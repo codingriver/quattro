@@ -1,0 +1,3 @@
+#include "resource.h"
+
+IDI_QUATTRO_APP_ICON ICON "icons\\quattro-app-icon.ico"
