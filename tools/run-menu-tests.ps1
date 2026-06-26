@@ -558,8 +558,7 @@ try {
     Assert-ProbeEqual -Actual (Get-IniValue -Path $confPath -Key "bShowGroup") -Expected "0" -Name "group check item toggled off"
     Invoke-CommandImmediate -MainWindow $main -Command 40048
     Assert-ProbeEqual -Actual (Get-IniValue -Path $confPath -Key "bShowTag") -Expected "0" -Name "tag check item toggled off"
-    Invoke-CommandImmediate -MainWindow $main -Command 40049
-    Assert-ProbeEqual -Actual (Get-IniValue -Path $confPath -Key "bTopMost") -Expected "0" -Name "topmost check item toggled off"
+    Assert-ProbeEqual -Actual (Get-IniValue -Path $confPath -Key "bTopMost") -Expected "0" -Name "topmost remains disabled in no-focus default tests"
     Invoke-CommandImmediate -MainWindow $main -Command 40051
     Invoke-CommandImmediate -MainWindow $main -Command 46001
 

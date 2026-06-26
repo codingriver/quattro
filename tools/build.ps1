@@ -9,6 +9,8 @@ param(
     [switch]$NoZip,
     [switch]$FullPackage,
     [switch]$FlatPackage,
+    [ValidateSet("vcpkg", "classic")]
+    [string]$Backend = "vcpkg",
     [switch]$Help
 )
 
@@ -25,7 +27,7 @@ Usage:
   powershell -ExecutionPolicy Bypass -File .\tools\$scriptName [options]
 
 Defaults:
-  Builds and packages x64 Quattro only, creates dist\x64\Quattro.exe and Quattro-x64.zip.
+  Builds and packages x64 Quattro with the vcpkg backend, creates dist\x64\Quattro.exe and Quattro-x64.zip.
 
 Options:
   --all, -All              Build both x86 and x64 packages.
@@ -38,6 +40,7 @@ Options:
   -NoZip                   Create package directories only, without zip archives.
   -FullPackage             Include external resource folders beside the exe.
   -FlatPackage             Run the previous default flat x64 single-exe package flow.
+  -Backend vcpkg|classic   Build backend. Default: vcpkg. Use classic for the legacy non-vcpkg build.
 
 Examples:
   powershell -ExecutionPolicy Bypass -File .\tools\$scriptName
@@ -57,8 +60,8 @@ function New-ArchitectureList {
     param([string]$Requested)
 
     $all = @(
-        [pscustomobject]@{ Name = "x86"; CMakePlatform = "Win32"; BuildDir = "build-x86" },
-        [pscustomobject]@{ Name = "x64"; CMakePlatform = "x64"; BuildDir = "build-x64" }
+        [pscustomobject]@{ Name = "x86"; CMakePlatform = "Win32"; BuildDir = "build-x86"; VcpkgTriplet = "x86-windows-static-md" },
+        [pscustomobject]@{ Name = "x64"; CMakePlatform = "x64"; BuildDir = "build-x64"; VcpkgTriplet = "x64-windows-static-md" }
     )
 
     if ($Requested -eq "all") {
@@ -70,7 +73,9 @@ function New-ArchitectureList {
 function Ensure-Configured {
     param(
         [string]$BuildDir,
-        [string]$CMakePlatform
+        [string]$CMakePlatform,
+        [string]$VcpkgTriplet = "",
+        [switch]$UseVcpkg
     )
 
     $cache = Join-Path $BuildDir "CMakeCache.txt"
@@ -78,14 +83,29 @@ function Ensure-Configured {
         $cacheText = Get-Content -Path $cache -Raw
         $expected = "CMAKE_GENERATOR_PLATFORM:INTERNAL=$CMakePlatform"
         $expectedSource = "CMAKE_HOME_DIRECTORY:INTERNAL=$($root.Replace('\', '/'))"
+        $expectedToolchain = "CMAKE_TOOLCHAIN_FILE:FILEPATH=$($root.Replace('\', '/'))/.vcpkg-root/scripts/buildsystems/vcpkg.cmake"
+        $expectedTriplet = "VCPKG_TARGET_TRIPLET:STRING=$VcpkgTriplet"
         if ($cacheText -notmatch [regex]::Escape($expected) -or
-            $cacheText -notmatch [regex]::Escape($expectedSource)) {
-            Remove-Item -LiteralPath $BuildDir -Recurse -Force
+            $cacheText -notmatch [regex]::Escape($expectedSource) -or
+            ($UseVcpkg -and ($cacheText -notmatch [regex]::Escape($expectedToolchain) -or
+                             $cacheText -notmatch [regex]::Escape($expectedTriplet)))) {
+            Remove-DirectoryRobust -Path $BuildDir
         }
     }
 
     if (!(Test-Path $cache)) {
-        cmake -S $root -B $BuildDir -G "Visual Studio 17 2022" -A $CMakePlatform
+        $configureArgs = @("-S", $root, "-B", $BuildDir, "-G", "Visual Studio 17 2022", "-A", $CMakePlatform)
+        if ($UseVcpkg) {
+            $toolchain = Join-Path $root ".vcpkg-root\scripts\buildsystems\vcpkg.cmake"
+            if (!(Test-Path $toolchain)) {
+                throw "vcpkg backend requested but toolchain was not found: $toolchain. Run .\.vcpkg-root\bootstrap-vcpkg.bat or use -Backend classic."
+            }
+            $configureArgs += @(
+                "-DCMAKE_TOOLCHAIN_FILE=$($toolchain.Replace('\', '/'))",
+                "-DVCPKG_TARGET_TRIPLET=$VcpkgTriplet"
+            )
+        }
+        & cmake @configureArgs
     }
 }
 
@@ -106,6 +126,21 @@ function Remove-LegacyBuildOutputs {
             Remove-Item -LiteralPath $file.FullName -Force
         }
     }
+}
+
+function Remove-DirectoryRobust {
+    param([string]$Path)
+
+    if (!(Test-Path $Path)) {
+        return
+    }
+    Get-ChildItem -LiteralPath $Path -Recurse -Force -ErrorAction SilentlyContinue | ForEach-Object {
+        try {
+            $_.Attributes = [System.IO.FileAttributes]::Normal
+        } catch {
+        }
+    }
+    Remove-Item -LiteralPath $Path -Recurse -Force
 }
 
 function Invoke-PackageBuild {
@@ -149,9 +184,6 @@ function Publish-Package {
         } else {
             $singleExeDirectoryPath = Join-Path $distRoot $SingleExeDirectory
         }
-        if (![string]::IsNullOrWhiteSpace($SingleExeDirectory) -and (Test-Path $singleExeDirectoryPath)) {
-            Remove-Item -LiteralPath $singleExeDirectoryPath -Recurse -Force
-        }
         New-Item -ItemType Directory -Force -Path $singleExeDirectoryPath | Out-Null
         $singleExePath = Join-Path $singleExeDirectoryPath "Quattro.exe"
         if (Test-Path $singleExePath) {
@@ -161,7 +193,7 @@ function Publish-Package {
         "single-exe: $singleExePath"
     } else {
         if (Test-Path $dist) {
-            Remove-Item -LiteralPath $dist -Recurse -Force
+            Remove-DirectoryRobust -Path $dist
         }
 
         New-Item -ItemType Directory -Force -Path $dist | Out-Null
@@ -214,13 +246,15 @@ New-Item -ItemType Directory -Force -Path $distRoot | Out-Null
 
 $outputs = New-Object System.Collections.Generic.List[string]
 foreach ($arch in $architectures) {
-    $buildDir = Join-Path $root $arch.BuildDir
+    $useVcpkg = $Backend -eq "vcpkg"
+    $buildDirName = if ($useVcpkg) { "build-vcpkg-$($arch.Name)" } else { $arch.BuildDir }
+    $buildDir = Join-Path $root $buildDirName
     if ($Clean -and (Test-Path $buildDir)) {
-        Remove-Item -LiteralPath $buildDir -Recurse -Force
+        Remove-DirectoryRobust -Path $buildDir
     }
 
     Remove-LegacyBuildOutputs -OutputDir (Join-Path $buildDir $Configuration)
-    Ensure-Configured -BuildDir $buildDir -CMakePlatform $arch.CMakePlatform
+    Ensure-Configured -BuildDir $buildDir -CMakePlatform $arch.CMakePlatform -VcpkgTriplet $arch.VcpkgTriplet -UseVcpkg:$useVcpkg
     Invoke-PackageBuild -BuildDir $buildDir -IncludeTestTools:$Test
     Remove-LegacyBuildOutputs -OutputDir (Join-Path $buildDir $Configuration)
 

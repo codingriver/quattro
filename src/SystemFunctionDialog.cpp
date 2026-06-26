@@ -130,8 +130,7 @@ public:
             return false;
         }
 
-        EnableWindow(owner_, FALSE);
-        ShowWindowRespectFocusPolicy(hwnd_, SW_SHOWNORMAL);
+        ownerWasEnabled_ = ShowModalWindow(owner_, hwnd_);
         UpdateWindow(hwnd_);
         RedrawWindow(hwnd_, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
 
@@ -143,10 +142,7 @@ public:
             }
         }
 
-        if (IsWindow(owner_)) {
-            EnableWindow(owner_, TRUE);
-            ActivateWindow(owner_);
-        }
+        RestoreModalOwner(owner_, ownerWasEnabled_, ownerRestored_);
         return accepted_;
     }
 
@@ -209,6 +205,7 @@ private:
             Close(false);
             return 0;
         case WM_DESTROY:
+            RestoreModalOwner(owner_, ownerWasEnabled_, ownerRestored_);
             if (font_ && ownsFont_) {
                 DeleteObject(font_);
             }
@@ -305,6 +302,8 @@ private:
     HWND hwnd_ = nullptr;
     const Theme& theme_;
     Link& link_;
+    bool ownerWasEnabled_ = false;
+    bool ownerRestored_ = false;
     bool done_ = false;
     bool accepted_ = false;
     HFONT font_ = nullptr;

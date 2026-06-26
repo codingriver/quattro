@@ -1,16 +1,22 @@
 #include "MainWindow.h"
 
 #include "AppLog.h"
+#include "BuiltinTools.h"
 #include "HotKeyEditor.h"
 #include "LinkEditDialog.h"
 #include "MenuCatalog.h"
+#include "PluginManagerDialog.h"
 #include "SearchDialog.h"
 #include "ShellItemService.h"
 #include "SimpleDialogs.h"
 #include "StartupService.h"
 #include "SystemFunctionDialog.h"
+#include "ThemedControls.h"
+#include "TodoEditDialog.h"
+#include "TodoSchedule.h"
 #include "UrlEditDialog.h"
 #include "Utilities.h"
+#include "WebDavBackupService.h"
 #include "../resources/resource.h"
 
 #include <algorithm>
@@ -20,6 +26,7 @@
 #include <commdlg.h>
 #include <ctime>
 #include <cstring>
+#include <cwchar>
 #include <cwctype>
 #include <optional>
 #include <shlobj.h>
@@ -33,8 +40,13 @@ namespace {
 constexpr int ID_HOTKEY_MAIN = 1;
 constexpr int ID_HOTKEY_SEARCH = 2;
 constexpr int ID_HOTKEY_LINK_BASE = 1000;
+constexpr int ID_NOTE_EDIT = 2100;
+constexpr int ID_REMINDER_PANEL = 2101;
 constexpr UINT_PTR ID_TIMER_DOCK = 10;
 constexpr UINT_PTR ID_TIMER_HOVER_ACTIVATE = 11;
+constexpr UINT_PTR ID_TIMER_NOTE_AUTOSAVE = 12;
+constexpr UINT_PTR ID_TIMER_REMINDER_SCAN = 13;
+constexpr UINT_PTR ID_TIMER_REMINDER_PANEL = 14;
 constexpr int kDockVisiblePixels = 3;
 constexpr int kDockRestoreGraceMs = 1500;
 
@@ -95,6 +107,37 @@ std::wstring TodayText() {
         L"星期日", L"星期一", L"星期二", L"星期三", L"星期四", L"星期五", L"星期六",
     };
     return std::to_wstring(now.wMonth) + L"月" + std::to_wstring(now.wDay) + L"日 " + kWeekdays[now.wDayOfWeek % 7];
+}
+
+std::wstring ConfigPackageFileName() {
+    SYSTEMTIME now{};
+    GetLocalTime(&now);
+    wchar_t buffer[64]{};
+    swprintf_s(buffer, L"quattro-%04u%02u%02u-%02u%02u.q4cfg",
+        now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute);
+    return buffer;
+}
+
+std::wstring FormatConfigPackageReport(const ConfigPackageReport& report) {
+    std::wstring text = report.message.empty() ? (report.ok ? L"操作完成。" : L"操作失败。") : report.message;
+    if (report.groupsAdded > 0 || report.tagsAdded > 0 || report.linksAdded > 0 ||
+        report.notesAdded > 0 || report.todosAdded > 0 || report.pluginSettingsAdded > 0 ||
+        report.urlIconsAdded > 0) {
+        text += L"\n\n新增分组: " + std::to_wstring(report.groupsAdded);
+        text += L"\n新增标签: " + std::to_wstring(report.tagsAdded);
+        text += L"\n新增启动项: " + std::to_wstring(report.linksAdded);
+        text += L"\n新增便签: " + std::to_wstring(report.notesAdded);
+        text += L"\n新增待办: " + std::to_wstring(report.todosAdded);
+        text += L"\n新增插件设置: " + std::to_wstring(report.pluginSettingsAdded);
+        text += L"\n新增 URL 图标: " + std::to_wstring(report.urlIconsAdded);
+    }
+    if (!report.warnings.empty()) {
+        text += L"\n\n警告:";
+        for (const auto& warning : report.warnings) {
+            text += L"\n- " + warning;
+        }
+    }
+    return text;
 }
 
 POINT ClampWindowPosition(int x, int y, int width, int height) {
@@ -334,7 +377,88 @@ bool IsAllTag(const Group& tag) {
 
 bool IsTodoTag(const Group& tag) {
     const std::wstring content = ToLower(tag.content);
-    return tag.type == 2 || tag.name == L"待办" || content.rfind(L"todo", 0) == 0;
+    return tag.type == 2 || tag.name == L"待办" || content == L"todo";
+}
+
+bool IsNoteTag(const Group& tag) {
+    return tag.type == 3 || ToLower(tag.content) == L"note";
+}
+
+bool IsTodoItemsTag(const Group& tag) {
+    return tag.type == 4 || ToLower(tag.content) == L"todoitems";
+}
+
+std::wstring TodoScheduleText(TodoScheduleKind kind) {
+    switch (kind) {
+    case TodoScheduleKind::Once:
+        return L"一次性";
+    case TodoScheduleKind::Daily:
+        return L"每日";
+    case TodoScheduleKind::Weekly:
+        return L"每周";
+    case TodoScheduleKind::Monthly:
+        return L"每月";
+    case TodoScheduleKind::Yearly:
+        return L"每年";
+    default:
+        return L"无时间";
+    }
+}
+
+bool IsTodoOverdue(const TodoItem& item) {
+    if (!item.enabled || !item.completedAt.empty() || item.nextDueAt.empty()) {
+        return false;
+    }
+    SYSTEMTIME due{};
+    SYSTEMTIME now{};
+    if (!TryParseTodoTimestamp(item.nextDueAt, due)) {
+        return false;
+    }
+    GetLocalTime(&now);
+    FILETIME dueFile{};
+    FILETIME nowFile{};
+    return SystemTimeToFileTime(&due, &dueFile) &&
+           SystemTimeToFileTime(&now, &nowFile) &&
+           CompareFileTime(&dueFile, &nowFile) < 0;
+}
+
+bool IsTodoDueForReminder(const TodoItem& item) {
+    if (!item.enabled || !item.completedAt.empty() || item.nextDueAt.empty()) {
+        return false;
+    }
+    SYSTEMTIME due{};
+    SYSTEMTIME now{};
+    if (!TryParseTodoTimestamp(item.nextDueAt, due)) {
+        return false;
+    }
+    GetLocalTime(&now);
+    FILETIME dueFile{};
+    FILETIME nowFile{};
+    return SystemTimeToFileTime(&due, &dueFile) &&
+           SystemTimeToFileTime(&now, &nowFile) &&
+           CompareFileTime(&dueFile, &nowFile) <= 0;
+}
+
+std::wstring TodoReminderKey(const TodoItem& item) {
+    return std::to_wstring(item.id) + L"|" + item.nextDueAt;
+}
+
+std::wstring TodoReminderText(const TodoItem& item) {
+    std::wstring text = item.title;
+    if (!Trim(item.content).empty()) {
+        text += L"\n" + Trim(item.content);
+    }
+    if (!item.nextDueAt.empty()) {
+        text += L"\n" + TodoScheduleText(item.scheduleKind) + L" " + item.nextDueAt;
+    }
+    return text;
+}
+
+std::wstring LimitNotificationText(const std::wstring& value, std::size_t limit) {
+    if (value.size() <= limit) {
+        return value;
+    }
+    return value.substr(0, limit > 3 ? limit - 3 : limit) + L"...";
 }
 
 std::wstring InitialSortKey(const std::wstring& value) {
@@ -941,6 +1065,7 @@ MainWindow::MainWindow(
       appDirectory_(std::move(appDirectory)),
       configService_(configService),
       storageService_(storageService),
+      pluginRegistry_(appDirectory_),
       config_(std::move(config)),
       model_(std::move(model)),
       theme_(std::move(theme)),
@@ -950,9 +1075,30 @@ MainWindow::MainWindow(
 }
 
 MainWindow::~MainWindow() {
+    SaveCurrentNotePage();
     if (tooltip_) {
         DestroyWindow(tooltip_);
         tooltip_ = nullptr;
+    }
+    if (noteEdit_) {
+        DestroyWindow(noteEdit_);
+        noteEdit_ = nullptr;
+    }
+    if (noteEditFont_) {
+        DeleteObject(noteEditFont_);
+        noteEditFont_ = nullptr;
+    }
+    if (noteEditBrush_) {
+        DeleteObject(noteEditBrush_);
+        noteEditBrush_ = nullptr;
+    }
+    if (reminderPanel_) {
+        DestroyWindow(reminderPanel_);
+        reminderPanel_ = nullptr;
+    }
+    if (reminderPanelFont_) {
+        DeleteObject(reminderPanelFont_);
+        reminderPanelFont_ = nullptr;
     }
     DiscardDeviceResources();
     SafeRelease(titleFormat_);
@@ -977,6 +1123,7 @@ bool MainWindow::Create() {
     if (!RegisterClassExW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
         return false;
     }
+    pluginRegistry_.Initialize();
 
     if (FAILED(D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, &d2dFactory_))) {
         return false;
@@ -1044,6 +1191,8 @@ bool MainWindow::Create() {
         dockTimerId_ = SetTimer(hwnd_, ID_TIMER_DOCK, 250, nullptr);
     }
     InitializeTrayIcon();
+    reminderScanTimerId_ = SetTimer(hwnd_, ID_TIMER_REMINDER_SCAN, 30000, nullptr);
+    CheckTodoReminders();
     return true;
 }
 
@@ -1176,6 +1325,20 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             pendingHoverActivationId_ = 0;
             return 0;
         }
+        if (wParam == ID_TIMER_NOTE_AUTOSAVE) {
+            KillTimer(hwnd_, ID_TIMER_NOTE_AUTOSAVE);
+            noteSaveTimerId_ = 0;
+            SaveCurrentNotePage();
+            return 0;
+        }
+        if (wParam == ID_TIMER_REMINDER_SCAN) {
+            CheckTodoReminders();
+            return 0;
+        }
+        if (wParam == ID_TIMER_REMINDER_PANEL) {
+            HideTodoReminderPanel();
+            return 0;
+        }
         return 0;
     case WM_DROPFILES: {
         HDROP drop = reinterpret_cast<HDROP>(wParam);
@@ -1289,7 +1452,11 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             }
             return 0;
         case HitKind::AddButton:
-            AddLink();
+            if (const Group* tag = FindGroup(currentTagId_); tag && IsTodoItemsTag(*tag)) {
+                AddTodoItem();
+            } else {
+                AddLink();
+            }
             return 0;
         case HitKind::Group:
             SelectGroup(hit.id);
@@ -1301,6 +1468,14 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             selectedLinkId_ = hit.id;
             if (!config_.doubleClickToRun) {
                 RunLink(hit.id);
+            } else {
+                InvalidateRect(hwnd_, nullptr, FALSE);
+            }
+            return 0;
+        case HitKind::Todo:
+            selectedTodoId_ = hit.id;
+            if (x <= hit.rect.left + 34.0f) {
+                ToggleTodoDone(hit.id);
             } else {
                 InvalidateRect(hwnd_, nullptr, FALSE);
             }
@@ -1320,6 +1495,9 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         if (hit.kind == HitKind::Link) {
             selectedLinkId_ = hit.id;
             ShowLinkMenu(hit.id, point);
+        } else if (hit.kind == HitKind::Todo) {
+            selectedTodoId_ = hit.id;
+            ShowTodoMenu(hit.id, point);
         } else if (hit.kind == HitKind::Group) {
             ShowGroupMenu(hit.id, point);
         } else if (hit.kind == HitKind::Tag) {
@@ -1353,6 +1531,8 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         HitArea hit = HitTest(x, y);
         if (hit.kind == HitKind::Link) {
             RunLink(hit.id);
+        } else if (hit.kind == HitKind::Todo) {
+            EditTodoItem(hit.id);
         }
         return 0;
     }
@@ -1373,6 +1553,18 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
     case WM_COMMAND:
         {
         const UINT command = LOWORD(wParam);
+        if (command == ID_REMINDER_PANEL) {
+            HideTodoReminderPanel();
+            return 0;
+        }
+        if (command == ID_NOTE_EDIT && HIWORD(wParam) == EN_CHANGE) {
+            noteDirty_ = true;
+            if (noteSaveTimerId_ != 0) {
+                KillTimer(hwnd_, ID_TIMER_NOTE_AUTOSAVE);
+            }
+            noteSaveTimerId_ = SetTimer(hwnd_, ID_TIMER_NOTE_AUTOSAVE, 700, nullptr);
+            return 0;
+        }
         if (command >= ID_MENU_MOVE_TO_BASE && command < ID_MENU_MOVE_TO_BASE + ID_MENU_DYNAMIC_TARGET_LIMIT) {
             const std::size_t targetIndex = command - ID_MENU_MOVE_TO_BASE;
             std::vector<int> targets = menuMoveTargetIds_;
@@ -1418,6 +1610,10 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         }
         if (command >= ID_MENU_SYSTEM_FUNCTION_BASE && command < ID_MENU_SYSTEM_FUNCTION_BASE + ID_MENU_SYSTEM_FUNCTION_LIMIT) {
             OpenSystemFunction(static_cast<std::size_t>(command - ID_MENU_SYSTEM_FUNCTION_BASE));
+            return 0;
+        }
+        if (command >= ID_MENU_TOOL_BASE && command < ID_MENU_TOOL_BASE + ID_MENU_TOOL_LIMIT) {
+            OpenBuiltinTool(static_cast<std::size_t>(command - ID_MENU_TOOL_BASE));
             return 0;
         }
         switch (command) {
@@ -1526,11 +1722,47 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         case ID_MENU_ADD_TAG:
             AddTag();
             return 0;
+        case ID_MENU_ADD_NOTE_TAG:
+            AddNoteTag();
+            return 0;
+        case ID_MENU_ADD_TODO_TAG:
+            AddTodoTag();
+            return 0;
         case ID_MENU_EDIT_TAG:
             EditTag(CommandTagId());
             return 0;
         case ID_MENU_DELETE_TAG:
             DeleteTag(CommandTagId());
+            return 0;
+        case ID_MENU_ADD_TODO_ITEM:
+            AddTodoItem();
+            return 0;
+        case ID_MENU_EDIT_TODO_ITEM:
+            EditTodoItem(CommandTodoId());
+            return 0;
+        case ID_MENU_DELETE_TODO_ITEM:
+            DeleteTodoItem(CommandTodoId());
+            return 0;
+        case ID_MENU_TOGGLE_TODO_DONE:
+            ToggleTodoDone(CommandTodoId());
+            return 0;
+        case ID_MENU_TOGGLE_TODO_ENABLED:
+            ToggleTodoEnabled(CommandTodoId());
+            return 0;
+        case ID_MENU_CLEAR_DONE_TODOS:
+            ClearDoneTodos();
+            return 0;
+        case ID_MENU_TODO_SORT_DUE:
+            SetCurrentTodoSort(0);
+            return 0;
+        case ID_MENU_TODO_SORT_CREATED:
+            SetCurrentTodoSort(1);
+            return 0;
+        case ID_MENU_TODO_SORT_TITLE:
+            SetCurrentTodoSort(2);
+            return 0;
+        case ID_MENU_TODO_SORT_STATUS:
+            SetCurrentTodoSort(3);
             return 0;
         case ID_MENU_SORT_POS:
             SetCurrentTagSort(0);
@@ -1598,11 +1830,26 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         case ID_MENU_SETTINGS:
             OpenSettings();
             return 0;
+        case ID_MENU_PLUGIN_STORE:
+            OpenPluginStore();
+            return 0;
         case ID_MENU_RESET_LAYOUT:
             ResetLayoutToDefaults();
             return 0;
         case ID_MENU_IMPORT_CLIPBOARD:
             ImportClipboard();
+            return 0;
+        case ID_MENU_IMPORT_CONFIG_MERGE:
+            ImportConfigPackageMerge();
+            return 0;
+        case ID_MENU_EXPORT_CONFIG:
+            ExportConfigPackage();
+            return 0;
+        case ID_MENU_UPLOAD_WEBDAV_BACKUP:
+            UploadWebDavBackup();
+            return 0;
+        case ID_MENU_DOWNLOAD_WEBDAV_BACKUP:
+            DownloadWebDavBackupMerge();
             return 0;
         case ID_MENU_CLEAR_ICON_CACHE:
             ClearIconCache();
@@ -1649,7 +1896,19 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             return TRUE;
         }
         return DefWindowProcW(hwnd_, message, wParam, lParam);
+    case WM_CTLCOLOREDIT:
+        if (reinterpret_cast<HWND>(lParam) == noteEdit_) {
+            HDC dc = reinterpret_cast<HDC>(wParam);
+            SetTextColor(dc, ToColorRef(theme_.color(L"edit", L"normal", L"text")));
+            SetBkColor(dc, ToColorRef(theme_.color(L"edit", L"normal", L"bg")));
+            if (!noteEditBrush_) {
+                noteEditBrush_ = CreateSolidBrush(ToColorRef(theme_.color(L"edit", L"normal", L"bg")));
+            }
+            return reinterpret_cast<LRESULT>(noteEditBrush_);
+        }
+        return DefWindowProcW(hwnd_, message, wParam, lParam);
     case WM_DESTROY:
+        SaveCurrentNotePage();
         HideLinkTooltip();
         if (tooltip_) {
             DestroyWindow(tooltip_);
@@ -1663,6 +1922,19 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             KillTimer(hwnd_, ID_TIMER_HOVER_ACTIVATE);
             hoverActivationTimerId_ = 0;
         }
+        if (noteSaveTimerId_ != 0) {
+            KillTimer(hwnd_, ID_TIMER_NOTE_AUTOSAVE);
+            noteSaveTimerId_ = 0;
+        }
+        if (reminderScanTimerId_ != 0) {
+            KillTimer(hwnd_, ID_TIMER_REMINDER_SCAN);
+            reminderScanTimerId_ = 0;
+        }
+        if (reminderPanelTimerId_ != 0) {
+            KillTimer(hwnd_, ID_TIMER_REMINDER_PANEL);
+            reminderPanelTimerId_ = 0;
+        }
+        HideTodoReminderPanel();
         DragAcceptFiles(hwnd_, FALSE);
         RevokeDragDrop(hwnd_);
         if (oleDropTarget_) {
@@ -1706,6 +1978,7 @@ void MainWindow::SelectGroup(int groupId) {
         return;
     }
 
+    SaveCurrentNotePage();
     currentGroupId_ = groupId;
     const auto tags = TagsForCurrentGroup();
     currentTagId_ = tags.empty() ? 0 : tags.front().id;
@@ -1726,6 +1999,7 @@ void MainWindow::SelectTag(int tagId) {
         return;
     }
 
+    SaveCurrentNotePage();
     currentTagId_ = tagId;
     linkScrollOffset_ = 0.0f;
     config_.currentTagId = currentTagId_;
@@ -1758,6 +2032,13 @@ int MainWindow::CommandLinkId() const {
         return menuContextId_;
     }
     return selectedLinkId_;
+}
+
+int MainWindow::CommandTodoId() const {
+    if (menuContextKind_ == HitKind::Todo) {
+        return menuContextId_;
+    }
+    return selectedTodoId_;
 }
 
 void MainWindow::AddGroup() {
@@ -1823,6 +2104,7 @@ void MainWindow::DeleteGroup(int groupId) {
     if (!group || group->parentGroup != 0) {
         return;
     }
+    SaveCurrentNotePage();
     std::wstring message = L"确定删除分组“" + group->name + L"”及其标签和启动项？";
     if (MessageBoxW(hwnd_, message.c_str(), L"删除分组", MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) != IDYES) {
         return;
@@ -1835,6 +2117,14 @@ void MainWindow::DeleteGroup(int groupId) {
         Group* tag = FindGroup(link.parentGroup);
         return tag && tag->parentGroup == groupId;
     }), model_.links.end());
+    model_.notes.erase(std::remove_if(model_.notes.begin(), model_.notes.end(), [&](const NotePage& note) {
+        Group* tag = FindGroup(note.tagId);
+        return tag && tag->parentGroup == groupId;
+    }), model_.notes.end());
+    model_.todos.erase(std::remove_if(model_.todos.begin(), model_.todos.end(), [&](const TodoItem& item) {
+        Group* tag = FindGroup(item.tagId);
+        return tag && tag->parentGroup == groupId;
+    }), model_.todos.end());
     model_.groups.erase(std::remove_if(model_.groups.begin(), model_.groups.end(), [groupId](const Group& item) {
         return item.id == groupId || item.parentGroup == groupId;
     }), model_.groups.end());
@@ -1861,13 +2151,6 @@ void MainWindow::AddTag() {
     tag.pos = -1;
     tag.layout = 1;
     tag.iconSize = 32;
-    if (name == L"全部") {
-        tag.type = 1;
-        tag.content = L"all";
-    } else if (name == L"待办") {
-        tag.type = 2;
-        tag.content = L"todo";
-    }
     if (!storageService_.InsertGroup(tag)) {
         MessageBoxW(hwnd_, storageService_.lastError().c_str(), L"新增标签", MB_OK | MB_ICONWARNING);
         return;
@@ -1883,6 +2166,64 @@ void MainWindow::AddTag() {
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
+void MainWindow::AddNoteTag() {
+    const int parentGroupId = CommandGroupId();
+    Group* parent = FindGroup(parentGroupId);
+    if (!parent || parent->parentGroup != 0) {
+        AddGroup();
+        return;
+    }
+    Group tag;
+    tag.name = UniqueSiblingGroupName(model_.groups, parentGroupId, L"便签");
+    tag.parentGroup = parentGroupId;
+    tag.pos = -1;
+    tag.layout = 1;
+    tag.iconSize = 32;
+    tag.type = 3;
+    tag.content = L"note";
+    if (!storageService_.InsertGroup(tag)) {
+        MessageBoxW(hwnd_, storageService_.lastError().c_str(), L"新增便签标签页", MB_OK | MB_ICONWARNING);
+        return;
+    }
+    model_.groups.push_back(tag);
+    currentGroupId_ = parentGroupId;
+    currentTagId_ = tag.id;
+    config_.currentGroupId = currentGroupId_;
+    config_.currentTagId = currentTagId_;
+    configService_.SaveWindowState(config_);
+    EnsureTagVisible(currentTagId_);
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void MainWindow::AddTodoTag() {
+    const int parentGroupId = CommandGroupId();
+    Group* parent = FindGroup(parentGroupId);
+    if (!parent || parent->parentGroup != 0) {
+        AddGroup();
+        return;
+    }
+    Group tag;
+    tag.name = UniqueSiblingGroupName(model_.groups, parentGroupId, L"待办事项");
+    tag.parentGroup = parentGroupId;
+    tag.pos = -1;
+    tag.layout = 1;
+    tag.iconSize = 32;
+    tag.type = 4;
+    tag.content = L"todoItems";
+    if (!storageService_.InsertGroup(tag)) {
+        MessageBoxW(hwnd_, storageService_.lastError().c_str(), L"新增待办事项标签页", MB_OK | MB_ICONWARNING);
+        return;
+    }
+    model_.groups.push_back(tag);
+    currentGroupId_ = parentGroupId;
+    currentTagId_ = tag.id;
+    config_.currentGroupId = currentGroupId_;
+    config_.currentTagId = currentTagId_;
+    configService_.SaveWindowState(config_);
+    EnsureTagVisible(currentTagId_);
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
 void MainWindow::EditTag(int tagId) {
     Group* tag = FindGroup(tagId);
     if (!tag || tag->parentGroup == 0) {
@@ -1894,16 +2235,6 @@ void MainWindow::EditTag(int tagId) {
     }
     Group edited = *tag;
     edited.name = name;
-    if (name == L"全部") {
-        edited.type = 1;
-        edited.content = L"all";
-    } else if (name == L"待办") {
-        edited.type = 2;
-        edited.content = L"todo";
-    } else if (edited.type == 1 || edited.type == 2) {
-        edited.type = 0;
-        edited.content.clear();
-    }
     if (!storageService_.UpdateGroup(edited)) {
         MessageBoxW(hwnd_, storageService_.lastError().c_str(), L"编辑标签", MB_OK | MB_ICONWARNING);
         return;
@@ -1917,6 +2248,7 @@ void MainWindow::DeleteTag(int tagId) {
     if (!tag || tag->parentGroup == 0) {
         return;
     }
+    SaveCurrentNotePage();
     std::wstring message = L"确定删除标签“" + tag->name + L"”及其启动项？";
     if (MessageBoxW(hwnd_, message.c_str(), L"删除标签", MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) != IDYES) {
         return;
@@ -1928,6 +2260,12 @@ void MainWindow::DeleteTag(int tagId) {
     model_.links.erase(std::remove_if(model_.links.begin(), model_.links.end(), [tagId](const Link& link) {
         return link.parentGroup == tagId;
     }), model_.links.end());
+    model_.notes.erase(std::remove_if(model_.notes.begin(), model_.notes.end(), [tagId](const NotePage& note) {
+        return note.tagId == tagId;
+    }), model_.notes.end());
+    model_.todos.erase(std::remove_if(model_.todos.begin(), model_.todos.end(), [tagId](const TodoItem& item) {
+        return item.tagId == tagId;
+    }), model_.todos.end());
     model_.groups.erase(std::remove_if(model_.groups.begin(), model_.groups.end(), [tagId](const Group& item) {
         return item.id == tagId;
     }), model_.groups.end());
@@ -1949,6 +2287,22 @@ void MainWindow::SetCurrentTagSort(int sort) {
         return;
     }
     *tag = edited;
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void MainWindow::SetCurrentTodoSort(int sort) {
+    Group* tag = FindGroup(CommandTagId());
+    if (!tag || tag->parentGroup == 0 || !IsTodoItemsTag(*tag)) {
+        return;
+    }
+    Group edited = *tag;
+    edited.sort = std::max(0, std::min(3, sort));
+    if (!storageService_.UpdateGroup(edited)) {
+        MessageBoxW(hwnd_, storageService_.lastError().c_str(), L"待办排序", MB_OK | MB_ICONWARNING);
+        return;
+    }
+    *tag = edited;
+    linkScrollOffset_ = 0.0f;
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
@@ -2059,7 +2413,7 @@ void MainWindow::ToggleConfigVisibility(bool AppConfig::*field) {
 
 int MainWindow::EnsureCurrentTag() {
     Group* tag = FindGroup(currentTagId_);
-    if (tag && tag->parentGroup != 0) {
+    if (tag && tag->parentGroup != 0 && !IsNoteTag(*tag) && !IsTodoItemsTag(*tag)) {
         return currentTagId_;
     }
 
@@ -2729,6 +3083,268 @@ void MainWindow::ClearCurrentTagLinks() {
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
+void MainWindow::AddTodoItem() {
+    Group* tag = FindGroup(currentTagId_);
+    if (!tag || !IsTodoItemsTag(*tag)) {
+        return;
+    }
+
+    TodoItem item;
+    item.tagId = currentTagId_;
+    item.title = L"新的待办事项";
+    item.enabled = true;
+    item.scheduleKind = TodoScheduleKind::None;
+    item.pos = -1;
+    if (!TodoEditDialog::Show(hwnd_, instance_, theme_, item, true)) {
+        return;
+    }
+    item.tagId = currentTagId_;
+    item.pos = -1;
+    if (!storageService_.InsertTodoItem(item)) {
+        MessageBoxW(hwnd_, storageService_.lastError().c_str(), L"新增待办事项", MB_OK | MB_ICONWARNING);
+        return;
+    }
+    model_.todos.push_back(item);
+    selectedTodoId_ = item.id;
+    CheckTodoReminders();
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void MainWindow::EditTodoItem(int todoId) {
+    TodoItem* item = FindTodoItem(todoId);
+    if (!item) {
+        return;
+    }
+    TodoItem edited = *item;
+    if (!TodoEditDialog::Show(hwnd_, instance_, theme_, edited, false)) {
+        return;
+    }
+    edited.id = item->id;
+    edited.tagId = item->tagId;
+    edited.pos = item->pos;
+    edited.createdAt = item->createdAt;
+    if (!storageService_.UpdateTodoItem(edited)) {
+        MessageBoxW(hwnd_, storageService_.lastError().c_str(), L"编辑待办事项", MB_OK | MB_ICONWARNING);
+        return;
+    }
+    *item = edited;
+    selectedTodoId_ = item->id;
+    CheckTodoReminders();
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void MainWindow::DeleteTodoItem(int todoId) {
+    TodoItem* item = FindTodoItem(todoId);
+    if (!item) {
+        return;
+    }
+    std::wstring message = L"确定删除待办事项“" + item->title + L"”？";
+    if (MessageBoxW(hwnd_, message.c_str(), L"删除待办事项", MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) != IDYES) {
+        return;
+    }
+    if (!storageService_.DeleteTodoItem(todoId)) {
+        MessageBoxW(hwnd_, storageService_.lastError().c_str(), L"删除待办事项", MB_OK | MB_ICONWARNING);
+        return;
+    }
+    model_.todos.erase(std::remove_if(model_.todos.begin(), model_.todos.end(), [todoId](const TodoItem& item) {
+        return item.id == todoId;
+    }), model_.todos.end());
+    if (selectedTodoId_ == todoId) {
+        selectedTodoId_ = 0;
+    }
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void MainWindow::ToggleTodoDone(int todoId) {
+    TodoItem* item = FindTodoItem(todoId);
+    if (!item) {
+        return;
+    }
+    const bool complete = item->completedAt.empty();
+    const std::wstring now = CurrentTodoTimestamp();
+    if (!storageService_.SetTodoCompleted(todoId, complete)) {
+        MessageBoxW(hwnd_, storageService_.lastError().c_str(), L"待办事项", MB_OK | MB_ICONWARNING);
+        return;
+    }
+    if (complete && IsRecurringTodoSchedule(item->scheduleKind)) {
+        item->completedAt.clear();
+        item->nextDueAt = ComputeNextTodoDueAt(item->scheduleKind, item->anchorAt, now);
+    } else {
+        item->completedAt = complete ? now : L"";
+    }
+    item->updatedAt = now;
+    selectedTodoId_ = todoId;
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void MainWindow::ToggleTodoEnabled(int todoId) {
+    TodoItem* item = FindTodoItem(todoId);
+    if (!item) {
+        return;
+    }
+    const bool enable = !item->enabled;
+    if (!storageService_.SetTodoEnabled(todoId, enable)) {
+        MessageBoxW(hwnd_, storageService_.lastError().c_str(), L"待办事项", MB_OK | MB_ICONWARNING);
+        return;
+    }
+    item->enabled = enable;
+    item->updatedAt = CurrentTodoTimestamp();
+    selectedTodoId_ = todoId;
+    if (enable) {
+        CheckTodoReminders();
+    }
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void MainWindow::ClearDoneTodos() {
+    Group* tag = FindGroup(currentTagId_);
+    if (!tag || !IsTodoItemsTag(*tag)) {
+        return;
+    }
+    std::vector<int> doneIds;
+    for (const auto& item : model_.todos) {
+        if (item.tagId == currentTagId_ && !item.completedAt.empty()) {
+            doneIds.push_back(item.id);
+        }
+    }
+    if (doneIds.empty()) {
+        return;
+    }
+    if (MessageBoxW(hwnd_, L"确定清空已完成待办事项？", L"清空已完成", MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) != IDYES) {
+        return;
+    }
+    for (int id : doneIds) {
+        if (!storageService_.DeleteTodoItem(id)) {
+            MessageBoxW(hwnd_, storageService_.lastError().c_str(), L"清空已完成", MB_OK | MB_ICONWARNING);
+            return;
+        }
+    }
+    model_.todos.erase(std::remove_if(model_.todos.begin(), model_.todos.end(), [&](const TodoItem& item) {
+        return std::find(doneIds.begin(), doneIds.end(), item.id) != doneIds.end();
+    }), model_.todos.end());
+    if (FindTodoItem(selectedTodoId_) == nullptr) {
+        selectedTodoId_ = 0;
+    }
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void MainWindow::CheckTodoReminders() {
+    for (const auto& item : model_.todos) {
+        if (!IsTodoDueForReminder(item)) {
+            continue;
+        }
+        const std::wstring key = TodoReminderKey(item);
+        if (shownReminderKeys_.find(key) != shownReminderKeys_.end()) {
+            continue;
+        }
+        shownReminderKeys_.insert(key);
+        ShowTodoReminder(item);
+        return;
+    }
+}
+
+void MainWindow::ShowTodoReminder(const TodoItem& item) {
+    ShowTodoReminderPanel(item);
+    ShowTodoSystemNotification(item);
+}
+
+void MainWindow::ShowTodoReminderPanel(const TodoItem& item) {
+    HideTodoReminderPanel();
+
+    if (!reminderPanelFont_) {
+        reminderPanelFont_ = CreateFontW(
+            -14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+            DEFAULT_PITCH | FF_DONTCARE, L"Microsoft YaHei UI");
+    }
+
+    RECT work{};
+    HMONITOR monitor = MonitorFromWindow(hwnd_, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO info{};
+    info.cbSize = sizeof(info);
+    if (GetMonitorInfoW(monitor, &info)) {
+        work = info.rcWork;
+    } else {
+        SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
+    }
+
+    const int width = 340;
+    const int height = 136;
+    const int x = work.right - width - 18;
+    const int y = work.bottom - height - 18;
+    const std::wstring text = L"待办提醒\r\n" + LimitNotificationText(item.title, 80) +
+        (Trim(item.content).empty() ? L"" : (L"\r\n" + LimitNotificationText(Trim(item.content), 160)));
+
+    reminderPanel_ = CreateWindowExW(
+        WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+        L"STATIC",
+        text.c_str(),
+        WS_POPUP | WS_BORDER | SS_LEFT | SS_NOTIFY,
+        x,
+        y,
+        width,
+        height,
+        hwnd_,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_REMINDER_PANEL)),
+        instance_,
+        nullptr);
+    if (!reminderPanel_) {
+        return;
+    }
+    SendMessageW(reminderPanel_, WM_SETFONT, reinterpret_cast<WPARAM>(reminderPanelFont_), TRUE);
+    ShowWindow(reminderPanel_, SW_SHOWNOACTIVATE);
+    SetWindowPos(reminderPanel_, HWND_TOPMOST, x, y, width, height, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    reminderPanelTimerId_ = SetTimer(hwnd_, ID_TIMER_REMINDER_PANEL, 12000, nullptr);
+}
+
+void MainWindow::HideTodoReminderPanel() {
+    if (reminderPanelTimerId_ != 0 && hwnd_) {
+        KillTimer(hwnd_, ID_TIMER_REMINDER_PANEL);
+        reminderPanelTimerId_ = 0;
+    }
+    if (reminderPanel_) {
+        DestroyWindow(reminderPanel_);
+        reminderPanel_ = nullptr;
+    }
+}
+
+bool MainWindow::EnsureNotificationIcon() {
+    if (trayIconVisible_) {
+        return true;
+    }
+
+    NOTIFYICONDATAW data{};
+    data.cbSize = sizeof(data);
+    data.hWnd = hwnd_;
+    data.uID = 1;
+    data.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
+    data.uCallbackMessage = WM_QUATTRO_TRAY;
+    data.hIcon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_QUATTRO_APP_ICON));
+    wcscpy_s(data.szTip, L"Quattro");
+    if (Shell_NotifyIconW(NIM_ADD, &data)) {
+        trayIconVisible_ = true;
+    }
+    return trayIconVisible_;
+}
+
+void MainWindow::ShowTodoSystemNotification(const TodoItem& item) {
+    if (!EnsureNotificationIcon()) {
+        return;
+    }
+
+    NOTIFYICONDATAW data{};
+    data.cbSize = sizeof(data);
+    data.hWnd = hwnd_;
+    data.uID = 1;
+    data.uFlags = NIF_INFO;
+    data.dwInfoFlags = NIIF_INFO;
+    const std::wstring title = LimitNotificationText(item.title, 63);
+    const std::wstring body = LimitNotificationText(Trim(item.content).empty() ? TodoReminderText(item) : Trim(item.content), 255);
+    wcscpy_s(data.szInfoTitle, title.empty() ? L"待办提醒" : title.c_str());
+    wcscpy_s(data.szInfo, body.empty() ? L"待办事项时间到了。" : body.c_str());
+    Shell_NotifyIconW(NIM_MODIFY, &data);
+}
+
 void MainWindow::CopyLinkPath(int linkId) {
     Link* link = FindLink(linkId);
     if (!link || !OpenClipboard(hwnd_)) {
@@ -2765,14 +3381,58 @@ void MainWindow::OpenSearch() {
 void MainWindow::OpenSettings() {
     AppConfig previous = config_;
     AppConfig next = config_;
-    if (!ShowSettingsDialog(hwnd_, instance_, next, theme_)) {
+    bool webDavDataImported = false;
+    if (!ShowSettingsDialog(hwnd_, instance_, next, theme_, appDirectory_, &webDavDataImported)) {
+        if (webDavDataImported) {
+            model_ = storageService_.Load();
+            SelectInitialItems();
+            pluginRegistry_.Initialize();
+            RegisterConfiguredHotKeys();
+            ClearUiBitmaps();
+            InvalidateRect(hwnd_, nullptr, FALSE);
+        }
         return;
     }
     config_ = next;
     configService_.Save(config_);
     SyncAutoRun(previous);
     ApplyConfigRuntimeChanges(previous);
+    if (webDavDataImported) {
+        model_ = storageService_.Load();
+        SelectInitialItems();
+        pluginRegistry_.Initialize();
+        RegisterConfiguredHotKeys();
+        ClearUiBitmaps();
+    }
     InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void MainWindow::OpenPluginStore() {
+    if (ShowPluginManagerDialog(hwnd_, instance_, theme_, pluginRegistry_, storageService_, appDirectory_, config_.pluginStoreUrl)) {
+        model_ = storageService_.Load();
+        SelectInitialItems();
+        RegisterConfiguredHotKeys();
+        InvalidateRect(hwnd_, nullptr, FALSE);
+    }
+}
+
+void MainWindow::OpenBuiltinTool(std::size_t index) {
+    if (menuToolEngines_.empty()) {
+        const auto plugins = pluginRegistry_.LoadPlugins();
+        for (const auto& plugin : plugins) {
+            if (!plugin.enabled || plugin.kind != L"builtin-tool" || plugin.engine.empty()) {
+                continue;
+            }
+            if (menuToolEngines_.size() >= ID_MENU_TOOL_LIMIT) {
+                break;
+            }
+            menuToolEngines_.push_back(plugin.engine);
+        }
+    }
+    if (index >= menuToolEngines_.size()) {
+        return;
+    }
+    ShowBuiltinTool(hwnd_, instance_, theme_, pluginRegistry_, menuToolEngines_[index]);
 }
 
 void MainWindow::ResetLayoutToDefaults() {
@@ -2945,6 +3605,13 @@ void MainWindow::ApplyTheme(const std::wstring& themeName) {
     configService_.Save(config_);
     ResetMenuVisuals();
     ApplyTooltipTheme();
+    if (noteEditBrush_) {
+        DeleteObject(noteEditBrush_);
+        noteEditBrush_ = nullptr;
+    }
+    if (noteEdit_) {
+        InvalidateRect(noteEdit_, nullptr, TRUE);
+    }
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
@@ -3143,6 +3810,132 @@ void MainWindow::ImportClipboard() {
     }
     CloseClipboard();
     InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void MainWindow::ExportConfigPackage() {
+    SaveCurrentNotePage();
+    SaveWindowState();
+
+    std::wstring buffer = (appDirectory_ / ConfigPackageFileName()).wstring();
+    buffer.resize(32768, L'\0');
+    OPENFILENAMEW ofn{};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = hwnd_;
+    ofn.lpstrFile = buffer.data();
+    ofn.nMaxFile = static_cast<DWORD>(buffer.size());
+    ofn.lpstrFilter = L"Quattro 配置包 (*.q4cfg)\0*.q4cfg\0所有文件\0*.*\0";
+    ofn.lpstrDefExt = L"q4cfg";
+    ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+    if (!GetSaveFileNameW(&ofn)) {
+        return;
+    }
+
+    ConfigPackageOptions options;
+    options.includeConfig = true;
+    options.includeData = true;
+    options.includeUrlIcons = true;
+    options.includePluginSettings = true;
+
+    ConfigPackageService service(appDirectory_);
+    const ConfigPackageReport report = service.ExportPackage(buffer.c_str(), options);
+    MessageBoxW(hwnd_, FormatConfigPackageReport(report).c_str(), L"导出配置包", MB_OK | (report.ok ? MB_ICONINFORMATION : MB_ICONWARNING));
+}
+
+void MainWindow::ImportConfigPackageMerge() {
+    SaveCurrentNotePage();
+
+    std::wstring buffer(32768, L'\0');
+    OPENFILENAMEW ofn{};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = hwnd_;
+    ofn.lpstrFile = buffer.data();
+    ofn.nMaxFile = static_cast<DWORD>(buffer.size());
+    ofn.lpstrFilter = L"Quattro 配置包 (*.q4cfg)\0*.q4cfg\0所有文件\0*.*\0";
+    ofn.lpstrDefExt = L"q4cfg";
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+    if (!GetOpenFileNameW(&ofn)) {
+        return;
+    }
+
+    const int confirm = MessageBoxW(
+        hwnd_,
+        L"将把配置包中的分组、标签、启动项、便签、待办和插件设置合并到当前数据。\n\n当前数据不会被覆盖，导入前会自动备份。",
+        L"合并导入配置包",
+        MB_OKCANCEL | MB_ICONINFORMATION);
+    if (confirm != IDOK) {
+        return;
+    }
+
+    ConfigPackageOptions options;
+    options.includeConfig = false;
+    options.includeData = true;
+    options.includeUrlIcons = true;
+    options.includePluginSettings = true;
+
+    ConfigPackageService service(appDirectory_);
+    const ConfigPackageReport report = service.ImportPackageMerge(buffer.c_str(), options);
+    if (report.ok) {
+        model_ = storageService_.Load();
+        SelectInitialItems();
+        pluginRegistry_.Initialize();
+        RegisterConfiguredHotKeys();
+        ClearUiBitmaps();
+        InvalidateRect(hwnd_, nullptr, FALSE);
+    }
+    MessageBoxW(hwnd_, FormatConfigPackageReport(report).c_str(), L"合并导入配置包", MB_OK | (report.ok ? MB_ICONINFORMATION : MB_ICONWARNING));
+}
+
+void MainWindow::UploadWebDavBackup() {
+    SaveCurrentNotePage();
+    SaveWindowState();
+
+    WebDavBackupService service(appDirectory_, config_);
+    const WebDavBackupReport report = service.UploadBackup();
+    MessageBoxW(hwnd_, report.message.c_str(), L"上传 WebDAV 备份", MB_OK | (report.ok ? MB_ICONINFORMATION : MB_ICONWARNING));
+}
+
+void MainWindow::DownloadWebDavBackupMerge() {
+    SaveCurrentNotePage();
+
+    WebDavBackupService service(appDirectory_, config_);
+    std::vector<WebDavRemoteFile> backups;
+    std::wstring error;
+    if (!service.ListBackups(backups, error)) {
+        MessageBoxW(hwnd_, error.c_str(), L"下载 WebDAV 备份", MB_OK | MB_ICONWARNING);
+        return;
+    }
+    if (backups.empty()) {
+        MessageBoxW(hwnd_, L"远端目录中没有可用的 .q4cfg 备份。", L"下载 WebDAV 备份", MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+
+    std::wstring fileName = backups.front().name;
+    if (!ShowWebDavBackupSelectionDialog(hwnd_, instance_, theme_, backups, fileName)) {
+        return;
+    }
+
+    const int confirm = MessageBoxW(
+        hwnd_,
+        L"将下载该 WebDAV 备份，并把其中的分组、标签、启动项、便签、待办和插件设置合并到当前数据。\n\n当前数据不会被覆盖，导入前会自动备份。",
+        L"下载 WebDAV 备份",
+        MB_OKCANCEL | MB_ICONINFORMATION);
+    if (confirm != IDOK) {
+        return;
+    }
+
+    const WebDavBackupReport report = service.DownloadAndImportMerge(fileName);
+    if (report.ok) {
+        model_ = storageService_.Load();
+        SelectInitialItems();
+        pluginRegistry_.Initialize();
+        RegisterConfiguredHotKeys();
+        ClearUiBitmaps();
+        InvalidateRect(hwnd_, nullptr, FALSE);
+    }
+    const std::wstring text = report.importReport.message.empty()
+        ? report.message
+        : FormatConfigPackageReport(report.importReport);
+    MessageBoxW(hwnd_, text.c_str(), L"下载 WebDAV 备份", MB_OK | (report.ok ? MB_ICONINFORMATION : MB_ICONWARNING));
 }
 
 bool MainWindow::ImportDropData(IDataObject* dataObject) {
@@ -3403,7 +4196,7 @@ void MainWindow::ShowTrayMenu(POINT screenPoint) {
     menuContextId_ = 0;
     HMENU menu = CreatePopupMenu();
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_SHOW, IsWindowVisible(hwnd_) ? L"隐藏主窗口" : L"显示主窗口");
-    AppendThemedMenuItem(menu, MF_STRING, ID_MENU_RESET_LAYOUT, L"重置布局为默认布局");
+    AppendThemedMenuItem(menu, MF_STRING, ID_MENU_RESET_LAYOUT, L"重置布局");
     AppendThemedSeparator(menu);
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_ABOUT, L"关于");
     AppendThemedSeparator(menu);
@@ -3420,8 +4213,10 @@ void MainWindow::ShowMainMenu(POINT screenPoint) {
     HMENU menu = CreatePopupMenu();
     HMENU themeMenu = CreatePopupMenu();
     HMENU systemMenu = CreatePopupMenu();
+    HMENU toolMenu = CreatePopupMenu();
     AppendThemeItemsToMenu(themeMenu);
     AppendSystemFunctionItems(systemMenu);
+    AppendToolItems(toolMenu);
 
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_TOGGLE_TITLE, config_.showTitle ? L"隐藏标题栏" : L"显示标题栏", false, -1, -1, config_.showTitle ? MenuIconEyeOff : MenuIconEye);
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_TOGGLE_GROUP, config_.showGroup ? L"隐藏分组" : L"显示分组", false, -1, -1, config_.showGroup ? MenuIconEyeOff : MenuIconEye);
@@ -3434,10 +4229,16 @@ void MainWindow::ShowMainMenu(POINT screenPoint) {
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_REFRESH_ALL_ICONS, L"重置所有图标");
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_CLEAR_ICON_CACHE, L"清理图标缓存");
     AppendThemedMenuItem(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(systemMenu), L"系统功能", true);
+    AppendThemedMenuItem(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(toolMenu), L"工具箱", true);
+    AppendThemedMenuItem(menu, MF_STRING, ID_MENU_PLUGIN_STORE, L"插件商店");
     AppendThemedSeparator(menu);
     AppendUnifiedViewOptionItems(menu);
     AppendThemedSeparator(menu);
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_IMPORT_CLIPBOARD, L"从剪贴板导入");
+    AppendThemedMenuItem(menu, MF_STRING, ID_MENU_IMPORT_CONFIG_MERGE, L"合并导入配置包...");
+    AppendThemedMenuItem(menu, MF_STRING, ID_MENU_EXPORT_CONFIG, L"导出配置包...");
+    AppendThemedMenuItem(menu, MF_STRING, ID_MENU_UPLOAD_WEBDAV_BACKUP, L"上传 WebDAV 备份...");
+    AppendThemedMenuItem(menu, MF_STRING, ID_MENU_DOWNLOAD_WEBDAV_BACKUP, L"下载 WebDAV 备份...");
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_UPDATE, L"更新");
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_EXIT, L"关闭退出");
     ActivateWindow(hwnd_);
@@ -3470,6 +4271,28 @@ void MainWindow::ShowLinkMenu(int linkId, POINT screenPoint) {
     selectedLinkId_ = linkId;
     menuContextKind_ = HitKind::Link;
     menuContextId_ = linkId;
+    ActivateWindow(hwnd_);
+    TrackPopupMenu(menu, TPM_RIGHTBUTTON, screenPoint.x, screenPoint.y, 0, hwnd_, nullptr);
+    DestroyMenu(menu);
+}
+
+void MainWindow::ShowTodoMenu(int todoId, POINT screenPoint) {
+    ResetMenuVisuals();
+    HMENU menu = CreatePopupMenu();
+    const TodoItem* item = FindTodoItem(todoId);
+    const bool done = item && !item->completedAt.empty();
+    const bool enabled = !item || item->enabled;
+    AppendThemedMenuItem(menu, MF_STRING, ID_MENU_EDIT_TODO_ITEM, L"编辑待办事项");
+    AppendThemedMenuItem(menu, MF_STRING, ID_MENU_TOGGLE_TODO_DONE, done ? L"标记为未完成" : L"标记为完成");
+    AppendThemedMenuItem(menu, MF_STRING, ID_MENU_TOGGLE_TODO_ENABLED, enabled ? L"禁用待办事项" : L"启用待办事项");
+    AppendThemedMenuItem(menu, MF_STRING, ID_MENU_DELETE_TODO_ITEM, L"删除待办事项");
+    AppendThemedSeparator(menu);
+    AppendTodoSortItems(menu, FindGroup(currentTagId_));
+    AppendThemedSeparator(menu);
+    AppendThemedMenuItem(menu, MF_STRING, ID_MENU_CLEAR_DONE_TODOS, L"清空已完成");
+    selectedTodoId_ = todoId;
+    menuContextKind_ = HitKind::Todo;
+    menuContextId_ = todoId;
     ActivateWindow(hwnd_);
     TrackPopupMenu(menu, TPM_RIGHTBUTTON, screenPoint.x, screenPoint.y, 0, hwnd_, nullptr);
     DestroyMenu(menu);
@@ -3629,7 +4452,9 @@ void MainWindow::ShowTagMenu(int tagId, POINT screenPoint) {
     ResetMenuVisuals();
     HMENU menu = CreatePopupMenu();
     Group* tag = FindGroup(tagId);
-    AppendThemedMenuItem(menu, MF_STRING, ID_MENU_ADD_TAG, L"新建标签");
+    AppendThemedMenuItem(menu, MF_STRING, ID_MENU_ADD_TAG, L"新建普通标签");
+    AppendThemedMenuItem(menu, MF_STRING, ID_MENU_ADD_NOTE_TAG, L"新建便签标签页");
+    AppendThemedMenuItem(menu, MF_STRING, ID_MENU_ADD_TODO_TAG, L"新建待办事项标签页");
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_EDIT_TAG, L"重命名标签");
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_DELETE_TAG, L"删除标签");
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_MOVE_UP, L"上移");
@@ -3637,13 +4462,20 @@ void MainWindow::ShowTagMenu(int tagId, POINT screenPoint) {
     HMENU moveMenu = CreatePopupMenu();
     AppendGroupTargetMenu(moveMenu, ID_MENU_MOVE_TAG_TO_BASE, menuGroupTargetIds_, tag ? tag->parentGroup : 0);
     AppendThemedMenuItem(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(moveMenu), L"移动到", true);
-    AppendThemedSeparator(menu);
-    AppendAddLinkItems(menu);
-    AppendThemedSeparator(menu);
-    AppendViewOptionItems(menu, tag);
-    AppendThemedSeparator(menu);
-    AppendThemedMenuItem(menu, MF_STRING, ID_MENU_REFRESH_PAGE_ICONS, L"刷新本页图标");
-    AppendThemedMenuItem(menu, MF_STRING, ID_MENU_CLEAR_TAG_LINKS, L"清空本页应用");
+    if (tag && IsTodoItemsTag(*tag)) {
+        AppendThemedSeparator(menu);
+        AppendThemedMenuItem(menu, MF_STRING, ID_MENU_ADD_TODO_ITEM, L"新增待办事项");
+        AppendTodoSortItems(menu, tag);
+        AppendThemedMenuItem(menu, MF_STRING, ID_MENU_CLEAR_DONE_TODOS, L"清空已完成");
+    } else if (!tag || !IsNoteTag(*tag)) {
+        AppendThemedSeparator(menu);
+        AppendAddLinkItems(menu);
+        AppendThemedSeparator(menu);
+        AppendViewOptionItems(menu, tag);
+        AppendThemedSeparator(menu);
+        AppendThemedMenuItem(menu, MF_STRING, ID_MENU_REFRESH_PAGE_ICONS, L"刷新本页图标");
+        AppendThemedMenuItem(menu, MF_STRING, ID_MENU_CLEAR_TAG_LINKS, L"清空本页应用");
+    }
     menuContextKind_ = HitKind::Tag;
     menuContextId_ = tagId;
     ActivateWindow(hwnd_);
@@ -3654,7 +4486,9 @@ void MainWindow::ShowTagMenu(int tagId, POINT screenPoint) {
 void MainWindow::ShowTagBlankMenu(POINT screenPoint) {
     ResetMenuVisuals();
     HMENU menu = CreatePopupMenu();
-    AppendThemedMenuItem(menu, MF_STRING, ID_MENU_ADD_TAG, L"新建标签");
+    AppendThemedMenuItem(menu, MF_STRING, ID_MENU_ADD_TAG, L"新建普通标签");
+    AppendThemedMenuItem(menu, MF_STRING, ID_MENU_ADD_NOTE_TAG, L"新建便签标签页");
+    AppendThemedMenuItem(menu, MF_STRING, ID_MENU_ADD_TODO_TAG, L"新建待办事项标签页");
     menuContextKind_ = HitKind::Group;
     menuContextId_ = currentGroupId_;
     ActivateWindow(hwnd_);
@@ -3667,12 +4501,19 @@ void MainWindow::ShowBackgroundMenu(POINT screenPoint) {
     menuContextKind_ = HitKind::None;
     menuContextId_ = 0;
     HMENU menu = CreatePopupMenu();
-    AppendAddLinkItems(menu);
-    AppendThemedSeparator(menu);
-    AppendViewOptionItems(menu, FindGroup(currentTagId_));
-    AppendThemedSeparator(menu);
-    AppendThemedMenuItem(menu, MF_STRING, ID_MENU_REFRESH_PAGE_ICONS, L"刷新本页图标");
-    AppendThemedMenuItem(menu, MF_STRING, ID_MENU_CLEAR_TAG_LINKS, L"清空本页应用");
+    Group* tag = FindGroup(currentTagId_);
+    if (tag && IsTodoItemsTag(*tag)) {
+        AppendThemedMenuItem(menu, MF_STRING, ID_MENU_ADD_TODO_ITEM, L"新增待办事项");
+        AppendTodoSortItems(menu, tag);
+        AppendThemedMenuItem(menu, MF_STRING, ID_MENU_CLEAR_DONE_TODOS, L"清空已完成");
+    } else if (!tag || !IsNoteTag(*tag)) {
+        AppendAddLinkItems(menu);
+        AppendThemedSeparator(menu);
+        AppendViewOptionItems(menu, tag);
+        AppendThemedSeparator(menu);
+        AppendThemedMenuItem(menu, MF_STRING, ID_MENU_REFRESH_PAGE_ICONS, L"刷新本页图标");
+        AppendThemedMenuItem(menu, MF_STRING, ID_MENU_CLEAR_TAG_LINKS, L"清空本页应用");
+    }
     ActivateWindow(hwnd_);
     TrackPopupMenu(menu, TPM_RIGHTBUTTON, screenPoint.x, screenPoint.y, 0, hwnd_, nullptr);
     DestroyMenu(menu);
@@ -3716,6 +4557,16 @@ void MainWindow::AppendViewOptionItems(HMENU menu, const Group* tag) {
     AppendThemedMenuItem(sortMenu, MF_STRING | (sort == 0 ? MF_CHECKED : 0), ID_MENU_SORT_POS, L"按位置");
     AppendThemedMenuItem(sortMenu, MF_STRING | (sort == 1 ? MF_CHECKED : 0), ID_MENU_SORT_RUNCOUNT, L"按运行次数");
     AppendThemedMenuItem(sortMenu, MF_STRING | (sort == 2 ? MF_CHECKED : 0), ID_MENU_SORT_NAME, L"按名称");
+    AppendThemedMenuItem(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(sortMenu), L"排序方式", true);
+}
+
+void MainWindow::AppendTodoSortItems(HMENU menu, const Group* tag) {
+    HMENU sortMenu = CreatePopupMenu();
+    const int sort = tag ? tag->sort : 0;
+    AppendThemedMenuItem(sortMenu, MF_STRING | (sort == 0 ? MF_CHECKED : 0), ID_MENU_TODO_SORT_DUE, L"按提醒时间（推荐）");
+    AppendThemedMenuItem(sortMenu, MF_STRING | (sort == 1 ? MF_CHECKED : 0), ID_MENU_TODO_SORT_CREATED, L"按创建时间");
+    AppendThemedMenuItem(sortMenu, MF_STRING | (sort == 2 ? MF_CHECKED : 0), ID_MENU_TODO_SORT_TITLE, L"按标题");
+    AppendThemedMenuItem(sortMenu, MF_STRING | (sort == 3 ? MF_CHECKED : 0), ID_MENU_TODO_SORT_STATUS, L"按完成状态");
     AppendThemedMenuItem(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(sortMenu), L"排序方式", true);
 }
 
@@ -3787,6 +4638,25 @@ void MainWindow::AppendSystemFunctionItems(HMENU menu) {
     }
     if (count == 0) {
         AppendThemedMenuItem(menu, MF_STRING | MF_GRAYED, ID_MENU_SYSTEM_FUNCTION_BASE, L"无可用功能");
+    }
+}
+
+void MainWindow::AppendToolItems(HMENU menu) {
+    menuToolEngines_.clear();
+    const auto plugins = pluginRegistry_.LoadPlugins();
+    for (const auto& plugin : plugins) {
+        if (!plugin.enabled || plugin.kind != L"builtin-tool" || plugin.engine.empty()) {
+            continue;
+        }
+        if (menuToolEngines_.size() >= ID_MENU_TOOL_LIMIT) {
+            break;
+        }
+        const UINT command = ID_MENU_TOOL_BASE + static_cast<UINT>(menuToolEngines_.size());
+        menuToolEngines_.push_back(plugin.engine);
+        AppendThemedMenuItem(menu, MF_STRING, command, plugin.name, false, -1, -1, MenuIconTools);
+    }
+    if (menuToolEngines_.empty()) {
+        AppendThemedMenuItem(menu, MF_STRING | MF_GRAYED, ID_MENU_TOOL_BASE, L"无已启用工具");
     }
 }
 
@@ -4210,6 +5080,17 @@ void MainWindow::DrawTags(D2D1_RECT_F rect) {
 
 void MainWindow::DrawLinks(D2D1_RECT_F rect) {
     FillRect(rect, theme_.color(L"content", L"normal", L"bg"));
+    const Group* currentTag = FindGroup(currentTagId_);
+    if (currentTag && IsNoteTag(*currentTag)) {
+        DrawNotePage(rect, *currentTag);
+        return;
+    }
+    if (currentTag && IsTodoItemsTag(*currentTag)) {
+        HideNoteEdit();
+        DrawTodoItems(rect, *currentTag);
+        return;
+    }
+    HideNoteEdit();
     auto links = LinksForCurrentTag();
     if (links.empty()) {
         textFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
@@ -4309,6 +5190,118 @@ void MainWindow::DrawLinks(D2D1_RECT_F rect) {
             }
         }
         hitAreas_.push_back(HitArea{HitKind::Link, link->id, IntersectRectF(item, rect)});
+    }
+    renderTarget_->PopAxisAlignedClip();
+    DrawScrollBar(rect, linkScrollOffset_, MaxLinkScrollOffset(rect), false);
+}
+
+void MainWindow::DrawNotePage(D2D1_RECT_F rect, const Group& tag) {
+    const float insetX = Metric(theme_, L"linkItem", L"viewportPaddingX", 16.0f);
+    const float insetY = Metric(theme_, L"list", L"paddingY", 6.0f);
+    const D2D1_RECT_F frame = D2D1::RectF(
+        rect.left + insetX,
+        rect.top + insetY,
+        rect.right - insetX,
+        rect.bottom - insetY);
+    FillRoundedRect(frame, theme_.color(L"edit", L"normal", L"bg"), Metric(theme_, L"edit", L"radius", 7.0f));
+    DrawRoundedRect(
+        frame,
+        theme_.color(L"edit", noteEdit_ == GetFocus() ? L"focused" : L"normal", L"border"),
+        Metric(theme_, L"edit", L"radius", 7.0f),
+        Metric(theme_, L"edit", L"borderWidth", 1.0f));
+    EnsureNoteEdit(frame, tag);
+}
+
+void MainWindow::DrawTodoItems(D2D1_RECT_F rect, const Group&) {
+    auto items = TodosForCurrentTag();
+    if (items.empty()) {
+        textFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+        const float emptyInsetX = Metric(theme_, L"content", L"emptyTextInsetX", 20.0f);
+        const float emptyTop = Metric(theme_, L"content", L"emptyTextTop", 24.0f);
+        const float emptyHeight = Metric(theme_, L"content", L"emptyTextHeight", 30.0f);
+        D2D1_RECT_F emptyText = D2D1::RectF(rect.left + emptyInsetX, rect.top + emptyTop, rect.right - emptyInsetX, rect.top + emptyTop + emptyHeight);
+        DrawTextBlock(L"当前标签没有待办事项", textFormat_, emptyText, theme_.color(L"content", L"empty", L"text"));
+        return;
+    }
+
+    const float paddingX = Metric(theme_, L"linkItem", L"viewportPaddingX", 16.0f);
+    const float paddingY = Metric(theme_, L"list", L"paddingY", 6.0f);
+    const float rowHeight = std::max(54.0f, Metric(theme_, L"listItem", L"height", 28.0f) + 24.0f);
+    const float rowGap = Metric(theme_, L"linkItem", L"listGapY", 2.0f);
+    const float checkboxSize = Metric(theme_, L"checkbox", L"boxSize", 16.0f);
+    const float checkboxLeft = Metric(theme_, L"listItem", L"paddingX", 8.0f);
+    const float textLeftGap = 10.0f;
+
+    renderTarget_->PushAxisAlignedClip(rect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+    float y = rect.top + paddingY - linkScrollOffset_;
+    for (TodoItem* itemPtr : items) {
+        TodoItem& item = *itemPtr;
+        D2D1_RECT_F row = D2D1::RectF(rect.left + paddingX, y, rect.right - paddingX, y + rowHeight);
+        y += rowHeight + rowGap;
+        if (row.bottom < rect.top + 2.0f) {
+            continue;
+        }
+        if (row.top > rect.bottom - 2.0f) {
+            break;
+        }
+
+        const bool selected = item.id == selectedTodoId_;
+        const bool hovered = IsHover(HitKind::Todo, item.id);
+        const bool done = !item.completedAt.empty();
+        const bool disabled = !item.enabled;
+        const bool overdue = IsTodoOverdue(item);
+        const wchar_t* state = selected ? L"selected" : (hovered ? L"hover" : L"normal");
+        FillRoundedRect(row, theme_.color(L"listItem", state, L"bg"), Metric(theme_, L"list", L"radius", 7.0f));
+        if (overdue) {
+            FillRect(D2D1::RectF(row.left, row.top + 6.0f, row.left + 3.0f, row.bottom - 6.0f), theme_.color(L"edit", L"error", L"border"));
+        }
+
+        D2D1_RECT_F box = D2D1::RectF(
+            row.left + checkboxLeft,
+            row.top + (rowHeight - checkboxSize) * 0.5f,
+            row.left + checkboxLeft + checkboxSize,
+            row.top + (rowHeight - checkboxSize) * 0.5f + checkboxSize);
+        const wchar_t* checkboxState = done ? L"checked" : L"normal";
+        FillRoundedRect(box, theme_.color(L"checkbox", checkboxState, L"boxBg"), Metric(theme_, L"checkbox", L"radius", 4.0f));
+        DrawRoundedRect(box, theme_.color(L"checkbox", checkboxState, L"border"), Metric(theme_, L"checkbox", L"radius", 4.0f));
+        if (done) {
+            ID2D1SolidColorBrush* brush = nullptr;
+            renderTarget_->CreateSolidColorBrush(theme_.color(L"checkbox", L"checked", L"mark").d2d(), &brush);
+            if (brush) {
+                renderTarget_->DrawLine(D2D1::Point2F(box.left + 4.0f, box.top + 8.0f), D2D1::Point2F(box.left + 7.0f, box.bottom - 4.0f), brush, 2.0f);
+                renderTarget_->DrawLine(D2D1::Point2F(box.left + 7.0f, box.bottom - 4.0f), D2D1::Point2F(box.right - 3.0f, box.top + 4.0f), brush, 2.0f);
+                brush->Release();
+            }
+        }
+
+        const float textLeft = box.right + textLeftGap;
+        D2D1_RECT_F titleRect = D2D1::RectF(textLeft, row.top + 7.0f, row.right - 8.0f, row.top + 27.0f);
+        D2D1_RECT_F detailRect = D2D1::RectF(textLeft, row.top + 29.0f, row.right - 8.0f, row.bottom - 6.0f);
+        textFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+        textFormat_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+        smallFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+        smallFormat_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+
+        const Color titleColor = (done || disabled) ? theme_.color(L"linkItem", L"disabled", L"text") : theme_.color(L"listItem", selected ? L"selected" : L"normal", L"text");
+        DrawTextBlock(item.title, textFormat_, titleRect, titleColor);
+
+        std::wstring detail;
+        if (disabled) {
+            detail = L"已禁用";
+        }
+        if (!item.nextDueAt.empty()) {
+            if (!detail.empty()) {
+                detail += L" · ";
+            }
+            detail += TodoScheduleText(item.scheduleKind) + L" · " + item.nextDueAt;
+        } else if (detail.empty()) {
+            detail = TodoScheduleText(item.scheduleKind);
+        }
+        if (!Trim(item.content).empty()) {
+            detail += L" · " + Trim(item.content);
+        }
+        DrawTextBlock(detail, smallFormat_, detailRect, done ? theme_.color(L"linkItem", L"normal", L"subtext") : theme_.color(L"linkItem", L"normal", L"subtext"));
+        hitAreas_.push_back(HitArea{HitKind::Todo, item.id, IntersectRectF(row, rect)});
     }
     renderTarget_->PopAxisAlignedClip();
     DrawScrollBar(rect, linkScrollOffset_, MaxLinkScrollOffset(rect), false);
@@ -4688,6 +5681,14 @@ float MainWindow::MaxLinkScrollOffset(const D2D1_RECT_F& rect) const {
         return 0.0f;
     }
 
+    const Group* currentTag = FindGroup(currentTagId_);
+    if (currentTag && IsNoteTag(*currentTag)) {
+        return 0.0f;
+    }
+    if (currentTag && IsTodoItemsTag(*currentTag)) {
+        return std::max(0.0f, TodoContentHeight(rect) - Height(rect));
+    }
+
     auto links = const_cast<MainWindow*>(this)->LinksForCurrentTag();
     if (links.empty()) {
         return 0.0f;
@@ -4697,6 +5698,22 @@ float MainWindow::MaxLinkScrollOffset(const D2D1_RECT_F& rect) const {
     const LinkLayoutMetrics metrics = MakeLinkLayout(theme_, rect, tag);
     const float contentHeight = LinkContentHeight(links.size(), metrics);
     return std::max(0.0f, contentHeight - Height(rect));
+}
+
+float MainWindow::TodoContentHeight(const D2D1_RECT_F&) const {
+    std::size_t count = 0;
+    for (const auto& item : model_.todos) {
+        if (item.tagId == currentTagId_) {
+            ++count;
+        }
+    }
+    if (count == 0) {
+        return 0.0f;
+    }
+    const float paddingY = Metric(theme_, L"list", L"paddingY", 6.0f);
+    const float itemHeight = std::max(54.0f, Metric(theme_, L"listItem", L"height", 28.0f) + 24.0f);
+    const float itemGap = Metric(theme_, L"linkItem", L"listGapY", 2.0f);
+    return paddingY * 2.0f + static_cast<float>(count) * itemHeight + static_cast<float>(count - 1) * itemGap;
 }
 
 void MainWindow::EnsureGroupVisible(int groupId) {
@@ -4895,6 +5912,53 @@ std::vector<Link*> MainWindow::LinksForCurrentTag() {
     return links;
 }
 
+std::vector<TodoItem*> MainWindow::TodosForCurrentTag() {
+    std::vector<TodoItem*> items;
+    for (auto& item : model_.todos) {
+        if (item.tagId == currentTagId_) {
+            items.push_back(&item);
+        }
+    }
+    const Group* tag = FindGroup(currentTagId_);
+    const int sortMode = tag ? tag->sort : 0;
+    std::sort(items.begin(), items.end(), [sortMode](const TodoItem* left, const TodoItem* right) {
+        const bool leftDone = !left->completedAt.empty();
+        const bool rightDone = !right->completedAt.empty();
+        if (leftDone != rightDone) {
+            return !leftDone;
+        }
+        if (left->enabled != right->enabled) {
+            return left->enabled;
+        }
+        if (sortMode == 1) {
+            if (left->createdAt != right->createdAt) {
+                return left->createdAt < right->createdAt;
+            }
+        } else if (sortMode == 2) {
+            const std::wstring leftTitle = InitialSortKey(left->title);
+            const std::wstring rightTitle = InitialSortKey(right->title);
+            if (leftTitle != rightTitle) {
+                return leftTitle < rightTitle;
+            }
+        } else if (sortMode != 3) {
+            if (left->nextDueAt != right->nextDueAt) {
+                if (left->nextDueAt.empty()) {
+                    return false;
+                }
+                if (right->nextDueAt.empty()) {
+                    return true;
+                }
+                return left->nextDueAt < right->nextDueAt;
+            }
+        }
+        if (left->pos != right->pos) {
+            return left->pos < right->pos;
+        }
+        return left->id < right->id;
+    });
+    return items;
+}
+
 Group* MainWindow::FindGroup(int id) {
     for (auto& group : model_.groups) {
         if (group.id == id) {
@@ -4911,6 +5975,130 @@ const Group* MainWindow::FindGroup(int id) const {
         }
     }
     return nullptr;
+}
+
+TodoItem* MainWindow::FindTodoItem(int id) {
+    for (auto& item : model_.todos) {
+        if (item.id == id) {
+            return &item;
+        }
+    }
+    return nullptr;
+}
+
+NotePage* MainWindow::FindNotePage(int tagId) {
+    for (auto& note : model_.notes) {
+        if (note.tagId == tagId) {
+            return &note;
+        }
+    }
+    return nullptr;
+}
+
+const NotePage* MainWindow::FindNotePage(int tagId) const {
+    for (const auto& note : model_.notes) {
+        if (note.tagId == tagId) {
+            return &note;
+        }
+    }
+    return nullptr;
+}
+
+void MainWindow::SaveCurrentNotePage() {
+    if (noteSaveTimerId_ != 0 && hwnd_) {
+        KillTimer(hwnd_, ID_TIMER_NOTE_AUTOSAVE);
+        noteSaveTimerId_ = 0;
+    }
+    const int tagId = noteEditTagId_ > 0 ? noteEditTagId_ : currentTagId_;
+    const Group* tag = FindGroup(tagId);
+    if (!noteDirty_ || !noteEdit_ || tagId <= 0 || !tag || !IsNoteTag(*tag)) {
+        return;
+    }
+
+    const int textLength = GetWindowTextLengthW(noteEdit_);
+    std::wstring content(static_cast<std::size_t>(std::max(0, textLength)) + 1, L'\0');
+    if (textLength > 0) {
+        GetWindowTextW(noteEdit_, content.data(), textLength + 1);
+    }
+    content.resize(static_cast<std::size_t>(std::max(0, textLength)));
+
+    if (!storageService_.SaveNotePage(tagId, content)) {
+        WriteAppLog(L"Save note page failed: " + storageService_.lastError());
+        return;
+    }
+
+    const std::wstring updatedAt = CurrentTodoTimestamp();
+    if (NotePage* note = FindNotePage(tagId)) {
+        note->content = content;
+        note->updatedAt = updatedAt;
+    } else {
+        NotePage newNote;
+        newNote.tagId = tagId;
+        newNote.content = content;
+        newNote.updatedAt = updatedAt;
+        model_.notes.push_back(std::move(newNote));
+    }
+    noteDirty_ = false;
+}
+
+void MainWindow::HideNoteEdit() {
+    SaveCurrentNotePage();
+    if (noteEdit_) {
+        ShowWindow(noteEdit_, SW_HIDE);
+    }
+}
+
+void MainWindow::EnsureNoteEdit(const D2D1_RECT_F& rect, const Group& tag) {
+    RECT frame{
+        static_cast<LONG>(rect.left + 0.5f),
+        static_cast<LONG>(rect.top + 0.5f),
+        static_cast<LONG>(rect.right + 0.5f),
+        static_cast<LONG>(rect.bottom + 0.5f),
+    };
+    RECT editRect = ThemedControls::MultiLineEditRect(theme_, frame);
+    const NotePage* note = FindNotePage(tag.id);
+    const std::wstring content = note ? note->content : L"";
+    if (!noteEditFont_) {
+        noteEditFont_ = ThemedControls::CreateEditFont(theme_);
+    }
+
+    if (!noteEdit_) {
+        noteEdit_ = CreateWindowExW(
+            0,
+            L"EDIT",
+            content.c_str(),
+            WS_CHILD | WS_CLIPSIBLINGS | WS_TABSTOP | ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN | WS_VSCROLL,
+            editRect.left,
+            editRect.top,
+            editRect.right - editRect.left,
+            editRect.bottom - editRect.top,
+            hwnd_,
+            reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_NOTE_EDIT)),
+            instance_,
+            nullptr);
+        if (noteEdit_) {
+            SendMessageW(noteEdit_, WM_SETFONT, reinterpret_cast<WPARAM>(noteEditFont_), TRUE);
+            SendMessageW(noteEdit_, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, MAKELPARAM(0, 0));
+            noteEditTagId_ = tag.id;
+            noteEditFrame_ = editRect;
+            noteDirty_ = false;
+        }
+    }
+
+    if (!noteEdit_) {
+        return;
+    }
+    if (noteEditTagId_ != tag.id) {
+        SaveCurrentNotePage();
+        SetWindowTextW(noteEdit_, content.c_str());
+        noteEditTagId_ = tag.id;
+        noteDirty_ = false;
+    }
+    if (!EqualRect(&noteEditFrame_, &editRect)) {
+        MoveWindow(noteEdit_, editRect.left, editRect.top, editRect.right - editRect.left, editRect.bottom - editRect.top, TRUE);
+        noteEditFrame_ = editRect;
+    }
+    ShowWindow(noteEdit_, SW_SHOWNA);
 }
 
 Link* MainWindow::FindLink(int id) {

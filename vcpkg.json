@@ -1,0 +1,12 @@
+{
+  "dependencies": [
+    {
+      "name": "curl",
+      "features": [
+        "ssl",
+        "sspi"
+      ]
+    },
+    "pugixml"
+  ]
+}

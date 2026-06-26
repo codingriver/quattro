@@ -1,9 +1,11 @@
 #pragma once
 
 #include "Config.h"
+#include "ConfigPackageService.h"
 #include "IconService.h"
 #include "Launcher.h"
 #include "Models.h"
+#include "PluginRegistry.h"
 #include "Storage.h"
 #include "Theme.h"
 
@@ -17,6 +19,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -55,6 +58,7 @@ private:
         Group,
         Tag,
         Link,
+        Todo,
     };
 
     struct HitArea {
@@ -83,9 +87,12 @@ private:
     void EditGroup(int groupId);
     void DeleteGroup(int groupId);
     void AddTag();
+    void AddNoteTag();
+    void AddTodoTag();
     void EditTag(int tagId);
     void DeleteTag(int tagId);
     void SetCurrentTagSort(int sort);
+    void SetCurrentTodoSort(int sort);
     void SetCurrentTagLayout(int layout);
     void SetCurrentTagIconSize(int iconSize);
     void SetAllTagsSort(int sort);
@@ -120,8 +127,22 @@ private:
     void CreateDesktopShortcut(int linkId);
     void OpenSystemProperties(int linkId);
     void ClearCurrentTagLinks();
+    void AddTodoItem();
+    void EditTodoItem(int todoId);
+    void DeleteTodoItem(int todoId);
+    void ToggleTodoDone(int todoId);
+    void ToggleTodoEnabled(int todoId);
+    void ClearDoneTodos();
+    void CheckTodoReminders();
+    void ShowTodoReminder(const TodoItem& item);
+    void ShowTodoReminderPanel(const TodoItem& item);
+    void HideTodoReminderPanel();
+    void ShowTodoSystemNotification(const TodoItem& item);
+    bool EnsureNotificationIcon();
     void OpenSearch();
     void OpenSettings();
+    void OpenPluginStore();
+    void OpenBuiltinTool(std::size_t index);
     void ResetLayoutToDefaults();
     void ClearIconCache();
     void RefreshAllIcons();
@@ -143,6 +164,10 @@ private:
     void HideMainWindow();
     void ImportPath(const std::wstring& path);
     void ImportClipboard();
+    void ExportConfigPackage();
+    void ImportConfigPackageMerge();
+    void UploadWebDavBackup();
+    void DownloadWebDavBackupMerge();
     bool ImportDropData(IDataObject* dataObject);
     void ApplyConfigRuntimeChanges(const AppConfig& previous);
     void SyncAutoRun(const AppConfig& previous);
@@ -162,12 +187,15 @@ private:
     void ShowGroupBlankMenu(POINT screenPoint);
     void ShowTagMenu(int tagId, POINT screenPoint);
     void ShowTagBlankMenu(POINT screenPoint);
+    void ShowTodoMenu(int todoId, POINT screenPoint);
     void ShowBackgroundMenu(POINT screenPoint);
     void AppendThemeItemsToMenu(HMENU menu);
     void AppendAddLinkItems(HMENU menu);
     void AppendViewOptionItems(HMENU menu, const Group* tag);
+    void AppendTodoSortItems(HMENU menu, const Group* tag);
     void AppendUnifiedViewOptionItems(HMENU menu);
     void AppendSystemFunctionItems(HMENU menu);
+    void AppendToolItems(HMENU menu);
     std::vector<int> GroupTargetIds(int excludedGroupId) const;
     std::vector<int> GroupedTagTargetIds(int excludedTagId) const;
     void AppendGroupTargetMenu(HMENU menu, UINT commandBase, std::vector<int>& targetIds, int excludedGroupId);
@@ -185,6 +213,8 @@ private:
     void DrawGroups(D2D1_RECT_F rect);
     void DrawTags(D2D1_RECT_F rect);
     void DrawLinks(D2D1_RECT_F rect);
+    void DrawNotePage(D2D1_RECT_F rect, const Group& tag);
+    void DrawTodoItems(D2D1_RECT_F rect, const Group& tag);
     void DrawButtonIcon(HitKind kind, D2D1_RECT_F rect, const Color& color);
     ID2D1Bitmap* LoadAppIconBitmap();
     void ClearUiBitmaps();
@@ -204,6 +234,7 @@ private:
     float MaxGroupScrollOffset(const D2D1_RECT_F& rect) const;
     float MaxTagScrollOffset(const D2D1_RECT_F& rect) const;
     float MaxLinkScrollOffset(const D2D1_RECT_F& rect) const;
+    float TodoContentHeight(const D2D1_RECT_F& rect) const;
     void EnsureGroupVisible(int groupId);
     void EnsureTagVisible(int tagId);
     void EnsureLinkVisible(int linkId);
@@ -212,9 +243,17 @@ private:
     std::vector<Group> TagsForCurrentGroup() const;
     std::wstring TagDisplayName(const Group& tag) const;
     std::vector<Link*> LinksForCurrentTag();
+    std::vector<TodoItem*> TodosForCurrentTag();
     Group* FindGroup(int id);
     const Group* FindGroup(int id) const;
     Link* FindLink(int id);
+    TodoItem* FindTodoItem(int id);
+    int CommandTodoId() const;
+    NotePage* FindNotePage(int tagId);
+    const NotePage* FindNotePage(int tagId) const;
+    void SaveCurrentNotePage();
+    void HideNoteEdit();
+    void EnsureNoteEdit(const D2D1_RECT_F& rect, const Group& tag);
     int LinkIdFromHotKeyId(int hotKeyId) const;
     bool IsUrlLink(const Link& link) const;
     int EnsureCurrentTag();
@@ -229,6 +268,7 @@ private:
     std::filesystem::path appDirectory_;
     ConfigService& configService_;
     StorageService& storageService_;
+    PluginRegistry pluginRegistry_;
     AppConfig config_;
     AppModel model_;
     Theme theme_;
@@ -238,6 +278,7 @@ private:
     int currentGroupId_ = 0;
     int currentTagId_ = 0;
     int selectedLinkId_ = 0;
+    int selectedTodoId_ = 0;
     HitKind menuContextKind_ = HitKind::None;
     int menuContextId_ = 0;
     HitArea hover_;
@@ -248,6 +289,7 @@ private:
     std::vector<int> menuMoveTargetIds_;
     std::vector<int> menuCopyTargetIds_;
     std::vector<int> menuGroupTargetIds_;
+    std::vector<std::wstring> menuToolEngines_;
     std::vector<std::pair<int, int>> registeredLinkHotKeys_;
     Link clipboardLink_;
     bool hasClipboardLink_ = false;
@@ -268,6 +310,18 @@ private:
     int pendingHoverActivationId_ = 0;
     UINT_PTR hoverActivationTimerId_ = 0;
     OleDropTarget* oleDropTarget_ = nullptr;
+    HWND noteEdit_ = nullptr;
+    int noteEditTagId_ = 0;
+    RECT noteEditFrame_{};
+    HFONT noteEditFont_ = nullptr;
+    HBRUSH noteEditBrush_ = nullptr;
+    bool noteDirty_ = false;
+    UINT_PTR noteSaveTimerId_ = 0;
+    UINT_PTR reminderScanTimerId_ = 0;
+    UINT_PTR reminderPanelTimerId_ = 0;
+    HWND reminderPanel_ = nullptr;
+    HFONT reminderPanelFont_ = nullptr;
+    std::unordered_set<std::wstring> shownReminderKeys_;
 
     ID2D1Factory* d2dFactory_ = nullptr;
     IDWriteFactory* dwriteFactory_ = nullptr;

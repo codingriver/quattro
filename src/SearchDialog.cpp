@@ -107,8 +107,7 @@ public:
         if (!hwnd_) {
             return 0;
         }
-        EnableWindow(owner_, FALSE);
-        ShowWindowRespectFocusPolicy(hwnd_, SW_SHOWNORMAL);
+        ownerWasEnabled_ = ShowModalWindow(owner_, hwnd_);
         UpdateWindow(hwnd_);
         RedrawWindow(hwnd_, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
 
@@ -119,8 +118,7 @@ public:
                 DispatchMessageW(&message);
             }
         }
-        EnableWindow(owner_, TRUE);
-        ActivateWindow(owner_);
+        RestoreModalOwner(owner_, ownerWasEnabled_, ownerRestored_);
         return selectedId_;
     }
 
@@ -252,6 +250,7 @@ private:
         case WM_DESTROY:
             SavePosition();
             done_ = true;
+            RestoreModalOwner(owner_, ownerWasEnabled_, ownerRestored_);
             if (editFont_) {
                 DeleteObject(editFont_);
                 editFont_ = nullptr;
@@ -401,6 +400,8 @@ private:
     AppConfig& config_;
     std::vector<int> results_;
     int selectedId_ = 0;
+    bool ownerWasEnabled_ = false;
+    bool ownerRestored_ = false;
     bool done_ = false;
 };
 }

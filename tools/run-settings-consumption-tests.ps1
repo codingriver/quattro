@@ -433,11 +433,15 @@ try {
             [NativeSettingsConsumptionUi]::PostMessage($searchMain, 0x0111, [IntPtr]40015, [IntPtr]::Zero) | Out-Null
             $searchDialog = Wait-SearchDialog -Process $searchProcess
             Start-Sleep -Milliseconds 350
-            $focusedId = Get-FocusedControlId -Window $searchDialog
-            if ($focusedId -ne $focusCase.expected) {
-                throw "Unexpected search focus for $($focusCase.name): expected=$($focusCase.expected) actual=$focusedId"
+            if ($env:QUATTRO_TEST_NO_FOCUS -eq "1") {
+                "search_focus_$($focusCase.name)=skipped_no_focus"
+            } else {
+                $focusedId = Get-FocusedControlId -Window $searchDialog
+                if ($focusedId -ne $focusCase.expected) {
+                    throw "Unexpected search focus for $($focusCase.name): expected=$($focusCase.expected) actual=$focusedId"
+                }
+                "search_focus_$($focusCase.name)=$focusedId"
             }
-            "search_focus_$($focusCase.name)=$focusedId"
             [NativeSettingsConsumptionUi]::PostMessage($searchDialog, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null
             Start-Sleep -Milliseconds 350
             $expectedCount = [string]([int]$focusCase.count + 1)

@@ -83,6 +83,12 @@ AppConfig ConfigService::Load() const {
     config.updateUrl = ReadString(L"UpdateUrl", L"");
     config.faqUrl = ReadString(L"FaqUrl", L"");
     config.rewardUrl = ReadString(L"RewardUrl", L"");
+    config.pluginStoreUrl = ReadString(L"PluginStoreUrl", L"");
+    config.webDavEnabled = ReadBool(L"WebDavEnabled", config.webDavEnabled);
+    config.webDavUrl = ReadString(L"WebDavUrl", L"");
+    config.webDavRemotePath = ReadString(L"WebDavRemotePath", L"/Quattro/backups/");
+    config.webDavUserName = ReadString(L"WebDavUserName", L"");
+    config.webDavKeepCount = Clamp(ReadInt(L"WebDavKeepCount", config.webDavKeepCount), 1, 100);
     return config;
 }
 
@@ -118,6 +124,12 @@ void ConfigService::SaveWindowState(const AppConfig& config) const {
     WriteString(L"UpdateUrl", config.updateUrl);
     WriteString(L"FaqUrl", config.faqUrl);
     WriteString(L"RewardUrl", config.rewardUrl);
+    WriteString(L"PluginStoreUrl", config.pluginStoreUrl);
+    WriteInt(L"WebDavEnabled", config.webDavEnabled ? 1 : 0);
+    WriteString(L"WebDavUrl", config.webDavUrl);
+    WriteString(L"WebDavRemotePath", config.webDavRemotePath);
+    WriteString(L"WebDavUserName", config.webDavUserName);
+    WriteInt(L"WebDavKeepCount", config.webDavKeepCount);
     WriteInt(L"nWidth", config.width);
     WriteInt(L"nHeight", config.height);
     WriteInt(L"nPosX", config.posX);
@@ -165,6 +177,12 @@ void ConfigService::Save(const AppConfig& config) const {
     WriteString(L"UpdateUrl", config.updateUrl);
     WriteString(L"FaqUrl", config.faqUrl);
     WriteString(L"RewardUrl", config.rewardUrl);
+    WriteString(L"PluginStoreUrl", config.pluginStoreUrl);
+    WriteInt(L"WebDavEnabled", config.webDavEnabled ? 1 : 0);
+    WriteString(L"WebDavUrl", config.webDavUrl);
+    WriteString(L"WebDavRemotePath", config.webDavRemotePath);
+    WriteString(L"WebDavUserName", config.webDavUserName);
+    WriteInt(L"WebDavKeepCount", config.webDavKeepCount);
 }
 
 int ConfigService::ReadInt(const wchar_t* key, int fallback) const {

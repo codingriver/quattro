@@ -1,5 +1,6 @@
 #include "Storage.h"
 
+#include "TodoSchedule.h"
 #include "Utilities.h"
 
 #include <sqlite3.h>
@@ -157,7 +158,24 @@ void CreateSchema(sqlite3* db, std::wstring& error) {
          "IsCustomColor INTEGER DEFAULT 0,"
          "CustomColor CHARACTER(10),"
          "Remark TEXT,"
-         "Pidl BLOB);",
+         "Pidl BLOB);"
+         "CREATE TABLE IF NOT EXISTS NotePages("
+         "TagId INTEGER PRIMARY KEY,"
+         "Content TEXT NOT NULL DEFAULT '',"
+         "UpdatedAt TEXT NOT NULL DEFAULT '');"
+         "CREATE TABLE IF NOT EXISTS TodoItems("
+         "ID INTEGER PRIMARY KEY AUTOINCREMENT,"
+         "TagId INTEGER NOT NULL,"
+         "Title TEXT NOT NULL,"
+         "Content TEXT NOT NULL DEFAULT '',"
+         "Enabled INTEGER DEFAULT 1,"
+         "ScheduleKind INTEGER DEFAULT 0,"
+         "AnchorAt TEXT NOT NULL DEFAULT '',"
+         "NextDueAt TEXT NOT NULL DEFAULT '',"
+         "CompletedAt TEXT NOT NULL DEFAULT '',"
+         "POS INTEGER DEFAULT 0,"
+         "CreatedAt TEXT NOT NULL DEFAULT '',"
+         "UpdatedAt TEXT NOT NULL DEFAULT '');",
          error);
 }
 
@@ -180,6 +198,28 @@ bool HasColumn(sqlite3* db, const wchar_t* table, const wchar_t* column) {
 void MigrateSchema(sqlite3* db, std::wstring& error) {
     if (!HasColumn(db, L"Links", L"Pidl")) {
         Exec(db, "ALTER TABLE Links ADD COLUMN Pidl BLOB;", error);
+    }
+    Exec(db,
+         "CREATE TABLE IF NOT EXISTS NotePages("
+         "TagId INTEGER PRIMARY KEY,"
+         "Content TEXT NOT NULL DEFAULT '',"
+         "UpdatedAt TEXT NOT NULL DEFAULT '');"
+         "CREATE TABLE IF NOT EXISTS TodoItems("
+         "ID INTEGER PRIMARY KEY AUTOINCREMENT,"
+         "TagId INTEGER NOT NULL,"
+         "Title TEXT NOT NULL,"
+         "Content TEXT NOT NULL DEFAULT '',"
+         "Enabled INTEGER DEFAULT 1,"
+         "ScheduleKind INTEGER DEFAULT 0,"
+         "AnchorAt TEXT NOT NULL DEFAULT '',"
+         "NextDueAt TEXT NOT NULL DEFAULT '',"
+         "CompletedAt TEXT NOT NULL DEFAULT '',"
+         "POS INTEGER DEFAULT 0,"
+         "CreatedAt TEXT NOT NULL DEFAULT '',"
+         "UpdatedAt TEXT NOT NULL DEFAULT '');",
+         error);
+    if (!HasColumn(db, L"TodoItems", L"Enabled")) {
+        Exec(db, "ALTER TABLE TodoItems ADD COLUMN Enabled INTEGER DEFAULT 1;", error);
     }
 }
 
@@ -209,6 +249,18 @@ int NextGroupPosition(sqlite3* db, int parentGroup) {
         return 0;
     }
     statement.bindInt(1, parentGroup);
+    if (statement.step() != SQLITE_ROW) {
+        return 0;
+    }
+    return statement.columnInt(0);
+}
+
+int NextTodoPosition(sqlite3* db, int tagId) {
+    SQLiteStatement statement(db, L"SELECT COALESCE(MAX(POS), -1) + 1 FROM TodoItems WHERE TagId=?;");
+    if (!statement.ok()) {
+        return 0;
+    }
+    statement.bindInt(1, tagId);
     if (statement.step() != SQLITE_ROW) {
         return 0;
     }
@@ -254,6 +306,40 @@ bool NormalizeGroupForSave(sqlite3* db, Group& group) {
     }
     if (group.pos < 0) {
         group.pos = NextGroupPosition(db, group.parentGroup);
+    }
+    return true;
+}
+
+bool NormalizeTodoForSave(sqlite3* db, TodoItem& item, bool isNew) {
+    item.title = Trim(item.title);
+    item.content = Trim(item.content);
+    item.anchorAt = NormalizeTodoTimestamp(item.anchorAt);
+    item.nextDueAt = NormalizeTodoTimestamp(item.nextDueAt);
+    item.completedAt = NormalizeTodoTimestamp(item.completedAt);
+    if (item.title.empty() || item.tagId <= 0) {
+        return false;
+    }
+    if (static_cast<int>(item.scheduleKind) < static_cast<int>(TodoScheduleKind::None) ||
+        static_cast<int>(item.scheduleKind) > static_cast<int>(TodoScheduleKind::Yearly)) {
+        item.scheduleKind = TodoScheduleKind::None;
+    }
+    if (item.scheduleKind == TodoScheduleKind::None) {
+        item.anchorAt.clear();
+        item.nextDueAt.clear();
+    } else if (item.anchorAt.empty()) {
+        return false;
+    } else if (item.nextDueAt.empty()) {
+        item.nextDueAt = ComputeNextTodoDueAt(item.scheduleKind, item.anchorAt, CurrentTodoTimestamp());
+    }
+    if (item.pos < 0) {
+        item.pos = NextTodoPosition(db, item.tagId);
+    }
+    const std::wstring now = CurrentTodoTimestamp();
+    if (isNew && item.createdAt.empty()) {
+        item.createdAt = now;
+    }
+    if (item.updatedAt.empty()) {
+        item.updatedAt = now;
     }
     return true;
 }
@@ -342,6 +428,43 @@ AppModel StorageService::Load() {
                 link.showCmd = statement.columnInt(15);
                 link.pidl = statement.columnBlob(16);
                 model.links.push_back(std::move(link));
+            }
+        }
+    }
+
+    {
+        SQLiteStatement statement(db.get(), L"SELECT TagId,Content,UpdatedAt FROM NotePages;");
+        if (statement.ok()) {
+            while (statement.step() == SQLITE_ROW) {
+                NotePage note;
+                note.tagId = statement.columnInt(0);
+                note.content = statement.columnText(1);
+                note.updatedAt = statement.columnText(2);
+                model.notes.push_back(std::move(note));
+            }
+        }
+    }
+
+    {
+        SQLiteStatement statement(db.get(),
+            L"SELECT ID,TagId,Title,Content,Enabled,ScheduleKind,AnchorAt,NextDueAt,CompletedAt,POS,CreatedAt,UpdatedAt "
+            L"FROM TodoItems ORDER BY TagId,CompletedAt,POS,ID;");
+        if (statement.ok()) {
+            while (statement.step() == SQLITE_ROW) {
+                TodoItem item;
+                item.id = statement.columnInt(0);
+                item.tagId = statement.columnInt(1);
+                item.title = statement.columnText(2);
+                item.content = statement.columnText(3);
+                item.enabled = statement.columnInt(4) != 0;
+                item.scheduleKind = static_cast<TodoScheduleKind>(statement.columnInt(5));
+                item.anchorAt = statement.columnText(6);
+                item.nextDueAt = statement.columnText(7);
+                item.completedAt = statement.columnText(8);
+                item.pos = statement.columnInt(9);
+                item.createdAt = statement.columnText(10);
+                item.updatedAt = statement.columnText(11);
+                model.todos.push_back(std::move(item));
             }
         }
     }
@@ -457,6 +580,16 @@ bool StorageService::DeleteGroup(int groupId) {
 
     bool ok = true;
     if (parentGroup == 0) {
+        SQLiteStatement deleteTodos(db.get(),
+            L"DELETE FROM TodoItems WHERE TagId IN (SELECT ID FROM Groups WHERE ParentGroup=?);");
+        deleteTodos.bindInt(1, groupId);
+        ok = ok && deleteTodos.step() == SQLITE_DONE;
+
+        SQLiteStatement deleteNotes(db.get(),
+            L"DELETE FROM NotePages WHERE TagId IN (SELECT ID FROM Groups WHERE ParentGroup=?);");
+        deleteNotes.bindInt(1, groupId);
+        ok = ok && deleteNotes.step() == SQLITE_DONE;
+
         SQLiteStatement deleteLinks(db.get(),
             L"DELETE FROM Links WHERE ParentGroup IN (SELECT ID FROM Groups WHERE ParentGroup=?);");
         deleteLinks.bindInt(1, groupId);
@@ -466,6 +599,14 @@ bool StorageService::DeleteGroup(int groupId) {
         deleteTags.bindInt(1, groupId);
         ok = ok && deleteTags.step() == SQLITE_DONE;
     } else {
+        SQLiteStatement deleteTodos(db.get(), L"DELETE FROM TodoItems WHERE TagId=?;");
+        deleteTodos.bindInt(1, groupId);
+        ok = ok && deleteTodos.step() == SQLITE_DONE;
+
+        SQLiteStatement deleteNotes(db.get(), L"DELETE FROM NotePages WHERE TagId=?;");
+        deleteNotes.bindInt(1, groupId);
+        ok = ok && deleteNotes.step() == SQLITE_DONE;
+
         SQLiteStatement deleteLinks(db.get(), L"DELETE FROM Links WHERE ParentGroup=?;");
         deleteLinks.bindInt(1, groupId);
         ok = ok && deleteLinks.step() == SQLITE_DONE;
@@ -619,6 +760,233 @@ bool StorageService::IncrementRunCount(int linkId, int runCount) {
     statement.bindInt(1, runCount);
     statement.bindInt(2, linkId);
     return statement.step() == SQLITE_DONE;
+}
+
+bool StorageService::SaveNotePage(int tagId, const std::wstring& content) {
+    lastError_.clear();
+    SQLiteDatabase db(appDirectory_ / L"db" / L"link.db");
+    if (!db.ok()) {
+        lastError_ = db.Error();
+        return false;
+    }
+    CreateSchema(db.get(), lastError_);
+    MigrateSchema(db.get(), lastError_);
+
+    SQLiteStatement statement(db.get(),
+        L"INSERT INTO NotePages(TagId,Content,UpdatedAt) VALUES(?,?,?) "
+        L"ON CONFLICT(TagId) DO UPDATE SET Content=excluded.Content,UpdatedAt=excluded.UpdatedAt;");
+    if (!statement.ok()) {
+        lastError_ = L"保存便签 SQL 准备失败。";
+        return false;
+    }
+    statement.bindInt(1, tagId);
+    statement.bindText(2, content);
+    statement.bindText(3, CurrentTodoTimestamp());
+    if (statement.step() != SQLITE_DONE) {
+        const void* message = sqlite3_errmsg16(db.get());
+        lastError_ = message ? static_cast<const wchar_t*>(message) : L"保存便签失败。";
+        return false;
+    }
+    return true;
+}
+
+bool StorageService::InsertTodoItem(TodoItem& item) {
+    lastError_.clear();
+    SQLiteDatabase db(appDirectory_ / L"db" / L"link.db");
+    if (!db.ok()) {
+        lastError_ = db.Error();
+        return false;
+    }
+    CreateSchema(db.get(), lastError_);
+    MigrateSchema(db.get(), lastError_);
+
+    item.pos = NextTodoPosition(db.get(), item.tagId);
+    if (!NormalizeTodoForSave(db.get(), item, true)) {
+        lastError_ = L"待办事项标题不能为空，且有时间的事项必须填写有效时间。";
+        return false;
+    }
+
+    SQLiteStatement statement(db.get(),
+        L"INSERT INTO TodoItems(TagId,Title,Content,Enabled,ScheduleKind,AnchorAt,NextDueAt,CompletedAt,POS,CreatedAt,UpdatedAt) "
+        L"VALUES(?,?,?,?,?,?,?,?,?,?,?);");
+    if (!statement.ok()) {
+        lastError_ = L"新增待办事项 SQL 准备失败。";
+        return false;
+    }
+    statement.bindInt(1, item.tagId);
+    statement.bindText(2, item.title);
+    statement.bindText(3, item.content);
+    statement.bindInt(4, item.enabled ? 1 : 0);
+    statement.bindInt(5, static_cast<int>(item.scheduleKind));
+    statement.bindText(6, item.anchorAt);
+    statement.bindText(7, item.nextDueAt);
+    statement.bindText(8, item.completedAt);
+    statement.bindInt(9, item.pos);
+    statement.bindText(10, item.createdAt);
+    statement.bindText(11, item.updatedAt);
+    if (statement.step() != SQLITE_DONE) {
+        const void* message = sqlite3_errmsg16(db.get());
+        lastError_ = message ? static_cast<const wchar_t*>(message) : L"新增待办事项失败。";
+        return false;
+    }
+    item.id = static_cast<int>(sqlite3_last_insert_rowid(db.get()));
+    return true;
+}
+
+bool StorageService::UpdateTodoItem(const TodoItem& source) {
+    lastError_.clear();
+    SQLiteDatabase db(appDirectory_ / L"db" / L"link.db");
+    if (!db.ok()) {
+        lastError_ = db.Error();
+        return false;
+    }
+    CreateSchema(db.get(), lastError_);
+    MigrateSchema(db.get(), lastError_);
+
+    TodoItem item = source;
+    item.updatedAt = CurrentTodoTimestamp();
+    if (!NormalizeTodoForSave(db.get(), item, false)) {
+        lastError_ = L"待办事项标题不能为空，且有时间的事项必须填写有效时间。";
+        return false;
+    }
+
+    SQLiteStatement statement(db.get(),
+        L"UPDATE TodoItems SET TagId=?,Title=?,Content=?,Enabled=?,ScheduleKind=?,AnchorAt=?,NextDueAt=?,"
+        L"CompletedAt=?,POS=?,CreatedAt=?,UpdatedAt=? WHERE ID=?;");
+    if (!statement.ok()) {
+        lastError_ = L"更新待办事项 SQL 准备失败。";
+        return false;
+    }
+    statement.bindInt(1, item.tagId);
+    statement.bindText(2, item.title);
+    statement.bindText(3, item.content);
+    statement.bindInt(4, item.enabled ? 1 : 0);
+    statement.bindInt(5, static_cast<int>(item.scheduleKind));
+    statement.bindText(6, item.anchorAt);
+    statement.bindText(7, item.nextDueAt);
+    statement.bindText(8, item.completedAt);
+    statement.bindInt(9, item.pos);
+    statement.bindText(10, item.createdAt);
+    statement.bindText(11, item.updatedAt);
+    statement.bindInt(12, item.id);
+    if (statement.step() != SQLITE_DONE) {
+        const void* message = sqlite3_errmsg16(db.get());
+        lastError_ = message ? static_cast<const wchar_t*>(message) : L"更新待办事项失败。";
+        return false;
+    }
+    return sqlite3_changes(db.get()) > 0;
+}
+
+bool StorageService::DeleteTodoItem(int todoId) {
+    lastError_.clear();
+    SQLiteDatabase db(appDirectory_ / L"db" / L"link.db");
+    if (!db.ok()) {
+        lastError_ = db.Error();
+        return false;
+    }
+
+    SQLiteStatement statement(db.get(), L"DELETE FROM TodoItems WHERE ID=?;");
+    if (!statement.ok()) {
+        lastError_ = L"删除待办事项 SQL 准备失败。";
+        return false;
+    }
+    statement.bindInt(1, todoId);
+    if (statement.step() != SQLITE_DONE) {
+        const void* message = sqlite3_errmsg16(db.get());
+        lastError_ = message ? static_cast<const wchar_t*>(message) : L"删除待办事项失败。";
+        return false;
+    }
+    return sqlite3_changes(db.get()) > 0;
+}
+
+bool StorageService::SetTodoCompleted(int todoId, bool completed) {
+    lastError_.clear();
+    SQLiteDatabase db(appDirectory_ / L"db" / L"link.db");
+    if (!db.ok()) {
+        lastError_ = db.Error();
+        return false;
+    }
+    CreateSchema(db.get(), lastError_);
+    MigrateSchema(db.get(), lastError_);
+
+    TodoItem item;
+    {
+        SQLiteStatement query(db.get(),
+            L"SELECT ID,TagId,Title,Content,Enabled,ScheduleKind,AnchorAt,NextDueAt,CompletedAt,POS,CreatedAt,UpdatedAt "
+            L"FROM TodoItems WHERE ID=?;");
+        if (!query.ok()) {
+            lastError_ = L"查询待办事项 SQL 准备失败。";
+            return false;
+        }
+        query.bindInt(1, todoId);
+        if (query.step() != SQLITE_ROW) {
+            lastError_ = L"待办事项不存在。";
+            return false;
+        }
+        item.id = query.columnInt(0);
+        item.tagId = query.columnInt(1);
+        item.title = query.columnText(2);
+        item.content = query.columnText(3);
+        item.enabled = query.columnInt(4) != 0;
+        item.scheduleKind = static_cast<TodoScheduleKind>(query.columnInt(5));
+        item.anchorAt = query.columnText(6);
+        item.nextDueAt = query.columnText(7);
+        item.completedAt = query.columnText(8);
+        item.pos = query.columnInt(9);
+        item.createdAt = query.columnText(10);
+        item.updatedAt = query.columnText(11);
+    }
+
+    const std::wstring now = CurrentTodoTimestamp();
+    if (completed && IsRecurringTodoSchedule(item.scheduleKind)) {
+        item.completedAt.clear();
+        item.nextDueAt = ComputeNextTodoDueAt(item.scheduleKind, item.anchorAt, now);
+    } else {
+        item.completedAt = completed ? now : L"";
+    }
+    item.updatedAt = now;
+
+    SQLiteStatement statement(db.get(), L"UPDATE TodoItems SET NextDueAt=?,CompletedAt=?,UpdatedAt=? WHERE ID=?;");
+    if (!statement.ok()) {
+        lastError_ = L"更新待办完成状态 SQL 准备失败。";
+        return false;
+    }
+    statement.bindText(1, item.nextDueAt);
+    statement.bindText(2, item.completedAt);
+    statement.bindText(3, item.updatedAt);
+    statement.bindInt(4, item.id);
+    if (statement.step() != SQLITE_DONE) {
+        const void* message = sqlite3_errmsg16(db.get());
+        lastError_ = message ? static_cast<const wchar_t*>(message) : L"更新待办完成状态失败。";
+        return false;
+    }
+    return sqlite3_changes(db.get()) > 0;
+}
+
+bool StorageService::SetTodoEnabled(int todoId, bool enabled) {
+    lastError_.clear();
+    SQLiteDatabase db(appDirectory_ / L"db" / L"link.db");
+    if (!db.ok()) {
+        lastError_ = db.Error();
+        return false;
+    }
+    CreateSchema(db.get(), lastError_);
+    MigrateSchema(db.get(), lastError_);
+
+    SQLiteStatement statement(db.get(), L"UPDATE TodoItems SET Enabled=?,UpdatedAt=? WHERE ID=?;");
+    if (!statement.ok()) {
+        lastError_ = L"更新待办启用状态 SQL 准备失败。";
+        return false;
+    }
+    statement.bindInt(1, enabled ? 1 : 0);
+    statement.bindText(2, CurrentTodoTimestamp());
+    statement.bindInt(3, todoId);
+    if (statement.step() != SQLITE_DONE) {
+        const void* message = sqlite3_errmsg16(db.get());
+        lastError_ = message ? static_cast<const wchar_t*>(message) : L"更新待办启用状态失败。";
+        return false;
+    }
+    return sqlite3_changes(db.get()) > 0;
 }
 
 AppModel StorageService::LoadFallback() const {

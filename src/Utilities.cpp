@@ -221,3 +221,33 @@ void ShowWindowRespectFocusPolicy(HWND hwnd, int showCommand) {
     }
     ShowWindow(hwnd, showCommand);
 }
+
+bool ShowModalWindow(HWND owner, HWND hwnd) {
+    if (!hwnd) {
+        return false;
+    }
+
+    ShowWindowRespectFocusPolicy(hwnd, SW_SHOWNORMAL);
+    ActivateWindow(hwnd);
+
+    if (!owner || !IsWindow(owner) || !IsWindowEnabled(owner)) {
+        return false;
+    }
+
+    EnableWindow(owner, FALSE);
+    return true;
+}
+
+void RestoreModalOwner(HWND owner, bool ownerWasEnabled, bool& ownerRestored) {
+    if (ownerRestored) {
+        return;
+    }
+    ownerRestored = true;
+
+    if (!ownerWasEnabled || !owner || !IsWindow(owner)) {
+        return;
+    }
+
+    EnableWindow(owner, TRUE);
+    ActivateWindow(owner);
+}

@@ -141,8 +141,7 @@ public:
             return false;
         }
 
-        EnableWindow(owner_, FALSE);
-        ShowWindowRespectFocusPolicy(hwnd_, SW_SHOWNORMAL);
+        ownerWasEnabled_ = ShowModalWindow(owner_, hwnd_);
         UpdateWindow(hwnd_);
         RedrawWindow(hwnd_, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
 
@@ -154,10 +153,7 @@ public:
             }
         }
 
-        if (IsWindow(owner_)) {
-            EnableWindow(owner_, TRUE);
-            ActivateWindow(owner_);
-        }
+        RestoreModalOwner(owner_, ownerWasEnabled_, ownerRestored_);
         return accepted_;
     }
 
@@ -257,6 +253,7 @@ private:
             Close(false);
             return 0;
         case WM_DESTROY:
+            RestoreModalOwner(owner_, ownerWasEnabled_, ownerRestored_);
             if (font_ && ownsFont_) {
                 DeleteObject(font_);
             }
@@ -682,6 +679,8 @@ private:
     Link& link_;
     const std::vector<Group>& groups_;
     bool isNew_ = false;
+    bool ownerWasEnabled_ = false;
+    bool ownerRestored_ = false;
     bool accepted_ = false;
     bool done_ = false;
 

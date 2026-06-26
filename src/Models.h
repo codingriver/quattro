@@ -4,6 +4,15 @@
 #include <string>
 #include <vector>
 
+enum class TodoScheduleKind {
+    None = 0,
+    Once = 1,
+    Daily = 2,
+    Weekly = 3,
+    Monthly = 4,
+    Yearly = 5,
+};
+
 struct AppConfig {
     bool autoRun = false;
     bool showTitle = true;
@@ -67,6 +76,13 @@ struct AppConfig {
     std::wstring updateUrl;
     std::wstring faqUrl;
     std::wstring rewardUrl;
+    std::wstring pluginStoreUrl;
+
+    bool webDavEnabled = false;
+    std::wstring webDavUrl;
+    std::wstring webDavRemotePath = L"/Quattro/backups/";
+    std::wstring webDavUserName;
+    int webDavKeepCount = 10;
 };
 
 struct Group {
@@ -103,7 +119,30 @@ struct Link {
     std::vector<std::uint8_t> pidl;
 };
 
+struct NotePage {
+    int tagId = 0;
+    std::wstring content;
+    std::wstring updatedAt;
+};
+
+struct TodoItem {
+    int id = 0;
+    int tagId = 0;
+    std::wstring title;
+    std::wstring content;
+    bool enabled = true;
+    TodoScheduleKind scheduleKind = TodoScheduleKind::None;
+    std::wstring anchorAt;
+    std::wstring nextDueAt;
+    std::wstring completedAt;
+    int pos = 0;
+    std::wstring createdAt;
+    std::wstring updatedAt;
+};
+
 struct AppModel {
     std::vector<Group> groups;
     std::vector<Link> links;
+    std::vector<NotePage> notes;
+    std::vector<TodoItem> todos;
 };

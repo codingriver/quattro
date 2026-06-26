@@ -3,7 +3,7 @@
 #include <array>
 
 namespace {
-constexpr std::array<MenuVisualRequirement, 26> kTopRightMenuVisuals{{
+constexpr std::array<MenuVisualRequirement, 32> kTopRightMenuVisuals{{
     {ID_MENU_TOGGLE_TITLE, L"隐藏标题栏", MenuIconEyeOff},
     {ID_MENU_TOGGLE_GROUP, L"隐藏分组", MenuIconEyeOff},
     {ID_MENU_TOGGLE_TAG, L"隐藏标签", MenuIconEyeOff},
@@ -13,6 +13,8 @@ constexpr std::array<MenuVisualRequirement, 26> kTopRightMenuVisuals{{
     {ID_MENU_REFRESH_ALL_ICONS, L"重置所有图标", MenuIconRefresh},
     {ID_MENU_CLEAR_ICON_CACHE, L"清理图标缓存", MenuIconClear},
     {ID_MENU_SYSTEM_FUNCTION_BASE, L"系统功能", MenuIconSystem},
+    {ID_MENU_TOOL_BASE, L"工具箱", MenuIconTools},
+    {ID_MENU_PLUGIN_STORE, L"插件商店", MenuIconTools},
     {ID_MENU_ALL_ICON_SMALL, L"小图标", MenuIconSize},
     {ID_MENU_ALL_ICON_MEDIUM, L"中图标", MenuIconSize},
     {ID_MENU_ALL_ICON_LARGE, L"大图标", MenuIconSize},
@@ -25,6 +27,10 @@ constexpr std::array<MenuVisualRequirement, 26> kTopRightMenuVisuals{{
     {0, L"统一查看方式", MenuIconView},
     {0, L"统一排序方式", MenuIconSort},
     {ID_MENU_IMPORT_CLIPBOARD, L"从剪贴板导入", MenuIconPaste},
+    {ID_MENU_IMPORT_CONFIG_MERGE, L"合并导入配置包", MenuIconPaste},
+    {ID_MENU_EXPORT_CONFIG, L"导出配置包", MenuIconCopy},
+    {ID_MENU_UPLOAD_WEBDAV_BACKUP, L"上传 WebDAV 备份", MenuIconCopy},
+    {ID_MENU_DOWNLOAD_WEBDAV_BACKUP, L"下载 WebDAV 备份", MenuIconPaste},
     {ID_MENU_UPDATE, L"更新", MenuIconRefresh},
     {ID_MENU_HELP, L"帮助说明", MenuIconHelp},
     {ID_MENU_EXIT, L"关闭退出", MenuIconExit},
@@ -36,6 +42,9 @@ constexpr std::array<MenuVisualRequirement, 26> kTopRightMenuVisuals{{
 int MenuIconFor(UINT_PTR id, const std::wstring& text) {
     if (id >= ID_MENU_SYSTEM_FUNCTION_BASE && id < ID_MENU_SYSTEM_FUNCTION_BASE + ID_MENU_SYSTEM_FUNCTION_LIMIT) {
         return MenuIconSystem;
+    }
+    if (id >= ID_MENU_TOOL_BASE && id < ID_MENU_TOOL_BASE + ID_MENU_TOOL_LIMIT) {
+        return MenuIconTools;
     }
     if (id >= ID_MENU_THEME_BASE && id < ID_MENU_THEME_BASE + 100) {
         return MenuIconTheme;
@@ -71,10 +80,14 @@ int MenuIconFor(UINT_PTR id, const std::wstring& text) {
     case ID_MENU_MOVE_UP:
     case ID_MENU_MOVE_DOWN: return MenuIconMove;
     case ID_MENU_COPY_LINK:
-    case ID_MENU_COPY_PATH: return MenuIconCopy;
+    case ID_MENU_COPY_PATH:
+    case ID_MENU_EXPORT_CONFIG:
+    case ID_MENU_UPLOAD_WEBDAV_BACKUP: return MenuIconCopy;
     case ID_MENU_CUT_LINK: return MenuIconCut;
     case ID_MENU_PASTE_LINK:
-    case ID_MENU_IMPORT_CLIPBOARD: return MenuIconPaste;
+    case ID_MENU_IMPORT_CLIPBOARD:
+    case ID_MENU_IMPORT_CONFIG_MERGE:
+    case ID_MENU_DOWNLOAD_WEBDAV_BACKUP: return MenuIconPaste;
     case ID_MENU_EDIT_LINK:
     case ID_MENU_EDIT_GROUP:
     case ID_MENU_EDIT_TAG: return MenuIconEdit;
@@ -86,11 +99,21 @@ int MenuIconFor(UINT_PTR id, const std::wstring& text) {
     case ID_MENU_SEARCH: return MenuIconSearch;
     case ID_MENU_ADD_GROUP: return MenuIconGroup;
     case ID_MENU_ADD_TAG: return MenuIconTag;
+    case ID_MENU_ADD_NOTE_TAG: return MenuIconNotebook;
+    case ID_MENU_ADD_TODO_TAG:
+    case ID_MENU_ADD_TODO_ITEM:
+    case ID_MENU_TOGGLE_TODO_DONE: return MenuIconList;
+    case ID_MENU_TOGGLE_TODO_ENABLED:
+        return text.find(L"禁用") != std::wstring::npos ? MenuIconEyeOff : MenuIconEye;
+    case ID_MENU_EDIT_TODO_ITEM: return MenuIconEdit;
+    case ID_MENU_DELETE_TODO_ITEM: return MenuIconDelete;
+    case ID_MENU_CLEAR_DONE_TODOS: return MenuIconClear;
     case ID_MENU_CLEAR_TAG_LINKS: return MenuIconClear;
     case ID_MENU_EXIT: return MenuIconExit;
     case ID_MENU_RUN_LINK: return MenuIconRun;
     case ID_MENU_TOGGLE_TOPMOST: return MenuIconPin;
     case ID_MENU_SETTINGS: return MenuIconSettings;
+    case ID_MENU_PLUGIN_STORE: return MenuIconTools;
     case ID_MENU_HELP:
     case ID_MENU_FAQ: return MenuIconHelp;
     case ID_MENU_REWARD: return MenuIconReward;
@@ -108,6 +131,10 @@ int MenuIconFor(UINT_PTR id, const std::wstring& text) {
     case ID_MENU_SORT_POS:
     case ID_MENU_SORT_RUNCOUNT:
     case ID_MENU_SORT_NAME:
+    case ID_MENU_TODO_SORT_DUE:
+    case ID_MENU_TODO_SORT_CREATED:
+    case ID_MENU_TODO_SORT_TITLE:
+    case ID_MENU_TODO_SORT_STATUS:
     case ID_MENU_ALL_SORT_POS:
     case ID_MENU_ALL_SORT_RUNCOUNT:
     case ID_MENU_ALL_SORT_NAME: return MenuIconSort;
@@ -127,6 +154,7 @@ int MenuIconFor(UINT_PTR id, const std::wstring& text) {
     if (text == L"列表") return MenuIconList;
     if (text == L"平铺") return MenuIconTile;
     if (text == L"系统功能") return MenuIconSystem;
+    if (text == L"工具箱" || text == L"插件商店") return MenuIconTools;
     if (text == L"主题" || text == L"皮肤") return MenuIconTheme;
     if (text == L"无可选分组" || text == L"无可选标签" || text == L"无可用功能") return MenuIconInfo;
     return MenuIconNone;

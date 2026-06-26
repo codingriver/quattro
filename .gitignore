@@ -19,6 +19,7 @@
 
 # CMake local/generated files
 /CMakeCache.txt
+/CMakeUserPresets.json
 /CMakeFiles/
 /cmake_install.cmake
 /install_manifest.txt
@@ -61,6 +62,8 @@
 
 # Local tool caches
 /.wrangler/
+/.vcpkg-root/
+/vcpkg_installed/
 
 # OS/editor noise
 Thumbs.db

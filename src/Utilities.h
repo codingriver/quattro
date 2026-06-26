@@ -26,3 +26,5 @@ std::optional<int> ParseInt(const std::wstring& value);
 bool SuppressForegroundActivation();
 void ActivateWindow(HWND hwnd);
 void ShowWindowRespectFocusPolicy(HWND hwnd, int showCommand);
+bool ShowModalWindow(HWND owner, HWND hwnd);
+void RestoreModalOwner(HWND owner, bool ownerWasEnabled, bool& ownerRestored);

@@ -46,8 +46,7 @@ private:
             return currentKey_;
         }
 
-        EnableWindow(owner_, FALSE);
-        ShowWindowRespectFocusPolicy(hwnd_, SW_SHOWNORMAL);
+        ownerWasEnabled_ = ShowModalWindow(owner_, hwnd_);
         UpdateWindow(hwnd_);
 
         MSG message{};
@@ -56,8 +55,7 @@ private:
             DispatchMessageW(&message);
         }
 
-        EnableWindow(owner_, TRUE);
-        ActivateWindow(owner_);
+        RestoreModalOwner(owner_, ownerWasEnabled_, ownerRestored_);
         return accepted_ ? capturedKey_ : currentKey_;
     }
 
@@ -123,6 +121,7 @@ private:
             DestroyWindow(hwnd_);
             return 0;
         case WM_DESTROY:
+            RestoreModalOwner(owner_, ownerWasEnabled_, ownerRestored_);
             if (font_ && ownsFont_) {
                 DeleteObject(font_);
                 font_ = nullptr;
@@ -140,6 +139,8 @@ private:
     HFONT font_ = nullptr;
     int currentKey_ = 0;
     int capturedKey_ = 0;
+    bool ownerWasEnabled_ = false;
+    bool ownerRestored_ = false;
     bool accepted_ = false;
     bool done_ = false;
     bool ownsFont_ = false;

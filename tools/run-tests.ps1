@@ -76,6 +76,18 @@ if (Test-Path $testExe) {
     throw "Unit test executable not found: $testExe"
 }
 
+$noteTodoAcceptanceExe = Join-Path $root "build\$Configuration\QuattroNoteTodoAcceptance.exe"
+if (Test-Path $noteTodoAcceptanceExe) {
+    & $noteTodoAcceptanceExe
+    if ($LASTEXITCODE -ne 0) {
+        throw "Note/todo acceptance tests failed."
+    }
+    $compatLines.Add("note_todo_acceptance=passed")
+} else {
+    $compatLines.Add("note_todo_acceptance=missing")
+    throw "Note/todo acceptance executable not found: $noteTodoAcceptanceExe"
+}
+
 $exe = Join-Path $root "build\$Configuration\Quattro.exe"
 if (!(Test-Path $exe)) {
     throw "Executable not found: $exe"
@@ -112,6 +124,10 @@ $compatLines.Add("scroll_tests=passed")
 $dialogDisplayTests = & (Join-Path $PSScriptRoot "run-dialog-display-tests.ps1") -ExePath $exe -LogDir $logDir
 $dialogDisplayTests
 $compatLines.Add("dialog_display_tests=passed")
+
+$pluginToolTests = & (Join-Path $PSScriptRoot "run-plugin-tool-tests.ps1") -ExePath $exe -ProbePath $probeExe -LogDir $logDir
+$pluginToolTests
+$compatLines.Add("plugin_tool_tests=passed")
 
 $docsPath = Join-Path "docs" "Quattro"
 

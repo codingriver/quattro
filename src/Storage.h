@@ -17,6 +17,12 @@ public:
     bool UpdateLink(const Link& link);
     bool DeleteLink(int linkId);
     bool IncrementRunCount(int linkId, int runCount);
+    bool SaveNotePage(int tagId, const std::wstring& content);
+    bool InsertTodoItem(TodoItem& item);
+    bool UpdateTodoItem(const TodoItem& item);
+    bool DeleteTodoItem(int todoId);
+    bool SetTodoCompleted(int todoId, bool completed);
+    bool SetTodoEnabled(int todoId, bool enabled);
     const std::wstring& lastError() const { return lastError_; }
     bool sqliteAvailable() const { return sqliteAvailable_; }
 

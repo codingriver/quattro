@@ -4,11 +4,14 @@
 #include "HotKeyEditor.h"
 #include "ThemedControls.h"
 #include "Utilities.h"
+#include "WebDavBackupService.h"
+#include "WebDavCredentialService.h"
 
 #include <commctrl.h>
 #include <windowsx.h>
 
 #include <algorithm>
+#include <array>
 #include <utility>
 #include <vector>
 
@@ -27,6 +30,11 @@ constexpr int ID_SEARCH_COUNT = 406;
 constexpr int ID_TAG_ALIGN_LEFT = 407;
 constexpr int ID_TAG_ALIGN_CENTER = 408;
 constexpr int ID_TAG_ALIGN_RIGHT = 409;
+constexpr int ID_WEBDAV_TEST = 410;
+constexpr int ID_WEBDAV_CLEAR_PASSWORD = 411;
+constexpr int ID_WEBDAV_UPLOAD = 412;
+constexpr int ID_WEBDAV_DOWNLOAD = 413;
+constexpr int ID_WEBDAV_BACKUP_LIST = 414;
 
 std::wstring GetText(HWND hwnd) {
     const int length = GetWindowTextLengthW(hwnd);
@@ -59,6 +67,49 @@ void FillRoundRect(HDC dc, RECT rect, int radius, COLORREF fill, COLORREF border
     SelectObject(dc, oldBrush);
     DeleteObject(pen);
     DeleteObject(brush);
+}
+
+std::wstring FormatConfigPackageReportText(const ConfigPackageReport& report) {
+    std::wstring text = report.message.empty() ? (report.ok ? L"操作完成。" : L"操作失败。") : report.message;
+    if (report.groupsAdded > 0 || report.tagsAdded > 0 || report.linksAdded > 0 ||
+        report.notesAdded > 0 || report.todosAdded > 0 || report.pluginSettingsAdded > 0 ||
+        report.urlIconsAdded > 0) {
+        text += L"\n\n新增分组: " + std::to_wstring(report.groupsAdded);
+        text += L"\n新增标签: " + std::to_wstring(report.tagsAdded);
+        text += L"\n新增启动项: " + std::to_wstring(report.linksAdded);
+        text += L"\n新增便签: " + std::to_wstring(report.notesAdded);
+        text += L"\n新增待办: " + std::to_wstring(report.todosAdded);
+        text += L"\n新增插件设置: " + std::to_wstring(report.pluginSettingsAdded);
+        text += L"\n新增 URL 图标: " + std::to_wstring(report.urlIconsAdded);
+    }
+    if (!report.warnings.empty()) {
+        text += L"\n\n警告:";
+        for (const auto& warning : report.warnings) {
+            text += L"\n- " + warning;
+        }
+    }
+    return text;
+}
+
+std::wstring FormatFileSize(std::uint64_t bytes) {
+    if (bytes >= 1024ull * 1024ull) {
+        return std::to_wstring((bytes + 1024ull * 1024ull - 1) / (1024ull * 1024ull)) + L" MB";
+    }
+    if (bytes >= 1024ull) {
+        return std::to_wstring((bytes + 1023ull) / 1024ull) + L" KB";
+    }
+    return std::to_wstring(bytes) + L" B";
+}
+
+std::wstring FormatBackupListItem(const WebDavRemoteFile& backup) {
+    std::wstring text = backup.name;
+    if (backup.size > 0) {
+        text += L"    " + FormatFileSize(backup.size);
+    }
+    if (!backup.lastModified.empty()) {
+        text += L"    " + backup.lastModified;
+    }
+    return text;
 }
 
 class TextDialog {
@@ -106,9 +157,7 @@ public:
             WriteAppLog(L"文本输入窗口创建失败: " + FormatLastError(error));
             return false;
         }
-        EnableWindow(owner_, FALSE);
-        ShowWindowRespectFocusPolicy(hwnd_, SW_SHOWNORMAL);
-        ActivateWindow(hwnd_);
+        ownerWasEnabled_ = ShowModalWindow(owner_, hwnd_);
         UpdateWindow(hwnd_);
 
         MSG message{};
@@ -118,8 +167,7 @@ public:
                 DispatchMessageW(&message);
             }
         }
-        EnableWindow(owner_, TRUE);
-        ActivateWindow(owner_);
+        RestoreModalOwner(owner_, ownerWasEnabled_, ownerRestored_);
         return accepted_;
     }
 
@@ -212,6 +260,7 @@ private:
             return 0;
         case WM_DESTROY:
             done_ = true;
+            RestoreModalOwner(owner_, ownerWasEnabled_, ownerRestored_);
             if (editFont_) {
                 DeleteObject(editFont_);
                 editFont_ = nullptr;
@@ -242,14 +291,218 @@ private:
     HBRUSH backgroundBrush_ = nullptr;
     HBRUSH fieldBrush_ = nullptr;
     HFONT editFont_ = nullptr;
+    bool ownerWasEnabled_ = false;
+    bool ownerRestored_ = false;
+    bool accepted_ = false;
+    bool done_ = false;
+};
+
+class WebDavBackupSelectionDialog {
+public:
+    WebDavBackupSelectionDialog(
+        HWND owner,
+        HINSTANCE instance,
+        const Theme& theme,
+        const std::vector<WebDavRemoteFile>& backups,
+        std::wstring& selectedName)
+        : owner_(owner), instance_(instance), theme_(theme), backups_(backups), selectedName_(selectedName) {}
+
+    bool Run() {
+        const std::wstring className = L"QuattroWebDavBackupSelectionDialog_" +
+            std::to_wstring(GetCurrentProcessId()) + L"_" + std::to_wstring(GetTickCount64());
+        WNDCLASSEXW wc{};
+        wc.cbSize = sizeof(wc);
+        wc.lpfnWndProc = WebDavBackupSelectionDialog::Proc;
+        wc.hInstance = instance_;
+        wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+        wc.hbrBackground = nullptr;
+        wc.lpszClassName = className.c_str();
+        if (!RegisterClassExW(&wc)) {
+            const DWORD error = GetLastError();
+            if (error != ERROR_CLASS_ALREADY_EXISTS) {
+                WriteAppLog(L"WebDAV 备份选择窗口类注册失败: " + FormatLastError(error));
+                return false;
+            }
+        }
+
+        RECT ownerRect{};
+        GetWindowRect(owner_, &ownerRect);
+        hwnd_ = CreateWindowExW(
+            WS_EX_DLGMODALFRAME | WS_EX_WINDOWEDGE,
+            className.c_str(),
+            L"选择 WebDAV 备份",
+            WS_CAPTION | WS_SYSMENU | WS_POPUP,
+            ownerRect.left + 60,
+            ownerRect.top + 80,
+            560,
+            390,
+            owner_,
+            nullptr,
+            instance_,
+            this);
+        if (!hwnd_) {
+            WriteAppLog(L"WebDAV 备份选择窗口创建失败: " + FormatLastError(GetLastError()));
+            return false;
+        }
+
+        ownerWasEnabled_ = ShowModalWindow(owner_, hwnd_);
+        UpdateWindow(hwnd_);
+
+        MSG message{};
+        while (!done_ && GetMessageW(&message, nullptr, 0, 0) > 0) {
+            if (!IsDialogMessageW(hwnd_, &message)) {
+                TranslateMessage(&message);
+                DispatchMessageW(&message);
+            }
+        }
+        RestoreModalOwner(owner_, ownerWasEnabled_, ownerRestored_);
+        return accepted_;
+    }
+
+private:
+    static LRESULT CALLBACK Proc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
+        WebDavBackupSelectionDialog* dialog = nullptr;
+        if (message == WM_NCCREATE) {
+            auto* create = reinterpret_cast<CREATESTRUCTW*>(lParam);
+            dialog = static_cast<WebDavBackupSelectionDialog*>(create->lpCreateParams);
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(dialog));
+            dialog->hwnd_ = hwnd;
+        } else {
+            dialog = reinterpret_cast<WebDavBackupSelectionDialog*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+        }
+        return dialog ? dialog->Handle(message, wParam, lParam) : DefWindowProcW(hwnd, message, wParam, lParam);
+    }
+
+    void AcceptSelection() {
+        const int selected = static_cast<int>(SendMessageW(list_, LB_GETCURSEL, 0, 0));
+        if (selected < 0 || selected >= static_cast<int>(backups_.size())) {
+            MessageBoxW(hwnd_, L"请选择一个备份文件。", L"选择 WebDAV 备份", MB_OK | MB_ICONWARNING);
+            return;
+        }
+        selectedName_ = backups_[static_cast<std::size_t>(selected)].name;
+        accepted_ = true;
+        done_ = true;
+        DestroyWindow(hwnd_);
+    }
+
+    LRESULT Handle(UINT message, WPARAM wParam, LPARAM lParam) {
+        switch (message) {
+        case WM_CREATE: {
+            font_ = reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
+            backgroundBrush_ = CreateSolidBrush(ToColorRef(theme_.color(L"dialog", L"normal", L"bg")));
+            listBrush_ = CreateSolidBrush(ToColorRef(theme_.color(L"list", L"normal", L"bg")));
+            ThemedControls::CreateLabelText(instance_, hwnd_, L"云端备份记录", 24, 20, 180, theme_, font_);
+            list_ = CreateWindowExW(
+                WS_EX_CLIENTEDGE,
+                L"LISTBOX",
+                nullptr,
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL | LBS_NOTIFY | LBS_HASSTRINGS,
+                24,
+                48,
+                500,
+                238,
+                hwnd_,
+                reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_WEBDAV_BACKUP_LIST)),
+                instance_,
+                nullptr);
+            SendMessageW(list_, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
+            for (const auto& backup : backups_) {
+                SendMessageW(list_, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(FormatBackupListItem(backup).c_str()));
+            }
+            if (!backups_.empty()) {
+                SendMessageW(list_, LB_SETCURSEL, 0, 0);
+            }
+
+            const int buttonHeight = ThemedControls::ButtonHeight(theme_);
+            ThemedControls::CreateButton(instance_, hwnd_, IDOK, L"下载", 360, 310, 76, buttonHeight, font_, true);
+            ThemedControls::CreateButton(instance_, hwnd_, IDCANCEL, L"取消", 452, 310, 76, buttonHeight, font_);
+            SetFocus(list_);
+            return 0;
+        }
+        case WM_PAINT: {
+            PAINTSTRUCT ps{};
+            HDC dc = BeginPaint(hwnd_, &ps);
+            RECT rect{};
+            GetClientRect(hwnd_, &rect);
+            FillRect(dc, &rect, backgroundBrush_ ? backgroundBrush_ : reinterpret_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
+            EndPaint(hwnd_, &ps);
+            return 0;
+        }
+        case WM_ERASEBKGND:
+            return 1;
+        case WM_CTLCOLORLISTBOX: {
+            HDC dc = reinterpret_cast<HDC>(wParam);
+            SetTextColor(dc, ToColorRef(theme_.color(L"list", L"normal", L"text")));
+            SetBkColor(dc, ToColorRef(theme_.color(L"list", L"normal", L"bg")));
+            return reinterpret_cast<LRESULT>(listBrush_ ? listBrush_ : GetStockObject(WHITE_BRUSH));
+        }
+        case WM_CTLCOLORSTATIC: {
+            HDC dc = reinterpret_cast<HDC>(wParam);
+            SetBkMode(dc, TRANSPARENT);
+            SetTextColor(dc, ToColorRef(theme_.color(L"label", L"normal", L"text")));
+            return reinterpret_cast<LRESULT>(backgroundBrush_ ? backgroundBrush_ : GetStockObject(WHITE_BRUSH));
+        }
+        case WM_DRAWITEM:
+            if (ThemedControls::Draw(theme_, reinterpret_cast<const DRAWITEMSTRUCT*>(lParam))) {
+                return TRUE;
+            }
+            return 0;
+        case WM_COMMAND:
+            if (LOWORD(wParam) == ID_WEBDAV_BACKUP_LIST && HIWORD(wParam) == LBN_DBLCLK) {
+                AcceptSelection();
+                return 0;
+            }
+            if (LOWORD(wParam) == IDOK) {
+                AcceptSelection();
+                return 0;
+            }
+            if (LOWORD(wParam) == IDCANCEL) {
+                done_ = true;
+                DestroyWindow(hwnd_);
+                return 0;
+            }
+            return 0;
+        case WM_CLOSE:
+            done_ = true;
+            DestroyWindow(hwnd_);
+            return 0;
+        case WM_DESTROY:
+            done_ = true;
+            RestoreModalOwner(owner_, ownerWasEnabled_, ownerRestored_);
+            if (backgroundBrush_) {
+                DeleteObject(backgroundBrush_);
+                backgroundBrush_ = nullptr;
+            }
+            if (listBrush_) {
+                DeleteObject(listBrush_);
+                listBrush_ = nullptr;
+            }
+            return 0;
+        default:
+            return DefWindowProcW(hwnd_, message, wParam, lParam);
+        }
+    }
+
+    HWND owner_ = nullptr;
+    HINSTANCE instance_ = nullptr;
+    HWND hwnd_ = nullptr;
+    HWND list_ = nullptr;
+    HFONT font_ = nullptr;
+    const Theme& theme_;
+    const std::vector<WebDavRemoteFile>& backups_;
+    std::wstring& selectedName_;
+    HBRUSH backgroundBrush_ = nullptr;
+    HBRUSH listBrush_ = nullptr;
+    bool ownerWasEnabled_ = false;
+    bool ownerRestored_ = false;
     bool accepted_ = false;
     bool done_ = false;
 };
 
 class SettingsDialog {
 public:
-    SettingsDialog(HWND owner, HINSTANCE instance, AppConfig& config, const Theme& theme)
-        : owner_(owner), instance_(instance), config_(config), draft_(config), theme_(theme) {}
+    SettingsDialog(HWND owner, HINSTANCE instance, AppConfig& config, const Theme& theme, std::filesystem::path appDirectory)
+        : owner_(owner), instance_(instance), config_(config), draft_(config), theme_(theme), appDirectory_(std::move(appDirectory)) {}
 
     bool Run() {
         WNDCLASSEXW wc{};
@@ -286,8 +539,7 @@ public:
             WriteAppLog(L"设置窗口创建失败: " + FormatLastError(GetLastError()));
             return false;
         }
-        EnableWindow(owner_, FALSE);
-        ShowWindowRespectFocusPolicy(hwnd_, SW_SHOWNORMAL);
+        ownerWasEnabled_ = ShowModalWindow(owner_, hwnd_);
         UpdateWindow(hwnd_);
         MSG message{};
         while (!done_ && GetMessageW(&message, nullptr, 0, 0) > 0) {
@@ -296,9 +548,12 @@ public:
                 DispatchMessageW(&message);
             }
         }
-        EnableWindow(owner_, TRUE);
-        ActivateWindow(owner_);
+        RestoreModalOwner(owner_, ownerWasEnabled_, ownerRestored_);
         return accepted_;
+    }
+
+    bool webDavDataImported() const {
+        return webDavDataImported_;
     }
 
 private:
@@ -308,6 +563,7 @@ private:
         TabInteraction = 2,
         TabHotKeys = 3,
         TabLinks = 4,
+        TabWebDav = 5,
     };
 
     struct TabChild {
@@ -411,31 +667,46 @@ private:
     }
 
     void CreateTabs() {
-        const wchar_t* titles[] = {L"显示", L"行为", L"交互", L"热键", L"链接"};
+        const wchar_t* titles[] = {L"显示", L"行为", L"交互", L"热键", L"链接", L"WebDAV"};
         const int startX = 30;
         const int startY = 18;
         const int itemWidth = static_cast<int>(theme_.metric(L"tabButton", L"groupItemWidth", 58.0f));
+        const std::array<int, 6> itemWidths{
+            std::max(itemWidth, 58),
+            std::max(itemWidth, 58),
+            std::max(itemWidth, 58),
+            std::max(itemWidth, 58),
+            std::max(itemWidth, 58),
+            std::max(itemWidth, 76),
+        };
         const int itemGap = static_cast<int>(theme_.metric(L"tabButton", L"groupGap", 0.0f));
         const int itemHeight = ThemedControls::TabButtonHeight(theme_);
         const int stripPadding = static_cast<int>(theme_.metric(L"tabButton", L"groupPadding", 3.0f));
+        int stripWidth = 0;
+        for (int width : itemWidths) {
+            stripWidth += width;
+        }
+        stripWidth += 5 * itemGap;
         tabStripRect_ = RECT{
             startX - stripPadding,
             startY - stripPadding,
-            startX + 5 * itemWidth + 4 * itemGap + stripPadding,
+            startX + stripWidth + stripPadding,
             startY + itemHeight + stripPadding};
-        for (int i = 0; i < 5; ++i) {
+        int x = startX;
+        for (int i = 0; i < 6; ++i) {
             HWND button = ThemedControls::CreateTabButton(
                 instance_,
                 hwnd_,
                 ID_SETTINGS_TAB_BASE + i,
                 titles[i],
-                startX + i * (itemWidth + itemGap),
+                x,
                 startY,
-                itemWidth,
+                itemWidths[static_cast<std::size_t>(i)],
                 itemHeight,
                 font_,
                 i == TabDisplay);
             tabButtons_.push_back(button);
+            x += itemWidths[static_cast<std::size_t>(i)] + itemGap;
         }
     }
 
@@ -533,6 +804,125 @@ private:
         draft_.updateUrl = GetText(updateUrlEdit_);
         draft_.faqUrl = GetText(faqUrlEdit_);
         draft_.rewardUrl = GetText(rewardUrlEdit_);
+        draft_.pluginStoreUrl = GetText(pluginStoreUrlEdit_);
+        draft_.webDavEnabled = SendMessageW(webDavEnabled_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        draft_.webDavUrl = GetText(webDavUrlEdit_);
+        draft_.webDavRemotePath = GetText(webDavRemotePathEdit_);
+        draft_.webDavUserName = GetText(webDavUserNameEdit_);
+        draft_.webDavKeepCount = ClampNumber(webDavKeepCountEdit_, 1, 100, draft_.webDavKeepCount);
+        if (Trim(draft_.webDavRemotePath).empty()) {
+            draft_.webDavRemotePath = L"/Quattro/backups/";
+        }
+    }
+
+    AppConfig ReadWebDavDraftFromControls() {
+        AppConfig value = draft_;
+        value.webDavEnabled = SendMessageW(webDavEnabled_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        value.webDavUrl = GetText(webDavUrlEdit_);
+        value.webDavRemotePath = GetText(webDavRemotePathEdit_);
+        value.webDavUserName = GetText(webDavUserNameEdit_);
+        value.webDavKeepCount = ClampNumber(webDavKeepCountEdit_, 1, 100, value.webDavKeepCount);
+        if (Trim(value.webDavRemotePath).empty()) {
+            value.webDavRemotePath = L"/Quattro/backups/";
+        }
+        return value;
+    }
+
+    bool SaveWebDavPasswordIfNeeded() {
+        const std::wstring password = GetText(webDavPasswordEdit_);
+        if (password.empty()) {
+            return true;
+        }
+        std::wstring error;
+        if (!WebDavCredentialService::SavePassword(draft_, password, error)) {
+            MessageBoxW(hwnd_, error.c_str(), L"WebDAV 备份", MB_OK | MB_ICONWARNING);
+            return false;
+        }
+        return true;
+    }
+
+    void TestWebDavConnection() {
+        AppConfig value = ReadWebDavDraftFromControls();
+        value.webDavEnabled = true;
+        std::wstring password = GetText(webDavPasswordEdit_);
+        std::wstring error;
+        if (password.empty() && !WebDavCredentialService::LoadPassword(value, password, error)) {
+            MessageBoxW(hwnd_, error.c_str(), L"WebDAV 备份", MB_OK | MB_ICONWARNING);
+            return;
+        }
+        WebDavClient client(value, password);
+        if (client.TestConnection()) {
+            MessageBoxW(hwnd_, L"WebDAV 连接成功。", L"WebDAV 备份", MB_OK | MB_ICONINFORMATION);
+        } else {
+            MessageBoxW(hwnd_, client.lastError().c_str(), L"WebDAV 备份", MB_OK | MB_ICONWARNING);
+        }
+    }
+
+    void ClearWebDavPassword() {
+        AppConfig value = ReadWebDavDraftFromControls();
+        std::wstring error;
+        if (WebDavCredentialService::DeletePassword(value, error)) {
+            SetWindowTextW(webDavPasswordEdit_, L"");
+            MessageBoxW(hwnd_, L"WebDAV 密码已清除。", L"WebDAV 备份", MB_OK | MB_ICONINFORMATION);
+        } else {
+            MessageBoxW(hwnd_, error.c_str(), L"WebDAV 备份", MB_OK | MB_ICONWARNING);
+        }
+    }
+
+    bool PrepareWebDavOperation() {
+        ReadDraft();
+        if (!SaveWebDavPasswordIfNeeded()) {
+            return false;
+        }
+        return true;
+    }
+
+    void UploadWebDavBackup() {
+        if (!PrepareWebDavOperation()) {
+            return;
+        }
+        WebDavBackupService service(appDirectory_, draft_);
+        const WebDavBackupReport report = service.UploadBackup();
+        MessageBoxW(hwnd_, report.message.c_str(), L"上传到云端", MB_OK | (report.ok ? MB_ICONINFORMATION : MB_ICONWARNING));
+    }
+
+    void DownloadWebDavBackup() {
+        if (!PrepareWebDavOperation()) {
+            return;
+        }
+        WebDavBackupService service(appDirectory_, draft_);
+        std::vector<WebDavRemoteFile> backups;
+        std::wstring error;
+        if (!service.ListBackups(backups, error)) {
+            MessageBoxW(hwnd_, error.c_str(), L"从云端下载", MB_OK | MB_ICONWARNING);
+            return;
+        }
+        if (backups.empty()) {
+            MessageBoxW(hwnd_, L"远端目录中没有可用的 .q4cfg 备份。", L"从云端下载", MB_OK | MB_ICONINFORMATION);
+            return;
+        }
+        std::wstring fileName = backups.front().name;
+        if (!ShowWebDavBackupSelectionDialog(hwnd_, instance_, theme_, backups, fileName)) {
+            return;
+        }
+
+        const int confirm = MessageBoxW(
+            hwnd_,
+            L"将下载所选 WebDAV 备份，并把其中的分组、标签、启动项、便签、待办和插件设置合并到当前数据。\n\n当前数据不会被覆盖，导入前会自动备份。",
+            L"从云端下载",
+            MB_OKCANCEL | MB_ICONINFORMATION);
+        if (confirm != IDOK) {
+            return;
+        }
+
+        const WebDavBackupReport report = service.DownloadAndImportMerge(fileName);
+        if (report.ok) {
+            webDavDataImported_ = true;
+        }
+        const std::wstring text = report.importReport.message.empty()
+            ? report.message
+            : FormatConfigPackageReportText(report.importReport);
+        MessageBoxW(hwnd_, text.c_str(), L"从云端下载", MB_OK | (report.ok ? MB_ICONINFORMATION : MB_ICONWARNING));
     }
 
     LRESULT Handle(UINT message, WPARAM wParam, LPARAM lParam) {
@@ -617,6 +1007,24 @@ private:
             faqUrlEdit_ = FramedEdit(TabLinks, 205, 34, 296, 206, draft_.faqUrl);
             Label(TabLinks, L"赞助链接", 274, 272, 110);
             rewardUrlEdit_ = FramedEdit(TabLinks, 206, 274, 296, 206, draft_.rewardUrl);
+            Label(TabLinks, L"插件商店", 34, 340, 110);
+            pluginStoreUrlEdit_ = FramedEdit(TabLinks, 207, 34, 364, 446, draft_.pluginStoreUrl);
+
+            webDavEnabled_ = CheckBox(TabWebDav, 208, L"启用 WebDAV 备份", 34, 64, draft_.webDavEnabled, 220);
+            Label(TabWebDav, L"服务器地址", 34, 112, 110);
+            webDavUrlEdit_ = FramedEdit(TabWebDav, 209, 34, 136, 446, draft_.webDavUrl);
+            Label(TabWebDav, L"远端目录", 34, 184, 110);
+            webDavRemotePathEdit_ = FramedEdit(TabWebDav, 210, 34, 208, 206, draft_.webDavRemotePath);
+            Label(TabWebDav, L"保留数量", 274, 184, 110);
+            webDavKeepCountEdit_ = NumberEdit(TabWebDav, 211, 274, 208, 90, draft_.webDavKeepCount);
+            Label(TabWebDav, L"用户名", 34, 256, 110);
+            webDavUserNameEdit_ = FramedEdit(TabWebDav, 212, 34, 280, 206, draft_.webDavUserName);
+            Label(TabWebDav, L"密码/应用密码", 274, 256, 130);
+            webDavPasswordEdit_ = FramedEdit(TabWebDav, 213, 274, 280, 206, L"", ES_AUTOHSCROLL | ES_PASSWORD);
+            Button(TabWebDav, ID_WEBDAV_UPLOAD, L"上传到云端", 34, 340, 104);
+            Button(TabWebDav, ID_WEBDAV_DOWNLOAD, L"从云端下载", 150, 340, 104);
+            Button(TabWebDav, ID_WEBDAV_TEST, L"测试连接", 286, 340, 92);
+            Button(TabWebDav, ID_WEBDAV_CLEAR_PASSWORD, L"清除密码", 390, 340, 90);
 
             const int buttonHeight = ThemedControls::ButtonHeight(theme_);
             ThemedControls::CreateButton(instance_, hwnd_, IDOK, L"确定", 350, 428, 76, buttonHeight, font_, true);
@@ -666,7 +1074,7 @@ private:
             if (HIWORD(wParam) == EN_SETFOCUS || HIWORD(wParam) == EN_KILLFOCUS) {
                 InvalidateField(reinterpret_cast<HWND>(lParam));
             }
-            if (LOWORD(wParam) >= ID_SETTINGS_TAB_BASE && LOWORD(wParam) < ID_SETTINGS_TAB_BASE + 5) {
+            if (LOWORD(wParam) >= ID_SETTINGS_TAB_BASE && LOWORD(wParam) < ID_SETTINGS_TAB_BASE + 6) {
                 ShowTab(static_cast<int>(LOWORD(wParam) - ID_SETTINGS_TAB_BASE));
                 return 0;
             }
@@ -695,8 +1103,27 @@ private:
                 UpdateHotKeyLabels();
                 return 0;
             }
+            if (LOWORD(wParam) == ID_WEBDAV_TEST) {
+                TestWebDavConnection();
+                return 0;
+            }
+            if (LOWORD(wParam) == ID_WEBDAV_CLEAR_PASSWORD) {
+                ClearWebDavPassword();
+                return 0;
+            }
+            if (LOWORD(wParam) == ID_WEBDAV_UPLOAD) {
+                UploadWebDavBackup();
+                return 0;
+            }
+            if (LOWORD(wParam) == ID_WEBDAV_DOWNLOAD) {
+                DownloadWebDavBackup();
+                return 0;
+            }
             if (LOWORD(wParam) == IDOK) {
                 ReadDraft();
+                if (!SaveWebDavPasswordIfNeeded()) {
+                    return 0;
+                }
                 config_ = draft_;
                 accepted_ = true;
                 done_ = true;
@@ -715,6 +1142,7 @@ private:
             return 0;
         case WM_DESTROY:
             done_ = true;
+            RestoreModalOwner(owner_, ownerWasEnabled_, ownerRestored_);
             if (editFont_) {
                 DeleteObject(editFont_);
                 editFont_ = nullptr;
@@ -754,9 +1182,12 @@ private:
     AppConfig& config_;
     AppConfig draft_;
     const Theme& theme_;
+    std::filesystem::path appDirectory_;
     HBRUSH backgroundBrush_ = nullptr;
     HBRUSH fieldBrush_ = nullptr;
     HBRUSH readOnlyFieldBrush_ = nullptr;
+    bool ownerWasEnabled_ = false;
+    bool ownerRestored_ = false;
     int currentTab_ = TabDisplay;
     RECT tabStripRect_{};
     std::vector<HWND> tabButtons_;
@@ -805,6 +1236,14 @@ private:
     HWND updateUrlEdit_ = nullptr;
     HWND faqUrlEdit_ = nullptr;
     HWND rewardUrlEdit_ = nullptr;
+    HWND pluginStoreUrlEdit_ = nullptr;
+    HWND webDavEnabled_ = nullptr;
+    HWND webDavUrlEdit_ = nullptr;
+    HWND webDavRemotePathEdit_ = nullptr;
+    HWND webDavKeepCountEdit_ = nullptr;
+    HWND webDavUserNameEdit_ = nullptr;
+    HWND webDavPasswordEdit_ = nullptr;
+    bool webDavDataImported_ = false;
     bool accepted_ = false;
     bool done_ = false;
 };
@@ -815,8 +1254,28 @@ bool ShowTextInputDialog(HWND owner, HINSTANCE instance, const Theme& theme, con
     return dialog.Run();
 }
 
-bool ShowSettingsDialog(HWND owner, HINSTANCE instance, AppConfig& config, const Theme& theme) {
-    SettingsDialog dialog(owner, instance, config, theme);
+bool ShowWebDavBackupSelectionDialog(
+    HWND owner,
+    HINSTANCE instance,
+    const Theme& theme,
+    const std::vector<WebDavRemoteFile>& backups,
+    std::wstring& selectedName) {
+    WebDavBackupSelectionDialog dialog(owner, instance, theme, backups, selectedName);
     return dialog.Run();
+}
+
+bool ShowSettingsDialog(
+    HWND owner,
+    HINSTANCE instance,
+    AppConfig& config,
+    const Theme& theme,
+    const std::filesystem::path& appDirectory,
+    bool* webDavDataImported) {
+    SettingsDialog dialog(owner, instance, config, theme, appDirectory);
+    const bool accepted = dialog.Run();
+    if (webDavDataImported) {
+        *webDavDataImported = dialog.webDavDataImported();
+    }
+    return accepted;
 }
 
