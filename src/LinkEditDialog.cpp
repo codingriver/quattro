@@ -3,6 +3,7 @@
 #include "AppLog.h"
 #include "HotKeyEditor.h"
 #include "ShellItemService.h"
+#include "ThemedControls.h"
 #include "Utilities.h"
 
 #include <commctrl.h>
@@ -13,15 +14,14 @@
 #include <cstdio>
 #include <filesystem>
 #include <string>
+#include <vector>
 
 namespace {
-constexpr int kDialogWidth = 520;
-constexpr int kDialogHeight = 440;
-constexpr int kLabelX = 22;
-constexpr int kFieldX = 84;
-constexpr int kFieldHeight = 24;
-constexpr int kFieldWidth = 418;
-constexpr int kRowStep = 28;
+constexpr int kDialogWidth = 560;
+constexpr int kDialogHeight = 540;
+constexpr int kLabelX = 28;
+constexpr int kFieldX = 108;
+constexpr int kFieldWidth = 416;
 
 enum ControlId {
     IdTag = 1001,
@@ -61,8 +61,15 @@ std::wstring GetWindowTextString(HWND hwnd) {
     return text;
 }
 
-void SetControlFont(HWND hwnd, HFONT font) {
-    SendMessageW(hwnd, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+float ClampFloat(float value, float minValue, float maxValue) {
+    return std::max(minValue, std::min(maxValue, value));
+}
+
+COLORREF ToColorRef(Color color) {
+    const auto byte = [](float value) -> BYTE {
+        return static_cast<BYTE>(ClampFloat(value, 0.0f, 1.0f) * 255.0f + 0.5f);
+    };
+    return RGB(byte(color.r), byte(color.g), byte(color.b));
 }
 
 bool LooksLikeUrl(const Link& link) {
@@ -96,8 +103,8 @@ std::wstring LinkHotKeyText(int key) {
 
 class DialogWindow {
 public:
-    DialogWindow(HWND owner, HINSTANCE instance, Link& link, const std::vector<Group>& groups, bool isNew)
-        : owner_(owner), instance_(instance), link_(link), groups_(groups), isNew_(isNew) {
+    DialogWindow(HWND owner, HINSTANCE instance, const Theme& theme, Link& link, const std::vector<Group>& groups, bool isNew)
+        : owner_(owner), instance_(instance), theme_(theme), link_(link), groups_(groups), isNew_(isNew) {
         capturedHotKey_ = link.hotKey;
     }
 
@@ -107,7 +114,7 @@ public:
         wc.lpfnWndProc = DialogWindow::WindowProc;
         wc.hInstance = instance_;
         wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-        wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+        wc.hbrBackground = nullptr;
         wc.lpszClassName = L"QuattroLinkEditDialog";
         RegisterClassExW(&wc);
 
@@ -120,7 +127,7 @@ public:
             WS_EX_DLGMODALFRAME | WS_EX_WINDOWEDGE,
             wc.lpszClassName,
             DialogTitleForLink(link_, isNew_).c_str(),
-            WS_CAPTION | WS_SYSMENU | WS_POPUP,
+            WS_CAPTION | WS_SYSMENU | WS_POPUP | WS_CLIPCHILDREN,
             x,
             y,
             kDialogWidth,
@@ -135,8 +142,9 @@ public:
         }
 
         EnableWindow(owner_, FALSE);
-        ShowWindow(hwnd_, SW_SHOWNORMAL);
+        ShowWindowRespectFocusPolicy(hwnd_, SW_SHOWNORMAL);
         UpdateWindow(hwnd_);
+        RedrawWindow(hwnd_, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
 
         MSG message{};
         while (!done_ && GetMessageW(&message, nullptr, 0, 0) > 0) {
@@ -148,7 +156,7 @@ public:
 
         if (IsWindow(owner_)) {
             EnableWindow(owner_, TRUE);
-            SetForegroundWindow(owner_);
+            ActivateWindow(owner_);
         }
         return accepted_;
     }
@@ -180,23 +188,35 @@ private:
             PAINTSTRUCT paint{};
             HDC hdc = BeginPaint(hwnd_, &paint);
             PaintBackground(hdc);
+            PaintFields(hdc);
             EndPaint(hwnd_, &paint);
             return 0;
         }
-        case WM_ERASEBKGND:
+        case WM_PRINTCLIENT:
             PaintBackground(reinterpret_cast<HDC>(wParam));
+            PaintFields(reinterpret_cast<HDC>(wParam));
+            return 0;
+        case WM_ERASEBKGND:
             return 1;
         case WM_CTLCOLORSTATIC:
         case WM_CTLCOLORBTN:
             SetBkMode(reinterpret_cast<HDC>(wParam), TRANSPARENT);
-            SetTextColor(reinterpret_cast<HDC>(wParam), RGB(31, 35, 40));
+            SetTextColor(reinterpret_cast<HDC>(wParam), ToColorRef(theme_.color(L"label", L"normal", L"text")));
             return reinterpret_cast<LRESULT>(backgroundBrush_ ? backgroundBrush_ : GetStockObject(WHITE_BRUSH));
         case WM_CTLCOLOREDIT:
         case WM_CTLCOLORLISTBOX:
-            SetBkColor(reinterpret_cast<HDC>(wParam), RGB(255, 255, 255));
-            SetTextColor(reinterpret_cast<HDC>(wParam), RGB(31, 35, 40));
-            return reinterpret_cast<LRESULT>(GetStockObject(WHITE_BRUSH));
+            SetBkColor(reinterpret_cast<HDC>(wParam), ToColorRef(theme_.color(L"edit", L"normal", L"bg")));
+            SetTextColor(reinterpret_cast<HDC>(wParam), ToColorRef(theme_.color(L"edit", L"normal", L"text")));
+            return reinterpret_cast<LRESULT>(fieldBrush_ ? fieldBrush_ : GetStockObject(WHITE_BRUSH));
+        case WM_DRAWITEM:
+            if (ThemedControls::Draw(theme_, reinterpret_cast<const DRAWITEMSTRUCT*>(lParam))) {
+                return TRUE;
+            }
+            return 0;
         case WM_COMMAND:
+            if (HIWORD(wParam) == EN_SETFOCUS || HIWORD(wParam) == EN_KILLFOCUS) {
+                InvalidateField(reinterpret_cast<HWND>(lParam));
+            }
             switch (LOWORD(wParam)) {
             case IdBrowseFile:
                 if (!LooksLikeUrl(link_)) {
@@ -242,9 +262,17 @@ private:
             }
             font_ = nullptr;
             ownsFont_ = false;
+            if (editFont_) {
+                DeleteObject(editFont_);
+                editFont_ = nullptr;
+            }
             if (backgroundBrush_) {
                 DeleteObject(backgroundBrush_);
                 backgroundBrush_ = nullptr;
+            }
+            if (fieldBrush_) {
+                DeleteObject(fieldBrush_);
+                fieldBrush_ = nullptr;
             }
             done_ = true;
             return 0;
@@ -253,34 +281,33 @@ private:
         }
     }
 
+    struct FieldFrame {
+        RECT rect{};
+        HWND child = nullptr;
+        bool readOnly = false;
+    };
+
     HWND Label(const wchar_t* text, int x, int y, int width = 74) {
-        HWND hwnd = CreateWindowExW(0, L"STATIC", text, WS_CHILD | WS_VISIBLE | SS_LEFT,
-                                    x, y + 5, width, 22, hwnd_, nullptr, instance_, nullptr);
-        SetControlFont(hwnd, font_);
-        return hwnd;
+        return ThemedControls::CreateLabelText(instance_, hwnd_, text, x, y + 7, width, theme_, editFont_ ? editFont_ : font_, SS_LEFT);
     }
 
     HWND Edit(int id, int x, int y, int width, const std::wstring& value) {
-        HWND hwnd = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", value.c_str(),
-                                    WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
-                                    x, y, width, kFieldHeight, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), instance_, nullptr);
-        SetControlFont(hwnd, font_);
+        const int fieldHeight = FieldHeight();
+        const RECT frame{x, y, x + width, y + fieldHeight};
+        HWND hwnd = ThemedControls::CreateSingleLineEdit(instance_, hwnd_, id, theme_, frame, value, editFont_ ? editFont_ : font_);
+        fieldFrames_.push_back(FieldFrame{frame, hwnd, false});
         return hwnd;
     }
 
-    HWND Button(int id, const wchar_t* text, int x, int y, int width, int height = kFieldHeight) {
-        HWND hwnd = CreateWindowExW(0, L"BUTTON", text, WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
-                                    x, y, width, height, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), instance_, nullptr);
-        SetControlFont(hwnd, font_);
-        return hwnd;
+    HWND Button(int id, const wchar_t* text, int x, int y, int width, int height = 0) {
+        if (height <= 0) {
+            height = ButtonHeight();
+        }
+        return ThemedControls::CreateButton(instance_, hwnd_, id, text, x, y, width, height, font_, id == IdOk);
     }
 
     HWND Combo(int id, int x, int y, int width, int dropHeight = 220) {
-        HWND hwnd = CreateWindowExW(0, WC_COMBOBOXW, nullptr,
-                                    WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST | WS_VSCROLL,
-                                    x, y, width, dropHeight, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), instance_, nullptr);
-        SetControlFont(hwnd, font_);
-        return hwnd;
+        return ThemedControls::CreateComboBox(instance_, hwnd_, id, x, y, width, dropHeight, font_, theme_);
     }
 
     void PaintBackground(HDC hdc) {
@@ -289,69 +316,94 @@ private:
         FillRect(hdc, &rect, backgroundBrush_ ? backgroundBrush_ : reinterpret_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
     }
 
+    void PaintFields(HDC hdc) {
+        for (const auto& frame : fieldFrames_) {
+            ThemedControls::DrawFieldFrame(theme_, hdc, frame.rect, frame.child, frame.readOnly);
+        }
+    }
+
+    void InvalidateField(HWND child) {
+        for (const auto& frame : fieldFrames_) {
+            if (frame.child == child) {
+                InvalidateRect(hwnd_, &frame.rect, TRUE);
+                return;
+            }
+        }
+    }
+
     void CreateControls() {
-        backgroundBrush_ = CreateSolidBrush(RGB(246, 246, 246));
-        font_ = CreateFontW(
-            -14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-            DEFAULT_PITCH | FF_DONTCARE, L"Microsoft YaHei UI");
+        backgroundBrush_ = CreateSolidBrush(ToColorRef(theme_.color(L"dialog", L"normal", L"bg")));
+        fieldBrush_ = CreateSolidBrush(ToColorRef(theme_.color(L"edit", L"normal", L"bg")));
+        font_ = ThemedControls::CreateDialogFont();
         ownsFont_ = font_ != nullptr;
         if (!font_) {
             font_ = reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
         }
+        editFont_ = ThemedControls::CreateEditFont(theme_);
 
         const bool isUrl = LooksLikeUrl(link_);
-        int y = 26;
+        const int rowStep = RowStep();
+        const int buttonHeight = ButtonHeight();
+        int y = 24;
         Label(L"名称", kLabelX, y);
         nameEdit_ = Edit(IdName, kFieldX, y, kFieldWidth, link_.name);
 
-        y += kRowStep;
+        y += rowStep;
         Label(isUrl ? L"网址" : L"路径", kLabelX, y);
-        pathEdit_ = Edit(IdPath, kFieldX, y, 380, link_.path);
-        Button(IdBrowseFile, L"...", 472, y, 30, kFieldHeight);
+        pathEdit_ = Edit(IdPath, kFieldX, y, 374, link_.path);
+        Button(IdBrowseFile, L"...", 492, y + 1, 32, buttonHeight);
 
-        y += kRowStep;
+        y += rowStep;
         Label(L"图标", kLabelX, y);
-        iconEdit_ = Edit(IdIcon, kFieldX, y, 380, link_.icon.empty() ? (isUrl ? L"#url" : L"默认系统缓存图标") : link_.icon);
-        Button(IdBrowseFolder, L"...", 472, y, 30, kFieldHeight);
+        iconEdit_ = Edit(IdIcon, kFieldX, y, 374, link_.icon.empty() ? (isUrl ? L"#url" : L"默认系统缓存图标") : link_.icon);
+        Button(IdBrowseFolder, L"...", 492, y + 1, 32, buttonHeight);
 
-        y += kRowStep;
+        y += rowStep;
         Label(L"参数", kLabelX, y);
         parameterEdit_ = Edit(IdParameter, kFieldX, y, kFieldWidth, link_.parameter);
 
-        y += kRowStep;
+        y += rowStep;
         Label(L"工作目录", kLabelX, y);
         workDirEdit_ = Edit(IdWorkDir, kFieldX, y, kFieldWidth, link_.workDir);
 
-        y += kRowStep;
-        adminCheck_ = CreateWindowExW(0, L"BUTTON", isUrl ? L"以隐私模式运行" : L"以管理员身份运行",
-                                      WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
-                                      kFieldX, y + 2, 180, 22, hwnd_, reinterpret_cast<HMENU>(IdAdmin), instance_, nullptr);
-        SetControlFont(adminCheck_, font_);
+        y += rowStep;
+        adminCheck_ = ThemedControls::CreateCheckBox(
+            instance_, hwnd_, IdAdmin, isUrl ? L"以隐私模式运行" : L"以管理员身份运行",
+            kFieldX, y + 4, 220, ThemedControls::CheckBoxHeight(theme_), font_, link_.isAdmin);
         SendMessageW(adminCheck_, BM_SETCHECK, link_.isAdmin ? BST_CHECKED : BST_UNCHECKED, 0);
 
-        y += kRowStep;
+        y += rowStep;
         Label(L"颜色", kLabelX, y);
         std::wstring colorText = link_.isCustomColor && !link_.customColor.empty() ? link_.customColor : L"#ff000000";
-        customColorEdit_ = Edit(IdCustomColorEdit, kFieldX, y, 380, colorText);
-        Button(IdPickColor, L"...", 472, y, 30, kFieldHeight);
+        customColorEdit_ = Edit(IdCustomColorEdit, kFieldX, y, 374, colorText);
+        Button(IdPickColor, L"...", 492, y + 1, 32, buttonHeight);
 
-        y += kRowStep;
+        y += rowStep;
         Label(L"快捷键", kLabelX, y);
-        hotKeyText_ = CreateWindowExW(0, L"BUTTON", LinkHotKeyText(capturedHotKey_).c_str(),
-                                      WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
-                                      kFieldX, y, kFieldWidth, kFieldHeight, hwnd_, reinterpret_cast<HMENU>(IdHotKeyCapture), instance_, nullptr);
-        SetControlFont(hotKeyText_, font_);
+        hotKeyText_ = ThemedControls::CreateButton(instance_, hwnd_, IdHotKeyCapture, LinkHotKeyText(capturedHotKey_).c_str(),
+                                                   kFieldX, y + 1, kFieldWidth, buttonHeight, font_);
 
-        y += kRowStep;
+        y += rowStep;
         Label(L"备注", kLabelX, y);
-        remarkEdit_ = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", link_.remark.c_str(),
-                                      WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL,
-                                      kFieldX, y, kFieldWidth, 82, hwnd_, reinterpret_cast<HMENU>(IdRemark), instance_, nullptr);
-        SetControlFont(remarkEdit_, font_);
+        const int remarkHeight = FieldHeight() * 2 + static_cast<int>(theme_.metric(L"global", L"sectionGap", 16.0f)) + 8;
+        const RECT remarkFrame{kFieldX, y, kFieldX + kFieldWidth, y + remarkHeight};
+        remarkEdit_ = ThemedControls::CreateMultiLineEdit(instance_, hwnd_, IdRemark, theme_, remarkFrame, link_.remark, font_);
+        fieldFrames_.push_back(FieldFrame{remarkFrame, remarkEdit_, false});
 
-        Button(IdOk, L"确定", 338, 372, 76, 28);
-        Button(IdCancel, L"取消", 426, 372, 76, 28);
+        Button(IdOk, L"确定", 356, 458, 76, buttonHeight);
+        Button(IdCancel, L"取消", 448, 458, 76, buttonHeight);
+    }
+
+    int FieldHeight() const {
+        return ThemedControls::EditFrameHeight(theme_);
+    }
+
+    int ButtonHeight() const {
+        return ThemedControls::ButtonHeight(theme_);
+    }
+
+    int RowStep() const {
+        return FieldHeight() + static_cast<int>(theme_.metric(L"global", L"itemGap", 8.0f));
     }
 
     void AddType(const wchar_t* text, int type) {
@@ -626,6 +678,7 @@ private:
     HWND owner_ = nullptr;
     HINSTANCE instance_ = nullptr;
     HWND hwnd_ = nullptr;
+    const Theme& theme_;
     Link& link_;
     const std::vector<Group>& groups_;
     bool isNew_ = false;
@@ -633,8 +686,11 @@ private:
     bool done_ = false;
 
     HFONT font_ = nullptr;
+    HFONT editFont_ = nullptr;
     bool ownsFont_ = false;
     HBRUSH backgroundBrush_ = nullptr;
+    HBRUSH fieldBrush_ = nullptr;
+    std::vector<FieldFrame> fieldFrames_;
     HWND tagCombo_ = nullptr;
     HWND typeCombo_ = nullptr;
     HWND showCombo_ = nullptr;
@@ -653,7 +709,8 @@ private:
 };
 }
 
-bool LinkEditDialog::Show(HWND owner, HINSTANCE instance, Link& link, const std::vector<Group>& groups, bool isNew) {
-    DialogWindow dialog(owner, instance, link, groups, isNew);
+bool LinkEditDialog::Show(HWND owner, HINSTANCE instance, const Theme& theme, Link& link, const std::vector<Group>& groups, bool isNew) {
+    DialogWindow dialog(owner, instance, theme, link, groups, isNew);
     return dialog.Run();
 }
+

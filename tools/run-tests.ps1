@@ -59,11 +59,17 @@ if (!(Test-Path (Join-Path $root "build\CMakeCache.txt"))) {
 }
 Remove-LegacyBuildOutputs -OutputDir (Join-Path $root "build\$Configuration")
 cmake --build build --config $Configuration -- /m
+if ($LASTEXITCODE -ne 0) {
+    throw "Build failed."
+}
 Remove-LegacyBuildOutputs -OutputDir (Join-Path $root "build\$Configuration")
 
 $testExe = Join-Path $root "build\$Configuration\QuattroTests.exe"
 if (Test-Path $testExe) {
     & $testExe
+    if ($LASTEXITCODE -ne 0) {
+        throw "Unit tests failed."
+    }
     $compatLines.Add("unit_tests=passed")
 } else {
     $compatLines.Add("unit_tests=missing")
@@ -86,6 +92,14 @@ if (!(Test-Path $probeExe)) {
 $menuTests = & (Join-Path $PSScriptRoot "run-menu-tests.ps1") -ExePath $exe -ProbePath $probeExe -LogDir $logDir
 $menuTests
 $compatLines.Add("menu_tests=passed")
+
+$menuVisualTests = & (Join-Path $PSScriptRoot "run-menu-visual-tests.ps1") -ExePath $exe -LogDir $logDir
+$menuVisualTests
+if (($menuVisualTests -join "`n") -match "menu_visual_tests=skipped") {
+    $compatLines.Add("menu_visual_tests=skipped")
+} else {
+    $compatLines.Add("menu_visual_tests=passed")
+}
 
 $seedExe = Join-Path $root "build\$Configuration\QuattroDbSeed.exe"
 if (!(Test-Path $seedExe)) {

@@ -192,3 +192,32 @@ std::optional<int> ParseInt(const std::wstring& value) {
     }
     return std::nullopt;
 }
+
+bool SuppressForegroundActivation() {
+    wchar_t value[16]{};
+    constexpr DWORD capacity = static_cast<DWORD>(sizeof(value) / sizeof(value[0]));
+    const DWORD length = GetEnvironmentVariableW(L"QUATTRO_TEST_NO_FOCUS", value, capacity);
+    if (length == 0 || length >= capacity) {
+        return false;
+    }
+    const std::wstring normalized = ToLower(Trim(value));
+    return normalized == L"1" || normalized == L"true" || normalized == L"yes" || normalized == L"on";
+}
+
+void ActivateWindow(HWND hwnd) {
+    if (!hwnd || SuppressForegroundActivation()) {
+        return;
+    }
+    SetForegroundWindow(hwnd);
+}
+
+void ShowWindowRespectFocusPolicy(HWND hwnd, int showCommand) {
+    if (!hwnd) {
+        return;
+    }
+    if (SuppressForegroundActivation() && (showCommand == SW_SHOWNORMAL || showCommand == SW_RESTORE)) {
+        ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+        return;
+    }
+    ShowWindow(hwnd, showCommand);
+}

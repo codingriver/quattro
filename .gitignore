@@ -13,13 +13,9 @@
 /icons/
 /docs/
 
-# Unused design/export previews
 /resources/icons/quattro-app-icon.png
 /resources/icons/quattro-app-icon-transparent.png
 /resources/icons/quattro-app-icon-size-preview.png
-
-# Generated source-tree assets
-/theme/assets/
 
 # CMake local/generated files
 /CMakeCache.txt

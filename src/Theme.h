@@ -21,14 +21,20 @@ class Theme {
 public:
     static Theme Load(const std::filesystem::path& themeDirectory, const std::wstring& themeName);
 
-    Color get(const std::wstring& name) const;
+    Color color(const std::wstring& component, const std::wstring& state, const std::wstring& role) const;
+    float metric(const std::wstring& component, const std::wstring& name, float fallback) const;
 
 private:
     void SetDefaults();
     void ParseXml(const std::wstring& xml);
-    Color ResolveValue(const std::wstring& value, int depth = 0) const;
-    void Put(const std::wstring& name, Color color);
+    Color ResolveColorValue(const std::wstring& value, int depth = 0) const;
+    void PutPalette(const std::wstring& name, Color color);
+    void PutState(const std::wstring& component, const std::wstring& state, const std::wstring& role, Color color);
+    void PutMetric(const std::wstring& component, const std::wstring& name, float value);
 
-    std::unordered_map<std::wstring, Color> colors_;
-    std::unordered_map<std::wstring, std::wstring> rawValues_;
+    std::unordered_map<std::wstring, Color> palette_;
+    std::unordered_map<std::wstring, std::wstring> rawPalette_;
+    std::unordered_map<std::wstring, Color> stateColors_;
+    std::unordered_map<std::wstring, std::wstring> rawStateColors_;
+    std::unordered_map<std::wstring, float> metrics_;
 };

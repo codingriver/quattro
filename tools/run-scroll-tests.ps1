@@ -247,6 +247,8 @@ function Send-Wheel {
 
 $runDir = Join-Path ([System.IO.Path]::GetTempPath()) ("QuattroScrollTests_" + [Guid]::NewGuid().ToString("N"))
 $process = $null
+$previousNoFocus = $env:QUATTRO_TEST_NO_FOCUS
+$env:QUATTRO_TEST_NO_FOCUS = '1'
 
 try {
     New-Item -ItemType Directory -Force -Path $runDir | Out-Null
@@ -262,7 +264,6 @@ try {
 
     $process = Start-Process -FilePath (Join-Path $runDir "Quattro.exe") -WorkingDirectory $runDir -PassThru -WindowStyle Normal
     $main = Wait-ProcessWindow -Process $process -ClassName "QuattroMainWindow" -TitleContains "Quattro"
-    [NativeScrollUi]::SetForegroundWindow($main) | Out-Null
     [NativeScrollUi]::MoveWindow($main, 80, 80, 680, 460, $true) | Out-Null
     Start-Sleep -Milliseconds 600
 
@@ -300,6 +301,11 @@ try {
     "link_changed_samples=$linkChanged"
     "screenshots=$before;$groups;$tags;$links"
 } finally {
+    if ($null -eq $previousNoFocus) {
+        Remove-Item Env:\QUATTRO_TEST_NO_FOCUS -ErrorAction SilentlyContinue
+    } else {
+        $env:QUATTRO_TEST_NO_FOCUS = $previousNoFocus
+    }
     if ($process -and !$process.HasExited) {
         try {
             [NativeScrollUi]::PostMessage($main, 0x0111, [IntPtr]40005, [IntPtr]::Zero) | Out-Null
@@ -312,3 +318,5 @@ try {
     }
     Remove-Item -LiteralPath $runDir -Recurse -Force -ErrorAction SilentlyContinue
 }
+
+

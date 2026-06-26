@@ -16,7 +16,7 @@ struct AppConfig {
     int dockCorner = 0;
     int dockDelay = 0;
     bool hideOnStart = false;
-    bool topMost = true;
+    bool topMost = false;
     bool hideAfterLink = false;
     bool hideWhenInactive = false;
 
@@ -61,7 +61,7 @@ struct AppConfig {
     bool groupRight = false;
     bool tagRight = false;
     std::wstring tagAlign = L"center";
-    std::wstring theme = L"gray";
+    std::wstring theme = L"default";
     std::wstring openDirCommand;
     std::wstring helpUrl;
     std::wstring updateUrl;

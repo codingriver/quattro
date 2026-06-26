@@ -1,6 +1,7 @@
 #include "SearchDialog.h"
 
 #include "ShellItemService.h"
+#include "ThemedControls.h"
 #include "Utilities.h"
 
 #include <commctrl.h>
@@ -28,6 +29,17 @@ std::wstring GetText(HWND hwnd) {
 
 void SetFont(HWND hwnd, HFONT font) {
     SendMessageW(hwnd, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+}
+
+float ClampFloat(float value, float minValue, float maxValue) {
+    return std::max(minValue, std::min(maxValue, value));
+}
+
+COLORREF ToColorRef(Color color) {
+    const auto byte = [](float value) -> BYTE {
+        return static_cast<BYTE>(ClampFloat(value, 0.0f, 1.0f) * 255.0f + 0.5f);
+    };
+    return RGB(byte(color.r), byte(color.g), byte(color.b));
 }
 
 bool ContainsText(const std::wstring& haystack, const std::wstring& needle) {
@@ -58,8 +70,8 @@ void CopyText(HWND owner, const std::wstring& text) {
 
 class SearchWindow {
 public:
-    SearchWindow(HWND owner, HINSTANCE instance, const AppModel& model, AppConfig& config)
-        : owner_(owner), instance_(instance), model_(model), config_(config) {}
+    SearchWindow(HWND owner, HINSTANCE instance, const Theme& theme, const AppModel& model, AppConfig& config)
+        : owner_(owner), instance_(instance), theme_(theme), model_(model), config_(config) {}
 
     int Run() {
         WNDCLASSEXW wc{};
@@ -67,7 +79,7 @@ public:
         wc.lpfnWndProc = SearchWindow::Proc;
         wc.hInstance = instance_;
         wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-        wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+        wc.hbrBackground = nullptr;
         wc.lpszClassName = L"QuattroSearchDialog";
         RegisterClassExW(&wc);
 
@@ -83,7 +95,7 @@ public:
             WS_EX_DLGMODALFRAME | WS_EX_WINDOWEDGE,
             wc.lpszClassName,
             L"搜索",
-            WS_CAPTION | WS_SYSMENU | WS_POPUP,
+            WS_CAPTION | WS_SYSMENU | WS_POPUP | WS_CLIPCHILDREN,
             x,
             y,
             560,
@@ -96,8 +108,9 @@ public:
             return 0;
         }
         EnableWindow(owner_, FALSE);
-        ShowWindow(hwnd_, SW_SHOWNORMAL);
+        ShowWindowRespectFocusPolicy(hwnd_, SW_SHOWNORMAL);
         UpdateWindow(hwnd_);
+        RedrawWindow(hwnd_, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
 
         MSG message{};
         while (!done_ && GetMessageW(&message, nullptr, 0, 0) > 0) {
@@ -107,7 +120,7 @@ public:
             }
         }
         EnableWindow(owner_, TRUE);
-        SetForegroundWindow(owner_);
+        ActivateWindow(owner_);
         return selectedId_;
     }
 
@@ -129,14 +142,21 @@ private:
         switch (message) {
         case WM_CREATE: {
             font_ = reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
-            edit_ = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
-                                    18, 18, 504, 26, hwnd_, reinterpret_cast<HMENU>(100), instance_, nullptr);
-            SetFont(edit_, font_);
-            list_ = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
-                                    WS_CHILD | WS_VISIBLE | WS_TABSTOP | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
-                                    18, 56, 504, 294, hwnd_, reinterpret_cast<HMENU>(101), instance_, nullptr);
+            editFont_ = ThemedControls::CreateEditFont(theme_);
+            backgroundBrush_ = CreateSolidBrush(ToColorRef(theme_.color(L"dialog", L"normal", L"bg")));
+            fieldBrush_ = CreateSolidBrush(ToColorRef(theme_.color(L"edit", L"normal", L"bg")));
+            const int fieldHeight = ThemedControls::EditFrameHeight(theme_);
+            editFrame_ = RECT{18, 16, 522, 16 + fieldHeight};
+            listFrame_ = RECT{18, 62, 522, 350};
+            edit_ = ThemedControls::CreateSingleLineEdit(instance_, hwnd_, 100, theme_, editFrame_, L"", editFont_ ? editFont_ : font_);
+            list_ = CreateWindowExW(0, WC_LISTVIEWW, L"",
+                                    WS_CHILD | WS_VISIBLE | WS_TABSTOP | LVS_REPORT | LVS_NOCOLUMNHEADER | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
+                                    20, 64, 500, 284, hwnd_, reinterpret_cast<HMENU>(101), instance_, nullptr);
             SetFont(list_, font_);
             ListView_SetExtendedListViewStyle(list_, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER);
+            ListView_SetBkColor(list_, ToColorRef(theme_.color(L"list", L"normal", L"bg")));
+            ListView_SetTextBkColor(list_, ToColorRef(theme_.color(L"list", L"normal", L"bg")));
+            ListView_SetTextColor(list_, ToColorRef(theme_.color(L"list", L"normal", L"text")));
             LVCOLUMNW col{};
             col.mask = LVCF_TEXT | LVCF_WIDTH;
             col.pszText = const_cast<LPWSTR>(L"名称");
@@ -149,9 +169,35 @@ private:
             SetFocus(config_.focusSearch ? edit_ : list_);
             return 0;
         }
+        case WM_PAINT: {
+            PAINTSTRUCT ps{};
+            HDC dc = BeginPaint(hwnd_, &ps);
+            PaintBackground(dc);
+            ThemedControls::DrawFieldFrame(theme_, dc, editFrame_, edit_);
+            ThemedControls::DrawListFrame(theme_, dc, listFrame_, list_, true);
+            EndPaint(hwnd_, &ps);
+            return 0;
+        }
+        case WM_PRINTCLIENT:
+            PaintBackground(reinterpret_cast<HDC>(wParam));
+            ThemedControls::DrawFieldFrame(theme_, reinterpret_cast<HDC>(wParam), editFrame_, edit_);
+            ThemedControls::DrawListFrame(theme_, reinterpret_cast<HDC>(wParam), listFrame_, list_, true);
+            return 0;
+        case WM_ERASEBKGND:
+            return 1;
+        case WM_CTLCOLOREDIT: {
+            HDC dc = reinterpret_cast<HDC>(wParam);
+            SetTextColor(dc, ToColorRef(theme_.color(L"edit", L"normal", L"text")));
+            SetBkColor(dc, ToColorRef(theme_.color(L"edit", L"normal", L"bg")));
+            return reinterpret_cast<LRESULT>(fieldBrush_ ? fieldBrush_ : GetStockObject(WHITE_BRUSH));
+        }
         case WM_COMMAND:
             if (LOWORD(wParam) == 100 && HIWORD(wParam) == EN_CHANGE) {
                 Refresh();
+                return 0;
+            }
+            if (LOWORD(wParam) == 100 && (HIWORD(wParam) == EN_SETFOCUS || HIWORD(wParam) == EN_KILLFOCUS)) {
+                InvalidateRect(hwnd_, &editFrame_, TRUE);
                 return 0;
             }
             if (LOWORD(wParam) == ID_SEARCH_RUN) {
@@ -206,10 +252,28 @@ private:
         case WM_DESTROY:
             SavePosition();
             done_ = true;
+            if (editFont_) {
+                DeleteObject(editFont_);
+                editFont_ = nullptr;
+            }
+            if (backgroundBrush_) {
+                DeleteObject(backgroundBrush_);
+                backgroundBrush_ = nullptr;
+            }
+            if (fieldBrush_) {
+                DeleteObject(fieldBrush_);
+                fieldBrush_ = nullptr;
+            }
             return 0;
         default:
             return DefWindowProcW(hwnd_, message, wParam, lParam);
         }
+    }
+
+    void PaintBackground(HDC dc) {
+        RECT rect{};
+        GetClientRect(hwnd_, &rect);
+        FillRect(dc, &rect, backgroundBrush_ ? backgroundBrush_ : reinterpret_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
     }
 
     void Refresh() {
@@ -290,7 +354,7 @@ private:
         AppendMenuW(menu, link ? MF_STRING : (MF_STRING | MF_GRAYED), ID_SEARCH_RUN, L"运行");
         AppendMenuW(menu, link ? MF_STRING : (MF_STRING | MF_GRAYED), ID_SEARCH_OPEN_LOCATION, L"打开所在目录");
         AppendMenuW(menu, link ? MF_STRING : (MF_STRING | MF_GRAYED), ID_SEARCH_COPY_PATH, L"复制路径");
-        SetForegroundWindow(hwnd_);
+        ActivateWindow(hwnd_);
         TrackPopupMenu(menu, TPM_RIGHTBUTTON, screenPoint.x, screenPoint.y, 0, hwnd_, nullptr);
         DestroyMenu(menu);
     }
@@ -327,6 +391,12 @@ private:
     HWND edit_ = nullptr;
     HWND list_ = nullptr;
     HFONT font_ = nullptr;
+    HFONT editFont_ = nullptr;
+    HBRUSH backgroundBrush_ = nullptr;
+    HBRUSH fieldBrush_ = nullptr;
+    RECT editFrame_{};
+    RECT listFrame_{};
+    const Theme& theme_;
     const AppModel& model_;
     AppConfig& config_;
     std::vector<int> results_;
@@ -335,8 +405,9 @@ private:
 };
 }
 
-int SearchDialog::Show(HWND owner, HINSTANCE instance, const AppModel& model, AppConfig& config) {
+int SearchDialog::Show(HWND owner, HINSTANCE instance, const Theme& theme, const AppModel& model, AppConfig& config) {
     ++config.searchCount;
-    SearchWindow window(owner, instance, model, config);
+    SearchWindow window(owner, instance, theme, model, config);
     return window.Run();
 }
+

@@ -1,5 +1,8 @@
 #include "HotKeyEditor.h"
 
+#include "ThemedControls.h"
+#include "Utilities.h"
+
 #include <windowsx.h>
 
 namespace {
@@ -44,7 +47,7 @@ private:
         }
 
         EnableWindow(owner_, FALSE);
-        ShowWindow(hwnd_, SW_SHOWNORMAL);
+        ShowWindowRespectFocusPolicy(hwnd_, SW_SHOWNORMAL);
         UpdateWindow(hwnd_);
 
         MSG message{};
@@ -54,7 +57,7 @@ private:
         }
 
         EnableWindow(owner_, TRUE);
-        SetForegroundWindow(owner_);
+        ActivateWindow(owner_);
         return accepted_ ? capturedKey_ : currentKey_;
     }
 
@@ -74,13 +77,22 @@ private:
     LRESULT Handle(UINT message, WPARAM wParam, LPARAM lParam) {
         switch (message) {
         case WM_CREATE: {
-            HFONT font = reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
-            HWND label = CreateWindowExW(0, L"STATIC", L"按下一个键，热键将保存为 Ctrl+Alt+该键。Backspace 清除，Esc 取消。",
-                                         WS_CHILD | WS_VISIBLE | SS_LEFT, 20, 22, 300, 42, hwnd_, nullptr, instance_, nullptr);
-            SendMessageW(label, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
-            HWND current = CreateWindowExW(0, L"STATIC", FormatHotKeyText(currentKey_).c_str(),
-                                           WS_CHILD | WS_VISIBLE | SS_LEFT, 20, 72, 220, 22, hwnd_, nullptr, instance_, nullptr);
-            SendMessageW(current, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+            font_ = ThemedControls::CreateDialogFont();
+            if (!font_) {
+                font_ = reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
+            } else {
+                ownsFont_ = true;
+            }
+            ThemedControls::CreateStaticText(
+                instance_,
+                hwnd_,
+                L"按下一个键，热键将保存为 Ctrl+Alt+该键。Backspace 清除，Esc 取消。",
+                20,
+                22,
+                300,
+                42,
+                font_);
+            ThemedControls::CreateStaticText(instance_, hwnd_, FormatHotKeyText(currentKey_).c_str(), 20, 72, 220, 22, font_);
             SetFocus(hwnd_);
             return 0;
         }
@@ -111,6 +123,10 @@ private:
             DestroyWindow(hwnd_);
             return 0;
         case WM_DESTROY:
+            if (font_ && ownsFont_) {
+                DeleteObject(font_);
+                font_ = nullptr;
+            }
             done_ = true;
             return 0;
         default:
@@ -121,10 +137,12 @@ private:
     HWND owner_ = nullptr;
     HINSTANCE instance_ = nullptr;
     HWND hwnd_ = nullptr;
+    HFONT font_ = nullptr;
     int currentKey_ = 0;
     int capturedKey_ = 0;
     bool accepted_ = false;
     bool done_ = false;
+    bool ownsFont_ = false;
 };
 }
 
@@ -146,3 +164,4 @@ std::wstring FormatHotKeyText(int key) {
 int ShowHotKeyCaptureDialog(HWND owner, HINSTANCE instance, int currentKey) {
     return HotKeyCapture::Run(owner, instance, currentKey);
 }
+

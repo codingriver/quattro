@@ -96,6 +96,7 @@ int wmain(int argc, wchar_t** argv) {
         link.path = target.wstring();
         link.remark = NumberedName(L"Remark", index);
         link.pos = -1;
+        link.runCount = index * 7;
         link.showCmd = SW_SHOWNORMAL;
         if (!storage.InsertLink(link)) {
             Fail(L"insert link failed: " + storage.lastError());

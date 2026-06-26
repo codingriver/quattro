@@ -79,7 +79,7 @@ cmake -S . -B build-x86 -G "Visual Studio 17 2022" -A Win32
 cmake --build build-x86 --config Release -- /m
 ```
 
-构建时会自动生成主题资源和内嵌默认资源。默认资源来自 `README.md`、`theme/`、`icons/url/`、`docs/`。`conf.ini` 是运行时本地配置文件，缺失时使用代码默认值并在保存设置时生成；`db/link.db` 缺失时会自动创建表结构和默认分组/标签。
+构建时会自动生成内嵌默认资源。默认资源来自 `README.md`，以及存在时的 `theme/`、`icons/menu/`、`icons/url/`、`docs/`。`conf.ini` 是运行时本地配置文件，缺失时使用代码默认值并在保存设置时生成；`db/link.db` 缺失时会自动创建表结构和默认分组/标签。
 
 ### 测试
 
@@ -139,10 +139,22 @@ powershell -ExecutionPolicy Bypass -File .\tools\run-dialog-display-tests.ps1 -E
 
 ### 打包
 
-一键打包，默认生成 64 位单 exe 并运行单元测试：
+一键打包，默认只构建并打包 `dist` 内的 64 位主程序，不构建测试程序和辅助工具，也不运行测试：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\tools\build.ps1
+```
+
+打包前构建测试程序和辅助工具，并运行单元测试：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\build.ps1 --test
+```
+
+执行旧默认的根目录单 exe 打包流程：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\build.ps1 -FlatPackage
 ```
 
 生成 32 位和 64 位单 exe：
@@ -169,7 +181,7 @@ powershell -ExecutionPolicy Bypass -File .\tools\build.ps1 -Clean
 powershell -ExecutionPolicy Bypass -File .\tools\build.ps1 -FullPackage
 ```
 
-跳过打包前单元测试：
+兼容旧命令；默认已不运行单元测试：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\tools\build.ps1 -SkipTests
@@ -181,20 +193,20 @@ powershell -ExecutionPolicy Bypass -File .\tools\build.ps1 -SkipTests
 powershell -ExecutionPolicy Bypass -File .\tools\build.ps1 --help
 ```
 
-脚本每次执行会先清空 `dist` 产出目录，完成后在控制台列出本次生成的 `artifacts` 绝对路径。
+脚本每次执行只清理并覆盖本次目标产物，完成后在控制台列出本次生成的 `artifacts` 绝对路径。
 
 默认产物：
 
 ```text
-dist/Quattro.exe
-dist/Quattro.zip
+dist/x64/Quattro.exe
+dist/Quattro-x64.zip
 ```
 
 `--all` 会同时生成 `dist/x86/Quattro.exe`、`dist/x64/Quattro.exe` 和对应 zip；`-FullPackage` 会额外生成传统目录包。
 
-默认发布包可以只分发 `dist/Quattro.exe`。程序首次运行会在可写目录释放缺失资源；如果 exe 同级目录不可写，会使用当前用户本地数据目录。
+默认发布包可以只分发 `dist/x64/Quattro.exe`。需要旧默认产物 `dist/Quattro.exe` 和 `dist/Quattro.zip` 时使用 `-FlatPackage`。程序首次运行会在可写目录释放缺失资源；如果 exe 同级目录不可写，会使用当前用户本地数据目录。
 
-打包脚本会删除旧 `dist`。如果 `dist/Quattro.exe` 正在运行，Windows 会锁定文件导致覆盖失败；先退出 Quattro 后再打包即可。
+如果本次目标 exe 正在运行，Windows 会锁定文件导致覆盖失败；先退出 Quattro 后再打包即可。
 
 ## SQLite
 
@@ -204,4 +216,10 @@ SQLite 使用官方 amalgamation 静态编译到 `Quattro.exe`，无需额外携
 
 - 外部文件索引集成已延期，详见需求 TODO 文档。
 - 增加更多实机兼容测试样本。
+
+## 参考说明
+
+- 菜单本地图标库使用 Tabler Icons Webfont 3.44.0，项目内文件位于 `icons/menu/tabler/`。
+- Tabler Icons 使用 MIT License；许可证文本已随图标库保存为 `icons/menu/tabler/LICENSE`。
+- 图标来源参考：https://tabler.io/icons 和 https://www.jsdelivr.com/package/npm/@tabler/icons-webfont
 

@@ -77,7 +77,7 @@ AppConfig ConfigService::Load() const {
     if (config.tagAlign != L"left" && config.tagAlign != L"center" && config.tagAlign != L"right") {
         config.tagAlign = L"center";
     }
-    config.theme = ReadString(L"Theme", L"gray");
+    config.theme = ReadString(L"Theme", L"default");
     config.openDirCommand = ReadString(L"OpenDirCmd", L"");
     config.helpUrl = ReadString(L"HelpUrl", L"");
     config.updateUrl = ReadString(L"UpdateUrl", L"");

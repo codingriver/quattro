@@ -423,7 +423,7 @@ bool ShellItemService::ShowNativeContextMenu(HWND owner, const Link& link, POINT
 
     bool handled = false;
     if (SUCCEEDED(contextMenu->QueryContextMenu(menu, 0, 1, 0x7FFF, CMF_NORMAL))) {
-        SetForegroundWindow(owner);
+        ActivateWindow(owner);
         const UINT command = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, screenPoint.x, screenPoint.y, 0, owner, nullptr);
         if (command > 0) {
             CMINVOKECOMMANDINFOEX invoke{};

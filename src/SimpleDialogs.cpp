@@ -2,6 +2,7 @@
 
 #include "AppLog.h"
 #include "HotKeyEditor.h"
+#include "ThemedControls.h"
 #include "Utilities.h"
 
 #include <commctrl.h>
@@ -9,8 +10,10 @@
 
 #include <algorithm>
 #include <utility>
+#include <vector>
 
 namespace {
+constexpr int ID_SETTINGS_TAB_BASE = 280;
 constexpr int ID_MAIN_HOTKEY_CAPTURE = 301;
 constexpr int ID_MAIN_HOTKEY_CLEAR = 302;
 constexpr int ID_SEARCH_HOTKEY_CAPTURE = 303;
@@ -21,6 +24,9 @@ constexpr int ID_DOCK_DELAY = 403;
 constexpr int ID_GROUP_DELAY = 404;
 constexpr int ID_TAG_DELAY = 405;
 constexpr int ID_SEARCH_COUNT = 406;
+constexpr int ID_TAG_ALIGN_LEFT = 407;
+constexpr int ID_TAG_ALIGN_CENTER = 408;
+constexpr int ID_TAG_ALIGN_RIGHT = 409;
 
 std::wstring GetText(HWND hwnd) {
     const int length = GetWindowTextLengthW(hwnd);
@@ -32,14 +38,33 @@ std::wstring GetText(HWND hwnd) {
     return text;
 }
 
-void SetFont(HWND hwnd, HFONT font) {
-    SendMessageW(hwnd, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+float ClampFloat(float value, float minValue, float maxValue) {
+    return std::max(minValue, std::min(maxValue, value));
+}
+
+COLORREF ToColorRef(Color color) {
+    const auto byte = [](float value) -> BYTE {
+        return static_cast<BYTE>(ClampFloat(value, 0.0f, 1.0f) * 255.0f + 0.5f);
+    };
+    return RGB(byte(color.r), byte(color.g), byte(color.b));
+}
+
+void FillRoundRect(HDC dc, RECT rect, int radius, COLORREF fill, COLORREF border, int borderWidth) {
+    HBRUSH brush = CreateSolidBrush(fill);
+    HPEN pen = CreatePen(PS_SOLID, std::max(1, borderWidth), border);
+    HGDIOBJ oldBrush = SelectObject(dc, brush);
+    HGDIOBJ oldPen = SelectObject(dc, pen);
+    RoundRect(dc, rect.left, rect.top, rect.right, rect.bottom, radius * 2, radius * 2);
+    SelectObject(dc, oldPen);
+    SelectObject(dc, oldBrush);
+    DeleteObject(pen);
+    DeleteObject(brush);
 }
 
 class TextDialog {
 public:
-    TextDialog(HWND owner, HINSTANCE instance, std::wstring title, std::wstring label, std::wstring& value)
-        : owner_(owner), instance_(instance), title_(std::move(title)), label_(std::move(label)), value_(value) {}
+    TextDialog(HWND owner, HINSTANCE instance, const Theme& theme, std::wstring title, std::wstring label, std::wstring& value)
+        : owner_(owner), instance_(instance), theme_(theme), title_(std::move(title)), label_(std::move(label)), value_(value) {}
 
     bool Run() {
         const std::wstring className = L"QuattroTextInputDialog_" +
@@ -49,7 +74,7 @@ public:
         wc.lpfnWndProc = TextDialog::Proc;
         wc.hInstance = instance_;
         wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-        wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+        wc.hbrBackground = nullptr;
         wc.lpszClassName = className.c_str();
         if (!RegisterClassExW(&wc)) {
             const DWORD error = GetLastError();
@@ -70,8 +95,8 @@ public:
             WS_CAPTION | WS_SYSMENU | WS_POPUP,
             ownerRect.left + 80,
             ownerRect.top + 100,
-            420,
-            170,
+            390,
+            162,
             owner_,
             nullptr,
             instance_,
@@ -82,8 +107,8 @@ public:
             return false;
         }
         EnableWindow(owner_, FALSE);
-        ShowWindow(hwnd_, SW_SHOWNORMAL);
-        SetForegroundWindow(hwnd_);
+        ShowWindowRespectFocusPolicy(hwnd_, SW_SHOWNORMAL);
+        ActivateWindow(hwnd_);
         UpdateWindow(hwnd_);
 
         MSG message{};
@@ -94,7 +119,7 @@ public:
             }
         }
         EnableWindow(owner_, TRUE);
-        SetForegroundWindow(owner_);
+        ActivateWindow(owner_);
         return accepted_;
     }
 
@@ -116,20 +141,53 @@ private:
         switch (message) {
         case WM_CREATE: {
             HFONT font = reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
-            HWND label = CreateWindowExW(0, L"STATIC", label_.c_str(), WS_CHILD | WS_VISIBLE, 22, 24, 360, 22, hwnd_, nullptr, instance_, nullptr);
-            SetFont(label, font);
-            edit_ = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", value_.c_str(), WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
-                                    22, 54, 360, 24, hwnd_, reinterpret_cast<HMENU>(100), instance_, nullptr);
-            SetFont(edit_, font);
-            HWND ok = CreateWindowExW(0, L"BUTTON", L"确定", WS_CHILD | WS_VISIBLE | WS_TABSTOP, 214, 96, 76, 28, hwnd_, reinterpret_cast<HMENU>(IDOK), instance_, nullptr);
-            HWND cancel = CreateWindowExW(0, L"BUTTON", L"取消", WS_CHILD | WS_VISIBLE | WS_TABSTOP, 306, 96, 76, 28, hwnd_, reinterpret_cast<HMENU>(IDCANCEL), instance_, nullptr);
-            SetFont(ok, font);
-            SetFont(cancel, font);
+            editFont_ = ThemedControls::CreateEditFont(theme_);
+            backgroundBrush_ = CreateSolidBrush(ToColorRef(theme_.color(L"dialog", L"normal", L"bg")));
+            fieldBrush_ = CreateSolidBrush(ToColorRef(theme_.color(L"edit", L"normal", L"bg")));
+            ThemedControls::CreateLabelText(instance_, hwnd_, label_.c_str(), 24, 18, 320, theme_, font);
+            const int fieldHeight = ThemedControls::EditFrameHeight(theme_);
+            editFrame_ = RECT{24, 42, 346, 42 + fieldHeight};
+            edit_ = ThemedControls::CreateSingleLineEdit(instance_, hwnd_, 100, theme_, editFrame_, value_, editFont_ ? editFont_ : font);
+            const int buttonHeight = ThemedControls::ButtonHeight(theme_);
+            ThemedControls::CreateButton(instance_, hwnd_, IDOK, L"确定", 198, 88, 72, buttonHeight, font, true);
+            ThemedControls::CreateButton(instance_, hwnd_, IDCANCEL, L"取消", 286, 88, 72, buttonHeight, font);
             SetFocus(edit_);
             SendMessageW(edit_, EM_SETSEL, 0, -1);
             return 0;
         }
+        case WM_PAINT: {
+            PAINTSTRUCT ps{};
+            HDC dc = BeginPaint(hwnd_, &ps);
+            RECT rect{};
+            GetClientRect(hwnd_, &rect);
+            FillRect(dc, &rect, backgroundBrush_ ? backgroundBrush_ : reinterpret_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
+            ThemedControls::DrawFieldFrame(theme_, dc, editFrame_, edit_);
+            EndPaint(hwnd_, &ps);
+            return 0;
+        }
+        case WM_ERASEBKGND:
+            return 1;
+        case WM_CTLCOLOREDIT: {
+            HDC dc = reinterpret_cast<HDC>(wParam);
+            SetTextColor(dc, ToColorRef(theme_.color(L"edit", L"normal", L"text")));
+            SetBkColor(dc, ToColorRef(theme_.color(L"edit", L"normal", L"bg")));
+            return reinterpret_cast<LRESULT>(fieldBrush_ ? fieldBrush_ : GetStockObject(WHITE_BRUSH));
+        }
+        case WM_CTLCOLORSTATIC: {
+            HDC dc = reinterpret_cast<HDC>(wParam);
+            SetBkMode(dc, TRANSPARENT);
+            SetTextColor(dc, ToColorRef(theme_.color(L"label", L"normal", L"text")));
+            return reinterpret_cast<LRESULT>(backgroundBrush_ ? backgroundBrush_ : GetStockObject(WHITE_BRUSH));
+        }
+        case WM_DRAWITEM:
+            if (ThemedControls::Draw(theme_, reinterpret_cast<const DRAWITEMSTRUCT*>(lParam))) {
+                return TRUE;
+            }
+            return 0;
         case WM_COMMAND:
+            if (HIWORD(wParam) == EN_SETFOCUS || HIWORD(wParam) == EN_KILLFOCUS) {
+                InvalidateRect(hwnd_, &editFrame_, TRUE);
+            }
             if (LOWORD(wParam) == IDOK) {
                 std::wstring next = Trim(GetText(edit_));
                 if (next.empty()) {
@@ -154,6 +212,18 @@ private:
             return 0;
         case WM_DESTROY:
             done_ = true;
+            if (editFont_) {
+                DeleteObject(editFont_);
+                editFont_ = nullptr;
+            }
+            if (backgroundBrush_) {
+                DeleteObject(backgroundBrush_);
+                backgroundBrush_ = nullptr;
+            }
+            if (fieldBrush_) {
+                DeleteObject(fieldBrush_);
+                fieldBrush_ = nullptr;
+            }
             return 0;
         default:
             return DefWindowProcW(hwnd_, message, wParam, lParam);
@@ -164,17 +234,22 @@ private:
     HINSTANCE instance_ = nullptr;
     HWND hwnd_ = nullptr;
     HWND edit_ = nullptr;
+    const Theme& theme_;
     std::wstring title_;
     std::wstring label_;
     std::wstring& value_;
+    RECT editFrame_{};
+    HBRUSH backgroundBrush_ = nullptr;
+    HBRUSH fieldBrush_ = nullptr;
+    HFONT editFont_ = nullptr;
     bool accepted_ = false;
     bool done_ = false;
 };
 
 class SettingsDialog {
 public:
-    SettingsDialog(HWND owner, HINSTANCE instance, AppConfig& config)
-        : owner_(owner), instance_(instance), config_(config), draft_(config) {}
+    SettingsDialog(HWND owner, HINSTANCE instance, AppConfig& config, const Theme& theme)
+        : owner_(owner), instance_(instance), config_(config), draft_(config), theme_(theme) {}
 
     bool Run() {
         WNDCLASSEXW wc{};
@@ -182,7 +257,7 @@ public:
         wc.lpfnWndProc = SettingsDialog::Proc;
         wc.hInstance = instance_;
         wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-        wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+        wc.hbrBackground = nullptr;
         wc.lpszClassName = L"QuattroSettingsDialog";
         if (!RegisterClassExW(&wc)) {
             const DWORD error = GetLastError();
@@ -201,8 +276,8 @@ public:
             WS_CAPTION | WS_SYSMENU | WS_POPUP,
             ownerRect.left + 60,
             ownerRect.top + 70,
+            560,
             520,
-            900,
             owner_,
             nullptr,
             instance_,
@@ -212,7 +287,7 @@ public:
             return false;
         }
         EnableWindow(owner_, FALSE);
-        ShowWindow(hwnd_, SW_SHOWNORMAL);
+        ShowWindowRespectFocusPolicy(hwnd_, SW_SHOWNORMAL);
         UpdateWindow(hwnd_);
         MSG message{};
         while (!done_ && GetMessageW(&message, nullptr, 0, 0) > 0) {
@@ -222,11 +297,31 @@ public:
             }
         }
         EnableWindow(owner_, TRUE);
-        SetForegroundWindow(owner_);
+        ActivateWindow(owner_);
         return accepted_;
     }
 
 private:
+    enum TabIndex {
+        TabDisplay = 0,
+        TabBehavior = 1,
+        TabInteraction = 2,
+        TabHotKeys = 3,
+        TabLinks = 4,
+    };
+
+    struct TabChild {
+        HWND hwnd = nullptr;
+        int tab = 0;
+    };
+
+    struct FieldFrame {
+        RECT rect{};
+        HWND child = nullptr;
+        int tab = 0;
+        bool readOnly = false;
+    };
+
     static LRESULT CALLBACK Proc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
         SettingsDialog* dialog = nullptr;
         if (message == WM_NCCREATE) {
@@ -240,20 +335,51 @@ private:
         return dialog ? dialog->Handle(message, wParam, lParam) : DefWindowProcW(hwnd, message, wParam, lParam);
     }
 
-    HWND CheckBox(int id, const wchar_t* text, int x, int y, bool checked) {
-        HWND hwnd = CreateWindowExW(0, L"BUTTON", text, WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
-                                    x, y, 190, 24, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), instance_, nullptr);
-        SetFont(hwnd, font_);
-        SendMessageW(hwnd, BM_SETCHECK, checked ? BST_CHECKED : BST_UNCHECKED, 0);
+    void AddTabChild(HWND hwnd, int tab) {
+        if (!hwnd) {
+            return;
+        }
+        tabChildren_.push_back(TabChild{hwnd, tab});
+    }
+
+    HWND Label(int tab, const wchar_t* text, int x, int y, int width = 110) {
+        HWND hwnd = ThemedControls::CreateLabelText(instance_, hwnd_, text, x, y, width, theme_, font_);
+        AddTabChild(hwnd, tab);
         return hwnd;
     }
 
-    HWND NumberEdit(int id, int x, int y, int width, int value) {
-        HWND hwnd = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", std::to_wstring(value).c_str(),
-                                    WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_NUMBER,
-                                    x, y, width, 24, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), instance_, nullptr);
-        SetFont(hwnd, font_);
+    HWND CheckBox(int tab, int id, const wchar_t* text, int x, int y, bool checked, int width = 210) {
+        HWND hwnd = ThemedControls::CreateCheckBox(instance_, hwnd_, id, text, x, y, width, ThemedControls::CheckBoxHeight(theme_), font_, checked);
+        AddTabChild(hwnd, tab);
         return hwnd;
+    }
+
+    HWND Button(int tab, int id, const wchar_t* text, int x, int y, int width) {
+        HWND hwnd = ThemedControls::CreateButton(instance_, hwnd_, id, text, x, y, width, ThemedControls::CompactButtonHeight(theme_), font_);
+        AddTabChild(hwnd, tab);
+        return hwnd;
+    }
+
+    HWND FramedEdit(int tab, int id, int x, int y, int width, const std::wstring& text, DWORD extraStyle = ES_AUTOHSCROLL) {
+        const int fieldHeight = ThemedControls::EditFrameHeight(theme_);
+        const RECT frame{x, y, x + width, y + fieldHeight};
+        HWND hwnd = ThemedControls::CreateSingleLineEdit(instance_, hwnd_, id, theme_, frame, text, editFont_ ? editFont_ : font_, extraStyle);
+        AddTabChild(hwnd, tab);
+        fieldFrames_.push_back(FieldFrame{frame, hwnd, tab, false});
+        return hwnd;
+    }
+
+    HWND FramedStatic(int tab, int x, int y, int width, const std::wstring& text) {
+        const int fieldHeight = ThemedControls::EditFrameHeight(theme_);
+        const RECT frame{x, y, x + width, y + fieldHeight};
+        HWND hwnd = ThemedControls::CreateFramedStatic(instance_, hwnd_, theme_, frame, text, font_);
+        AddTabChild(hwnd, tab);
+        fieldFrames_.push_back(FieldFrame{frame, hwnd, tab, true});
+        return hwnd;
+    }
+
+    HWND NumberEdit(int tab, int id, int x, int y, int width, int value) {
+        return FramedEdit(tab, id, x, y, width, std::to_wstring(value), ES_NUMBER);
     }
 
     int ClampNumber(HWND edit, int minValue, int maxValue, int fallback) const {
@@ -265,151 +391,290 @@ private:
     }
 
     void SelectTagAlign() {
-        int index = 1;
+        tagAlignIndex_ = 1;
         if (draft_.tagAlign == L"left") {
-            index = 0;
+            tagAlignIndex_ = 0;
         } else if (draft_.tagAlign == L"right") {
-            index = 2;
+            tagAlignIndex_ = 2;
         }
-        SendMessageW(tagAlignCombo_, CB_SETCURSEL, index, 0);
+        UpdateTagAlignButtons();
+    }
+
+    void UpdateTagAlignButtons() {
+        const HWND buttons[] = {tagAlignLeft_, tagAlignCenter_, tagAlignRight_};
+        for (int i = 0; i < 3; ++i) {
+            if (buttons[i]) {
+                SendMessageW(buttons[i], BM_SETCHECK, i == tagAlignIndex_ ? BST_CHECKED : BST_UNCHECKED, 0);
+                InvalidateRect(buttons[i], nullptr, TRUE);
+            }
+        }
+    }
+
+    void CreateTabs() {
+        const wchar_t* titles[] = {L"显示", L"行为", L"交互", L"热键", L"链接"};
+        const int startX = 30;
+        const int startY = 18;
+        const int itemWidth = static_cast<int>(theme_.metric(L"tabButton", L"groupItemWidth", 58.0f));
+        const int itemGap = static_cast<int>(theme_.metric(L"tabButton", L"groupGap", 0.0f));
+        const int itemHeight = ThemedControls::TabButtonHeight(theme_);
+        const int stripPadding = static_cast<int>(theme_.metric(L"tabButton", L"groupPadding", 3.0f));
+        tabStripRect_ = RECT{
+            startX - stripPadding,
+            startY - stripPadding,
+            startX + 5 * itemWidth + 4 * itemGap + stripPadding,
+            startY + itemHeight + stripPadding};
+        for (int i = 0; i < 5; ++i) {
+            HWND button = ThemedControls::CreateTabButton(
+                instance_,
+                hwnd_,
+                ID_SETTINGS_TAB_BASE + i,
+                titles[i],
+                startX + i * (itemWidth + itemGap),
+                startY,
+                itemWidth,
+                itemHeight,
+                font_,
+                i == TabDisplay);
+            tabButtons_.push_back(button);
+        }
+    }
+
+    void PaintTabs(HDC dc) {
+        if (tabStripRect_.right <= tabStripRect_.left || tabStripRect_.bottom <= tabStripRect_.top) {
+            return;
+        }
+        FillRoundRect(
+            dc,
+            tabStripRect_,
+            static_cast<int>(theme_.metric(L"tabButton", L"groupRadius", 10.0f)),
+            ToColorRef(theme_.color(L"tabButton", L"normal", L"groupBg")),
+            ToColorRef(theme_.color(L"tabButton", L"normal", L"groupBorder")),
+            static_cast<int>(theme_.metric(L"tabButton", L"groupBorderWidth", 1.0f)));
+    }
+
+    void ShowTab(int tab) {
+        currentTab_ = tab;
+        for (int i = 0; i < static_cast<int>(tabButtons_.size()); ++i) {
+            SendMessageW(tabButtons_[i], BM_SETCHECK, i == currentTab_ ? BST_CHECKED : BST_UNCHECKED, 0);
+            InvalidateRect(tabButtons_[i], nullptr, TRUE);
+        }
+        for (const auto& child : tabChildren_) {
+            const bool visible = child.tab == currentTab_;
+            ShowWindow(child.hwnd, visible ? SW_SHOW : SW_HIDE);
+            EnableWindow(child.hwnd, visible ? TRUE : FALSE);
+        }
+        InvalidateRect(hwnd_, nullptr, TRUE);
+    }
+
+    bool IsFieldChild(HWND hwnd) const {
+        for (const auto& frame : fieldFrames_) {
+            if (frame.child == hwnd) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    void InvalidateField(HWND hwnd) {
+        for (const auto& frame : fieldFrames_) {
+            if (frame.child == hwnd) {
+                InvalidateRect(hwnd_, &frame.rect, TRUE);
+                return;
+            }
+        }
+    }
+
+    void PaintFields(HDC dc) {
+        for (const auto& frame : fieldFrames_) {
+            if (frame.tab != currentTab_) {
+                continue;
+            }
+            ThemedControls::DrawFieldFrame(theme_, dc, frame.rect, frame.child, frame.readOnly);
+        }
+    }
+
+    void ReadDraft() {
+        draft_.showTitle = SendMessageW(showTitle_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        draft_.showGroup = SendMessageW(showGroup_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        draft_.showTag = SendMessageW(showTag_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        draft_.topMost = SendMessageW(topMost_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        draft_.autoDock = SendMessageW(autoDock_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        draft_.hideWhenInactive = SendMessageW(hideInactive_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        draft_.hideAfterLink = SendMessageW(hideAfterLink_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        draft_.hideOnStart = SendMessageW(hideOnStart_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        draft_.showRunCount = SendMessageW(showRunCount_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        draft_.doubleClickToRun = SendMessageW(doubleClick_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        draft_.hideNotifyIcon = SendMessageW(hideNotify_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        draft_.deleteConfirm = SendMessageW(deleteConfirm_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        draft_.saveRunCount = SendMessageW(saveRunCount_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        draft_.showDate = SendMessageW(showDate_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        draft_.showSearchButton = SendMessageW(showSearchButton_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        draft_.showMenuButton = SendMessageW(showMenuButton_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        draft_.showSkinButton = SendMessageW(showSkinButton_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        draft_.autoRun = SendMessageW(autoRun_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        draft_.linkNameSingleLine = SendMessageW(linkNameSingleLine_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        draft_.showTooltip = SendMessageW(showTooltip_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        draft_.groupRight = SendMessageW(groupRight_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        draft_.tagRight = SendMessageW(tagRight_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        draft_.focusSearch = SendMessageW(focusSearch_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        draft_.mouseEnterActiveGroup = SendMessageW(enterActiveGroup_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        draft_.mouseEnterActiveTag = SendMessageW(enterActiveTag_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        draft_.tagAlign = tagAlignIndex_ == 0 ? L"left" : (tagAlignIndex_ == 2 ? L"right" : L"center");
+        auto alpha = ParseInt(GetText(alphaEdit_));
+        draft_.alpha = alpha ? std::max(64, std::min(255, *alpha)) : 255;
+        draft_.groupWidth = ClampNumber(groupWidthEdit_, 40, 240, draft_.groupWidth);
+        draft_.tagWidth = ClampNumber(tagWidthEdit_, 40, 240, draft_.tagWidth);
+        draft_.dockDelay = ClampNumber(dockDelayEdit_, 0, 5000, draft_.dockDelay);
+        draft_.activeGroupDelay = ClampNumber(groupDelayEdit_, 0, 5000, draft_.activeGroupDelay);
+        draft_.activeTagDelay = ClampNumber(tagDelayEdit_, 0, 5000, draft_.activeTagDelay);
+        draft_.searchCount = ClampNumber(searchCountEdit_, 0, 10000, draft_.searchCount);
+        draft_.openDirCommand = GetText(openDirEdit_);
+        draft_.helpUrl = GetText(helpUrlEdit_);
+        draft_.updateUrl = GetText(updateUrlEdit_);
+        draft_.faqUrl = GetText(faqUrlEdit_);
+        draft_.rewardUrl = GetText(rewardUrlEdit_);
     }
 
     LRESULT Handle(UINT message, WPARAM wParam, LPARAM lParam) {
         switch (message) {
         case WM_CREATE: {
             font_ = reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
-            showTitle_ = CheckBox(101, L"显示标题栏", 26, 20, draft_.showTitle);
-            showGroup_ = CheckBox(102, L"显示分组栏", 250, 20, draft_.showGroup);
-            showTag_ = CheckBox(103, L"显示标签栏", 26, 50, draft_.showTag);
-            topMost_ = CheckBox(104, L"窗口置顶", 250, 50, draft_.topMost);
-            autoDock_ = CheckBox(105, L"自动停靠", 26, 80, draft_.autoDock);
-            hideInactive_ = CheckBox(106, L"失焦隐藏", 250, 80, draft_.hideWhenInactive);
-            hideAfterLink_ = CheckBox(107, L"运行后隐藏", 26, 110, draft_.hideAfterLink);
-            hideOnStart_ = CheckBox(116, L"启动后隐藏", 250, 110, draft_.hideOnStart);
-            showRunCount_ = CheckBox(108, L"显示运行次数", 26, 140, draft_.showRunCount);
-            doubleClick_ = CheckBox(109, L"双击运行", 250, 140, draft_.doubleClickToRun);
-            hideNotify_ = CheckBox(110, L"隐藏托盘图标", 26, 170, draft_.hideNotifyIcon);
-            deleteConfirm_ = CheckBox(111, L"删除确认", 250, 170, draft_.deleteConfirm);
-            saveRunCount_ = CheckBox(112, L"保存运行次数", 26, 200, draft_.saveRunCount);
-            showDate_ = CheckBox(113, L"显示日期", 250, 200, draft_.showDate);
-            showSearchButton_ = CheckBox(114, L"显示搜索按钮", 26, 230, draft_.showSearchButton);
-            showMenuButton_ = CheckBox(115, L"显示菜单按钮", 250, 230, draft_.showMenuButton);
-            showSkinButton_ = CheckBox(121, L"显示主题按钮", 26, 260, draft_.showSkinButton);
-            autoRun_ = CheckBox(117, L"开机自启动", 250, 260, draft_.autoRun);
-            linkNameSingleLine_ = CheckBox(118, L"启动项名称单行", 26, 290, draft_.linkNameSingleLine);
-            showTooltip_ = CheckBox(119, L"显示提示", 250, 290, draft_.showTooltip);
-            groupRight_ = CheckBox(120, L"分组栏在右侧", 26, 320, draft_.groupRight);
-            tagRight_ = CheckBox(122, L"标签栏在右侧", 250, 320, draft_.tagRight);
-            focusSearch_ = CheckBox(123, L"打开搜索时聚焦输入框", 26, 350, draft_.focusSearch);
-            enterActiveGroup_ = CheckBox(124, L"鼠标进入激活分组", 250, 350, draft_.mouseEnterActiveGroup);
-            enterActiveTag_ = CheckBox(125, L"鼠标进入激活标签", 26, 380, draft_.mouseEnterActiveTag);
+            editFont_ = ThemedControls::CreateEditFont(theme_);
+            backgroundBrush_ = CreateSolidBrush(ToColorRef(theme_.color(L"dialog", L"normal", L"bg")));
+            fieldBrush_ = CreateSolidBrush(ToColorRef(theme_.color(L"edit", L"normal", L"bg")));
+            readOnlyFieldBrush_ = CreateSolidBrush(ToColorRef(theme_.color(L"field", L"readonly", L"bg")));
+            CreateTabs();
 
-            HWND label = CreateWindowExW(0, L"STATIC", L"透明度", WS_CHILD | WS_VISIBLE, 26, 416, 70, 22, hwnd_, nullptr, instance_, nullptr);
-            SetFont(label, font_);
-            alphaEdit_ = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", std::to_wstring(draft_.alpha).c_str(),
-                                         WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_NUMBER,
-                                         130, 412, 72, 24, hwnd_, reinterpret_cast<HMENU>(201), instance_, nullptr);
-            SetFont(alphaEdit_, font_);
+            showTitle_ = CheckBox(TabDisplay, 101, L"显示标题栏", 34, 64, draft_.showTitle);
+            showGroup_ = CheckBox(TabDisplay, 102, L"显示分组栏", 282, 64, draft_.showGroup);
+            showTag_ = CheckBox(TabDisplay, 103, L"显示标签栏", 34, 94, draft_.showTag);
+            showRunCount_ = CheckBox(TabDisplay, 108, L"显示运行次数", 282, 94, draft_.showRunCount);
+            showDate_ = CheckBox(TabDisplay, 113, L"显示日期", 34, 124, draft_.showDate);
+            showSearchButton_ = CheckBox(TabDisplay, 114, L"显示搜索按钮", 282, 124, draft_.showSearchButton);
+            showMenuButton_ = CheckBox(TabDisplay, 115, L"显示菜单按钮", 34, 154, draft_.showMenuButton);
+            showSkinButton_ = CheckBox(TabDisplay, 121, L"显示主题按钮", 282, 154, draft_.showSkinButton);
+            linkNameSingleLine_ = CheckBox(TabDisplay, 118, L"启动项名称单行", 34, 184, draft_.linkNameSingleLine);
+            showTooltip_ = CheckBox(TabDisplay, 119, L"显示提示", 282, 184, draft_.showTooltip);
+            groupRight_ = CheckBox(TabDisplay, 120, L"分组栏在右侧", 34, 214, draft_.groupRight);
+            tagRight_ = CheckBox(TabDisplay, 122, L"标签栏在右侧", 282, 214, draft_.tagRight);
 
-            label = CreateWindowExW(0, L"STATIC", L"标签文字", WS_CHILD | WS_VISIBLE, 250, 416, 70, 22, hwnd_, nullptr, instance_, nullptr);
-            SetFont(label, font_);
-            tagAlignCombo_ = CreateWindowExW(0, WC_COMBOBOXW, nullptr, WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST,
-                                             326, 412, 112, 100, hwnd_, nullptr, instance_, nullptr);
-            SetFont(tagAlignCombo_, font_);
-            SendMessageW(tagAlignCombo_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"左对齐"));
-            SendMessageW(tagAlignCombo_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"居中"));
-            SendMessageW(tagAlignCombo_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"右对齐"));
+            Label(TabDisplay, L"透明度", 34, 260, 76);
+            alphaEdit_ = NumberEdit(TabDisplay, 201, 118, 254, 78, draft_.alpha);
+            Label(TabDisplay, L"标签文字", 282, 260, 72);
+            const int tabButtonHeight = ThemedControls::TabButtonHeight(theme_);
+            tagAlignLeft_ = ThemedControls::CreateTabButton(instance_, hwnd_, ID_TAG_ALIGN_LEFT, L"左", 364, 255, 36, tabButtonHeight, font_, false);
+            tagAlignCenter_ = ThemedControls::CreateTabButton(instance_, hwnd_, ID_TAG_ALIGN_CENTER, L"中", 404, 255, 36, tabButtonHeight, font_, true);
+            tagAlignRight_ = ThemedControls::CreateTabButton(instance_, hwnd_, ID_TAG_ALIGN_RIGHT, L"右", 444, 255, 36, tabButtonHeight, font_, false);
+            AddTabChild(tagAlignLeft_, TabDisplay);
+            AddTabChild(tagAlignCenter_, TabDisplay);
+            AddTabChild(tagAlignRight_, TabDisplay);
             SelectTagAlign();
 
-            label = CreateWindowExW(0, L"STATIC", L"分组宽度", WS_CHILD | WS_VISIBLE, 26, 452, 90, 22, hwnd_, nullptr, instance_, nullptr);
-            SetFont(label, font_);
-            groupWidthEdit_ = NumberEdit(ID_GROUP_WIDTH, 130, 448, 72, draft_.groupWidth);
-            label = CreateWindowExW(0, L"STATIC", L"标签宽度", WS_CHILD | WS_VISIBLE, 250, 452, 90, 22, hwnd_, nullptr, instance_, nullptr);
-            SetFont(label, font_);
-            tagWidthEdit_ = NumberEdit(ID_TAG_WIDTH, 366, 448, 72, draft_.tagWidth);
+            Label(TabDisplay, L"分组宽度", 34, 314, 76);
+            groupWidthEdit_ = NumberEdit(TabDisplay, ID_GROUP_WIDTH, 118, 308, 78, draft_.groupWidth);
+            Label(TabDisplay, L"标签宽度", 282, 314, 72);
+            tagWidthEdit_ = NumberEdit(TabDisplay, ID_TAG_WIDTH, 364, 308, 78, draft_.tagWidth);
 
-            label = CreateWindowExW(0, L"STATIC", L"停靠延迟", WS_CHILD | WS_VISIBLE, 26, 488, 90, 22, hwnd_, nullptr, instance_, nullptr);
-            SetFont(label, font_);
-            dockDelayEdit_ = NumberEdit(ID_DOCK_DELAY, 130, 484, 72, draft_.dockDelay);
-            label = CreateWindowExW(0, L"STATIC", L"搜索计数", WS_CHILD | WS_VISIBLE, 250, 488, 90, 22, hwnd_, nullptr, instance_, nullptr);
-            SetFont(label, font_);
-            searchCountEdit_ = NumberEdit(ID_SEARCH_COUNT, 366, 484, 72, draft_.searchCount);
+            topMost_ = CheckBox(TabBehavior, 104, L"窗口置顶", 34, 64, draft_.topMost);
+            autoDock_ = CheckBox(TabBehavior, 105, L"自动停靠", 282, 64, draft_.autoDock);
+            hideInactive_ = CheckBox(TabBehavior, 106, L"失焦隐藏", 34, 94, draft_.hideWhenInactive);
+            hideAfterLink_ = CheckBox(TabBehavior, 107, L"运行后隐藏", 282, 94, draft_.hideAfterLink);
+            hideOnStart_ = CheckBox(TabBehavior, 116, L"启动后隐藏", 34, 124, draft_.hideOnStart);
+            autoRun_ = CheckBox(TabBehavior, 117, L"开机自启动", 282, 124, draft_.autoRun);
+            hideNotify_ = CheckBox(TabBehavior, 110, L"隐藏托盘图标", 34, 154, draft_.hideNotifyIcon);
+            deleteConfirm_ = CheckBox(TabBehavior, 111, L"删除确认", 282, 154, draft_.deleteConfirm);
+            saveRunCount_ = CheckBox(TabBehavior, 112, L"保存运行次数", 34, 184, draft_.saveRunCount);
+            Label(TabBehavior, L"停靠延迟", 34, 238, 76);
+            dockDelayEdit_ = NumberEdit(TabBehavior, ID_DOCK_DELAY, 118, 232, 88, draft_.dockDelay);
 
-            label = CreateWindowExW(0, L"STATIC", L"分组激活延迟", WS_CHILD | WS_VISIBLE, 26, 524, 100, 22, hwnd_, nullptr, instance_, nullptr);
-            SetFont(label, font_);
-            groupDelayEdit_ = NumberEdit(ID_GROUP_DELAY, 130, 520, 72, draft_.activeGroupDelay);
-            label = CreateWindowExW(0, L"STATIC", L"标签激活延迟", WS_CHILD | WS_VISIBLE, 250, 524, 100, 22, hwnd_, nullptr, instance_, nullptr);
-            SetFont(label, font_);
-            tagDelayEdit_ = NumberEdit(ID_TAG_DELAY, 366, 520, 72, draft_.activeTagDelay);
+            doubleClick_ = CheckBox(TabInteraction, 109, L"双击运行", 34, 64, draft_.doubleClickToRun);
+            focusSearch_ = CheckBox(TabInteraction, 123, L"打开搜索时聚焦输入框", 282, 64, draft_.focusSearch);
+            enterActiveGroup_ = CheckBox(TabInteraction, 124, L"鼠标进入激活分组", 34, 94, draft_.mouseEnterActiveGroup);
+            enterActiveTag_ = CheckBox(TabInteraction, 125, L"鼠标进入激活标签", 282, 94, draft_.mouseEnterActiveTag);
+            Label(TabInteraction, L"分组激活延迟", 34, 154, 100);
+            groupDelayEdit_ = NumberEdit(TabInteraction, ID_GROUP_DELAY, 144, 148, 88, draft_.activeGroupDelay);
+            Label(TabInteraction, L"标签激活延迟", 282, 154, 100);
+            tagDelayEdit_ = NumberEdit(TabInteraction, ID_TAG_DELAY, 392, 148, 88, draft_.activeTagDelay);
+            Label(TabInteraction, L"搜索计数", 34, 208, 88);
+            searchCountEdit_ = NumberEdit(TabInteraction, ID_SEARCH_COUNT, 144, 202, 88, draft_.searchCount);
 
-            label = CreateWindowExW(0, L"STATIC", L"主窗口热键", WS_CHILD | WS_VISIBLE, 26, 560, 90, 22, hwnd_, nullptr, instance_, nullptr);
-            SetFont(label, font_);
-            mainHotKeyText_ = CreateWindowExW(WS_EX_CLIENTEDGE, L"STATIC", FormatHotKeyText(draft_.mainHotKey).c_str(),
-                                              WS_CHILD | WS_VISIBLE | SS_LEFTNOWORDWRAP,
-                                              130, 556, 180, 24, hwnd_, nullptr, instance_, nullptr);
-            SetFont(mainHotKeyText_, font_);
-            HWND button = CreateWindowExW(0, L"BUTTON", L"录入", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
-                                          318, 555, 52, 26, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_MAIN_HOTKEY_CAPTURE)), instance_, nullptr);
-            SetFont(button, font_);
-            button = CreateWindowExW(0, L"BUTTON", L"清除", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
-                                     386, 555, 52, 26, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_MAIN_HOTKEY_CLEAR)), instance_, nullptr);
-            SetFont(button, font_);
+            Label(TabHotKeys, L"主窗口热键", 34, 74, 84);
+            mainHotKeyText_ = FramedStatic(TabHotKeys, 128, 66, 210, FormatHotKeyText(draft_.mainHotKey));
+            Button(TabHotKeys, ID_MAIN_HOTKEY_CAPTURE, L"录入", 354, 68, 56);
+            Button(TabHotKeys, ID_MAIN_HOTKEY_CLEAR, L"清除", 424, 68, 56);
+            Label(TabHotKeys, L"搜索热键", 34, 128, 84);
+            searchHotKeyText_ = FramedStatic(TabHotKeys, 128, 120, 210, FormatHotKeyText(draft_.searchHotKey));
+            Button(TabHotKeys, ID_SEARCH_HOTKEY_CAPTURE, L"录入", 354, 122, 56);
+            Button(TabHotKeys, ID_SEARCH_HOTKEY_CLEAR, L"清除", 424, 122, 56);
 
-            label = CreateWindowExW(0, L"STATIC", L"搜索热键", WS_CHILD | WS_VISIBLE, 26, 596, 70, 22, hwnd_, nullptr, instance_, nullptr);
-            SetFont(label, font_);
-            searchHotKeyText_ = CreateWindowExW(WS_EX_CLIENTEDGE, L"STATIC", FormatHotKeyText(draft_.searchHotKey).c_str(),
-                                                WS_CHILD | WS_VISIBLE | SS_LEFTNOWORDWRAP,
-                                                130, 592, 180, 24, hwnd_, nullptr, instance_, nullptr);
-            SetFont(searchHotKeyText_, font_);
-            button = CreateWindowExW(0, L"BUTTON", L"录入", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
-                                     318, 591, 52, 26, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_SEARCH_HOTKEY_CAPTURE)), instance_, nullptr);
-            SetFont(button, font_);
-            button = CreateWindowExW(0, L"BUTTON", L"清除", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
-                                     386, 591, 52, 26, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_SEARCH_HOTKEY_CLEAR)), instance_, nullptr);
-            SetFont(button, font_);
+            Label(TabLinks, L"打开目录命令", 34, 68, 110);
+            openDirEdit_ = FramedEdit(TabLinks, 202, 34, 92, 446, draft_.openDirCommand);
+            Label(TabLinks, L"帮助链接", 34, 136, 110);
+            helpUrlEdit_ = FramedEdit(TabLinks, 203, 34, 160, 446, draft_.helpUrl);
+            Label(TabLinks, L"更新链接", 34, 204, 110);
+            updateUrlEdit_ = FramedEdit(TabLinks, 204, 34, 228, 446, draft_.updateUrl);
+            Label(TabLinks, L"FAQ 链接", 34, 272, 110);
+            faqUrlEdit_ = FramedEdit(TabLinks, 205, 34, 296, 206, draft_.faqUrl);
+            Label(TabLinks, L"赞助链接", 274, 272, 110);
+            rewardUrlEdit_ = FramedEdit(TabLinks, 206, 274, 296, 206, draft_.rewardUrl);
 
-            label = CreateWindowExW(0, L"STATIC", L"打开目录命令", WS_CHILD | WS_VISIBLE, 26, 632, 100, 22, hwnd_, nullptr, instance_, nullptr);
-            SetFont(label, font_);
-            openDirEdit_ = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", draft_.openDirCommand.c_str(),
-                                           WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
-                                           130, 628, 308, 24, hwnd_, reinterpret_cast<HMENU>(202), instance_, nullptr);
-            SetFont(openDirEdit_, font_);
-
-            label = CreateWindowExW(0, L"STATIC", L"帮助链接", WS_CHILD | WS_VISIBLE, 26, 668, 100, 22, hwnd_, nullptr, instance_, nullptr);
-            SetFont(label, font_);
-            helpUrlEdit_ = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", draft_.helpUrl.c_str(),
-                                           WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
-                                           130, 664, 308, 24, hwnd_, reinterpret_cast<HMENU>(203), instance_, nullptr);
-            SetFont(helpUrlEdit_, font_);
-
-            label = CreateWindowExW(0, L"STATIC", L"更新链接", WS_CHILD | WS_VISIBLE, 26, 704, 100, 22, hwnd_, nullptr, instance_, nullptr);
-            SetFont(label, font_);
-            updateUrlEdit_ = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", draft_.updateUrl.c_str(),
-                                             WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
-                                             130, 700, 308, 24, hwnd_, reinterpret_cast<HMENU>(204), instance_, nullptr);
-            SetFont(updateUrlEdit_, font_);
-
-            label = CreateWindowExW(0, L"STATIC", L"FAQ 链接", WS_CHILD | WS_VISIBLE, 26, 740, 100, 22, hwnd_, nullptr, instance_, nullptr);
-            SetFont(label, font_);
-            faqUrlEdit_ = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", draft_.faqUrl.c_str(),
-                                          WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
-                                          130, 736, 308, 24, hwnd_, reinterpret_cast<HMENU>(205), instance_, nullptr);
-            SetFont(faqUrlEdit_, font_);
-
-            label = CreateWindowExW(0, L"STATIC", L"赞助链接", WS_CHILD | WS_VISIBLE, 26, 776, 100, 22, hwnd_, nullptr, instance_, nullptr);
-            SetFont(label, font_);
-            rewardUrlEdit_ = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", draft_.rewardUrl.c_str(),
-                                             WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
-                                             130, 772, 308, 24, hwnd_, reinterpret_cast<HMENU>(206), instance_, nullptr);
-            SetFont(rewardUrlEdit_, font_);
-
-            HWND ok = CreateWindowExW(0, L"BUTTON", L"确定", WS_CHILD | WS_VISIBLE | WS_TABSTOP, 290, 818, 76, 30, hwnd_, reinterpret_cast<HMENU>(IDOK), instance_, nullptr);
-            HWND cancel = CreateWindowExW(0, L"BUTTON", L"取消", WS_CHILD | WS_VISIBLE | WS_TABSTOP, 382, 818, 76, 30, hwnd_, reinterpret_cast<HMENU>(IDCANCEL), instance_, nullptr);
-            SetFont(ok, font_);
-            SetFont(cancel, font_);
+            const int buttonHeight = ThemedControls::ButtonHeight(theme_);
+            ThemedControls::CreateButton(instance_, hwnd_, IDOK, L"确定", 350, 428, 76, buttonHeight, font_, true);
+            ThemedControls::CreateButton(instance_, hwnd_, IDCANCEL, L"取消", 442, 428, 76, buttonHeight, font_);
+            ShowTab(TabDisplay);
             return 0;
         }
+        case WM_PAINT: {
+            PAINTSTRUCT ps{};
+            HDC dc = BeginPaint(hwnd_, &ps);
+            RECT rect{};
+            GetClientRect(hwnd_, &rect);
+            FillRect(dc, &rect, backgroundBrush_ ? backgroundBrush_ : reinterpret_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
+            PaintTabs(dc);
+            PaintFields(dc);
+            EndPaint(hwnd_, &ps);
+            return 0;
+        }
+        case WM_ERASEBKGND: {
+            return 1;
+        }
+        case WM_CTLCOLOREDIT: {
+            HDC dc = reinterpret_cast<HDC>(wParam);
+            SetTextColor(dc, ToColorRef(theme_.color(L"edit", L"normal", L"text")));
+            SetBkColor(dc, ToColorRef(theme_.color(L"edit", L"normal", L"bg")));
+            return reinterpret_cast<LRESULT>(fieldBrush_ ? fieldBrush_ : GetStockObject(WHITE_BRUSH));
+        }
+        case WM_CTLCOLORSTATIC:
+        case WM_CTLCOLORLISTBOX:
+        case WM_CTLCOLORBTN: {
+            HDC dc = reinterpret_cast<HDC>(wParam);
+            SetBkMode(dc, TRANSPARENT);
+            HWND child = reinterpret_cast<HWND>(lParam);
+            const bool fieldChild = IsFieldChild(child);
+            SetTextColor(dc, ToColorRef(fieldChild ? theme_.color(L"field", L"readonly", L"text") : theme_.color(L"label", L"normal", L"text")));
+            if (fieldChild && readOnlyFieldBrush_) {
+                return reinterpret_cast<LRESULT>(readOnlyFieldBrush_);
+            }
+            return reinterpret_cast<LRESULT>(backgroundBrush_ ? backgroundBrush_ : GetStockObject(WHITE_BRUSH));
+        }
+        case WM_DRAWITEM:
+            if (ThemedControls::Draw(theme_, reinterpret_cast<const DRAWITEMSTRUCT*>(lParam))) {
+                return TRUE;
+            }
+            return 0;
         case WM_COMMAND:
+            if (HIWORD(wParam) == EN_SETFOCUS || HIWORD(wParam) == EN_KILLFOCUS) {
+                InvalidateField(reinterpret_cast<HWND>(lParam));
+            }
+            if (LOWORD(wParam) >= ID_SETTINGS_TAB_BASE && LOWORD(wParam) < ID_SETTINGS_TAB_BASE + 5) {
+                ShowTab(static_cast<int>(LOWORD(wParam) - ID_SETTINGS_TAB_BASE));
+                return 0;
+            }
+            if (LOWORD(wParam) >= ID_TAG_ALIGN_LEFT && LOWORD(wParam) <= ID_TAG_ALIGN_RIGHT) {
+                tagAlignIndex_ = static_cast<int>(LOWORD(wParam) - ID_TAG_ALIGN_LEFT);
+                UpdateTagAlignButtons();
+                return 0;
+            }
             if (LOWORD(wParam) == ID_MAIN_HOTKEY_CAPTURE) {
                 draft_.mainHotKey = ShowHotKeyCaptureDialog(hwnd_, instance_, draft_.mainHotKey);
                 UpdateHotKeyLabels();
@@ -431,46 +696,7 @@ private:
                 return 0;
             }
             if (LOWORD(wParam) == IDOK) {
-                draft_.showTitle = SendMessageW(showTitle_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-                draft_.showGroup = SendMessageW(showGroup_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-                draft_.showTag = SendMessageW(showTag_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-                draft_.topMost = SendMessageW(topMost_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-                draft_.autoDock = SendMessageW(autoDock_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-                draft_.hideWhenInactive = SendMessageW(hideInactive_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-                draft_.hideAfterLink = SendMessageW(hideAfterLink_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-                draft_.hideOnStart = SendMessageW(hideOnStart_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-                draft_.showRunCount = SendMessageW(showRunCount_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-                draft_.doubleClickToRun = SendMessageW(doubleClick_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-                draft_.hideNotifyIcon = SendMessageW(hideNotify_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-                draft_.deleteConfirm = SendMessageW(deleteConfirm_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-                draft_.saveRunCount = SendMessageW(saveRunCount_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-                draft_.showDate = SendMessageW(showDate_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-                draft_.showSearchButton = SendMessageW(showSearchButton_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-                draft_.showMenuButton = SendMessageW(showMenuButton_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-                draft_.showSkinButton = SendMessageW(showSkinButton_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-                draft_.autoRun = SendMessageW(autoRun_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-                draft_.linkNameSingleLine = SendMessageW(linkNameSingleLine_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-                draft_.showTooltip = SendMessageW(showTooltip_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-                draft_.groupRight = SendMessageW(groupRight_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-                draft_.tagRight = SendMessageW(tagRight_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-                draft_.focusSearch = SendMessageW(focusSearch_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-                draft_.mouseEnterActiveGroup = SendMessageW(enterActiveGroup_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-                draft_.mouseEnterActiveTag = SendMessageW(enterActiveTag_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-                const int alignIndex = static_cast<int>(SendMessageW(tagAlignCombo_, CB_GETCURSEL, 0, 0));
-                draft_.tagAlign = alignIndex == 0 ? L"left" : (alignIndex == 2 ? L"right" : L"center");
-                auto alpha = ParseInt(GetText(alphaEdit_));
-                draft_.alpha = alpha ? std::max(64, std::min(255, *alpha)) : 255;
-                draft_.groupWidth = ClampNumber(groupWidthEdit_, 40, 240, draft_.groupWidth);
-                draft_.tagWidth = ClampNumber(tagWidthEdit_, 40, 240, draft_.tagWidth);
-                draft_.dockDelay = ClampNumber(dockDelayEdit_, 0, 5000, draft_.dockDelay);
-                draft_.activeGroupDelay = ClampNumber(groupDelayEdit_, 0, 5000, draft_.activeGroupDelay);
-                draft_.activeTagDelay = ClampNumber(tagDelayEdit_, 0, 5000, draft_.activeTagDelay);
-                draft_.searchCount = ClampNumber(searchCountEdit_, 0, 10000, draft_.searchCount);
-                draft_.openDirCommand = GetText(openDirEdit_);
-                draft_.helpUrl = GetText(helpUrlEdit_);
-                draft_.updateUrl = GetText(updateUrlEdit_);
-                draft_.faqUrl = GetText(faqUrlEdit_);
-                draft_.rewardUrl = GetText(rewardUrlEdit_);
+                ReadDraft();
                 config_ = draft_;
                 accepted_ = true;
                 done_ = true;
@@ -489,6 +715,22 @@ private:
             return 0;
         case WM_DESTROY:
             done_ = true;
+            if (editFont_) {
+                DeleteObject(editFont_);
+                editFont_ = nullptr;
+            }
+            if (backgroundBrush_) {
+                DeleteObject(backgroundBrush_);
+                backgroundBrush_ = nullptr;
+            }
+            if (fieldBrush_) {
+                DeleteObject(fieldBrush_);
+                fieldBrush_ = nullptr;
+            }
+            if (readOnlyFieldBrush_) {
+                DeleteObject(readOnlyFieldBrush_);
+                readOnlyFieldBrush_ = nullptr;
+            }
             return 0;
         default:
             return DefWindowProcW(hwnd_, message, wParam, lParam);
@@ -508,8 +750,18 @@ private:
     HINSTANCE instance_ = nullptr;
     HWND hwnd_ = nullptr;
     HFONT font_ = nullptr;
+    HFONT editFont_ = nullptr;
     AppConfig& config_;
     AppConfig draft_;
+    const Theme& theme_;
+    HBRUSH backgroundBrush_ = nullptr;
+    HBRUSH fieldBrush_ = nullptr;
+    HBRUSH readOnlyFieldBrush_ = nullptr;
+    int currentTab_ = TabDisplay;
+    RECT tabStripRect_{};
+    std::vector<HWND> tabButtons_;
+    std::vector<TabChild> tabChildren_;
+    std::vector<FieldFrame> fieldFrames_;
     HWND showTitle_ = nullptr;
     HWND showGroup_ = nullptr;
     HWND showTag_ = nullptr;
@@ -542,7 +794,10 @@ private:
     HWND groupDelayEdit_ = nullptr;
     HWND tagDelayEdit_ = nullptr;
     HWND searchCountEdit_ = nullptr;
-    HWND tagAlignCombo_ = nullptr;
+    int tagAlignIndex_ = 1;
+    HWND tagAlignLeft_ = nullptr;
+    HWND tagAlignCenter_ = nullptr;
+    HWND tagAlignRight_ = nullptr;
     HWND mainHotKeyText_ = nullptr;
     HWND searchHotKeyText_ = nullptr;
     HWND openDirEdit_ = nullptr;
@@ -555,12 +810,13 @@ private:
 };
 }
 
-bool ShowTextInputDialog(HWND owner, HINSTANCE instance, const std::wstring& title, const std::wstring& label, std::wstring& value) {
-    TextDialog dialog(owner, instance, title, label, value);
+bool ShowTextInputDialog(HWND owner, HINSTANCE instance, const Theme& theme, const std::wstring& title, const std::wstring& label, std::wstring& value) {
+    TextDialog dialog(owner, instance, theme, title, label, value);
     return dialog.Run();
 }
 
-bool ShowSettingsDialog(HWND owner, HINSTANCE instance, AppConfig& config) {
-    SettingsDialog dialog(owner, instance, config);
+bool ShowSettingsDialog(HWND owner, HINSTANCE instance, AppConfig& config, const Theme& theme) {
+    SettingsDialog dialog(owner, instance, config, theme);
     return dialog.Run();
 }
+

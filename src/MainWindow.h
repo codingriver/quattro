@@ -9,8 +9,9 @@
 
 #include <d2d1.h>
 #include <dwrite.h>
-#include <wincodec.h>
 #include <windows.h>
+#include <commctrl.h>
+#include <wincodec.h>
 
 #include <filesystem>
 #include <memory>
@@ -65,6 +66,8 @@ private:
     struct MenuItemData {
         std::wstring text;
         int icon = 0;
+        int systemImageIndex = -1;
+        int stockIcon = -1;
         bool checked = false;
         bool disabled = false;
         bool submenu = false;
@@ -85,6 +88,10 @@ private:
     void SetCurrentTagSort(int sort);
     void SetCurrentTagLayout(int layout);
     void SetCurrentTagIconSize(int iconSize);
+    void SetAllTagsSort(int sort);
+    void SetAllTagsLayout(int layout);
+    void SetAllTagsIconSize(int iconSize);
+    void ToggleConfigVisibility(bool AppConfig::*field);
     int CommandGroupId() const;
     int CommandTagId() const;
     int CommandLinkId() const;
@@ -93,6 +100,7 @@ private:
     void AddFolder();
     void AddUrl();
     void AddSystemFunction();
+    void OpenSystemFunction(std::size_t index);
     void EditLink(int linkId);
     void DeleteLink(int linkId);
     void RunLink(int linkId);
@@ -103,6 +111,7 @@ private:
     void MoveMenuContext(int direction);
     void MoveLinkWithinTag(int linkId, int direction);
     void MoveGroupWithinParent(int groupId, int direction);
+    void MoveTagToGroup(int tagId, int groupId);
     void MoveLinkToTag(int linkId, int tagId);
     void CopyLinkToTag(int linkId, int tagId);
     void OpenContainingFolder(int linkId);
@@ -113,7 +122,9 @@ private:
     void ClearCurrentTagLinks();
     void OpenSearch();
     void OpenSettings();
+    void ResetLayoutToDefaults();
     void ClearIconCache();
+    void RefreshAllIcons();
     void RefreshLinkIcon(int linkId);
     void ShowAbout();
     void OpenHelp();
@@ -142,6 +153,11 @@ private:
     void ShowTrayMenu(POINT screenPoint);
     void ShowMainMenu(POINT screenPoint);
     void ShowLinkMenu(int linkId, POINT screenPoint);
+    void CreateTooltip();
+    void ApplyTooltipTheme();
+    void HideLinkTooltip();
+    void UpdateLinkTooltip(const HitArea& hit, POINT screenPoint);
+    std::wstring LinkTooltipText(const Link& link) const;
     void ShowGroupMenu(int groupId, POINT screenPoint);
     void ShowGroupBlankMenu(POINT screenPoint);
     void ShowTagMenu(int tagId, POINT screenPoint);
@@ -150,6 +166,11 @@ private:
     void AppendThemeItemsToMenu(HMENU menu);
     void AppendAddLinkItems(HMENU menu);
     void AppendViewOptionItems(HMENU menu, const Group* tag);
+    void AppendUnifiedViewOptionItems(HMENU menu);
+    void AppendSystemFunctionItems(HMENU menu);
+    std::vector<int> GroupTargetIds(int excludedGroupId) const;
+    std::vector<int> GroupedTagTargetIds(int excludedTagId) const;
+    void AppendGroupTargetMenu(HMENU menu, UINT commandBase, std::vector<int>& targetIds, int excludedGroupId);
     void AppendTagTargetMenu(HMENU menu, UINT commandBase, std::vector<int>& targetIds, int excludedTagId);
     void AppendGroupedTagTargetMenu(HMENU menu, UINT commandBase, std::vector<int>& targetIds, int excludedTagId);
     void SaveWindowState();
@@ -165,19 +186,16 @@ private:
     void DrawTags(D2D1_RECT_F rect);
     void DrawLinks(D2D1_RECT_F rect);
     void DrawButtonIcon(HitKind kind, D2D1_RECT_F rect, const Color& color);
-    void DrawUiBitmap(const std::wstring& name, const D2D1_RECT_F& rect, float opacity = 1.0f);
     ID2D1Bitmap* LoadAppIconBitmap();
-    ID2D1Bitmap* LoadUiBitmap(const std::wstring& name);
     void ClearUiBitmaps();
     void FillRect(const D2D1_RECT_F& rect, const Color& color);
     void DrawRect(const D2D1_RECT_F& rect, const Color& color, float strokeWidth = 1.0f);
     void FillRoundedRect(const D2D1_RECT_F& rect, const Color& color, float radius);
     void DrawRoundedRect(const D2D1_RECT_F& rect, const Color& color, float radius, float strokeWidth = 1.0f);
-    void DrawSoftShadow(const D2D1_RECT_F& rect, float radius);
     void DrawScrollBar(const D2D1_RECT_F& rect, float offset, float maxOffset, bool horizontal);
     void DrawTextBlock(const std::wstring& text, IDWriteTextFormat* format, const D2D1_RECT_F& rect, const Color& color);
     void ResetMenuVisuals();
-    void AppendThemedMenuItem(HMENU menu, UINT flags, UINT_PTR id, const std::wstring& text, bool submenu = false);
+    void AppendThemedMenuItem(HMENU menu, UINT flags, UINT_PTR id, const std::wstring& text, bool submenu = false, int systemImageIndex = -1, int stockIcon = -1, int menuIcon = 0);
     void AppendThemedSeparator(HMENU menu);
     bool MeasureThemedMenuItem(MEASUREITEMSTRUCT* measure);
     bool DrawThemedMenuItem(const DRAWITEMSTRUCT* draw);
@@ -229,11 +247,16 @@ private:
     float linkScrollOffset_ = 0.0f;
     std::vector<int> menuMoveTargetIds_;
     std::vector<int> menuCopyTargetIds_;
+    std::vector<int> menuGroupTargetIds_;
     std::vector<std::pair<int, int>> registeredLinkHotKeys_;
     Link clipboardLink_;
     bool hasClipboardLink_ = false;
     bool clipboardCut_ = false;
     int clipboardSourceId_ = 0;
+    HWND tooltip_ = nullptr;
+    TOOLINFOW tooltipInfo_{};
+    std::wstring tooltipText_;
+    int tooltipLinkId_ = 0;
     bool trackingMouse_ = false;
     bool trayIconVisible_ = false;
     bool hotKeysRegistered_ = false;

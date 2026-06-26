@@ -4,9 +4,11 @@ param(
     [switch]$All,
     [string]$Configuration = "Release",
     [switch]$Clean,
+    [switch]$Test,
     [switch]$SkipTests,
     [switch]$NoZip,
     [switch]$FullPackage,
+    [switch]$FlatPackage,
     [switch]$Help
 )
 
@@ -23,7 +25,7 @@ Usage:
   powershell -ExecutionPolicy Bypass -File .\tools\$scriptName [options]
 
 Defaults:
-  Builds x64 only, runs unit tests, creates Quattro.exe and a zip archive.
+  Builds and packages x64 Quattro only, creates dist\x64\Quattro.exe and Quattro-x64.zip.
 
 Options:
   --all, -All              Build both x86 and x64 packages.
@@ -31,12 +33,16 @@ Options:
   -Platform x86|x64        Build a single platform. Default: x64.
   -Configuration <name>    Build configuration. Default: Release.
   -Clean                   Remove the selected build directory before configure.
-  -SkipTests               Skip unit tests before packaging.
+  -Test                    Build test/helper tools and run unit tests before packaging.
+  -SkipTests               Compatibility no-op; tests are skipped unless -Test is specified.
   -NoZip                   Create package directories only, without zip archives.
   -FullPackage             Include external resource folders beside the exe.
+  -FlatPackage             Run the previous default flat x64 single-exe package flow.
 
 Examples:
   powershell -ExecutionPolicy Bypass -File .\tools\$scriptName
+  powershell -ExecutionPolicy Bypass -File .\tools\$scriptName -Test
+  powershell -ExecutionPolicy Bypass -File .\tools\$scriptName -FlatPackage
   powershell -ExecutionPolicy Bypass -File .\tools\$scriptName --all
   powershell -ExecutionPolicy Bypass -File .\tools\$scriptName -Platform x86
 "@
@@ -102,6 +108,21 @@ function Remove-LegacyBuildOutputs {
     }
 }
 
+function Invoke-PackageBuild {
+    param(
+        [string]$BuildDir,
+        [switch]$IncludeTestTools
+    )
+
+    $targets = @("Quattro")
+    if ($IncludeTestTools) {
+        $targets += @("QuattroTests", "QuattroDbProbe", "QuattroDbSeed")
+    }
+
+    $buildArgs = @("--build", $BuildDir, "--config", $Configuration, "--target") + $targets + @("--", "/m")
+    & cmake @buildArgs
+}
+
 function Publish-Package {
     param(
         [string]$BuildDir,
@@ -116,7 +137,7 @@ function Publish-Package {
 
     Remove-LegacyBuildOutputs -OutputDir $source
     if (!(Test-Path (Join-Path $source "Quattro.exe"))) {
-        cmake --build $BuildDir --config $Configuration -- /m
+        Invoke-PackageBuild -BuildDir $BuildDir
         Remove-LegacyBuildOutputs -OutputDir $source
     }
 
@@ -128,8 +149,14 @@ function Publish-Package {
         } else {
             $singleExeDirectoryPath = Join-Path $distRoot $SingleExeDirectory
         }
+        if (![string]::IsNullOrWhiteSpace($SingleExeDirectory) -and (Test-Path $singleExeDirectoryPath)) {
+            Remove-Item -LiteralPath $singleExeDirectoryPath -Recurse -Force
+        }
         New-Item -ItemType Directory -Force -Path $singleExeDirectoryPath | Out-Null
         $singleExePath = Join-Path $singleExeDirectoryPath "Quattro.exe"
+        if (Test-Path $singleExePath) {
+            Remove-Item -LiteralPath $singleExePath -Force
+        }
         Copy-Item -LiteralPath (Join-Path $source "Quattro.exe") -Destination $singleExePath -Force
         "single-exe: $singleExePath"
     } else {
@@ -170,14 +197,19 @@ if (!$architectures -or $architectures.Count -eq 0) {
     throw "No platform selected."
 }
 
+if ($Test -and $SkipTests) {
+    throw "-Test and -SkipTests cannot be used together."
+}
+
+if ($FlatPackage -and ($All -or $Platform -ne "x64" -or $FullPackage)) {
+    throw "-FlatPackage can only be used with the default x64 single-exe package flow."
+}
+
 if (($architectures | Where-Object { $_.Name -eq "x64" }) -and -not [System.Environment]::Is64BitOperatingSystem) {
     throw "x64 package requires a 64-bit Windows host."
 }
 
 $distRoot = Join-Path $root "dist"
-if (Test-Path $distRoot) {
-    Remove-Item -LiteralPath $distRoot -Recurse -Force
-}
 New-Item -ItemType Directory -Force -Path $distRoot | Out-Null
 
 $outputs = New-Object System.Collections.Generic.List[string]
@@ -189,10 +221,10 @@ foreach ($arch in $architectures) {
 
     Remove-LegacyBuildOutputs -OutputDir (Join-Path $buildDir $Configuration)
     Ensure-Configured -BuildDir $buildDir -CMakePlatform $arch.CMakePlatform
-    cmake --build $buildDir --config $Configuration -- /m
+    Invoke-PackageBuild -BuildDir $buildDir -IncludeTestTools:$Test
     Remove-LegacyBuildOutputs -OutputDir (Join-Path $buildDir $Configuration)
 
-    if (!$SkipTests) {
+    if ($Test) {
         $testExe = Join-Path $buildDir "$Configuration\QuattroTests.exe"
         if (!(Test-Path $testExe)) {
             throw "Unit test executable not found: $testExe"
@@ -200,8 +232,8 @@ foreach ($arch in $architectures) {
         & $testExe
     }
 
-    $singleDefaultX64 = !$All -and $architectures.Count -eq 1 -and $arch.Name -eq "x64"
-    $distName = if ($singleDefaultX64) { "Quattro" } else { "Quattro-$($arch.Name)" }
+    $flatSingleExeX64 = $FlatPackage -and !$All -and $architectures.Count -eq 1 -and $arch.Name -eq "x64"
+    $distName = if ($flatSingleExeX64) { "Quattro" } else { "Quattro-$($arch.Name)" }
 
     $packageArgs = @{
         BuildDir = $buildDir
@@ -209,7 +241,7 @@ foreach ($arch in $architectures) {
     }
     if (!$FullPackage) {
         $packageArgs.SingleExe = $true
-        if (!$singleDefaultX64) {
+        if (!$flatSingleExeX64) {
             $packageArgs.SingleExeDirectory = $arch.Name
         }
     }
@@ -219,7 +251,7 @@ foreach ($arch in $architectures) {
     Publish-Package @packageArgs
 
     if (!$FullPackage) {
-        $singleExeOutput = if ($singleDefaultX64) {
+        $singleExeOutput = if ($flatSingleExeX64) {
             Join-Path $distRoot "Quattro.exe"
         } else {
             Join-Path (Join-Path $distRoot $arch.Name) "Quattro.exe"

@@ -3,6 +3,7 @@
 #include "AppLog.h"
 #include "HotKeyEditor.h"
 #include "LinkEditDialog.h"
+#include "MenuCatalog.h"
 #include "SearchDialog.h"
 #include "ShellItemService.h"
 #include "SimpleDialogs.h"
@@ -24,63 +25,11 @@
 #include <shlobj.h>
 #include <shobjidl.h>
 #include <shellapi.h>
+#include <system_error>
 #include <uxtheme.h>
 #include <windowsx.h>
 
 namespace {
-constexpr UINT ID_MENU_ADD_LINK = 40001;
-constexpr UINT ID_MENU_EDIT_LINK = 40002;
-constexpr UINT ID_MENU_DELETE_LINK = 40003;
-constexpr UINT ID_MENU_SHOW = 40004;
-constexpr UINT ID_MENU_EXIT = 40005;
-constexpr UINT ID_MENU_RUN_LINK = 40006;
-constexpr UINT ID_MENU_OPEN_LOCATION = 40007;
-constexpr UINT ID_MENU_COPY_PATH = 40008;
-constexpr UINT ID_MENU_ADD_GROUP = 40009;
-constexpr UINT ID_MENU_EDIT_GROUP = 40010;
-constexpr UINT ID_MENU_DELETE_GROUP = 40011;
-constexpr UINT ID_MENU_ADD_TAG = 40012;
-constexpr UINT ID_MENU_EDIT_TAG = 40013;
-constexpr UINT ID_MENU_DELETE_TAG = 40014;
-constexpr UINT ID_MENU_SEARCH = 40015;
-constexpr UINT ID_MENU_SETTINGS = 40016;
-constexpr UINT ID_MENU_IMPORT_CLIPBOARD = 40017;
-constexpr UINT ID_MENU_SORT_POS = 40018;
-constexpr UINT ID_MENU_SORT_RUNCOUNT = 40019;
-constexpr UINT ID_MENU_SORT_NAME = 40020;
-constexpr UINT ID_MENU_MOVE_UP = 40021;
-constexpr UINT ID_MENU_MOVE_DOWN = 40022;
-constexpr UINT ID_MENU_COPY_LINK = 40023;
-constexpr UINT ID_MENU_CUT_LINK = 40024;
-constexpr UINT ID_MENU_PASTE_LINK = 40025;
-constexpr UINT ID_MENU_CLEAR_ICON_CACHE = 40026;
-constexpr UINT ID_MENU_ABOUT = 40027;
-constexpr UINT ID_MENU_HELP = 40028;
-constexpr UINT ID_MENU_UPDATE = 40029;
-constexpr UINT ID_MENU_REFRESH_LINK_ICON = 40030;
-constexpr UINT ID_MENU_REPAIR_LINK = 40031;
-constexpr UINT ID_MENU_FAQ = 40032;
-constexpr UINT ID_MENU_REWARD = 40033;
-constexpr UINT ID_MENU_ADD_FILE = 40034;
-constexpr UINT ID_MENU_ADD_FOLDER = 40035;
-constexpr UINT ID_MENU_ADD_URL = 40036;
-constexpr UINT ID_MENU_ADD_SYSTEM = 40037;
-constexpr UINT ID_MENU_CLEAR_TAG_LINKS = 40038;
-constexpr UINT ID_MENU_RUN_ADMIN = 40039;
-constexpr UINT ID_MENU_RUN_PRIVATE = 40040;
-constexpr UINT ID_MENU_COPY_URL = 40041;
-constexpr UINT ID_MENU_WINDOWS_CONTEXT = 40042;
-constexpr UINT ID_MENU_CREATE_DESKTOP_SHORTCUT = 40043;
-constexpr UINT ID_MENU_PROPERTIES = 40044;
-constexpr UINT ID_MENU_REFRESH_PAGE_ICONS = 40045;
-constexpr UINT ID_MENU_THEME_BASE = 43000;
-constexpr UINT ID_MENU_LAYOUT_LIST = 44000;
-constexpr UINT ID_MENU_LAYOUT_TILE = 44001;
-constexpr UINT ID_MENU_ICON_SMALL = 44002;
-constexpr UINT ID_MENU_ICON_MEDIUM = 44003;
-constexpr UINT ID_MENU_ICON_LARGE = 44004;
-constexpr UINT ID_MENU_MOVE_TO_BASE = 41000;
-constexpr UINT ID_MENU_COPY_TO_BASE = 42000;
 constexpr int ID_HOTKEY_MAIN = 1;
 constexpr int ID_HOTKEY_SEARCH = 2;
 constexpr int ID_HOTKEY_LINK_BASE = 1000;
@@ -107,21 +56,6 @@ float Height(const D2D1_RECT_F& rect) {
 
 float ClampFloat(float value, float minValue, float maxValue) {
     return std::max(minValue, std::min(maxValue, value));
-}
-
-Color WithAlpha(Color color, float alpha) {
-    color.a = ClampFloat(alpha, 0.0f, 1.0f);
-    return color;
-}
-
-Color Mix(Color left, Color right, float amount) {
-    const float t = ClampFloat(amount, 0.0f, 1.0f);
-    return Color{
-        left.r + (right.r - left.r) * t,
-        left.g + (right.g - left.g) * t,
-        left.b + (right.b - left.b) * t,
-        left.a + (right.a - left.a) * t,
-    };
 }
 
 COLORREF ToColorRef(Color color) {
@@ -151,14 +85,6 @@ D2D1_RECT_F Inset(D2D1_RECT_F rect, float dx, float dy) {
     rect.right -= dx;
     rect.top += dy;
     rect.bottom -= dy;
-    return rect;
-}
-
-D2D1_RECT_F Offset(D2D1_RECT_F rect, float dx, float dy) {
-    rect.left += dx;
-    rect.right += dx;
-    rect.top += dy;
-    rect.bottom += dy;
     return rect;
 }
 
@@ -195,6 +121,16 @@ int NextModelLinkPosition(const std::vector<Link>& links, int parentGroup) {
     for (const auto& link : links) {
         if (link.parentGroup == parentGroup) {
             maxPosition = std::max(maxPosition, link.pos);
+        }
+    }
+    return maxPosition + 1;
+}
+
+int NextModelGroupPosition(const std::vector<Group>& groups, int parentGroup) {
+    int maxPosition = -1;
+    for (const auto& group : groups) {
+        if (group.parentGroup == parentGroup) {
+            maxPosition = std::max(maxPosition, group.pos);
         }
     }
     return maxPosition + 1;
@@ -261,12 +197,20 @@ int EffectiveLinkLayout(const Group* tag) {
     return tag && tag->layout == 0 ? 0 : 1;
 }
 
-float LinkTileSide(int iconSize) {
-    return std::max(74.0f, std::min(96.0f, static_cast<float>(iconSize) + 42.0f));
+float Metric(const Theme& theme, const wchar_t* component, const wchar_t* name, float fallback) {
+    return theme.metric(component, name, fallback);
 }
 
-int LinkGridColumns(const D2D1_RECT_F& rect, float tileSide, float gap) {
-    const float width = std::max(1.0f, Width(rect) - 16.0f);
+float LinkTileSide(const Theme& theme, int iconSize) {
+    return std::max(
+        Metric(theme, L"linkItem", L"tileMinSide", 74.0f),
+        std::min(
+            Metric(theme, L"linkItem", L"tileMaxSide", 96.0f),
+            static_cast<float>(iconSize) + Metric(theme, L"linkItem", L"tileIconExtra", 42.0f)));
+}
+
+int LinkGridColumns(const Theme& theme, const D2D1_RECT_F& rect, float tileSide, float gap) {
+    const float width = std::max(1.0f, Width(rect) - Metric(theme, L"linkItem", L"viewportPaddingX", 16.0f));
     return std::max(1, static_cast<int>((width + gap) / (tileSide + gap)));
 }
 
@@ -284,43 +228,43 @@ struct LinkLayoutMetrics {
     float itemHeight = 74.0f;
 };
 
-LinkLayoutMetrics MakeLinkLayout(const D2D1_RECT_F& rect, const Group* tag) {
+LinkLayoutMetrics MakeLinkLayout(const Theme& theme, const D2D1_RECT_F& rect, const Group* tag) {
     LinkLayoutMetrics metrics;
     metrics.layout = EffectiveLinkLayout(tag);
     metrics.iconSize = EffectiveIconSize(tag);
 
-    const float available = std::max(1.0f, Width(rect) - 16.0f);
+    const float available = std::max(1.0f, Width(rect) - Metric(theme, L"linkItem", L"viewportPaddingX", 16.0f));
     if (metrics.layout == 0) {
-        metrics.leftInset = 4.0f;
-        metrics.topInset = 6.0f;
-        metrics.bottomInset = 6.0f;
-        metrics.gapX = 0.0f;
-        metrics.gapY = 2.0f;
+        metrics.leftInset = Metric(theme, L"linkItem", L"listLeftInset", 4.0f);
+        metrics.topInset = Metric(theme, L"linkItem", L"listTopInset", 6.0f);
+        metrics.bottomInset = Metric(theme, L"linkItem", L"listBottomInset", 6.0f);
+        metrics.gapX = Metric(theme, L"linkItem", L"listGapX", 0.0f);
+        metrics.gapY = Metric(theme, L"linkItem", L"listGapY", 2.0f);
         metrics.columns = 1;
-        metrics.itemWidth = std::max(1.0f, Width(rect) - 8.0f);
-        metrics.itemHeight = std::max(34.0f, static_cast<float>(metrics.iconSize) + 12.0f);
+        metrics.itemWidth = std::max(1.0f, Width(rect) - metrics.leftInset * 2.0f);
+        metrics.itemHeight = std::max(Metric(theme, L"linkItem", L"listMinHeight", 34.0f), static_cast<float>(metrics.iconSize) + Metric(theme, L"linkItem", L"listHeightExtra", 12.0f));
         return metrics;
     }
 
-    metrics.leftInset = 8.0f;
-    metrics.topInset = 8.0f;
-    metrics.bottomInset = 8.0f;
+    metrics.leftInset = Metric(theme, L"linkItem", L"gridLeftInset", 8.0f);
+    metrics.topInset = Metric(theme, L"linkItem", L"gridTopInset", 8.0f);
+    metrics.bottomInset = Metric(theme, L"linkItem", L"gridBottomInset", 8.0f);
     if (metrics.iconSize <= 24) {
         metrics.compactTile = true;
-        metrics.gapX = 6.0f;
-        metrics.gapY = 6.0f;
-        const float preferredWidth = 128.0f;
+        metrics.gapX = Metric(theme, L"linkItem", L"compactGapX", 6.0f);
+        metrics.gapY = Metric(theme, L"linkItem", L"compactGapY", 6.0f);
+        const float preferredWidth = Metric(theme, L"linkItem", L"compactPreferredWidth", 128.0f);
         metrics.columns = std::max(1, static_cast<int>((available + metrics.gapX) / (preferredWidth + metrics.gapX)));
-        metrics.itemWidth = std::max(72.0f, (available - static_cast<float>(metrics.columns - 1) * metrics.gapX) / static_cast<float>(metrics.columns));
-        metrics.itemHeight = std::max(34.0f, static_cast<float>(metrics.iconSize) + 12.0f);
+        metrics.itemWidth = std::max(Metric(theme, L"linkItem", L"compactMinWidth", 72.0f), (available - static_cast<float>(metrics.columns - 1) * metrics.gapX) / static_cast<float>(metrics.columns));
+        metrics.itemHeight = std::max(Metric(theme, L"linkItem", L"listMinHeight", 34.0f), static_cast<float>(metrics.iconSize) + Metric(theme, L"linkItem", L"listHeightExtra", 12.0f));
         return metrics;
     }
 
-    metrics.gapX = 4.0f;
-    metrics.gapY = 4.0f;
-    metrics.itemWidth = LinkTileSide(metrics.iconSize);
+    metrics.gapX = Metric(theme, L"linkItem", L"gridGapX", 4.0f);
+    metrics.gapY = Metric(theme, L"linkItem", L"gridGapY", 4.0f);
+    metrics.itemWidth = LinkTileSide(theme, metrics.iconSize);
     metrics.itemHeight = metrics.itemWidth;
-    metrics.columns = LinkGridColumns(rect, metrics.itemWidth, metrics.gapX);
+    metrics.columns = LinkGridColumns(theme, rect, metrics.itemWidth, metrics.gapX);
     return metrics;
 }
 
@@ -343,8 +287,12 @@ float LinkContentHeight(std::size_t count, const LinkLayoutMetrics& metrics) {
            metrics.bottomInset;
 }
 
-float NavigationItemWidth(const std::wstring& text) {
-    return std::max(86.0f, std::min(168.0f, 28.0f + static_cast<float>(text.size()) * 12.0f));
+float NavigationItemWidth(const Theme& theme, const std::wstring& text) {
+    return std::max(
+        Metric(theme, L"majorNavItem", L"textMinWidth", 86.0f),
+        std::min(
+            Metric(theme, L"majorNavItem", L"textMaxWidth", 168.0f),
+            Metric(theme, L"majorNavItem", L"textBaseWidth", 28.0f) + static_cast<float>(text.size()) * Metric(theme, L"majorNavItem", L"textCharWidth", 12.0f)));
 }
 
 bool HasSiblingGroupName(const std::vector<Group>& groups, int parentGroup, const std::wstring& name) {
@@ -409,17 +357,91 @@ std::wstring InitialSortKey(const std::wstring& value) {
 }
 
 struct ThemeMenuItem {
-    const wchar_t* name;
-    const wchar_t* label;
+    std::wstring name;
+    std::wstring label;
 };
 
-constexpr std::array<ThemeMenuItem, 5> kThemeMenuItems{{
-        {L"gray", L"浅灰"},
-        {L"dark", L"深色"},
-        {L"dark2", L"深色 2"},
-        {L"晨雾", L"晨雾"},
-        {L"泡泡糖", L"泡泡糖"},
-}};
+std::wstring XmlAttributeValue(const std::wstring& tag, const std::wstring& name) {
+    const std::wstring pattern = name + L"=\"";
+    std::size_t begin = tag.find(pattern);
+    if (begin == std::wstring::npos) {
+        return {};
+    }
+    begin += pattern.size();
+    const std::size_t end = tag.find(L'"', begin);
+    if (end == std::wstring::npos) {
+        return {};
+    }
+    return tag.substr(begin, end - begin);
+}
+
+std::wstring ReadThemeDisplayName(const std::filesystem::path& path, const std::wstring& fallback) {
+    const std::wstring xml = LoadUtf8File(path);
+    const std::size_t begin = xml.find(L"<Theme");
+    if (begin == std::wstring::npos) {
+        return fallback;
+    }
+    const std::size_t end = xml.find(L">", begin);
+    if (end == std::wstring::npos) {
+        return fallback;
+    }
+    const std::wstring tag = xml.substr(begin, end - begin + 1);
+    std::wstring label = XmlAttributeValue(tag, L"displayName");
+    return label.empty() ? fallback : label;
+}
+
+std::vector<ThemeMenuItem> DiscoverThemeMenuItems(const std::filesystem::path& themeDirectory, const std::wstring& currentTheme) {
+    std::vector<ThemeMenuItem> items;
+    std::error_code ec;
+    if (std::filesystem::exists(themeDirectory, ec) && std::filesystem::is_directory(themeDirectory, ec)) {
+        for (const auto& entry : std::filesystem::directory_iterator(themeDirectory, ec)) {
+            if (ec) {
+                break;
+            }
+            if (!entry.is_regular_file(ec) || entry.path().extension() != L".xml") {
+                continue;
+            }
+            const std::wstring name = entry.path().stem().wstring();
+            if (name.empty()) {
+                continue;
+            }
+            items.push_back(ThemeMenuItem{name, ReadThemeDisplayName(entry.path(), name)});
+        }
+    }
+
+    auto hasTheme = [&](const std::wstring& name) {
+        return std::any_of(items.begin(), items.end(), [&](const ThemeMenuItem& item) {
+            return item.name == name;
+        });
+    };
+    if (!hasTheme(L"default")) {
+        items.push_back(ThemeMenuItem{L"default", L"default"});
+    }
+    if (!currentTheme.empty() && currentTheme != L"default" && !hasTheme(currentTheme)) {
+        const std::filesystem::path path = themeDirectory / (currentTheme + L".xml");
+        if (FileExists(path)) {
+            items.push_back(ThemeMenuItem{currentTheme, ReadThemeDisplayName(path, currentTheme)});
+        }
+    }
+
+    std::sort(items.begin(), items.end(), [](const ThemeMenuItem& left, const ThemeMenuItem& right) {
+        if (left.name == L"default" || right.name == L"default") {
+            return left.name == L"default" && right.name != L"default";
+        }
+        return left.label < right.label;
+    });
+    items.erase(std::unique(items.begin(), items.end(), [](const ThemeMenuItem& left, const ThemeMenuItem& right) {
+        return left.name == right.name;
+    }), items.end());
+    return items;
+}
+
+std::wstring EffectiveThemeName(const std::filesystem::path& themeDirectory, const std::wstring& themeName) {
+    if (!themeName.empty() && FileExists(themeDirectory / (themeName + L".xml"))) {
+        return themeName;
+    }
+    return L"default";
+}
 
 std::wstring MenuTextFromRaw(const std::wstring& text) {
     std::wstring result;
@@ -431,82 +453,6 @@ std::wstring MenuTextFromRaw(const std::wstring& text) {
         result.push_back(text[i]);
     }
     return result;
-}
-
-enum MenuIcon {
-    MenuIconNone = 0,
-    MenuIconFile,
-    MenuIconFolder,
-    MenuIconUrl,
-    MenuIconSystem,
-    MenuIconShield,
-    MenuIconOpenFolder,
-    MenuIconWindows,
-    MenuIconShortcut,
-    MenuIconRefresh,
-    MenuIconMove,
-    MenuIconCopy,
-    MenuIconEdit,
-    MenuIconInfo,
-    MenuIconDelete,
-    MenuIconSearch,
-    MenuIconGroup,
-    MenuIconTag,
-    MenuIconTheme,
-    MenuIconSize,
-    MenuIconView,
-    MenuIconSort,
-    MenuIconClear,
-    MenuIconAbout,
-    MenuIconExit,
-    MenuIconRun,
-};
-
-int MenuIconFor(UINT_PTR id, const std::wstring& text) {
-    switch (id) {
-    case ID_MENU_ADD_FILE: return MenuIconFile;
-    case ID_MENU_ADD_FOLDER: return MenuIconFolder;
-    case ID_MENU_ADD_URL: return MenuIconUrl;
-    case ID_MENU_ADD_SYSTEM: return MenuIconSystem;
-    case ID_MENU_RUN_ADMIN: return MenuIconShield;
-    case ID_MENU_RUN_PRIVATE: return MenuIconUrl;
-    case ID_MENU_OPEN_LOCATION: return MenuIconOpenFolder;
-    case ID_MENU_COPY_URL: return MenuIconUrl;
-    case ID_MENU_WINDOWS_CONTEXT: return MenuIconWindows;
-    case ID_MENU_CREATE_DESKTOP_SHORTCUT: return MenuIconShortcut;
-    case ID_MENU_REFRESH_LINK_ICON:
-    case ID_MENU_REFRESH_PAGE_ICONS:
-    case ID_MENU_CLEAR_ICON_CACHE: return MenuIconRefresh;
-    case ID_MENU_MOVE_UP:
-    case ID_MENU_MOVE_DOWN: return MenuIconMove;
-    case ID_MENU_COPY_LINK:
-    case ID_MENU_COPY_PATH:
-    case ID_MENU_COPY_TO_BASE: return MenuIconCopy;
-    case ID_MENU_EDIT_LINK:
-    case ID_MENU_EDIT_GROUP:
-    case ID_MENU_EDIT_TAG: return MenuIconEdit;
-    case ID_MENU_PROPERTIES:
-    case ID_MENU_ABOUT: return MenuIconInfo;
-    case ID_MENU_DELETE_LINK:
-    case ID_MENU_DELETE_GROUP:
-    case ID_MENU_DELETE_TAG: return MenuIconDelete;
-    case ID_MENU_SEARCH: return MenuIconSearch;
-    case ID_MENU_ADD_GROUP: return MenuIconGroup;
-    case ID_MENU_ADD_TAG: return MenuIconTag;
-    case ID_MENU_CLEAR_TAG_LINKS: return MenuIconClear;
-    case ID_MENU_EXIT: return MenuIconExit;
-    case ID_MENU_RUN_LINK: return MenuIconRun;
-    default:
-        break;
-    }
-
-    if (text == L"移动到" || text == L"移动到标签") return MenuIconMove;
-    if (text == L"复制到" || text == L"复制到标签") return MenuIconCopy;
-    if (text == L"图标大小") return MenuIconSize;
-    if (text == L"查看方式") return MenuIconView;
-    if (text == L"排序方式") return MenuIconSort;
-    if (text == L"主题") return MenuIconTheme;
-    return MenuIconNone;
 }
 
 bool DrawStockMenuIcon(HDC dc, const RECT& rect, SHSTOCKICONID id) {
@@ -522,11 +468,146 @@ bool DrawStockMenuIcon(HDC dc, const RECT& rect, SHSTOCKICONID id) {
     return true;
 }
 
+bool DrawSystemImageListIcon(HDC dc, const RECT& rect, int imageIndex, bool disabled) {
+    if (imageIndex < 0) {
+        return false;
+    }
+    SHFILEINFOW info{};
+    HIMAGELIST imageList = reinterpret_cast<HIMAGELIST>(SHGetFileInfoW(
+        L"C:\\",
+        FILE_ATTRIBUTE_DIRECTORY,
+        &info,
+        sizeof(info),
+        SHGFI_SYSICONINDEX | SHGFI_SMALLICON | SHGFI_USEFILEATTRIBUTES));
+    if (!imageList) {
+        return false;
+    }
+
+    const int size = std::min(rect.right - rect.left, rect.bottom - rect.top);
+    const int x = rect.left + ((rect.right - rect.left) - size) / 2;
+    const int y = rect.top + ((rect.bottom - rect.top) - size) / 2;
+    return ImageList_Draw(imageList, imageIndex, dc, x, y, disabled ? ILD_BLEND50 : ILD_NORMAL) != FALSE;
+}
+
+bool EnsureMenuIconFontLoaded(const std::filesystem::path& appDirectory) {
+    static std::filesystem::path loadedPath;
+    static bool loaded = false;
+
+    const std::filesystem::path fontPath = appDirectory / L"icons" / L"menu" / L"tabler" / L"tabler-icons.ttf";
+    if (loaded && loadedPath == fontPath) {
+        return true;
+    }
+    loadedPath = fontPath;
+    loaded = FileExists(fontPath) && AddFontResourceExW(fontPath.c_str(), FR_PRIVATE, nullptr) > 0;
+    return loaded;
+}
+
+wchar_t MenuIconGlyph(int icon) {
+    switch (icon) {
+    case MenuIconFile: return static_cast<wchar_t>(0xEAA4); // file
+    case MenuIconFolder: return static_cast<wchar_t>(0xEAAD); // folder
+    case MenuIconUrl: return static_cast<wchar_t>(0xEB54); // world
+    case MenuIconSystem: return static_cast<wchar_t>(0xEBB6); // apps
+    case MenuIconShield: return static_cast<wchar_t>(0xEB24); // shield
+    case MenuIconOpenFolder: return static_cast<wchar_t>(0xFAF7); // folder-open
+    case MenuIconWindows: return static_cast<wchar_t>(0xECD8); // brand-windows
+    case MenuIconShortcut: return static_cast<wchar_t>(0xEA99); // external-link
+    case MenuIconRefresh: return static_cast<wchar_t>(0xEB13); // refresh
+    case MenuIconMove: return static_cast<wchar_t>(0xF22F); // arrows-move
+    case MenuIconCopy: return static_cast<wchar_t>(0xEA7A); // copy
+    case MenuIconCut: return static_cast<wchar_t>(0xEB1B); // scissors
+    case MenuIconPaste: return static_cast<wchar_t>(0xEA6F); // clipboard
+    case MenuIconEdit: return static_cast<wchar_t>(0xEA98); // edit
+    case MenuIconInfo: return static_cast<wchar_t>(0xEAC5); // info-circle
+    case MenuIconDelete: return static_cast<wchar_t>(0xEB41); // trash
+    case MenuIconSearch: return static_cast<wchar_t>(0xEB1C); // search
+    case MenuIconGroup: return static_cast<wchar_t>(0xEAAE); // folders
+    case MenuIconTag: return static_cast<wchar_t>(0xEF86); // tags
+    case MenuIconTheme: return static_cast<wchar_t>(0xEC0A); // shirt
+    case MenuIconSize: return static_cast<wchar_t>(0xF291); // ruler-measure
+    case MenuIconView: return static_cast<wchar_t>(0xEA03); // adjustments
+    case MenuIconList: return static_cast<wchar_t>(0xEC14); // layout-list
+    case MenuIconTile: return static_cast<wchar_t>(0xEDBA); // layout-grid
+    case MenuIconSort: return static_cast<wchar_t>(0xEB5A); // arrows-sort
+    case MenuIconClear: return static_cast<wchar_t>(0xEF88); // trash-x
+    case MenuIconEye: return static_cast<wchar_t>(0xEA9A); // eye
+    case MenuIconEyeOff: return static_cast<wchar_t>(0xECF0); // eye-off
+    case MenuIconAbout: return static_cast<wchar_t>(0xEAC5); // info-circle
+    case MenuIconExit: return static_cast<wchar_t>(0xEB55); // x
+    case MenuIconRun: return static_cast<wchar_t>(0xED46); // player-play
+    case MenuIconPin: return static_cast<wchar_t>(0xEC9C); // pin
+    case MenuIconPinOff: return static_cast<wchar_t>(0xED60); // pinned
+    case MenuIconSettings: return static_cast<wchar_t>(0xEB20); // settings
+    case MenuIconHelp: return static_cast<wchar_t>(0xF91D); // help-circle
+    case MenuIconReward: return static_cast<wchar_t>(0xEB68); // gift
+    case MenuIconPower: return static_cast<wchar_t>(0xEB0D); // power
+    case MenuIconRestart: return static_cast<wchar_t>(0xEB13); // refresh
+    case MenuIconLogout: return static_cast<wchar_t>(0xEBA8); // logout
+    case MenuIconLock: return static_cast<wchar_t>(0xEAE2); // lock
+    case MenuIconSleep: return static_cast<wchar_t>(0xF228); // zzz
+    case MenuIconMonitor: return static_cast<wchar_t>(0xEA89); // device-desktop
+    case MenuIconVolumeUp: return static_cast<wchar_t>(0xEB51); // volume
+    case MenuIconVolumeDown: return static_cast<wchar_t>(0xEB4F); // volume-2
+    case MenuIconVolumeMute: return static_cast<wchar_t>(0xF1C3); // volume-off
+    case MenuIconTools: return static_cast<wchar_t>(0xEBCA); // tools
+    case MenuIconCalculator: return static_cast<wchar_t>(0xEB80); // calculator
+    case MenuIconTerminal: return static_cast<wchar_t>(0xEBEF); // terminal-2
+    case MenuIconNotebook: return static_cast<wchar_t>(0xEB96); // notebook
+    case MenuIconEnvironment: return static_cast<wchar_t>(0xEF05); // variable
+    case MenuIconUser: return static_cast<wchar_t>(0xEB4D); // user
+    case MenuIconHistory: return static_cast<wchar_t>(0xEBEA); // history
+    case MenuIconCertificate: return static_cast<wchar_t>(0xED76); // certificate
+    case MenuIconComputer: return static_cast<wchar_t>(0xEA89); // device-desktop
+    default: return L'\0';
+    }
+}
+
+bool DrawLocalMenuIcon(HDC dc, const RECT& rc, int icon, bool disabled, const std::filesystem::path& appDirectory) {
+    const wchar_t glyph = MenuIconGlyph(icon);
+    if (glyph == L'\0' || !EnsureMenuIconFontLoaded(appDirectory)) {
+        return false;
+    }
+
+    const int size = std::min(rc.right - rc.left, rc.bottom - rc.top);
+    HFONT font = CreateFontW(
+        -std::max(12, size + 1),
+        0,
+        0,
+        0,
+        FW_NORMAL,
+        FALSE,
+        FALSE,
+        FALSE,
+        DEFAULT_CHARSET,
+        OUT_DEFAULT_PRECIS,
+        CLIP_DEFAULT_PRECIS,
+        CLEARTYPE_QUALITY,
+        DEFAULT_PITCH | FF_DONTCARE,
+        L"tabler-icons");
+    if (!font) {
+        return false;
+    }
+
+    const COLORREF accent = disabled ? RGB(160, 168, 178) :
+        (icon == MenuIconDelete || icon == MenuIconClear || icon == MenuIconExit || icon == MenuIconPower ? RGB(228, 48, 58) : RGB(0, 153, 215));
+    const int oldBkMode = SetBkMode(dc, TRANSPARENT);
+    const COLORREF oldTextColor = SetTextColor(dc, accent);
+    HGDIOBJ oldFont = SelectObject(dc, font);
+    RECT textRect = rc;
+    DrawTextW(dc, &glyph, 1, &textRect, DT_SINGLELINE | DT_CENTER | DT_VCENTER | DT_NOCLIP);
+    SelectObject(dc, oldFont);
+    SetTextColor(dc, oldTextColor);
+    SetBkMode(dc, oldBkMode);
+    DeleteObject(font);
+    return true;
+}
+
 void DrawFallbackMenuIcon(HDC dc, const RECT& rc, int icon, bool disabled) {
     const COLORREF blue = disabled ? RGB(150, 150, 150) : RGB(0, 120, 215);
     const COLORREF red = disabled ? RGB(150, 150, 150) : RGB(230, 50, 45);
-    const COLORREF gray = disabled ? RGB(170, 170, 170) : RGB(100, 116, 139);
+    const COLORREF mutedColor = disabled ? RGB(170, 170, 170) : RGB(100, 116, 139);
     const COLORREF amber = disabled ? RGB(170, 170, 170) : RGB(245, 180, 40);
+    const COLORREF green = disabled ? RGB(170, 170, 170) : RGB(24, 150, 92);
     const int l = rc.left + 1;
     const int t = rc.top + 1;
     const int r = rc.right - 1;
@@ -554,6 +635,22 @@ void DrawFallbackMenuIcon(HDC dc, const RECT& rc, int icon, bool disabled) {
         Rectangle(dc, l + 4, t + 2, r - 1, b - 4);
         Rectangle(dc, l + 1, t + 5, r - 4, b - 1);
         break;
+    case MenuIconCut:
+        Ellipse(dc, l + 1, t + 2, l + 6, t + 7);
+        Ellipse(dc, l + 1, b - 7, l + 6, b - 2);
+        MoveToEx(dc, l + 6, t + 7, nullptr);
+        LineTo(dc, r - 2, b - 3);
+        MoveToEx(dc, l + 6, b - 7, nullptr);
+        LineTo(dc, r - 2, t + 3);
+        break;
+    case MenuIconPaste:
+        RoundRect(dc, l + 3, t + 4, r - 2, b - 1, 3, 3);
+        Rectangle(dc, l + 6, t + 1, r - 5, t + 6);
+        MoveToEx(dc, l + 6, t + 10, nullptr);
+        LineTo(dc, r - 5, t + 10);
+        MoveToEx(dc, l + 6, t + 13, nullptr);
+        LineTo(dc, r - 7, t + 13);
+        break;
     case MenuIconClear:
     case MenuIconDelete:
         MoveToEx(dc, l + 2, t + 2, nullptr);
@@ -575,12 +672,90 @@ void DrawFallbackMenuIcon(HDC dc, const RECT& rc, int icon, bool disabled) {
         Rectangle(dc, l + 2, b - 8, l + 9, b - 2);
         Rectangle(dc, r - 9, b - 9, r - 2, b - 2);
         break;
+    case MenuIconList:
+        for (int i = 0; i < 3; ++i) {
+            const int y = t + 3 + i * 5;
+            Rectangle(dc, l + 2, y, l + 5, y + 3);
+            MoveToEx(dc, l + 8, y + 1, nullptr);
+            LineTo(dc, r - 2, y + 1);
+        }
+        break;
+    case MenuIconTile:
+        Rectangle(dc, l + 2, t + 2, l + 7, t + 7);
+        Rectangle(dc, r - 7, t + 2, r - 2, t + 7);
+        Rectangle(dc, l + 2, b - 7, l + 7, b - 2);
+        Rectangle(dc, r - 7, b - 7, r - 2, b - 2);
+        break;
+    case MenuIconGroup:
+        {
+            HBRUSH fillBrush = CreateSolidBrush(amber);
+            HGDIOBJ previousBrush = SelectObject(dc, fillBrush);
+            RoundRect(dc, l + 1, t + 4, r - 1, b - 1, 4, 4);
+            SelectObject(dc, previousBrush);
+            DeleteObject(fillBrush);
+        }
+        MoveToEx(dc, l + 2, t + 4, nullptr);
+        LineTo(dc, l + 6, t + 1);
+        LineTo(dc, l + 10, t + 4);
+        break;
+    case MenuIconTag:
+        MoveToEx(dc, l + 3, t + 2, nullptr);
+        LineTo(dc, r - 2, t + 2);
+        LineTo(dc, r - 2, b - 6);
+        LineTo(dc, (l + r) / 2, b - 2);
+        LineTo(dc, l + 3, b - 6);
+        LineTo(dc, l + 3, t + 2);
+        break;
+    case MenuIconTheme:
+        {
+            HBRUSH fillBrush = CreateSolidBrush(disabled ? RGB(170, 170, 170) : RGB(255, 255, 255));
+            HGDIOBJ previousBrush = SelectObject(dc, fillBrush);
+            Ellipse(dc, l + 1, t + 1, r - 1, b - 1);
+            SelectObject(dc, previousBrush);
+            DeleteObject(fillBrush);
+        }
+        {
+            HBRUSH greenBrush = CreateSolidBrush(green);
+            HGDIOBJ previousBrush = SelectObject(dc, greenBrush);
+            Ellipse(dc, l + 4, t + 4, l + 8, t + 8);
+            Ellipse(dc, r - 8, t + 5, r - 4, t + 9);
+            Ellipse(dc, l + 7, b - 8, l + 11, b - 4);
+            SelectObject(dc, previousBrush);
+            DeleteObject(greenBrush);
+        }
+        break;
+    case MenuIconEyeOff:
+        Arc(dc, l + 1, t + 3, r - 1, b - 3, l + 3, (t + b) / 2, r - 3, (t + b) / 2);
+        Arc(dc, l + 1, t + 3, r - 1, b - 3, r - 3, (t + b) / 2, l + 3, (t + b) / 2);
+        MoveToEx(dc, l + 2, b - 2, nullptr);
+        LineTo(dc, r - 2, t + 2);
+        break;
+    case MenuIconView:
+        Rectangle(dc, l + 1, t + 3, r - 1, b - 3);
+        MoveToEx(dc, l + 4, (t + b) / 2, nullptr);
+        LineTo(dc, r - 4, (t + b) / 2);
+        break;
+    case MenuIconReward:
+        {
+            HBRUSH fillBrush = CreateSolidBrush(disabled ? RGB(170, 170, 170) : RGB(255, 232, 140));
+            HGDIOBJ previousBrush = SelectObject(dc, fillBrush);
+            Ellipse(dc, l + 2, t + 2, r - 2, b - 2);
+            SelectObject(dc, previousBrush);
+            DeleteObject(fillBrush);
+        }
+        MoveToEx(dc, (l + r) / 2, t + 5, nullptr);
+        LineTo(dc, (l + r) / 2, b - 5);
+        MoveToEx(dc, l + 6, t + 8, nullptr);
+        LineTo(dc, r - 6, t + 8);
+        MoveToEx(dc, l + 6, b - 8, nullptr);
+        LineTo(dc, r - 6, b - 8);
+        break;
     default:
-        HPEN grayPen = CreatePen(PS_SOLID, 2, gray);
-        SelectObject(dc, grayPen);
+        HPEN mutedPen = CreatePen(PS_SOLID, 2, mutedColor);
+        SelectObject(dc, mutedPen);
         Rectangle(dc, l + 2, t + 2, r - 2, b - 2);
         SelectObject(dc, pen);
-        DeleteObject(grayPen);
+        DeleteObject(mutedPen);
         break;
     }
 
@@ -590,7 +765,7 @@ void DrawFallbackMenuIcon(HDC dc, const RECT& rc, int icon, bool disabled) {
     DeleteObject(pen);
 }
 
-void DrawMenuIcon(HDC dc, const RECT& rc, int icon, bool disabled) {
+void DrawMenuIcon(HDC dc, const RECT& rc, int icon, bool disabled, const std::filesystem::path& appDirectory) {
     if (icon == MenuIconNone) {
         return;
     }
@@ -599,21 +774,22 @@ void DrawMenuIcon(HDC dc, const RECT& rc, int icon, bool disabled) {
     case MenuIconFile: drawn = DrawStockMenuIcon(dc, rc, SIID_DOCNOASSOC); break;
     case MenuIconFolder: drawn = DrawStockMenuIcon(dc, rc, SIID_FOLDER); break;
     case MenuIconUrl: drawn = DrawStockMenuIcon(dc, rc, SIID_WORLD); break;
-    case MenuIconSystem:
-    case MenuIconWindows:
     case MenuIconRun: drawn = DrawStockMenuIcon(dc, rc, SIID_APPLICATION); break;
     case MenuIconShield: drawn = DrawStockMenuIcon(dc, rc, SIID_SHIELD); break;
     case MenuIconOpenFolder: drawn = DrawStockMenuIcon(dc, rc, SIID_FOLDEROPEN); break;
     case MenuIconShortcut: drawn = DrawStockMenuIcon(dc, rc, SIID_LINK); break;
     case MenuIconEdit: drawn = DrawStockMenuIcon(dc, rc, SIID_RENAME); break;
+    case MenuIconGroup: drawn = DrawStockMenuIcon(dc, rc, SIID_FOLDER); break;
     case MenuIconInfo:
     case MenuIconAbout: drawn = DrawStockMenuIcon(dc, rc, SIID_INFO); break;
-    case MenuIconDelete:
-    case MenuIconClear: drawn = DrawStockMenuIcon(dc, rc, SIID_DELETE); break;
+    case MenuIconDelete: drawn = DrawStockMenuIcon(dc, rc, SIID_DELETE); break;
     case MenuIconSearch: drawn = DrawStockMenuIcon(dc, rc, SIID_FIND); break;
     case MenuIconExit: drawn = DrawStockMenuIcon(dc, rc, SIID_ERROR); break;
     default:
         break;
+    }
+    if (!drawn) {
+        drawn = DrawLocalMenuIcon(dc, rc, icon, disabled, appDirectory);
     }
     if (!drawn) {
         DrawFallbackMenuIcon(dc, rc, icon, disabled);
@@ -774,6 +950,10 @@ MainWindow::MainWindow(
 }
 
 MainWindow::~MainWindow() {
+    if (tooltip_) {
+        DestroyWindow(tooltip_);
+        tooltip_ = nullptr;
+    }
     DiscardDeviceResources();
     SafeRelease(titleFormat_);
     SafeRelease(textFormat_);
@@ -847,9 +1027,10 @@ bool MainWindow::Create() {
     if (config_.topMost) {
         SetWindowPos(hwnd_, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
     }
+    CreateTooltip();
 
     if (!config_.hideOnStart) {
-        ShowWindow(hwnd_, SW_SHOWNORMAL);
+        ShowWindowRespectFocusPolicy(hwnd_, SW_SHOWNORMAL);
         UpdateWindow(hwnd_);
     }
     oleDropTarget_ = new OleDropTarget(this);
@@ -1013,6 +1194,7 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         OnResize(LOWORD(lParam), HIWORD(lParam));
         return 0;
     case WM_MOVE:
+        HideLinkTooltip();
         SaveWindowState();
         return 0;
     case WM_MOUSEMOVE: {
@@ -1048,9 +1230,13 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             TrackMouseEvent(&event);
             trackingMouse_ = true;
         }
+        POINT screenPoint{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+        ClientToScreen(hwnd_, &screenPoint);
+        UpdateLinkTooltip(next, screenPoint);
         return 0;
     }
     case WM_MOUSELEAVE:
+        HideLinkTooltip();
         trackingMouse_ = false;
         hover_ = {};
         pendingHoverActivationKind_ = HitKind::None;
@@ -1062,18 +1248,21 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         InvalidateRect(hwnd_, nullptr, FALSE);
         return 0;
     case WM_MOUSEWHEEL: {
+        HideLinkTooltip();
         POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
         ScreenToClient(hwnd_, &point);
         ScrollAtPoint(static_cast<float>(point.x), static_cast<float>(point.y), GET_WHEEL_DELTA_WPARAM(wParam), false);
         return 0;
     }
     case WM_MOUSEHWHEEL: {
+        HideLinkTooltip();
         POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
         ScreenToClient(hwnd_, &point);
         ScrollAtPoint(static_cast<float>(point.x), static_cast<float>(point.y), GET_WHEEL_DELTA_WPARAM(wParam), true);
         return 0;
     }
     case WM_LBUTTONDOWN: {
+        HideLinkTooltip();
         SetFocus(hwnd_);
         const float x = static_cast<float>(GET_X_LPARAM(lParam));
         const float y = static_cast<float>(GET_Y_LPARAM(lParam));
@@ -1121,6 +1310,7 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         }
     }
     case WM_RBUTTONUP: {
+        HideLinkTooltip();
         SetFocus(hwnd_);
         const float x = static_cast<float>(GET_X_LPARAM(lParam));
         const float y = static_cast<float>(GET_Y_LPARAM(lParam));
@@ -1157,6 +1347,7 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         return 0;
     }
     case WM_LBUTTONDBLCLK: {
+        HideLinkTooltip();
         const float x = static_cast<float>(GET_X_LPARAM(lParam));
         const float y = static_cast<float>(GET_Y_LPARAM(lParam));
         HitArea hit = HitTest(x, y);
@@ -1182,19 +1373,51 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
     case WM_COMMAND:
         {
         const UINT command = LOWORD(wParam);
-        if (command >= ID_MENU_MOVE_TO_BASE && command < ID_MENU_MOVE_TO_BASE + menuMoveTargetIds_.size()) {
-            MoveLinkToTag(CommandLinkId(), menuMoveTargetIds_[command - ID_MENU_MOVE_TO_BASE]);
+        if (command >= ID_MENU_MOVE_TO_BASE && command < ID_MENU_MOVE_TO_BASE + ID_MENU_DYNAMIC_TARGET_LIMIT) {
+            const std::size_t targetIndex = command - ID_MENU_MOVE_TO_BASE;
+            std::vector<int> targets = menuMoveTargetIds_;
+            if (targetIndex >= targets.size()) {
+                Link* link = FindLink(CommandLinkId());
+                targets = GroupedTagTargetIds(link ? link->parentGroup : 0);
+            }
+            if (targetIndex < targets.size()) {
+                MoveLinkToTag(CommandLinkId(), targets[targetIndex]);
+            }
             return 0;
         }
-        if (command >= ID_MENU_COPY_TO_BASE && command < ID_MENU_COPY_TO_BASE + menuCopyTargetIds_.size()) {
-            CopyLinkToTag(CommandLinkId(), menuCopyTargetIds_[command - ID_MENU_COPY_TO_BASE]);
+        if (command >= ID_MENU_COPY_TO_BASE && command < ID_MENU_COPY_TO_BASE + ID_MENU_DYNAMIC_TARGET_LIMIT) {
+            const std::size_t targetIndex = command - ID_MENU_COPY_TO_BASE;
+            std::vector<int> targets = menuCopyTargetIds_;
+            if (targetIndex >= targets.size()) {
+                targets = GroupedTagTargetIds(0);
+            }
+            if (targetIndex < targets.size()) {
+                CopyLinkToTag(CommandLinkId(), targets[targetIndex]);
+            }
+            return 0;
+        }
+        if (command >= ID_MENU_MOVE_TAG_TO_BASE && command < ID_MENU_MOVE_TAG_TO_BASE + ID_MENU_DYNAMIC_TARGET_LIMIT) {
+            const std::size_t targetIndex = command - ID_MENU_MOVE_TAG_TO_BASE;
+            std::vector<int> targets = menuGroupTargetIds_;
+            if (targetIndex >= targets.size()) {
+                const Group* tag = FindGroup(CommandTagId());
+                targets = GroupTargetIds(tag ? tag->parentGroup : 0);
+            }
+            if (targetIndex < targets.size()) {
+                MoveTagToGroup(CommandTagId(), targets[targetIndex]);
+            }
             return 0;
         }
         if (command >= ID_MENU_THEME_BASE && command < ID_MENU_THEME_BASE + 100) {
+            const auto themeItems = DiscoverThemeMenuItems(appDirectory_ / L"theme", config_.theme);
             const std::size_t themeIndex = command - ID_MENU_THEME_BASE;
-            if (themeIndex < kThemeMenuItems.size()) {
-                ApplyTheme(kThemeMenuItems[themeIndex].name);
+            if (themeIndex < themeItems.size()) {
+                ApplyTheme(themeItems[themeIndex].name);
             }
+            return 0;
+        }
+        if (command >= ID_MENU_SYSTEM_FUNCTION_BASE && command < ID_MENU_SYSTEM_FUNCTION_BASE + ID_MENU_SYSTEM_FUNCTION_LIMIT) {
+            OpenSystemFunction(static_cast<std::size_t>(command - ID_MENU_SYSTEM_FUNCTION_BASE));
             return 0;
         }
         switch (command) {
@@ -1333,17 +1556,59 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         case ID_MENU_ICON_LARGE:
             SetCurrentTagIconSize(48);
             return 0;
+        case ID_MENU_ALL_SORT_POS:
+            SetAllTagsSort(0);
+            return 0;
+        case ID_MENU_ALL_SORT_RUNCOUNT:
+            SetAllTagsSort(1);
+            return 0;
+        case ID_MENU_ALL_SORT_NAME:
+            SetAllTagsSort(2);
+            return 0;
+        case ID_MENU_ALL_LAYOUT_LIST:
+            SetAllTagsLayout(0);
+            return 0;
+        case ID_MENU_ALL_LAYOUT_TILE:
+            SetAllTagsLayout(1);
+            return 0;
+        case ID_MENU_ALL_ICON_SMALL:
+            SetAllTagsIconSize(24);
+            return 0;
+        case ID_MENU_ALL_ICON_MEDIUM:
+            SetAllTagsIconSize(32);
+            return 0;
+        case ID_MENU_ALL_ICON_LARGE:
+            SetAllTagsIconSize(48);
+            return 0;
+        case ID_MENU_TOGGLE_TITLE:
+            ToggleConfigVisibility(&AppConfig::showTitle);
+            return 0;
+        case ID_MENU_TOGGLE_GROUP:
+            ToggleConfigVisibility(&AppConfig::showGroup);
+            return 0;
+        case ID_MENU_TOGGLE_TAG:
+            ToggleConfigVisibility(&AppConfig::showTag);
+            return 0;
+        case ID_MENU_TOGGLE_TOPMOST:
+            ToggleConfigVisibility(&AppConfig::topMost);
+            return 0;
         case ID_MENU_SEARCH:
             OpenSearch();
             return 0;
         case ID_MENU_SETTINGS:
             OpenSettings();
             return 0;
+        case ID_MENU_RESET_LAYOUT:
+            ResetLayoutToDefaults();
+            return 0;
         case ID_MENU_IMPORT_CLIPBOARD:
             ImportClipboard();
             return 0;
         case ID_MENU_CLEAR_ICON_CACHE:
             ClearIconCache();
+            return 0;
+        case ID_MENU_REFRESH_ALL_ICONS:
+            RefreshAllIcons();
             return 0;
         case ID_MENU_ABOUT:
             ShowAbout();
@@ -1385,6 +1650,11 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         }
         return DefWindowProcW(hwnd_, message, wParam, lParam);
     case WM_DESTROY:
+        HideLinkTooltip();
+        if (tooltip_) {
+            DestroyWindow(tooltip_);
+            tooltip_ = nullptr;
+        }
         if (dockTimerId_ != 0) {
             KillTimer(hwnd_, dockTimerId_);
             dockTimerId_ = 0;
@@ -1492,6 +1762,10 @@ int MainWindow::CommandLinkId() const {
 
 void MainWindow::AddGroup() {
     std::wstring name = UniqueSiblingGroupName(model_.groups, 0, L"新的分组");
+    if (!ShowTextInputDialog(hwnd_, instance_, theme_, L"新建分组", L"分组名称", name)) {
+        return;
+    }
+
     Group group;
     group.name = name;
     group.parentGroup = 0;
@@ -1531,7 +1805,7 @@ void MainWindow::EditGroup(int groupId) {
         return;
     }
     std::wstring name = group->name;
-    if (!ShowTextInputDialog(hwnd_, instance_, L"编辑分组", L"分组名称", name)) {
+    if (!ShowTextInputDialog(hwnd_, instance_, theme_, L"编辑分组", L"分组名称", name)) {
         return;
     }
     Group edited = *group;
@@ -1577,6 +1851,10 @@ void MainWindow::AddTag() {
         return;
     }
     std::wstring name = UniqueSiblingGroupName(model_.groups, parentGroupId, L"新的标签");
+    if (!ShowTextInputDialog(hwnd_, instance_, theme_, L"新建标签", L"标签名称", name)) {
+        return;
+    }
+
     Group tag;
     tag.name = name;
     tag.parentGroup = parentGroupId;
@@ -1611,7 +1889,7 @@ void MainWindow::EditTag(int tagId) {
         return;
     }
     std::wstring name = tag->name;
-    if (!ShowTextInputDialog(hwnd_, instance_, L"编辑标签", L"标签名称", name)) {
+    if (!ShowTextInputDialog(hwnd_, instance_, theme_, L"编辑标签", L"标签名称", name)) {
         return;
     }
     Group edited = *tag;
@@ -1714,6 +1992,71 @@ void MainWindow::SetCurrentTagIconSize(int iconSize) {
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
+void MainWindow::SetAllTagsSort(int sort) {
+    for (Group& tag : model_.groups) {
+        if (tag.parentGroup == 0) {
+            continue;
+        }
+        Group edited = tag;
+        edited.sort = sort;
+        if (!storageService_.UpdateGroup(edited)) {
+            MessageBoxW(hwnd_, storageService_.lastError().c_str(), L"统一排序方式", MB_OK | MB_ICONWARNING);
+            return;
+        }
+        tag = edited;
+    }
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void MainWindow::SetAllTagsLayout(int layout) {
+    for (Group& tag : model_.groups) {
+        if (tag.parentGroup == 0) {
+            continue;
+        }
+        Group edited = tag;
+        edited.layout = layout == 0 ? 0 : 1;
+        if (!storageService_.UpdateGroup(edited)) {
+            MessageBoxW(hwnd_, storageService_.lastError().c_str(), L"统一查看方式", MB_OK | MB_ICONWARNING);
+            return;
+        }
+        tag = edited;
+    }
+    linkScrollOffset_ = 0.0f;
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void MainWindow::SetAllTagsIconSize(int iconSize) {
+    int normalized = 32;
+    if (iconSize <= 24) {
+        normalized = 24;
+    } else if (iconSize >= 48) {
+        normalized = 48;
+    }
+
+    for (Group& tag : model_.groups) {
+        if (tag.parentGroup == 0) {
+            continue;
+        }
+        Group edited = tag;
+        edited.iconSize = normalized;
+        if (!storageService_.UpdateGroup(edited)) {
+            MessageBoxW(hwnd_, storageService_.lastError().c_str(), L"统一图标大小", MB_OK | MB_ICONWARNING);
+            return;
+        }
+        tag = edited;
+    }
+    linkScrollOffset_ = 0.0f;
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void MainWindow::ToggleConfigVisibility(bool AppConfig::*field) {
+    AppConfig previous = config_;
+    config_.*field = !(config_.*field);
+    configService_.SaveWindowState(config_);
+    ApplyConfigRuntimeChanges(previous);
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
 int MainWindow::EnsureCurrentTag() {
     Group* tag = FindGroup(currentTagId_);
     if (tag && tag->parentGroup != 0) {
@@ -1761,7 +2104,7 @@ void MainWindow::AddLink() {
     link.type = 0;
     link.pos = -1;
     link.showCmd = SW_SHOWNORMAL;
-    if (!LinkEditDialog::Show(hwnd_, instance_, link, model_.groups, true)) {
+    if (!LinkEditDialog::Show(hwnd_, instance_, theme_, link, model_.groups, true)) {
         return;
     }
     if (!storageService_.InsertLink(link)) {
@@ -1844,7 +2187,7 @@ void MainWindow::AddUrl() {
     link.icon = L"#url";
     link.pos = -1;
     link.showCmd = SW_SHOWNORMAL;
-    if (!UrlEditDialog::Show(hwnd_, instance_, link, true)) {
+    if (!UrlEditDialog::Show(hwnd_, instance_, theme_, link, true)) {
         return;
     }
     if (!storageService_.InsertLink(link)) {
@@ -1867,7 +2210,7 @@ void MainWindow::AddSystemFunction() {
     link.parentGroup = currentTagId_;
     link.pos = -1;
     link.showCmd = SW_SHOWNORMAL;
-    if (!SystemFunctionDialog::Show(hwnd_, instance_, link)) {
+    if (!SystemFunctionDialog::Show(hwnd_, instance_, theme_, link)) {
         return;
     }
     if (!storageService_.InsertLink(link)) {
@@ -1881,13 +2224,26 @@ void MainWindow::AddSystemFunction() {
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
+void MainWindow::OpenSystemFunction(std::size_t index) {
+    Link link;
+    if (!ConfigureSystemFunctionLink(index, link)) {
+        return;
+    }
+
+    std::wstring error;
+    if (!launcher_.Run(link, error)) {
+        const std::wstring message = error.empty() ? L"打开系统功能失败。" : error;
+        MessageBoxW(hwnd_, message.c_str(), L"系统功能", MB_OK | MB_ICONWARNING);
+    }
+}
+
 void MainWindow::EditLink(int linkId) {
     Link* existing = FindLink(linkId);
     if (!existing) {
         return;
     }
     Link edited = *existing;
-    if (!LinkEditDialog::Show(hwnd_, instance_, edited, model_.groups, false)) {
+    if (!LinkEditDialog::Show(hwnd_, instance_, theme_, edited, model_.groups, false)) {
         return;
     }
     if (!storageService_.UpdateLink(edited)) {
@@ -2112,6 +2468,35 @@ void MainWindow::MoveGroupWithinParent(int groupId, int direction) {
         currentTagId_ = groupId;
         EnsureTagVisible(currentTagId_);
     }
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void MainWindow::MoveTagToGroup(int tagId, int groupId) {
+    Group* tag = FindGroup(tagId);
+    Group* targetGroup = FindGroup(groupId);
+    if (!tag || tag->parentGroup == 0 || !targetGroup || targetGroup->parentGroup != 0 || tag->parentGroup == groupId) {
+        return;
+    }
+
+    Group edited = *tag;
+    edited.parentGroup = groupId;
+    edited.pos = NextModelGroupPosition(model_.groups, groupId);
+    if (!storageService_.UpdateGroup(edited)) {
+        MessageBoxW(hwnd_, storageService_.lastError().c_str(), L"移动标签", MB_OK | MB_ICONWARNING);
+        return;
+    }
+
+    *tag = edited;
+    currentGroupId_ = groupId;
+    currentTagId_ = tagId;
+    config_.currentGroupId = currentGroupId_;
+    config_.currentTagId = currentTagId_;
+    configService_.SaveWindowState(config_);
+    tagScrollOffset_ = 0.0f;
+    linkScrollOffset_ = 0.0f;
+    EnsureGroupVisible(currentGroupId_);
+    EnsureTagVisible(currentTagId_);
+    EnsureLinkVisible(selectedLinkId_);
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
@@ -2369,7 +2754,7 @@ void MainWindow::CopyLinkPath(int linkId) {
 }
 
 void MainWindow::OpenSearch() {
-    int linkId = SearchDialog::Show(hwnd_, instance_, model_, config_);
+    int linkId = SearchDialog::Show(hwnd_, instance_, theme_, model_, config_);
     configService_.SaveWindowState(config_);
     if (linkId > 0) {
         selectedLinkId_ = linkId;
@@ -2380,13 +2765,67 @@ void MainWindow::OpenSearch() {
 void MainWindow::OpenSettings() {
     AppConfig previous = config_;
     AppConfig next = config_;
-    if (!ShowSettingsDialog(hwnd_, instance_, next)) {
+    if (!ShowSettingsDialog(hwnd_, instance_, next, theme_)) {
         return;
     }
     config_ = next;
     configService_.Save(config_);
     SyncAutoRun(previous);
     ApplyConfigRuntimeChanges(previous);
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void MainWindow::ResetLayoutToDefaults() {
+    AppConfig previous = config_;
+    const AppConfig defaults;
+
+    config_.showTitle = defaults.showTitle;
+    config_.showGroup = defaults.showGroup;
+    config_.showTag = defaults.showTag;
+    config_.showSearchButton = defaults.showSearchButton;
+    config_.showMenuButton = defaults.showMenuButton;
+    config_.showSkinButton = defaults.showSkinButton;
+    config_.topMost = defaults.topMost;
+    config_.groupRight = defaults.groupRight;
+    config_.tagRight = defaults.tagRight;
+    config_.tagAlign = defaults.tagAlign;
+    config_.width = defaults.width;
+    config_.height = defaults.height;
+    config_.groupWidth = defaults.groupWidth;
+    config_.autoGroupWidth = defaults.autoGroupWidth;
+    config_.tagWidth = defaults.tagWidth;
+    config_.autoTagHeight = defaults.autoTagHeight;
+    config_.attrWidth = defaults.attrWidth;
+    config_.attrHeight = defaults.attrHeight;
+    config_.alpha = defaults.alpha;
+
+    const POINT position = ClampWindowPosition(defaults.posX, defaults.posY, defaults.width, defaults.height);
+    config_.posX = position.x;
+    config_.posY = position.y;
+
+    dockHidden_ = false;
+    dockRestoreRect_ = {};
+    dockHideDueTick_ = GetTickCount64() + kDockRestoreGraceMs;
+    groupScrollOffset_ = 0.0f;
+    tagScrollOffset_ = 0.0f;
+    linkScrollOffset_ = 0.0f;
+
+    configService_.SaveWindowState(config_);
+    ApplyConfigRuntimeChanges(previous);
+
+    if (IsIconic(hwnd_)) {
+        ShowWindowRespectFocusPolicy(hwnd_, SW_RESTORE);
+    }
+    ShowWindowRespectFocusPolicy(hwnd_, SW_SHOWNORMAL);
+    SetWindowPos(
+        hwnd_,
+        config_.topMost ? HWND_TOPMOST : HWND_NOTOPMOST,
+        config_.posX,
+        config_.posY,
+        config_.width,
+        config_.height,
+        SWP_SHOWWINDOW);
+    ActivateWindow(hwnd_);
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
@@ -2398,6 +2837,13 @@ void MainWindow::ClearIconCache() {
         WriteAppLog(L"图标缓存清理失败。");
         MessageBoxW(hwnd_, L"图标缓存清理失败，请确认 icons/cache 目录可写。", L"图标缓存", MB_OK | MB_ICONWARNING);
     }
+}
+
+void MainWindow::RefreshAllIcons() {
+    for (const auto& link : model_.links) {
+        iconService_.RefreshDiskCache(link);
+    }
+    InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
 void MainWindow::RefreshLinkIcon(int linkId) {
@@ -2469,7 +2915,7 @@ bool MainWindow::OpenConfiguredUrl(const std::wstring& url, const wchar_t* title
 
 bool MainWindow::TryRepairLinkTarget(Link& link) {
     Link edited = link;
-    if (!LinkEditDialog::Show(hwnd_, instance_, edited, model_.groups, false)) {
+    if (!LinkEditDialog::Show(hwnd_, instance_, theme_, edited, model_.groups, false)) {
         return false;
     }
     link = edited;
@@ -2488,7 +2934,7 @@ void MainWindow::ShowThemeMenu(POINT screenPoint) {
     ResetMenuVisuals();
     HMENU menu = CreatePopupMenu();
     AppendThemeItemsToMenu(menu);
-    SetForegroundWindow(hwnd_);
+    ActivateWindow(hwnd_);
     TrackPopupMenu(menu, TPM_RIGHTBUTTON, screenPoint.x, screenPoint.y, 0, hwnd_, nullptr);
     DestroyMenu(menu);
 }
@@ -2498,6 +2944,7 @@ void MainWindow::ApplyTheme(const std::wstring& themeName) {
     theme_ = Theme::Load(appDirectory_ / L"theme", config_.theme);
     configService_.Save(config_);
     ResetMenuVisuals();
+    ApplyTooltipTheme();
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
@@ -2567,6 +3014,7 @@ void MainWindow::UpdateDockState() {
 }
 
 void MainWindow::DockHide() {
+    HideLinkTooltip();
     if (dockHidden_) {
         return;
     }
@@ -2831,6 +3279,9 @@ bool MainWindow::ImportDropData(IDataObject* dataObject) {
 void MainWindow::ApplyConfigRuntimeChanges(const AppConfig& previous) {
     SetLayeredWindowAttributes(hwnd_, 0, static_cast<BYTE>(config_.alpha), LWA_ALPHA);
     SetWindowPos(hwnd_, config_.topMost ? HWND_TOPMOST : HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+    if (previous.showTooltip != config_.showTooltip && !config_.showTooltip) {
+        HideLinkTooltip();
+    }
     if (previous.hideNotifyIcon != config_.hideNotifyIcon) {
         RemoveTrayIcon();
         InitializeTrayIcon();
@@ -2952,15 +3403,12 @@ void MainWindow::ShowTrayMenu(POINT screenPoint) {
     menuContextId_ = 0;
     HMENU menu = CreatePopupMenu();
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_SHOW, IsWindowVisible(hwnd_) ? L"隐藏主窗口" : L"显示主窗口");
-    AppendThemedSeparator(menu);
-    AppendThemedMenuItem(menu, MF_STRING, ID_MENU_SEARCH, L"搜索");
-    AppendThemedMenuItem(menu, MF_STRING, ID_MENU_ADD_FILE, L"添加文件");
-    AppendThemedMenuItem(menu, MF_STRING, ID_MENU_ADD_URL, L"添加网址");
+    AppendThemedMenuItem(menu, MF_STRING, ID_MENU_RESET_LAYOUT, L"重置布局为默认布局");
     AppendThemedSeparator(menu);
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_ABOUT, L"关于");
     AppendThemedSeparator(menu);
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_EXIT, L"退出");
-    SetForegroundWindow(hwnd_);
+    ActivateWindow(hwnd_);
     TrackPopupMenu(menu, TPM_RIGHTBUTTON, screenPoint.x, screenPoint.y, 0, hwnd_, nullptr);
     DestroyMenu(menu);
 }
@@ -2971,17 +3419,34 @@ void MainWindow::ShowMainMenu(POINT screenPoint) {
     menuContextId_ = 0;
     HMENU menu = CreatePopupMenu();
     HMENU themeMenu = CreatePopupMenu();
+    HMENU systemMenu = CreatePopupMenu();
     AppendThemeItemsToMenu(themeMenu);
-    AppendThemedMenuItem(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(themeMenu), L"主题", true);
+    AppendSystemFunctionItems(systemMenu);
+
+    AppendThemedMenuItem(menu, MF_STRING, ID_MENU_TOGGLE_TITLE, config_.showTitle ? L"隐藏标题栏" : L"显示标题栏", false, -1, -1, config_.showTitle ? MenuIconEyeOff : MenuIconEye);
+    AppendThemedMenuItem(menu, MF_STRING, ID_MENU_TOGGLE_GROUP, config_.showGroup ? L"隐藏分组" : L"显示分组", false, -1, -1, config_.showGroup ? MenuIconEyeOff : MenuIconEye);
+    AppendThemedMenuItem(menu, MF_STRING, ID_MENU_TOGGLE_TAG, config_.showTag ? L"隐藏标签" : L"显示标签", false, -1, -1, config_.showTag ? MenuIconEyeOff : MenuIconEye);
+    AppendThemedMenuItem(menu, MF_STRING, ID_MENU_TOGGLE_TOPMOST, config_.topMost ? L"取消钉住" : L"钉住", false, -1, -1, config_.topMost ? MenuIconPinOff : MenuIconPin);
+    AppendThemedSeparator(menu);
+    AppendThemedMenuItem(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(themeMenu), L"皮肤", true);
+    AppendThemedMenuItem(menu, MF_STRING, ID_MENU_SETTINGS, L"设置");
+    AppendThemedSeparator(menu);
+    AppendThemedMenuItem(menu, MF_STRING, ID_MENU_REFRESH_ALL_ICONS, L"重置所有图标");
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_CLEAR_ICON_CACHE, L"清理图标缓存");
+    AppendThemedMenuItem(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(systemMenu), L"系统功能", true);
+    AppendThemedSeparator(menu);
+    AppendUnifiedViewOptionItems(menu);
     AppendThemedSeparator(menu);
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_IMPORT_CLIPBOARD, L"从剪贴板导入");
-    SetForegroundWindow(hwnd_);
+    AppendThemedMenuItem(menu, MF_STRING, ID_MENU_UPDATE, L"更新");
+    AppendThemedMenuItem(menu, MF_STRING, ID_MENU_EXIT, L"关闭退出");
+    ActivateWindow(hwnd_);
     TrackPopupMenu(menu, TPM_RIGHTBUTTON, screenPoint.x, screenPoint.y, 0, hwnd_, nullptr);
     DestroyMenu(menu);
 }
 
 void MainWindow::ShowLinkMenu(int linkId, POINT screenPoint) {
+    HideLinkTooltip();
     ResetMenuVisuals();
     HMENU menu = CreatePopupMenu();
     Link* link = FindLink(linkId);
@@ -3005,9 +3470,132 @@ void MainWindow::ShowLinkMenu(int linkId, POINT screenPoint) {
     selectedLinkId_ = linkId;
     menuContextKind_ = HitKind::Link;
     menuContextId_ = linkId;
-    SetForegroundWindow(hwnd_);
+    ActivateWindow(hwnd_);
     TrackPopupMenu(menu, TPM_RIGHTBUTTON, screenPoint.x, screenPoint.y, 0, hwnd_, nullptr);
     DestroyMenu(menu);
+}
+
+void MainWindow::CreateTooltip() {
+    if (tooltip_ || !hwnd_) {
+        return;
+    }
+
+    INITCOMMONCONTROLSEX controls{};
+    controls.dwSize = sizeof(controls);
+    controls.dwICC = ICC_WIN95_CLASSES;
+    InitCommonControlsEx(&controls);
+
+    tooltip_ = CreateWindowExW(
+        WS_EX_TOPMOST,
+        TOOLTIPS_CLASSW,
+        nullptr,
+        WS_POPUP | TTS_NOPREFIX | TTS_ALWAYSTIP,
+        CW_USEDEFAULT,
+        CW_USEDEFAULT,
+        CW_USEDEFAULT,
+        CW_USEDEFAULT,
+        hwnd_,
+        nullptr,
+        instance_,
+        nullptr);
+    if (!tooltip_) {
+        return;
+    }
+
+    SetWindowPos(tooltip_, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    SendMessageW(tooltip_, TTM_SETMAXTIPWIDTH, 0, 520);
+    SendMessageW(tooltip_, TTM_SETDELAYTIME, TTDT_INITIAL, 320);
+    SendMessageW(tooltip_, TTM_SETDELAYTIME, TTDT_RESHOW, 80);
+    SendMessageW(tooltip_, TTM_SETDELAYTIME, TTDT_AUTOPOP, 12000);
+
+    tooltipText_ = L" ";
+    tooltipInfo_ = {};
+    tooltipInfo_.cbSize = sizeof(tooltipInfo_);
+    tooltipInfo_.uFlags = TTF_TRACK | TTF_ABSOLUTE | TTF_TRANSPARENT;
+    tooltipInfo_.hwnd = hwnd_;
+    tooltipInfo_.uId = 1;
+    GetClientRect(hwnd_, &tooltipInfo_.rect);
+    tooltipInfo_.lpszText = const_cast<LPWSTR>(tooltipText_.c_str());
+    SendMessageW(tooltip_, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&tooltipInfo_));
+    SendMessageW(tooltip_, TTM_ACTIVATE, TRUE, 0);
+    ApplyTooltipTheme();
+}
+
+void MainWindow::ApplyTooltipTheme() {
+    if (!tooltip_) {
+        return;
+    }
+    SendMessageW(tooltip_, TTM_SETTIPBKCOLOR, ToColorRef(theme_.color(L"tooltip", L"normal", L"bg")), 0);
+    SendMessageW(tooltip_, TTM_SETTIPTEXTCOLOR, ToColorRef(theme_.color(L"tooltip", L"normal", L"text")), 0);
+
+    const int paddingX = static_cast<int>(std::max(0.0f, Metric(theme_, L"tooltip", L"paddingX", 8.0f)));
+    const int paddingY = static_cast<int>(std::max(0.0f, Metric(theme_, L"tooltip", L"paddingY", 5.0f)));
+    RECT margin{paddingX, paddingY, paddingX, paddingY};
+    SendMessageW(tooltip_, TTM_SETMARGIN, 0, reinterpret_cast<LPARAM>(&margin));
+}
+
+void MainWindow::HideLinkTooltip() {
+    if (!tooltip_) {
+        return;
+    }
+    SendMessageW(tooltip_, TTM_TRACKACTIVATE, FALSE, reinterpret_cast<LPARAM>(&tooltipInfo_));
+    tooltipLinkId_ = 0;
+}
+
+std::wstring MainWindow::LinkTooltipText(const Link& link) const {
+    std::wstring target = Trim(link.path);
+    if (!target.empty()) {
+        target = IsUrlLink(link) ? NormalizeUrl(target) : ExpandEnvironmentStringsSafe(target);
+    } else if (!Trim(link.workDir).empty()) {
+        target = ExpandEnvironmentStringsSafe(Trim(link.workDir));
+    } else {
+        target = Trim(link.name);
+    }
+
+    const std::wstring remark = Trim(link.remark);
+    if (target.empty()) {
+        return remark;
+    }
+    if (remark.empty()) {
+        return target;
+    }
+    return target + L"\r\n" + remark;
+}
+
+void MainWindow::UpdateLinkTooltip(const HitArea& hit, POINT screenPoint) {
+    if (!config_.showTooltip || hit.kind != HitKind::Link) {
+        HideLinkTooltip();
+        return;
+    }
+
+    Link* link = FindLink(hit.id);
+    if (!link) {
+        HideLinkTooltip();
+        return;
+    }
+
+    const std::wstring text = LinkTooltipText(*link);
+    if (text.empty()) {
+        HideLinkTooltip();
+        return;
+    }
+
+    if (!tooltip_) {
+        CreateTooltip();
+    }
+    if (!tooltip_) {
+        return;
+    }
+
+    if (tooltipLinkId_ != hit.id || tooltipText_ != text) {
+        tooltipText_ = text;
+        tooltipInfo_.lpszText = const_cast<LPWSTR>(tooltipText_.c_str());
+        SendMessageW(tooltip_, TTM_UPDATETIPTEXTW, 0, reinterpret_cast<LPARAM>(&tooltipInfo_));
+        tooltipLinkId_ = hit.id;
+    }
+
+    SendMessageW(tooltip_, TTM_TRACKPOSITION, 0, MAKELPARAM(screenPoint.x + 14, screenPoint.y + 18));
+    SendMessageW(tooltip_, TTM_TRACKACTIVATE, TRUE, reinterpret_cast<LPARAM>(&tooltipInfo_));
 }
 
 void MainWindow::ShowGroupMenu(int groupId, POINT screenPoint) {
@@ -3021,7 +3609,7 @@ void MainWindow::ShowGroupMenu(int groupId, POINT screenPoint) {
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_MOVE_DOWN, L"右移(Shift+→)");
     menuContextKind_ = HitKind::Group;
     menuContextId_ = groupId;
-    SetForegroundWindow(hwnd_);
+    ActivateWindow(hwnd_);
     TrackPopupMenu(menu, TPM_RIGHTBUTTON, screenPoint.x, screenPoint.y, 0, hwnd_, nullptr);
     DestroyMenu(menu);
 }
@@ -3032,7 +3620,7 @@ void MainWindow::ShowGroupBlankMenu(POINT screenPoint) {
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_ADD_GROUP, L"新建分组");
     menuContextKind_ = HitKind::None;
     menuContextId_ = 0;
-    SetForegroundWindow(hwnd_);
+    ActivateWindow(hwnd_);
     TrackPopupMenu(menu, TPM_RIGHTBUTTON, screenPoint.x, screenPoint.y, 0, hwnd_, nullptr);
     DestroyMenu(menu);
 }
@@ -3046,6 +3634,9 @@ void MainWindow::ShowTagMenu(int tagId, POINT screenPoint) {
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_DELETE_TAG, L"删除标签");
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_MOVE_UP, L"上移");
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_MOVE_DOWN, L"下移");
+    HMENU moveMenu = CreatePopupMenu();
+    AppendGroupTargetMenu(moveMenu, ID_MENU_MOVE_TAG_TO_BASE, menuGroupTargetIds_, tag ? tag->parentGroup : 0);
+    AppendThemedMenuItem(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(moveMenu), L"移动到", true);
     AppendThemedSeparator(menu);
     AppendAddLinkItems(menu);
     AppendThemedSeparator(menu);
@@ -3055,7 +3646,7 @@ void MainWindow::ShowTagMenu(int tagId, POINT screenPoint) {
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_CLEAR_TAG_LINKS, L"清空本页应用");
     menuContextKind_ = HitKind::Tag;
     menuContextId_ = tagId;
-    SetForegroundWindow(hwnd_);
+    ActivateWindow(hwnd_);
     TrackPopupMenu(menu, TPM_RIGHTBUTTON, screenPoint.x, screenPoint.y, 0, hwnd_, nullptr);
     DestroyMenu(menu);
 }
@@ -3066,7 +3657,7 @@ void MainWindow::ShowTagBlankMenu(POINT screenPoint) {
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_ADD_TAG, L"新建标签");
     menuContextKind_ = HitKind::Group;
     menuContextId_ = currentGroupId_;
-    SetForegroundWindow(hwnd_);
+    ActivateWindow(hwnd_);
     TrackPopupMenu(menu, TPM_RIGHTBUTTON, screenPoint.x, screenPoint.y, 0, hwnd_, nullptr);
     DestroyMenu(menu);
 }
@@ -3082,15 +3673,19 @@ void MainWindow::ShowBackgroundMenu(POINT screenPoint) {
     AppendThemedSeparator(menu);
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_REFRESH_PAGE_ICONS, L"刷新本页图标");
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_CLEAR_TAG_LINKS, L"清空本页应用");
-    SetForegroundWindow(hwnd_);
+    ActivateWindow(hwnd_);
     TrackPopupMenu(menu, TPM_RIGHTBUTTON, screenPoint.x, screenPoint.y, 0, hwnd_, nullptr);
     DestroyMenu(menu);
 }
 
 void MainWindow::AppendThemeItemsToMenu(HMENU menu) {
-    for (std::size_t i = 0; i < kThemeMenuItems.size(); ++i) {
-        const UINT flags = MF_STRING | (config_.theme == kThemeMenuItems[i].name ? MF_CHECKED : 0);
-        AppendThemedMenuItem(menu, flags, ID_MENU_THEME_BASE + static_cast<UINT>(i), kThemeMenuItems[i].label);
+    const std::filesystem::path themeDirectory = appDirectory_ / L"theme";
+    const auto themeItems = DiscoverThemeMenuItems(themeDirectory, config_.theme);
+    const std::wstring effectiveTheme = EffectiveThemeName(themeDirectory, config_.theme);
+    const std::size_t count = std::min<std::size_t>(themeItems.size(), 100);
+    for (std::size_t i = 0; i < count; ++i) {
+        const UINT flags = MF_STRING | (effectiveTheme == themeItems[i].name ? MF_CHECKED : 0);
+        AppendThemedMenuItem(menu, flags, ID_MENU_THEME_BASE + static_cast<UINT>(i), themeItems[i].label);
     }
 }
 
@@ -3124,6 +3719,123 @@ void MainWindow::AppendViewOptionItems(HMENU menu, const Group* tag) {
     AppendThemedMenuItem(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(sortMenu), L"排序方式", true);
 }
 
+void MainWindow::AppendUnifiedViewOptionItems(HMENU menu) {
+    bool hasTag = false;
+    bool allSmall = true;
+    bool allMedium = true;
+    bool allLarge = true;
+    bool allList = true;
+    bool allTile = true;
+    bool allSortPos = true;
+    bool allSortRunCount = true;
+    bool allSortName = true;
+
+    for (const auto& tag : model_.groups) {
+        if (tag.parentGroup == 0) {
+            continue;
+        }
+        hasTag = true;
+        const int iconSize = EffectiveIconSize(&tag);
+        const int layout = EffectiveLinkLayout(&tag);
+        allSmall = allSmall && iconSize == 24;
+        allMedium = allMedium && iconSize == 32;
+        allLarge = allLarge && iconSize == 48;
+        allList = allList && layout == 0;
+        allTile = allTile && layout == 1;
+        allSortPos = allSortPos && tag.sort == 0;
+        allSortRunCount = allSortRunCount && tag.sort == 1;
+        allSortName = allSortName && tag.sort == 2;
+    }
+
+    const UINT disabled = hasTag ? 0 : MF_GRAYED;
+    HMENU iconMenu = CreatePopupMenu();
+    AppendThemedMenuItem(iconMenu, MF_STRING | disabled | (hasTag && allSmall ? MF_CHECKED : 0), ID_MENU_ALL_ICON_SMALL, L"小图标");
+    AppendThemedMenuItem(iconMenu, MF_STRING | disabled | (hasTag && allMedium ? MF_CHECKED : 0), ID_MENU_ALL_ICON_MEDIUM, L"中图标");
+    AppendThemedMenuItem(iconMenu, MF_STRING | disabled | (hasTag && allLarge ? MF_CHECKED : 0), ID_MENU_ALL_ICON_LARGE, L"大图标");
+    AppendThemedMenuItem(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(iconMenu), L"统一图标大小", true);
+
+    HMENU layoutMenu = CreatePopupMenu();
+    AppendThemedMenuItem(layoutMenu, MF_STRING | disabled | (hasTag && allList ? MF_CHECKED : 0), ID_MENU_ALL_LAYOUT_LIST, L"列表");
+    AppendThemedMenuItem(layoutMenu, MF_STRING | disabled | (hasTag && allTile ? MF_CHECKED : 0), ID_MENU_ALL_LAYOUT_TILE, L"平铺");
+    AppendThemedMenuItem(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(layoutMenu), L"统一查看方式", true);
+
+    HMENU sortMenu = CreatePopupMenu();
+    AppendThemedMenuItem(sortMenu, MF_STRING | disabled | (hasTag && allSortPos ? MF_CHECKED : 0), ID_MENU_ALL_SORT_POS, L"按位置");
+    AppendThemedMenuItem(sortMenu, MF_STRING | disabled | (hasTag && allSortRunCount ? MF_CHECKED : 0), ID_MENU_ALL_SORT_RUNCOUNT, L"按运行次数");
+    AppendThemedMenuItem(sortMenu, MF_STRING | disabled | (hasTag && allSortName ? MF_CHECKED : 0), ID_MENU_ALL_SORT_NAME, L"按名称");
+    AppendThemedMenuItem(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(sortMenu), L"统一排序方式", true);
+}
+
+void MainWindow::AppendSystemFunctionItems(HMENU menu) {
+    const auto functions = SystemFunctions();
+    const std::size_t count = std::min<std::size_t>(functions.size(), ID_MENU_SYSTEM_FUNCTION_LIMIT);
+    const std::size_t columnBreak = count > 18 ? (count + 1) / 2 : count + 1;
+    for (std::size_t i = 0; i < count; ++i) {
+        UINT flags = MF_STRING;
+        if (i == columnBreak) {
+            flags |= MF_MENUBARBREAK;
+        }
+        AppendThemedMenuItem(
+            menu,
+            flags,
+            ID_MENU_SYSTEM_FUNCTION_BASE + static_cast<UINT>(i),
+            functions[i].name,
+            false,
+            functions[i].menuIcon != MenuIconNone ? -1 : SystemFunctionImageIndex(functions[i]),
+            functions[i].stockIcon,
+            functions[i].menuIcon);
+    }
+    if (count == 0) {
+        AppendThemedMenuItem(menu, MF_STRING | MF_GRAYED, ID_MENU_SYSTEM_FUNCTION_BASE, L"无可用功能");
+    }
+}
+
+std::vector<int> MainWindow::GroupTargetIds(int excludedGroupId) const {
+    std::vector<int> targetIds;
+    const auto groups = MajorGroups();
+    for (const auto& group : groups) {
+        if (group.id == excludedGroupId) {
+            continue;
+        }
+        if (targetIds.size() >= ID_MENU_DYNAMIC_TARGET_LIMIT) {
+            break;
+        }
+        targetIds.push_back(group.id);
+    }
+    return targetIds;
+}
+
+std::vector<int> MainWindow::GroupedTagTargetIds(int excludedTagId) const {
+    std::vector<int> targetIds;
+    const auto groups = MajorGroups();
+    for (const auto& group : groups) {
+        for (const auto& tag : model_.groups) {
+            if (tag.parentGroup != group.id || tag.id == excludedTagId) {
+                continue;
+            }
+            if (targetIds.size() >= ID_MENU_DYNAMIC_TARGET_LIMIT) {
+                return targetIds;
+            }
+            targetIds.push_back(tag.id);
+        }
+    }
+    return targetIds;
+}
+
+void MainWindow::AppendGroupTargetMenu(HMENU menu, UINT commandBase, std::vector<int>& targetIds, int excludedGroupId) {
+    targetIds = GroupTargetIds(excludedGroupId);
+    for (std::size_t i = 0; i < targetIds.size(); ++i) {
+        const Group* group = FindGroup(targetIds[i]);
+        if (!group) {
+            continue;
+        }
+        AppendThemedMenuItem(menu, MF_STRING, commandBase + static_cast<UINT>(i), group->name);
+    }
+    if (targetIds.empty()) {
+        AppendThemedMenuItem(menu, MF_STRING | MF_GRAYED, commandBase, L"无可选分组");
+    }
+}
+
 void MainWindow::AppendTagTargetMenu(HMENU menu, UINT commandBase, std::vector<int>& targetIds, int excludedTagId) {
     targetIds.clear();
     for (const auto& tag : model_.groups) {
@@ -3153,7 +3865,7 @@ void MainWindow::AppendGroupedTagTargetMenu(HMENU menu, UINT commandBase, std::v
             if (tag.parentGroup != group.id || tag.id == excludedTagId) {
                 continue;
             }
-            if (targetIds.size() >= 500) {
+            if (targetIds.size() >= ID_MENU_DYNAMIC_TARGET_LIMIT) {
                 break;
             }
             const UINT command = commandBase + static_cast<UINT>(targetIds.size());
@@ -3197,12 +3909,12 @@ void MainWindow::WakeUp() {
     }
     dockHideDueTick_ = GetTickCount64() + kDockRestoreGraceMs;
     if (!IsWindowVisible(hwnd_)) {
-        ShowWindow(hwnd_, SW_SHOWNORMAL);
+        ShowWindowRespectFocusPolicy(hwnd_, SW_SHOWNORMAL);
     }
     SetWindowPos(hwnd_, nullptr, 0, 0, 0, 0,
                  SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
-    ShowWindow(hwnd_, SW_RESTORE);
-    SetForegroundWindow(hwnd_);
+    ShowWindowRespectFocusPolicy(hwnd_, SW_RESTORE);
+    ActivateWindow(hwnd_);
 }
 
 bool MainWindow::IsEffectivelyVisible() const {
@@ -3210,6 +3922,7 @@ bool MainWindow::IsEffectivelyVisible() const {
 }
 
 void MainWindow::HideMainWindow() {
+    HideLinkTooltip();
     if (dockHidden_) {
         const int width = dockRestoreRect_.right - dockRestoreRect_.left;
         const int height = dockRestoreRect_.bottom - dockRestoreRect_.top;
@@ -3265,7 +3978,7 @@ void MainWindow::Draw() {
     renderTarget_->BeginDraw();
     const D2D1_SIZE_F size = renderTarget_->GetSize();
 
-    renderTarget_->Clear(theme_.get(L"main_client").d2d());
+    renderTarget_->Clear(theme_.color(L"window", L"normal", L"bg").d2d());
     D2D1_RECT_F title{}, groups{}, tags{}, links{};
     BuildLayout(size.width, size.height, title, groups, tags, links);
     ClampScrollOffsets();
@@ -3279,7 +3992,7 @@ void MainWindow::Draw() {
         DrawTags(tags);
     }
     DrawLinks(links);
-    DrawRect(D2D1::RectF(0, 0, size.width, size.height), theme_.get(L"main_bd"));
+    DrawRect(D2D1::RectF(0, 0, size.width, size.height), theme_.color(L"window", L"normal", L"border"));
 
     HRESULT hr = renderTarget_->EndDraw();
     if (hr == D2DERR_RECREATE_TARGET) {
@@ -3292,29 +4005,37 @@ void MainWindow::DrawTitle(D2D1_RECT_F rect) {
         return;
     }
 
-    FillRect(rect, theme_.get(L"main_bk"));
-    FillRect(D2D1::RectF(rect.left, rect.bottom - 1.0f, rect.right, rect.bottom), theme_.get(L"main_line"));
+    FillRect(rect, theme_.color(L"title", L"normal", L"bg"));
+    FillRect(D2D1::RectF(rect.left, rect.bottom - 1.0f, rect.right, rect.bottom), theme_.color(L"title", L"normal", L"line"));
 
-    const float iconSize = 20.0f;
-    D2D1_RECT_F appIcon = D2D1::RectF(rect.left + 9.0f, rect.top + 7.0f, rect.left + 9.0f + iconSize, rect.top + 7.0f + iconSize);
+    const float iconSize = Metric(theme_, L"title", L"iconSize", 20.0f);
+    const float iconLeft = Metric(theme_, L"title", L"iconLeft", 9.0f);
+    const float iconTop = Metric(theme_, L"title", L"iconTop", 7.0f);
+    D2D1_RECT_F appIcon = D2D1::RectF(rect.left + iconLeft, rect.top + iconTop, rect.left + iconLeft + iconSize, rect.top + iconTop + iconSize);
     if (ID2D1Bitmap* bitmap = LoadAppIconBitmap()) {
         renderTarget_->DrawBitmap(bitmap, appIcon, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
     }
 
-    const float titleTextEnd = rect.left + 134.0f;
-    D2D1_RECT_F nameRect = D2D1::RectF(appIcon.right + 7.0f, rect.top, titleTextEnd, rect.bottom);
+    const float titleTextEnd = rect.left + Metric(theme_, L"title", L"textEnd", 134.0f);
+    D2D1_RECT_F nameRect = D2D1::RectF(appIcon.right + Metric(theme_, L"title", L"textGap", 7.0f), rect.top, titleTextEnd, rect.bottom);
     titleFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
-    DrawTextBlock(L"Quattro", titleFormat_, nameRect, theme_.get(L"main_title"));
+    DrawTextBlock(L"Quattro", titleFormat_, nameRect, theme_.color(L"title", L"normal", L"text"));
 
-    const float buttonSize = 26.0f;
-    const std::array<HitKind, 3> buttons = {
+    const float buttonSize = ClampFloat(theme_.metric(L"titleButton", L"size", 26.0f), 18.0f, 40.0f);
+    const float buttonGap = ClampFloat(theme_.metric(L"titleButton", L"gap", 2.0f), 0.0f, 12.0f);
+    const float buttonRightInset = Metric(theme_, L"titleButton", L"rightInset", 4.0f);
+    const float buttonTopInset = Metric(theme_, L"titleButton", L"topInset", 4.0f);
+    const float buttonReserveInset = Metric(theme_, L"titleButton", L"reserveInset", 16.0f);
+    const std::array<HitKind, 4> buttons = {
         HitKind::CloseButton,
+        HitKind::SkinButton,
         HitKind::MenuButton,
         HitKind::SearchButton,
     };
     auto isTitleButtonVisible = [&](HitKind kind) {
         return !((kind == HitKind::MenuButton && !config_.showMenuButton) ||
-                 (kind == HitKind::SearchButton && !config_.showSearchButton));
+                 (kind == HitKind::SearchButton && !config_.showSearchButton) ||
+                 (kind == HitKind::SkinButton && !config_.showSkinButton));
     };
     int visibleButtonCount = 0;
     for (HitKind kind : buttons) {
@@ -3323,28 +4044,28 @@ void MainWindow::DrawTitle(D2D1_RECT_F rect) {
         }
     }
     const float buttonReserve = visibleButtonCount > 0
-        ? 16.0f + static_cast<float>(visibleButtonCount) * buttonSize + static_cast<float>(visibleButtonCount - 1) * 4.0f
-        : 16.0f;
+        ? buttonReserveInset + static_cast<float>(visibleButtonCount) * buttonSize + static_cast<float>(visibleButtonCount - 1) * buttonGap
+        : buttonReserveInset;
 
     if (config_.showDate) {
         D2D1_RECT_F dateRect = D2D1::RectF(titleTextEnd, rect.top, rect.right - buttonReserve, rect.bottom);
         dateRect.right = rect.right - buttonReserve;
         smallFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
-        DrawTextBlock(TodayText(), smallFormat_, dateRect, theme_.get(L"title_subtext"));
+        DrawTextBlock(TodayText(), smallFormat_, dateRect, theme_.color(L"title", L"normal", L"subtext"));
     }
 
-    float buttonRight = rect.right - 4.0f;
+    float buttonRight = rect.right - buttonRightInset;
     for (HitKind kind : buttons) {
         if (!isTitleButtonVisible(kind)) {
             continue;
         }
-        D2D1_RECT_F button = D2D1::RectF(buttonRight - buttonSize, rect.top + 4.0f, buttonRight, rect.top + 4.0f + buttonSize);
+        D2D1_RECT_F button = D2D1::RectF(buttonRight - buttonSize, rect.top + buttonTopInset, buttonRight, rect.top + buttonTopInset + buttonSize);
         if (IsHover(kind, 0)) {
-            FillRect(button, kind == HitKind::CloseButton ? Color{0.92f, 0.22f, 0.22f, 0.16f} : theme_.get(L"btnbk_hot"));
+            FillRect(button, kind == HitKind::CloseButton ? theme_.color(L"titleCloseButton", L"hover", L"bg") : theme_.color(L"titleButton", L"hover", L"bg"));
         }
-        DrawButtonIcon(kind, button, kind == HitKind::CloseButton && IsHover(kind, 0) ? Color{0.72f, 0.10f, 0.10f, 1.0f} : theme_.get(L"textdefaultcolor"));
+        DrawButtonIcon(kind, button, kind == HitKind::CloseButton && IsHover(kind, 0) ? theme_.color(L"titleCloseButton", L"hover", L"icon") : theme_.color(L"titleButton", L"normal", L"icon"));
         hitAreas_.push_back(HitArea{kind, 0, button});
-        buttonRight -= buttonSize + 2.0f;
+        buttonRight -= buttonSize + buttonGap;
     }
 }
 
@@ -3353,15 +4074,57 @@ void MainWindow::DrawGroups(D2D1_RECT_F rect) {
         return;
     }
 
-    FillRect(rect, theme_.get(L"main_bk"));
-    FillRect(D2D1::RectF(rect.left, rect.bottom - 1.0f, rect.right, rect.bottom), theme_.get(L"main_line"));
+    FillRect(rect, theme_.color(L"majorNav", L"normal", L"bg"));
+    const bool vertical = Height(rect) > Width(rect);
+    if (vertical) {
+        FillRect(D2D1::RectF(rect.left, rect.top, rect.left + 1.0f, rect.bottom), theme_.color(L"majorNav", L"normal", L"line"));
+    } else {
+        FillRect(D2D1::RectF(rect.left, rect.bottom - 1.0f, rect.right, rect.bottom), theme_.color(L"majorNav", L"normal", L"line"));
+    }
 
     renderTarget_->PushAxisAlignedClip(rect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-    float x = rect.left + 4.0f - groupScrollOffset_;
+    const float itemOffsetX = Metric(theme_, L"majorNavItem", L"offsetX", 4.0f);
+    const float itemMinWidth = Metric(theme_, L"majorNavItem", L"minWidth", 72.0f);
+    const float itemMaxWidth = Metric(theme_, L"majorNavItem", L"maxWidth", 128.0f);
+    const float itemWidthAdjust = Metric(theme_, L"majorNavItem", L"widthAdjust", -14.0f);
+    const float textInsetX = Metric(theme_, L"majorNavItem", L"textInsetX", 10.0f);
+    if (vertical) {
+        const float topInset = Metric(theme_, L"majorNavItem", L"verticalTopInset", 2.0f);
+        const float itemHeight = Metric(theme_, L"majorNavItem", L"verticalHeight", 32.0f);
+        const float itemGap = Metric(theme_, L"majorNavItem", L"verticalGap", 2.0f);
+        float y = rect.top + topInset - groupScrollOffset_;
+        for (const auto& group : MajorGroups()) {
+            D2D1_RECT_F item = D2D1::RectF(rect.left, y, rect.right, y + itemHeight);
+            if (item.bottom < rect.top + topInset) {
+                y += itemHeight + itemGap;
+                continue;
+            }
+            if (item.top > rect.bottom - 2.0f) {
+                break;
+            }
+            const bool selected = group.id == currentGroupId_;
+            const bool hovered = IsHover(HitKind::Group, group.id);
+            if (selected) {
+                FillRect(item, theme_.color(L"majorNavItem", L"selected", L"bg"));
+            } else if (hovered) {
+                FillRect(item, theme_.color(L"majorNavItem", L"hover", L"bg"));
+            }
+            textFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+            textFormat_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+            DrawTextBlock(group.name, textFormat_, Inset(item, textInsetX, 0.0f), theme_.color(L"majorNavItem", selected ? L"selected" : L"normal", L"text"));
+            hitAreas_.push_back(HitArea{HitKind::Group, group.id, IntersectRectF(item, rect)});
+            y += itemHeight + itemGap;
+        }
+        renderTarget_->PopAxisAlignedClip();
+        DrawScrollBar(rect, groupScrollOffset_, MaxGroupScrollOffset(rect), false);
+        return;
+    }
+
+    float x = rect.left + itemOffsetX - groupScrollOffset_;
     const float y = rect.top;
     const float itemHeight = Height(rect) - 1.0f;
     for (const auto& group : MajorGroups()) {
-        const float itemWidth = std::max(72.0f, std::min(128.0f, NavigationItemWidth(group.name) - 14.0f));
+        const float itemWidth = std::max(itemMinWidth, std::min(itemMaxWidth, NavigationItemWidth(theme_, group.name) + itemWidthAdjust));
         D2D1_RECT_F item = D2D1::RectF(x, y, x + itemWidth, y + itemHeight);
         if (item.right < rect.left + 2.0f) {
             x += itemWidth;
@@ -3373,12 +4136,13 @@ void MainWindow::DrawGroups(D2D1_RECT_F rect) {
         const bool selected = group.id == currentGroupId_;
         const bool hovered = IsHover(HitKind::Group, group.id);
         if (group.id == currentGroupId_) {
-            FillRect(item, theme_.get(L"major_group_item_bk_sel"));
+            FillRect(item, theme_.color(L"majorNavItem", L"selected", L"bg"));
         } else if (hovered) {
-            FillRect(item, theme_.get(L"major_group_item_bk_hot"));
+            FillRect(item, theme_.color(L"majorNavItem", L"hover", L"bg"));
         }
         textFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
-        DrawTextBlock(group.name, textFormat_, Inset(item, 10.0f, 0.0f), theme_.get(selected ? L"major_group_item_text_sel" : L"major_group_item_text_nml"));
+        textFormat_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+        DrawTextBlock(group.name, textFormat_, Inset(item, textInsetX, 0.0f), theme_.color(L"majorNavItem", selected ? L"selected" : L"normal", L"text"));
         hitAreas_.push_back(HitArea{HitKind::Group, group.id, IntersectRectF(item, rect)});
         x += itemWidth;
     }
@@ -3391,17 +4155,34 @@ void MainWindow::DrawTags(D2D1_RECT_F rect) {
         return;
     }
 
-    FillRect(rect, theme_.get(L"main_bk"));
-    FillRect(D2D1::RectF(rect.right - 1.0f, rect.top, rect.right, rect.bottom), theme_.get(L"main_line"));
+    FillRect(rect, theme_.color(L"minorNav", L"normal", L"bg"));
+    if (config_.tagRight) {
+        FillRect(D2D1::RectF(rect.left, rect.top, rect.left + 1.0f, rect.bottom), theme_.color(L"minorNav", L"normal", L"line"));
+    } else {
+        FillRect(D2D1::RectF(rect.right - 1.0f, rect.top, rect.right, rect.bottom), theme_.color(L"minorNav", L"normal", L"line"));
+    }
 
-    textFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+    if (config_.tagAlign == L"right") {
+        textFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING);
+    } else if (config_.tagAlign == L"center") {
+        textFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+    } else {
+        textFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+    }
+    textFormat_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
 
     renderTarget_->PushAxisAlignedClip(rect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-    float y = rect.top + 2.0f - tagScrollOffset_;
+    const float topInset = Metric(theme_, L"minorNavItem", L"topInset", 2.0f);
+    const float itemHeight = Metric(theme_, L"minorNavItem", L"height", 32.0f);
+    const float itemGap = Metric(theme_, L"minorNavItem", L"gap", 2.0f);
+    const float textInsetX = Metric(theme_, L"minorNavItem", L"textInsetX", 10.0f);
+    const float accentWidth = Metric(theme_, L"minorNavItem", L"accentWidth", 3.0f);
+    const float accentInsetY = Metric(theme_, L"minorNavItem", L"accentInsetY", 3.0f);
+    float y = rect.top + topInset - tagScrollOffset_;
     for (const auto& tag : TagsForCurrentGroup()) {
-        D2D1_RECT_F item = D2D1::RectF(rect.left, y, rect.right, y + 32.0f);
-        if (item.bottom < rect.top + 2.0f) {
-            y += 34.0f;
+        D2D1_RECT_F item = D2D1::RectF(rect.left, y, rect.right, y + itemHeight);
+        if (item.bottom < rect.top + topInset) {
+            y += itemHeight + itemGap;
             continue;
         }
         if (item.top > rect.bottom - 2.0f) {
@@ -3410,31 +4191,38 @@ void MainWindow::DrawTags(D2D1_RECT_F rect) {
         const bool selected = tag.id == currentTagId_;
         const bool hovered = IsHover(HitKind::Tag, tag.id);
         if (selected) {
-            FillRect(item, theme_.get(L"minor_group_item_bk_sel"));
-            FillRect(D2D1::RectF(item.left, item.top + 3.0f, item.left + 3.0f, item.bottom - 3.0f), theme_.get(L"main_title"));
+            FillRect(item, theme_.color(L"minorNavItem", L"selected", L"bg"));
+            if (config_.tagRight) {
+                FillRect(D2D1::RectF(item.right - accentWidth, item.top + accentInsetY, item.right, item.bottom - accentInsetY), theme_.color(L"minorNavItem", L"selected", L"accent"));
+            } else {
+                FillRect(D2D1::RectF(item.left, item.top + accentInsetY, item.left + accentWidth, item.bottom - accentInsetY), theme_.color(L"minorNavItem", L"selected", L"accent"));
+            }
         } else if (hovered) {
-            FillRect(item, theme_.get(L"minor_group_item_bk_hot"));
+            FillRect(item, theme_.color(L"minorNavItem", L"hover", L"bg"));
         }
-        DrawTextBlock(tag.name, textFormat_, Inset(item, 10.0f, 0.0f), theme_.get(selected ? L"minor_group_item_text_sel" : L"minor_group_item_text_nml"));
+        DrawTextBlock(tag.name, textFormat_, Inset(item, textInsetX, 0.0f), theme_.color(L"minorNavItem", selected ? L"selected" : L"normal", L"text"));
         hitAreas_.push_back(HitArea{HitKind::Tag, tag.id, IntersectRectF(item, rect)});
-        y += 34.0f;
+        y += itemHeight + itemGap;
     }
     renderTarget_->PopAxisAlignedClip();
     DrawScrollBar(rect, tagScrollOffset_, MaxTagScrollOffset(rect), false);
 }
 
 void MainWindow::DrawLinks(D2D1_RECT_F rect) {
-    FillRect(rect, theme_.get(L"main_client"));
+    FillRect(rect, theme_.color(L"content", L"normal", L"bg"));
     auto links = LinksForCurrentTag();
     if (links.empty()) {
         textFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
-        D2D1_RECT_F emptyText = D2D1::RectF(rect.left + 20.0f, rect.top + 24.0f, rect.right - 20.0f, rect.top + 54.0f);
-        DrawTextBlock(L"当前标签没有启动项", textFormat_, emptyText, theme_.get(L"empty_text"));
+        const float emptyInsetX = Metric(theme_, L"content", L"emptyTextInsetX", 20.0f);
+        const float emptyTop = Metric(theme_, L"content", L"emptyTextTop", 24.0f);
+        const float emptyHeight = Metric(theme_, L"content", L"emptyTextHeight", 30.0f);
+        D2D1_RECT_F emptyText = D2D1::RectF(rect.left + emptyInsetX, rect.top + emptyTop, rect.right - emptyInsetX, rect.top + emptyTop + emptyHeight);
+        DrawTextBlock(L"当前标签没有启动项", textFormat_, emptyText, theme_.color(L"content", L"empty", L"text"));
         return;
     }
 
     const Group* tag = FindGroup(currentTagId_);
-    const LinkLayoutMetrics metrics = MakeLinkLayout(rect, tag);
+    const LinkLayoutMetrics metrics = MakeLinkLayout(theme_, rect, tag);
 
     renderTarget_->PushAxisAlignedClip(rect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
     for (std::size_t index = 0; index < links.size(); ++index) {
@@ -3447,16 +4235,21 @@ void MainWindow::DrawLinks(D2D1_RECT_F rect) {
             break;
         }
 
-        FillRect(item, theme_.get(L"link_item_bk"));
+        FillRect(item, theme_.color(L"linkItem", L"normal", L"bg"));
         if (link->id == selectedLinkId_) {
-            FillRect(item, theme_.get(L"link_item_bk_sel"));
-            FillRect(D2D1::RectF(item.left, item.top, item.left + 4.0f, item.bottom), theme_.get(L"main_title"));
+            FillRect(item, theme_.color(L"linkItem", L"selected", L"bg"));
+            FillRect(D2D1::RectF(item.left, item.top, item.left + Metric(theme_, L"linkItem", L"selectedAccentWidth", 4.0f), item.bottom), theme_.color(L"linkItem", L"selected", L"accent"));
         } else if (IsHover(HitKind::Link, link->id)) {
-            FillRect(item, theme_.get(L"link_item_bk_hot"));
+            FillRect(item, theme_.color(L"linkItem", L"hover", L"bg"));
         }
         if (link->isCustomColor) {
             if (auto color = ParseCustomColor(link->customColor)) {
-                FillRect(D2D1::RectF(item.left, item.top + 4.0f, item.left + 3.0f, item.bottom - 4.0f), *color);
+                FillRect(D2D1::RectF(
+                             item.left,
+                             item.top + Metric(theme_, L"linkItem", L"customColorInsetY", 4.0f),
+                             item.left + Metric(theme_, L"linkItem", L"customColorWidth", 3.0f),
+                             item.bottom - Metric(theme_, L"linkItem", L"customColorInsetY", 4.0f)),
+                         *color);
             }
         }
 
@@ -3465,25 +4258,56 @@ void MainWindow::DrawLinks(D2D1_RECT_F rect) {
         IDWriteTextFormat* nameFormat = textFormat_;
         if (metrics.layout == 0 || metrics.compactTile) {
             const float iconTop = item.top + (Height(item) - metrics.iconSize) * 0.5f;
-            icon = D2D1::RectF(item.left + 8.0f, iconTop, item.left + 8.0f + metrics.iconSize, iconTop + metrics.iconSize);
-            nameRect = D2D1::RectF(icon.right + 8.0f, item.top, item.right - 6.0f, item.bottom);
+            const float iconLeft = item.left + Metric(theme_, L"linkItem", L"listIconLeft", 8.0f);
+            icon = D2D1::RectF(iconLeft, iconTop, iconLeft + metrics.iconSize, iconTop + metrics.iconSize);
+            nameRect = D2D1::RectF(icon.right + Metric(theme_, L"linkItem", L"listTextGap", 8.0f), item.top, item.right - Metric(theme_, L"linkItem", L"listTextRightInset", 6.0f), item.bottom);
             nameFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+            nameFormat->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+            if (config_.showRunCount) {
+                const float runWidth = Metric(theme_, L"linkItem", L"runCountWidth", 36.0f);
+                nameRect.right = std::max(nameRect.left, item.right - runWidth - Metric(theme_, L"linkItem", L"runCountRightInset", 8.0f));
+            }
         } else {
             const float iconLeft = item.left + (Width(item) - metrics.iconSize) * 0.5f;
-            const float iconTop = item.top + 8.0f;
+            const float iconTop = item.top + Metric(theme_, L"linkItem", L"gridIconTop", 8.0f);
             icon = D2D1::RectF(iconLeft, iconTop, iconLeft + metrics.iconSize, iconTop + metrics.iconSize);
-            nameRect = D2D1::RectF(item.left + 4.0f, icon.bottom + 4.0f, item.right - 4.0f, item.bottom - 4.0f);
-            nameFormat = metrics.itemWidth <= 78.0f ? smallFormat_ : textFormat_;
+            nameRect = D2D1::RectF(
+                item.left + Metric(theme_, L"linkItem", L"gridTextPaddingX", 4.0f),
+                icon.bottom + Metric(theme_, L"linkItem", L"gridTextGap", 4.0f),
+                item.right - Metric(theme_, L"linkItem", L"gridTextPaddingX", 4.0f),
+                item.bottom - Metric(theme_, L"linkItem", L"gridTextPaddingBottom", 4.0f));
+            nameFormat = metrics.itemWidth <= Metric(theme_, L"linkItem", L"smallTextWidthThreshold", 78.0f) ? smallFormat_ : textFormat_;
             nameFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+            nameFormat->SetWordWrapping(config_.linkNameSingleLine ? DWRITE_WORD_WRAPPING_NO_WRAP : DWRITE_WORD_WRAPPING_WRAP);
         }
 
         if (ID2D1Bitmap* bitmap = iconService_.GetBitmap(renderTarget_, *link)) {
             renderTarget_->DrawBitmap(bitmap, icon, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
         } else {
-            FillRoundedRect(icon, theme_.get(L"main_title"), 7.0f);
-            DrawRoundedRect(icon, theme_.get(L"main_bd"), 7.0f);
+            const float iconRadius = Metric(theme_, L"iconFallback", L"radius", 7.0f);
+            FillRoundedRect(icon, theme_.color(L"iconFallback", L"normal", L"bg"), iconRadius);
+            DrawRoundedRect(icon, theme_.color(L"iconFallback", L"normal", L"border"), iconRadius);
         }
-        DrawTextBlock(link->name, nameFormat, nameRect, theme_.get(L"link_item_text_nml"));
+        DrawTextBlock(link->name, nameFormat, nameRect, theme_.color(L"linkItem", L"normal", L"text"));
+        if (config_.showRunCount) {
+            smallFormat_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+            const std::wstring runText = std::to_wstring(link->runCount);
+            if (metrics.layout == 0 || metrics.compactTile) {
+                const float rightInset = Metric(theme_, L"linkItem", L"runCountRightInset", 8.0f);
+                const float width = Metric(theme_, L"linkItem", L"runCountWidth", 36.0f);
+                D2D1_RECT_F runRect = D2D1::RectF(item.right - rightInset - width, item.top, item.right - rightInset, item.bottom);
+                smallFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING);
+                DrawTextBlock(runText, smallFormat_, runRect, theme_.color(L"linkItem", L"normal", L"subtext"));
+            } else {
+                const float width = Metric(theme_, L"linkItem", L"runCountGridWidth", 28.0f);
+                const float height = Metric(theme_, L"linkItem", L"runCountGridHeight", 16.0f);
+                const float rightInset = Metric(theme_, L"linkItem", L"runCountGridRightInset", 4.0f);
+                const float topInset = Metric(theme_, L"linkItem", L"runCountGridTopInset", 3.0f);
+                D2D1_RECT_F runRect = D2D1::RectF(item.right - rightInset - width, item.top + topInset, item.right - rightInset, item.top + topInset + height);
+                smallFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING);
+                DrawTextBlock(runText, smallFormat_, runRect, theme_.color(L"linkItem", L"normal", L"subtext"));
+            }
+        }
         hitAreas_.push_back(HitArea{HitKind::Link, link->id, IntersectRectF(item, rect)});
     }
     renderTarget_->PopAxisAlignedClip();
@@ -3499,30 +4323,31 @@ void MainWindow::DrawButtonIcon(HitKind kind, D2D1_RECT_F rect, const Color& col
 
     const float cx = (rect.left + rect.right) * 0.5f;
     const float cy = (rect.top + rect.bottom) * 0.5f;
+    const float stroke = Metric(theme_, L"titleButton", L"iconStrokeWidth", 1.6f);
+    const float iconHalf = Metric(theme_, L"titleButton", L"iconHalf", 5.0f);
+    const float menuHalfWidth = Metric(theme_, L"titleButton", L"menuHalfWidth", 6.0f);
+    const float menuLineGap = Metric(theme_, L"titleButton", L"menuLineGap", 5.0f);
+    const float searchRadius = Metric(theme_, L"titleButton", L"searchRadius", 5.0f);
+    const float searchOffset = Metric(theme_, L"titleButton", L"searchOffset", 2.0f);
+    const float searchHandle = Metric(theme_, L"titleButton", L"searchHandle", 7.0f);
     if (kind == HitKind::CloseButton) {
-        renderTarget_->DrawLine(D2D1::Point2F(cx - 5, cy - 5), D2D1::Point2F(cx + 5, cy + 5), brush, 1.6f);
-        renderTarget_->DrawLine(D2D1::Point2F(cx + 5, cy - 5), D2D1::Point2F(cx - 5, cy + 5), brush, 1.6f);
+        renderTarget_->DrawLine(D2D1::Point2F(cx - iconHalf, cy - iconHalf), D2D1::Point2F(cx + iconHalf, cy + iconHalf), brush, stroke);
+        renderTarget_->DrawLine(D2D1::Point2F(cx + iconHalf, cy - iconHalf), D2D1::Point2F(cx - iconHalf, cy + iconHalf), brush, stroke);
     } else if (kind == HitKind::MenuButton) {
-        renderTarget_->DrawLine(D2D1::Point2F(cx - 6, cy - 5), D2D1::Point2F(cx + 6, cy - 5), brush, 1.6f);
-        renderTarget_->DrawLine(D2D1::Point2F(cx - 6, cy), D2D1::Point2F(cx + 6, cy), brush, 1.6f);
-        renderTarget_->DrawLine(D2D1::Point2F(cx - 6, cy + 5), D2D1::Point2F(cx + 6, cy + 5), brush, 1.6f);
+        renderTarget_->DrawLine(D2D1::Point2F(cx - menuHalfWidth, cy - menuLineGap), D2D1::Point2F(cx + menuHalfWidth, cy - menuLineGap), brush, stroke);
+        renderTarget_->DrawLine(D2D1::Point2F(cx - menuHalfWidth, cy), D2D1::Point2F(cx + menuHalfWidth, cy), brush, stroke);
+        renderTarget_->DrawLine(D2D1::Point2F(cx - menuHalfWidth, cy + menuLineGap), D2D1::Point2F(cx + menuHalfWidth, cy + menuLineGap), brush, stroke);
     } else if (kind == HitKind::SearchButton) {
-        renderTarget_->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(cx - 2, cy - 2), 5.0f, 5.0f), brush, 1.6f);
-        renderTarget_->DrawLine(D2D1::Point2F(cx + 2, cy + 2), D2D1::Point2F(cx + 7, cy + 7), brush, 1.6f);
+        renderTarget_->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(cx - searchOffset, cy - searchOffset), searchRadius, searchRadius), brush, stroke);
+        renderTarget_->DrawLine(D2D1::Point2F(cx + searchOffset, cy + searchOffset), D2D1::Point2F(cx + searchHandle, cy + searchHandle), brush, stroke);
     } else if (kind == HitKind::AddButton) {
-        renderTarget_->DrawLine(D2D1::Point2F(cx - 6, cy), D2D1::Point2F(cx + 6, cy), brush, 1.6f);
-        renderTarget_->DrawLine(D2D1::Point2F(cx, cy - 6), D2D1::Point2F(cx, cy + 6), brush, 1.6f);
+        renderTarget_->DrawLine(D2D1::Point2F(cx - menuHalfWidth, cy), D2D1::Point2F(cx + menuHalfWidth, cy), brush, stroke);
+        renderTarget_->DrawLine(D2D1::Point2F(cx, cy - menuHalfWidth), D2D1::Point2F(cx, cy + menuHalfWidth), brush, stroke);
     } else if (kind == HitKind::SkinButton) {
-        renderTarget_->DrawRectangle(D2D1::RectF(cx - 6, cy - 6, cx + 6, cy + 6), brush, 1.4f);
-        renderTarget_->DrawLine(D2D1::Point2F(cx - 6, cy), D2D1::Point2F(cx + 6, cy), brush, 1.2f);
+        renderTarget_->DrawRectangle(D2D1::RectF(cx - menuHalfWidth, cy - menuHalfWidth, cx + menuHalfWidth, cy + menuHalfWidth), brush, Metric(theme_, L"titleButton", L"skinStrokeWidth", 1.4f));
+        renderTarget_->DrawLine(D2D1::Point2F(cx - menuHalfWidth, cy), D2D1::Point2F(cx + menuHalfWidth, cy), brush, Metric(theme_, L"titleButton", L"skinLineStrokeWidth", 1.2f));
     }
     brush->Release();
-}
-
-void MainWindow::DrawUiBitmap(const std::wstring& name, const D2D1_RECT_F& rect, float opacity) {
-    if (ID2D1Bitmap* bitmap = LoadUiBitmap(name)) {
-        renderTarget_->DrawBitmap(bitmap, rect, ClampFloat(opacity, 0.0f, 1.0f), D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
-    }
 }
 
 ID2D1Bitmap* MainWindow::LoadAppIconBitmap() {
@@ -3561,47 +4386,6 @@ ID2D1Bitmap* MainWindow::LoadAppIconBitmap() {
     SafeRelease(converter);
     SafeRelease(wicBitmap);
     DestroyIcon(icon);
-    return bitmap;
-}
-
-ID2D1Bitmap* MainWindow::LoadUiBitmap(const std::wstring& name) {
-    if (!uiWicFactory_ || !renderTarget_ || name.empty()) {
-        return nullptr;
-    }
-
-    auto found = uiBitmapCache_.find(name);
-    if (found != uiBitmapCache_.end()) {
-        return found->second;
-    }
-
-    const std::filesystem::path path = appDirectory_ / L"theme" / L"assets" / name;
-    if (!FileExists(path)) {
-        return nullptr;
-    }
-
-    IWICBitmapDecoder* decoder = nullptr;
-    IWICBitmapFrameDecode* frame = nullptr;
-    IWICFormatConverter* converter = nullptr;
-    ID2D1Bitmap* bitmap = nullptr;
-
-    if (SUCCEEDED(uiWicFactory_->CreateDecoderFromFilename(path.c_str(), nullptr, GENERIC_READ, WICDecodeMetadataCacheOnLoad, &decoder)) &&
-        SUCCEEDED(decoder->GetFrame(0, &frame)) &&
-        SUCCEEDED(uiWicFactory_->CreateFormatConverter(&converter)) &&
-        SUCCEEDED(converter->Initialize(
-            frame,
-            GUID_WICPixelFormat32bppPBGRA,
-            WICBitmapDitherTypeNone,
-            nullptr,
-            0.0,
-            WICBitmapPaletteTypeMedianCut)) &&
-        SUCCEEDED(renderTarget_->CreateBitmapFromWicBitmap(converter, nullptr, &bitmap)) &&
-        bitmap) {
-        uiBitmapCache_[name] = bitmap;
-    }
-
-    SafeRelease(converter);
-    SafeRelease(frame);
-    SafeRelease(decoder);
     return bitmap;
 }
 
@@ -3652,38 +4436,34 @@ void MainWindow::DrawRoundedRect(const D2D1_RECT_F& rect, const Color& color, fl
     }
 }
 
-void MainWindow::DrawSoftShadow(const D2D1_RECT_F& rect, float radius) {
-    const Color shadow = theme_.get(L"shadow_soft");
-    FillRoundedRect(Offset(rect, 0.0f, 2.0f), WithAlpha(shadow, shadow.a * 0.16f), radius + 2.0f);
-    FillRoundedRect(Offset(rect, 0.0f, 1.0f), WithAlpha(shadow, shadow.a * 0.10f), radius + 1.0f);
-}
-
 void MainWindow::DrawScrollBar(const D2D1_RECT_F& rect, float offset, float maxOffset, bool horizontal) {
     if (maxOffset <= 0.5f || Width(rect) <= 0 || Height(rect) <= 0) {
         return;
     }
 
-    const float thickness = 5.0f;
-    const float inset = 5.0f;
+    const float thickness = ClampFloat(theme_.metric(L"scrollbar", L"thickness", 5.0f), 2.0f, 16.0f);
+    const float inset = ClampFloat(theme_.metric(L"scrollbar", L"inset", 5.0f), 0.0f, 24.0f);
     const float viewport = horizontal ? Width(rect) : Height(rect);
     const float content = viewport + maxOffset;
     const float trackLength = std::max(20.0f, viewport - inset * 2.0f);
-    const float thumbLength = std::max(24.0f, trackLength * viewport / std::max(viewport, content));
+    const float thumbLength = std::max(Metric(theme_, L"scrollbar", L"minThumbLength", 24.0f), trackLength * viewport / std::max(viewport, content));
     const float travel = std::max(1.0f, trackLength - thumbLength);
     const float thumbStart = inset + travel * ClampFloat(offset / maxOffset, 0.0f, 1.0f);
 
     D2D1_RECT_F track{};
     D2D1_RECT_F thumb{};
     if (horizontal) {
-        track = D2D1::RectF(rect.left + inset, rect.bottom - thickness - 4.0f, rect.right - inset, rect.bottom - 4.0f);
+        const float edgeInset = Metric(theme_, L"scrollbar", L"edgeInset", 4.0f);
+        track = D2D1::RectF(rect.left + inset, rect.bottom - thickness - edgeInset, rect.right - inset, rect.bottom - edgeInset);
         thumb = D2D1::RectF(rect.left + thumbStart, track.top, rect.left + thumbStart + thumbLength, track.bottom);
     } else {
-        track = D2D1::RectF(rect.right - thickness - 4.0f, rect.top + inset, rect.right - 4.0f, rect.bottom - inset);
+        const float edgeInset = Metric(theme_, L"scrollbar", L"edgeInset", 4.0f);
+        track = D2D1::RectF(rect.right - thickness - edgeInset, rect.top + inset, rect.right - edgeInset, rect.bottom - inset);
         thumb = D2D1::RectF(track.left, rect.top + thumbStart, track.right, rect.top + thumbStart + thumbLength);
     }
 
-    FillRoundedRect(track, theme_.get(L"scroll_track"), thickness * 0.5f);
-    FillRoundedRect(thumb, theme_.get(L"scroll_thumb"), thickness * 0.5f);
+    FillRoundedRect(track, theme_.color(L"scrollbar", L"normal", L"track"), thickness * 0.5f);
+    FillRoundedRect(thumb, theme_.color(L"scrollbar", L"normal", L"thumb"), thickness * 0.5f);
 }
 
 void MainWindow::DrawTextBlock(const std::wstring& text, IDWriteTextFormat* format, const D2D1_RECT_F& rect, const Color& color) {
@@ -3701,10 +4481,12 @@ void MainWindow::ResetMenuVisuals() {
     activeMenuItems_.clear();
 }
 
-void MainWindow::AppendThemedMenuItem(HMENU menu, UINT flags, UINT_PTR id, const std::wstring& text, bool submenu) {
+void MainWindow::AppendThemedMenuItem(HMENU menu, UINT flags, UINT_PTR id, const std::wstring& text, bool submenu, int systemImageIndex, int stockIcon, int menuIcon) {
     auto item = std::make_unique<MenuItemData>();
     item->text = MenuTextFromRaw(text);
-    item->icon = MenuIconFor(id, item->text);
+    item->icon = menuIcon != MenuIconNone ? menuIcon : MenuIconFor(id, item->text);
+    item->systemImageIndex = systemImageIndex;
+    item->stockIcon = stockIcon;
     item->checked = (flags & MF_CHECKED) != 0;
     item->disabled = (flags & (MF_DISABLED | MF_GRAYED)) != 0;
     item->submenu = submenu || ((flags & MF_POPUP) != 0);
@@ -3723,8 +4505,12 @@ bool MainWindow::MeasureThemedMenuItem(MEASUREITEMSTRUCT* measure) {
     }
     const auto* item = reinterpret_cast<const MenuItemData*>(measure->itemData);
     const int textLength = static_cast<int>(item->text.size());
-    measure->itemHeight = 30;
-    measure->itemWidth = static_cast<UINT>(54 + std::min(360, std::max(64, textLength * 13)));
+    measure->itemHeight = static_cast<UINT>(Metric(theme_, L"menuItem", L"height", 30.0f));
+    const int minTextWidth = static_cast<int>(Metric(theme_, L"menuItem", L"minTextWidth", 64.0f));
+    const int maxTextWidth = static_cast<int>(Metric(theme_, L"menuItem", L"maxTextWidth", 360.0f));
+    const int widthBase = static_cast<int>(Metric(theme_, L"menuItem", L"widthBase", 54.0f));
+    const int charWidth = static_cast<int>(Metric(theme_, L"menuItem", L"charWidth", 13.0f));
+    measure->itemWidth = static_cast<UINT>(widthBase + std::min(maxTextWidth, std::max(minTextWidth, textLength * charWidth)));
     return true;
 }
 
@@ -3738,50 +4524,70 @@ bool MainWindow::DrawThemedMenuItem(const DRAWITEMSTRUCT* draw) {
     HDC dc = draw->hDC;
     const bool selected = (draw->itemState & ODS_SELECTED) != 0;
 
-    const Color background = theme_.get(L"menu_bk");
-    const Color hover = selected ? theme_.get(L"menu_item_bk_hot") : background;
+    const Color background = theme_.color(L"menu", L"normal", L"bg");
+    const Color hover = selected ? theme_.color(L"menuItem", L"hover", L"bg") : background;
     HBRUSH backgroundBrush = CreateSolidBrush(ToColorRef(hover));
     ::FillRect(dc, &rc, backgroundBrush);
     DeleteObject(backgroundBrush);
 
     if (selected) {
         RECT hotRect = rc;
-        InflateRect(&hotRect, -4, -3);
-        HBRUSH hotBrush = CreateSolidBrush(ToColorRef(theme_.get(L"menu_item_bk_hot")));
+        InflateRect(&hotRect, -static_cast<int>(Metric(theme_, L"menuItem", L"hoverInsetX", 4.0f)), -static_cast<int>(Metric(theme_, L"menuItem", L"hoverInsetY", 3.0f)));
+        HBRUSH hotBrush = CreateSolidBrush(ToColorRef(theme_.color(L"menuItem", L"hover", L"bg")));
         ::FillRect(dc, &hotRect, hotBrush);
         DeleteObject(hotBrush);
     }
 
-    const RECT iconRect{rc.left + 8, rc.top + 6, rc.left + 24, rc.bottom - 6};
-    if (item->checked) {
-        HPEN pen = CreatePen(PS_SOLID, 2, ToColorRef(theme_.get(L"main_title")));
-        HGDIOBJ oldPen = SelectObject(dc, pen);
-        MoveToEx(dc, iconRect.left + 2, iconRect.top + 8, nullptr);
-        LineTo(dc, iconRect.left + 7, iconRect.bottom - 2);
-        LineTo(dc, iconRect.right - 1, iconRect.top + 2);
-        SelectObject(dc, oldPen);
-        DeleteObject(pen);
+    const int iconLeft = static_cast<int>(Metric(theme_, L"menuItem", L"iconLeft", 8.0f));
+    const int iconTopInset = static_cast<int>(Metric(theme_, L"menuItem", L"iconInsetY", 6.0f));
+    const int iconSize = static_cast<int>(Metric(theme_, L"menuItem", L"iconSize", 16.0f));
+    const RECT iconRect{rc.left + iconLeft, rc.top + iconTopInset, rc.left + iconLeft + iconSize, rc.bottom - iconTopInset};
+    if (item->stockIcon >= 0) {
+        if (!DrawStockMenuIcon(dc, iconRect, static_cast<SHSTOCKICONID>(item->stockIcon)) &&
+            !DrawSystemImageListIcon(dc, iconRect, item->systemImageIndex, item->disabled)) {
+            DrawMenuIcon(dc, iconRect, item->icon, item->disabled, appDirectory_);
+        }
+    } else if (item->systemImageIndex >= 0) {
+        if (!DrawSystemImageListIcon(dc, iconRect, item->systemImageIndex, item->disabled)) {
+            DrawMenuIcon(dc, iconRect, item->icon, item->disabled, appDirectory_);
+        }
     } else {
-        DrawMenuIcon(dc, iconRect, item->icon, item->disabled);
+        DrawMenuIcon(dc, iconRect, item->icon, item->disabled, appDirectory_);
+    }
+
+    if (item->checked) {
+        HBRUSH dotBrush = CreateSolidBrush(ToColorRef(theme_.color(L"menuItem", L"checked", L"mark")));
+        HGDIOBJ oldBrush = SelectObject(dc, dotBrush);
+        HPEN dotPen = CreatePen(PS_SOLID, 1, ToColorRef(theme_.color(L"menuItem", L"checked", L"mark")));
+        HGDIOBJ oldPen = SelectObject(dc, dotPen);
+        const int dotCenterY = (rc.top + rc.bottom) / 2;
+        Ellipse(dc, rc.left + 3, dotCenterY - 2, rc.left + 7, dotCenterY + 2);
+        SelectObject(dc, oldPen);
+        SelectObject(dc, oldBrush);
+        DeleteObject(dotPen);
+        DeleteObject(dotBrush);
     }
 
     RECT textRect = rc;
-    textRect.left += 34;
-    textRect.right -= item->submenu ? 22 : 8;
+    textRect.left += static_cast<int>(Metric(theme_, L"menuItem", L"textLeft", 34.0f));
+    textRect.right -= item->submenu ? static_cast<int>(Metric(theme_, L"menuItem", L"submenuRight", 22.0f)) : static_cast<int>(Metric(theme_, L"menuItem", L"textRight", 8.0f));
     SetBkMode(dc, TRANSPARENT);
-    SetTextColor(dc, ToColorRef(item->disabled ? theme_.get(L"menu_text_disabled") : theme_.get(L"menu_text")));
+    SetTextColor(dc, ToColorRef(theme_.color(L"menuItem", item->disabled ? L"disabled" : L"normal", L"text")));
     HFONT font = reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
     HGDIOBJ oldFont = SelectObject(dc, font);
     DrawTextW(dc, item->text.c_str(), static_cast<int>(item->text.size()), &textRect, DT_SINGLELINE | DT_VCENTER | DT_LEFT | DT_END_ELLIPSIS);
     SelectObject(dc, oldFont);
 
     if (item->submenu) {
-        HPEN pen = CreatePen(PS_SOLID, 1, ToColorRef(item->disabled ? theme_.get(L"menu_text_disabled") : theme_.get(L"menu_text")));
+        HPEN pen = CreatePen(PS_SOLID, 1, ToColorRef(theme_.color(L"menuItem", item->disabled ? L"disabled" : L"normal", L"text")));
         HGDIOBJ oldPen = SelectObject(dc, pen);
         const int midY = (rc.top + rc.bottom) / 2;
-        MoveToEx(dc, rc.right - 14, midY - 4, nullptr);
-        LineTo(dc, rc.right - 9, midY);
-        LineTo(dc, rc.right - 14, midY + 4);
+        const int arrowRight = static_cast<int>(Metric(theme_, L"menuItem", L"arrowRight", 9.0f));
+        const int arrowWidth = static_cast<int>(Metric(theme_, L"menuItem", L"arrowWidth", 5.0f));
+        const int arrowHalfHeight = static_cast<int>(Metric(theme_, L"menuItem", L"arrowHalfHeight", 4.0f));
+        MoveToEx(dc, rc.right - arrowRight - arrowWidth, midY - arrowHalfHeight, nullptr);
+        LineTo(dc, rc.right - arrowRight, midY);
+        LineTo(dc, rc.right - arrowRight - arrowWidth, midY + arrowHalfHeight);
         SelectObject(dc, oldPen);
         DeleteObject(pen);
     }
@@ -3815,7 +4621,7 @@ void MainWindow::ScrollAtPoint(float x, float y, int wheelDelta, bool horizontal
     D2D1_RECT_F title{}, groups{}, tags{}, links{};
     BuildLayout(static_cast<float>(client.right - client.left), static_cast<float>(client.bottom - client.top), title, groups, tags, links);
 
-    const float step = horizontal ? 72.0f : 80.0f;
+    const float step = horizontal ? Metric(theme_, L"scrollbar", L"wheelStepX", 72.0f) : Metric(theme_, L"scrollbar", L"wheelStepY", 80.0f);
     const float amount = -static_cast<float>(wheelDelta) / static_cast<float>(WHEEL_DELTA) * step;
     bool changed = false;
     if (config_.showGroup && Contains(groups, x, y)) {
@@ -3839,10 +4645,26 @@ float MainWindow::MaxGroupScrollOffset(const D2D1_RECT_F& rect) const {
         return 0.0f;
     }
 
-    float contentWidth = 8.0f;
+    if (Height(rect) > Width(rect)) {
+        const auto groups = MajorGroups();
+        const float itemHeight = Metric(theme_, L"majorNavItem", L"verticalHeight", 32.0f);
+        const float itemGap = Metric(theme_, L"majorNavItem", L"verticalGap", 2.0f);
+        const float topInset = Metric(theme_, L"majorNavItem", L"verticalTopInset", 2.0f);
+        const float bottomInset = Metric(theme_, L"majorNavItem", L"verticalBottomInset", 2.0f);
+        const float contentHeight = topInset + bottomInset + static_cast<float>(groups.size()) * itemHeight
+            + static_cast<float>(groups.empty() ? 0 : groups.size() - 1) * itemGap;
+        return std::max(0.0f, contentHeight - Height(rect));
+    }
+
+    const float itemOffsetX = Metric(theme_, L"majorNavItem", L"offsetX", 4.0f);
+    const float contentRightPadding = Metric(theme_, L"majorNavItem", L"contentRightPadding", 4.0f);
+    const float itemMinWidth = Metric(theme_, L"majorNavItem", L"minWidth", 72.0f);
+    const float itemMaxWidth = Metric(theme_, L"majorNavItem", L"maxWidth", 128.0f);
+    const float itemWidthAdjust = Metric(theme_, L"majorNavItem", L"widthAdjust", -14.0f);
+    float contentWidth = itemOffsetX + contentRightPadding;
     const auto groups = MajorGroups();
     for (const auto& group : groups) {
-        contentWidth += std::max(72.0f, std::min(128.0f, NavigationItemWidth(group.name) - 14.0f));
+        contentWidth += std::max(itemMinWidth, std::min(itemMaxWidth, NavigationItemWidth(theme_, group.name) + itemWidthAdjust));
     }
     return std::max(0.0f, contentWidth - Width(rect));
 }
@@ -3853,7 +4675,11 @@ float MainWindow::MaxTagScrollOffset(const D2D1_RECT_F& rect) const {
     }
 
     const auto tags = TagsForCurrentGroup();
-    const float contentHeight = 4.0f + static_cast<float>(tags.size()) * 34.0f;
+    const float itemHeight = Metric(theme_, L"minorNavItem", L"height", 32.0f);
+    const float itemGap = Metric(theme_, L"minorNavItem", L"gap", 2.0f);
+    const float topInset = Metric(theme_, L"minorNavItem", L"topInset", 2.0f);
+    const float bottomInset = Metric(theme_, L"minorNavItem", L"bottomInset", 2.0f);
+    const float contentHeight = topInset + bottomInset + static_cast<float>(tags.size()) * (itemHeight + itemGap);
     return std::max(0.0f, contentHeight - Height(rect));
 }
 
@@ -3868,7 +4694,7 @@ float MainWindow::MaxLinkScrollOffset(const D2D1_RECT_F& rect) const {
     }
 
     const Group* tag = FindGroup(currentTagId_);
-    const LinkLayoutMetrics metrics = MakeLinkLayout(rect, tag);
+    const LinkLayoutMetrics metrics = MakeLinkLayout(theme_, rect, tag);
     const float contentHeight = LinkContentHeight(links.size(), metrics);
     return std::max(0.0f, contentHeight - Height(rect));
 }
@@ -3880,14 +4706,41 @@ void MainWindow::EnsureGroupVisible(int groupId) {
     }
     D2D1_RECT_F title{}, groupsRect{}, tagsRect{}, linksRect{};
     BuildLayout(static_cast<float>(client.right - client.left), static_cast<float>(client.bottom - client.top), title, groupsRect, tagsRect, linksRect);
-    float x = groupsRect.left + 4.0f;
+
+    if (Height(groupsRect) > Width(groupsRect)) {
+        const float itemHeight = Metric(theme_, L"majorNavItem", L"verticalHeight", 32.0f);
+        const float itemGap = Metric(theme_, L"majorNavItem", L"verticalGap", 2.0f);
+        const float topInset = Metric(theme_, L"majorNavItem", L"verticalTopInset", 2.0f);
+        const float visibilityPadding = Metric(theme_, L"majorNavItem", L"visibilityPadding", 8.0f);
+        float y = groupsRect.top + topInset;
+        for (const auto& group : MajorGroups()) {
+            if (group.id == groupId) {
+                if (y - groupScrollOffset_ < groupsRect.top + visibilityPadding) {
+                    groupScrollOffset_ = y - groupsRect.top - visibilityPadding;
+                } else if (y + itemHeight - groupScrollOffset_ > groupsRect.bottom - visibilityPadding) {
+                    groupScrollOffset_ = y + itemHeight - groupsRect.bottom + visibilityPadding;
+                }
+                groupScrollOffset_ = ClampFloat(groupScrollOffset_, 0.0f, MaxGroupScrollOffset(groupsRect));
+                return;
+            }
+            y += itemHeight + itemGap;
+        }
+        return;
+    }
+
+    const float itemOffsetX = Metric(theme_, L"majorNavItem", L"offsetX", 4.0f);
+    const float itemMinWidth = Metric(theme_, L"majorNavItem", L"minWidth", 72.0f);
+    const float itemMaxWidth = Metric(theme_, L"majorNavItem", L"maxWidth", 128.0f);
+    const float itemWidthAdjust = Metric(theme_, L"majorNavItem", L"widthAdjust", -14.0f);
+    const float visibilityPadding = Metric(theme_, L"majorNavItem", L"visibilityPadding", 8.0f);
+    float x = groupsRect.left + itemOffsetX;
     for (const auto& group : MajorGroups()) {
-        const float width = std::max(72.0f, std::min(128.0f, NavigationItemWidth(group.name) - 14.0f));
+        const float width = std::max(itemMinWidth, std::min(itemMaxWidth, NavigationItemWidth(theme_, group.name) + itemWidthAdjust));
         if (group.id == groupId) {
-            if (x - groupScrollOffset_ < groupsRect.left + 8.0f) {
-                groupScrollOffset_ = x - groupsRect.left - 8.0f;
-            } else if (x + width - groupScrollOffset_ > groupsRect.right - 8.0f) {
-                groupScrollOffset_ = x + width - groupsRect.right + 8.0f;
+            if (x - groupScrollOffset_ < groupsRect.left + visibilityPadding) {
+                groupScrollOffset_ = x - groupsRect.left - visibilityPadding;
+            } else if (x + width - groupScrollOffset_ > groupsRect.right - visibilityPadding) {
+                groupScrollOffset_ = x + width - groupsRect.right + visibilityPadding;
             }
             groupScrollOffset_ = ClampFloat(groupScrollOffset_, 0.0f, MaxGroupScrollOffset(groupsRect));
             return;
@@ -3903,18 +4756,22 @@ void MainWindow::EnsureTagVisible(int tagId) {
     }
     D2D1_RECT_F title{}, groupsRect{}, tagsRect{}, linksRect{};
     BuildLayout(static_cast<float>(client.right - client.left), static_cast<float>(client.bottom - client.top), title, groupsRect, tagsRect, linksRect);
-    float y = tagsRect.top + 2.0f;
+    const float topInset = Metric(theme_, L"minorNavItem", L"topInset", 2.0f);
+    const float itemHeight = Metric(theme_, L"minorNavItem", L"height", 32.0f);
+    const float itemGap = Metric(theme_, L"minorNavItem", L"gap", 2.0f);
+    const float visibilityPadding = Metric(theme_, L"minorNavItem", L"visibilityPadding", 8.0f);
+    float y = tagsRect.top + topInset;
     for (const auto& tag : TagsForCurrentGroup()) {
         if (tag.id == tagId) {
-            if (y - tagScrollOffset_ < tagsRect.top + 8.0f) {
-                tagScrollOffset_ = y - tagsRect.top - 8.0f;
-            } else if (y + 32.0f - tagScrollOffset_ > tagsRect.bottom - 8.0f) {
-                tagScrollOffset_ = y + 32.0f - tagsRect.bottom + 8.0f;
+            if (y - tagScrollOffset_ < tagsRect.top + visibilityPadding) {
+                tagScrollOffset_ = y - tagsRect.top - visibilityPadding;
+            } else if (y + itemHeight - tagScrollOffset_ > tagsRect.bottom - visibilityPadding) {
+                tagScrollOffset_ = y + itemHeight - tagsRect.bottom + visibilityPadding;
             }
             tagScrollOffset_ = ClampFloat(tagScrollOffset_, 0.0f, MaxTagScrollOffset(tagsRect));
             return;
         }
-        y += 34.0f;
+        y += itemHeight + itemGap;
     }
 }
 
@@ -3938,15 +4795,16 @@ void MainWindow::EnsureLinkVisible(int linkId) {
 
     const int index = static_cast<int>(std::distance(links.begin(), it));
     const Group* tag = FindGroup(currentTagId_);
-    const LinkLayoutMetrics metrics = MakeLinkLayout(linksRect, tag);
+    const LinkLayoutMetrics metrics = MakeLinkLayout(theme_, linksRect, tag);
     const D2D1_RECT_F item = LinkItemRect(linksRect, metrics, index, 0.0f);
     const float itemTop = item.top;
     const float itemBottom = item.bottom;
 
-    if (itemTop - linkScrollOffset_ < linksRect.top + 8.0f) {
-        linkScrollOffset_ = itemTop - linksRect.top - 8.0f;
-    } else if (itemBottom - linkScrollOffset_ > linksRect.bottom - 8.0f) {
-        linkScrollOffset_ = itemBottom - linksRect.bottom + 8.0f;
+    const float visibilityPadding = Metric(theme_, L"linkItem", L"visibilityPadding", 8.0f);
+    if (itemTop - linkScrollOffset_ < linksRect.top + visibilityPadding) {
+        linkScrollOffset_ = itemTop - linksRect.top - visibilityPadding;
+    } else if (itemBottom - linkScrollOffset_ > linksRect.bottom - visibilityPadding) {
+        linkScrollOffset_ = itemBottom - linksRect.bottom + visibilityPadding;
     }
     linkScrollOffset_ = ClampFloat(linkScrollOffset_, 0.0f, MaxLinkScrollOffset(linksRect));
 }
@@ -4078,7 +4936,7 @@ int MainWindow::LinkIdFromHotKeyId(int hotKeyId) const {
 }
 
 void MainWindow::BuildLayout(float width, float height, D2D1_RECT_F& title, D2D1_RECT_F& groups, D2D1_RECT_F& tags, D2D1_RECT_F& links) const {
-    const float titleHeight = config_.showTitle ? 34.0f : 0.0f;
+    const float titleHeight = config_.showTitle ? Metric(theme_, L"title", L"height", 34.0f) : 0.0f;
     title = D2D1::RectF(0, 0, width, titleHeight);
 
     float left = 0.0f;
@@ -4089,16 +4947,30 @@ void MainWindow::BuildLayout(float width, float height, D2D1_RECT_F& title, D2D1
     groups = D2D1::RectF(0, top, width, top);
     tags = D2D1::RectF(0, top, 0, bottom);
     if (config_.showGroup) {
-        const float groupHeight = 34.0f;
-        groups = D2D1::RectF(0.0f, top, width, std::min(bottom, top + groupHeight));
-        top = groups.bottom;
+        if (config_.groupRight) {
+            const float groupWidth = ClampFloat(static_cast<float>(config_.groupWidth), 40.0f, std::max(40.0f, width * 0.42f));
+            groups = D2D1::RectF(std::max(left, right - groupWidth), top, right, bottom);
+            right = groups.left;
+        } else {
+            const float groupHeight = Metric(theme_, L"majorNav", L"height", 34.0f);
+            groups = D2D1::RectF(0.0f, top, width, std::min(bottom, top + groupHeight));
+            top = groups.bottom;
+        }
     }
 
     if (config_.showTag) {
-        const float maxTagWidth = std::max(72.0f, width * 0.42f);
-        const float tagWidth = std::min(72.0f, maxTagWidth);
-        tags = D2D1::RectF(left, top, left + tagWidth, bottom);
-        left += tagWidth;
+        const float configuredTagWidth = config_.tagWidth > 0 ? static_cast<float>(config_.tagWidth) : Metric(theme_, L"minorNav", L"width", 72.0f);
+        const float minTagWidth = Metric(theme_, L"minorNav", L"minWidth", 56.0f);
+        const float maxTagRatio = Metric(theme_, L"minorNav", L"maxWidthRatio", 0.42f);
+        const float maxTagWidth = std::max(minTagWidth, width * maxTagRatio);
+        const float tagWidth = std::min(std::max(minTagWidth, configuredTagWidth), maxTagWidth);
+        if (config_.tagRight) {
+            tags = D2D1::RectF(std::max(left, right - tagWidth), top, right, bottom);
+            right = tags.left;
+        } else {
+            tags = D2D1::RectF(left, top, std::min(right, left + tagWidth), bottom);
+            left = tags.right;
+        }
     }
 
     links = D2D1::RectF(left, top, right, bottom);
@@ -4120,3 +4992,4 @@ bool MainWindow::IsHover(HitKind kind, int id) const {
 bool MainWindow::Contains(const D2D1_RECT_F& rect, float x, float y) {
     return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
 }
+

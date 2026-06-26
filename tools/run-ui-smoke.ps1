@@ -40,6 +40,9 @@ public static class NativeUi {
     public static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
 
     [DllImport("user32.dll")]
+    public static extern bool EnumChildWindows(IntPtr hWndParent, EnumWindowsProc lpEnumFunc, IntPtr lParam);
+
+    [DllImport("user32.dll")]
     public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
@@ -101,9 +104,23 @@ public static class NativeUi {
 
             string actualClass = ClassName(hWnd);
             string title = WindowText(hWnd);
-            bool classMatches = className == null || actualClass == className;
+            bool classMatches = className == null ||
+                actualClass == className ||
+                (className.EndsWith("*") && actualClass.StartsWith(className.Substring(0, className.Length - 1)));
             bool titleMatches = titleContains == null || title.Contains(titleContains);
             if (classMatches && titleMatches) {
+                found = hWnd;
+                return false;
+            }
+            return true;
+        }, IntPtr.Zero);
+        return found;
+    }
+
+    public static IntPtr FindChildByClass(IntPtr parent, string className) {
+        IntPtr found = IntPtr.Zero;
+        EnumChildWindows(parent, (hWnd, lParam) => {
+            if (ClassName(hWnd) == className) {
                 found = hWnd;
                 return false;
             }
@@ -206,8 +223,15 @@ function Invoke-TextCommand {
     )
 
     [NativeUi]::PostMessage($MainWindow, 0x0111, [IntPtr]$Command, [IntPtr]::Zero) | Out-Null
-    $dialog = Wait-ProcessWindow -Process $Process -ClassName "QuattroTextInputDialog" -TitleContains $DialogTitle
-    $edit = [NativeUi]::FindWindowEx($dialog, [IntPtr]::Zero, "Edit", $null)
+    $dialog = Wait-ProcessWindow -Process $Process -ClassName "QuattroTextInputDialog_*" -TitleContains $DialogTitle
+    $edit = [IntPtr]::Zero
+    $deadline = [DateTime]::UtcNow.AddSeconds(5)
+    while ($edit -eq [IntPtr]::Zero -and [DateTime]::UtcNow -lt $deadline) {
+        $edit = [NativeUi]::FindChildByClass($dialog, "Edit")
+        if ($edit -eq [IntPtr]::Zero) {
+            Start-Sleep -Milliseconds 50
+        }
+    }
     if ($edit -eq [IntPtr]::Zero) {
         throw "Text input edit control not found."
     }
@@ -244,6 +268,8 @@ function Capture-Window {
 
 $runDir = Join-Path ([System.IO.Path]::GetTempPath()) ("QuattroUiSmoke_" + [Guid]::NewGuid().ToString("N"))
 $process = $null
+$previousNoFocus = $env:QUATTRO_TEST_NO_FOCUS
+$env:QUATTRO_TEST_NO_FOCUS = '1'
 
 try {
     New-Item -ItemType Directory -Force -Path $runDir | Out-Null
@@ -262,7 +288,7 @@ nWidth=388
 nHeight=560
 nPosX=80
 nPosY=80
-Theme=gray
+Theme=default
 "@ | Set-Content -Path (Join-Path $runDir "conf.ini") -Encoding UTF8
 
     $testExe = Join-Path $runDir "Quattro.exe"
@@ -311,11 +337,8 @@ Theme=gray
     if (![NativeUi]::IsWindowVisible($main)) {
         throw "Tray left-click did not restore the main window."
     }
-
-    [NativeUi]::SetForegroundWindow($main) | Out-Null
-    [NativeUi]::SendMessage($main, 0x0111, [IntPtr]40009, [IntPtr]::Zero) | Out-Null
-    Start-Sleep -Milliseconds 300
-    [NativeUi]::SendMessage($main, 0x0111, [IntPtr]40012, [IntPtr]::Zero) | Out-Null
+    Invoke-TextCommand -Process $process -MainWindow $main -Command 40009 -DialogTitle "" -Text "SmokeGroup"
+    Invoke-TextCommand -Process $process -MainWindow $main -Command 40012 -DialogTitle "" -Text "SmokeTag"
     Start-Sleep -Milliseconds 500
 
     $screenshot = Join-Path $LogDir "ui-smoke-main.png"
@@ -349,6 +372,11 @@ Theme=gray
     "final_tags=$finalTags"
     "screenshot=$screenshot"
 } finally {
+    if ($null -eq $previousNoFocus) {
+        Remove-Item Env:\QUATTRO_TEST_NO_FOCUS -ErrorAction SilentlyContinue
+    } else {
+        $env:QUATTRO_TEST_NO_FOCUS = $previousNoFocus
+    }
     if (![string]::IsNullOrWhiteSpace($runDir)) {
         $appLog = Join-Path $runDir "logs\app.log"
         if (Test-Path $appLog) {
@@ -367,3 +395,5 @@ Theme=gray
     }
     Remove-Item -LiteralPath $runDir -Recurse -Force -ErrorAction SilentlyContinue
 }
+
+

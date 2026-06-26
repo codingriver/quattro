@@ -1,11 +1,14 @@
 #include "UrlEditDialog.h"
 
+#include "ThemedControls.h"
 #include "Utilities.h"
 
 #include <commctrl.h>
 #include <wininet.h>
 
+#include <algorithm>
 #include <utility>
+#include <vector>
 
 namespace {
 constexpr int kDialogWidth = 500;
@@ -29,8 +32,15 @@ std::wstring GetWindowTextString(HWND hwnd) {
     return text;
 }
 
-void SetControlFont(HWND hwnd, HFONT font) {
-    SendMessageW(hwnd, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+float ClampFloat(float value, float minValue, float maxValue) {
+    return std::max(minValue, std::min(maxValue, value));
+}
+
+COLORREF ToColorRef(Color color) {
+    const auto byte = [](float value) -> BYTE {
+        return static_cast<BYTE>(ClampFloat(value, 0.0f, 1.0f) * 255.0f + 0.5f);
+    };
+    return RGB(byte(color.r), byte(color.g), byte(color.b));
 }
 
 std::wstring UrlHostOrText(const std::wstring& value) {
@@ -48,8 +58,8 @@ std::wstring UrlHostOrText(const std::wstring& value) {
 
 class DialogWindow {
 public:
-    DialogWindow(HWND owner, HINSTANCE instance, Link& link, bool isNew)
-        : owner_(owner), instance_(instance), link_(link), isNew_(isNew) {}
+    DialogWindow(HWND owner, HINSTANCE instance, const Theme& theme, Link& link, bool isNew)
+        : owner_(owner), instance_(instance), theme_(theme), link_(link), isNew_(isNew) {}
 
     bool Run() {
         WNDCLASSEXW wc{};
@@ -57,7 +67,7 @@ public:
         wc.lpfnWndProc = DialogWindow::WindowProc;
         wc.hInstance = instance_;
         wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-        wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+        wc.hbrBackground = nullptr;
         wc.lpszClassName = L"QuattroUrlEditDialog";
         RegisterClassExW(&wc);
 
@@ -70,7 +80,7 @@ public:
             WS_EX_DLGMODALFRAME | WS_EX_WINDOWEDGE,
             wc.lpszClassName,
             isNew_ ? L"添加网址" : L"编辑<超链接>",
-            WS_CAPTION | WS_SYSMENU | WS_POPUP,
+            WS_CAPTION | WS_SYSMENU | WS_POPUP | WS_CLIPCHILDREN,
             x,
             y,
             kDialogWidth,
@@ -84,8 +94,9 @@ public:
         }
 
         EnableWindow(owner_, FALSE);
-        ShowWindow(hwnd_, SW_SHOWNORMAL);
+        ShowWindowRespectFocusPolicy(hwnd_, SW_SHOWNORMAL);
         UpdateWindow(hwnd_);
+        RedrawWindow(hwnd_, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
 
         MSG message{};
         while (!done_ && GetMessageW(&message, nullptr, 0, 0) > 0) {
@@ -97,7 +108,7 @@ public:
 
         if (IsWindow(owner_)) {
             EnableWindow(owner_, TRUE);
-            SetForegroundWindow(owner_);
+            ActivateWindow(owner_);
         }
         return accepted_;
     }
@@ -121,16 +132,38 @@ private:
         case WM_CREATE:
             CreateControls();
             return 0;
+        case WM_PAINT: {
+            PAINTSTRUCT ps{};
+            HDC dc = BeginPaint(hwnd_, &ps);
+            PaintBackground(dc);
+            PaintFields(dc);
+            EndPaint(hwnd_, &ps);
+            return 0;
+        }
+        case WM_PRINTCLIENT:
+            PaintBackground(reinterpret_cast<HDC>(wParam));
+            PaintFields(reinterpret_cast<HDC>(wParam));
+            return 0;
         case WM_CTLCOLORSTATIC:
             SetBkMode(reinterpret_cast<HDC>(wParam), TRANSPARENT);
+            SetTextColor(reinterpret_cast<HDC>(wParam), ToColorRef(theme_.color(L"label", L"normal", L"text")));
             return reinterpret_cast<LRESULT>(backgroundBrush_ ? backgroundBrush_ : GetStockObject(WHITE_BRUSH));
+        case WM_CTLCOLOREDIT:
+            SetBkColor(reinterpret_cast<HDC>(wParam), ToColorRef(theme_.color(L"edit", L"normal", L"bg")));
+            SetTextColor(reinterpret_cast<HDC>(wParam), ToColorRef(theme_.color(L"edit", L"normal", L"text")));
+            return reinterpret_cast<LRESULT>(fieldBrush_ ? fieldBrush_ : GetStockObject(WHITE_BRUSH));
+        case WM_DRAWITEM:
+            if (ThemedControls::Draw(theme_, reinterpret_cast<const DRAWITEMSTRUCT*>(lParam))) {
+                return TRUE;
+            }
+            return 0;
         case WM_ERASEBKGND: {
-            RECT rect{};
-            GetClientRect(hwnd_, &rect);
-            FillRect(reinterpret_cast<HDC>(wParam), &rect, backgroundBrush_ ? backgroundBrush_ : reinterpret_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
             return 1;
         }
         case WM_COMMAND:
+            if (HIWORD(wParam) == EN_SETFOCUS || HIWORD(wParam) == EN_KILLFOCUS) {
+                InvalidateField(reinterpret_cast<HWND>(lParam));
+            }
             if (LOWORD(wParam) == IdOk) {
                 Accept();
                 return 0;
@@ -147,8 +180,15 @@ private:
             if (font_ && ownsFont_) {
                 DeleteObject(font_);
             }
+            if (editFont_) {
+                DeleteObject(editFont_);
+                editFont_ = nullptr;
+            }
             if (backgroundBrush_) {
                 DeleteObject(backgroundBrush_);
+            }
+            if (fieldBrush_) {
+                DeleteObject(fieldBrush_);
             }
             done_ = true;
             return 0;
@@ -157,32 +197,34 @@ private:
         }
     }
 
+    struct FieldFrame {
+        RECT rect{};
+        HWND child = nullptr;
+    };
+
     HWND Label(const wchar_t* text, int x, int y) {
-        HWND hwnd = CreateWindowExW(0, L"STATIC", text, WS_CHILD | WS_VISIBLE | SS_RIGHT,
-                                    x, y + 4, 58, 22, hwnd_, nullptr, instance_, nullptr);
-        SetControlFont(hwnd, font_);
-        return hwnd;
+        return ThemedControls::CreateLabelText(instance_, hwnd_, text, x, y + 4, 58, theme_, font_, SS_RIGHT);
     }
 
     HWND Edit(int id, int x, int y, int width, const std::wstring& value, DWORD extraStyle = ES_AUTOHSCROLL) {
-        HWND hwnd = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", value.c_str(),
-                                    WS_CHILD | WS_VISIBLE | WS_TABSTOP | extraStyle,
-                                    x, y, width, extraStyle & ES_MULTILINE ? 74 : 26,
-                                    hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), instance_, nullptr);
-        SetControlFont(hwnd, font_);
+        const int height = extraStyle & ES_MULTILINE ? ThemedControls::EditFrameHeight(theme_) * 2 + 14 : FieldHeight();
+        const RECT frame{x, y, x + width, y + height};
+        HWND hwnd = (extraStyle & ES_MULTILINE)
+            ? ThemedControls::CreateMultiLineEdit(instance_, hwnd_, id, theme_, frame, value, font_, extraStyle)
+            : ThemedControls::CreateSingleLineEdit(instance_, hwnd_, id, theme_, frame, value, editFont_ ? editFont_ : font_, extraStyle);
+        fieldFrames_.push_back(FieldFrame{frame, hwnd});
         return hwnd;
     }
 
     void CreateControls() {
-        backgroundBrush_ = CreateSolidBrush(RGB(246, 246, 246));
-        font_ = CreateFontW(
-            -14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-            DEFAULT_PITCH | FF_DONTCARE, L"Microsoft YaHei UI");
+        backgroundBrush_ = CreateSolidBrush(ToColorRef(theme_.color(L"dialog", L"normal", L"bg")));
+        fieldBrush_ = CreateSolidBrush(ToColorRef(theme_.color(L"edit", L"normal", L"bg")));
+        font_ = ThemedControls::CreateDialogFont();
         ownsFont_ = font_ != nullptr;
         if (!font_) {
             font_ = reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
         }
+        editFont_ = ThemedControls::CreateEditFont(theme_);
 
         Label(L"名称", 18, 24);
         nameEdit_ = Edit(IdName, 84, 22, 384, link_.name);
@@ -193,12 +235,37 @@ private:
         Label(L"备注", 18, 96);
         remarkEdit_ = Edit(IdRemark, 84, 94, 384, link_.remark, ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL);
 
-        HWND ok = CreateWindowExW(0, L"BUTTON", L"确定", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
-                                  306, 188, 76, 28, hwnd_, reinterpret_cast<HMENU>(IdOk), instance_, nullptr);
-        HWND cancel = CreateWindowExW(0, L"BUTTON", L"取消", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
-                                      392, 188, 76, 28, hwnd_, reinterpret_cast<HMENU>(IdCancel), instance_, nullptr);
-        SetControlFont(ok, font_);
-        SetControlFont(cancel, font_);
+        ThemedControls::CreateButton(instance_, hwnd_, IdOk, L"确定", 306, 188, 76, ButtonHeight(), font_, true);
+        ThemedControls::CreateButton(instance_, hwnd_, IdCancel, L"取消", 392, 188, 76, ButtonHeight(), font_);
+    }
+
+    int FieldHeight() const {
+        return ThemedControls::EditFrameHeight(theme_);
+    }
+
+    int ButtonHeight() const {
+        return ThemedControls::ButtonHeight(theme_);
+    }
+
+    void PaintBackground(HDC dc) {
+        RECT rect{};
+        GetClientRect(hwnd_, &rect);
+        FillRect(dc, &rect, backgroundBrush_ ? backgroundBrush_ : reinterpret_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
+    }
+
+    void PaintFields(HDC dc) {
+        for (const auto& frame : fieldFrames_) {
+            ThemedControls::DrawFieldFrame(theme_, dc, frame.rect, frame.child);
+        }
+    }
+
+    void InvalidateField(HWND child) {
+        for (const auto& frame : fieldFrames_) {
+            if (frame.child == child) {
+                InvalidateRect(hwnd_, &frame.rect, TRUE);
+                return;
+            }
+        }
     }
 
     void Accept() {
@@ -240,20 +307,25 @@ private:
     HWND owner_ = nullptr;
     HINSTANCE instance_ = nullptr;
     HWND hwnd_ = nullptr;
+    const Theme& theme_;
     Link& link_;
     bool isNew_ = false;
     bool done_ = false;
     bool accepted_ = false;
     HFONT font_ = nullptr;
+    HFONT editFont_ = nullptr;
     bool ownsFont_ = false;
     HBRUSH backgroundBrush_ = nullptr;
+    HBRUSH fieldBrush_ = nullptr;
+    std::vector<FieldFrame> fieldFrames_;
     HWND nameEdit_ = nullptr;
     HWND urlEdit_ = nullptr;
     HWND remarkEdit_ = nullptr;
 };
 }
 
-bool UrlEditDialog::Show(HWND owner, HINSTANCE instance, Link& link, bool isNew) {
-    DialogWindow dialog(owner, instance, link, isNew);
+bool UrlEditDialog::Show(HWND owner, HINSTANCE instance, const Theme& theme, Link& link, bool isNew) {
+    DialogWindow dialog(owner, instance, theme, link, isNew);
     return dialog.Run();
 }
+

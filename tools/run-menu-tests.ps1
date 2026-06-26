@@ -75,6 +75,9 @@ public static class NativeMenuUi {
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     public static extern bool SetWindowText(IntPtr hWnd, string lpString);
 
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+    public static extern int GetPrivateProfileString(string section, string key, string defaultValue, StringBuilder returnedString, int size, string fileName);
+
     [DllImport("user32.dll")]
     public static extern bool PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
 
@@ -116,6 +119,12 @@ public static class NativeMenuUi {
         int length = (int)SendMessage(hwnd, 0x000E, IntPtr.Zero, IntPtr.Zero);
         var text = new StringBuilder(length + 1);
         SendMessageText(hwnd, 0x000D, (IntPtr)text.Capacity, text);
+        return text.ToString();
+    }
+
+    public static string PrivateProfileString(string path, string section, string key) {
+        var text = new StringBuilder(512);
+        GetPrivateProfileString(section, key, "", text, text.Capacity, path);
         return text.ToString();
     }
 
@@ -386,8 +395,92 @@ function Assert-ProbeContains {
     }
 }
 
+function Convert-ProbeLine {
+    param([string]$Line)
+    $fields = @{}
+    $parts = $Line -split "`t"
+    if ($parts.Count -eq 0) {
+        return $null
+    }
+    $fields["kind"] = $parts[0]
+    for ($i = 1; $i -lt $parts.Count; $i++) {
+        $pair = $parts[$i] -split "=", 2
+        if ($pair.Count -eq 2) {
+            $fields[$pair[0]] = $pair[1]
+        }
+    }
+    return $fields
+}
+
+function Get-ProbeRecordByName {
+    param([string[]]$Lines, [string]$Kind, [string]$Name)
+    foreach ($line in $Lines) {
+        $record = Convert-ProbeLine -Line $line
+        if ($record -and $record["kind"] -eq $Kind -and $record["name"] -eq $Name) {
+            return $record
+        }
+    }
+    throw "Probe record not found: $Kind / $Name"
+}
+
+function Get-ProbeSystemLink {
+    param([string[]]$Lines)
+    foreach ($line in $Lines) {
+        $record = Convert-ProbeLine -Line $line
+        if ($record -and $record["kind"] -eq "LINK" -and $record["type"] -eq "3" -and $record["path"] -eq "::{20D04FE0-3AEA-1069-A2D8-08002B30309D}") {
+            return $record
+        }
+    }
+    throw "Probe system link not found"
+}
+
+function Assert-ProbeEqual {
+    param([string]$Actual, [string]$Expected, [string]$Name)
+    if ($Actual -ne $Expected) {
+        throw "Probe assertion failed: $Name. expected=$Expected actual=$Actual"
+    }
+}
+
+function Assert-AllTagsHaveViewOptions {
+    param(
+        [string[]]$Lines,
+        [string]$Sort,
+        [string]$Layout,
+        [string]$IconSize
+    )
+
+    $checked = 0
+    foreach ($line in $Lines) {
+        $record = Convert-ProbeLine -Line $line
+        if (!$record -or $record["kind"] -ne "GROUP" -or $record["parent"] -eq "0") {
+            continue
+        }
+        $checked++
+        Assert-ProbeEqual -Actual $record["sort"] -Expected $Sort -Name "unified tag sort for $($record["name"])"
+        Assert-ProbeEqual -Actual $record["layout"] -Expected $Layout -Name "unified tag layout for $($record["name"])"
+        Assert-ProbeEqual -Actual $record["iconSize"] -Expected $IconSize -Name "unified tag icon size for $($record["name"])"
+    }
+    if ($checked -lt 2) {
+        throw "Probe assertion failed: expected at least two tags for unified menu settings, checked=$checked"
+    }
+}
+
+function Get-IniValue {
+    param([string]$Path, [string]$Key)
+    if (!(Test-Path $Path)) {
+        throw "INI file not found: $Path"
+    }
+    $value = [NativeMenuUi]::PrivateProfileString($Path, "main", $Key)
+    if ([string]::IsNullOrEmpty($value)) {
+        throw "INI key not found: $Key"
+    }
+    return $value
+}
+
 $runDir = Join-Path ([System.IO.Path]::GetTempPath()) ("QuattroMenuTests_" + [Guid]::NewGuid().ToString("N"))
 $process = $null
+$previousNoFocus = $env:QUATTRO_TEST_NO_FOCUS
+$env:QUATTRO_TEST_NO_FOCUS = '1'
 
 try {
     New-Item -ItemType Directory -Force -Path $runDir | Out-Null
@@ -402,10 +495,8 @@ try {
     $process = Start-Process -FilePath (Join-Path $runDir "Quattro.exe") -WorkingDirectory $runDir -PassThru -WindowStyle Normal
     $main = Wait-ProcessWindow -Process $process -ClassName "QuattroMainWindow" -TitleContains "Quattro"
 
-    Invoke-CommandImmediate -MainWindow $main -Command 40009
-    Invoke-TextCommand -Process $process -MainWindow $main -Command 40010 -DialogTitle "" -Text "MenuGroup"
-    Invoke-CommandImmediate -MainWindow $main -Command 40012
-    Invoke-TextCommand -Process $process -MainWindow $main -Command 40013 -DialogTitle "" -Text "MenuTag"
+    Invoke-TextCommand -Process $process -MainWindow $main -Command 40009 -DialogTitle "" -Text "MenuGroup"
+    Invoke-TextCommand -Process $process -MainWindow $main -Command 40012 -DialogTitle "" -Text "MenuTag"
 
     Invoke-LinkDialogCommand -Process $process -MainWindow $main -Command 40001 -DialogTitle "" -Name "MenuLink" -Path $targetA -Remark "InitialRemark"
     Invoke-LinkDialogCommand -Process $process -MainWindow $main -Command 40002 -DialogTitle "" -Name "EditedLink" -Path $targetA -Remark "EditedRemark"
@@ -418,13 +509,21 @@ try {
     Invoke-CommandImmediate -MainWindow $main -Command 40021
     Invoke-MessageCommand -Process $process -MainWindow $main -Command 40003 -Title "" -Response 6
 
+    Set-Clipboard -Value $targetB
+    Invoke-CommandImmediate -MainWindow $main -Command 40017
+
     Invoke-CommandImmediate -MainWindow $main -Command 40020
     Invoke-CommandImmediate -MainWindow $main -Command 44001
     Invoke-CommandImmediate -MainWindow $main -Command 44004
+    Invoke-CommandImmediate -MainWindow $main -Command 44011
+    Invoke-CommandImmediate -MainWindow $main -Command 44014
+    Invoke-CommandImmediate -MainWindow $main -Command 44013
+    Invoke-CommandImmediate -MainWindow $main -Command 44015
+    Invoke-CommandImmediate -MainWindow $main -Command 44017
 
-    Invoke-CommandImmediate -MainWindow $main -Command 40012
+    Invoke-TextCommand -Process $process -MainWindow $main -Command 40012 -DialogTitle "" -Text "DeleteTag"
     Invoke-MessageCommand -Process $process -MainWindow $main -Command 40014 -Title "" -Response 6
-    Invoke-CommandImmediate -MainWindow $main -Command 40009
+    Invoke-TextCommand -Process $process -MainWindow $main -Command 40009 -DialogTitle "" -Text "DeleteGroup"
     Invoke-MessageCommand -Process $process -MainWindow $main -Command 40011 -Title "" -Response 6
 
     Invoke-MessageCommand -Process $process -MainWindow $main -Command 40026 -Title ""
@@ -444,6 +543,25 @@ try {
     Invoke-CommandImmediate -MainWindow $main -Command 43000
     Invoke-UrlDialogCommand -Process $process -MainWindow $main -Command 40036 -Name "MenuUrl" -Url "www.example.com" -Remark "UrlRemark"
     Invoke-SystemFunctionDialogCommand -Process $process -MainWindow $main -Command 40037
+    Invoke-TextCommand -Process $process -MainWindow $main -Command 40009 -DialogTitle "" -Text "MoveGroup"
+    Invoke-TextCommand -Process $process -MainWindow $main -Command 40013 -DialogTitle "" -Text "MoveTarget"
+    Invoke-CommandImmediate -MainWindow $main -Command 41002
+    Invoke-CommandImmediate -MainWindow $main -Command 45001
+    Invoke-CommandImmediate -MainWindow $main -Command 44016
+    Invoke-CommandImmediate -MainWindow $main -Command 44010
+    Invoke-CommandImmediate -MainWindow $main -Command 44012
+    Invoke-CommandImmediate -MainWindow $main -Command 40050
+    $confPath = Join-Path $runDir "conf.ini"
+    Invoke-CommandImmediate -MainWindow $main -Command 40046
+    Assert-ProbeEqual -Actual (Get-IniValue -Path $confPath -Key "bShowTitle") -Expected "0" -Name "title check item toggled off"
+    Invoke-CommandImmediate -MainWindow $main -Command 40047
+    Assert-ProbeEqual -Actual (Get-IniValue -Path $confPath -Key "bShowGroup") -Expected "0" -Name "group check item toggled off"
+    Invoke-CommandImmediate -MainWindow $main -Command 40048
+    Assert-ProbeEqual -Actual (Get-IniValue -Path $confPath -Key "bShowTag") -Expected "0" -Name "tag check item toggled off"
+    Invoke-CommandImmediate -MainWindow $main -Command 40049
+    Assert-ProbeEqual -Actual (Get-IniValue -Path $confPath -Key "bTopMost") -Expected "0" -Name "topmost check item toggled off"
+    Invoke-CommandImmediate -MainWindow $main -Command 40051
+    Invoke-CommandImmediate -MainWindow $main -Command 46001
 
     [NativeMenuUi]::PostMessage($main, 0x0111, [IntPtr]40005, [IntPtr]::Zero) | Out-Null
     if (!$process.WaitForExit(5000)) {
@@ -453,15 +571,35 @@ try {
     $probeLines = Read-Probe -Directory $runDir
     $probeLines | Set-Content -Path (Join-Path $LogDir "menu-test-probe.txt") -Encoding UTF8
     Assert-ProbeContains -Lines $probeLines -Pattern "GROUP.*parent=0.*name=MenuGroup" -Name "edited group persisted"
-    Assert-ProbeContains -Lines $probeLines -Pattern "GROUP.*parent=[1-9].*sort=2.*layout=1.*iconSize=48.*name=MenuTag" -Name "edited tag settings persisted"
+    Assert-ProbeContains -Lines $probeLines -Pattern "GROUP.*parent=[1-9].*sort=1.*layout=0.*iconSize=24.*name=MenuTag" -Name "unified tag settings persisted"
     Assert-ProbeContains -Lines $probeLines -Pattern "LINK.*name=EditedLink.*path=.*target-a.txt.*remark=EditedRemark" -Name "edited link persisted"
+    Assert-ProbeContains -Lines $probeLines -Pattern "LINK.*name=target-b.*path=.*target-b.txt" -Name "clipboard import persisted"
     Assert-ProbeContains -Lines $probeLines -Pattern "LINK.*type=2.*name=MenuUrl.*path=https://www.example.com.*remark=UrlRemark" -Name "url link persisted"
     Assert-ProbeContains -Lines $probeLines -Pattern "LINK.*type=3.*path=::\{20D04FE0-3AEA-1069-A2D8-08002B30309D\}" -Name "system function persisted"
+    Assert-AllTagsHaveViewOptions -Lines $probeLines -Sort "1" -Layout "0" -IconSize "24"
+    $menuGroup = Get-ProbeRecordByName -Lines $probeLines -Kind "GROUP" -Name "MenuGroup"
+    $moveTarget = Get-ProbeRecordByName -Lines $probeLines -Kind "GROUP" -Name "MoveTarget"
+    $systemLink = Get-ProbeSystemLink -Lines $probeLines
+    Assert-ProbeEqual -Actual $moveTarget["parent"] -Expected $menuGroup["id"] -Name "tag move-to group persisted"
+    Assert-ProbeEqual -Actual $systemLink["parent"] -Expected $moveTarget["id"] -Name "link move-to tag persisted"
+    Assert-ProbeEqual -Actual (Get-IniValue -Path $confPath -Key "bShowTitle") -Expected "1" -Name "tray reset restored title visibility"
+    Assert-ProbeEqual -Actual (Get-IniValue -Path $confPath -Key "bShowGroup") -Expected "1" -Name "tray reset restored group visibility"
+    Assert-ProbeEqual -Actual (Get-IniValue -Path $confPath -Key "bShowTag") -Expected "1" -Name "tray reset restored tag visibility"
+    Assert-ProbeEqual -Actual (Get-IniValue -Path $confPath -Key "bTopMost") -Expected "0" -Name "tray reset restored non-topmost default"
+    Assert-ProbeEqual -Actual (Get-IniValue -Path $confPath -Key "nWidth") -Expected "388" -Name "tray reset restored width"
+    Assert-ProbeEqual -Actual (Get-IniValue -Path $confPath -Key "nHeight") -Expected "560" -Name "tray reset restored height"
+    Assert-ProbeEqual -Actual (Get-IniValue -Path $confPath -Key "nGroupWidth") -Expected "72" -Name "tray reset restored group width"
+    Assert-ProbeEqual -Actual (Get-IniValue -Path $confPath -Key "nTagWidth") -Expected "124" -Name "tray reset restored tag width"
 
     $probeReport = Join-Path $LogDir "menu-test-probe.txt"
     Write-Output 'menu_tests=passed'
     Write-Output ('probe=' + $probeReport)
 } finally {
+    if ($null -eq $previousNoFocus) {
+        Remove-Item Env:\QUATTRO_TEST_NO_FOCUS -ErrorAction SilentlyContinue
+    } else {
+        $env:QUATTRO_TEST_NO_FOCUS = $previousNoFocus
+    }
     if (![string]::IsNullOrWhiteSpace($runDir)) {
         $runDir | Set-Content -Path (Join-Path $LogDir "menu-test-run-dir.txt") -Encoding UTF8
         $appLog = Join-Path $runDir "logs\app.log"
@@ -481,3 +619,5 @@ try {
     }
     Remove-Item -LiteralPath $runDir -Recurse -Force -ErrorAction SilentlyContinue
 }
+
+

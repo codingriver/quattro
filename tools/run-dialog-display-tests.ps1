@@ -34,6 +34,25 @@ public struct DialogRect {
     public int Bottom;
 }
 
+[StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+public struct LogFontRect {
+    public int lfHeight;
+    public int lfWidth;
+    public int lfEscapement;
+    public int lfOrientation;
+    public int lfWeight;
+    public byte lfItalic;
+    public byte lfUnderline;
+    public byte lfStrikeOut;
+    public byte lfCharSet;
+    public byte lfOutPrecision;
+    public byte lfClipPrecision;
+    public byte lfQuality;
+    public byte lfPitchAndFamily;
+    [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)]
+    public string lfFaceName;
+}
+
 public static class NativeDialogUi {
     public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
 
@@ -75,6 +94,12 @@ public static class NativeDialogUi {
 
     [DllImport("user32.dll")]
     public static extern IntPtr GetDlgItem(IntPtr hDlg, int nIDDlgItem);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr SendMessage(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("gdi32.dll", CharSet = CharSet.Unicode)]
+    public static extern int GetObject(IntPtr hgdiobj, int cbBuffer, out LogFontRect obj);
 
     public static string ClassName(IntPtr hwnd) {
         var text = new StringBuilder(256);
@@ -153,6 +178,36 @@ public static class NativeDialogUi {
     }
 }
 '@
+}
+
+$themeXml = [xml](Get-Content (Join-Path $root "theme\\default.xml"))
+$editComponent = $themeXml.Theme.Component | Where-Object { $_.name -eq "edit" }
+$expectedSingleLineFontPx = [int](($editComponent.Metric | Where-Object { $_.name -eq "singleLineFontSizePx" }).value)
+
+function Get-ControlFontHeight {
+    param([IntPtr]$Hwnd)
+
+    $font = [NativeDialogUi]::SendMessage($Hwnd, 0x0031, [IntPtr]::Zero, [IntPtr]::Zero)
+    if ($font -eq [IntPtr]::Zero) {
+        throw "Control has no font handle."
+    }
+    $fontInfo = [LogFontRect]::new()
+    $fontSize = [System.Runtime.InteropServices.Marshal]::SizeOf($fontInfo)
+    [void][NativeDialogUi]::GetObject($font, $fontSize, [ref]$fontInfo)
+    return $fontInfo.lfHeight
+}
+
+function Assert-ControlFontHeight {
+    param(
+        [IntPtr]$Hwnd,
+        [string]$Name,
+        [int]$ExpectedPx
+    )
+
+    $actualHeight = Get-ControlFontHeight -Hwnd $Hwnd
+    if ([math]::Abs($actualHeight) -ne $ExpectedPx) {
+        throw "Unexpected font height for ${Name}: expected $ExpectedPx, actual $actualHeight"
+    }
 }
 
 function Wait-ProcessWindow {
@@ -237,6 +292,7 @@ function Assert-UsefulImage {
 
 function Assert-DialogSurface {
     param([IntPtr]$Hwnd, [string]$Name, [string]$Screenshot, [int[]]$RequiredControlIds = @())
+    Start-Sleep -Milliseconds 250
 
     foreach ($id in $RequiredControlIds) {
         $child = [IntPtr]::Zero
@@ -263,6 +319,8 @@ function Assert-DialogSurface {
 
 $runDir = Join-Path ([System.IO.Path]::GetTempPath()) ("QuattroDialogTests_" + [Guid]::NewGuid().ToString("N"))
 $process = $null
+$previousNoFocus = $env:QUATTRO_TEST_NO_FOCUS
+$env:QUATTRO_TEST_NO_FOCUS = '1'
 
 try {
     New-Item -ItemType Directory -Force -Path $runDir | Out-Null
@@ -270,7 +328,6 @@ try {
 
     $process = Start-Process -FilePath (Join-Path $runDir "Quattro.exe") -WorkingDirectory $runDir -PassThru -WindowStyle Normal
     $main = Wait-ProcessWindow -Process $process -ClassName "QuattroMainWindow" -TitleContains "Quattro"
-    [NativeDialogUi]::SetForegroundWindow($main) | Out-Null
     Start-Sleep -Milliseconds 300
 
     $mainSmall = Join-Path $LogDir "p2-main-small.png"
@@ -285,27 +342,32 @@ try {
     Capture-Window -Hwnd $main -Path $mainLarge
     Assert-UsefulImage -Path $mainLarge -Name "main-large"
 
-    [NativeDialogUi]::PostMessage($main, 0x0111, [IntPtr]40010, [IntPtr]::Zero) | Out-Null
+    [NativeDialogUi]::PostMessage($main, 0x0111, [IntPtr]40009, [IntPtr]::Zero) | Out-Null
     $textDialog = Wait-ProcessWindow -Process $process -ClassName "QuattroTextInputDialog_*"
     Assert-DialogSurface -Hwnd $textDialog -Name "text-dialog" -Screenshot (Join-Path $LogDir "p2-dialog-text.png")
+    Assert-ControlFontHeight -Hwnd ([NativeDialogUi]::GetDlgItem($textDialog, 100)) -Name "text-dialog.edit" -ExpectedPx $expectedSingleLineFontPx
     [NativeDialogUi]::PostMessage($textDialog, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null
     Wait-WindowClosed -Hwnd $textDialog
 
     [NativeDialogUi]::PostMessage($main, 0x0111, [IntPtr]40001, [IntPtr]::Zero) | Out-Null
     $linkDialog = Wait-ProcessWindow -Process $process -ClassName "QuattroLinkEditDialog"
     Assert-DialogSurface -Hwnd $linkDialog -Name "link-dialog" -Screenshot (Join-Path $LogDir "p2-dialog-link.png") -RequiredControlIds @(1003,1004,1007,1008,1010,1012,1014,1015,1017,1018,1019)
+    Assert-ControlFontHeight -Hwnd ([NativeDialogUi]::GetDlgItem($linkDialog, 1003)) -Name "link-dialog.name" -ExpectedPx $expectedSingleLineFontPx
     [NativeDialogUi]::PostMessage($linkDialog, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null
     Wait-WindowClosed -Hwnd $linkDialog
 
     [NativeDialogUi]::PostMessage($main, 0x0111, [IntPtr]40015, [IntPtr]::Zero) | Out-Null
     $searchDialog = Wait-ProcessWindow -Process $process -ClassName "QuattroSearchDialog"
     Assert-DialogSurface -Hwnd $searchDialog -Name "search-dialog" -Screenshot (Join-Path $LogDir "p2-dialog-search.png")
+    Assert-ControlFontHeight -Hwnd ([NativeDialogUi]::GetDlgItem($searchDialog, 100)) -Name "search-dialog.edit" -ExpectedPx $expectedSingleLineFontPx
     [NativeDialogUi]::PostMessage($searchDialog, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null
     Wait-WindowClosed -Hwnd $searchDialog
 
     [NativeDialogUi]::PostMessage($main, 0x0111, [IntPtr]40016, [IntPtr]::Zero) | Out-Null
     $settingsDialog = Wait-ProcessWindow -Process $process -ClassName "QuattroSettingsDialog"
     Assert-DialogSurface -Hwnd $settingsDialog -Name "settings-dialog" -Screenshot (Join-Path $LogDir "p2-dialog-settings.png")
+    Assert-ControlFontHeight -Hwnd ([NativeDialogUi]::GetDlgItem($settingsDialog, 401)) -Name "settings-dialog.group-width" -ExpectedPx $expectedSingleLineFontPx
+    Assert-ControlFontHeight -Hwnd ([NativeDialogUi]::GetDlgItem($settingsDialog, 203)) -Name "settings-dialog.help-url" -ExpectedPx $expectedSingleLineFontPx
     [NativeDialogUi]::PostMessage($settingsDialog, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null
     Wait-WindowClosed -Hwnd $settingsDialog
 
@@ -317,6 +379,11 @@ try {
     "dialog_display_tests=passed"
     "screenshots=$mainSmall;$mainLarge;p2-dialog-text.png;p2-dialog-link.png;p2-dialog-search.png;p2-dialog-settings.png"
 } finally {
+    if ($null -eq $previousNoFocus) {
+        Remove-Item Env:\QUATTRO_TEST_NO_FOCUS -ErrorAction SilentlyContinue
+    } else {
+        $env:QUATTRO_TEST_NO_FOCUS = $previousNoFocus
+    }
     if ($process -and !$process.HasExited) {
         try {
             [NativeDialogUi]::PostMessage($main, 0x0111, [IntPtr]40005, [IntPtr]::Zero) | Out-Null
@@ -329,3 +396,5 @@ try {
     }
     Remove-Item -LiteralPath $runDir -Recurse -Force -ErrorAction SilentlyContinue
 }
+
+

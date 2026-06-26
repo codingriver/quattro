@@ -1,0 +1,443 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Theme id="default" displayName="default" version="2">
+    <!--
+        Theme rules:
+        1. Only shared component categories are supported. Theme values must
+           describe a reusable UI category, not a specific page, window, or
+           control instance.
+        2. Do not add page/control names such as settings.searchInput,
+           linkEdit.nameField, searchDialog.keywordEdit, or any similar
+           per-screen override. Unsupported components are ignored by the
+           loader.
+        3. Customize common controls through the shared categories below:
+           text, label, panel, field, edit, button, iconButton, checkbox,
+           toggle, radio, comboBox, tabButton, list, listItem, scrollbar,
+           slider, dialog, menuItem, linkItem, majorNavItem, minorNavItem,
+           titleButton, tooltip, separator, etc.
+        4. New themeable UI must first be mapped to an existing shared category.
+           Add a new category only when it represents a reusable component type
+           across screens.
+    -->
+    <Palette>
+        <Color name="text" value="#ff20242B"/>
+        <Color name="mutedText" value="rgb(93,105,122)"/>
+        <Color name="accent" value="rgb(47,107,255)"/>
+        <Color name="accentSoft" value="rgb(228,237,255)"/>
+        <Color name="focus" value="rgb(47,107,255)"/>
+        <Color name="surface" value="rgb(255,255,255)"/>
+        <Color name="surfaceRaised" value="rgb(250,252,255)"/>
+        <Color name="background" value="rgb(244,247,251)"/>
+        <Color name="border" value="rgb(194,202,214)"/>
+        <Color name="line" value="rgb(223,228,236)"/>
+        <Color name="hover" value="rgb(237,243,255)"/>
+        <Color name="pressed" value="rgb(220,232,255)"/>
+        <Color name="menuHover" value="rgb(235,240,248)"/>
+        <Color name="majorHover" value="rgb(232,240,255)"/>
+        <Color name="minorHover" value="rgb(235,240,247)"/>
+        <Color name="selected" value="rgb(224,234,255)"/>
+        <Color name="dangerSoft" value="argb(44,232,72,85)"/>
+        <Color name="danger" value="rgb(181,35,48)"/>
+        <Color name="success" value="rgb(10,128,82)"/>
+        <Color name="successSoft" value="rgb(222,248,235)"/>
+        <Color name="warning" value="rgb(188,102,8)"/>
+        <Color name="warningSoft" value="rgb(255,243,209)"/>
+        <Color name="info" value="rgb(25,108,194)"/>
+        <Color name="infoSoft" value="rgb(224,240,255)"/>
+        <Color name="overlay" value="argb(108,16,20,28)"/>
+        <Color name="shadow" value="argb(52,16,20,28)"/>
+        <Color name="disabledText" value="rgb(145,156,171)"/>
+        <Color name="scrollTrack" value="argb(108,219,226,236)"/>
+        <Color name="scrollThumb" value="argb(218,136,151,171)"/>
+        <Color name="emptyText" value="rgb(105,116,132)"/>
+        <Color name="linkBg" value="argb(226,255,255,255)"/>
+        <Color name="checkMark" value="rgb(255,255,255)"/>
+    </Palette>
+
+    <Component name="global">
+        <Metric name="controlHeight" value="30"/>
+        <Metric name="compactControlHeight" value="24"/>
+        <Metric name="fieldHeight" value="32"/>
+        <Metric name="paddingX" value="10"/>
+        <Metric name="paddingY" value="6"/>
+        <Metric name="itemGap" value="8"/>
+        <Metric name="rowGap" value="6"/>
+        <Metric name="sectionGap" value="16"/>
+        <State name="normal" text="@text" bg="@surface"/>
+        <State name="success" text="@success" bg="@successSoft"/>
+        <State name="warning" text="@warning" bg="@warningSoft"/>
+        <State name="danger" text="@danger" bg="@dangerSoft"/>
+        <State name="info" text="@info" bg="@infoSoft"/>
+    </Component>
+    <Component name="window">
+        <State name="normal" bg="@background" border="@border"/>
+    </Component>
+    <Component name="title">
+        <Metric name="height" value="34"/>
+        <Metric name="iconSize" value="20"/>
+        <Metric name="iconLeft" value="9"/>
+        <Metric name="iconTop" value="7"/>
+        <Metric name="textGap" value="7"/>
+        <Metric name="textEnd" value="134"/>
+        <State name="normal" bg="@surface" text="@accent" subtext="@mutedText" line="@line"/>
+    </Component>
+    <Component name="titleButton">
+        <Metric name="size" value="26"/>
+        <Metric name="gap" value="2"/>
+        <Metric name="rightInset" value="4"/>
+        <Metric name="topInset" value="4"/>
+        <Metric name="reserveInset" value="16"/>
+        <Metric name="iconStrokeWidth" value="1.6"/>
+        <Metric name="iconHalf" value="5"/>
+        <Metric name="menuHalfWidth" value="6"/>
+        <Metric name="menuLineGap" value="5"/>
+        <Metric name="searchRadius" value="5"/>
+        <Metric name="searchOffset" value="2"/>
+        <Metric name="searchHandle" value="7"/>
+        <Metric name="skinStrokeWidth" value="1.4"/>
+        <Metric name="skinLineStrokeWidth" value="1.2"/>
+        <State name="normal" icon="@text"/>
+        <State name="hover" bg="@hover"/>
+    </Component>
+    <Component name="titleCloseButton">
+        <State name="hover" bg="@dangerSoft" icon="@danger"/>
+    </Component>
+    <Component name="majorNav">
+        <Metric name="height" value="34"/>
+        <State name="normal" bg="@surface" line="@line"/>
+    </Component>
+    <Component name="majorNavItem">
+        <Metric name="offsetX" value="4"/>
+        <Metric name="minWidth" value="72"/>
+        <Metric name="maxWidth" value="128"/>
+        <Metric name="widthAdjust" value="-14"/>
+        <Metric name="textInsetX" value="10"/>
+        <Metric name="textMinWidth" value="86"/>
+        <Metric name="textMaxWidth" value="168"/>
+        <Metric name="textBaseWidth" value="28"/>
+        <Metric name="textCharWidth" value="12"/>
+        <Metric name="contentRightPadding" value="4"/>
+        <Metric name="visibilityPadding" value="8"/>
+        <Metric name="verticalTopInset" value="2"/>
+        <Metric name="verticalBottomInset" value="2"/>
+        <Metric name="verticalHeight" value="32"/>
+        <Metric name="verticalGap" value="2"/>
+        <State name="normal" text="@text"/>
+        <State name="hover" bg="@majorHover" text="@text"/>
+        <State name="selected" bg="@surface" text="@accent"/>
+    </Component>
+    <Component name="minorNav">
+        <Metric name="width" value="72"/>
+        <Metric name="minWidth" value="56"/>
+        <Metric name="maxWidthRatio" value="0.42"/>
+        <State name="normal" bg="@surface" line="@line"/>
+    </Component>
+    <Component name="minorNavItem">
+        <Metric name="topInset" value="2"/>
+        <Metric name="bottomInset" value="2"/>
+        <Metric name="height" value="32"/>
+        <Metric name="gap" value="2"/>
+        <Metric name="textInsetX" value="10"/>
+        <Metric name="accentWidth" value="3"/>
+        <Metric name="accentInsetY" value="3"/>
+        <Metric name="visibilityPadding" value="8"/>
+        <State name="normal" text="@text"/>
+        <State name="hover" bg="@minorHover" text="@text"/>
+        <State name="selected" bg="@selected" text="@text" accent="@accent"/>
+    </Component>
+    <Component name="content">
+        <Metric name="emptyTextInsetX" value="20"/>
+        <Metric name="emptyTextTop" value="24"/>
+        <Metric name="emptyTextHeight" value="30"/>
+        <State name="normal" bg="@background"/>
+        <State name="empty" text="@emptyText"/>
+    </Component>
+    <Component name="text">
+        <Metric name="textHeight" value="20"/>
+        <Metric name="textOffsetY" value="1"/>
+        <State name="normal" text="@text"/>
+        <State name="muted" text="@mutedText"/>
+        <State name="disabled" text="@disabledText"/>
+        <State name="accent" text="@accent"/>
+        <State name="success" text="@success"/>
+        <State name="warning" text="@warning"/>
+        <State name="danger" text="@danger"/>
+        <State name="info" text="@info"/>
+    </Component>
+    <Component name="label">
+        <Metric name="height" value="20"/>
+        <Metric name="textHeight" value="20"/>
+        <Metric name="textOffsetY" value="1"/>
+        <State name="normal" text="@text"/>
+        <State name="muted" text="@mutedText"/>
+        <State name="disabled" text="@disabledText"/>
+    </Component>
+    <Component name="panel">
+        <Metric name="radius" value="7"/>
+        <Metric name="borderWidth" value="1"/>
+        <Metric name="paddingX" value="10"/>
+        <Metric name="paddingY" value="8"/>
+        <State name="normal" bg="@surface" border="@line"/>
+        <State name="raised" bg="@surfaceRaised" border="@border"/>
+        <State name="hover" bg="@hover" border="@border"/>
+        <State name="selected" bg="@selected" border="@accent"/>
+    </Component>
+    <Component name="field">
+        <Metric name="radius" value="7"/>
+        <Metric name="borderWidth" value="1"/>
+        <Metric name="height" value="32"/>
+        <Metric name="paddingX" value="9"/>
+        <Metric name="textHeight" value="20"/>
+        <Metric name="textOffsetY" value="1"/>
+        <State name="normal" bg="@surface" text="@text" border="@border"/>
+        <State name="readonly" bg="@surfaceRaised" text="@mutedText" border="@line"/>
+        <State name="disabled" bg="@background" text="@disabledText" border="@line"/>
+        <State name="focused" bg="@surface" text="@text" border="@focus"/>
+    </Component>
+    <Component name="linkItem">
+        <Metric name="viewportPaddingX" value="16"/>
+        <Metric name="tileMinSide" value="74"/>
+        <Metric name="tileMaxSide" value="96"/>
+        <Metric name="tileIconExtra" value="42"/>
+        <Metric name="listLeftInset" value="4"/>
+        <Metric name="listTopInset" value="6"/>
+        <Metric name="listBottomInset" value="6"/>
+        <Metric name="listGapX" value="0"/>
+        <Metric name="listGapY" value="2"/>
+        <Metric name="listMinHeight" value="34"/>
+        <Metric name="listHeightExtra" value="12"/>
+        <Metric name="gridLeftInset" value="8"/>
+        <Metric name="gridTopInset" value="8"/>
+        <Metric name="gridBottomInset" value="8"/>
+        <Metric name="gridGapX" value="4"/>
+        <Metric name="gridGapY" value="4"/>
+        <Metric name="compactGapX" value="6"/>
+        <Metric name="compactGapY" value="6"/>
+        <Metric name="compactPreferredWidth" value="128"/>
+        <Metric name="compactMinWidth" value="72"/>
+        <Metric name="selectedAccentWidth" value="4"/>
+        <Metric name="customColorWidth" value="3"/>
+        <Metric name="customColorInsetY" value="4"/>
+        <Metric name="listIconLeft" value="8"/>
+        <Metric name="listTextGap" value="8"/>
+        <Metric name="listTextRightInset" value="6"/>
+        <Metric name="gridIconTop" value="8"/>
+        <Metric name="gridTextPaddingX" value="4"/>
+        <Metric name="gridTextGap" value="4"/>
+        <Metric name="gridTextPaddingBottom" value="4"/>
+        <Metric name="smallTextWidthThreshold" value="78"/>
+        <Metric name="visibilityPadding" value="8"/>
+        <Metric name="runCountWidth" value="36"/>
+        <Metric name="runCountRightInset" value="8"/>
+        <Metric name="runCountGridWidth" value="28"/>
+        <Metric name="runCountGridHeight" value="16"/>
+        <Metric name="runCountGridRightInset" value="4"/>
+        <Metric name="runCountGridTopInset" value="3"/>
+        <State name="normal" bg="@linkBg" text="@text" subtext="@mutedText"/>
+        <State name="hover" bg="@surface" text="@text"/>
+        <State name="pressed" bg="@pressed" text="@text"/>
+        <State name="selected" bg="@selected" text="@text" accent="@accent"/>
+        <State name="disabled" text="@disabledText"/>
+        <State name="dragTarget" bg="@accentSoft" border="@accent"/>
+    </Component>
+    <Component name="iconFallback">
+        <Metric name="radius" value="7"/>
+        <State name="normal" bg="@accent" border="@border"/>
+    </Component>
+    <Component name="scrollbar">
+        <Metric name="thickness" value="5"/>
+        <Metric name="inset" value="5"/>
+        <Metric name="edgeInset" value="4"/>
+        <Metric name="minThumbLength" value="24"/>
+        <Metric name="wheelStepX" value="72"/>
+        <Metric name="wheelStepY" value="80"/>
+        <State name="normal" track="@scrollTrack" thumb="@scrollThumb"/>
+    </Component>
+    <Component name="menu">
+        <State name="normal" bg="@surface"/>
+    </Component>
+    <Component name="menuItem">
+        <Metric name="height" value="30"/>
+        <Metric name="widthBase" value="54"/>
+        <Metric name="minTextWidth" value="64"/>
+        <Metric name="maxTextWidth" value="360"/>
+        <Metric name="charWidth" value="13"/>
+        <Metric name="hoverInsetX" value="4"/>
+        <Metric name="hoverInsetY" value="3"/>
+        <Metric name="iconLeft" value="8"/>
+        <Metric name="iconInsetY" value="6"/>
+        <Metric name="iconSize" value="16"/>
+        <Metric name="textLeft" value="34"/>
+        <Metric name="textRight" value="8"/>
+        <Metric name="submenuRight" value="22"/>
+        <Metric name="arrowRight" value="9"/>
+        <Metric name="arrowWidth" value="5"/>
+        <Metric name="arrowHalfHeight" value="4"/>
+        <State name="normal" text="@text"/>
+        <State name="hover" bg="@menuHover" text="@text"/>
+        <State name="disabled" text="@disabledText"/>
+        <State name="checked" mark="@accent"/>
+    </Component>
+    <Component name="dialog">
+        <State name="normal" bg="@background" text="@text"/>
+    </Component>
+    <Component name="iconButton">
+        <Metric name="size" value="28"/>
+        <Metric name="radius" value="7"/>
+        <Metric name="iconSize" value="16"/>
+        <State name="normal" bg="argb(0,255,255,255)" icon="@text"/>
+        <State name="hover" bg="@hover" icon="@accent"/>
+        <State name="pressed" bg="@pressed" icon="@accent"/>
+        <State name="disabled" icon="@disabledText"/>
+    </Component>
+    <Component name="edit">
+        <Metric name="radius" value="7"/>
+        <Metric name="borderWidth" value="1"/>
+        <Metric name="height" value="32"/>
+        <Metric name="paddingX" value="9"/>
+        <Metric name="textHeight" value="14"/>
+        <Metric name="textOffsetY" value="0"/>
+        <Metric name="singleLineFontSizePx" value="14"/>
+        <Metric name="singleLineControlHeight" value="24"/>
+        <Metric name="singleLineOffsetY" value="0"/>
+        <Metric name="multiLinePaddingTop" value="7"/>
+        <Metric name="multiLinePaddingBottom" value="7"/>
+        <State name="normal" bg="@surface" text="@text" border="@border"/>
+        <State name="hover" bg="@surface" text="@text" border="@accent"/>
+        <State name="focused" bg="@surface" text="@text" border="@focus"/>
+        <State name="readonly" bg="@surfaceRaised" text="@mutedText" border="@line"/>
+        <State name="disabled" bg="@background" text="@disabledText" border="@line"/>
+        <State name="error" bg="@dangerSoft" text="@text" border="@danger"/>
+    </Component>
+    <Component name="comboBox">
+        <Metric name="radius" value="7"/>
+        <Metric name="borderWidth" value="1"/>
+        <Metric name="height" value="32"/>
+        <Metric name="paddingX" value="9"/>
+        <Metric name="itemHeight" value="26"/>
+        <Metric name="textHeight" value="20"/>
+        <Metric name="textOffsetY" value="1"/>
+        <Metric name="arrowWidth" value="28"/>
+        <Metric name="arrowSize" value="5"/>
+        <Metric name="arrowPaddingRight" value="11"/>
+        <Metric name="arrowOffsetY" value="1"/>
+        <Metric name="arrowStrokeWidth" value="1"/>
+        <State name="normal" bg="@surface" text="@text" border="@border" itemBg="@surface" arrow="@mutedText"/>
+        <State name="hover" bg="@surface" text="@text" border="@accent" itemBg="@hover" arrow="@accent"/>
+        <State name="focused" bg="@surface" text="@text" border="@focus" itemBg="@surface" arrow="@accent"/>
+        <State name="selected" bg="@surface" text="@text" border="@accent" itemBg="@selected" arrow="@accent"/>
+        <State name="disabled" bg="@background" text="@disabledText" border="@line" itemBg="@background" arrow="@disabledText"/>
+    </Component>
+    <Component name="tabButton">
+        <Metric name="radius" value="8"/>
+        <Metric name="borderWidth" value="1"/>
+        <Metric name="height" value="30"/>
+        <Metric name="paddingX" value="12"/>
+        <Metric name="textHeight" value="20"/>
+        <Metric name="textOffsetY" value="1"/>
+        <Metric name="segmented" value="1"/>
+        <Metric name="segmentInset" value="2"/>
+        <Metric name="groupItemWidth" value="58"/>
+        <Metric name="groupGap" value="0"/>
+        <Metric name="groupPadding" value="3"/>
+        <Metric name="groupRadius" value="10"/>
+        <Metric name="groupBorderWidth" value="1"/>
+        <State name="normal" bg="@surfaceRaised" text="@text" border="@surfaceRaised" groupBg="@surfaceRaised" groupBorder="@line"/>
+        <State name="hover" bg="@hover" text="@text" border="@line"/>
+        <State name="selected" bg="@surface" text="@accent" border="@accent"/>
+        <State name="selectedHover" bg="@pressed" text="@accent" border="@accent"/>
+        <State name="focused" border="@focus"/>
+        <State name="disabled" bg="@background" text="@disabledText" border="@line"/>
+    </Component>
+    <Component name="button">
+        <Metric name="radius" value="7"/>
+        <Metric name="borderWidth" value="1"/>
+        <Metric name="height" value="30"/>
+        <Metric name="compactHeight" value="28"/>
+        <Metric name="paddingX" value="12"/>
+        <Metric name="textHeight" value="20"/>
+        <Metric name="textOffsetY" value="1"/>
+        <Metric name="pressedOffset" value="1"/>
+        <State name="normal" bg="@surface" text="@text" border="@border"/>
+        <State name="hover" bg="@hover" text="@text" border="@accent"/>
+        <State name="pressed" bg="@pressed" text="@text" border="@accent"/>
+        <State name="focused" border="@focus"/>
+        <State name="disabled" bg="@surfaceRaised" text="@disabledText" border="@line"/>
+    </Component>
+    <Component name="checkbox">
+        <Metric name="boxSize" value="16"/>
+        <Metric name="radius" value="4"/>
+        <Metric name="borderWidth" value="1"/>
+        <Metric name="gap" value="8"/>
+        <Metric name="height" value="24"/>
+        <Metric name="textHeight" value="20"/>
+        <Metric name="textOffsetY" value="1"/>
+        <Metric name="boxOffsetX" value="0"/>
+        <Metric name="boxOffsetY" value="0"/>
+        <Metric name="markWidth" value="2"/>
+        <State name="normal" text="@text" boxBg="@surface" border="@border"/>
+        <State name="hover" text="@text" boxBg="@hover" border="@accent"/>
+        <State name="checked" text="@text" boxBg="@accent" border="@accent" mark="@checkMark"/>
+        <State name="checkedHover" text="@text" boxBg="@accent" border="@focus" mark="@checkMark"/>
+        <State name="focused" border="@focus"/>
+        <State name="disabled" text="@disabledText" boxBg="@surfaceRaised" border="@line"/>
+    </Component>
+    <Component name="toggle">
+        <Metric name="width" value="38"/>
+        <Metric name="height" value="22"/>
+        <Metric name="thumbSize" value="18"/>
+        <State name="normal" track="@border" thumb="@surface"/>
+        <State name="checked" track="@accent" thumb="@surface"/>
+        <State name="hover" track="@focus" thumb="@surface"/>
+        <State name="disabled" track="@line" thumb="@surfaceRaised"/>
+    </Component>
+    <Component name="radio">
+        <Metric name="dotSize" value="16"/>
+        <Metric name="innerDotSize" value="8"/>
+        <Metric name="height" value="24"/>
+        <Metric name="gap" value="8"/>
+        <State name="normal" text="@text" dot="@surface" border="@border"/>
+        <State name="hover" text="@text" dot="@hover" border="@accent"/>
+        <State name="checked" text="@text" dot="@accent" border="@accent"/>
+        <State name="disabled" text="@disabledText" dot="@surfaceRaised" border="@line"/>
+    </Component>
+    <Component name="list">
+        <Metric name="radius" value="7"/>
+        <Metric name="borderWidth" value="1"/>
+        <Metric name="paddingX" value="8"/>
+        <Metric name="paddingY" value="6"/>
+        <State name="normal" bg="@surface" text="@text" border="@border"/>
+        <State name="readonly" bg="@surfaceRaised" text="@text" border="@line"/>
+        <State name="disabled" bg="@background" text="@disabledText" border="@line"/>
+        <State name="focused" bg="@surface" text="@text" border="@focus"/>
+    </Component>
+    <Component name="listItem">
+        <Metric name="height" value="28"/>
+        <Metric name="paddingX" value="8"/>
+        <Metric name="textHeight" value="20"/>
+        <Metric name="textOffsetY" value="1"/>
+        <State name="normal" bg="@surface" text="@text"/>
+        <State name="hover" bg="@hover" text="@text"/>
+        <State name="selected" bg="@selected" text="@text"/>
+        <State name="disabled" text="@disabledText"/>
+    </Component>
+    <Component name="slider">
+        <Metric name="height" value="24"/>
+        <Metric name="trackHeight" value="4"/>
+        <Metric name="thumbSize" value="14"/>
+        <State name="normal" track="@line" fill="@accent" thumb="@surface" border="@border"/>
+        <State name="hover" track="@line" fill="@focus" thumb="@surface" border="@accent"/>
+        <State name="disabled" track="@line" fill="@border" thumb="@surfaceRaised" border="@line"/>
+    </Component>
+    <Component name="tooltip">
+        <Metric name="radius" value="6"/>
+        <Metric name="borderWidth" value="1"/>
+        <Metric name="paddingX" value="8"/>
+        <Metric name="paddingY" value="5"/>
+        <State name="normal" bg="@text" text="@surface" border="@text"/>
+    </Component>
+    <Component name="separator">
+        <Metric name="thickness" value="1"/>
+        <Metric name="inset" value="0"/>
+        <State name="normal" line="@line"/>
+    </Component>
+</Theme>

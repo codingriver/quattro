@@ -23,3 +23,6 @@ bool HasUrlScheme(const std::wstring& value);
 std::wstring NormalizeUrl(std::wstring value);
 std::wstring ExpandEnvironmentStringsSafe(const std::wstring& value);
 std::optional<int> ParseInt(const std::wstring& value);
+bool SuppressForegroundActivation();
+void ActivateWindow(HWND hwnd);
+void ShowWindowRespectFocusPolicy(HWND hwnd, int showCommand);

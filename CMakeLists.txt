@@ -12,6 +12,7 @@ set(EMBEDDED_ASSET_INPUTS
 
 file(GLOB_RECURSE EMBEDDED_ASSET_DIR_INPUTS CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/theme/*"
+    "${CMAKE_CURRENT_SOURCE_DIR}/icons/menu/*"
     "${CMAKE_CURRENT_SOURCE_DIR}/icons/url/*"
     "${CMAKE_CURRENT_SOURCE_DIR}/docs/*"
 )
@@ -20,13 +21,10 @@ list(APPEND EMBEDDED_ASSET_INPUTS ${EMBEDDED_ASSET_DIR_INPUTS})
 set(EMBEDDED_ASSETS_CPP "${CMAKE_CURRENT_BINARY_DIR}/generated/EmbeddedAssets.cpp")
 add_custom_command(
     OUTPUT "${EMBEDDED_ASSETS_CPP}"
-    COMMAND powershell -ExecutionPolicy Bypass -File "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate-theme-assets.ps1"
-            -OutputDir "${CMAKE_CURRENT_SOURCE_DIR}/theme/assets"
     COMMAND powershell -ExecutionPolicy Bypass -File "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate-embedded-assets.ps1"
             -Root "${CMAKE_CURRENT_SOURCE_DIR}"
             -Output "${EMBEDDED_ASSETS_CPP}"
     DEPENDS
-        "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate-theme-assets.ps1"
         "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate-embedded-assets.ps1"
         ${EMBEDDED_ASSET_INPUTS}
     COMMENT "Generating embedded default assets"
@@ -63,6 +61,7 @@ add_executable(Quattro WIN32
     src/Launcher.cpp
     src/LinkEditDialog.cpp
     src/MainWindow.cpp
+    src/MenuCatalog.cpp
     src/SearchDialog.cpp
     src/ShellItemService.cpp
     src/SimpleDialogs.cpp
@@ -70,6 +69,7 @@ add_executable(Quattro WIN32
     src/Storage.cpp
     src/SystemFunctionDialog.cpp
     src/Theme.cpp
+    src/ThemedControls.cpp
     src/UrlEditDialog.cpp
     src/Utilities.cpp
 )
@@ -82,8 +82,12 @@ add_executable(QuattroTests
     tests/UnitTests.cpp
     src/Config.cpp
     src/Launcher.cpp
+    src/MenuCatalog.cpp
     src/ShellItemService.cpp
     src/Storage.cpp
+    src/SystemFunctionDialog.cpp
+    src/Theme.cpp
+    src/ThemedControls.cpp
     src/Utilities.cpp
 )
 
@@ -96,6 +100,13 @@ add_executable(QuattroDbProbe
 add_executable(QuattroDbSeed
     tests/DbSeed.cpp
     src/Storage.cpp
+    src/Utilities.cpp
+)
+
+add_executable(QuattroThemeStateProbe
+    tests/ThemeStateProbe.cpp
+    src/Theme.cpp
+    src/ThemedControls.cpp
     src/Utilities.cpp
 )
 
@@ -131,6 +142,14 @@ target_compile_definitions(QuattroDbSeed PRIVATE
     NOMINMAX
 )
 
+target_compile_definitions(QuattroThemeStateProbe PRIVATE
+    UNICODE
+    _UNICODE
+    WINVER=0x0A00
+    _WIN32_WINNT=0x0A00
+    NOMINMAX
+)
+
 target_compile_options(Quattro PRIVATE
     $<$<CXX_COMPILER_ID:MSVC>:/W4 /permissive- /EHsc /utf-8>
 )
@@ -147,12 +166,22 @@ target_compile_options(QuattroDbSeed PRIVATE
     $<$<CXX_COMPILER_ID:MSVC>:/W4 /permissive- /EHsc /utf-8>
 )
 
+target_compile_options(QuattroThemeStateProbe PRIVATE
+    $<$<CXX_COMPILER_ID:MSVC>:/W4 /permissive- /EHsc /utf-8>
+)
+
 target_include_directories(Quattro PRIVATE
+    src
+)
+
+target_include_directories(QuattroThemeStateProbe PRIVATE
     src
 )
 
 target_link_libraries(QuattroTests PRIVATE
     sqlite3
+    comctl32
+    gdi32
     ole32
     shell32
     shlwapi
@@ -166,6 +195,14 @@ target_link_libraries(QuattroDbProbe PRIVATE
 
 target_link_libraries(QuattroDbSeed PRIVATE
     sqlite3
+    user32
+)
+
+target_link_libraries(QuattroThemeStateProbe PRIVATE
+    comctl32
+    gdiplus
+    gdi32
+    shell32
     user32
 )
 
@@ -192,14 +229,15 @@ add_custom_command(TARGET Quattro POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Quattro>/db"
 )
 
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/theme")
-    add_custom_command(TARGET Quattro POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/theme" "$<TARGET_FILE_DIR:Quattro>/theme"
-    )
-endif()
-
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/icons")
     add_custom_command(TARGET Quattro POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/icons" "$<TARGET_FILE_DIR:Quattro>/icons"
+    )
+endif()
+
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/theme")
+    add_custom_command(TARGET Quattro POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E rm -rf "$<TARGET_FILE_DIR:Quattro>/theme"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/theme" "$<TARGET_FILE_DIR:Quattro>/theme"
     )
 endif()
