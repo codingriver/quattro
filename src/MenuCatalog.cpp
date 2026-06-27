@@ -91,8 +91,8 @@ int MenuIconFor(UINT_PTR id, const std::wstring& text) {
     case ID_MENU_EDIT_LINK:
     case ID_MENU_EDIT_GROUP:
     case ID_MENU_EDIT_TAG: return MenuIconEdit;
-    case ID_MENU_PROPERTIES:
-    case ID_MENU_ABOUT: return MenuIconInfo;
+    case ID_MENU_PROPERTIES: return MenuIconInfo;
+    case ID_MENU_ABOUT: return MenuIconAbout;
     case ID_MENU_DELETE_LINK:
     case ID_MENU_DELETE_GROUP:
     case ID_MENU_DELETE_TAG: return MenuIconDelete;

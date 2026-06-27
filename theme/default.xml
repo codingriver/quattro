@@ -268,14 +268,19 @@
         <Metric name="iconSize" value="16"/>
         <Metric name="textLeft" value="34"/>
         <Metric name="textRight" value="8"/>
+        <Metric name="checkedTextRight" value="28"/>
         <Metric name="submenuRight" value="22"/>
         <Metric name="arrowRight" value="9"/>
         <Metric name="arrowWidth" value="5"/>
         <Metric name="arrowHalfHeight" value="4"/>
-        <State name="normal" text="@text"/>
-        <State name="hover" bg="@menuHover" text="@text"/>
-        <State name="disabled" text="@disabledText"/>
-        <State name="checked" mark="@accent"/>
+        <Metric name="checkRight" value="10"/>
+        <Metric name="checkWidth" value="9"/>
+        <Metric name="checkHeight" value="7"/>
+        <Metric name="checkMarkWidth" value="2"/>
+        <State name="normal" text="@text" icon="@mutedText"/>
+        <State name="hover" bg="@menuHover" text="@text" icon="@mutedText"/>
+        <State name="disabled" text="@disabledText" icon="@disabledText"/>
+        <State name="checked" mark="@accent" icon="@accent"/>
     </Component>
     <Component name="dialog">
         <State name="normal" bg="@background" text="@text"/>
@@ -335,14 +340,14 @@
         <Metric name="textHeight" value="20"/>
         <Metric name="textOffsetY" value="1"/>
         <Metric name="segmented" value="1"/>
-        <Metric name="segmentInset" value="2"/>
+        <Metric name="segmentInset" value="0.5"/>
         <Metric name="groupItemWidth" value="58"/>
         <Metric name="groupGap" value="0"/>
-        <Metric name="groupPadding" value="3"/>
-        <Metric name="groupRadius" value="10"/>
-        <Metric name="groupBorderWidth" value="1"/>
-        <State name="normal" bg="@surfaceRaised" text="@text" border="@surfaceRaised" groupBg="@surfaceRaised" groupBorder="@line"/>
-        <State name="hover" bg="@hover" text="@text" border="@line"/>
+        <Metric name="groupPadding" value="1"/>
+        <Metric name="groupRadius" value="0"/>
+        <Metric name="groupBorderWidth" value="0"/>
+        <State name="normal" bg="@surfaceRaised" text="@text" border="rgb(210,216,226)" groupBg="@surfaceRaised" groupBorder="@border"/>
+        <State name="hover" bg="@hover" text="@text" border="@border"/>
         <State name="selected" bg="@surface" text="@accent" border="@accent"/>
         <State name="selectedHover" bg="@pressed" text="@accent" border="@accent"/>
         <State name="focused" border="@focus"/>
@@ -432,8 +437,9 @@
         <Metric name="radius" value="6"/>
         <Metric name="borderWidth" value="1"/>
         <Metric name="paddingX" value="8"/>
-        <Metric name="paddingY" value="5"/>
-        <State name="normal" bg="@text" text="@surface" border="@text"/>
+        <Metric name="paddingY" value="7"/>
+        <Metric name="lineGap" value="4"/>
+        <State name="normal" bg="rgb(229,231,235)" text="rgb(17,24,39)" border="rgb(156,163,175)"/>
     </Component>
     <Component name="separator">
         <Metric name="thickness" value="1"/>

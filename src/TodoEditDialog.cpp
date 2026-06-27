@@ -59,7 +59,7 @@ public:
             WS_EX_DLGMODALFRAME | WS_EX_WINDOWEDGE,
             wc.lpszClassName,
             isNew_ ? L"新增待办事项" : L"编辑待办事项",
-            WS_CAPTION | WS_SYSMENU | WS_POPUP,
+            WS_CAPTION | WS_SYSMENU | WS_POPUP | WS_CLIPCHILDREN,
             ownerRect.left + 58,
             ownerRect.top + 72,
             520,
@@ -107,8 +107,8 @@ private:
         return dialog ? dialog->Handle(message, wParam, lParam) : DefWindowProcW(hwnd, message, wParam, lParam);
     }
 
-    HWND Label(const wchar_t* text, int x, int y, int width = 96) {
-        return ThemedControls::CreateLabelText(instance_, hwnd_, text, x, y, width, theme_, font_);
+    HWND Label(const wchar_t* text, int x, int y, int width = 64) {
+        return ThemedControls::CreateLabelText(instance_, hwnd_, text, x, y, width, theme_, font_, SS_RIGHT);
     }
 
     HWND SingleEdit(int id, int x, int y, int width, const std::wstring& value) {

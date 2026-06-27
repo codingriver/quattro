@@ -24,6 +24,7 @@ Add-Type -AssemblyName System.Drawing
 if (-not ([System.Management.Automation.PSTypeName]'NativeDialogUi').Type) {
 Add-Type @'
 using System;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Text;
 
@@ -56,6 +57,13 @@ public struct LogFontRect {
 public static class NativeDialogUi {
     public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
 
+    private struct ChildInfo {
+        public IntPtr Hwnd;
+        public string ClassName;
+        public string Text;
+        public DialogRect Rect;
+    }
+
     [DllImport("user32.dll")]
     public static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
 
@@ -70,6 +78,9 @@ public static class NativeDialogUi {
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     public static extern int GetWindowText(IntPtr hWnd, StringBuilder lpString, int nMaxCount);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern bool SetWindowText(IntPtr hWnd, string lpString);
 
     [DllImport("user32.dll")]
     public static extern bool IsWindow(IntPtr hWnd);
@@ -176,6 +187,93 @@ public static class NativeDialogUi {
         }, IntPtr.Zero);
         return output.ToString();
     }
+
+    private static bool IsInteractiveClass(string className) {
+        return className == "Edit" ||
+            className == "ComboBox" ||
+            className == "Button" ||
+            className == "SysListView32" ||
+            className == "ListBox";
+    }
+
+    private static int IntersectWidth(DialogRect left, DialogRect right) {
+        return Math.Min(left.Right, right.Right) - Math.Max(left.Left, right.Left);
+    }
+
+    private static int IntersectHeight(DialogRect left, DialogRect right) {
+        return Math.Min(left.Bottom, right.Bottom) - Math.Max(left.Top, right.Top);
+    }
+
+    private static bool IsLabelInteractiveOverlap(ChildInfo left, ChildInfo right, int minimumArea) {
+        bool leftLabel = left.ClassName == "Static" && !String.IsNullOrWhiteSpace(left.Text);
+        bool rightLabel = right.ClassName == "Static" && !String.IsNullOrWhiteSpace(right.Text);
+        bool labelInteractivePair =
+            (leftLabel && IsInteractiveClass(right.ClassName)) ||
+            (rightLabel && IsInteractiveClass(left.ClassName));
+        if (!labelInteractivePair) {
+            return false;
+        }
+
+        int width = IntersectWidth(left.Rect, right.Rect);
+        int height = IntersectHeight(left.Rect, right.Rect);
+        return width > 3 && height > 3 && width * height >= minimumArea;
+    }
+
+    public static string OverlappingVisibleChildren(IntPtr parent, int minimumArea) {
+        var children = new List<ChildInfo>();
+        EnumChildWindows(parent, (hWnd, lParam) => {
+            if (!IsWindowVisible(hWnd)) {
+                return true;
+            }
+            DialogRect childRect;
+            if (!GetWindowRect(hWnd, out childRect)) {
+                return true;
+            }
+            children.Add(new ChildInfo {
+                Hwnd = hWnd,
+                ClassName = ClassName(hWnd),
+                Text = WindowText(hWnd),
+                Rect = childRect
+            });
+            return true;
+        }, IntPtr.Zero);
+
+        var output = new StringBuilder();
+        for (int i = 0; i < children.Count; ++i) {
+            for (int j = i + 1; j < children.Count; ++j) {
+                ChildInfo left = children[i];
+                ChildInfo right = children[j];
+                if (!IsLabelInteractiveOverlap(left, right, minimumArea)) {
+                    continue;
+                }
+                output.Append(left.ClassName);
+                output.Append("|");
+                output.Append(left.Text);
+                output.Append("|");
+                output.Append(left.Rect.Left);
+                output.Append(",");
+                output.Append(left.Rect.Top);
+                output.Append(",");
+                output.Append(left.Rect.Right);
+                output.Append(",");
+                output.Append(left.Rect.Bottom);
+                output.Append("<->");
+                output.Append(right.ClassName);
+                output.Append("|");
+                output.Append(right.Text);
+                output.Append("|");
+                output.Append(right.Rect.Left);
+                output.Append(",");
+                output.Append(right.Rect.Top);
+                output.Append(",");
+                output.Append(right.Rect.Right);
+                output.Append(",");
+                output.Append(right.Rect.Bottom);
+                output.Append(";");
+            }
+        }
+        return output.ToString();
+    }
 }
 '@
 }
@@ -210,6 +308,23 @@ function Assert-ControlFontHeight {
     }
 }
 
+function Get-ProcessWindowSummary {
+    param([System.Diagnostics.Process]$Process)
+
+    $items = New-Object System.Collections.Generic.List[string]
+    [NativeDialogUi]::EnumWindows({
+        param([IntPtr]$Hwnd, [IntPtr]$Param)
+        $windowProcessId = [uint32]0
+        [NativeDialogUi]::GetWindowThreadProcessId($Hwnd, [ref]$windowProcessId) | Out-Null
+        if ($windowProcessId -eq $Process.Id) {
+            $visible = [NativeDialogUi]::IsWindowVisible($Hwnd)
+            $items.Add(("{0}|{1}|visible={2}" -f [NativeDialogUi]::ClassName($Hwnd), [NativeDialogUi]::WindowText($Hwnd), $visible)) | Out-Null
+        }
+        return $true
+    }, [IntPtr]::Zero) | Out-Null
+    return ($items -join "; ")
+}
+
 function Wait-ProcessWindow {
     param(
         [System.Diagnostics.Process]$Process,
@@ -229,7 +344,42 @@ function Wait-ProcessWindow {
         }
         Start-Sleep -Milliseconds 100
     }
-    throw "Timed out waiting for window: $ClassName"
+    throw "Timed out waiting for window: $ClassName. Windows: $(Get-ProcessWindowSummary -Process $Process)"
+}
+
+function Find-ProcessWindow {
+    param(
+        [System.Diagnostics.Process]$Process,
+        [string]$ClassName,
+        [string]$TitleContains = ""
+    )
+
+    if ($Process.HasExited) {
+        return [IntPtr]::Zero
+    }
+    return [NativeDialogUi]::FindTopWindow([uint32]$Process.Id, $ClassName, $(if ($TitleContains) { $TitleContains } else { $null }))
+}
+
+function Try-AcceptTextDialog {
+    param(
+        [System.Diagnostics.Process]$Process,
+        [string]$TitleContains,
+        [string]$Text,
+        [int]$TimeoutMs = 800
+    )
+
+    $deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMs)
+    while ([DateTime]::UtcNow -lt $deadline) {
+        $dialog = Find-ProcessWindow -Process $Process -ClassName "QuattroTextInputDialog_*" -TitleContains $TitleContains
+        if ($dialog -ne [IntPtr]::Zero -and [NativeDialogUi]::IsWindow($dialog)) {
+            [NativeDialogUi]::SetWindowText([NativeDialogUi]::GetDlgItem($dialog, 100), $Text) | Out-Null
+            [NativeDialogUi]::PostMessage($dialog, 0x0111, [IntPtr]1, [IntPtr]::Zero) | Out-Null
+            Wait-WindowClosed -Hwnd $dialog
+            return $true
+        }
+        Start-Sleep -Milliseconds 50
+    }
+    return $false
 }
 
 function Wait-WindowClosed {
@@ -313,6 +463,11 @@ function Assert-DialogSurface {
         $outside | Set-Content -Path (Join-Path $LogDir ("p2-" + $Name + "-bounds.txt")) -Encoding UTF8
         throw "Visible child control outside parent in $Name"
     }
+    $overlap = [NativeDialogUi]::OverlappingVisibleChildren($Hwnd, 16)
+    if (![string]::IsNullOrWhiteSpace($overlap)) {
+        $overlap | Set-Content -Path (Join-Path $LogDir ("p2-" + $Name + "-overlap.txt")) -Encoding UTF8
+        throw "Visible label overlaps an interactive control in $Name"
+    }
     Capture-Window -Hwnd $Hwnd -Path $Screenshot
     Assert-UsefulImage -Path $Screenshot -Name $Name
 }
@@ -346,7 +501,8 @@ try {
     $textDialog = Wait-ProcessWindow -Process $process -ClassName "QuattroTextInputDialog_*"
     Assert-DialogSurface -Hwnd $textDialog -Name "text-dialog" -Screenshot (Join-Path $LogDir "p2-dialog-text.png")
     Assert-ControlFontHeight -Hwnd ([NativeDialogUi]::GetDlgItem($textDialog, 100)) -Name "text-dialog.edit" -ExpectedPx $expectedSingleLineFontPx
-    [NativeDialogUi]::PostMessage($textDialog, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null
+    [NativeDialogUi]::SetWindowText([NativeDialogUi]::GetDlgItem($textDialog, 100), "DialogTestGroup") | Out-Null
+    [NativeDialogUi]::PostMessage($textDialog, 0x0111, [IntPtr]1, [IntPtr]::Zero) | Out-Null
     Wait-WindowClosed -Hwnd $textDialog
 
     [NativeDialogUi]::PostMessage($main, 0x0111, [IntPtr]40001, [IntPtr]::Zero) | Out-Null
@@ -355,6 +511,20 @@ try {
     Assert-ControlFontHeight -Hwnd ([NativeDialogUi]::GetDlgItem($linkDialog, 1003)) -Name "link-dialog.name" -ExpectedPx $expectedSingleLineFontPx
     [NativeDialogUi]::PostMessage($linkDialog, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null
     Wait-WindowClosed -Hwnd $linkDialog
+
+    [NativeDialogUi]::SendMessage($main, 0x0111, [IntPtr]40053, [IntPtr]::Zero) | Out-Null
+    if (Try-AcceptTextDialog -Process $process -TitleContains "新建分组" -Text "DialogTodoGroup") {
+        [NativeDialogUi]::SendMessage($main, 0x0111, [IntPtr]40053, [IntPtr]::Zero) | Out-Null
+    }
+    Start-Sleep -Milliseconds 500
+    [NativeDialogUi]::PostMessage($main, 0x0111, [IntPtr]40054, [IntPtr]::Zero) | Out-Null
+    $todoDialog = Wait-ProcessWindow -Process $process -ClassName "QuattroTodoEditDialog"
+    Assert-DialogSurface -Hwnd $todoDialog -Name "todo-dialog" -Screenshot (Join-Path $LogDir "p2-dialog-todo.png") -RequiredControlIds @(101,102,103,104,105)
+    Assert-ControlFontHeight -Hwnd ([NativeDialogUi]::GetDlgItem($todoDialog, 101)) -Name "todo-dialog.title" -ExpectedPx $expectedSingleLineFontPx
+    Assert-ControlFontHeight -Hwnd ([NativeDialogUi]::GetDlgItem($todoDialog, 102)) -Name "todo-dialog.content" -ExpectedPx $expectedSingleLineFontPx
+    Assert-ControlFontHeight -Hwnd ([NativeDialogUi]::GetDlgItem($todoDialog, 104)) -Name "todo-dialog.time" -ExpectedPx $expectedSingleLineFontPx
+    [NativeDialogUi]::PostMessage($todoDialog, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null
+    Wait-WindowClosed -Hwnd $todoDialog
 
     [NativeDialogUi]::PostMessage($main, 0x0111, [IntPtr]40015, [IntPtr]::Zero) | Out-Null
     $searchDialog = Wait-ProcessWindow -Process $process -ClassName "QuattroSearchDialog"
@@ -377,7 +547,7 @@ try {
     }
 
     "dialog_display_tests=passed"
-    "screenshots=$mainSmall;$mainLarge;p2-dialog-text.png;p2-dialog-link.png;p2-dialog-search.png;p2-dialog-settings.png"
+    "screenshots=$mainSmall;$mainLarge;p2-dialog-text.png;p2-dialog-link.png;p2-dialog-todo.png;p2-dialog-search.png;p2-dialog-settings.png"
 } finally {
     if ($null -eq $previousNoFocus) {
         Remove-Item Env:\QUATTRO_TEST_NO_FOCUS -ErrorAction SilentlyContinue

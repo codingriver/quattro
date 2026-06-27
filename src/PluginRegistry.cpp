@@ -209,6 +209,9 @@ bool PluginRegistry::EnsureSchema(void* rawDb) {
         "Author TEXT,"
         "License TEXT,"
         "PackageUrl TEXT,"
+        "HomepageUrl TEXT,"
+        "SourceUrl TEXT,"
+        "AddedAt TEXT,"
         "Sha256 TEXT,"
         "Builtin INTEGER DEFAULT 0,"
         "Deletable INTEGER DEFAULT 1,"
@@ -239,6 +242,15 @@ bool PluginRegistry::EnsureSchema(void* rawDb) {
     if (!HasColumn(db, L"Plugins", L"PackageUrl")) {
         Exec(db, "ALTER TABLE Plugins ADD COLUMN PackageUrl TEXT;", lastError_);
     }
+    if (!HasColumn(db, L"Plugins", L"HomepageUrl")) {
+        Exec(db, "ALTER TABLE Plugins ADD COLUMN HomepageUrl TEXT;", lastError_);
+    }
+    if (!HasColumn(db, L"Plugins", L"SourceUrl")) {
+        Exec(db, "ALTER TABLE Plugins ADD COLUMN SourceUrl TEXT;", lastError_);
+    }
+    if (!HasColumn(db, L"Plugins", L"AddedAt")) {
+        Exec(db, "ALTER TABLE Plugins ADD COLUMN AddedAt TEXT;", lastError_);
+    }
     if (!HasColumn(db, L"Plugins", L"Sha256")) {
         Exec(db, "ALTER TABLE Plugins ADD COLUMN Sha256 TEXT;", lastError_);
     }
@@ -252,12 +264,13 @@ bool PluginRegistry::UpsertBuiltinPlugins(void* rawDb) {
     auto* db = static_cast<sqlite3*>(rawDb);
     for (const auto& plugin : BuiltinPlugins()) {
         SQLiteStatement row(db,
-            L"INSERT INTO Plugins(ID,Name,Version,Category,Kind,Engine,Description,Permissions,Author,License,PackageUrl,Sha256,Builtin,Deletable,Enabled,Installed) "
-            L"VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+            L"INSERT INTO Plugins(ID,Name,Version,Category,Kind,Engine,Description,Permissions,Author,License,PackageUrl,HomepageUrl,SourceUrl,AddedAt,Sha256,Builtin,Deletable,Enabled,Installed) "
+            L"VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
             L"ON CONFLICT(ID) DO UPDATE SET "
             L"Name=excluded.Name,Version=excluded.Version,Category=excluded.Category,Kind=excluded.Kind,"
             L"Engine=excluded.Engine,Description=excluded.Description,Permissions=excluded.Permissions,"
-            L"Author=excluded.Author,License=excluded.License,PackageUrl=excluded.PackageUrl,Sha256=excluded.Sha256,"
+            L"Author=excluded.Author,License=excluded.License,PackageUrl=excluded.PackageUrl,"
+            L"HomepageUrl=excluded.HomepageUrl,SourceUrl=excluded.SourceUrl,AddedAt=excluded.AddedAt,Sha256=excluded.Sha256,"
             L"Builtin=excluded.Builtin,Deletable=excluded.Deletable,Installed=1,UpdatedAt=CURRENT_TIMESTAMP;");
         if (!row.ok()) {
             lastError_ = L"插件注册 SQL 准备失败。";
@@ -274,11 +287,14 @@ bool PluginRegistry::UpsertBuiltinPlugins(void* rawDb) {
         row.bindText(9, plugin.author);
         row.bindText(10, plugin.license);
         row.bindText(11, plugin.packageUrl);
-        row.bindText(12, plugin.sha256);
-        row.bindInt(13, plugin.builtin ? 1 : 0);
-        row.bindInt(14, plugin.deletable ? 1 : 0);
-        row.bindInt(15, plugin.enabled ? 1 : 0);
-        row.bindInt(16, plugin.installed ? 1 : 0);
+        row.bindText(12, plugin.homepageUrl);
+        row.bindText(13, plugin.sourceUrl);
+        row.bindText(14, plugin.addedAt);
+        row.bindText(15, plugin.sha256);
+        row.bindInt(16, plugin.builtin ? 1 : 0);
+        row.bindInt(17, plugin.deletable ? 1 : 0);
+        row.bindInt(18, plugin.enabled ? 1 : 0);
+        row.bindInt(19, plugin.installed ? 1 : 0);
         if (row.step() != SQLITE_DONE) {
             const void* message = sqlite3_errmsg16(db);
             lastError_ = message ? static_cast<const wchar_t*>(message) : L"注册内置插件失败。";
@@ -301,7 +317,7 @@ std::vector<PluginRecord> PluginRegistry::LoadPlugins() {
     }
 
     SQLiteStatement statement(db.get(),
-        L"SELECT ID,Name,Version,Category,Kind,Engine,Description,Permissions,Author,License,PackageUrl,Sha256,Builtin,Deletable,Enabled,Installed "
+        L"SELECT ID,Name,Version,Category,Kind,Engine,Description,Permissions,Author,License,PackageUrl,HomepageUrl,SourceUrl,AddedAt,Sha256,Builtin,Deletable,Enabled,Installed,CreatedAt,UpdatedAt "
         L"FROM Plugins ORDER BY Builtin DESC,Category,Name;");
     if (!statement.ok()) {
         lastError_ = L"读取插件列表失败。";
@@ -320,11 +336,16 @@ std::vector<PluginRecord> PluginRegistry::LoadPlugins() {
         plugin.author = statement.columnText(8);
         plugin.license = statement.columnText(9);
         plugin.packageUrl = statement.columnText(10);
-        plugin.sha256 = statement.columnText(11);
-        plugin.builtin = statement.columnInt(12) != 0;
-        plugin.deletable = statement.columnInt(13) != 0;
-        plugin.enabled = statement.columnInt(14) != 0;
-        plugin.installed = statement.columnInt(15) != 0;
+        plugin.homepageUrl = statement.columnText(11);
+        plugin.sourceUrl = statement.columnText(12);
+        plugin.addedAt = statement.columnText(13);
+        plugin.sha256 = statement.columnText(14);
+        plugin.builtin = statement.columnInt(15) != 0;
+        plugin.deletable = statement.columnInt(16) != 0;
+        plugin.enabled = statement.columnInt(17) != 0;
+        plugin.installed = statement.columnInt(18) != 0;
+        plugin.createdAt = statement.columnText(19);
+        plugin.updatedAt = statement.columnText(20);
         plugins.push_back(std::move(plugin));
     }
     return plugins;
@@ -341,12 +362,13 @@ bool PluginRegistry::UpsertStorePlugin(const PluginRecord& plugin) {
         return false;
     }
     SQLiteStatement statement(db.get(),
-        L"INSERT INTO Plugins(ID,Name,Version,Category,Kind,Engine,Description,Permissions,Author,License,PackageUrl,Sha256,Builtin,Deletable,Enabled,Installed) "
-        L"VALUES(?,?,?,?,?,?,?,?,?,?,?,?,0,?,0,0) "
+        L"INSERT INTO Plugins(ID,Name,Version,Category,Kind,Engine,Description,Permissions,Author,License,PackageUrl,HomepageUrl,SourceUrl,AddedAt,Sha256,Builtin,Deletable,Enabled,Installed) "
+        L"VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,0,0) "
         L"ON CONFLICT(ID) DO UPDATE SET "
         L"Name=excluded.Name,Version=excluded.Version,Category=excluded.Category,Kind=excluded.Kind,"
         L"Engine=excluded.Engine,Description=excluded.Description,Permissions=excluded.Permissions,"
-        L"Author=excluded.Author,License=excluded.License,PackageUrl=excluded.PackageUrl,Sha256=excluded.Sha256,"
+        L"Author=excluded.Author,License=excluded.License,PackageUrl=excluded.PackageUrl,"
+        L"HomepageUrl=excluded.HomepageUrl,SourceUrl=excluded.SourceUrl,AddedAt=excluded.AddedAt,Sha256=excluded.Sha256,"
         L"Deletable=excluded.Deletable,UpdatedAt=CURRENT_TIMESTAMP;");
     if (!statement.ok()) {
         lastError_ = L"更新商店插件失败。";
@@ -363,8 +385,11 @@ bool PluginRegistry::UpsertStorePlugin(const PluginRecord& plugin) {
     statement.bindText(9, plugin.author);
     statement.bindText(10, plugin.license);
     statement.bindText(11, plugin.packageUrl);
-    statement.bindText(12, plugin.sha256);
-    statement.bindInt(13, plugin.deletable ? 1 : 0);
+    statement.bindText(12, plugin.homepageUrl);
+    statement.bindText(13, plugin.sourceUrl);
+    statement.bindText(14, plugin.addedAt);
+    statement.bindText(15, plugin.sha256);
+    statement.bindInt(16, plugin.deletable ? 1 : 0);
     if (statement.step() != SQLITE_DONE) {
         const void* message = sqlite3_errmsg16(db.get());
         lastError_ = message ? static_cast<const wchar_t*>(message) : L"更新商店插件失败。";
@@ -384,12 +409,13 @@ bool PluginRegistry::MarkInstalled(const PluginRecord& plugin, const std::wstrin
         return false;
     }
     SQLiteStatement statement(db.get(),
-        L"INSERT INTO Plugins(ID,Name,Version,Category,Kind,Engine,Description,Permissions,Author,License,PackageUrl,Sha256,Builtin,Deletable,Enabled,Installed,InstallPath) "
-        L"VALUES(?,?,?,?,?,?,?,?,?,?,?,?,0,?,1,1,?) "
+        L"INSERT INTO Plugins(ID,Name,Version,Category,Kind,Engine,Description,Permissions,Author,License,PackageUrl,HomepageUrl,SourceUrl,AddedAt,Sha256,Builtin,Deletable,Enabled,Installed,InstallPath) "
+        L"VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,1,1,?) "
         L"ON CONFLICT(ID) DO UPDATE SET "
         L"Name=excluded.Name,Version=excluded.Version,Category=excluded.Category,Kind=excluded.Kind,"
         L"Engine=excluded.Engine,Description=excluded.Description,Permissions=excluded.Permissions,"
-        L"Author=excluded.Author,License=excluded.License,PackageUrl=excluded.PackageUrl,Sha256=excluded.Sha256,"
+        L"Author=excluded.Author,License=excluded.License,PackageUrl=excluded.PackageUrl,"
+        L"HomepageUrl=excluded.HomepageUrl,SourceUrl=excluded.SourceUrl,AddedAt=excluded.AddedAt,Sha256=excluded.Sha256,"
         L"Deletable=excluded.Deletable,Enabled=1,Installed=1,InstallPath=excluded.InstallPath,UpdatedAt=CURRENT_TIMESTAMP;");
     if (!statement.ok()) {
         lastError_ = L"标记插件已安装失败。";
@@ -406,9 +432,12 @@ bool PluginRegistry::MarkInstalled(const PluginRecord& plugin, const std::wstrin
     statement.bindText(9, plugin.author);
     statement.bindText(10, plugin.license);
     statement.bindText(11, plugin.packageUrl);
-    statement.bindText(12, plugin.sha256);
-    statement.bindInt(13, plugin.deletable ? 1 : 0);
-    statement.bindText(14, installPath);
+    statement.bindText(12, plugin.homepageUrl);
+    statement.bindText(13, plugin.sourceUrl);
+    statement.bindText(14, plugin.addedAt);
+    statement.bindText(15, plugin.sha256);
+    statement.bindInt(16, plugin.deletable ? 1 : 0);
+    statement.bindText(17, installPath);
     if (statement.step() != SQLITE_DONE) {
         const void* message = sqlite3_errmsg16(db.get());
         lastError_ = message ? static_cast<const wchar_t*>(message) : L"标记插件已安装失败。";

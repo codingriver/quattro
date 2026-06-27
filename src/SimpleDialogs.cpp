@@ -680,19 +680,22 @@ private:
             std::max(itemWidth, 76),
         };
         const int itemGap = static_cast<int>(theme_.metric(L"tabButton", L"groupGap", 0.0f));
+        const int separatorWidth = static_cast<int>(theme_.metric(L"tabButton", L"groupBorderWidth", 1.0f));
+        const int itemSpacing = std::max(itemGap, separatorWidth > 0 ? separatorWidth : 0);
         const int itemHeight = ThemedControls::TabButtonHeight(theme_);
         const int stripPadding = static_cast<int>(theme_.metric(L"tabButton", L"groupPadding", 3.0f));
         int stripWidth = 0;
         for (int width : itemWidths) {
             stripWidth += width;
         }
-        stripWidth += 5 * itemGap;
+        stripWidth += 5 * itemSpacing;
         tabStripRect_ = RECT{
             startX - stripPadding,
             startY - stripPadding,
             startX + stripWidth + stripPadding,
             startY + itemHeight + stripPadding};
         int x = startX;
+        tabSeparatorXs_.clear();
         for (int i = 0; i < 6; ++i) {
             HWND button = ThemedControls::CreateTabButton(
                 instance_,
@@ -706,7 +709,11 @@ private:
                 font_,
                 i == TabDisplay);
             tabButtons_.push_back(button);
-            x += itemWidths[static_cast<std::size_t>(i)] + itemGap;
+            x += itemWidths[static_cast<std::size_t>(i)];
+            if (i < 5) {
+                tabSeparatorXs_.push_back(x);
+                x += itemSpacing;
+            }
         }
     }
 
@@ -714,13 +721,21 @@ private:
         if (tabStripRect_.right <= tabStripRect_.left || tabStripRect_.bottom <= tabStripRect_.top) {
             return;
         }
-        FillRoundRect(
-            dc,
-            tabStripRect_,
-            static_cast<int>(theme_.metric(L"tabButton", L"groupRadius", 10.0f)),
-            ToColorRef(theme_.color(L"tabButton", L"normal", L"groupBg")),
-            ToColorRef(theme_.color(L"tabButton", L"normal", L"groupBorder")),
-            static_cast<int>(theme_.metric(L"tabButton", L"groupBorderWidth", 1.0f)));
+        ThemedControls::DrawTabGroupFrame(theme_, dc, tabStripRect_);
+        const int separatorWidth = static_cast<int>(theme_.metric(L"tabButton", L"groupBorderWidth", 1.0f));
+        if (separatorWidth <= 0) {
+            return;
+        }
+        HBRUSH separator = CreateSolidBrush(ToColorRef(theme_.color(L"tabButton", L"normal", L"groupBorder")));
+        for (int x : tabSeparatorXs_) {
+            RECT line{
+                x,
+                tabStripRect_.top,
+                x + separatorWidth,
+                tabStripRect_.bottom};
+            FillRect(dc, &line, separator);
+        }
+        DeleteObject(separator);
     }
 
     void ShowTab(int tab) {
@@ -1191,6 +1206,7 @@ private:
     int currentTab_ = TabDisplay;
     RECT tabStripRect_{};
     std::vector<HWND> tabButtons_;
+    std::vector<int> tabSeparatorXs_;
     std::vector<TabChild> tabChildren_;
     std::vector<FieldFrame> fieldFrames_;
     HWND showTitle_ = nullptr;

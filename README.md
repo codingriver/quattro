@@ -183,6 +183,18 @@ powershell -ExecutionPolicy Bypass -File .\tools\build.ps1 -Clean
 powershell -ExecutionPolicy Bypass -File .\tools\build.ps1 -FullPackage
 ```
 
+使用 UPX 压缩发布 exe 后再生成 zip：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\build.ps1 -Upx
+```
+
+如果 `upx.exe` 不在 `PATH` 中，可以显式指定路径：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\build.ps1 -Upx -UpxPath C:\tools\upx\upx.exe
+```
+
 兼容旧命令；默认已不运行单元测试：
 
 ```powershell
@@ -208,6 +220,8 @@ dist/Quattro-x64.zip
 
 默认发布包可以只分发 `dist/x64/Quattro.exe`。需要旧默认产物 `dist/Quattro.exe` 和 `dist/Quattro.zip` 时使用 `-FlatPackage`。程序首次运行会在可写目录释放缺失资源；如果 exe 同级目录不可写，会使用当前用户本地数据目录。
 
+传入 `-Upx` 时，脚本只压缩复制到 `dist` 的发布 exe，不会修改 `build-*` 目录中的原始编译产物；zip 会基于压缩后的 exe 创建。
+
 如果本次目标 exe 正在运行，Windows 会锁定文件导致覆盖失败；先退出 Quattro 后再打包即可。
 
 ## SQLite
@@ -219,7 +233,9 @@ SQLite 使用官方 amalgamation 静态编译到 `Quattro.exe`，无需额外携
 插件商店入口位于主菜单。当前支持：
 
 - 内置工具插件：连点器、计时器、秒表，可启用/禁用。
-- 声明式启动项包：从 `plugins/store/index.json` 或 `PluginStoreUrl` 读取，安装后创建分组、标签和启动项。
+- 声明式启动项包：从 `plugins/store/index.json` 或 `PluginStoreUrl` 指向的远程 manifest/index 读取，安装后创建分组、标签和启动项。
+- 产品化商店列表：显示名称、版本、状态、分类，支持未安装/已安装/已启用/已禁用筛选、滚动和分页。
+- 插件详情提示：悬浮插件列表行时显示添加时间、远程链接、主页、作者和权限等信息。
 - 插件贡献追踪：删除普通插件时会移除它创建的启动项和资源文件。
 
 默认示例商店会随单 exe 首次运行释放到：

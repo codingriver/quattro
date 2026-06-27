@@ -297,6 +297,26 @@ function Wait-Control {
     throw "Control not found: $Id"
 }
 
+function Assert-ControlVisible {
+    param([IntPtr]$Parent, [int]$Id, [bool]$Visible, [string]$Name)
+
+    $control = Wait-Control -Parent $Parent -Id $Id
+    $actual = [NativePluginToolUi]::IsWindowVisible($control)
+    if ($actual -ne $Visible) {
+        throw "Unexpected visibility for $Name control $Id. Expected $Visible, got $actual."
+    }
+}
+
+function Assert-ControlText {
+    param([IntPtr]$Parent, [int]$Id, [string]$Expected, [string]$Name)
+
+    $control = Wait-Control -Parent $Parent -Id $Id
+    $actual = [NativePluginToolUi]::ControlText($control)
+    if ($actual -ne $Expected) {
+        throw "Unexpected text for $Name control $Id. Expected '$Expected', got '$actual'."
+    }
+}
+
 function Post-Command {
     param([IntPtr]$Parent, [int]$Id, [int]$Notify = 0)
     [NativePluginToolUi]::PostMessage($Parent, $WM_COMMAND, (Make-WParam -Id $Id -Notify $Notify), [IntPtr]::Zero) | Out-Null
@@ -306,8 +326,6 @@ function Post-Command {
 function Invoke-ControlClick {
     param([IntPtr]$Parent, [int]$Id)
     $control = Wait-Control -Parent $Parent -Id $Id
-    [NativePluginToolUi]::SendMessage($control, $BM_CLICK, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null
-    [NativePluginToolUi]::SendMessage($Parent, $WM_COMMAND, (Make-WParam -Id $Id), $control) | Out-Null
     $handled = [NativePluginToolUi]::SendMessage($Parent, $WM_TOOL_AUTOMATION, [IntPtr]$Id, [IntPtr]::Zero)
     if ($handled -eq [IntPtr]::Zero) {
         throw "Tool automation command was not handled: $Id"
@@ -700,51 +718,70 @@ PluginStoreUrl=plugins/store/index.json
         $seenTools[$title] = $true
 
         if ($title -eq "连点器") {
-            Assert-Surface -Hwnd $tool -Name "tool-clicker-ready" -Path (Join-Path $LogDir "tool-clicker-ready.png") -RequiredControlIds @(7001,7002,7003,7004,7005,7006,7007,7008,7013,7014)
+            Assert-Surface -Hwnd $tool -Name "tool-clicker-ready" -Path (Join-Path $LogDir "tool-clicker-ready.png") -RequiredControlIds @(7001,7003,7004,7005,7006,7007,7013,7014,7017,7019)
             [PluginToolRect]$toolRect = New-Object PluginToolRect
             [NativePluginToolUi]::GetWindowRect($tool, [ref]$toolRect) | Out-Null
-            Set-EditText -Parent $tool -Id 7001 -Text ([string]($toolRect.Left + 32))
-            Set-EditText -Parent $tool -Id 7002 -Text ([string]($toolRect.Top + 210))
+            Set-EditText -Parent $tool -Id 7001 -Text (([string]($toolRect.Left + 32)) + ", " + ([string]($toolRect.Top + 210)))
             Set-EditText -Parent $tool -Id 7003 -Text "1"
             Set-EditText -Parent $tool -Id 7004 -Text "100"
             Set-EditText -Parent $tool -Id 7013 -Text "0"
             [NativePluginToolUi]::SendMessage((Wait-Control -Parent $tool -Id 7005), $CB_SETCURSEL, [IntPtr]0, [IntPtr]::Zero) | Out-Null
-            Assert-Surface -Hwnd $tool -Name "tool-clicker-configured" -Path (Join-Path $LogDir "tool-clicker-configured.png") -RequiredControlIds @(7001,7002,7003,7004,7007,7008)
+            Assert-Surface -Hwnd $tool -Name "tool-clicker-configured" -Path (Join-Path $LogDir "tool-clicker-configured.png") -RequiredControlIds @(7001,7003,7004,7007,7019)
             Invoke-ControlClick -Parent $tool -Id 7007
             Start-Sleep -Milliseconds 700
-            Assert-Surface -Hwnd $tool -Name "tool-clicker-complete" -Path (Join-Path $LogDir "tool-clicker-complete.png") -RequiredControlIds @(7001,7002,7003,7004,7007,7008)
+            Assert-Surface -Hwnd $tool -Name "tool-clicker-complete" -Path (Join-Path $LogDir "tool-clicker-complete.png") -RequiredControlIds @(7001,7003,7004,7007,7019)
+            Set-EditText -Parent $tool -Id 7003 -Text "0"
+            Assert-Surface -Hwnd $tool -Name "tool-clicker-infinite-configured" -Path (Join-Path $LogDir "tool-clicker-infinite-configured.png") -RequiredControlIds @(7001,7003,7004,7007,7019)
+            Invoke-ControlClick -Parent $tool -Id 7007
+            Start-Sleep -Milliseconds 350
+            Invoke-ControlClick -Parent $tool -Id 7007
+            Assert-Surface -Hwnd $tool -Name "tool-clicker-infinite-stopped" -Path (Join-Path $LogDir "tool-clicker-infinite-stopped.png") -RequiredControlIds @(7001,7003,7004,7007,7019)
             [NativePluginToolUi]::PostMessage($tool, $WM_CLOSE, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null
             Wait-WindowClosed -Hwnd $tool
         } elseif ($title -eq "计时器") {
-            Assert-Surface -Hwnd $tool -Name "tool-timer-ready" -Path (Join-Path $LogDir "tool-timer-ready.png") -RequiredControlIds @(7101,7107,7108,7102,7103,7104,7109,7110)
+            Assert-Surface -Hwnd $tool -Name "tool-timer-ready" -Path (Join-Path $LogDir "tool-timer-ready.png") -RequiredControlIds @(7101,7107,7108,7102,7104,7109,7110)
+            Assert-ControlVisible -Parent $tool -Id 7102 -Visible $true -Name "timer-ready-start"
+            Assert-ControlVisible -Parent $tool -Id 7103 -Visible $false -Name "timer-ready-pause"
+            Assert-ControlText -Parent $tool -Id 7102 -Expected "开始(&S)" -Name "timer-ready-start"
             Set-EditText -Parent $tool -Id 7101 -Text "0"
             Set-EditText -Parent $tool -Id 7107 -Text "0"
             Set-EditText -Parent $tool -Id 7108 -Text "1"
             Set-Check -Parent $tool -Id 7109 -Checked $false
             Set-Check -Parent $tool -Id 7110 -Checked $false
-            Assert-Surface -Hwnd $tool -Name "tool-timer-configured" -Path (Join-Path $LogDir "tool-timer-configured.png") -RequiredControlIds @(7101,7107,7108,7102,7103,7104)
+            Assert-Surface -Hwnd $tool -Name "tool-timer-configured" -Path (Join-Path $LogDir "tool-timer-configured.png") -RequiredControlIds @(7101,7107,7108,7102,7104)
             Invoke-ControlClick -Parent $tool -Id 7102
             Start-Sleep -Milliseconds 350
-            Assert-Surface -Hwnd $tool -Name "tool-timer-running" -Path (Join-Path $LogDir "tool-timer-running.png") -RequiredControlIds @(7101,7107,7108,7102,7103,7104)
+            Assert-Surface -Hwnd $tool -Name "tool-timer-running" -Path (Join-Path $LogDir "tool-timer-running.png") -RequiredControlIds @(7101,7107,7108,7103,7104)
+            Assert-ControlVisible -Parent $tool -Id 7102 -Visible $false -Name "timer-running-start"
+            Assert-ControlVisible -Parent $tool -Id 7103 -Visible $true -Name "timer-running-pause"
+            Invoke-ControlClick -Parent $tool -Id 7103
+            Assert-Surface -Hwnd $tool -Name "tool-timer-paused" -Path (Join-Path $LogDir "tool-timer-paused.png") -RequiredControlIds @(7101,7107,7108,7102,7104)
+            Assert-ControlVisible -Parent $tool -Id 7102 -Visible $true -Name "timer-paused-start"
+            Assert-ControlVisible -Parent $tool -Id 7103 -Visible $false -Name "timer-paused-pause"
+            Assert-ControlText -Parent $tool -Id 7102 -Expected "继续(&S)" -Name "timer-paused-start"
+            Invoke-ControlClick -Parent $tool -Id 7102
             [NativePluginToolUi]::StartClickTopWindowButtonWhenAppears([uint32]$process.Id, "#32770", "", 1, 5000, 700)
             $timerHandled = [NativePluginToolUi]::SendMessage($tool, $WM_TOOL_TIMER_AUTOMATION, [IntPtr]7106, [IntPtr]::Zero)
             if ($timerHandled -eq [IntPtr]::Zero) {
                 throw "Timer automation tick was not handled."
             }
             Start-Sleep -Milliseconds 300
-            Assert-Surface -Hwnd $tool -Name "tool-timer-finished" -Path (Join-Path $LogDir "tool-timer-finished.png") -RequiredControlIds @(7101,7107,7108,7102,7103,7104)
+            Assert-Surface -Hwnd $tool -Name "tool-timer-finished" -Path (Join-Path $LogDir "tool-timer-finished.png") -RequiredControlIds @(7101,7107,7108,7102,7104)
+            Assert-ControlVisible -Parent $tool -Id 7102 -Visible $true -Name "timer-finished-start"
+            Assert-ControlVisible -Parent $tool -Id 7103 -Visible $false -Name "timer-finished-pause"
             Invoke-ControlClick -Parent $tool -Id 7104
-            Assert-Surface -Hwnd $tool -Name "tool-timer-reset" -Path (Join-Path $LogDir "tool-timer-reset.png") -RequiredControlIds @(7101,7107,7108,7102,7103,7104)
+            Assert-Surface -Hwnd $tool -Name "tool-timer-reset" -Path (Join-Path $LogDir "tool-timer-reset.png") -RequiredControlIds @(7101,7107,7108,7102,7104)
+            Assert-ControlText -Parent $tool -Id 7102 -Expected "开始(&S)" -Name "timer-reset-start"
             [NativePluginToolUi]::PostMessage($tool, $WM_CLOSE, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null
             Wait-WindowClosed -Hwnd $tool
         } elseif ($title -eq "秒表") {
-            Assert-Surface -Hwnd $tool -Name "tool-stopwatch-ready" -Path (Join-Path $LogDir "tool-stopwatch-ready.png") -RequiredControlIds @(7201,7202,7203,7204,7205,7207,7209)
+            Assert-Surface -Hwnd $tool -Name "tool-stopwatch-ready" -Path (Join-Path $LogDir "tool-stopwatch-ready.png") -RequiredControlIds @(7201,7203,7204,7205,7207,7209)
             Invoke-ControlClick -Parent $tool -Id 7201
             Start-Sleep -Milliseconds 350
             Invoke-ControlClick -Parent $tool -Id 7204
             Start-Sleep -Milliseconds 200
             Invoke-ControlClick -Parent $tool -Id 7202
-            Assert-Surface -Hwnd $tool -Name "tool-stopwatch-lap-paused" -Path (Join-Path $LogDir "tool-stopwatch-lap-paused.png") -RequiredControlIds @(7201,7202,7203,7204,7205,7207,7209)
+            Assert-Surface -Hwnd $tool -Name "tool-stopwatch-lap-paused" -Path (Join-Path $LogDir "tool-stopwatch-lap-paused.png") -RequiredControlIds @(7201,7203,7204,7205,7207,7209)
             Invoke-ControlClick -Parent $tool -Id 7205
             Assert-ClipboardContains -Text "当前时间"
             Invoke-ControlClick -Parent $tool -Id 7209
@@ -761,9 +798,9 @@ PluginStoreUrl=plugins/store/index.json
             }
             $exportLogPath = Join-Path $LogDir "tool-stopwatch-export.txt"
             Copy-Item -LiteralPath $exportPath -Destination $exportLogPath -Force
-            Assert-Surface -Hwnd $tool -Name "tool-stopwatch-exported" -Path (Join-Path $LogDir "tool-stopwatch-exported.png") -RequiredControlIds @(7201,7202,7203,7204,7205,7207,7209)
+            Assert-Surface -Hwnd $tool -Name "tool-stopwatch-exported" -Path (Join-Path $LogDir "tool-stopwatch-exported.png") -RequiredControlIds @(7201,7203,7204,7205,7207,7209)
             Invoke-ControlClick -Parent $tool -Id 7203
-            Assert-Surface -Hwnd $tool -Name "tool-stopwatch-reset" -Path (Join-Path $LogDir "tool-stopwatch-reset.png") -RequiredControlIds @(7201,7202,7203,7204,7205,7207,7209)
+            Assert-Surface -Hwnd $tool -Name "tool-stopwatch-reset" -Path (Join-Path $LogDir "tool-stopwatch-reset.png") -RequiredControlIds @(7201,7203,7204,7205,7207,7209)
             [NativePluginToolUi]::PostMessage($tool, $WM_CLOSE, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null
             Wait-WindowClosed -Hwnd $tool
         } else {
@@ -787,6 +824,7 @@ PluginStoreUrl=plugins/store/index.json
     $finalProbe = Read-Probe -Directory $runDir
     $finalProbe | Set-Content -Path (Join-Path $LogDir "plugin-tool-probe-final.txt") -Encoding UTF8
     Assert-ProbeContains -Lines $finalProbe -Pattern "PLUGIN.*id=quattro\.builtin\.clicker.*enabled=1.*installed=1" -Name "clicker enabled persisted"
+    Assert-ProbeContains -Lines $finalProbe -Pattern "PLUGIN_SETTING.*plugin=quattro\.builtin\.clicker.*key=count.*value=0" -Name "clicker infinite count persisted"
     Assert-ProbeContains -Lines $finalProbe -Pattern "PLUGIN_SETTING.*plugin=quattro\.builtin\.clicker.*key=interval.*value=100" -Name "clicker interval persisted"
     Assert-ProbeContains -Lines $finalProbe -Pattern "PLUGIN_SETTING.*plugin=quattro\.builtin\.timer.*key=secondsPart.*value=1" -Name "timer seconds persisted"
     Assert-ProbeContains -Lines $finalProbe -Pattern "PLUGIN_SETTING.*plugin=quattro\.builtin\.stopwatch.*key=laps" -Name "stopwatch lap setting persisted"

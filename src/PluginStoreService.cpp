@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <initializer_list>
 #include <iterator>
 #include <sstream>
 #include <string>
@@ -47,6 +48,16 @@ const JsonValue* ArrayValue(const JsonValue& value, const wchar_t* key) {
 std::wstring StringValue(const JsonValue& value, const wchar_t* key, const std::wstring& fallback = L"") {
     const JsonValue* child = value.get(key);
     return child ? child->stringOr(fallback) : fallback;
+}
+
+std::wstring FirstStringValue(const JsonValue& value, std::initializer_list<const wchar_t*> keys) {
+    for (const wchar_t* key : keys) {
+        const std::wstring text = StringValue(value, key);
+        if (!text.empty()) {
+            return text;
+        }
+    }
+    return {};
 }
 
 bool BoolValue(const JsonValue& value, const wchar_t* key, bool fallback = false) {
@@ -185,6 +196,15 @@ bool PluginStoreService::Install(const std::wstring& pluginId, PluginRegistry& r
             return false;
         }
         package.record.packageUrl = plugin.record.packageUrl;
+        if (package.record.homepageUrl.empty()) {
+            package.record.homepageUrl = plugin.record.homepageUrl;
+        }
+        if (package.record.sourceUrl.empty()) {
+            package.record.sourceUrl = plugin.record.sourceUrl;
+        }
+        if (package.record.addedAt.empty()) {
+            package.record.addedAt = plugin.record.addedAt;
+        }
         package.record.sha256 = plugin.record.sha256;
         plugin = std::move(package);
     }
@@ -315,6 +335,16 @@ bool PluginStoreService::ParsePluginObject(const JsonValue& object, const std::f
     plugin.record.author = StringValue(object, L"author");
     plugin.record.license = StringValue(object, L"license");
     plugin.record.packageUrl = StringValue(object, L"packageUrl");
+    const std::wstring manifestUrl = StringValue(object, L"manifestUrl");
+    if (plugin.record.packageUrl.empty()) {
+        plugin.record.packageUrl = manifestUrl;
+    }
+    plugin.record.homepageUrl = FirstStringValue(object, {L"homepageUrl", L"homepage", L"url", L"repositoryUrl"});
+    plugin.record.sourceUrl = FirstStringValue(object, {L"sourceUrl", L"manifestUrl", L"repositoryUrl"});
+    if (!plugin.record.sourceUrl.empty() && !IsHttpUrl(plugin.record.sourceUrl) && IsHttpUrl(storeUrl_)) {
+        plugin.record.sourceUrl = ResolvePackageUrl(plugin.record.sourceUrl);
+    }
+    plugin.record.addedAt = FirstStringValue(object, {L"addedAt", L"createdAt", L"publishedAt"});
     plugin.record.sha256 = StringValue(object, L"sha256");
     plugin.record.builtin = BoolValue(object, L"builtin", false);
     plugin.record.deletable = BoolValue(object, L"deletable", !plugin.record.builtin);
@@ -323,6 +353,9 @@ bool PluginStoreService::ParsePluginObject(const JsonValue& object, const std::f
     if (plugin.record.id.empty() || plugin.record.name.empty()) {
         lastError_ = L"插件定义缺少 id 或 name。";
         return false;
+    }
+    if (plugin.record.sourceUrl.empty() && IsHttpUrl(storeUrl_)) {
+        plugin.record.sourceUrl = storeUrl_;
     }
 
     if (const JsonValue* groups = ArrayValue(object, L"groups")) {

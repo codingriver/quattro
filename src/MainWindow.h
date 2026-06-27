@@ -75,6 +75,8 @@ private:
         bool checked = false;
         bool disabled = false;
         bool submenu = false;
+        bool checkedIconAccent = false;
+        bool separator = false;
     };
 
     static LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
@@ -212,6 +214,9 @@ private:
     void DrawTitle(D2D1_RECT_F rect);
     void DrawGroups(D2D1_RECT_F rect);
     void DrawTags(D2D1_RECT_F rect);
+    void DrawTabGroupFrame(D2D1_RECT_F rect);
+    void DrawTabGroupItem(D2D1_RECT_F rect, const std::wstring& text, bool selected, bool hovered, IDWriteTextFormat* format);
+    void DrawTabGroupSeparator(const D2D1_RECT_F& rect, bool horizontal);
     void DrawLinks(D2D1_RECT_F rect);
     void DrawNotePage(D2D1_RECT_F rect, const Group& tag);
     void DrawTodoItems(D2D1_RECT_F rect, const Group& tag);
@@ -222,10 +227,12 @@ private:
     void DrawRect(const D2D1_RECT_F& rect, const Color& color, float strokeWidth = 1.0f);
     void FillRoundedRect(const D2D1_RECT_F& rect, const Color& color, float radius);
     void DrawRoundedRect(const D2D1_RECT_F& rect, const Color& color, float radius, float strokeWidth = 1.0f);
+    void FillEllipse(float cx, float cy, float radius, const Color& color);
     void DrawScrollBar(const D2D1_RECT_F& rect, float offset, float maxOffset, bool horizontal);
+    float MeasureTextWidth(const std::wstring& text, IDWriteTextFormat* format, float maxWidth = 1000.0f) const;
     void DrawTextBlock(const std::wstring& text, IDWriteTextFormat* format, const D2D1_RECT_F& rect, const Color& color);
     void ResetMenuVisuals();
-    void AppendThemedMenuItem(HMENU menu, UINT flags, UINT_PTR id, const std::wstring& text, bool submenu = false, int systemImageIndex = -1, int stockIcon = -1, int menuIcon = 0);
+    void AppendThemedMenuItem(HMENU menu, UINT flags, UINT_PTR id, const std::wstring& text, bool submenu = false, int systemImageIndex = -1, int stockIcon = -1, int menuIcon = 0, bool checkedIconAccent = false);
     void AppendThemedSeparator(HMENU menu);
     bool MeasureThemedMenuItem(MEASUREITEMSTRUCT* measure);
     bool DrawThemedMenuItem(const DRAWITEMSTRUCT* draw);

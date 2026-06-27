@@ -355,9 +355,13 @@ void Theme::SetDefaults() {
     PutState(L"scrollbar", L"normal", L"thumb", palette_[L"scrollThumb"]);
     PutState(L"menu", L"normal", L"bg", palette_[L"surface"]);
     PutState(L"menuItem", L"normal", L"text", palette_[L"text"]);
+    PutState(L"menuItem", L"normal", L"icon", palette_[L"mutedText"]);
     PutState(L"menuItem", L"disabled", L"text", palette_[L"disabledText"]);
+    PutState(L"menuItem", L"disabled", L"icon", palette_[L"disabledText"]);
     PutState(L"menuItem", L"hover", L"bg", palette_[L"hover"]);
+    PutState(L"menuItem", L"hover", L"icon", palette_[L"mutedText"]);
     PutState(L"menuItem", L"checked", L"mark", palette_[L"accent"]);
+    PutState(L"menuItem", L"checked", L"icon", palette_[L"accent"]);
     PutState(L"dialog", L"normal", L"bg", palette_[L"background"]);
     PutState(L"dialog", L"normal", L"text", palette_[L"text"]);
     PutState(L"iconButton", L"normal", L"bg", Color{1, 1, 1, 0});
@@ -411,12 +415,12 @@ void Theme::SetDefaults() {
     PutState(L"comboBox", L"disabled", L"arrow", palette_[L"disabledText"]);
     PutState(L"tabButton", L"normal", L"bg", palette_[L"surfaceRaised"]);
     PutState(L"tabButton", L"normal", L"text", palette_[L"text"]);
-    PutState(L"tabButton", L"normal", L"border", palette_[L"surfaceRaised"]);
+    PutState(L"tabButton", L"normal", L"border", Color{0.82f, 0.85f, 0.89f, 1});
     PutState(L"tabButton", L"normal", L"groupBg", palette_[L"surfaceRaised"]);
-    PutState(L"tabButton", L"normal", L"groupBorder", palette_[L"line"]);
+    PutState(L"tabButton", L"normal", L"groupBorder", palette_[L"border"]);
     PutState(L"tabButton", L"hover", L"bg", palette_[L"hover"]);
     PutState(L"tabButton", L"hover", L"text", palette_[L"text"]);
-    PutState(L"tabButton", L"hover", L"border", palette_[L"line"]);
+    PutState(L"tabButton", L"hover", L"border", palette_[L"border"]);
     PutState(L"tabButton", L"selected", L"bg", palette_[L"accentSoft"]);
     PutState(L"tabButton", L"selected", L"text", palette_[L"accent"]);
     PutState(L"tabButton", L"selected", L"border", palette_[L"accent"]);
@@ -483,9 +487,9 @@ void Theme::SetDefaults() {
     PutState(L"slider", L"normal", L"fill", palette_[L"accent"]);
     PutState(L"slider", L"normal", L"thumb", palette_[L"surface"]);
     PutState(L"slider", L"normal", L"border", palette_[L"border"]);
-    PutState(L"tooltip", L"normal", L"bg", palette_[L"text"]);
-    PutState(L"tooltip", L"normal", L"text", palette_[L"surface"]);
-    PutState(L"tooltip", L"normal", L"border", palette_[L"text"]);
+    PutState(L"tooltip", L"normal", L"bg", Color{229.0f / 255.0f, 231.0f / 255.0f, 235.0f / 255.0f, 1.0f});
+    PutState(L"tooltip", L"normal", L"text", Color{17.0f / 255.0f, 24.0f / 255.0f, 39.0f / 255.0f, 1.0f});
+    PutState(L"tooltip", L"normal", L"border", Color{156.0f / 255.0f, 163.0f / 255.0f, 175.0f / 255.0f, 1.0f});
     PutState(L"separator", L"normal", L"line", palette_[L"line"]);
 
     PutMetric(L"titleButton", L"size", 26.0f);
@@ -618,10 +622,15 @@ void Theme::SetDefaults() {
     PutMetric(L"menuItem", L"iconSize", 16.0f);
     PutMetric(L"menuItem", L"textLeft", 34.0f);
     PutMetric(L"menuItem", L"textRight", 8.0f);
+    PutMetric(L"menuItem", L"checkedTextRight", 28.0f);
     PutMetric(L"menuItem", L"submenuRight", 22.0f);
     PutMetric(L"menuItem", L"arrowRight", 9.0f);
     PutMetric(L"menuItem", L"arrowWidth", 5.0f);
     PutMetric(L"menuItem", L"arrowHalfHeight", 4.0f);
+    PutMetric(L"menuItem", L"checkRight", 10.0f);
+    PutMetric(L"menuItem", L"checkWidth", 9.0f);
+    PutMetric(L"menuItem", L"checkHeight", 7.0f);
+    PutMetric(L"menuItem", L"checkMarkWidth", 2.0f);
     PutMetric(L"button", L"radius", 6.0f);
     PutMetric(L"button", L"borderWidth", 1.0f);
     PutMetric(L"button", L"height", 30.0f);
@@ -663,12 +672,12 @@ void Theme::SetDefaults() {
     PutMetric(L"tabButton", L"textHeight", 20.0f);
     PutMetric(L"tabButton", L"textOffsetY", 1.0f);
     PutMetric(L"tabButton", L"segmented", 1.0f);
-    PutMetric(L"tabButton", L"segmentInset", 2.0f);
+    PutMetric(L"tabButton", L"segmentInset", 0.5f);
     PutMetric(L"tabButton", L"groupItemWidth", 58.0f);
     PutMetric(L"tabButton", L"groupGap", 0.0f);
-    PutMetric(L"tabButton", L"groupPadding", 3.0f);
-    PutMetric(L"tabButton", L"groupRadius", 10.0f);
-    PutMetric(L"tabButton", L"groupBorderWidth", 1.0f);
+    PutMetric(L"tabButton", L"groupPadding", 1.0f);
+    PutMetric(L"tabButton", L"groupRadius", 0.0f);
+    PutMetric(L"tabButton", L"groupBorderWidth", 0.0f);
     PutMetric(L"checkbox", L"boxSize", 16.0f);
     PutMetric(L"checkbox", L"radius", 4.0f);
     PutMetric(L"checkbox", L"borderWidth", 1.0f);
@@ -700,7 +709,8 @@ void Theme::SetDefaults() {
     PutMetric(L"tooltip", L"radius", 6.0f);
     PutMetric(L"tooltip", L"borderWidth", 1.0f);
     PutMetric(L"tooltip", L"paddingX", 8.0f);
-    PutMetric(L"tooltip", L"paddingY", 5.0f);
+    PutMetric(L"tooltip", L"paddingY", 7.0f);
+    PutMetric(L"tooltip", L"lineGap", 4.0f);
     PutMetric(L"separator", L"thickness", 1.0f);
     PutMetric(L"separator", L"inset", 0.0f);
 }

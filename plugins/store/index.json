@@ -11,6 +11,8 @@
       "description": "添加常用 Windows 系统工具入口，演示声明式插件安装和删除。",
       "author": "Quattro",
       "license": "MIT",
+      "homepage": "https://example.com/quattro/plugins/system-links",
+      "addedAt": "2026-06-27T00:00:00+08:00",
       "permissions": ["create-groups", "create-links"],
       "groups": [
         {

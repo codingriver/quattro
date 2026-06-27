@@ -9,6 +9,8 @@ param(
     [switch]$NoZip,
     [switch]$FullPackage,
     [switch]$FlatPackage,
+    [switch]$Upx,
+    [string]$UpxPath = "upx",
     [ValidateSet("vcpkg", "classic")]
     [string]$Backend = "vcpkg",
     [switch]$Help
@@ -40,6 +42,8 @@ Options:
   -NoZip                   Create package directories only, without zip archives.
   -FullPackage             Include external resource folders beside the exe.
   -FlatPackage             Run the previous default flat x64 single-exe package flow.
+  -Upx                     Compress packaged Quattro.exe with UPX before zipping.
+  -UpxPath <path>          UPX executable path. Default: upx.
   -Backend vcpkg|classic   Build backend. Default: vcpkg. Use classic for the legacy non-vcpkg build.
 
 Examples:
@@ -158,6 +162,27 @@ function Invoke-PackageBuild {
     & cmake @buildArgs
 }
 
+function Invoke-UpxCompress {
+    param([string]$ExePath)
+
+    if (!$Upx) {
+        return
+    }
+    if (!(Test-Path $ExePath)) {
+        throw "UPX target not found: $ExePath"
+    }
+
+    $before = (Get-Item -LiteralPath $ExePath).Length
+    & $UpxPath "--best" "--lzma" $ExePath
+    if ($LASTEXITCODE -ne 0) {
+        throw "UPX failed for: $ExePath"
+    }
+    $after = (Get-Item -LiteralPath $ExePath).Length
+    $saved = $before - $after
+    $percent = if ($before -gt 0) { [math]::Round(($saved * 100.0) / $before, 1) } else { 0 }
+    "upx: $ExePath ($before -> $after bytes, saved $percent%)"
+}
+
 function Publish-Package {
     param(
         [string]$BuildDir,
@@ -190,6 +215,7 @@ function Publish-Package {
             Remove-Item -LiteralPath $singleExePath -Force
         }
         Copy-Item -LiteralPath (Join-Path $source "Quattro.exe") -Destination $singleExePath -Force
+        Invoke-UpxCompress -ExePath $singleExePath
         "single-exe: $singleExePath"
     } else {
         if (Test-Path $dist) {
@@ -198,6 +224,7 @@ function Publish-Package {
 
         New-Item -ItemType Directory -Force -Path $dist | Out-Null
         Copy-Item -LiteralPath (Join-Path $source "Quattro.exe") -Destination $dist
+        Invoke-UpxCompress -ExePath (Join-Path $dist "Quattro.exe")
         Copy-Item -LiteralPath (Join-Path $source "db") -Destination $dist -Recurse -ErrorAction SilentlyContinue
         Copy-Item -LiteralPath (Join-Path $source "theme") -Destination $dist -Recurse -ErrorAction SilentlyContinue
         Copy-Item -LiteralPath (Join-Path $source "icons") -Destination $dist -Recurse -ErrorAction SilentlyContinue

@@ -114,6 +114,15 @@ function Draw-RoundRect {
         [System.Drawing.Color]$Border,
         [int]$Radius = 7
     )
+    if ($Radius -le 0) {
+        $brush = New-Object System.Drawing.SolidBrush $Fill
+        $pen = New-Object System.Drawing.Pen $Border, 1
+        $Graphics.FillRectangle($brush, $Rect)
+        $Graphics.DrawRectangle($pen, $Rect)
+        $brush.Dispose()
+        $pen.Dispose()
+        return
+    }
     $path = New-Object System.Drawing.Drawing2D.GraphicsPath
     $d = $Radius * 2
     $path.AddArc($Rect.Left, $Rect.Top, $d, $d, 180, 90)

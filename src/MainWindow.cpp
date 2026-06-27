@@ -32,6 +32,7 @@
 #include <shlobj.h>
 #include <shobjidl.h>
 #include <shellapi.h>
+#include <sstream>
 #include <system_error>
 #include <uxtheme.h>
 #include <windowsx.h>
@@ -49,6 +50,13 @@ constexpr UINT_PTR ID_TIMER_REMINDER_SCAN = 13;
 constexpr UINT_PTR ID_TIMER_REMINDER_PANEL = 14;
 constexpr int kDockVisiblePixels = 3;
 constexpr int kDockRestoreGraceMs = 1500;
+constexpr const wchar_t* kTooltipWindowClass = L"QuattroTooltipWindow";
+constexpr const wchar_t* kTooltipBgProp = L"QuattroTooltipBg";
+constexpr const wchar_t* kTooltipTextProp = L"QuattroTooltipText";
+constexpr const wchar_t* kTooltipBorderProp = L"QuattroTooltipBorder";
+constexpr const wchar_t* kTooltipPaddingXProp = L"QuattroTooltipPaddingX";
+constexpr const wchar_t* kTooltipPaddingYProp = L"QuattroTooltipPaddingY";
+constexpr const wchar_t* kTooltipLineGapProp = L"QuattroTooltipLineGap";
 
 template <typename T>
 void SafeRelease(T*& value) {
@@ -75,6 +83,117 @@ COLORREF ToColorRef(Color color) {
         return static_cast<BYTE>(ClampFloat(value, 0.0f, 1.0f) * 255.0f + 0.5f);
     };
     return RGB(byte(color.r), byte(color.g), byte(color.b));
+}
+
+Color RgbColor(int r, int g, int b, float a = 1.0f) {
+    return Color{
+        ClampFloat(static_cast<float>(r) / 255.0f, 0.0f, 1.0f),
+        ClampFloat(static_cast<float>(g) / 255.0f, 0.0f, 1.0f),
+        ClampFloat(static_cast<float>(b) / 255.0f, 0.0f, 1.0f),
+        ClampFloat(a, 0.0f, 1.0f)};
+}
+
+COLORREF WindowPropColor(HWND hwnd, const wchar_t* name, COLORREF fallback) {
+    HANDLE value = GetPropW(hwnd, name);
+    if (!value) {
+        return fallback;
+    }
+    return static_cast<COLORREF>(reinterpret_cast<UINT_PTR>(value));
+}
+
+int WindowPropInt(HWND hwnd, const wchar_t* name, int fallback) {
+    HANDLE value = GetPropW(hwnd, name);
+    if (!value) {
+        return fallback;
+    }
+    return static_cast<int>(reinterpret_cast<UINT_PTR>(value));
+}
+
+std::vector<std::wstring> SplitTooltipLines(const std::wstring& text) {
+    std::vector<std::wstring> lines;
+    std::wstringstream stream(text);
+    std::wstring line;
+    while (std::getline(stream, line)) {
+        if (!line.empty() && line.back() == L'\r') {
+            line.pop_back();
+        }
+        lines.push_back(line);
+    }
+    if (lines.empty()) {
+        lines.push_back(L"");
+    }
+    return lines;
+}
+
+SIZE MeasureTooltipText(HDC dc, const std::wstring& text, int lineGap) {
+    SIZE result{};
+    TEXTMETRICW metrics{};
+    GetTextMetricsW(dc, &metrics);
+    const int lineHeight = metrics.tmHeight;
+    for (const auto& line : SplitTooltipLines(text)) {
+        SIZE lineSize{};
+        GetTextExtentPoint32W(dc, line.c_str(), static_cast<int>(line.size()), &lineSize);
+        result.cx = std::max(result.cx, lineSize.cx);
+    }
+    const int lineCount = static_cast<int>(SplitTooltipLines(text).size());
+    result.cy = lineCount * lineHeight + std::max(0, lineCount - 1) * lineGap;
+    return result;
+}
+
+LRESULT CALLBACK TooltipWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
+    switch (message) {
+    case WM_ERASEBKGND:
+        return 1;
+    case WM_PAINT: {
+        PAINTSTRUCT ps{};
+        HDC dc = BeginPaint(hwnd, &ps);
+        RECT rect{};
+        GetClientRect(hwnd, &rect);
+        const COLORREF bg = WindowPropColor(hwnd, kTooltipBgProp, RGB(32, 32, 32));
+        const COLORREF text = WindowPropColor(hwnd, kTooltipTextProp, RGB(255, 255, 255));
+        const COLORREF border = WindowPropColor(hwnd, kTooltipBorderProp, bg);
+        HBRUSH brush = CreateSolidBrush(bg);
+        FillRect(dc, &rect, brush);
+        DeleteObject(brush);
+        HPEN pen = CreatePen(PS_SOLID, 1, border);
+        HPEN previousPen = reinterpret_cast<HPEN>(SelectObject(dc, pen));
+        HBRUSH previousBrush = reinterpret_cast<HBRUSH>(SelectObject(dc, GetStockObject(NULL_BRUSH)));
+        Rectangle(dc, rect.left, rect.top, rect.right, rect.bottom);
+        SelectObject(dc, previousBrush);
+        SelectObject(dc, previousPen);
+        DeleteObject(pen);
+
+        wchar_t buffer[1024]{};
+        GetWindowTextW(hwnd, buffer, static_cast<int>(std::size(buffer)));
+        SetBkMode(dc, TRANSPARENT);
+        SetTextColor(dc, text);
+        HFONT font = reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
+        HFONT previousFont = reinterpret_cast<HFONT>(SelectObject(dc, font));
+        const int paddingX = WindowPropInt(hwnd, kTooltipPaddingXProp, 8);
+        const int paddingY = WindowPropInt(hwnd, kTooltipPaddingYProp, 7);
+        const int lineGap = WindowPropInt(hwnd, kTooltipLineGapProp, 4);
+        TEXTMETRICW metrics{};
+        GetTextMetricsW(dc, &metrics);
+        int y = rect.top + paddingY;
+        for (const auto& line : SplitTooltipLines(buffer)) {
+            TextOutW(dc, rect.left + paddingX, y, line.c_str(), static_cast<int>(line.size()));
+            y += metrics.tmHeight + lineGap;
+        }
+        SelectObject(dc, previousFont);
+        EndPaint(hwnd, &ps);
+        return 0;
+    }
+    case WM_NCDESTROY:
+        RemovePropW(hwnd, kTooltipBgProp);
+        RemovePropW(hwnd, kTooltipTextProp);
+        RemovePropW(hwnd, kTooltipBorderProp);
+        RemovePropW(hwnd, kTooltipPaddingXProp);
+        RemovePropW(hwnd, kTooltipPaddingYProp);
+        RemovePropW(hwnd, kTooltipLineGapProp);
+        return 0;
+    default:
+        return DefWindowProcW(hwnd, message, wParam, lParam);
+    }
 }
 
 bool Intersects(const D2D1_RECT_F& left, const D2D1_RECT_F& right) {
@@ -271,6 +390,15 @@ struct LinkLayoutMetrics {
     float itemHeight = 74.0f;
 };
 
+struct TodoVisualStyle {
+    Color bg;
+    Color border;
+    Color title;
+    Color dot;
+    Color tagBg;
+    Color tagText;
+};
+
 LinkLayoutMetrics MakeLinkLayout(const Theme& theme, const D2D1_RECT_F& rect, const Group* tag) {
     LinkLayoutMetrics metrics;
     metrics.layout = EffectiveLinkLayout(tag);
@@ -336,6 +464,17 @@ float NavigationItemWidth(const Theme& theme, const std::wstring& text) {
         std::min(
             Metric(theme, L"majorNavItem", L"textMaxWidth", 168.0f),
             Metric(theme, L"majorNavItem", L"textBaseWidth", 28.0f) + static_cast<float>(text.size()) * Metric(theme, L"majorNavItem", L"textCharWidth", 12.0f)));
+}
+
+float TabGroupItemWidth(const Theme& theme, const std::wstring& text, IDWriteTextFormat* format, float measuredTextWidth) {
+    const float minWidth = Metric(theme, L"majorNavItem", L"minWidth", 72.0f);
+    const float maxWidth = Metric(theme, L"majorNavItem", L"textMaxWidth", 168.0f);
+    const float paddingX = Metric(theme, L"tabButton", L"paddingX", 12.0f);
+    const float fallback = NavigationItemWidth(theme, text);
+    const float desired = (measuredTextWidth > 0.0f && format)
+        ? measuredTextWidth + paddingX * 2.0f
+        : fallback;
+    return std::max(minWidth, std::min(maxWidth, desired));
 }
 
 bool HasSiblingGroupName(const std::vector<Group>& groups, int parentGroup, const std::wstring& name) {
@@ -686,7 +825,7 @@ wchar_t MenuIconGlyph(int icon) {
     }
 }
 
-bool DrawLocalMenuIcon(HDC dc, const RECT& rc, int icon, bool disabled, const std::filesystem::path& appDirectory) {
+bool DrawLocalMenuIcon(HDC dc, const RECT& rc, int icon, bool disabled, COLORREF color, const std::filesystem::path& appDirectory) {
     const wchar_t glyph = MenuIconGlyph(icon);
     if (glyph == L'\0' || !EnsureMenuIconFontLoaded(appDirectory)) {
         return false;
@@ -715,7 +854,7 @@ bool DrawLocalMenuIcon(HDC dc, const RECT& rc, int icon, bool disabled, const st
     const COLORREF accent = disabled ? RGB(160, 168, 178) :
         (icon == MenuIconDelete || icon == MenuIconClear || icon == MenuIconExit || icon == MenuIconPower ? RGB(228, 48, 58) : RGB(0, 153, 215));
     const int oldBkMode = SetBkMode(dc, TRANSPARENT);
-    const COLORREF oldTextColor = SetTextColor(dc, accent);
+    const COLORREF oldTextColor = SetTextColor(dc, color == CLR_INVALID ? accent : color);
     HGDIOBJ oldFont = SelectObject(dc, font);
     RECT textRect = rc;
     DrawTextW(dc, &glyph, 1, &textRect, DT_SINGLELINE | DT_CENTER | DT_VCENTER | DT_NOCLIP);
@@ -726,9 +865,9 @@ bool DrawLocalMenuIcon(HDC dc, const RECT& rc, int icon, bool disabled, const st
     return true;
 }
 
-void DrawFallbackMenuIcon(HDC dc, const RECT& rc, int icon, bool disabled) {
-    const COLORREF blue = disabled ? RGB(150, 150, 150) : RGB(0, 120, 215);
-    const COLORREF red = disabled ? RGB(150, 150, 150) : RGB(230, 50, 45);
+void DrawFallbackMenuIcon(HDC dc, const RECT& rc, int icon, bool disabled, COLORREF color) {
+    const COLORREF blue = disabled ? RGB(150, 150, 150) : (color == CLR_INVALID ? RGB(0, 120, 215) : color);
+    const COLORREF red = disabled ? RGB(150, 150, 150) : (color == CLR_INVALID ? RGB(230, 50, 45) : color);
     const COLORREF mutedColor = disabled ? RGB(170, 170, 170) : RGB(100, 116, 139);
     const COLORREF amber = disabled ? RGB(170, 170, 170) : RGB(245, 180, 40);
     const COLORREF green = disabled ? RGB(170, 170, 170) : RGB(24, 150, 92);
@@ -889,7 +1028,7 @@ void DrawFallbackMenuIcon(HDC dc, const RECT& rc, int icon, bool disabled) {
     DeleteObject(pen);
 }
 
-void DrawMenuIcon(HDC dc, const RECT& rc, int icon, bool disabled, const std::filesystem::path& appDirectory) {
+void DrawMenuIcon(HDC dc, const RECT& rc, int icon, bool disabled, COLORREF color, const std::filesystem::path& appDirectory) {
     if (icon == MenuIconNone) {
         return;
     }
@@ -904,19 +1043,17 @@ void DrawMenuIcon(HDC dc, const RECT& rc, int icon, bool disabled, const std::fi
     case MenuIconShortcut: drawn = DrawStockMenuIcon(dc, rc, SIID_LINK); break;
     case MenuIconEdit: drawn = DrawStockMenuIcon(dc, rc, SIID_RENAME); break;
     case MenuIconGroup: drawn = DrawStockMenuIcon(dc, rc, SIID_FOLDER); break;
-    case MenuIconInfo:
-    case MenuIconAbout: drawn = DrawStockMenuIcon(dc, rc, SIID_INFO); break;
+    case MenuIconInfo: drawn = DrawStockMenuIcon(dc, rc, SIID_INFO); break;
     case MenuIconDelete: drawn = DrawStockMenuIcon(dc, rc, SIID_DELETE); break;
     case MenuIconSearch: drawn = DrawStockMenuIcon(dc, rc, SIID_FIND); break;
-    case MenuIconExit: drawn = DrawStockMenuIcon(dc, rc, SIID_ERROR); break;
     default:
         break;
     }
     if (!drawn) {
-        drawn = DrawLocalMenuIcon(dc, rc, icon, disabled, appDirectory);
+        drawn = DrawLocalMenuIcon(dc, rc, icon, disabled, color, appDirectory);
     }
     if (!drawn) {
-        DrawFallbackMenuIcon(dc, rc, icon, disabled);
+        DrawFallbackMenuIcon(dc, rc, icon, disabled, color);
     }
 }
 
@@ -1474,11 +1611,7 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             return 0;
         case HitKind::Todo:
             selectedTodoId_ = hit.id;
-            if (x <= hit.rect.left + 34.0f) {
-                ToggleTodoDone(hit.id);
-            } else {
-                InvalidateRect(hwnd_, nullptr, FALSE);
-            }
+            InvalidateRect(hwnd_, nullptr, FALSE);
             return 0;
         default:
             return 0;
@@ -4303,20 +4436,24 @@ void MainWindow::CreateTooltip() {
         return;
     }
 
-    INITCOMMONCONTROLSEX controls{};
-    controls.dwSize = sizeof(controls);
-    controls.dwICC = ICC_WIN95_CLASSES;
-    InitCommonControlsEx(&controls);
+    WNDCLASSEXW wc{};
+    wc.cbSize = sizeof(wc);
+    wc.lpfnWndProc = TooltipWindowProc;
+    wc.hInstance = instance_;
+    wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    wc.lpszClassName = kTooltipWindowClass;
+    wc.hbrBackground = nullptr;
+    RegisterClassExW(&wc);
 
     tooltip_ = CreateWindowExW(
-        WS_EX_TOPMOST,
-        TOOLTIPS_CLASSW,
+        WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+        kTooltipWindowClass,
         nullptr,
-        WS_POPUP | TTS_NOPREFIX | TTS_ALWAYSTIP,
-        CW_USEDEFAULT,
-        CW_USEDEFAULT,
-        CW_USEDEFAULT,
-        CW_USEDEFAULT,
+        WS_POPUP,
+        0,
+        0,
+        0,
+        0,
         hwnd_,
         nullptr,
         instance_,
@@ -4326,21 +4463,9 @@ void MainWindow::CreateTooltip() {
     }
 
     SetWindowPos(tooltip_, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-    SendMessageW(tooltip_, TTM_SETMAXTIPWIDTH, 0, 520);
-    SendMessageW(tooltip_, TTM_SETDELAYTIME, TTDT_INITIAL, 320);
-    SendMessageW(tooltip_, TTM_SETDELAYTIME, TTDT_RESHOW, 80);
-    SendMessageW(tooltip_, TTM_SETDELAYTIME, TTDT_AUTOPOP, 12000);
 
-    tooltipText_ = L" ";
+    tooltipText_.clear();
     tooltipInfo_ = {};
-    tooltipInfo_.cbSize = sizeof(tooltipInfo_);
-    tooltipInfo_.uFlags = TTF_TRACK | TTF_ABSOLUTE | TTF_TRANSPARENT;
-    tooltipInfo_.hwnd = hwnd_;
-    tooltipInfo_.uId = 1;
-    GetClientRect(hwnd_, &tooltipInfo_.rect);
-    tooltipInfo_.lpszText = const_cast<LPWSTR>(tooltipText_.c_str());
-    SendMessageW(tooltip_, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&tooltipInfo_));
-    SendMessageW(tooltip_, TTM_ACTIVATE, TRUE, 0);
     ApplyTooltipTheme();
 }
 
@@ -4348,41 +4473,52 @@ void MainWindow::ApplyTooltipTheme() {
     if (!tooltip_) {
         return;
     }
-    SendMessageW(tooltip_, TTM_SETTIPBKCOLOR, ToColorRef(theme_.color(L"tooltip", L"normal", L"bg")), 0);
-    SendMessageW(tooltip_, TTM_SETTIPTEXTCOLOR, ToColorRef(theme_.color(L"tooltip", L"normal", L"text")), 0);
-
     const int paddingX = static_cast<int>(std::max(0.0f, Metric(theme_, L"tooltip", L"paddingX", 8.0f)));
     const int paddingY = static_cast<int>(std::max(0.0f, Metric(theme_, L"tooltip", L"paddingY", 5.0f)));
-    RECT margin{paddingX, paddingY, paddingX, paddingY};
-    SendMessageW(tooltip_, TTM_SETMARGIN, 0, reinterpret_cast<LPARAM>(&margin));
+    const int lineGap = static_cast<int>(std::max(0.0f, Metric(theme_, L"tooltip", L"lineGap", 4.0f)));
+    SetPropW(tooltip_, kTooltipBgProp, reinterpret_cast<HANDLE>(static_cast<UINT_PTR>(ToColorRef(theme_.color(L"tooltip", L"normal", L"bg")))));
+    SetPropW(tooltip_, kTooltipTextProp, reinterpret_cast<HANDLE>(static_cast<UINT_PTR>(ToColorRef(theme_.color(L"tooltip", L"normal", L"text")))));
+    SetPropW(tooltip_, kTooltipBorderProp, reinterpret_cast<HANDLE>(static_cast<UINT_PTR>(ToColorRef(theme_.color(L"tooltip", L"normal", L"border")))));
+    SetPropW(tooltip_, kTooltipPaddingXProp, reinterpret_cast<HANDLE>(static_cast<UINT_PTR>(paddingX)));
+    SetPropW(tooltip_, kTooltipPaddingYProp, reinterpret_cast<HANDLE>(static_cast<UINT_PTR>(paddingY)));
+    SetPropW(tooltip_, kTooltipLineGapProp, reinterpret_cast<HANDLE>(static_cast<UINT_PTR>(lineGap)));
 }
 
 void MainWindow::HideLinkTooltip() {
     if (!tooltip_) {
         return;
     }
-    SendMessageW(tooltip_, TTM_TRACKACTIVATE, FALSE, reinterpret_cast<LPARAM>(&tooltipInfo_));
+    ShowWindow(tooltip_, SW_HIDE);
     tooltipLinkId_ = 0;
 }
 
 std::wstring MainWindow::LinkTooltipText(const Link& link) const {
-    std::wstring target = Trim(link.path);
-    if (!target.empty()) {
-        target = IsUrlLink(link) ? NormalizeUrl(target) : ExpandEnvironmentStringsSafe(target);
+    const std::wstring name = Trim(link.name);
+    std::wstring installLocation = Trim(link.path);
+    if (!installLocation.empty()) {
+        installLocation = IsUrlLink(link) ? NormalizeUrl(installLocation) : ExpandEnvironmentStringsSafe(installLocation);
     } else if (!Trim(link.workDir).empty()) {
-        target = ExpandEnvironmentStringsSafe(Trim(link.workDir));
-    } else {
-        target = Trim(link.name);
+        installLocation = ExpandEnvironmentStringsSafe(Trim(link.workDir));
     }
-
     const std::wstring remark = Trim(link.remark);
-    if (target.empty()) {
-        return remark;
+
+    std::wstring text;
+    if (!name.empty()) {
+        text += L"名称: " + name;
     }
-    if (remark.empty()) {
-        return target;
+    if (!installLocation.empty()) {
+        if (!text.empty()) {
+            text += L"\r\n";
+        }
+        text += L"安装位置: " + installLocation;
     }
-    return target + L"\r\n" + remark;
+    if (!remark.empty()) {
+        if (!text.empty()) {
+            text += L"\r\n";
+        }
+        text += remark;
+    }
+    return text;
 }
 
 void MainWindow::UpdateLinkTooltip(const HitArea& hit, POINT screenPoint) {
@@ -4412,13 +4548,43 @@ void MainWindow::UpdateLinkTooltip(const HitArea& hit, POINT screenPoint) {
 
     if (tooltipLinkId_ != hit.id || tooltipText_ != text) {
         tooltipText_ = text;
-        tooltipInfo_.lpszText = const_cast<LPWSTR>(tooltipText_.c_str());
-        SendMessageW(tooltip_, TTM_UPDATETIPTEXTW, 0, reinterpret_cast<LPARAM>(&tooltipInfo_));
+        SetWindowTextW(tooltip_, tooltipText_.c_str());
         tooltipLinkId_ = hit.id;
     }
 
-    SendMessageW(tooltip_, TTM_TRACKPOSITION, 0, MAKELPARAM(screenPoint.x + 14, screenPoint.y + 18));
-    SendMessageW(tooltip_, TTM_TRACKACTIVATE, TRUE, reinterpret_cast<LPARAM>(&tooltipInfo_));
+    HDC dc = GetDC(tooltip_);
+    HFONT font = reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
+    HFONT previousFont = reinterpret_cast<HFONT>(SelectObject(dc, font));
+    const int lineGap = WindowPropInt(tooltip_, kTooltipLineGapProp, 4);
+    const SIZE textSize = MeasureTooltipText(dc, tooltipText_, lineGap);
+    SelectObject(dc, previousFont);
+    ReleaseDC(tooltip_, dc);
+
+    const int paddingX = WindowPropInt(tooltip_, kTooltipPaddingXProp, 8);
+    const int paddingY = WindowPropInt(tooltip_, kTooltipPaddingYProp, 7);
+    int width = std::max(80, static_cast<int>(textSize.cx) + paddingX * 2);
+    int height = std::max(24, static_cast<int>(textSize.cy) + paddingY * 2);
+    int x = screenPoint.x + 14;
+    int y = screenPoint.y + 18;
+
+    HMONITOR monitor = MonitorFromPoint(screenPoint, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO monitorInfo{};
+    monitorInfo.cbSize = sizeof(monitorInfo);
+    if (GetMonitorInfoW(monitor, &monitorInfo)) {
+        if (x + width > monitorInfo.rcWork.right) {
+            x = screenPoint.x - width - 14;
+        }
+        if (y + height > monitorInfo.rcWork.bottom) {
+            y = screenPoint.y - height - 18;
+        }
+        x = std::max(static_cast<int>(monitorInfo.rcWork.left), x);
+        y = std::max(static_cast<int>(monitorInfo.rcWork.top), y);
+    }
+
+    SetWindowPos(tooltip_, HWND_TOPMOST, x, y, width, height, SWP_NOACTIVATE);
+    ShowWindow(tooltip_, SW_SHOWNA);
+    SetWindowPos(tooltip_, HWND_TOPMOST, x, y, width, height, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    InvalidateRect(tooltip_, nullptr, TRUE);
 }
 
 void MainWindow::ShowGroupMenu(int groupId, POINT screenPoint) {
@@ -4526,7 +4692,7 @@ void MainWindow::AppendThemeItemsToMenu(HMENU menu) {
     const std::size_t count = std::min<std::size_t>(themeItems.size(), 100);
     for (std::size_t i = 0; i < count; ++i) {
         const UINT flags = MF_STRING | (effectiveTheme == themeItems[i].name ? MF_CHECKED : 0);
-        AppendThemedMenuItem(menu, flags, ID_MENU_THEME_BASE + static_cast<UINT>(i), themeItems[i].label);
+        AppendThemedMenuItem(menu, flags, ID_MENU_THEME_BASE + static_cast<UINT>(i), themeItems[i].label, false, -1, -1, MenuIconTheme, true);
     }
 }
 
@@ -4946,25 +5112,20 @@ void MainWindow::DrawGroups(D2D1_RECT_F rect) {
 
     FillRect(rect, theme_.color(L"majorNav", L"normal", L"bg"));
     const bool vertical = Height(rect) > Width(rect);
-    if (vertical) {
-        FillRect(D2D1::RectF(rect.left, rect.top, rect.left + 1.0f, rect.bottom), theme_.color(L"majorNav", L"normal", L"line"));
-    } else {
-        FillRect(D2D1::RectF(rect.left, rect.bottom - 1.0f, rect.right, rect.bottom), theme_.color(L"majorNav", L"normal", L"line"));
-    }
+    DrawTabGroupFrame(rect);
 
     renderTarget_->PushAxisAlignedClip(rect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-    const float itemOffsetX = Metric(theme_, L"majorNavItem", L"offsetX", 4.0f);
-    const float itemMinWidth = Metric(theme_, L"majorNavItem", L"minWidth", 72.0f);
-    const float itemMaxWidth = Metric(theme_, L"majorNavItem", L"maxWidth", 128.0f);
-    const float itemWidthAdjust = Metric(theme_, L"majorNavItem", L"widthAdjust", -14.0f);
-    const float textInsetX = Metric(theme_, L"majorNavItem", L"textInsetX", 10.0f);
+    const float groupPadding = Metric(theme_, L"tabButton", L"groupPadding", 3.0f);
+    const float itemOffsetX = groupPadding;
     if (vertical) {
-        const float topInset = Metric(theme_, L"majorNavItem", L"verticalTopInset", 2.0f);
-        const float itemHeight = Metric(theme_, L"majorNavItem", L"verticalHeight", 32.0f);
-        const float itemGap = Metric(theme_, L"majorNavItem", L"verticalGap", 2.0f);
+        const float topInset = groupPadding;
+        const float itemHeight = Metric(theme_, L"tabButton", L"height", Metric(theme_, L"majorNavItem", L"verticalHeight", 32.0f));
+        const float itemGap = Metric(theme_, L"tabButton", L"groupGap", 0.0f);
+        const float leftInset = groupPadding;
         float y = rect.top + topInset - groupScrollOffset_;
+        bool firstVisible = true;
         for (const auto& group : MajorGroups()) {
-            D2D1_RECT_F item = D2D1::RectF(rect.left, y, rect.right, y + itemHeight);
+            D2D1_RECT_F item = D2D1::RectF(rect.left + leftInset, y, rect.right - groupPadding, y + itemHeight);
             if (item.bottom < rect.top + topInset) {
                 y += itemHeight + itemGap;
                 continue;
@@ -4972,18 +5133,15 @@ void MainWindow::DrawGroups(D2D1_RECT_F rect) {
             if (item.top > rect.bottom - 2.0f) {
                 break;
             }
+            if (!firstVisible) {
+                DrawTabGroupSeparator(D2D1::RectF(rect.left, item.top, rect.right, item.top), false);
+            }
             const bool selected = group.id == currentGroupId_;
             const bool hovered = IsHover(HitKind::Group, group.id);
-            if (selected) {
-                FillRect(item, theme_.color(L"majorNavItem", L"selected", L"bg"));
-            } else if (hovered) {
-                FillRect(item, theme_.color(L"majorNavItem", L"hover", L"bg"));
-            }
-            textFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
-            textFormat_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
-            DrawTextBlock(group.name, textFormat_, Inset(item, textInsetX, 0.0f), theme_.color(L"majorNavItem", selected ? L"selected" : L"normal", L"text"));
+            DrawTabGroupItem(item, group.name, selected, hovered, textFormat_);
             hitAreas_.push_back(HitArea{HitKind::Group, group.id, IntersectRectF(item, rect)});
             y += itemHeight + itemGap;
+            firstVisible = false;
         }
         renderTarget_->PopAxisAlignedClip();
         DrawScrollBar(rect, groupScrollOffset_, MaxGroupScrollOffset(rect), false);
@@ -4991,10 +5149,12 @@ void MainWindow::DrawGroups(D2D1_RECT_F rect) {
     }
 
     float x = rect.left + itemOffsetX - groupScrollOffset_;
-    const float y = rect.top;
-    const float itemHeight = Height(rect) - 1.0f;
+    const float itemHeight = Metric(theme_, L"tabButton", L"height", 30.0f);
+    const float y = rect.top + std::max(0.0f, (Height(rect) - itemHeight) * 0.5f);
+    const float itemGap = Metric(theme_, L"tabButton", L"groupGap", 0.0f);
+    bool firstVisible = true;
     for (const auto& group : MajorGroups()) {
-        const float itemWidth = std::max(itemMinWidth, std::min(itemMaxWidth, NavigationItemWidth(theme_, group.name) + itemWidthAdjust));
+        const float itemWidth = TabGroupItemWidth(theme_, group.name, textFormat_, MeasureTextWidth(group.name, textFormat_));
         D2D1_RECT_F item = D2D1::RectF(x, y, x + itemWidth, y + itemHeight);
         if (item.right < rect.left + 2.0f) {
             x += itemWidth;
@@ -5003,18 +5163,15 @@ void MainWindow::DrawGroups(D2D1_RECT_F rect) {
         if (item.left > rect.right - 2.0f) {
             break;
         }
+        if (!firstVisible) {
+            DrawTabGroupSeparator(D2D1::RectF(item.left, rect.top, item.left, rect.bottom), true);
+        }
         const bool selected = group.id == currentGroupId_;
         const bool hovered = IsHover(HitKind::Group, group.id);
-        if (group.id == currentGroupId_) {
-            FillRect(item, theme_.color(L"majorNavItem", L"selected", L"bg"));
-        } else if (hovered) {
-            FillRect(item, theme_.color(L"majorNavItem", L"hover", L"bg"));
-        }
-        textFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
-        textFormat_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
-        DrawTextBlock(group.name, textFormat_, Inset(item, textInsetX, 0.0f), theme_.color(L"majorNavItem", selected ? L"selected" : L"normal", L"text"));
+        DrawTabGroupItem(item, group.name, selected, hovered, textFormat_);
         hitAreas_.push_back(HitArea{HitKind::Group, group.id, IntersectRectF(item, rect)});
-        x += itemWidth;
+        x += itemWidth + itemGap;
+        firstVisible = false;
     }
     renderTarget_->PopAxisAlignedClip();
     DrawScrollBar(rect, groupScrollOffset_, MaxGroupScrollOffset(rect), true);
@@ -5026,11 +5183,7 @@ void MainWindow::DrawTags(D2D1_RECT_F rect) {
     }
 
     FillRect(rect, theme_.color(L"minorNav", L"normal", L"bg"));
-    if (config_.tagRight) {
-        FillRect(D2D1::RectF(rect.left, rect.top, rect.left + 1.0f, rect.bottom), theme_.color(L"minorNav", L"normal", L"line"));
-    } else {
-        FillRect(D2D1::RectF(rect.right - 1.0f, rect.top, rect.right, rect.bottom), theme_.color(L"minorNav", L"normal", L"line"));
-    }
+    DrawTabGroupFrame(rect);
 
     if (config_.tagAlign == L"right") {
         textFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING);
@@ -5042,15 +5195,14 @@ void MainWindow::DrawTags(D2D1_RECT_F rect) {
     textFormat_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
 
     renderTarget_->PushAxisAlignedClip(rect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-    const float topInset = Metric(theme_, L"minorNavItem", L"topInset", 2.0f);
-    const float itemHeight = Metric(theme_, L"minorNavItem", L"height", 32.0f);
-    const float itemGap = Metric(theme_, L"minorNavItem", L"gap", 2.0f);
-    const float textInsetX = Metric(theme_, L"minorNavItem", L"textInsetX", 10.0f);
-    const float accentWidth = Metric(theme_, L"minorNavItem", L"accentWidth", 3.0f);
-    const float accentInsetY = Metric(theme_, L"minorNavItem", L"accentInsetY", 3.0f);
+    const float groupPadding = Metric(theme_, L"tabButton", L"groupPadding", 3.0f);
+    const float topInset = groupPadding;
+    const float itemHeight = Metric(theme_, L"tabButton", L"height", Metric(theme_, L"minorNavItem", L"height", 32.0f));
+    const float itemGap = Metric(theme_, L"tabButton", L"groupGap", 0.0f);
     float y = rect.top + topInset - tagScrollOffset_;
+    bool firstVisible = true;
     for (const auto& tag : TagsForCurrentGroup()) {
-        D2D1_RECT_F item = D2D1::RectF(rect.left, y, rect.right, y + itemHeight);
+        D2D1_RECT_F item = D2D1::RectF(rect.left + groupPadding, y, rect.right - groupPadding, y + itemHeight);
         if (item.bottom < rect.top + topInset) {
             y += itemHeight + itemGap;
             continue;
@@ -5058,24 +5210,64 @@ void MainWindow::DrawTags(D2D1_RECT_F rect) {
         if (item.top > rect.bottom - 2.0f) {
             break;
         }
+        if (!firstVisible) {
+            DrawTabGroupSeparator(D2D1::RectF(rect.left, item.top, rect.right, item.top), false);
+        }
         const bool selected = tag.id == currentTagId_;
         const bool hovered = IsHover(HitKind::Tag, tag.id);
-        if (selected) {
-            FillRect(item, theme_.color(L"minorNavItem", L"selected", L"bg"));
-            if (config_.tagRight) {
-                FillRect(D2D1::RectF(item.right - accentWidth, item.top + accentInsetY, item.right, item.bottom - accentInsetY), theme_.color(L"minorNavItem", L"selected", L"accent"));
-            } else {
-                FillRect(D2D1::RectF(item.left, item.top + accentInsetY, item.left + accentWidth, item.bottom - accentInsetY), theme_.color(L"minorNavItem", L"selected", L"accent"));
-            }
-        } else if (hovered) {
-            FillRect(item, theme_.color(L"minorNavItem", L"hover", L"bg"));
-        }
-        DrawTextBlock(tag.name, textFormat_, Inset(item, textInsetX, 0.0f), theme_.color(L"minorNavItem", selected ? L"selected" : L"normal", L"text"));
+        DrawTabGroupItem(item, tag.name, selected, hovered, textFormat_);
         hitAreas_.push_back(HitArea{HitKind::Tag, tag.id, IntersectRectF(item, rect)});
         y += itemHeight + itemGap;
+        firstVisible = false;
     }
     renderTarget_->PopAxisAlignedClip();
     DrawScrollBar(rect, tagScrollOffset_, MaxTagScrollOffset(rect), false);
+}
+
+void MainWindow::DrawTabGroupFrame(D2D1_RECT_F rect) {
+    if (Width(rect) <= 0.0f || Height(rect) <= 0.0f) {
+        return;
+    }
+    const float radius = Metric(theme_, L"tabButton", L"groupRadius", 10.0f);
+    const float borderWidth = Metric(theme_, L"tabButton", L"groupBorderWidth", 1.0f);
+    if (borderWidth <= 0.0f) {
+        FillRect(rect, theme_.color(L"tabButton", L"normal", L"groupBg"));
+        return;
+    }
+    const D2D1_RECT_F frame = Inset(rect, borderWidth * 0.5f, borderWidth * 0.5f);
+    FillRoundedRect(frame, theme_.color(L"tabButton", L"normal", L"groupBg"), radius);
+    DrawRoundedRect(frame, theme_.color(L"tabButton", L"normal", L"groupBorder"), radius, borderWidth);
+}
+
+void MainWindow::DrawTabGroupItem(D2D1_RECT_F rect, const std::wstring& text, bool selected, bool hovered, IDWriteTextFormat* format) {
+    const wchar_t* state = selected ? (hovered ? L"selectedHover" : L"selected") : (hovered ? L"hover" : L"normal");
+    const float inset = theme_.metric(L"tabButton", L"segmented", 0.0f) > 0.5f
+        ? Metric(theme_, L"tabButton", L"segmentInset", 2.0f)
+        : 0.0f;
+    const D2D1_RECT_F segment = Inset(rect, inset, inset);
+    const float radius = Metric(theme_, L"tabButton", L"radius", 8.0f);
+    const float borderWidth = Metric(theme_, L"tabButton", L"borderWidth", 1.0f);
+    FillRoundedRect(segment, theme_.color(L"tabButton", state, L"bg"), radius);
+    DrawRoundedRect(segment, theme_.color(L"tabButton", state, L"border"), radius, borderWidth);
+
+    format->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+    format->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+    const float paddingX = Metric(theme_, L"tabButton", L"paddingX", 12.0f);
+    DrawTextBlock(text, format, Inset(rect, paddingX, 0.0f), theme_.color(L"tabButton", state, L"text"));
+}
+
+void MainWindow::DrawTabGroupSeparator(const D2D1_RECT_F& rect, bool horizontal) {
+    const float width = Metric(theme_, L"tabButton", L"groupBorderWidth", 1.0f);
+    if (width <= 0.0f) {
+        return;
+    }
+    if (horizontal) {
+        const float half = width * 0.5f;
+        FillRect(D2D1::RectF(rect.left - half, rect.top, rect.left + half, rect.bottom), theme_.color(L"tabButton", L"normal", L"groupBorder"));
+    } else {
+        const float half = width * 0.5f;
+        FillRect(D2D1::RectF(rect.left, rect.top - half, rect.right, rect.top + half), theme_.color(L"tabButton", L"normal", L"groupBorder"));
+    }
 }
 
 void MainWindow::DrawLinks(D2D1_RECT_F rect) {
@@ -5226,11 +5418,13 @@ void MainWindow::DrawTodoItems(D2D1_RECT_F rect, const Group&) {
 
     const float paddingX = Metric(theme_, L"linkItem", L"viewportPaddingX", 16.0f);
     const float paddingY = Metric(theme_, L"list", L"paddingY", 6.0f);
-    const float rowHeight = std::max(54.0f, Metric(theme_, L"listItem", L"height", 28.0f) + 24.0f);
-    const float rowGap = Metric(theme_, L"linkItem", L"listGapY", 2.0f);
-    const float checkboxSize = Metric(theme_, L"checkbox", L"boxSize", 16.0f);
-    const float checkboxLeft = Metric(theme_, L"listItem", L"paddingX", 8.0f);
-    const float textLeftGap = 10.0f;
+    const float rowHeight = std::max(64.0f, Metric(theme_, L"listItem", L"height", 28.0f) + 36.0f);
+    const float rowGap = std::max(4.0f, Metric(theme_, L"linkItem", L"listGapY", 2.0f));
+    const float contentInsetX = std::max(14.0f, Metric(theme_, L"listItem", L"paddingX", 8.0f));
+    const float dotRadius = 4.0f;
+    const float dotRightInset = 16.0f;
+    const float tagHeight = 20.0f;
+    const float tagGap = 6.0f;
 
     renderTarget_->PushAxisAlignedClip(rect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
     float y = rect.top + paddingY - linkScrollOffset_;
@@ -5250,57 +5444,79 @@ void MainWindow::DrawTodoItems(D2D1_RECT_F rect, const Group&) {
         const bool done = !item.completedAt.empty();
         const bool disabled = !item.enabled;
         const bool overdue = IsTodoOverdue(item);
-        const wchar_t* state = selected ? L"selected" : (hovered ? L"hover" : L"normal");
-        FillRoundedRect(row, theme_.color(L"listItem", state, L"bg"), Metric(theme_, L"list", L"radius", 7.0f));
-        if (overdue) {
-            FillRect(D2D1::RectF(row.left, row.top + 6.0f, row.left + 3.0f, row.bottom - 6.0f), theme_.color(L"edit", L"error", L"border"));
+        const bool recurring = IsRecurringTodoSchedule(item.scheduleKind);
+        TodoVisualStyle style{};
+        if (disabled) {
+            style = {RgbColor(232, 235, 240), RgbColor(162, 171, 185), RgbColor(105, 113, 126), RgbColor(139, 146, 158), RgbColor(213, 218, 226), RgbColor(82, 91, 105)};
+        } else if (done) {
+            style = {RgbColor(230, 240, 232), RgbColor(142, 189, 153), RgbColor(78, 105, 84), RgbColor(92, 152, 108), RgbColor(207, 226, 211), RgbColor(63, 113, 75)};
+        } else if (overdue) {
+            style = {RgbColor(255, 233, 227), RgbColor(214, 104, 91), RgbColor(117, 38, 30), RgbColor(220, 61, 65), RgbColor(248, 205, 197), RgbColor(166, 31, 22)};
+        } else if (recurring) {
+            style = {RgbColor(225, 244, 234), RgbColor(118, 196, 151), RgbColor(24, 84, 54), RgbColor(32, 157, 99), RgbColor(199, 234, 214), RgbColor(25, 115, 70)};
+        } else if (item.scheduleKind == TodoScheduleKind::Once || !item.nextDueAt.empty()) {
+            style = {RgbColor(229, 240, 255), RgbColor(111, 163, 235), RgbColor(29, 70, 126), RgbColor(48, 117, 225), RgbColor(204, 224, 252), RgbColor(31, 91, 158)};
+        } else {
+            style = {RgbColor(237, 241, 246), RgbColor(163, 175, 191), RgbColor(62, 73, 88), RgbColor(130, 142, 158), RgbColor(219, 225, 234), RgbColor(78, 90, 108)};
         }
 
-        D2D1_RECT_F box = D2D1::RectF(
-            row.left + checkboxLeft,
-            row.top + (rowHeight - checkboxSize) * 0.5f,
-            row.left + checkboxLeft + checkboxSize,
-            row.top + (rowHeight - checkboxSize) * 0.5f + checkboxSize);
-        const wchar_t* checkboxState = done ? L"checked" : L"normal";
-        FillRoundedRect(box, theme_.color(L"checkbox", checkboxState, L"boxBg"), Metric(theme_, L"checkbox", L"radius", 4.0f));
-        DrawRoundedRect(box, theme_.color(L"checkbox", checkboxState, L"border"), Metric(theme_, L"checkbox", L"radius", 4.0f));
-        if (done) {
-            ID2D1SolidColorBrush* brush = nullptr;
-            renderTarget_->CreateSolidColorBrush(theme_.color(L"checkbox", L"checked", L"mark").d2d(), &brush);
-            if (brush) {
-                renderTarget_->DrawLine(D2D1::Point2F(box.left + 4.0f, box.top + 8.0f), D2D1::Point2F(box.left + 7.0f, box.bottom - 4.0f), brush, 2.0f);
-                renderTarget_->DrawLine(D2D1::Point2F(box.left + 7.0f, box.bottom - 4.0f), D2D1::Point2F(box.right - 3.0f, box.top + 4.0f), brush, 2.0f);
-                brush->Release();
-            }
+        const float radius = Metric(theme_, L"list", L"radius", 7.0f);
+        FillRoundedRect(row, style.bg, radius);
+        DrawRoundedRect(row, selected ? theme_.color(L"linkItem", L"selected", L"accent") : style.border, radius, selected ? 1.4f : 1.0f);
+        if (hovered && !selected) {
+            DrawRoundedRect(Inset(row, 1.0f, 1.0f), theme_.color(L"listItem", L"hover", L"bg"), std::max(0.0f, radius - 1.0f), 1.0f);
         }
 
-        const float textLeft = box.right + textLeftGap;
-        D2D1_RECT_F titleRect = D2D1::RectF(textLeft, row.top + 7.0f, row.right - 8.0f, row.top + 27.0f);
-        D2D1_RECT_F detailRect = D2D1::RectF(textLeft, row.top + 29.0f, row.right - 8.0f, row.bottom - 6.0f);
+        const float dotCx = row.right - dotRightInset;
+        const float titleRight = dotCx - dotRadius - 12.0f;
+        FillEllipse(dotCx, row.top + 22.0f, dotRadius, style.dot);
+
+        D2D1_RECT_F titleRect = D2D1::RectF(row.left + contentInsetX, row.top + 9.0f, titleRight, row.top + 30.0f);
         textFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
         textFormat_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
         smallFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
         smallFormat_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
 
-        const Color titleColor = (done || disabled) ? theme_.color(L"linkItem", L"disabled", L"text") : theme_.color(L"listItem", selected ? L"selected" : L"normal", L"text");
-        DrawTextBlock(item.title, textFormat_, titleRect, titleColor);
+        DrawTextBlock(item.title, textFormat_, titleRect, style.title);
 
-        std::wstring detail;
+        std::vector<std::wstring> tags;
         if (disabled) {
-            detail = L"已禁用";
+            tags.push_back(L"已禁用");
+        } else if (done) {
+            tags.push_back(L"已完成");
+        } else if (overdue) {
+            tags.push_back(L"已逾期");
+        }
+        if (recurring) {
+            tags.push_back(L"重复");
+        } else if (item.scheduleKind == TodoScheduleKind::Once || !item.nextDueAt.empty()) {
+            tags.push_back(L"一次性");
+        } else {
+            tags.push_back(L"无时间");
+        }
+        const std::wstring scheduleText = TodoScheduleText(item.scheduleKind);
+        if (recurring) {
+            tags.push_back(scheduleText);
         }
         if (!item.nextDueAt.empty()) {
-            if (!detail.empty()) {
-                detail += L" · ";
+            tags.push_back(item.nextDueAt);
+        }
+
+        float tagX = row.left + contentInsetX;
+        const float tagY = row.top + 36.0f;
+        const float tagRight = row.right - contentInsetX;
+        for (const auto& tagText : tags) {
+            const float desiredWidth = std::min(150.0f, std::max(34.0f, MeasureTextWidth(tagText, smallFormat_) + 16.0f));
+            const float availableWidth = tagRight - tagX;
+            if (availableWidth < 34.0f) {
+                break;
             }
-            detail += TodoScheduleText(item.scheduleKind) + L" · " + item.nextDueAt;
-        } else if (detail.empty()) {
-            detail = TodoScheduleText(item.scheduleKind);
+            const float tagWidth = std::min(desiredWidth, availableWidth);
+            const D2D1_RECT_F tagRect = D2D1::RectF(tagX, tagY, tagX + tagWidth, tagY + tagHeight);
+            FillRoundedRect(tagRect, style.tagBg, 4.0f);
+            DrawTextBlock(tagText, smallFormat_, Inset(tagRect, 8.0f, 1.0f), style.tagText);
+            tagX += tagWidth + tagGap;
         }
-        if (!Trim(item.content).empty()) {
-            detail += L" · " + Trim(item.content);
-        }
-        DrawTextBlock(detail, smallFormat_, detailRect, done ? theme_.color(L"linkItem", L"normal", L"subtext") : theme_.color(L"linkItem", L"normal", L"subtext"));
         hitAreas_.push_back(HitArea{HitKind::Todo, item.id, IntersectRectF(row, rect)});
     }
     renderTarget_->PopAxisAlignedClip();
@@ -5429,6 +5645,17 @@ void MainWindow::DrawRoundedRect(const D2D1_RECT_F& rect, const Color& color, fl
     }
 }
 
+void MainWindow::FillEllipse(float cx, float cy, float radius, const Color& color) {
+    if (radius <= 0.0f) {
+        return;
+    }
+    ID2D1SolidColorBrush* brush = nullptr;
+    if (SUCCEEDED(renderTarget_->CreateSolidColorBrush(color.d2d(), &brush)) && brush) {
+        renderTarget_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), radius, radius), brush);
+        brush->Release();
+    }
+}
+
 void MainWindow::DrawScrollBar(const D2D1_RECT_F& rect, float offset, float maxOffset, bool horizontal) {
     if (maxOffset <= 0.5f || Width(rect) <= 0 || Height(rect) <= 0) {
         return;
@@ -5459,6 +5686,29 @@ void MainWindow::DrawScrollBar(const D2D1_RECT_F& rect, float offset, float maxO
     FillRoundedRect(thumb, theme_.color(L"scrollbar", L"normal", L"thumb"), thickness * 0.5f);
 }
 
+float MainWindow::MeasureTextWidth(const std::wstring& text, IDWriteTextFormat* format, float maxWidth) const {
+    if (text.empty() || !format || !dwriteFactory_) {
+        return 0.0f;
+    }
+    IDWriteTextLayout* layout = nullptr;
+    float width = 0.0f;
+    if (SUCCEEDED(dwriteFactory_->CreateTextLayout(
+            text.c_str(),
+            static_cast<UINT32>(text.size()),
+            format,
+            std::max(1.0f, maxWidth),
+            32.0f,
+            &layout)) &&
+        layout) {
+        DWRITE_TEXT_METRICS metrics{};
+        if (SUCCEEDED(layout->GetMetrics(&metrics))) {
+            width = metrics.widthIncludingTrailingWhitespace;
+        }
+        layout->Release();
+    }
+    return width;
+}
+
 void MainWindow::DrawTextBlock(const std::wstring& text, IDWriteTextFormat* format, const D2D1_RECT_F& rect, const Color& color) {
     if (text.empty() || !format) {
         return;
@@ -5474,7 +5724,7 @@ void MainWindow::ResetMenuVisuals() {
     activeMenuItems_.clear();
 }
 
-void MainWindow::AppendThemedMenuItem(HMENU menu, UINT flags, UINT_PTR id, const std::wstring& text, bool submenu, int systemImageIndex, int stockIcon, int menuIcon) {
+void MainWindow::AppendThemedMenuItem(HMENU menu, UINT flags, UINT_PTR id, const std::wstring& text, bool submenu, int systemImageIndex, int stockIcon, int menuIcon, bool checkedIconAccent) {
     auto item = std::make_unique<MenuItemData>();
     item->text = MenuTextFromRaw(text);
     item->icon = menuIcon != MenuIconNone ? menuIcon : MenuIconFor(id, item->text);
@@ -5483,13 +5733,18 @@ void MainWindow::AppendThemedMenuItem(HMENU menu, UINT flags, UINT_PTR id, const
     item->checked = (flags & MF_CHECKED) != 0;
     item->disabled = (flags & (MF_DISABLED | MF_GRAYED)) != 0;
     item->submenu = submenu || ((flags & MF_POPUP) != 0);
+    item->checkedIconAccent = checkedIconAccent;
     MenuItemData* raw = item.get();
     activeMenuItems_.push_back(std::move(item));
     AppendMenuW(menu, (flags | MF_OWNERDRAW) & ~MF_STRING, id, reinterpret_cast<LPCWSTR>(raw));
 }
 
 void MainWindow::AppendThemedSeparator(HMENU menu) {
-    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    auto item = std::make_unique<MenuItemData>();
+    item->separator = true;
+    MenuItemData* raw = item.get();
+    activeMenuItems_.push_back(std::move(item));
+    AppendMenuW(menu, MF_SEPARATOR | MF_OWNERDRAW, 0, reinterpret_cast<LPCWSTR>(raw));
 }
 
 bool MainWindow::MeasureThemedMenuItem(MEASUREITEMSTRUCT* measure) {
@@ -5497,6 +5752,12 @@ bool MainWindow::MeasureThemedMenuItem(MEASUREITEMSTRUCT* measure) {
         return false;
     }
     const auto* item = reinterpret_cast<const MenuItemData*>(measure->itemData);
+    if (item->separator) {
+        const int thickness = static_cast<int>(std::max(1.0f, Metric(theme_, L"separator", L"thickness", 1.0f)));
+        measure->itemHeight = static_cast<UINT>(std::max(5, thickness + 8));
+        measure->itemWidth = static_cast<UINT>(Metric(theme_, L"menuItem", L"widthBase", 54.0f) + Metric(theme_, L"menuItem", L"minTextWidth", 64.0f));
+        return true;
+    }
     const int textLength = static_cast<int>(item->text.size());
     measure->itemHeight = static_cast<UINT>(Metric(theme_, L"menuItem", L"height", 30.0f));
     const int minTextWidth = static_cast<int>(Metric(theme_, L"menuItem", L"minTextWidth", 64.0f));
@@ -5515,9 +5776,28 @@ bool MainWindow::DrawThemedMenuItem(const DRAWITEMSTRUCT* draw) {
     const auto* item = reinterpret_cast<const MenuItemData*>(draw->itemData);
     RECT rc = draw->rcItem;
     HDC dc = draw->hDC;
+    const Color background = theme_.color(L"menu", L"normal", L"bg");
+
+    if (item->separator) {
+        HBRUSH backgroundBrush = CreateSolidBrush(ToColorRef(background));
+        ::FillRect(dc, &rc, backgroundBrush);
+        DeleteObject(backgroundBrush);
+
+        const int inset = static_cast<int>(std::max(0.0f, Metric(theme_, L"separator", L"inset", 0.0f)));
+        const int thickness = static_cast<int>(std::max(1.0f, Metric(theme_, L"separator", L"thickness", 1.0f)));
+        RECT lineRect{
+            rc.left + inset,
+            rc.top + ((rc.bottom - rc.top) - thickness) / 2,
+            rc.right - inset,
+            rc.top + ((rc.bottom - rc.top) - thickness) / 2 + thickness};
+        HBRUSH lineBrush = CreateSolidBrush(ToColorRef(theme_.color(L"separator", L"normal", L"line")));
+        ::FillRect(dc, &lineRect, lineBrush);
+        DeleteObject(lineBrush);
+        return true;
+    }
+
     const bool selected = (draw->itemState & ODS_SELECTED) != 0;
 
-    const Color background = theme_.color(L"menu", L"normal", L"bg");
     const Color hover = selected ? theme_.color(L"menuItem", L"hover", L"bg") : background;
     HBRUSH backgroundBrush = CreateSolidBrush(ToColorRef(hover));
     ::FillRect(dc, &rc, backgroundBrush);
@@ -5535,35 +5815,52 @@ bool MainWindow::DrawThemedMenuItem(const DRAWITEMSTRUCT* draw) {
     const int iconTopInset = static_cast<int>(Metric(theme_, L"menuItem", L"iconInsetY", 6.0f));
     const int iconSize = static_cast<int>(Metric(theme_, L"menuItem", L"iconSize", 16.0f));
     const RECT iconRect{rc.left + iconLeft, rc.top + iconTopInset, rc.left + iconLeft + iconSize, rc.bottom - iconTopInset};
+    const COLORREF iconColorRef = item->checkedIconAccent
+        ? ToColorRef(theme_.color(L"menuItem", item->checked ? L"checked" : (item->disabled ? L"disabled" : L"normal"), L"icon"))
+        : CLR_INVALID;
     if (item->stockIcon >= 0) {
         if (!DrawStockMenuIcon(dc, iconRect, static_cast<SHSTOCKICONID>(item->stockIcon)) &&
             !DrawSystemImageListIcon(dc, iconRect, item->systemImageIndex, item->disabled)) {
-            DrawMenuIcon(dc, iconRect, item->icon, item->disabled, appDirectory_);
+            DrawMenuIcon(dc, iconRect, item->icon, item->disabled, iconColorRef, appDirectory_);
         }
     } else if (item->systemImageIndex >= 0) {
         if (!DrawSystemImageListIcon(dc, iconRect, item->systemImageIndex, item->disabled)) {
-            DrawMenuIcon(dc, iconRect, item->icon, item->disabled, appDirectory_);
+            DrawMenuIcon(dc, iconRect, item->icon, item->disabled, iconColorRef, appDirectory_);
         }
     } else {
-        DrawMenuIcon(dc, iconRect, item->icon, item->disabled, appDirectory_);
+        DrawMenuIcon(dc, iconRect, item->icon, item->disabled, iconColorRef, appDirectory_);
     }
 
     if (item->checked) {
-        HBRUSH dotBrush = CreateSolidBrush(ToColorRef(theme_.color(L"menuItem", L"checked", L"mark")));
-        HGDIOBJ oldBrush = SelectObject(dc, dotBrush);
-        HPEN dotPen = CreatePen(PS_SOLID, 1, ToColorRef(theme_.color(L"menuItem", L"checked", L"mark")));
-        HGDIOBJ oldPen = SelectObject(dc, dotPen);
-        const int dotCenterY = (rc.top + rc.bottom) / 2;
-        Ellipse(dc, rc.left + 3, dotCenterY - 2, rc.left + 7, dotCenterY + 2);
-        SelectObject(dc, oldPen);
-        SelectObject(dc, oldBrush);
-        DeleteObject(dotPen);
-        DeleteObject(dotBrush);
+        if (item->checkedIconAccent) {
+            HPEN checkPen = CreatePen(PS_SOLID, static_cast<int>(Metric(theme_, L"menuItem", L"checkMarkWidth", 2.0f)), ToColorRef(theme_.color(L"menuItem", L"checked", L"mark")));
+            HGDIOBJ oldPen = SelectObject(dc, checkPen);
+            const int dotCenterY = (rc.top + rc.bottom) / 2;
+            const int checkRight = rc.right - static_cast<int>(Metric(theme_, L"menuItem", L"checkRight", 10.0f));
+            const int checkWidth = static_cast<int>(Metric(theme_, L"menuItem", L"checkWidth", 9.0f));
+            const int checkHeight = static_cast<int>(Metric(theme_, L"menuItem", L"checkHeight", 7.0f));
+            MoveToEx(dc, checkRight - checkWidth, dotCenterY - 1, nullptr);
+            LineTo(dc, checkRight - checkWidth / 2 - 1, dotCenterY + checkHeight / 2);
+            LineTo(dc, checkRight, dotCenterY - checkHeight / 2);
+            SelectObject(dc, oldPen);
+            DeleteObject(checkPen);
+        } else {
+            HBRUSH dotBrush = CreateSolidBrush(ToColorRef(theme_.color(L"menuItem", L"checked", L"mark")));
+            HGDIOBJ oldBrush = SelectObject(dc, dotBrush);
+            HPEN dotPen = CreatePen(PS_SOLID, 1, ToColorRef(theme_.color(L"menuItem", L"checked", L"mark")));
+            HGDIOBJ oldPen = SelectObject(dc, dotPen);
+            const int dotCenterY = (rc.top + rc.bottom) / 2;
+            Ellipse(dc, rc.left + 3, dotCenterY - 2, rc.left + 7, dotCenterY + 2);
+            SelectObject(dc, oldPen);
+            SelectObject(dc, oldBrush);
+            DeleteObject(dotPen);
+            DeleteObject(dotBrush);
+        }
     }
 
     RECT textRect = rc;
     textRect.left += static_cast<int>(Metric(theme_, L"menuItem", L"textLeft", 34.0f));
-    textRect.right -= item->submenu ? static_cast<int>(Metric(theme_, L"menuItem", L"submenuRight", 22.0f)) : static_cast<int>(Metric(theme_, L"menuItem", L"textRight", 8.0f));
+    textRect.right -= item->submenu ? static_cast<int>(Metric(theme_, L"menuItem", L"submenuRight", 22.0f)) : static_cast<int>(Metric(theme_, L"menuItem", item->checked && item->checkedIconAccent ? L"checkedTextRight" : L"textRight", item->checked && item->checkedIconAccent ? 28.0f : 8.0f));
     SetBkMode(dc, TRANSPARENT);
     SetTextColor(dc, ToColorRef(theme_.color(L"menuItem", item->disabled ? L"disabled" : L"normal", L"text")));
     HFONT font = reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
@@ -5640,24 +5937,27 @@ float MainWindow::MaxGroupScrollOffset(const D2D1_RECT_F& rect) const {
 
     if (Height(rect) > Width(rect)) {
         const auto groups = MajorGroups();
-        const float itemHeight = Metric(theme_, L"majorNavItem", L"verticalHeight", 32.0f);
-        const float itemGap = Metric(theme_, L"majorNavItem", L"verticalGap", 2.0f);
-        const float topInset = Metric(theme_, L"majorNavItem", L"verticalTopInset", 2.0f);
-        const float bottomInset = Metric(theme_, L"majorNavItem", L"verticalBottomInset", 2.0f);
+        const float groupPadding = Metric(theme_, L"tabButton", L"groupPadding", 3.0f);
+        const float itemHeight = Metric(theme_, L"tabButton", L"height", Metric(theme_, L"majorNavItem", L"verticalHeight", 32.0f));
+        const float itemGap = Metric(theme_, L"tabButton", L"groupGap", 0.0f);
+        const float topInset = groupPadding;
+        const float bottomInset = groupPadding;
         const float contentHeight = topInset + bottomInset + static_cast<float>(groups.size()) * itemHeight
             + static_cast<float>(groups.empty() ? 0 : groups.size() - 1) * itemGap;
         return std::max(0.0f, contentHeight - Height(rect));
     }
 
-    const float itemOffsetX = Metric(theme_, L"majorNavItem", L"offsetX", 4.0f);
-    const float contentRightPadding = Metric(theme_, L"majorNavItem", L"contentRightPadding", 4.0f);
-    const float itemMinWidth = Metric(theme_, L"majorNavItem", L"minWidth", 72.0f);
-    const float itemMaxWidth = Metric(theme_, L"majorNavItem", L"maxWidth", 128.0f);
-    const float itemWidthAdjust = Metric(theme_, L"majorNavItem", L"widthAdjust", -14.0f);
+    const float groupPadding = Metric(theme_, L"tabButton", L"groupPadding", 3.0f);
+    const float itemOffsetX = groupPadding;
+    const float contentRightPadding = groupPadding;
+    const float itemGap = Metric(theme_, L"tabButton", L"groupGap", 0.0f);
     float contentWidth = itemOffsetX + contentRightPadding;
     const auto groups = MajorGroups();
     for (const auto& group : groups) {
-        contentWidth += std::max(itemMinWidth, std::min(itemMaxWidth, NavigationItemWidth(theme_, group.name) + itemWidthAdjust));
+        contentWidth += TabGroupItemWidth(theme_, group.name, textFormat_, MeasureTextWidth(group.name, textFormat_)) + itemGap;
+    }
+    if (!groups.empty()) {
+        contentWidth -= itemGap;
     }
     return std::max(0.0f, contentWidth - Width(rect));
 }
@@ -5668,11 +5968,13 @@ float MainWindow::MaxTagScrollOffset(const D2D1_RECT_F& rect) const {
     }
 
     const auto tags = TagsForCurrentGroup();
-    const float itemHeight = Metric(theme_, L"minorNavItem", L"height", 32.0f);
-    const float itemGap = Metric(theme_, L"minorNavItem", L"gap", 2.0f);
-    const float topInset = Metric(theme_, L"minorNavItem", L"topInset", 2.0f);
-    const float bottomInset = Metric(theme_, L"minorNavItem", L"bottomInset", 2.0f);
-    const float contentHeight = topInset + bottomInset + static_cast<float>(tags.size()) * (itemHeight + itemGap);
+    const float groupPadding = Metric(theme_, L"tabButton", L"groupPadding", 3.0f);
+    const float itemHeight = Metric(theme_, L"tabButton", L"height", Metric(theme_, L"minorNavItem", L"height", 32.0f));
+    const float itemGap = Metric(theme_, L"tabButton", L"groupGap", 0.0f);
+    const float topInset = groupPadding;
+    const float bottomInset = groupPadding;
+    const float contentHeight = topInset + bottomInset + static_cast<float>(tags.size()) * itemHeight
+        + static_cast<float>(tags.empty() ? 0 : tags.size() - 1) * itemGap;
     return std::max(0.0f, contentHeight - Height(rect));
 }
 
@@ -5711,8 +6013,8 @@ float MainWindow::TodoContentHeight(const D2D1_RECT_F&) const {
         return 0.0f;
     }
     const float paddingY = Metric(theme_, L"list", L"paddingY", 6.0f);
-    const float itemHeight = std::max(54.0f, Metric(theme_, L"listItem", L"height", 28.0f) + 24.0f);
-    const float itemGap = Metric(theme_, L"linkItem", L"listGapY", 2.0f);
+    const float itemHeight = std::max(64.0f, Metric(theme_, L"listItem", L"height", 28.0f) + 36.0f);
+    const float itemGap = std::max(4.0f, Metric(theme_, L"linkItem", L"listGapY", 2.0f));
     return paddingY * 2.0f + static_cast<float>(count) * itemHeight + static_cast<float>(count - 1) * itemGap;
 }
 
@@ -5725,9 +6027,10 @@ void MainWindow::EnsureGroupVisible(int groupId) {
     BuildLayout(static_cast<float>(client.right - client.left), static_cast<float>(client.bottom - client.top), title, groupsRect, tagsRect, linksRect);
 
     if (Height(groupsRect) > Width(groupsRect)) {
-        const float itemHeight = Metric(theme_, L"majorNavItem", L"verticalHeight", 32.0f);
-        const float itemGap = Metric(theme_, L"majorNavItem", L"verticalGap", 2.0f);
-        const float topInset = Metric(theme_, L"majorNavItem", L"verticalTopInset", 2.0f);
+        const float groupPadding = Metric(theme_, L"tabButton", L"groupPadding", 3.0f);
+        const float itemHeight = Metric(theme_, L"tabButton", L"height", Metric(theme_, L"majorNavItem", L"verticalHeight", 32.0f));
+        const float itemGap = Metric(theme_, L"tabButton", L"groupGap", 0.0f);
+        const float topInset = groupPadding;
         const float visibilityPadding = Metric(theme_, L"majorNavItem", L"visibilityPadding", 8.0f);
         float y = groupsRect.top + topInset;
         for (const auto& group : MajorGroups()) {
@@ -5745,14 +6048,13 @@ void MainWindow::EnsureGroupVisible(int groupId) {
         return;
     }
 
-    const float itemOffsetX = Metric(theme_, L"majorNavItem", L"offsetX", 4.0f);
-    const float itemMinWidth = Metric(theme_, L"majorNavItem", L"minWidth", 72.0f);
-    const float itemMaxWidth = Metric(theme_, L"majorNavItem", L"maxWidth", 128.0f);
-    const float itemWidthAdjust = Metric(theme_, L"majorNavItem", L"widthAdjust", -14.0f);
+    const float groupPadding = Metric(theme_, L"tabButton", L"groupPadding", 3.0f);
+    const float itemOffsetX = groupPadding;
+    const float itemGap = Metric(theme_, L"tabButton", L"groupGap", 0.0f);
     const float visibilityPadding = Metric(theme_, L"majorNavItem", L"visibilityPadding", 8.0f);
     float x = groupsRect.left + itemOffsetX;
     for (const auto& group : MajorGroups()) {
-        const float width = std::max(itemMinWidth, std::min(itemMaxWidth, NavigationItemWidth(theme_, group.name) + itemWidthAdjust));
+        const float width = TabGroupItemWidth(theme_, group.name, textFormat_, MeasureTextWidth(group.name, textFormat_));
         if (group.id == groupId) {
             if (x - groupScrollOffset_ < groupsRect.left + visibilityPadding) {
                 groupScrollOffset_ = x - groupsRect.left - visibilityPadding;
@@ -5762,7 +6064,7 @@ void MainWindow::EnsureGroupVisible(int groupId) {
             groupScrollOffset_ = ClampFloat(groupScrollOffset_, 0.0f, MaxGroupScrollOffset(groupsRect));
             return;
         }
-        x += width;
+        x += width + itemGap;
     }
 }
 
@@ -5773,9 +6075,10 @@ void MainWindow::EnsureTagVisible(int tagId) {
     }
     D2D1_RECT_F title{}, groupsRect{}, tagsRect{}, linksRect{};
     BuildLayout(static_cast<float>(client.right - client.left), static_cast<float>(client.bottom - client.top), title, groupsRect, tagsRect, linksRect);
-    const float topInset = Metric(theme_, L"minorNavItem", L"topInset", 2.0f);
-    const float itemHeight = Metric(theme_, L"minorNavItem", L"height", 32.0f);
-    const float itemGap = Metric(theme_, L"minorNavItem", L"gap", 2.0f);
+    const float groupPadding = Metric(theme_, L"tabButton", L"groupPadding", 3.0f);
+    const float topInset = groupPadding;
+    const float itemHeight = Metric(theme_, L"tabButton", L"height", Metric(theme_, L"minorNavItem", L"height", 32.0f));
+    const float itemGap = Metric(theme_, L"tabButton", L"groupGap", 0.0f);
     const float visibilityPadding = Metric(theme_, L"minorNavItem", L"visibilityPadding", 8.0f);
     float y = tagsRect.top + topInset;
     for (const auto& tag : TagsForCurrentGroup()) {
@@ -6140,7 +6443,9 @@ void MainWindow::BuildLayout(float width, float height, D2D1_RECT_F& title, D2D1
             groups = D2D1::RectF(std::max(left, right - groupWidth), top, right, bottom);
             right = groups.left;
         } else {
-            const float groupHeight = Metric(theme_, L"majorNav", L"height", 34.0f);
+            const float tabGroupHeight = Metric(theme_, L"tabButton", L"height", 30.0f)
+                + Metric(theme_, L"tabButton", L"groupPadding", 3.0f) * 2.0f;
+            const float groupHeight = std::max(Metric(theme_, L"majorNav", L"height", 34.0f), tabGroupHeight);
             groups = D2D1::RectF(0.0f, top, width, std::min(bottom, top + groupHeight));
             top = groups.bottom;
         }

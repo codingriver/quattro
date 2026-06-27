@@ -16,6 +16,11 @@ struct PluginRecord {
     std::wstring author;
     std::wstring license;
     std::wstring packageUrl;
+    std::wstring homepageUrl;
+    std::wstring sourceUrl;
+    std::wstring addedAt;
+    std::wstring createdAt;
+    std::wstring updatedAt;
     std::wstring sha256;
     bool builtin = false;
     bool deletable = true;

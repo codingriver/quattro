@@ -344,18 +344,16 @@ void DrawTabButton(const Theme& theme, const DRAWITEMSTRUCT* draw) {
         FillRect(draw->hDC, &rect, bg);
         DeleteObject(bg);
 
-        if (selected || hover || focused) {
-            RECT segmentRect = rect;
-            const int inset = static_cast<int>(theme.metric(L"tabButton", L"segmentInset", 2.0f));
-            InflateRect(&segmentRect, -inset, -inset);
-            FillRoundRect(
-                draw->hDC,
-                segmentRect,
-                radius,
-                ToColorRef(theme.color(L"tabButton", state, L"bg")),
-                ToColorRef(theme.color(L"tabButton", focused ? L"focused" : state, L"border")),
-                borderWidth);
-        }
+        RECT segmentRect = rect;
+        const int inset = static_cast<int>(theme.metric(L"tabButton", L"segmentInset", 2.0f) + 0.5f);
+        InflateRect(&segmentRect, -inset, -inset);
+        FillRoundRect(
+            draw->hDC,
+            segmentRect,
+            radius,
+            ToColorRef(theme.color(L"tabButton", state, L"bg")),
+            ToColorRef(theme.color(L"tabButton", focused ? L"focused" : state, L"border")),
+            borderWidth);
     } else {
         FillRoundRect(
             draw->hDC,
@@ -476,6 +474,13 @@ int TabButtonHeight(const Theme& theme) {
 
 RECT TabButtonTextRect(const Theme& theme, RECT frame) {
     return TextRectFromMetrics(theme, L"tabButton", frame, 20.0f, true);
+}
+
+RECT TabGroupInnerRect(const Theme& theme, RECT frame) {
+    const int padding = static_cast<int>(theme.metric(L"tabButton", L"groupPadding", 3.0f));
+    RECT rect = frame;
+    InflateRect(&rect, -padding, -padding);
+    return rect;
 }
 
 int ComboBoxHeight(const Theme& theme) {
@@ -730,6 +735,16 @@ void DrawListFrame(const Theme& theme, HDC dc, RECT rect, HWND child, bool readO
         ToColorRef(theme.color(L"list", state, L"bg")),
         ToColorRef(theme.color(L"list", state, L"border")),
         static_cast<int>(theme.metric(L"list", L"borderWidth", 1.0f)));
+}
+
+void DrawTabGroupFrame(const Theme& theme, HDC dc, RECT rect) {
+    FillRoundRect(
+        dc,
+        rect,
+        static_cast<int>(theme.metric(L"tabButton", L"groupRadius", 10.0f)),
+        ToColorRef(theme.color(L"tabButton", L"normal", L"groupBg")),
+        ToColorRef(theme.color(L"tabButton", L"normal", L"groupBorder")),
+        static_cast<int>(theme.metric(L"tabButton", L"groupBorderWidth", 1.0f)));
 }
 
 bool Draw(const Theme& theme, const DRAWITEMSTRUCT* draw) {

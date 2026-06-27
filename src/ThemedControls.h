@@ -89,6 +89,8 @@ RECT CheckBoxBoxRect(const Theme& theme, RECT frame);
 RECT CheckBoxTextRect(const Theme& theme, RECT frame);
 int TabButtonHeight(const Theme& theme);
 RECT TabButtonTextRect(const Theme& theme, RECT frame);
+RECT TabGroupInnerRect(const Theme& theme, RECT frame);
+void DrawTabGroupFrame(const Theme& theme, HDC dc, RECT rect);
 int ComboBoxHeight(const Theme& theme);
 int ComboBoxItemHeight(const Theme& theme);
 RECT ComboBoxItemTextRect(const Theme& theme, RECT frame);
