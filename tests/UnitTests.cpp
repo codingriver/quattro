@@ -11,6 +11,8 @@
 #include "../src/TodoSchedule.h"
 #include "../src/Utilities.h"
 #include "../src/WebDavClient.h"
+#include "../src/WebDavCredentialService.h"
+#include "../src/WebDavRecoveryService.h"
 
 #include <cmath>
 #include <filesystem>
@@ -80,6 +82,26 @@ int wmain() {
     const std::wstring savedConfigText = LoadUtf8File(temp);
     Check(savedConfigText.find(L"password") == std::wstring::npos && savedConfigText.find(L"Password") == std::wstring::npos, "Config does not persist webdav password");
     std::filesystem::remove(temp, ec);
+
+    const std::filesystem::path recoveryPath = std::filesystem::temp_directory_path() / L"quattro_unit_webdav_recovery.ini";
+    std::filesystem::remove(recoveryPath, ec);
+    WebDavRecoveryService recovery(recoveryPath);
+    std::wstring recoveryError;
+    Check(recovery.Save(config, recoveryError), "WebDAV recovery save");
+    Check(recoveryError.empty(), "WebDAV recovery save no error");
+    Check(recovery.HasRecoverableSettings(), "WebDAV recovery has settings");
+    AppConfig recovered;
+    Check(recovery.Load(recovered), "WebDAV recovery load");
+    Check(recovered.webDavEnabled, "WebDAV recovery enabled");
+    Check(recovered.webDavUrl == config.webDavUrl, "WebDAV recovery url");
+    Check(recovered.webDavRemotePath == config.webDavRemotePath, "WebDAV recovery remote path");
+    Check(recovered.webDavUserName == config.webDavUserName, "WebDAV recovery user");
+    Check(recovered.webDavKeepCount == config.webDavKeepCount, "WebDAV recovery keep count");
+    const std::wstring recoveryText = LoadUtf8File(recoveryPath);
+    Check(recoveryText.find(L"password") == std::wstring::npos && recoveryText.find(L"Password") == std::wstring::npos, "WebDAV recovery does not persist password");
+    Check(recoveryText.find(L"credential_target=Quattro.WebDavBackup.Default") != std::wstring::npos, "WebDAV recovery stores stable credential target");
+    Check(WebDavCredentialService::TargetName(config) == L"Quattro.WebDavBackup.Default", "WebDAV credential stable target");
+    std::filesystem::remove(recoveryPath, ec);
 
     const std::filesystem::path themeRoot = std::filesystem::temp_directory_path() / L"quattro_theme_unit";
     std::filesystem::remove_all(themeRoot, ec);

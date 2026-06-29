@@ -26,6 +26,7 @@ struct PluginRecord {
     bool deletable = true;
     bool enabled = false;
     bool installed = false;
+    bool favorite = false;
 };
 
 struct PluginContribution {
@@ -45,6 +46,7 @@ public:
     bool MarkInstalled(const PluginRecord& plugin, const std::wstring& installPath);
     bool RemovePlugin(const std::wstring& pluginId);
     bool SetEnabled(const std::wstring& pluginId, bool enabled);
+    bool SetFavorite(const std::wstring& pluginId, bool favorite);
     bool IsEnabled(const std::wstring& pluginId);
     bool RecordContribution(const std::wstring& pluginId, const std::wstring& objectType, int objectId, const std::wstring& objectPath = L"");
     std::vector<PluginContribution> LoadContributions(const std::wstring& pluginId);

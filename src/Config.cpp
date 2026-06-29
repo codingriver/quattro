@@ -38,6 +38,7 @@ AppConfig ConfigService::Load() const {
     config.saveRunCount = ReadBool(L"bSaveRunCount", config.saveRunCount);
     config.showRunCount = ReadBool(L"bRunCount", config.showRunCount);
     config.hideNotifyIcon = ReadBool(L"bHideNotify", config.hideNotifyIcon);
+    config.preferAdminRun = ReadBool(L"bPreferAdminRun", config.preferAdminRun);
     config.showDate = ReadBool(L"bShowDate", config.showDate);
     config.showSearchButton = ReadBool(L"bShowBtnSearch", config.showSearchButton);
     config.showMenuButton = ReadBool(L"bShowBtnMenu", config.showMenuButton);
@@ -155,6 +156,7 @@ void ConfigService::Save(const AppConfig& config) const {
     WriteInt(L"bHideUnhot", config.hideWhenInactive ? 1 : 0);
     WriteInt(L"bDelConfirm", config.deleteConfirm ? 1 : 0);
     WriteInt(L"bSaveRunCount", config.saveRunCount ? 1 : 0);
+    WriteInt(L"bPreferAdminRun", config.preferAdminRun ? 1 : 0);
     WriteInt(L"bShowDate", config.showDate ? 1 : 0);
     WriteInt(L"bShowBtnSearch", config.showSearchButton ? 1 : 0);
     WriteInt(L"bShowBtnMenu", config.showMenuButton ? 1 : 0);

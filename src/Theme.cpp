@@ -529,7 +529,7 @@ void Theme::SetDefaults() {
     PutMetric(L"majorNavItem", L"verticalHeight", 32.0f);
     PutMetric(L"majorNavItem", L"verticalGap", 2.0f);
     PutMetric(L"minorNav", L"width", 72.0f);
-    PutMetric(L"minorNav", L"minWidth", 56.0f);
+    PutMetric(L"minorNav", L"minWidth", 40.0f);
     PutMetric(L"minorNav", L"maxWidthRatio", 0.42f);
     PutMetric(L"minorNavItem", L"topInset", 2.0f);
     PutMetric(L"minorNavItem", L"bottomInset", 2.0f);

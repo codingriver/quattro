@@ -66,9 +66,11 @@ add_executable(Quattro WIN32
     src/main.cpp
     src/AppLog.cpp
     src/BuiltinTools.cpp
+    src/CatalogDialogLayout.cpp
     src/Config.cpp
     src/ConfigPackageService.cpp
     src/EmbeddedAssetInstaller.cpp
+    src/Elevation.cpp
     src/HotKeyEditor.cpp
     src/IconService.cpp
     src/JsonValue.cpp
@@ -94,6 +96,7 @@ add_executable(Quattro WIN32
     src/WebDavBackupService.cpp
     src/WebDavClient.cpp
     src/WebDavCredentialService.cpp
+    src/WebDavRecoveryService.cpp
 )
 
 set_target_properties(Quattro PROPERTIES
@@ -119,6 +122,7 @@ add_executable(QuattroTests
     src/WebDavBackupService.cpp
     src/WebDavClient.cpp
     src/WebDavCredentialService.cpp
+    src/WebDavRecoveryService.cpp
 )
 
 add_executable(QuattroNoteTodoAcceptance
@@ -165,6 +169,7 @@ add_executable(QuattroWebDavAcceptance
     src/WebDavBackupService.cpp
     src/WebDavClient.cpp
     src/WebDavCredentialService.cpp
+    src/WebDavRecoveryService.cpp
 )
 
 target_compile_definitions(Quattro PRIVATE
@@ -326,6 +331,7 @@ target_link_libraries(Quattro PRIVATE
     d2d1
     dwrite
     ole32
+    oleaut32
     shell32
     shlwapi
     wininet

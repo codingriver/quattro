@@ -155,6 +155,7 @@ private:
     void OpenReward();
     void ShowUpdateInfo();
     bool OpenConfiguredUrl(const std::wstring& url, const wchar_t* title);
+    void RestartWithOppositePrivilege();
     bool TryRepairLinkTarget(Link& link);
     void ShowThemeMenu(POINT screenPoint);
     void ApplyTheme(const std::wstring& themeName);
@@ -309,6 +310,8 @@ private:
     bool trackingMouse_ = false;
     bool trayIconVisible_ = false;
     bool hotKeysRegistered_ = false;
+    bool runningAsAdmin_ = false;
+    bool exitingForPrivilegeRestart_ = false;
     bool dockHidden_ = false;
     RECT dockRestoreRect_{};
     UINT_PTR dockTimerId_ = 0;

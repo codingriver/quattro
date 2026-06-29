@@ -2,6 +2,7 @@
 
 #include "AppLog.h"
 #include "BuiltinTools.h"
+#include "Elevation.h"
 #include "HotKeyEditor.h"
 #include "LinkEditDialog.h"
 #include "MenuCatalog.h"
@@ -17,6 +18,7 @@
 #include "UrlEditDialog.h"
 #include "Utilities.h"
 #include "WebDavBackupService.h"
+#include "WebDavRecoveryService.h"
 #include "../resources/resource.h"
 
 #include <algorithm>
@@ -1207,7 +1209,12 @@ MainWindow::MainWindow(
       model_(std::move(model)),
       theme_(std::move(theme)),
       launcher_(appDirectory_, &config_),
-      iconService_(appDirectory_) {
+      iconService_(appDirectory_),
+      runningAsAdmin_(IsRunningAsAdmin()) {
+    if (config_.preferAdminRun != runningAsAdmin_) {
+        config_.preferAdminRun = runningAsAdmin_;
+        configService_.Save(config_);
+    }
     SelectInitialItems();
 }
 
@@ -1676,6 +1683,10 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         return 0;
     }
     case WM_CLOSE:
+        if (exitingForPrivilegeRestart_) {
+            DestroyWindow(hwnd_);
+            return 0;
+        }
         if (!trayIconVisible_) {
             config_.hideNotifyIcon = false;
             InitializeTrayIcon();
@@ -2004,6 +2015,9 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             return 0;
         case ID_MENU_UPDATE:
             ShowUpdateInfo();
+            return 0;
+        case ID_MENU_RESTART_PRIVILEGE:
+            RestartWithOppositePrivilege();
             return 0;
         case ID_MENU_SHOW:
             if (IsEffectivelyVisible()) {
@@ -3528,6 +3542,11 @@ void MainWindow::OpenSettings() {
     }
     config_ = next;
     configService_.Save(config_);
+    std::wstring webDavRecoveryError;
+    WebDavRecoveryService().Save(config_, webDavRecoveryError);
+    if (!webDavRecoveryError.empty()) {
+        WriteAppLog(webDavRecoveryError);
+    }
     SyncAutoRun(previous);
     ApplyConfigRuntimeChanges(previous);
     if (webDavDataImported) {
@@ -3649,9 +3668,12 @@ void MainWindow::RefreshLinkIcon(int linkId) {
 }
 
 void MainWindow::ShowAbout() {
+    const std::wstring privilegeText = runningAsAdmin_ ? L"管理员" : L"普通用户";
+    const std::wstring message =
+        L"Quattro\n\n轻量级 Windows 快速启动工具\nC++ / Win32 / Direct2D / DirectWrite\n\n当前权限：" + privilegeText;
     MessageBoxW(
         hwnd_,
-        L"Quattro\n\n轻量级 Windows 快速启动工具\nC++ / Win32 / Direct2D / DirectWrite",
+        message.c_str(),
         L"关于",
         MB_OK | MB_ICONINFORMATION);
 }
@@ -3692,6 +3714,29 @@ void MainWindow::ShowUpdateInfo() {
         L"当前版本为本地构建版本。\n\n在线更新服务暂未接入，请以后续发布包或项目交付说明为准。",
         L"检查更新",
         MB_OK | MB_ICONINFORMATION);
+}
+
+void MainWindow::RestartWithOppositePrivilege() {
+    config_.preferAdminRun = !runningAsAdmin_;
+    configService_.Save(config_);
+
+    std::wstring error;
+    const bool launched = runningAsAdmin_
+        ? RestartCurrentProcessUnelevated(hwnd_, error)
+        : RestartCurrentProcessElevated(hwnd_, error);
+    if (!launched) {
+        config_.preferAdminRun = runningAsAdmin_;
+        configService_.Save(config_);
+        MessageBoxW(
+            hwnd_,
+            error.empty() ? L"重启失败。" : error.c_str(),
+            runningAsAdmin_ ? L"以普通用户重启" : L"以管理员身份重启",
+            MB_OK | MB_ICONWARNING);
+        return;
+    }
+
+    exitingForPrivilegeRestart_ = true;
+    DestroyWindow(hwnd_);
 }
 
 bool MainWindow::OpenConfiguredUrl(const std::wstring& url, const wchar_t* title) {
@@ -4329,6 +4374,7 @@ void MainWindow::ShowTrayMenu(POINT screenPoint) {
     menuContextId_ = 0;
     HMENU menu = CreatePopupMenu();
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_SHOW, IsWindowVisible(hwnd_) ? L"隐藏主窗口" : L"显示主窗口");
+    AppendThemedMenuItem(menu, MF_STRING, ID_MENU_RESTART_PRIVILEGE, runningAsAdmin_ ? L"以普通用户重启" : L"以管理员身份重启", false, -1, -1, MenuIconShield);
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_RESET_LAYOUT, L"重置布局");
     AppendThemedSeparator(menu);
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_ABOUT, L"关于");
@@ -5052,11 +5098,6 @@ void MainWindow::DrawTitle(D2D1_RECT_F rect) {
         renderTarget_->DrawBitmap(bitmap, appIcon, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
     }
 
-    const float titleTextEnd = rect.left + Metric(theme_, L"title", L"textEnd", 134.0f);
-    D2D1_RECT_F nameRect = D2D1::RectF(appIcon.right + Metric(theme_, L"title", L"textGap", 7.0f), rect.top, titleTextEnd, rect.bottom);
-    titleFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
-    DrawTextBlock(L"Quattro", titleFormat_, nameRect, theme_.color(L"title", L"normal", L"text"));
-
     const float buttonSize = ClampFloat(theme_.metric(L"titleButton", L"size", 26.0f), 18.0f, 40.0f);
     const float buttonGap = ClampFloat(theme_.metric(L"titleButton", L"gap", 2.0f), 0.0f, 12.0f);
     const float buttonRightInset = Metric(theme_, L"titleButton", L"rightInset", 4.0f);
@@ -5082,6 +5123,12 @@ void MainWindow::DrawTitle(D2D1_RECT_F rect) {
     const float buttonReserve = visibleButtonCount > 0
         ? buttonReserveInset + static_cast<float>(visibleButtonCount) * buttonSize + static_cast<float>(visibleButtonCount - 1) * buttonGap
         : buttonReserveInset;
+    const float titleTextDesiredEnd = rect.left + Metric(theme_, L"title", L"textEnd", 134.0f);
+    const float titleTextMaxEnd = rect.right - buttonReserve - Metric(theme_, L"title", L"textGap", 7.0f);
+    const float titleTextEnd = std::max(appIcon.right, std::min(titleTextDesiredEnd, titleTextMaxEnd));
+    D2D1_RECT_F nameRect = D2D1::RectF(appIcon.right + Metric(theme_, L"title", L"textGap", 7.0f), rect.top, titleTextEnd, rect.bottom);
+    titleFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+    DrawTextBlock(L"Quattro", titleFormat_, nameRect, theme_.color(L"title", L"normal", L"text"));
 
     if (config_.showDate) {
         D2D1_RECT_F dateRect = D2D1::RectF(titleTextEnd, rect.top, rect.right - buttonReserve, rect.bottom);
@@ -5174,7 +5221,6 @@ void MainWindow::DrawGroups(D2D1_RECT_F rect) {
         firstVisible = false;
     }
     renderTarget_->PopAxisAlignedClip();
-    DrawScrollBar(rect, groupScrollOffset_, MaxGroupScrollOffset(rect), true);
 }
 
 void MainWindow::DrawTags(D2D1_RECT_F rect) {
@@ -6452,8 +6498,8 @@ void MainWindow::BuildLayout(float width, float height, D2D1_RECT_F& title, D2D1
     }
 
     if (config_.showTag) {
-        const float configuredTagWidth = config_.tagWidth > 0 ? static_cast<float>(config_.tagWidth) : Metric(theme_, L"minorNav", L"width", 72.0f);
-        const float minTagWidth = Metric(theme_, L"minorNav", L"minWidth", 56.0f);
+        const float configuredTagWidth = (config_.tagWidth > 0 ? static_cast<float>(config_.tagWidth) : Metric(theme_, L"minorNav", L"width", 72.0f)) * (2.0f / 3.0f);
+        const float minTagWidth = Metric(theme_, L"minorNav", L"minWidth", 40.0f);
         const float maxTagRatio = Metric(theme_, L"minorNav", L"maxWidthRatio", 0.42f);
         const float maxTagWidth = std::max(minTagWidth, width * maxTagRatio);
         const float tagWidth = std::min(std::max(minTagWidth, configuredTagWidth), maxTagWidth);

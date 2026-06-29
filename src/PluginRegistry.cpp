@@ -317,8 +317,10 @@ std::vector<PluginRecord> PluginRegistry::LoadPlugins() {
     }
 
     SQLiteStatement statement(db.get(),
-        L"SELECT ID,Name,Version,Category,Kind,Engine,Description,Permissions,Author,License,PackageUrl,HomepageUrl,SourceUrl,AddedAt,Sha256,Builtin,Deletable,Enabled,Installed,CreatedAt,UpdatedAt "
-        L"FROM Plugins ORDER BY Builtin DESC,Category,Name;");
+        L"SELECT p.ID,p.Name,p.Version,p.Category,p.Kind,p.Engine,p.Description,p.Permissions,p.Author,p.License,p.PackageUrl,p.HomepageUrl,p.SourceUrl,p.AddedAt,p.Sha256,p.Builtin,p.Deletable,p.Enabled,p.Installed,p.CreatedAt,p.UpdatedAt,COALESCE(s.Value,'') "
+        L"FROM Plugins p "
+        L"LEFT JOIN PluginSettings s ON s.PluginID=p.ID AND s.Key='favorite' "
+        L"ORDER BY p.Builtin DESC,p.Category,p.Name;");
     if (!statement.ok()) {
         lastError_ = L"读取插件列表失败。";
         return plugins;
@@ -346,6 +348,7 @@ std::vector<PluginRecord> PluginRegistry::LoadPlugins() {
         plugin.installed = statement.columnInt(18) != 0;
         plugin.createdAt = statement.columnText(19);
         plugin.updatedAt = statement.columnText(20);
+        plugin.favorite = statement.columnText(21) == L"1";
         plugins.push_back(std::move(plugin));
     }
     return plugins;
@@ -495,6 +498,10 @@ bool PluginRegistry::SetEnabled(const std::wstring& pluginId, bool enabled) {
         return false;
     }
     return true;
+}
+
+bool PluginRegistry::SetFavorite(const std::wstring& pluginId, bool favorite) {
+    return SetSetting(pluginId, L"favorite", favorite ? L"1" : L"0");
 }
 
 bool PluginRegistry::IsEnabled(const std::wstring& pluginId) {

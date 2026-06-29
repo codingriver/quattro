@@ -1,13 +1,16 @@
 #include "Config.h"
 #include "AppLog.h"
 #include "EmbeddedAssetInstaller.h"
+#include "Elevation.h"
 #include "MainWindow.h"
 #include "Storage.h"
 #include "Theme.h"
 #include "Utilities.h"
+#include "WebDavRecoveryService.h"
 
 #include <windows.h>
 #include <objbase.h>
+#include <shellapi.h>
 
 #include <filesystem>
 #include <fstream>
@@ -166,6 +169,8 @@ void WriteStartupReport(
     file << "delete_confirm=" << (config.deleteConfirm ? 1 : 0) << "\n";
     file << "save_run_count=" << (config.saveRunCount ? 1 : 0) << "\n";
     file << "hide_notify_icon=" << (config.hideNotifyIcon ? 1 : 0) << "\n";
+    file << "is_admin=" << (IsRunningAsAdmin() ? 1 : 0) << "\n";
+    file << "prefer_admin_run=" << (config.preferAdminRun ? 1 : 0) << "\n";
     file << "mouse_enter_active_group=" << (config.mouseEnterActiveGroup ? 1 : 0) << "\n";
     file << "mouse_enter_active_tag=" << (config.mouseEnterActiveTag ? 1 : 0) << "\n";
     file << "active_group_delay=" << config.activeGroupDelay << "\n";
@@ -180,6 +185,23 @@ void WriteStartupReport(
     file << "faq_url=" << WideToUtf8(config.faqUrl) << "\n";
     file << "reward_url=" << WideToUtf8(config.rewardUrl) << "\n";
     file << "external_file_index=deferred\n";
+}
+
+bool HasPrivilegeRestartArgument() {
+    int argc = 0;
+    LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    if (!argv) {
+        return false;
+    }
+    bool found = false;
+    for (int i = 1; i < argc; ++i) {
+        if (std::wstring(argv[i]) == L"--quattro-privilege-restart") {
+            found = true;
+            break;
+        }
+    }
+    LocalFree(argv);
+    return found;
 }
 }
 
@@ -200,20 +222,50 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
         WriteAppLog(assetInstall.message);
     }
 
+    const bool privilegeRestart = HasPrivilegeRestartArgument();
+    ConfigService configService(appDirectory / L"conf.ini");
+    AppConfig config = configService.Load();
+    if (config.preferAdminRun && !IsRunningAsAdmin() && !privilegeRestart) {
+        std::wstring error;
+        if (!RestartCurrentProcessElevated(nullptr, error)) {
+            WriteAppLog(L"按上次权限以管理员身份启动失败: " + error);
+        } else {
+            WriteAppLog(L"按上次权限请求管理员启动。");
+            return 0;
+        }
+    }
+
     Runtime runtime;
     const std::wstring mutexName = BuildName(L"QuattroMutex_", appDirectory);
     const std::wstring sharedMemoryName = BuildName(L"QuattroShareMemory_", appDirectory);
     runtime.mutex = CreateMutexW(nullptr, TRUE, mutexName.c_str());
     if (runtime.mutex && GetLastError() == ERROR_ALREADY_EXISTS) {
-        ActivateExistingInstance(sharedMemoryName);
-        return 0;
+        if (privilegeRestart) {
+            DWORD wait = WaitForSingleObject(runtime.mutex, 5000);
+            if (wait == WAIT_OBJECT_0 || wait == WAIT_ABANDONED) {
+                WriteAppLog(L"权限切换重启已接管单实例。");
+            } else {
+                ActivateExistingInstance(sharedMemoryName);
+                return 0;
+            }
+        } else {
+            ActivateExistingInstance(sharedMemoryName);
+            return 0;
+        }
     }
 
     runtime.sharedMemory = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, sizeof(HWND), sharedMemoryName.c_str());
 
     HRESULT ole = OleInitialize(nullptr);
-    ConfigService configService(appDirectory / L"conf.ini");
-    AppConfig config = configService.Load();
+    if (!WebDavRecoveryService::HasWebDavSettings(config)) {
+        WebDavRecoveryService recoveryService;
+        AppConfig recoveredConfig = config;
+        if (recoveryService.Load(recoveredConfig)) {
+            config = recoveredConfig;
+            configService.Save(config);
+            WriteAppLog(L"已从本机恢复 WebDAV 设置: " + recoveryService.path().wstring());
+        }
+    }
     StorageService storageService(appDirectory);
     AppModel model = storageService.Load();
     Theme theme = Theme::Load(appDirectory / L"theme", config.theme);

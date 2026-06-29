@@ -127,7 +127,7 @@
     </Component>
     <Component name="minorNav">
         <Metric name="width" value="72"/>
-        <Metric name="minWidth" value="56"/>
+        <Metric name="minWidth" value="40"/>
         <Metric name="maxWidthRatio" value="0.42"/>
         <State name="normal" bg="@surface" line="@line"/>
     </Component>

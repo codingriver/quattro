@@ -4,9 +4,49 @@
 
 #include <wincred.h>
 
-std::wstring WebDavCredentialService::TargetName(const AppConfig& config) {
+namespace {
+std::wstring LegacyTargetName(const AppConfig& config) {
     const std::wstring key = ToLower(Trim(config.webDavUrl)) + L"|" + ToLower(Trim(config.webDavUserName));
     return L"Quattro.WebDavBackup." + Hex8(StablePathHash(key));
+}
+
+bool ReadCredential(const std::wstring& target, std::wstring& password, std::wstring& error) {
+    PCREDENTIALW credential = nullptr;
+    if (!CredReadW(target.c_str(), CRED_TYPE_GENERIC, 0, &credential)) {
+        const DWORD code = GetLastError();
+        if (code == ERROR_NOT_FOUND) {
+            return true;
+        }
+        error = L"读取 WebDAV 密码失败: " + FormatLastError(code);
+        return false;
+    }
+    if (credential && credential->CredentialBlob && credential->CredentialBlobSize > 0) {
+        password.assign(
+            reinterpret_cast<const wchar_t*>(credential->CredentialBlob),
+            reinterpret_cast<const wchar_t*>(credential->CredentialBlob) + credential->CredentialBlobSize / sizeof(wchar_t));
+    }
+    if (credential) {
+        CredFree(credential);
+    }
+    return true;
+}
+
+bool DeleteCredential(const std::wstring& target, std::wstring& error) {
+    if (!CredDeleteW(target.c_str(), CRED_TYPE_GENERIC, 0)) {
+        const DWORD code = GetLastError();
+        if (code == ERROR_NOT_FOUND) {
+            return true;
+        }
+        error = L"删除 WebDAV 密码失败: " + FormatLastError(code);
+        return false;
+    }
+    return true;
+}
+}
+
+std::wstring WebDavCredentialService::TargetName(const AppConfig& config) {
+    (void)config;
+    return L"Quattro.WebDavBackup.Default";
 }
 
 bool WebDavCredentialService::SavePassword(const AppConfig& config, const std::wstring& password, std::wstring& error) {
@@ -38,23 +78,24 @@ bool WebDavCredentialService::LoadPassword(const AppConfig& config, std::wstring
         return true;
     }
 
-    const std::wstring target = TargetName(config);
-    PCREDENTIALW credential = nullptr;
-    if (!CredReadW(target.c_str(), CRED_TYPE_GENERIC, 0, &credential)) {
-        const DWORD code = GetLastError();
-        if (code == ERROR_NOT_FOUND) {
-            return true;
-        }
-        error = L"读取 WebDAV 密码失败: " + FormatLastError(code);
+    if (!ReadCredential(TargetName(config), password, error)) {
         return false;
     }
-    if (credential && credential->CredentialBlob && credential->CredentialBlobSize > 0) {
-        password.assign(
-            reinterpret_cast<const wchar_t*>(credential->CredentialBlob),
-            reinterpret_cast<const wchar_t*>(credential->CredentialBlob) + credential->CredentialBlobSize / sizeof(wchar_t));
+    if (!password.empty()) {
+        return true;
     }
-    if (credential) {
-        CredFree(credential);
+
+    std::wstring legacyPassword;
+    if (!ReadCredential(LegacyTargetName(config), legacyPassword, error)) {
+        return false;
+    }
+    if (!legacyPassword.empty()) {
+        password = legacyPassword;
+        std::wstring saveError;
+        if (!SavePassword(config, legacyPassword, saveError)) {
+            error = saveError;
+            return false;
+        }
     }
     return true;
 }
@@ -64,14 +105,8 @@ bool WebDavCredentialService::DeletePassword(const AppConfig& config, std::wstri
     if (Trim(config.webDavUrl).empty() || Trim(config.webDavUserName).empty()) {
         return true;
     }
-    const std::wstring target = TargetName(config);
-    if (!CredDeleteW(target.c_str(), CRED_TYPE_GENERIC, 0)) {
-        const DWORD code = GetLastError();
-        if (code == ERROR_NOT_FOUND) {
-            return true;
-        }
-        error = L"删除 WebDAV 密码失败: " + FormatLastError(code);
+    if (!DeleteCredential(TargetName(config), error)) {
         return false;
     }
-    return true;
+    return DeleteCredential(LegacyTargetName(config), error);
 }
