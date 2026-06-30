@@ -1,5 +1,6 @@
 #include "Config.h"
 
+#include "AppStoreConfig.h"
 #include "Utilities.h"
 
 #include <algorithm>
@@ -85,8 +86,14 @@ AppConfig ConfigService::Load() const {
     config.faqUrl = ReadString(L"FaqUrl", L"");
     config.rewardUrl = ReadString(L"RewardUrl", L"");
     config.pluginStoreUrl = ReadString(L"PluginStoreUrl", L"");
-    config.appStoreOwner = ReadString(L"AppStoreOwner", L"");
-    config.appStoreRepo = ReadString(L"AppStoreRepo", L"");
+    config.appStoreRepository = NormalizeAppStoreRepository(ReadString(L"AppStoreRepository", L""));
+    if (config.appStoreRepository.empty()) {
+        config.appStoreRepository = AppStoreRepositoryFor(ReadString(L"AppStoreOwner", L""), ReadString(L"AppStoreRepo", L""));
+    }
+    config.appStoreOwner = AppStoreRepositoryOwner(config.appStoreRepository);
+    config.appStoreRepo = AppStoreRepositoryName(config.appStoreRepository);
+    config.appStoreGithubToken = ReadString(L"AppStoreGithubToken", L"");
+    config.appStoreEncryptionToken = ReadString(L"AppStoreEncryptionToken", L"");
     config.appStoreDefaultBranch = ReadString(L"AppStoreDefaultBranch", L"main");
     config.appStoreTagPattern = ReadString(L"AppStoreReleaseTagPattern", L"{appId}-v{version}");
     config.appStoreSplitSizeMiB = Clamp(ReadInt(L"AppStoreSplitSizeMiB", config.appStoreSplitSizeMiB), 16, 1800);
@@ -132,8 +139,15 @@ void ConfigService::SaveWindowState(const AppConfig& config) const {
     WriteString(L"FaqUrl", config.faqUrl);
     WriteString(L"RewardUrl", config.rewardUrl);
     WriteString(L"PluginStoreUrl", config.pluginStoreUrl);
-    WriteString(L"AppStoreOwner", config.appStoreOwner);
-    WriteString(L"AppStoreRepo", config.appStoreRepo);
+    std::wstring repository = NormalizeAppStoreRepository(config.appStoreRepository);
+    if (repository.empty()) {
+        repository = AppStoreRepositoryFor(config.appStoreOwner, config.appStoreRepo);
+    }
+    WriteString(L"AppStoreRepository", repository);
+    WriteString(L"AppStoreOwner", L"");
+    WriteString(L"AppStoreRepo", L"");
+    WriteString(L"AppStoreGithubToken", config.appStoreGithubToken);
+    WriteString(L"AppStoreEncryptionToken", config.appStoreEncryptionToken);
     WriteString(L"AppStoreDefaultBranch", config.appStoreDefaultBranch);
     WriteString(L"AppStoreReleaseTagPattern", config.appStoreTagPattern);
     WriteInt(L"AppStoreSplitSizeMiB", config.appStoreSplitSizeMiB);
@@ -192,8 +206,15 @@ void ConfigService::Save(const AppConfig& config) const {
     WriteString(L"FaqUrl", config.faqUrl);
     WriteString(L"RewardUrl", config.rewardUrl);
     WriteString(L"PluginStoreUrl", config.pluginStoreUrl);
-    WriteString(L"AppStoreOwner", config.appStoreOwner);
-    WriteString(L"AppStoreRepo", config.appStoreRepo);
+    std::wstring repository = NormalizeAppStoreRepository(config.appStoreRepository);
+    if (repository.empty()) {
+        repository = AppStoreRepositoryFor(config.appStoreOwner, config.appStoreRepo);
+    }
+    WriteString(L"AppStoreRepository", repository);
+    WriteString(L"AppStoreOwner", L"");
+    WriteString(L"AppStoreRepo", L"");
+    WriteString(L"AppStoreGithubToken", config.appStoreGithubToken);
+    WriteString(L"AppStoreEncryptionToken", config.appStoreEncryptionToken);
     WriteString(L"AppStoreDefaultBranch", config.appStoreDefaultBranch);
     WriteString(L"AppStoreReleaseTagPattern", config.appStoreTagPattern);
     WriteInt(L"AppStoreSplitSizeMiB", config.appStoreSplitSizeMiB);

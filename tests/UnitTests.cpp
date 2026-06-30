@@ -1,5 +1,6 @@
 #include "../src/Config.h"
 #include "../src/ConfigPackageService.h"
+#include "../src/AppStoreConfig.h"
 #include "../src/AppStoreManifest.h"
 #include "../src/AppPackageService.h"
 #include "../src/AppStoreRegistry.h"
@@ -71,8 +72,9 @@ int wmain() {
     config.helpUrl = L"https://help.local/";
     config.updateUrl = L"https://update.local/";
     config.pluginStoreUrl = L"https://plugins.local/index.json";
-    config.appStoreOwner = L"owner";
-    config.appStoreRepo = L"repo";
+    config.appStoreRepository = L"owner/repo";
+    config.appStoreGithubToken = L"github-token";
+    config.appStoreEncryptionToken = L"encryption-token";
     config.appStoreSplitSizeMiB = 256;
     config.appStoreIncludeDrafts = true;
     config.webDavEnabled = true;
@@ -89,8 +91,11 @@ int wmain() {
     Check(loaded.helpUrl == L"https://help.local/", "Config help url");
     Check(loaded.updateUrl == L"https://update.local/", "Config update url");
     Check(loaded.pluginStoreUrl == L"https://plugins.local/index.json", "Config plugin store url");
-    Check(loaded.appStoreOwner == L"owner", "Config app store owner");
-    Check(loaded.appStoreRepo == L"repo", "Config app store repo");
+    Check(loaded.appStoreRepository == L"owner/repo", "Config app store repository");
+    Check(loaded.appStoreOwner == L"owner", "Config app store owner derived");
+    Check(loaded.appStoreRepo == L"repo", "Config app store repo derived");
+    Check(loaded.appStoreGithubToken == L"github-token", "Config app store github token");
+    Check(loaded.appStoreEncryptionToken == L"encryption-token", "Config app store encryption token");
     Check(loaded.appStoreSplitSizeMiB == 256, "Config app store split size");
     Check(loaded.appStoreIncludeDrafts, "Config app store include drafts");
     Check(loaded.webDavEnabled, "Config webdav enabled");
@@ -99,7 +104,20 @@ int wmain() {
     Check(loaded.webDavUserName == L"unit", "Config webdav user");
     Check(loaded.webDavKeepCount == 7, "Config webdav keep count");
     const std::wstring savedConfigText = LoadUtf8File(temp);
+    Check(savedConfigText.find(L"AppStoreRepository=owner/repo") != std::wstring::npos, "Config persists app store repository");
+    Check(savedConfigText.find(L"AppStoreOwner=") == std::wstring::npos, "Config omits legacy app store owner");
+    Check(savedConfigText.find(L"AppStoreRepo=") == std::wstring::npos, "Config omits legacy app store repo");
+    Check(savedConfigText.find(L"AppStoreGithubToken=github-token") != std::wstring::npos, "Config persists app store github token");
+    Check(savedConfigText.find(L"AppStoreEncryptionToken=encryption-token") != std::wstring::npos, "Config persists app store encryption token");
     Check(savedConfigText.find(L"password") == std::wstring::npos && savedConfigText.find(L"Password") == std::wstring::npos, "Config does not persist webdav password");
+    std::filesystem::remove(temp, ec);
+
+    {
+        std::ofstream legacyConfig(temp, std::ios::binary | std::ios::trunc);
+        legacyConfig << "[main]\nAppStoreOwner=codingriver\nAppStoreRepo=storage\n";
+    }
+    AppConfig legacyLoaded = service.Load();
+    Check(legacyLoaded.appStoreRepository == L"codingriver/storage", "Config migrates legacy app store repository");
     std::filesystem::remove(temp, ec);
 
     const std::filesystem::path recoveryPath = std::filesystem::temp_directory_path() / L"quattro_unit_webdav_recovery.ini";
@@ -327,6 +345,11 @@ int wmain() {
     std::wstring completeReason;
     Check(!IsManifestCompleteForRelease(manifest, release, false, completeReason), "Encrypted app hidden without token");
     Check(IsManifestCompleteForRelease(manifest, release, true, completeReason), "Encrypted app visible with token");
+    release.draft = true;
+    release.tagName = L"untagged-abc123";
+    Check(IsManifestCompleteForRelease(manifest, release, true, completeReason), "Draft untagged release visible by manifest tag");
+    release.draft = false;
+    release.tagName = L"demo.tool-v1.0.0";
     std::wstring otherManifestText = manifestText;
     const std::wstring versionLine = L"  \"version\": \"1.0.0\",\n";
     const std::size_t versionPos = otherManifestText.find(versionLine);

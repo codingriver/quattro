@@ -1,5 +1,6 @@
 #include "AppStoreDialog.h"
 
+#include "AppStoreConfig.h"
 #include "AppPackageService.h"
 #include "AppStoreCredentialService.h"
 #include "AppStoreRegistry.h"
@@ -861,7 +862,7 @@ private:
                 const std::wstring text = AppText(app);
                 SendMessageW(list_, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(text.c_str()));
             }
-            SetWindowTextW(status_, (L"文件 " + std::to_wstring(apps_.size()) + L" 个，来源 " + config_.appStoreOwner + L"/" + config_.appStoreRepo).c_str());
+            SetWindowTextW(status_, (L"文件 " + std::to_wstring(apps_.size()) + L" 个，来源 " + AppStoreRepositoryFor(AppStoreRepositoryOwner(config_), AppStoreRepositoryName(config_))).c_str());
             SetWindowTextW(primary_, L"下载");
             SetWindowTextW(resume_, L"重命名");
             EnableWindow(pause_, FALSE);
@@ -908,7 +909,7 @@ private:
             AppStoreRegistry registry(appDirectory_);
             const long long splitSize = static_cast<long long>(std::max(16, config_.appStoreSplitSizeMiB)) * 1024LL * 1024LL;
             std::wstring taskId;
-            if (!registry.AddDownloadTask(apps_[static_cast<std::size_t>(index)], config_.appStoreOwner, config_.appStoreRepo, splitSize, taskId)) {
+            if (!registry.AddDownloadTask(apps_[static_cast<std::size_t>(index)], AppStoreRepositoryOwner(config_), AppStoreRepositoryName(config_), splitSize, taskId)) {
                 MessageBoxW(hwnd_, registry.lastError().c_str(), kDriveManagerTitle, MB_OK | MB_ICONWARNING);
                 return;
             }
@@ -935,7 +936,7 @@ private:
             AppStoreRegistry registry(appDirectory_);
             const long long splitSize = static_cast<long long>(std::max(16, config_.appStoreSplitSizeMiB)) * 1024LL * 1024LL;
             std::wstring taskId;
-            if (!registry.AddUploadTaskPlaceholder(uploadPath.wstring(), config_.appStoreOwner, config_.appStoreRepo, splitSize, taskId)) {
+            if (!registry.AddUploadTaskPlaceholder(uploadPath.wstring(), AppStoreRepositoryOwner(config_), AppStoreRepositoryName(config_), splitSize, taskId)) {
                 MessageBoxW(hwnd_, registry.lastError().c_str(), kDriveManagerTitle, MB_OK | MB_ICONWARNING);
                 return;
             }

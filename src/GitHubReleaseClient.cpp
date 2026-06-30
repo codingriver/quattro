@@ -1,5 +1,6 @@
 #include "GitHubReleaseClient.h"
 
+#include "AppStoreConfig.h"
 #include "JsonValue.h"
 #include "Utilities.h"
 
@@ -139,6 +140,10 @@ bool ParseReleaseObject(const JsonValue& item, AppStoreRelease& release) {
     return true;
 }
 
+std::wstring RepositoryPath(const AppConfig& config) {
+    return AppStoreRepositoryOwner(config) + L"/" + AppStoreRepositoryName(config);
+}
+
 #ifdef QUATTRO_WITH_CURL
 struct MemorySink {
     std::vector<std::uint8_t>* bytes = nullptr;
@@ -232,7 +237,7 @@ bool GitHubReleaseClient::ListReleases(std::vector<AppStoreRelease>& releases) {
         return false;
     }
     std::wstring text;
-    if (!RequestJson(ApiUrl(L"/repos/" + Trim(config_.appStoreOwner) + L"/" + Trim(config_.appStoreRepo) + L"/releases?per_page=100"), text)) {
+    if (!RequestJson(ApiUrl(L"/repos/" + RepositoryPath(config_) + L"/releases?per_page=100"), text)) {
         return false;
     }
     JsonValue root;
@@ -262,7 +267,7 @@ bool GitHubReleaseClient::GetReleaseByTag(const std::wstring& tag, AppStoreRelea
     long status = 0;
     if (!RequestJson(
             L"GET",
-            ApiUrl(L"/repos/" + Trim(config_.appStoreOwner) + L"/" + Trim(config_.appStoreRepo) + L"/releases/tags/" + UrlEncode(tag)),
+            ApiUrl(L"/repos/" + RepositoryPath(config_) + L"/releases/tags/" + UrlEncode(tag)),
             {},
             text,
             &status)) {
@@ -296,7 +301,7 @@ bool GitHubReleaseClient::CreateRelease(const AppStoreManifest& manifest, AppSto
     std::wstring text;
     if (!RequestJson(
             L"POST",
-            ApiUrl(L"/repos/" + Trim(config_.appStoreOwner) + L"/" + Trim(config_.appStoreRepo) + L"/releases"),
+            ApiUrl(L"/repos/" + RepositoryPath(config_) + L"/releases"),
             WideToUtf8(wideBody.str()),
             text)) {
         return false;
@@ -319,7 +324,7 @@ bool GitHubReleaseClient::UpdateReleaseMetadata(long long releaseId, const std::
     std::wstring text;
     return RequestJson(
         L"PATCH",
-        ApiUrl(L"/repos/" + Trim(config_.appStoreOwner) + L"/" + Trim(config_.appStoreRepo) + L"/releases/" + std::to_wstring(releaseId)),
+        ApiUrl(L"/repos/" + RepositoryPath(config_) + L"/releases/" + std::to_wstring(releaseId)),
         WideToUtf8(wideBody.str()),
         text);
 }
@@ -333,7 +338,7 @@ bool GitHubReleaseClient::DeleteRelease(long long releaseId) {
     long status = 0;
     if (!RequestBytes(
             L"DELETE",
-            ApiUrl(L"/repos/" + Trim(config_.appStoreOwner) + L"/" + Trim(config_.appStoreRepo) + L"/releases/" + std::to_wstring(releaseId)),
+            ApiUrl(L"/repos/" + RepositoryPath(config_) + L"/releases/" + std::to_wstring(releaseId)),
             L"application/vnd.github+json",
             {},
             response,
@@ -352,7 +357,7 @@ bool GitHubReleaseClient::DeleteAsset(long long assetId) {
     long status = 0;
     if (!RequestBytes(
             L"DELETE",
-            ApiUrl(L"/repos/" + Trim(config_.appStoreOwner) + L"/" + Trim(config_.appStoreRepo) + L"/releases/assets/" + std::to_wstring(assetId)),
+            ApiUrl(L"/repos/" + RepositoryPath(config_) + L"/releases/assets/" + std::to_wstring(assetId)),
             L"application/vnd.github+json",
             {},
             response,
@@ -369,7 +374,7 @@ bool GitHubReleaseClient::UploadReleaseAsset(const AppStoreRelease& release, con
         upload = upload.substr(0, brace);
     }
     if (upload.empty()) {
-        upload = L"https://uploads.github.com/repos/" + Trim(config_.appStoreOwner) + L"/" + Trim(config_.appStoreRepo) + L"/releases/" + std::to_wstring(release.id) + L"/assets";
+        upload = L"https://uploads.github.com/repos/" + RepositoryPath(config_) + L"/releases/" + std::to_wstring(release.id) + L"/assets";
     }
     upload += L"?name=" + UrlEncode(assetName);
     std::vector<std::uint8_t> response;
@@ -408,7 +413,7 @@ bool GitHubReleaseClient::DownloadAssetBytes(long long assetId, std::vector<std:
         return false;
     }
     return RequestBytes(
-        ApiUrl(L"/repos/" + Trim(config_.appStoreOwner) + L"/" + Trim(config_.appStoreRepo) + L"/releases/assets/" + std::to_wstring(assetId)),
+        ApiUrl(L"/repos/" + RepositoryPath(config_) + L"/releases/assets/" + std::to_wstring(assetId)),
         L"application/octet-stream",
         bytes);
 }
@@ -419,7 +424,7 @@ bool GitHubReleaseClient::DownloadAssetFile(long long assetId, const std::filesy
         return false;
     }
     return RequestFile(
-        ApiUrl(L"/repos/" + Trim(config_.appStoreOwner) + L"/" + Trim(config_.appStoreRepo) + L"/releases/assets/" + std::to_wstring(assetId)),
+        ApiUrl(L"/repos/" + RepositoryPath(config_) + L"/releases/assets/" + std::to_wstring(assetId)),
         L"application/octet-stream",
         path,
         std::move(progress));
@@ -680,13 +685,10 @@ std::wstring GitHubReleaseClient::ApiUrl(const std::wstring& path) const {
 }
 
 bool GitHubReleaseClient::ValidateSettings() {
-    if (Trim(config_.appStoreOwner).empty()) {
-        lastError_ = L"网盘管理 GitHub Owner 未配置。";
-        return false;
-    }
-    if (Trim(config_.appStoreRepo).empty()) {
-        lastError_ = L"网盘管理 GitHub Repo 未配置。";
+    if (AppStoreRepositoryOwner(config_).empty() || AppStoreRepositoryName(config_).empty()) {
+        lastError_ = L"网盘管理 GitHub 仓库未配置，请填写 owner/repo。";
         return false;
     }
     return true;
 }
+

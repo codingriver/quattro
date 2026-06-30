@@ -22,6 +22,34 @@ const AppStoreReleaseAsset* FindAsset(const AppStoreRelease& release, const std:
 bool IsQuattroManagedAsset(const std::wstring& name) {
     return ToLower(name) == L"manifest.json" || ToLower(name).rfind(L"package.zip", 0) == 0;
 }
+
+bool FindReleaseByManifestTag(GitHubReleaseClient& client, const std::wstring& tag, AppStoreRelease& release) {
+    if (client.GetReleaseByTag(tag, release)) {
+        return true;
+    }
+
+    std::vector<AppStoreRelease> releases;
+    if (!client.ListReleases(releases)) {
+        return false;
+    }
+    for (const auto& candidate : releases) {
+        const AppStoreReleaseAsset* manifestAsset = FindAsset(candidate, L"manifest.json");
+        if (!manifestAsset) {
+            continue;
+        }
+        std::wstring manifestText;
+        if (!client.DownloadAssetText(manifestAsset->id, manifestText)) {
+            continue;
+        }
+        AppStoreManifest manifest;
+        std::wstring error;
+        if (ParseAppStoreManifest(manifestText, manifest, error) && manifest.tag == tag) {
+            release = candidate;
+            return true;
+        }
+    }
+    return false;
+}
 }
 
 AppTransferService::AppTransferService(std::filesystem::path appDirectory, AppConfig config)
@@ -110,7 +138,7 @@ AppTransferRunReport AppTransferService::RunUploadTask(const AppTransferTask& ta
     if (ShouldStop(task.id, registry, error)) {
         return {false, error};
     }
-    if (client.GetReleaseByTag(package.manifest.tag, release)) {
+    if (FindReleaseByManifestTag(client, package.manifest.tag, release)) {
         registry.SetTaskStatus(task.id, L"running", L"preparingAssets");
         for (const auto& asset : release.assets) {
             if (!IsQuattroManagedAsset(asset.name)) {
@@ -130,7 +158,7 @@ AppTransferRunReport AppTransferService::RunUploadTask(const AppTransferTask& ta
                 return {false, client.lastError()};
             }
         }
-        client.GetReleaseByTag(package.manifest.tag, release);
+        FindReleaseByManifestTag(client, package.manifest.tag, release);
     } else if (!client.CreateRelease(package.manifest, release)) {
         registry.SetTaskStatus(task.id, L"failed", L"creatingRelease", client.lastError());
         return {false, client.lastError()};
@@ -176,10 +204,10 @@ AppTransferRunReport AppTransferService::RunUploadTask(const AppTransferTask& ta
             return !ShouldStop(task.id, registry, stopMessage);
         };
         if (!client.UploadReleaseAsset(release, partPath, manifestPart.name, uploaded, uploadProgress)) {
-            if (client.GetReleaseByTag(package.manifest.tag, release)) {
+            if (FindReleaseByManifestTag(client, package.manifest.tag, release)) {
                 if (const AppStoreReleaseAsset* duplicate = FindAsset(release, manifestPart.name)) {
                     client.DeleteAsset(duplicate->id);
-                    client.GetReleaseByTag(package.manifest.tag, release);
+                    FindReleaseByManifestTag(client, package.manifest.tag, release);
                 }
             }
             if (!client.UploadReleaseAsset(release, partPath, manifestPart.name, uploaded, uploadProgress)) {
@@ -237,7 +265,7 @@ AppTransferRunReport AppTransferService::RunDownloadTask(const AppTransferTask& 
 
     GitHubReleaseClient client(config_, githubToken);
     AppStoreRelease release;
-    if (!client.GetReleaseByTag(manifest.tag, release)) {
+    if (!FindReleaseByManifestTag(client, manifest.tag, release)) {
         registry.SetTaskStatus(task.id, L"failed", L"downloadingManifest", client.lastError());
         return {false, client.lastError()};
     }
@@ -364,7 +392,7 @@ AppTransferRunReport AppTransferService::DeleteRemoteForUploadTask(const AppTran
     }
     GitHubReleaseClient client(config_, githubToken);
     AppStoreRelease release;
-    if (!client.GetReleaseByTag(tag, release)) {
+    if (!FindReleaseByManifestTag(client, tag, release)) {
         return {true, L"远端 Release 不存在。"};
     }
     if (!client.DeleteRelease(release.id)) {

@@ -86,6 +86,7 @@ add_executable(Quattro WIN32
     resources/Quattro.rc
     src/main.cpp
     src/AppLog.cpp
+    src/AppStoreConfig.cpp
     src/AppStoreCredentialService.cpp
     src/AppStoreDialog.cpp
     src/AppStoreManifest.cpp
@@ -134,6 +135,7 @@ set_target_properties(Quattro PROPERTIES
 
 add_executable(QuattroTests
     tests/UnitTests.cpp
+    src/AppStoreConfig.cpp
     src/AppStoreCredentialService.cpp
     src/AppStoreManifest.cpp
     src/AppPackageService.cpp
@@ -163,6 +165,7 @@ add_executable(QuattroTests
 
 add_executable(QuattroNoteTodoAcceptance
     tests/NoteTodoAcceptance.cpp
+    src/AppStoreConfig.cpp
     src/Config.cpp
     src/ConfigPackageService.cpp
     src/JsonValue.cpp
@@ -196,6 +199,7 @@ add_executable(QuattroThemeStateProbe
 
 add_executable(QuattroWebDavAcceptance
     tests/WebDavAcceptance.cpp
+    src/AppStoreConfig.cpp
     src/Config.cpp
     src/ConfigPackageService.cpp
     src/PluginRegistry.cpp
@@ -206,6 +210,25 @@ add_executable(QuattroWebDavAcceptance
     src/WebDavClient.cpp
     src/WebDavCredentialService.cpp
     src/WebDavRecoveryService.cpp
+)
+
+add_executable(QuattroAppStoreAcceptance
+    tests/AppStoreAcceptance.cpp
+    src/AppStoreConfig.cpp
+    src/AppStoreCredentialService.cpp
+    src/AppStoreManifest.cpp
+    src/AppPackageService.cpp
+    src/AppStoreRegistry.cpp
+    src/AppStoreService.cpp
+    src/AppTransferService.cpp
+    src/Config.cpp
+    src/ConfigPackageService.cpp
+    src/JsonValue.cpp
+    src/GitHubReleaseClient.cpp
+    src/PluginRegistry.cpp
+    src/Storage.cpp
+    src/TodoSchedule.cpp
+    src/Utilities.cpp
 )
 
 target_compile_definitions(Quattro PRIVATE
@@ -264,15 +287,25 @@ target_compile_definitions(QuattroWebDavAcceptance PRIVATE
     NOMINMAX
 )
 
+target_compile_definitions(QuattroAppStoreAcceptance PRIVATE
+    UNICODE
+    _UNICODE
+    WINVER=0x0A00
+    _WIN32_WINNT=0x0A00
+    NOMINMAX
+)
+
 if(QUATTRO_WITH_WEBDAV_LIBS)
     target_compile_definitions(Quattro PRIVATE QUATTRO_WITH_WEBDAV_LIBS)
     target_compile_definitions(QuattroTests PRIVATE QUATTRO_WITH_WEBDAV_LIBS)
     target_compile_definitions(QuattroWebDavAcceptance PRIVATE QUATTRO_WITH_WEBDAV_LIBS)
+    target_compile_definitions(QuattroAppStoreAcceptance PRIVATE QUATTRO_WITH_WEBDAV_LIBS)
 endif()
 
 if(QUATTRO_WITH_CURL)
     target_compile_definitions(Quattro PRIVATE QUATTRO_WITH_CURL)
     target_compile_definitions(QuattroTests PRIVATE QUATTRO_WITH_CURL)
+    target_compile_definitions(QuattroAppStoreAcceptance PRIVATE QUATTRO_WITH_CURL)
 endif()
 
 target_compile_options(Quattro PRIVATE
@@ -300,6 +333,10 @@ target_compile_options(QuattroThemeStateProbe PRIVATE
 )
 
 target_compile_options(QuattroWebDavAcceptance PRIVATE
+    $<$<CXX_COMPILER_ID:MSVC>:/W4 /permissive- /EHsc /utf-8>
+)
+
+target_compile_options(QuattroAppStoreAcceptance PRIVATE
     $<$<CXX_COMPILER_ID:MSVC>:/W4 /permissive- /EHsc /utf-8>
 )
 
@@ -371,6 +408,24 @@ target_link_libraries(QuattroWebDavAcceptance PRIVATE
 
 if(QUATTRO_WITH_WEBDAV_LIBS)
     target_link_libraries(QuattroWebDavAcceptance PRIVATE CURL::libcurl pugixml::pugixml)
+endif()
+
+target_link_libraries(QuattroAppStoreAcceptance PRIVATE
+    sqlite3
+    ccronexpr
+    advapi32
+    bcrypt
+    crypt32
+    shell32
+    shlwapi
+    user32
+    wininet
+)
+
+if(QUATTRO_WITH_WEBDAV_LIBS)
+    target_link_libraries(QuattroAppStoreAcceptance PRIVATE CURL::libcurl pugixml::pugixml)
+elseif(QUATTRO_WITH_CURL)
+    target_link_libraries(QuattroAppStoreAcceptance PRIVATE CURL::libcurl)
 endif()
 
 target_link_libraries(Quattro PRIVATE

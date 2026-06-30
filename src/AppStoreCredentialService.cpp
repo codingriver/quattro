@@ -1,5 +1,6 @@
 #include "AppStoreCredentialService.h"
 
+#include "AppStoreConfig.h"
 #include "Utilities.h"
 
 #include <wincred.h>
@@ -38,16 +39,16 @@ bool ReadCredential(const std::wstring& target, std::wstring& secret, std::wstri
 }
 
 std::wstring AppStoreCredentialService::TargetName(const AppConfig& config, SecretKind kind) {
-    const std::wstring owner = ToLower(Trim(config.appStoreOwner));
-    const std::wstring repo = ToLower(Trim(config.appStoreRepo));
+    const std::wstring owner = ToLower(AppStoreRepositoryOwner(config));
+    const std::wstring repo = ToLower(AppStoreRepositoryName(config));
     const std::wstring key = owner + L"/" + repo;
     return L"Quattro.AppStore." + KindName(kind) + L"." + Hex8(StablePathHash(key));
 }
 
 bool AppStoreCredentialService::SaveSecret(const AppConfig& config, SecretKind kind, const std::wstring& secret, std::wstring& error) {
     error.clear();
-    if (Trim(config.appStoreOwner).empty() || Trim(config.appStoreRepo).empty()) {
-        error = L"GitHub Owner 和 Repo 不能为空。";
+    if (AppStoreRepositoryOwner(config).empty() || AppStoreRepositoryName(config).empty()) {
+        error = L"GitHub 仓库不能为空，请填写 owner/repo。";
         return false;
     }
 
@@ -55,7 +56,8 @@ bool AppStoreCredentialService::SaveSecret(const AppConfig& config, SecretKind k
     CREDENTIALW credential{};
     credential.Type = CRED_TYPE_GENERIC;
     credential.TargetName = const_cast<LPWSTR>(target.c_str());
-    credential.UserName = const_cast<LPWSTR>(config.appStoreOwner.c_str());
+    const std::wstring repository = AppStoreRepositoryFor(AppStoreRepositoryOwner(config), AppStoreRepositoryName(config));
+    credential.UserName = const_cast<LPWSTR>(repository.c_str());
     credential.Persist = CRED_PERSIST_LOCAL_MACHINE;
     credential.CredentialBlobSize = static_cast<DWORD>(secret.size() * sizeof(wchar_t));
     credential.CredentialBlob = reinterpret_cast<LPBYTE>(const_cast<wchar_t*>(secret.c_str()));
@@ -69,7 +71,15 @@ bool AppStoreCredentialService::SaveSecret(const AppConfig& config, SecretKind k
 bool AppStoreCredentialService::LoadSecret(const AppConfig& config, SecretKind kind, std::wstring& secret, std::wstring& error) {
     error.clear();
     secret.clear();
-    if (Trim(config.appStoreOwner).empty() || Trim(config.appStoreRepo).empty()) {
+    if (kind == SecretKind::GitHubToken) {
+        secret = config.appStoreGithubToken;
+    } else {
+        secret = config.appStoreEncryptionToken;
+    }
+    if (!secret.empty()) {
+        return true;
+    }
+    if (AppStoreRepositoryOwner(config).empty() || AppStoreRepositoryName(config).empty()) {
         return true;
     }
     return ReadCredential(TargetName(config, kind), secret, error);
@@ -77,7 +87,7 @@ bool AppStoreCredentialService::LoadSecret(const AppConfig& config, SecretKind k
 
 bool AppStoreCredentialService::DeleteSecret(const AppConfig& config, SecretKind kind, std::wstring& error) {
     error.clear();
-    if (Trim(config.appStoreOwner).empty() || Trim(config.appStoreRepo).empty()) {
+    if (AppStoreRepositoryOwner(config).empty() || AppStoreRepositoryName(config).empty()) {
         return true;
     }
     const std::wstring target = TargetName(config, kind);

@@ -1,6 +1,7 @@
 #include "SimpleDialogs.h"
 
 #include "AppLog.h"
+#include "AppStoreConfig.h"
 #include "AppStoreCredentialService.h"
 #include "GitHubReleaseClient.h"
 #include "HotKeyEditor.h"
@@ -827,8 +828,11 @@ private:
         draft_.faqUrl = GetText(faqUrlEdit_);
         draft_.rewardUrl = GetText(rewardUrlEdit_);
         draft_.pluginStoreUrl = GetText(pluginStoreUrlEdit_);
-        draft_.appStoreOwner = GetText(appStoreOwnerEdit_);
-        draft_.appStoreRepo = GetText(appStoreRepoEdit_);
+        draft_.appStoreRepository = NormalizeAppStoreRepository(GetText(appStoreRepositoryEdit_));
+        draft_.appStoreOwner = AppStoreRepositoryOwner(draft_.appStoreRepository);
+        draft_.appStoreRepo = AppStoreRepositoryName(draft_.appStoreRepository);
+        draft_.appStoreGithubToken = GetText(appStoreGithubTokenEdit_);
+        draft_.appStoreEncryptionToken = GetText(appStoreEncryptionTokenEdit_);
         draft_.appStoreDefaultBranch = GetText(appStoreDefaultBranchEdit_);
         draft_.appStoreTagPattern = GetText(appStoreTagPatternEdit_);
         draft_.appStoreSplitSizeMiB = ClampNumber(appStoreSplitSizeEdit_, 16, 1800, draft_.appStoreSplitSizeMiB);
@@ -877,8 +881,11 @@ private:
 
     AppConfig ReadAppStoreDraftFromControls() {
         AppConfig value = draft_;
-        value.appStoreOwner = GetText(appStoreOwnerEdit_);
-        value.appStoreRepo = GetText(appStoreRepoEdit_);
+        value.appStoreRepository = NormalizeAppStoreRepository(GetText(appStoreRepositoryEdit_));
+        value.appStoreOwner = AppStoreRepositoryOwner(value.appStoreRepository);
+        value.appStoreRepo = AppStoreRepositoryName(value.appStoreRepository);
+        value.appStoreGithubToken = GetText(appStoreGithubTokenEdit_);
+        value.appStoreEncryptionToken = GetText(appStoreEncryptionTokenEdit_);
         value.appStoreDefaultBranch = GetText(appStoreDefaultBranchEdit_);
         value.appStoreTagPattern = GetText(appStoreTagPatternEdit_);
         value.appStoreSplitSizeMiB = ClampNumber(appStoreSplitSizeEdit_, 16, 1800, value.appStoreSplitSizeMiB);
@@ -893,18 +900,6 @@ private:
     }
 
     bool SaveAppStoreSecretsIfNeeded() {
-        AppConfig value = ReadAppStoreDraftFromControls();
-        std::wstring error;
-        const std::wstring githubToken = GetText(appStoreGithubTokenEdit_);
-        if (!githubToken.empty() && !AppStoreCredentialService::SaveSecret(value, AppStoreCredentialService::SecretKind::GitHubToken, githubToken, error)) {
-            MessageBoxW(hwnd_, error.c_str(), L"网盘管理", MB_OK | MB_ICONWARNING);
-            return false;
-        }
-        const std::wstring encryptionToken = GetText(appStoreEncryptionTokenEdit_);
-        if (!encryptionToken.empty() && !AppStoreCredentialService::SaveSecret(value, AppStoreCredentialService::SecretKind::PackageEncryptionToken, encryptionToken, error)) {
-            MessageBoxW(hwnd_, error.c_str(), L"网盘管理", MB_OK | MB_ICONWARNING);
-            return false;
-        }
         return true;
     }
 
@@ -929,7 +924,7 @@ private:
         std::wstring error;
         if (AppStoreCredentialService::DeleteSecret(value, kind, error)) {
             SetWindowTextW(edit, L"");
-            MessageBoxW(hwnd_, L"网盘管理凭据已清除。", L"网盘管理", MB_OK | MB_ICONINFORMATION);
+            MessageBoxW(hwnd_, L"网盘管理 Token 已清空，点击确定后写入配置文件。", L"网盘管理", MB_OK | MB_ICONINFORMATION);
         } else {
             MessageBoxW(hwnd_, error.c_str(), L"网盘管理", MB_OK | MB_ICONWARNING);
         }
@@ -1120,14 +1115,12 @@ private:
             Button(TabWebDav, ID_WEBDAV_TEST, L"测试连接", 286, 340, 92);
             Button(TabWebDav, ID_WEBDAV_CLEAR_PASSWORD, L"清除密码", 390, 340, 90);
 
-            Label(TabAppStore, L"GitHub Owner", 34, 64, 110);
-            appStoreOwnerEdit_ = FramedEdit(TabAppStore, 214, 34, 88, 206, draft_.appStoreOwner);
-            Label(TabAppStore, L"GitHub Repo", 274, 64, 110);
-            appStoreRepoEdit_ = FramedEdit(TabAppStore, 215, 274, 88, 206, draft_.appStoreRepo);
+            Label(TabAppStore, L"GitHub 仓库", 34, 64, 110);
+            appStoreRepositoryEdit_ = FramedEdit(TabAppStore, 214, 34, 88, 446, draft_.appStoreRepository);
             Label(TabAppStore, L"GitHub Token", 34, 132, 110);
-            appStoreGithubTokenEdit_ = FramedEdit(TabAppStore, 216, 34, 156, 206, L"", ES_AUTOHSCROLL | ES_PASSWORD);
+            appStoreGithubTokenEdit_ = FramedEdit(TabAppStore, 216, 34, 156, 206, draft_.appStoreGithubToken, ES_AUTOHSCROLL | ES_PASSWORD);
             Label(TabAppStore, L"加密 Token", 274, 132, 110);
-            appStoreEncryptionTokenEdit_ = FramedEdit(TabAppStore, 217, 274, 156, 206, L"", ES_AUTOHSCROLL | ES_PASSWORD);
+            appStoreEncryptionTokenEdit_ = FramedEdit(TabAppStore, 217, 274, 156, 206, draft_.appStoreEncryptionToken, ES_AUTOHSCROLL | ES_PASSWORD);
             Label(TabAppStore, L"默认分支", 34, 200, 110);
             appStoreDefaultBranchEdit_ = FramedEdit(TabAppStore, 218, 34, 224, 206, draft_.appStoreDefaultBranch);
             Label(TabAppStore, L"Tag 规则", 274, 200, 110);
@@ -1366,8 +1359,7 @@ private:
     HWND faqUrlEdit_ = nullptr;
     HWND rewardUrlEdit_ = nullptr;
     HWND pluginStoreUrlEdit_ = nullptr;
-    HWND appStoreOwnerEdit_ = nullptr;
-    HWND appStoreRepoEdit_ = nullptr;
+    HWND appStoreRepositoryEdit_ = nullptr;
     HWND appStoreGithubTokenEdit_ = nullptr;
     HWND appStoreEncryptionTokenEdit_ = nullptr;
     HWND appStoreDefaultBranchEdit_ = nullptr;

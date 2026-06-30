@@ -173,7 +173,9 @@ bool IsManifestCompleteForRelease(
     bool hasPackageEncryptionToken,
     std::wstring& reason) {
     reason.clear();
-    if (release.tagName != manifest.tag) {
+    const std::wstring releaseTag = ToLower(release.tagName);
+    const bool draftUntagged = release.draft && releaseTag.rfind(L"untagged-", 0) == 0;
+    if (!draftUntagged && release.tagName != manifest.tag) {
         reason = L"Release tag 与 manifest tag 不一致。";
         return false;
     }
