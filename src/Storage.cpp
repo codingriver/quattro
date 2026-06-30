@@ -170,6 +170,11 @@ void CreateSchema(sqlite3* db, std::wstring& error) {
          "Content TEXT NOT NULL DEFAULT '',"
          "Enabled INTEGER DEFAULT 1,"
          "ScheduleKind INTEGER DEFAULT 0,"
+         "RepeatMode INTEGER DEFAULT 0,"
+         "RepeatInterval INTEGER DEFAULT 1,"
+         "RepeatLimit INTEGER DEFAULT 0,"
+         "RepeatFinished INTEGER DEFAULT 0,"
+         "CronExpression TEXT NOT NULL DEFAULT '',"
          "AnchorAt TEXT NOT NULL DEFAULT '',"
          "NextDueAt TEXT NOT NULL DEFAULT '',"
          "CompletedAt TEXT NOT NULL DEFAULT '',"
@@ -211,6 +216,11 @@ void MigrateSchema(sqlite3* db, std::wstring& error) {
          "Content TEXT NOT NULL DEFAULT '',"
          "Enabled INTEGER DEFAULT 1,"
          "ScheduleKind INTEGER DEFAULT 0,"
+         "RepeatMode INTEGER DEFAULT 0,"
+         "RepeatInterval INTEGER DEFAULT 1,"
+         "RepeatLimit INTEGER DEFAULT 0,"
+         "RepeatFinished INTEGER DEFAULT 0,"
+         "CronExpression TEXT NOT NULL DEFAULT '',"
          "AnchorAt TEXT NOT NULL DEFAULT '',"
          "NextDueAt TEXT NOT NULL DEFAULT '',"
          "CompletedAt TEXT NOT NULL DEFAULT '',"
@@ -220,6 +230,22 @@ void MigrateSchema(sqlite3* db, std::wstring& error) {
          error);
     if (!HasColumn(db, L"TodoItems", L"Enabled")) {
         Exec(db, "ALTER TABLE TodoItems ADD COLUMN Enabled INTEGER DEFAULT 1;", error);
+    }
+    if (!HasColumn(db, L"TodoItems", L"RepeatInterval")) {
+        Exec(db, "ALTER TABLE TodoItems ADD COLUMN RepeatInterval INTEGER DEFAULT 1;", error);
+    }
+    if (!HasColumn(db, L"TodoItems", L"RepeatMode")) {
+        Exec(db, "ALTER TABLE TodoItems ADD COLUMN RepeatMode INTEGER DEFAULT 0;", error);
+        Exec(db, "UPDATE TodoItems SET RepeatMode=1 WHERE ScheduleKind IN (6,7,8);", error);
+    }
+    if (!HasColumn(db, L"TodoItems", L"RepeatLimit")) {
+        Exec(db, "ALTER TABLE TodoItems ADD COLUMN RepeatLimit INTEGER DEFAULT 0;", error);
+    }
+    if (!HasColumn(db, L"TodoItems", L"RepeatFinished")) {
+        Exec(db, "ALTER TABLE TodoItems ADD COLUMN RepeatFinished INTEGER DEFAULT 0;", error);
+    }
+    if (!HasColumn(db, L"TodoItems", L"CronExpression")) {
+        Exec(db, "ALTER TABLE TodoItems ADD COLUMN CronExpression TEXT NOT NULL DEFAULT '';", error);
     }
 }
 
@@ -320,16 +346,35 @@ bool NormalizeTodoForSave(sqlite3* db, TodoItem& item, bool isNew) {
         return false;
     }
     if (static_cast<int>(item.scheduleKind) < static_cast<int>(TodoScheduleKind::None) ||
-        static_cast<int>(item.scheduleKind) > static_cast<int>(TodoScheduleKind::Yearly)) {
+        static_cast<int>(item.scheduleKind) > static_cast<int>(TodoScheduleKind::Cron)) {
         item.scheduleKind = TodoScheduleKind::None;
+    }
+    item.repeatInterval = std::max(1, item.repeatInterval);
+    item.repeatLimit = std::max(0, item.repeatLimit);
+    item.repeatFinished = std::max(0, item.repeatFinished);
+    item.cronExpression = NormalizeTodoCronExpression(item.cronExpression);
+    if (static_cast<int>(item.repeatMode) < static_cast<int>(TodoRepeatMode::FixedPoint) ||
+        static_cast<int>(item.repeatMode) > static_cast<int>(TodoRepeatMode::Interval)) {
+        item.repeatMode = TodoRepeatMode::FixedPoint;
     }
     if (item.scheduleKind == TodoScheduleKind::None) {
         item.anchorAt.clear();
         item.nextDueAt.clear();
+        item.cronExpression.clear();
+        item.repeatFinished = 0;
+    } else if (item.scheduleKind == TodoScheduleKind::Cron) {
+        item.anchorAt.clear();
+        if (!IsValidTodoCronExpression(item.cronExpression)) {
+            return false;
+        }
+        if (item.nextDueAt.empty()) {
+            item.nextDueAt = ComputeNextTodoDueAt(item, CurrentTodoTimestamp());
+        }
     } else if (item.anchorAt.empty()) {
         return false;
     } else if (item.nextDueAt.empty()) {
-        item.nextDueAt = ComputeNextTodoDueAt(item.scheduleKind, item.anchorAt, CurrentTodoTimestamp());
+        item.cronExpression.clear();
+        item.nextDueAt = ComputeNextTodoDueAt(item, CurrentTodoTimestamp());
     }
     if (item.pos < 0) {
         item.pos = NextTodoPosition(db, item.tagId);
@@ -447,7 +492,7 @@ AppModel StorageService::Load() {
 
     {
         SQLiteStatement statement(db.get(),
-            L"SELECT ID,TagId,Title,Content,Enabled,ScheduleKind,AnchorAt,NextDueAt,CompletedAt,POS,CreatedAt,UpdatedAt "
+            L"SELECT ID,TagId,Title,Content,Enabled,ScheduleKind,RepeatMode,RepeatInterval,RepeatLimit,RepeatFinished,CronExpression,AnchorAt,NextDueAt,CompletedAt,POS,CreatedAt,UpdatedAt "
             L"FROM TodoItems ORDER BY TagId,CompletedAt,POS,ID;");
         if (statement.ok()) {
             while (statement.step() == SQLITE_ROW) {
@@ -458,12 +503,17 @@ AppModel StorageService::Load() {
                 item.content = statement.columnText(3);
                 item.enabled = statement.columnInt(4) != 0;
                 item.scheduleKind = static_cast<TodoScheduleKind>(statement.columnInt(5));
-                item.anchorAt = statement.columnText(6);
-                item.nextDueAt = statement.columnText(7);
-                item.completedAt = statement.columnText(8);
-                item.pos = statement.columnInt(9);
-                item.createdAt = statement.columnText(10);
-                item.updatedAt = statement.columnText(11);
+                item.repeatMode = static_cast<TodoRepeatMode>(statement.columnInt(6));
+                item.repeatInterval = std::max(1, statement.columnInt(7));
+                item.repeatLimit = std::max(0, statement.columnInt(8));
+                item.repeatFinished = std::max(0, statement.columnInt(9));
+                item.cronExpression = statement.columnText(10);
+                item.anchorAt = statement.columnText(11);
+                item.nextDueAt = statement.columnText(12);
+                item.completedAt = statement.columnText(13);
+                item.pos = statement.columnInt(14);
+                item.createdAt = statement.columnText(15);
+                item.updatedAt = statement.columnText(16);
                 model.todos.push_back(std::move(item));
             }
         }
@@ -807,8 +857,8 @@ bool StorageService::InsertTodoItem(TodoItem& item) {
     }
 
     SQLiteStatement statement(db.get(),
-        L"INSERT INTO TodoItems(TagId,Title,Content,Enabled,ScheduleKind,AnchorAt,NextDueAt,CompletedAt,POS,CreatedAt,UpdatedAt) "
-        L"VALUES(?,?,?,?,?,?,?,?,?,?,?);");
+        L"INSERT INTO TodoItems(TagId,Title,Content,Enabled,ScheduleKind,RepeatMode,RepeatInterval,RepeatLimit,RepeatFinished,CronExpression,AnchorAt,NextDueAt,CompletedAt,POS,CreatedAt,UpdatedAt) "
+        L"VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);");
     if (!statement.ok()) {
         lastError_ = L"新增待办事项 SQL 准备失败。";
         return false;
@@ -818,12 +868,17 @@ bool StorageService::InsertTodoItem(TodoItem& item) {
     statement.bindText(3, item.content);
     statement.bindInt(4, item.enabled ? 1 : 0);
     statement.bindInt(5, static_cast<int>(item.scheduleKind));
-    statement.bindText(6, item.anchorAt);
-    statement.bindText(7, item.nextDueAt);
-    statement.bindText(8, item.completedAt);
-    statement.bindInt(9, item.pos);
-    statement.bindText(10, item.createdAt);
-    statement.bindText(11, item.updatedAt);
+    statement.bindInt(6, static_cast<int>(item.repeatMode));
+    statement.bindInt(7, item.repeatInterval);
+    statement.bindInt(8, item.repeatLimit);
+    statement.bindInt(9, item.repeatFinished);
+    statement.bindText(10, item.cronExpression);
+    statement.bindText(11, item.anchorAt);
+    statement.bindText(12, item.nextDueAt);
+    statement.bindText(13, item.completedAt);
+    statement.bindInt(14, item.pos);
+    statement.bindText(15, item.createdAt);
+    statement.bindText(16, item.updatedAt);
     if (statement.step() != SQLITE_DONE) {
         const void* message = sqlite3_errmsg16(db.get());
         lastError_ = message ? static_cast<const wchar_t*>(message) : L"新增待办事项失败。";
@@ -851,7 +906,7 @@ bool StorageService::UpdateTodoItem(const TodoItem& source) {
     }
 
     SQLiteStatement statement(db.get(),
-        L"UPDATE TodoItems SET TagId=?,Title=?,Content=?,Enabled=?,ScheduleKind=?,AnchorAt=?,NextDueAt=?,"
+        L"UPDATE TodoItems SET TagId=?,Title=?,Content=?,Enabled=?,ScheduleKind=?,RepeatMode=?,RepeatInterval=?,RepeatLimit=?,RepeatFinished=?,CronExpression=?,AnchorAt=?,NextDueAt=?,"
         L"CompletedAt=?,POS=?,CreatedAt=?,UpdatedAt=? WHERE ID=?;");
     if (!statement.ok()) {
         lastError_ = L"更新待办事项 SQL 准备失败。";
@@ -862,13 +917,18 @@ bool StorageService::UpdateTodoItem(const TodoItem& source) {
     statement.bindText(3, item.content);
     statement.bindInt(4, item.enabled ? 1 : 0);
     statement.bindInt(5, static_cast<int>(item.scheduleKind));
-    statement.bindText(6, item.anchorAt);
-    statement.bindText(7, item.nextDueAt);
-    statement.bindText(8, item.completedAt);
-    statement.bindInt(9, item.pos);
-    statement.bindText(10, item.createdAt);
-    statement.bindText(11, item.updatedAt);
-    statement.bindInt(12, item.id);
+    statement.bindInt(6, static_cast<int>(item.repeatMode));
+    statement.bindInt(7, item.repeatInterval);
+    statement.bindInt(8, item.repeatLimit);
+    statement.bindInt(9, item.repeatFinished);
+    statement.bindText(10, item.cronExpression);
+    statement.bindText(11, item.anchorAt);
+    statement.bindText(12, item.nextDueAt);
+    statement.bindText(13, item.completedAt);
+    statement.bindInt(14, item.pos);
+    statement.bindText(15, item.createdAt);
+    statement.bindText(16, item.updatedAt);
+    statement.bindInt(17, item.id);
     if (statement.step() != SQLITE_DONE) {
         const void* message = sqlite3_errmsg16(db.get());
         lastError_ = message ? static_cast<const wchar_t*>(message) : L"更新待办事项失败。";
@@ -912,7 +972,7 @@ bool StorageService::SetTodoCompleted(int todoId, bool completed) {
     TodoItem item;
     {
         SQLiteStatement query(db.get(),
-            L"SELECT ID,TagId,Title,Content,Enabled,ScheduleKind,AnchorAt,NextDueAt,CompletedAt,POS,CreatedAt,UpdatedAt "
+            L"SELECT ID,TagId,Title,Content,Enabled,ScheduleKind,RepeatMode,RepeatInterval,RepeatLimit,RepeatFinished,CronExpression,AnchorAt,NextDueAt,CompletedAt,POS,CreatedAt,UpdatedAt "
             L"FROM TodoItems WHERE ID=?;");
         if (!query.ok()) {
             lastError_ = L"查询待办事项 SQL 准备失败。";
@@ -929,32 +989,47 @@ bool StorageService::SetTodoCompleted(int todoId, bool completed) {
         item.content = query.columnText(3);
         item.enabled = query.columnInt(4) != 0;
         item.scheduleKind = static_cast<TodoScheduleKind>(query.columnInt(5));
-        item.anchorAt = query.columnText(6);
-        item.nextDueAt = query.columnText(7);
-        item.completedAt = query.columnText(8);
-        item.pos = query.columnInt(9);
-        item.createdAt = query.columnText(10);
-        item.updatedAt = query.columnText(11);
+        item.repeatMode = static_cast<TodoRepeatMode>(query.columnInt(6));
+        item.repeatInterval = std::max(1, query.columnInt(7));
+        item.repeatLimit = std::max(0, query.columnInt(8));
+        item.repeatFinished = std::max(0, query.columnInt(9));
+        item.cronExpression = query.columnText(10);
+        item.anchorAt = query.columnText(11);
+        item.nextDueAt = query.columnText(12);
+        item.completedAt = query.columnText(13);
+        item.pos = query.columnInt(14);
+        item.createdAt = query.columnText(15);
+        item.updatedAt = query.columnText(16);
     }
 
     const std::wstring now = CurrentTodoTimestamp();
     if (completed && IsRecurringTodoSchedule(item.scheduleKind)) {
-        item.completedAt.clear();
-        item.nextDueAt = ComputeNextTodoDueAt(item.scheduleKind, item.anchorAt, now);
+        ++item.repeatFinished;
+        if (item.repeatLimit > 0 && item.repeatFinished >= item.repeatLimit) {
+            item.completedAt = now;
+            item.nextDueAt.clear();
+        } else {
+            item.completedAt.clear();
+            item.nextDueAt = ComputeNextTodoDueAt(item, now);
+        }
     } else {
         item.completedAt = completed ? now : L"";
+        if (!completed && IsRecurringTodoSchedule(item.scheduleKind) && item.nextDueAt.empty()) {
+            item.nextDueAt = ComputeNextTodoDueAt(item, now);
+        }
     }
     item.updatedAt = now;
 
-    SQLiteStatement statement(db.get(), L"UPDATE TodoItems SET NextDueAt=?,CompletedAt=?,UpdatedAt=? WHERE ID=?;");
+    SQLiteStatement statement(db.get(), L"UPDATE TodoItems SET NextDueAt=?,CompletedAt=?,RepeatFinished=?,UpdatedAt=? WHERE ID=?;");
     if (!statement.ok()) {
         lastError_ = L"更新待办完成状态 SQL 准备失败。";
         return false;
     }
     statement.bindText(1, item.nextDueAt);
     statement.bindText(2, item.completedAt);
-    statement.bindText(3, item.updatedAt);
-    statement.bindInt(4, item.id);
+    statement.bindInt(3, item.repeatFinished);
+    statement.bindText(4, item.updatedAt);
+    statement.bindInt(5, item.id);
     if (statement.step() != SQLITE_DONE) {
         const void* message = sqlite3_errmsg16(db.get());
         lastError_ = message ? static_cast<const wchar_t*>(message) : L"更新待办完成状态失败。";

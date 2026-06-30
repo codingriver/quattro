@@ -65,11 +65,11 @@ constexpr int kPluginIconBox = 38;
 CatalogDialogMetrics PluginCatalogMetrics() {
     CatalogDialogMetrics metrics{};
     metrics.contentPaddingX = 24;
-    metrics.toolbarHeight = 24;
+    metrics.toolbarHeight = 26;
     metrics.verticalGap = 4;
     metrics.toolbarY = metrics.verticalGap;
     metrics.statusBarHeight = 22;
-    metrics.pagerHeight = 24;
+    metrics.pagerHeight = 26;
     metrics.bottomPadding = 0;
     metrics.horizontalGap = kGap;
     metrics.minListHeight = 80;
@@ -715,8 +715,8 @@ private:
         listBrush_ = CreateSolidBrush(ToColorRef(theme_.color(L"list", L"normal", L"bg")));
 
         const CatalogDialogMetrics& metrics = layout_.metrics();
-        const int toolbarControlHeight = std::max(1, metrics.toolbarHeight - 2);
-        const int pagerControlHeight = std::max(1, metrics.pagerHeight - 2);
+        const int toolbarControlHeight = ThemedControls::CompactButtonHeight(theme_);
+        const int pagerControlHeight = ThemedControls::CompactButtonHeight(theme_);
         const int statusTextHeight = std::max(1, metrics.statusBarHeight - 2);
         int filterX = metrics.contentPaddingX;
         for (PluginFilter filter : {PluginFilter::All, PluginFilter::Installed, PluginFilter::NotInstalled, PluginFilter::Enabled, PluginFilter::Favorite}) {
@@ -764,7 +764,12 @@ private:
         }
 
         const int listY = layout_.listTop();
-        listFrame_ = RECT{metrics.contentPaddingX - 1, listY - 1, metrics.contentPaddingX + 1, listY + 1};
+        const int listBorderWidth = static_cast<int>(theme_.metric(L"list", L"borderWidth", 1.0f));
+        listFrame_ = RECT{
+            metrics.contentPaddingX - listBorderWidth,
+            listY - listBorderWidth,
+            metrics.contentPaddingX + listBorderWidth,
+            listY + listBorderWidth};
         list_ = CreateWindowExW(
             0,
             L"LISTBOX",
@@ -852,6 +857,7 @@ private:
         controls.list = list_;
         controls.listFrame = &listFrame_;
         controls.listItemHeight = CurrentRowHeight();
+        controls.listFrameInset = static_cast<int>(theme_.metric(L"list", L"borderWidth", 1.0f));
         controls.pagerLeading = {{sortButton_, kSortButtonWidth}, {viewButton_, kViewButtonWidth}};
         controls.pagePrev = prevButton_;
         controls.pagePrevWidth = kButtonWidth;

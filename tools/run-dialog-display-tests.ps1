@@ -95,6 +95,9 @@ public static class NativeDialogUi {
     public static extern bool MoveWindow(IntPtr hWnd, int x, int y, int width, int height, bool repaint);
 
     [DllImport("user32.dll")]
+    public static extern bool RedrawWindow(IntPtr hWnd, IntPtr lprcUpdate, IntPtr hrgnUpdate, uint flags);
+
+    [DllImport("user32.dll")]
     public static extern bool GetWindowRect(IntPtr hwnd, out DialogRect rect);
 
     [DllImport("user32.dll")]
@@ -146,6 +149,25 @@ public static class NativeDialogUi {
             return true;
         }, IntPtr.Zero);
         return found;
+    }
+
+    [DllImport("user32.dll")]
+    public static extern int GetDlgCtrlID(IntPtr hwndCtl);
+
+    public static string VisibleChildrenSummary(IntPtr parent) {
+        var output = new StringBuilder();
+        EnumChildWindows(parent, (hWnd, lParam) => {
+            output.Append(GetDlgCtrlID(hWnd));
+            output.Append("|");
+            output.Append(ClassName(hWnd));
+            output.Append("|");
+            output.Append(WindowText(hWnd));
+            output.Append("|visible=");
+            output.Append(IsWindowVisible(hWnd));
+            output.Append(";");
+            return true;
+        }, IntPtr.Zero);
+        return output.ToString();
     }
 
     public static string OutOfBoundsVisibleChildren(IntPtr parent, int padding) {
@@ -408,6 +430,9 @@ function Capture-Window {
         throw "Invalid window rectangle."
     }
 
+    [NativeDialogUi]::RedrawWindow($Hwnd, [IntPtr]::Zero, [IntPtr]::Zero, 0x0001 -bor 0x0100 -bor 0x0080 -bor 0x0400) | Out-Null
+    Start-Sleep -Milliseconds 120
+
     $bitmap = New-Object System.Drawing.Bitmap $width, $height
     $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
     $hdc = $graphics.GetHdc()
@@ -435,6 +460,20 @@ function Assert-UsefulImage {
         if ($colors.Count -lt 4) {
             throw "Screenshot appears blank: $Name"
         }
+        $dark = 0
+        $samples = 0
+        for ($y = [Math]::Max(36, [int]($bitmap.Height * 0.15)); $y -lt [int]($bitmap.Height * 0.85); $y += 18) {
+            for ($x = [int]($bitmap.Width * 0.08); $x -lt [int]($bitmap.Width * 0.92); $x += 18) {
+                $pixel = $bitmap.GetPixel($x, $y)
+                if (($pixel.R + $pixel.G + $pixel.B) -lt 36) {
+                    $dark++
+                }
+                $samples++
+            }
+        }
+        if ($samples -gt 0 -and ($dark / $samples) -gt 0.82) {
+            throw "Screenshot client area appears black: $Name"
+        }
     } finally {
         $bitmap.Dispose()
     }
@@ -455,7 +494,7 @@ function Assert-DialogSurface {
             Start-Sleep -Milliseconds 50
         }
         if ($child -eq [IntPtr]::Zero -or ![NativeDialogUi]::IsWindow($child)) {
-            throw "Required control missing in ${Name}: $id"
+            throw "Required control missing in ${Name}: $id. Children: $([NativeDialogUi]::VisibleChildrenSummary($Hwnd))"
         }
     }
     $outside = [NativeDialogUi]::OutOfBoundsVisibleChildren($Hwnd, 4)
@@ -469,7 +508,36 @@ function Assert-DialogSurface {
         throw "Visible label overlaps an interactive control in $Name"
     }
     Capture-Window -Hwnd $Hwnd -Path $Screenshot
-    Assert-UsefulImage -Path $Screenshot -Name $Name
+    try {
+        Assert-UsefulImage -Path $Screenshot -Name $Name
+    } catch {
+        Start-Sleep -Milliseconds 350
+        Capture-Window -Hwnd $Hwnd -Path $Screenshot
+        Assert-UsefulImage -Path $Screenshot -Name $Name
+    }
+}
+
+function Assert-RadioSelectionGroup {
+    param(
+        [IntPtr]$Parent,
+        [string]$Name,
+        [int[]]$Ids,
+        [int]$ExpectedChecked = 1
+    )
+
+    $checked = 0
+    foreach ($id in $Ids) {
+        $child = [NativeDialogUi]::GetDlgItem($Parent, $id)
+        if ($child -eq [IntPtr]::Zero -or ![NativeDialogUi]::IsWindow($child)) {
+            throw "Selection group missing control in ${Name}: $id"
+        }
+        if ([NativeDialogUi]::SendMessage($child, 0x00F0, [IntPtr]::Zero, [IntPtr]::Zero) -eq [IntPtr]1) {
+            $checked++
+        }
+    }
+    if ($checked -ne $ExpectedChecked) {
+        throw "Unexpected checked count for ${Name}: expected $ExpectedChecked, actual $checked"
+    }
 }
 
 $runDir = Join-Path ([System.IO.Path]::GetTempPath()) ("QuattroDialogTests_" + [Guid]::NewGuid().ToString("N"))
@@ -519,10 +587,17 @@ try {
     Start-Sleep -Milliseconds 500
     [NativeDialogUi]::PostMessage($main, 0x0111, [IntPtr]40054, [IntPtr]::Zero) | Out-Null
     $todoDialog = Wait-ProcessWindow -Process $process -ClassName "QuattroTodoEditDialog"
-    Assert-DialogSurface -Hwnd $todoDialog -Name "todo-dialog" -Screenshot (Join-Path $LogDir "p2-dialog-todo.png") -RequiredControlIds @(101,102,103,104,105)
+    Assert-DialogSurface -Hwnd $todoDialog -Name "todo-dialog" -Screenshot (Join-Path $LogDir "p2-dialog-todo.png") -RequiredControlIds @(101,102,105,110,111)
+    Assert-RadioSelectionGroup -Parent $todoDialog -Name "todo-reminder" -Ids @(110,111)
     Assert-ControlFontHeight -Hwnd ([NativeDialogUi]::GetDlgItem($todoDialog, 101)) -Name "todo-dialog.title" -ExpectedPx $expectedSingleLineFontPx
     Assert-ControlFontHeight -Hwnd ([NativeDialogUi]::GetDlgItem($todoDialog, 102)) -Name "todo-dialog.content" -ExpectedPx $expectedSingleLineFontPx
-    Assert-ControlFontHeight -Hwnd ([NativeDialogUi]::GetDlgItem($todoDialog, 104)) -Name "todo-dialog.time" -ExpectedPx $expectedSingleLineFontPx
+    [NativeDialogUi]::SendMessage($todoDialog, 0x0111, [IntPtr]111, [IntPtr]::Zero) | Out-Null
+    Assert-DialogSurface -Hwnd $todoDialog -Name "todo-dialog-fixed" -Screenshot (Join-Path $LogDir "p2-dialog-todo-fixed.png") -RequiredControlIds @(101,102,105,111,130,150,153)
+    Assert-RadioSelectionGroup -Parent $todoDialog -Name "todo-reminder-fixed" -Ids @(110,111,112)
+    Assert-ControlFontHeight -Hwnd ([NativeDialogUi]::GetDlgItem($todoDialog, 150)) -Name "todo-dialog.time" -ExpectedPx $expectedSingleLineFontPx
+    [NativeDialogUi]::SendMessage(([NativeDialogUi]::GetDlgItem($todoDialog, 130)), 0x014E, [IntPtr]2, [IntPtr]::Zero) | Out-Null
+    [NativeDialogUi]::SendMessage($todoDialog, 0x0111, [IntPtr](130 -bor (1 -shl 16)), [NativeDialogUi]::GetDlgItem($todoDialog, 130)) | Out-Null
+    Assert-DialogSurface -Hwnd $todoDialog -Name "todo-dialog-advanced" -Screenshot (Join-Path $LogDir "p2-dialog-todo-advanced.png") -RequiredControlIds @(101,102,105,111,130,150,153)
     [NativeDialogUi]::PostMessage($todoDialog, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null
     Wait-WindowClosed -Hwnd $todoDialog
 
@@ -547,7 +622,7 @@ try {
     }
 
     "dialog_display_tests=passed"
-    "screenshots=$mainSmall;$mainLarge;p2-dialog-text.png;p2-dialog-link.png;p2-dialog-todo.png;p2-dialog-search.png;p2-dialog-settings.png"
+    "screenshots=$mainSmall;$mainLarge;p2-dialog-text.png;p2-dialog-link.png;p2-dialog-todo.png;p2-dialog-todo-fixed.png;p2-dialog-todo-advanced.png;p2-dialog-search.png;p2-dialog-settings.png"
 } finally {
     if ($null -eq $previousNoFocus) {
         Remove-Item Env:\QUATTRO_TEST_NO_FOCUS -ErrorAction SilentlyContinue

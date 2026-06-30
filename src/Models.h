@@ -11,6 +11,15 @@ enum class TodoScheduleKind {
     Weekly = 3,
     Monthly = 4,
     Yearly = 5,
+    Hourly = 6,
+    Minutely = 7,
+    Secondly = 8,
+    Cron = 9,
+};
+
+enum class TodoRepeatMode {
+    FixedPoint = 0,
+    Interval = 1,
 };
 
 struct AppConfig {
@@ -133,6 +142,11 @@ struct TodoItem {
     std::wstring content;
     bool enabled = true;
     TodoScheduleKind scheduleKind = TodoScheduleKind::None;
+    TodoRepeatMode repeatMode = TodoRepeatMode::FixedPoint;
+    int repeatInterval = 1;
+    int repeatLimit = 0;
+    int repeatFinished = 0;
+    std::wstring cronExpression;
     std::wstring anchorAt;
     std::wstring nextDueAt;
     std::wstring completedAt;

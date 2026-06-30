@@ -103,6 +103,7 @@ int EditPaddingX(const Theme& theme);
 int EditTextHeight(const Theme& theme);
 int EditFontSizePx(const Theme& theme);
 RECT SingleLineEditRect(const Theme& theme, RECT frame);
+RECT SingleLineEditRectForFrame(const Theme& theme, RECT frame);
 RECT MultiLineEditRect(const Theme& theme, RECT frame);
 
 HWND CreateSingleLineEdit(

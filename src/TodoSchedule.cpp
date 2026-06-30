@@ -2,9 +2,13 @@
 
 #include "Utilities.h"
 
+#include <ccronexpr.h>
+
 #include <algorithm>
 #include <ctime>
 #include <cwchar>
+#include <cwctype>
+#include <string>
 
 namespace {
 bool IsLeapYear(int year) {
@@ -29,7 +33,7 @@ std::time_t ToTimeT(const SYSTEMTIME& value) {
     tm.tm_mday = static_cast<int>(value.wDay);
     tm.tm_hour = static_cast<int>(value.wHour);
     tm.tm_min = static_cast<int>(value.wMinute);
-    tm.tm_sec = 0;
+    tm.tm_sec = static_cast<int>(value.wSecond);
     tm.tm_isdst = -1;
     return std::mktime(&tm);
 }
@@ -43,11 +47,16 @@ SYSTEMTIME FromTimeT(std::time_t value) {
     result.wDay = static_cast<WORD>(tm.tm_mday);
     result.wHour = static_cast<WORD>(tm.tm_hour);
     result.wMinute = static_cast<WORD>(tm.tm_min);
+    result.wSecond = static_cast<WORD>(tm.tm_sec);
     return result;
 }
 
+SYSTEMTIME AddSeconds(const SYSTEMTIME& value, int seconds) {
+    return FromTimeT(ToTimeT(value) + static_cast<std::time_t>(seconds));
+}
+
 SYSTEMTIME AddDays(const SYSTEMTIME& value, int days) {
-    return FromTimeT(ToTimeT(value) + static_cast<std::time_t>(days) * 24 * 60 * 60);
+    return AddSeconds(value, days * 24 * 60 * 60);
 }
 
 SYSTEMTIME AddMonths(const SYSTEMTIME& value, int months) {
@@ -78,6 +87,12 @@ SYSTEMTIME AddYears(const SYSTEMTIME& value, int years) {
 
 SYSTEMTIME AddPeriodsFromAnchor(TodoScheduleKind kind, const SYSTEMTIME& anchor, int periods) {
     switch (kind) {
+    case TodoScheduleKind::Secondly:
+        return AddSeconds(anchor, periods);
+    case TodoScheduleKind::Minutely:
+        return AddSeconds(anchor, periods * 60);
+    case TodoScheduleKind::Hourly:
+        return AddSeconds(anchor, periods * 60 * 60);
     case TodoScheduleKind::Daily:
         return AddDays(anchor, periods);
     case TodoScheduleKind::Weekly:
@@ -94,7 +109,7 @@ SYSTEMTIME AddPeriodsFromAnchor(TodoScheduleKind kind, const SYSTEMTIME& anchor,
 bool IsValidParsedTime(const SYSTEMTIME& value) {
     if (value.wYear < 1900 || value.wMonth < 1 || value.wMonth > 12 ||
         value.wDay < 1 || value.wDay > DaysInMonth(value.wYear, value.wMonth) ||
-        value.wHour > 23 || value.wMinute > 59) {
+        value.wHour > 23 || value.wMinute > 59 || value.wSecond > 59) {
         return false;
     }
     const std::time_t roundTrip = ToTimeT(value);
@@ -106,11 +121,68 @@ bool IsValidParsedTime(const SYSTEMTIME& value) {
            normalized.wMonth == value.wMonth &&
            normalized.wDay == value.wDay &&
            normalized.wHour == value.wHour &&
-           normalized.wMinute == value.wMinute;
+           normalized.wMinute == value.wMinute &&
+           normalized.wSecond == value.wSecond;
+}
+
+int FixedIntervalSeconds(TodoScheduleKind kind, int repeatInterval) {
+    const int interval = std::max(1, repeatInterval);
+    switch (kind) {
+    case TodoScheduleKind::Secondly:
+        return interval;
+    case TodoScheduleKind::Minutely:
+        return interval * 60;
+    case TodoScheduleKind::Hourly:
+        return interval * 60 * 60;
+    case TodoScheduleKind::Daily:
+        return interval * 24 * 60 * 60;
+    case TodoScheduleKind::Weekly:
+        return interval * 7 * 24 * 60 * 60;
+    default:
+        return 0;
+    }
+}
+
+std::string WideToUtf8(const std::wstring& value) {
+    if (value.empty()) {
+        return {};
+    }
+    const int length = WideCharToMultiByte(CP_UTF8, 0, value.c_str(), static_cast<int>(value.size()), nullptr, 0, nullptr, nullptr);
+    if (length <= 0) {
+        return {};
+    }
+    std::string output(static_cast<std::size_t>(length), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, value.c_str(), static_cast<int>(value.size()), output.data(), length, nullptr, nullptr);
+    return output;
+}
+
+bool TryParseCronExpression(const std::wstring& value, cron_expr& parsed) {
+    const std::string expression = WideToUtf8(NormalizeTodoCronExpression(value));
+    if (expression.empty()) {
+        return false;
+    }
+    const char* error = nullptr;
+    cron_parse_expr(expression.c_str(), &parsed, &error);
+    return error == nullptr;
 }
 }
 
 bool IsRecurringTodoSchedule(TodoScheduleKind kind) {
+    return kind == TodoScheduleKind::Secondly ||
+           kind == TodoScheduleKind::Minutely ||
+           kind == TodoScheduleKind::Hourly ||
+           kind == TodoScheduleKind::Daily ||
+           kind == TodoScheduleKind::Weekly ||
+           kind == TodoScheduleKind::Monthly ||
+           kind == TodoScheduleKind::Yearly ||
+           kind == TodoScheduleKind::Cron;
+}
+
+bool IsTodoCronSchedule(TodoScheduleKind kind) {
+    return kind == TodoScheduleKind::Cron;
+}
+
+bool IsFixedPointSchedule(TodoScheduleKind kind) {
     return kind == TodoScheduleKind::Daily ||
            kind == TodoScheduleKind::Weekly ||
            kind == TodoScheduleKind::Monthly ||
@@ -127,12 +199,13 @@ std::wstring FormatTodoTimestamp(const SYSTEMTIME& value) {
     wchar_t buffer[32]{};
     swprintf_s(
         buffer,
-        L"%04u-%02u-%02u %02u:%02u",
+        L"%04u-%02u-%02u %02u:%02u:%02u",
         value.wYear,
         value.wMonth,
         value.wDay,
         value.wHour,
-        value.wMinute);
+        value.wMinute,
+        value.wSecond);
     return buffer;
 }
 
@@ -143,13 +216,19 @@ bool TryParseTodoTimestamp(const std::wstring& value, SYSTEMTIME& result) {
     int day = 0;
     int hour = 0;
     int minute = 0;
-    int matched = swscanf_s(text.c_str(), L"%d-%d-%d %d:%d", &year, &month, &day, &hour, &minute);
+    int second = 0;
+    int matched = swscanf_s(text.c_str(), L"%d-%d-%d %d:%d:%d", &year, &month, &day, &hour, &minute, &second);
     if (matched < 3) {
         return false;
     }
     if (matched == 3) {
         hour = 0;
         minute = 0;
+        second = 0;
+    } else if (matched == 5) {
+        second = 0;
+    } else if (matched != 6) {
+        return false;
     }
 
     SYSTEMTIME parsed{};
@@ -158,6 +237,7 @@ bool TryParseTodoTimestamp(const std::wstring& value, SYSTEMTIME& result) {
     parsed.wDay = static_cast<WORD>(day);
     parsed.wHour = static_cast<WORD>(hour);
     parsed.wMinute = static_cast<WORD>(minute);
+    parsed.wSecond = static_cast<WORD>(second);
     if (!IsValidParsedTime(parsed)) {
         return false;
     }
@@ -173,8 +253,39 @@ std::wstring NormalizeTodoTimestamp(const std::wstring& value) {
     return FormatTodoTimestamp(parsed);
 }
 
+std::wstring NormalizeTodoCronExpression(const std::wstring& value) {
+    const std::wstring text = Trim(value);
+    std::wstring result;
+    bool previousSpace = false;
+    for (wchar_t ch : text) {
+        if (std::iswspace(ch) != 0) {
+            if (!result.empty() && !previousSpace) {
+                result += L' ';
+            }
+            previousSpace = true;
+        } else {
+            result += ch;
+            previousSpace = false;
+        }
+    }
+    return Trim(result);
+}
+
+bool IsValidTodoCronExpression(const std::wstring& value) {
+    cron_expr parsed{};
+    return TryParseCronExpression(value, parsed);
+}
+
 std::wstring ComputeNextTodoDueAt(TodoScheduleKind kind, const std::wstring& anchorAt, const std::wstring& afterAt) {
-    if (kind == TodoScheduleKind::None) {
+    return ComputeNextTodoDueAt(kind, 1, anchorAt, afterAt);
+}
+
+std::wstring ComputeNextTodoDueAt(TodoScheduleKind kind, int repeatInterval, const std::wstring& anchorAt, const std::wstring& afterAt) {
+    return ComputeNextTodoDueAt(kind, IsFixedPointSchedule(kind) ? TodoRepeatMode::FixedPoint : TodoRepeatMode::Interval, repeatInterval, anchorAt, afterAt);
+}
+
+std::wstring ComputeNextTodoDueAt(TodoScheduleKind kind, TodoRepeatMode repeatMode, int repeatInterval, const std::wstring& anchorAt, const std::wstring& afterAt) {
+    if (kind == TodoScheduleKind::None || kind == TodoScheduleKind::Cron) {
         return {};
     }
 
@@ -192,15 +303,54 @@ std::wstring ComputeNextTodoDueAt(TodoScheduleKind kind, const std::wstring& anc
     }
 
     const std::time_t afterTime = ToTimeT(after);
+    const int fixedSeconds = repeatMode == TodoRepeatMode::Interval ? FixedIntervalSeconds(kind, repeatInterval) : 0;
+    if (fixedSeconds > 0) {
+        const std::time_t anchorTime = ToTimeT(anchor);
+        if (anchorTime == static_cast<std::time_t>(-1)) {
+            return {};
+        }
+        if (anchorTime > afterTime) {
+            return FormatTodoTimestamp(anchor);
+        }
+        const std::time_t elapsed = afterTime - anchorTime;
+        const std::time_t periods = elapsed / fixedSeconds + 1;
+        return FormatTodoTimestamp(FromTimeT(anchorTime + periods * fixedSeconds));
+    }
+
+    const int interval = std::max(1, repeatInterval);
     SYSTEMTIME due = anchor;
     std::time_t dueTime = ToTimeT(due);
     int periods = 0;
     int guard = 0;
     while (dueTime <= afterTime && guard < 10000) {
-        ++periods;
+        periods += interval;
         due = AddPeriodsFromAnchor(kind, anchor, periods);
         dueTime = ToTimeT(due);
         ++guard;
     }
     return FormatTodoTimestamp(due);
+}
+
+std::wstring ComputeNextTodoCronDueAt(const std::wstring& cronExpression, const std::wstring& afterAt) {
+    cron_expr parsed{};
+    if (!TryParseCronExpression(cronExpression, parsed)) {
+        return {};
+    }
+
+    SYSTEMTIME after{};
+    if (!TryParseTodoTimestamp(afterAt, after)) {
+        GetLocalTime(&after);
+    }
+    const std::time_t next = cron_next(&parsed, ToTimeT(after));
+    if (next == static_cast<std::time_t>(-1)) {
+        return {};
+    }
+    return FormatTodoTimestamp(FromTimeT(next));
+}
+
+std::wstring ComputeNextTodoDueAt(const TodoItem& item, const std::wstring& afterAt) {
+    if (item.scheduleKind == TodoScheduleKind::Cron) {
+        return ComputeNextTodoCronDueAt(item.cronExpression, afterAt);
+    }
+    return ComputeNextTodoDueAt(item.scheduleKind, item.repeatMode, item.repeatInterval, item.anchorAt, afterAt);
 }

@@ -128,16 +128,18 @@ const NotePage* FindNoteByTag(const AppModel& model, int tagId) {
 }
 
 void CheckScheduleRules() {
-    Check(NormalizeTodoTimestamp(L"2026/06/26") == L"2026-06-26 00:00", "acceptance timestamp date-only normalize");
+    Check(NormalizeTodoTimestamp(L"2026/06/26") == L"2026-06-26 00:00:00", "acceptance timestamp date-only normalize");
     Check(NormalizeTodoTimestamp(L"2026-02-29 09:00").empty(), "acceptance timestamp rejects invalid date");
     Check(ComputeNextTodoDueAt(TodoScheduleKind::None, L"2026-06-26 09:30", L"2026-06-26 10:00").empty(), "acceptance no-time next due empty");
-    Check(ComputeNextTodoDueAt(TodoScheduleKind::Once, L"2026-06-26 09:30", L"2030-01-01 00:00") == L"2026-06-26 09:30", "acceptance once keeps anchor");
-    Check(ComputeNextTodoDueAt(TodoScheduleKind::Daily, L"2026-06-26 09:30", L"2026-06-26 10:00") == L"2026-06-27 09:30", "acceptance daily next due");
-    Check(ComputeNextTodoDueAt(TodoScheduleKind::Weekly, L"2026-06-26 09:30", L"2026-06-27 00:00") == L"2026-07-03 09:30", "acceptance weekly next due");
-    Check(ComputeNextTodoDueAt(TodoScheduleKind::Monthly, L"2024-01-31 09:00", L"2024-02-01 00:00") == L"2024-02-29 09:00", "acceptance monthly clamps February");
-    Check(ComputeNextTodoDueAt(TodoScheduleKind::Monthly, L"2024-01-31 09:00", L"2024-03-01 00:00") == L"2024-03-31 09:00", "acceptance monthly returns to anchor day");
-    Check(ComputeNextTodoDueAt(TodoScheduleKind::Yearly, L"2024-02-29 09:00", L"2025-01-01 00:00") == L"2025-02-28 09:00", "acceptance yearly clamps non-leap");
-    Check(ComputeNextTodoDueAt(TodoScheduleKind::Yearly, L"2024-02-29 09:00", L"2027-03-01 00:00") == L"2028-02-29 09:00", "acceptance yearly returns to leap day");
+    Check(ComputeNextTodoDueAt(TodoScheduleKind::Once, L"2026-06-26 09:30", L"2030-01-01 00:00") == L"2026-06-26 09:30:00", "acceptance once keeps anchor");
+    Check(ComputeNextTodoDueAt(TodoScheduleKind::Secondly, 10, L"2026-06-26 09:30:05", L"2026-06-26 09:30:12") == L"2026-06-26 09:30:15", "acceptance second interval next due");
+    Check(ComputeNextTodoDueAt(TodoScheduleKind::Daily, L"2026-06-26 09:30", L"2026-06-26 10:00") == L"2026-06-27 09:30:00", "acceptance daily next due");
+    Check(ComputeNextTodoDueAt(TodoScheduleKind::Weekly, L"2026-06-26 09:30", L"2026-06-27 00:00") == L"2026-07-03 09:30:00", "acceptance weekly next due");
+    Check(ComputeNextTodoDueAt(TodoScheduleKind::Monthly, L"2024-01-31 09:00", L"2024-02-01 00:00") == L"2024-02-29 09:00:00", "acceptance monthly clamps February");
+    Check(ComputeNextTodoDueAt(TodoScheduleKind::Monthly, L"2024-01-31 09:00", L"2024-03-01 00:00") == L"2024-03-31 09:00:00", "acceptance monthly returns to anchor day");
+    Check(ComputeNextTodoDueAt(TodoScheduleKind::Yearly, L"2024-02-29 09:00", L"2025-01-01 00:00") == L"2025-02-28 09:00:00", "acceptance yearly clamps non-leap");
+    Check(ComputeNextTodoDueAt(TodoScheduleKind::Yearly, L"2024-02-29 09:00", L"2027-03-01 00:00") == L"2028-02-29 09:00:00", "acceptance yearly returns to leap day");
+    Check(IsValidTodoCronExpression(L"0 30 9 * * *") && ComputeNextTodoCronDueAt(L"0 30 9 * * *", L"2026-06-26 09:00:00") == L"2026-06-26 09:30:00", "acceptance cron daily next due");
 }
 }
 
@@ -202,7 +204,7 @@ int wmain() {
     once.scheduleKind = TodoScheduleKind::Once;
     once.anchorAt = L"2026/06/26 09:30";
     once.pos = -1;
-    Check(storage.InsertTodoItem(once) && once.nextDueAt == L"2026-06-26 09:30" && once.enabled, "acceptance insert once todo");
+    Check(storage.InsertTodoItem(once) && once.nextDueAt == L"2026-06-26 09:30:00" && once.enabled, "acceptance insert once todo");
     once.title = L"OnceEdited";
     once.content = L"edited content";
     once.enabled = false;
@@ -214,11 +216,14 @@ int wmain() {
     recurring.tagId = todoTag.id;
     recurring.title = L"Recurring";
     recurring.scheduleKind = TodoScheduleKind::Monthly;
+    recurring.repeatMode = TodoRepeatMode::FixedPoint;
+    recurring.repeatInterval = 1;
+    recurring.repeatLimit = 2;
     recurring.anchorAt = L"2024-01-31 09:00";
     recurring.pos = -1;
     Check(storage.InsertTodoItem(recurring) && recurring.nextDueAt >= CurrentTodoTimestamp(), "acceptance insert recurring next due after now");
-    const std::wstring recurringBeforeComplete = recurring.nextDueAt;
     Check(storage.SetTodoCompleted(recurring.id, true), "acceptance complete recurring todo advances");
+    Check(storage.SetTodoCompleted(recurring.id, true), "acceptance complete recurring todo reaches repeat limit");
 
     AppModel loaded = storage.Load();
     const Group* renamedNote = FindGroupByName(loaded, L"RenamedNote");
@@ -230,7 +235,7 @@ int wmain() {
     const TodoItem* loadedOnce = FindTodoByTitle(loaded, L"OnceEdited");
     Check(loadedOnce && loadedOnce->enabled && !loadedOnce->completedAt.empty() && loadedOnce->content == L"edited content", "acceptance reload completed enabled todo");
     const TodoItem* loadedRecurring = FindTodoByTitle(loaded, L"Recurring");
-    Check(loadedRecurring && loadedRecurring->completedAt.empty() && loadedRecurring->nextDueAt >= recurringBeforeComplete, "acceptance reload recurring remains open");
+    Check(loadedRecurring && !loadedRecurring->completedAt.empty() && loadedRecurring->nextDueAt.empty() && loadedRecurring->repeatFinished == 2 && loadedRecurring->repeatMode == TodoRepeatMode::FixedPoint, "acceptance reload recurring stops at repeat limit");
 
     Check(storage.DeleteTodoItem(noTime.id), "acceptance delete todo");
     loaded = storage.Load();
@@ -252,7 +257,7 @@ int wmain() {
     const TodoItem* legacyTodo = FindTodoByTitle(legacy, L"legacy todo");
     const Group* legacyNote = FindGroupByName(legacy, L"LegacyNote");
     Check(legacyFilter && legacyFilter->type == 2 && legacyFilter->content == L"todo", "acceptance legacy type2 todo filter unchanged");
-    Check(legacyTodo && legacyTodo->enabled && legacyTodo->nextDueAt == L"2026-06-26 09:30", "acceptance legacy todo default enabled after migration");
+    Check(legacyTodo && legacyTodo->enabled && legacyTodo->repeatMode == TodoRepeatMode::FixedPoint && legacyTodo->nextDueAt == L"2026-06-26 09:30", "acceptance legacy todo default enabled after migration");
     Check(legacyNote && FindNoteByTag(legacy, legacyNote->id), "acceptance legacy note survives migration");
     Check(legacyStorage.SetTodoEnabled(200, false), "acceptance migrated enabled column writable");
     legacy = legacyStorage.Load();

@@ -46,8 +46,16 @@ add_library(sqlite3 STATIC
     third_party/sqlite/sqlite3.c
 )
 
+add_library(ccronexpr STATIC
+    third_party/ccronexpr/ccronexpr.c
+)
+
 target_include_directories(sqlite3 PUBLIC
     third_party/sqlite
+)
+
+target_include_directories(ccronexpr PUBLIC
+    third_party/ccronexpr
 )
 
 target_compile_definitions(sqlite3 PRIVATE
@@ -56,7 +64,16 @@ target_compile_definitions(sqlite3 PRIVATE
     SQLITE_THREADSAFE=1
 )
 
+target_compile_definitions(ccronexpr PRIVATE
+    CRON_USE_LOCAL_TIME
+    _CRT_SECURE_NO_WARNINGS
+)
+
 target_compile_options(sqlite3 PRIVATE
+    $<$<C_COMPILER_ID:MSVC>:/W0 /utf-8>
+)
+
+target_compile_options(ccronexpr PRIVATE
     $<$<C_COMPILER_ID:MSVC>:/W0 /utf-8>
 )
 
@@ -272,6 +289,7 @@ target_include_directories(QuattroThemeStateProbe PRIVATE
 
 target_link_libraries(QuattroTests PRIVATE
     sqlite3
+    ccronexpr
     advapi32
     bcrypt
     comctl32
@@ -289,6 +307,7 @@ endif()
 
 target_link_libraries(QuattroNoteTodoAcceptance PRIVATE
     sqlite3
+    ccronexpr
     bcrypt
     shell32
     shlwapi
@@ -298,11 +317,13 @@ target_link_libraries(QuattroNoteTodoAcceptance PRIVATE
 
 target_link_libraries(QuattroDbProbe PRIVATE
     sqlite3
+    ccronexpr
     user32
 )
 
 target_link_libraries(QuattroDbSeed PRIVATE
     sqlite3
+    ccronexpr
     user32
 )
 
@@ -316,6 +337,7 @@ target_link_libraries(QuattroThemeStateProbe PRIVATE
 
 target_link_libraries(QuattroWebDavAcceptance PRIVATE
     sqlite3
+    ccronexpr
     advapi32
     user32
 )
@@ -326,6 +348,7 @@ endif()
 
 target_link_libraries(Quattro PRIVATE
     sqlite3
+    ccronexpr
     advapi32
     bcrypt
     d2d1

@@ -533,6 +533,12 @@ std::wstring TodoScheduleText(TodoScheduleKind kind) {
     switch (kind) {
     case TodoScheduleKind::Once:
         return L"一次性";
+    case TodoScheduleKind::Secondly:
+        return L"每秒";
+    case TodoScheduleKind::Minutely:
+        return L"每分";
+    case TodoScheduleKind::Hourly:
+        return L"每时";
     case TodoScheduleKind::Daily:
         return L"每日";
     case TodoScheduleKind::Weekly:
@@ -541,9 +547,48 @@ std::wstring TodoScheduleText(TodoScheduleKind kind) {
         return L"每月";
     case TodoScheduleKind::Yearly:
         return L"每年";
+    case TodoScheduleKind::Cron:
+        return L"Cron";
     default:
         return L"无时间";
     }
+}
+
+std::wstring TodoScheduleText(const TodoItem& item) {
+    if (item.scheduleKind == TodoScheduleKind::Cron) {
+        return item.cronExpression.empty() ? L"Cron" : L"Cron " + item.cronExpression;
+    }
+    if (!IsRecurringTodoSchedule(item.scheduleKind) || item.repeatInterval <= 1) {
+        return TodoScheduleText(item.scheduleKind);
+    }
+    std::wstring unit;
+    switch (item.scheduleKind) {
+    case TodoScheduleKind::Secondly:
+        unit = L"秒";
+        break;
+    case TodoScheduleKind::Minutely:
+        unit = L"分";
+        break;
+    case TodoScheduleKind::Hourly:
+        unit = L"时";
+        break;
+    case TodoScheduleKind::Daily:
+        unit = L"天";
+        break;
+    case TodoScheduleKind::Weekly:
+        unit = L"周";
+        break;
+    case TodoScheduleKind::Monthly:
+        unit = L"月";
+        break;
+    case TodoScheduleKind::Yearly:
+        unit = L"年";
+        break;
+    default:
+        unit = L"";
+        break;
+    }
+    return L"每 " + std::to_wstring(item.repeatInterval) + L" " + unit;
 }
 
 bool IsTodoOverdue(const TodoItem& item) {
@@ -590,7 +635,10 @@ std::wstring TodoReminderText(const TodoItem& item) {
         text += L"\n" + Trim(item.content);
     }
     if (!item.nextDueAt.empty()) {
-        text += L"\n" + TodoScheduleText(item.scheduleKind) + L" " + item.nextDueAt;
+        text += L"\n" + TodoScheduleText(item) + L" " + item.nextDueAt;
+        if (IsRecurringTodoSchedule(item.scheduleKind) && item.repeatLimit > 0) {
+            text += L" (" + std::to_wstring(item.repeatFinished) + L"/" + std::to_wstring(item.repeatLimit) + L")";
+        }
     }
     return text;
 }
@@ -1335,7 +1383,7 @@ bool MainWindow::Create() {
         dockTimerId_ = SetTimer(hwnd_, ID_TIMER_DOCK, 250, nullptr);
     }
     InitializeTrayIcon();
-    reminderScanTimerId_ = SetTimer(hwnd_, ID_TIMER_REMINDER_SCAN, 30000, nullptr);
+    reminderScanTimerId_ = SetTimer(hwnd_, ID_TIMER_REMINDER_SCAN, 1000, nullptr);
     CheckTodoReminders();
     return true;
 }
@@ -3314,10 +3362,19 @@ void MainWindow::ToggleTodoDone(int todoId) {
         return;
     }
     if (complete && IsRecurringTodoSchedule(item->scheduleKind)) {
-        item->completedAt.clear();
-        item->nextDueAt = ComputeNextTodoDueAt(item->scheduleKind, item->anchorAt, now);
+        ++item->repeatFinished;
+        if (item->repeatLimit > 0 && item->repeatFinished >= item->repeatLimit) {
+            item->completedAt = now;
+            item->nextDueAt.clear();
+        } else {
+            item->completedAt.clear();
+            item->nextDueAt = ComputeNextTodoDueAt(*item, now);
+        }
     } else {
         item->completedAt = complete ? now : L"";
+        if (!complete && IsRecurringTodoSchedule(item->scheduleKind) && item->nextDueAt.empty()) {
+            item->nextDueAt = ComputeNextTodoDueAt(*item, now);
+        }
     }
     item->updatedAt = now;
     selectedTodoId_ = todoId;
@@ -5540,9 +5597,12 @@ void MainWindow::DrawTodoItems(D2D1_RECT_F rect, const Group&) {
         } else {
             tags.push_back(L"无时间");
         }
-        const std::wstring scheduleText = TodoScheduleText(item.scheduleKind);
+        const std::wstring scheduleText = TodoScheduleText(item);
         if (recurring) {
             tags.push_back(scheduleText);
+            if (item.repeatLimit > 0) {
+                tags.push_back(std::to_wstring(item.repeatFinished) + L"/" + std::to_wstring(item.repeatLimit));
+            }
         }
         if (!item.nextDueAt.empty()) {
             tags.push_back(item.nextDueAt);

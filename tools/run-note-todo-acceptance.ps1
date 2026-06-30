@@ -60,6 +60,7 @@ function Assert-BlockNotContains {
     }
 }
 
+$todoDialogEnableText = "$([char]0x542F)$([char]0x7528)"
 $todoEnableText = "$([char]0x542F)$([char]0x7528)$([char]0x5F85)$([char]0x529E)$([char]0x4E8B)$([char]0x9879)"
 $todoDisableText = "$([char]0x7981)$([char]0x7528)$([char]0x5F85)$([char]0x529E)$([char]0x4E8B)$([char]0x9879)"
 $recommendedDueSortText = "$([char]0x6309)$([char]0x63D0)$([char]0x9192)$([char]0x65F6)$([char]0x95F4)$([char]0xFF08)$([char]0x63A8)$([char]0x8350)$([char]0xFF09)"
@@ -100,7 +101,7 @@ Assert-Contains -Path "src\Storage.cpp" -Needle "Enabled INTEGER DEFAULT 1" -Nam
 Assert-Contains -Path "src\Storage.cpp" -Needle "ALTER TABLE TodoItems ADD COLUMN Enabled INTEGER DEFAULT 1;" -Name "TodoItems Enabled migration"
 Assert-Contains -Path "src\TodoEditDialog.cpp" -Needle "IdEnabled" -Name "Todo edit enabled checkbox id"
 Assert-Contains -Path "src\TodoEditDialog.cpp" -Needle "CreateCheckBox" -Name "Todo edit enabled checkbox control"
-Assert-Contains -Path "src\TodoEditDialog.cpp" -Needle $todoEnableText -Name "Todo edit enabled checkbox text"
+Assert-Contains -Path "src\TodoEditDialog.cpp" -Needle $todoDialogEnableText -Name "Todo edit enabled checkbox text"
 Assert-Contains -Path "src\TodoEditDialog.cpp" -Needle "draft_.enabled = SendMessageW(enabledCheck_, BM_GETCHECK, 0, 0) == BST_CHECKED;" -Name "Todo edit enabled save"
 Assert-Contains -Path "src\MainWindow.cpp" -Needle "ShowTodoReminderPanel(item);" -Name "Reminder panel"
 Assert-Contains -Path "src\MainWindow.cpp" -Needle "ShowTodoSystemNotification(item);" -Name "System notification"

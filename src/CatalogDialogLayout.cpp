@@ -88,28 +88,37 @@ void CatalogDialogLayout::Layout(HWND parent, const RECT& client, const CatalogD
         GetWindowRect(control, &rect);
         POINT point{rect.left, rect.top};
         ScreenToClient(parent, &point);
-        MoveWindow(control, point.x, geometry.toolbar.top + 1, rect.right - rect.left, std::max(1, metrics_.toolbarHeight - 2), TRUE);
+        MoveWindow(control, point.x, geometry.toolbar.top + 1, rect.right - rect.left, std::max(1, ThemedControls::CompactButtonHeight(*controls.theme)), TRUE);
     }
 
     const int toolbarLeft = static_cast<int>(geometry.toolbar.left);
     const int toolbarRight = static_cast<int>(geometry.toolbar.right);
     const int trailingX = std::max(toolbarLeft, toolbarRight - controls.toolbarTrailingWidth);
     if (controls.toolbarTrailing) {
-        MoveWindow(controls.toolbarTrailing, trailingX, geometry.toolbar.top + 1, controls.toolbarTrailingWidth, std::max(1, metrics_.toolbarHeight - 2), TRUE);
+        MoveWindow(controls.toolbarTrailing, trailingX, geometry.toolbar.top + 1, controls.toolbarTrailingWidth, std::max(1, ThemedControls::CompactButtonHeight(*controls.theme)), TRUE);
     }
     if (controls.searchEdit && controls.searchFrame && controls.theme) {
         const int searchRight = trailingX - metrics_.horizontalGap;
         const int searchLeft = std::max(toolbarLeft + metrics_.searchLeftReserve, searchRight - metrics_.searchWidth);
         *controls.searchFrame = RECT{searchLeft, geometry.toolbar.top + 1, searchRight, geometry.toolbar.bottom - 1};
-        const RECT editRect = ThemedControls::SingleLineEditRect(*controls.theme, *controls.searchFrame);
+        const RECT editRect = ThemedControls::SingleLineEditRectForFrame(*controls.theme, *controls.searchFrame);
         MoveWindow(controls.searchEdit, editRect.left, editRect.top, editRect.right - editRect.left, editRect.bottom - editRect.top, TRUE);
     }
 
+    const int listInset = std::max(0, controls.listFrameInset);
     if (controls.listFrame) {
         *controls.listFrame = geometry.listFrame;
     }
     if (controls.list) {
-        MoveWindow(controls.list, geometry.list.left, geometry.list.top, geometry.list.right - geometry.list.left, geometry.list.bottom - geometry.list.top, TRUE);
+        const int listWidth = std::max(1, static_cast<int>(geometry.list.right - geometry.list.left) - listInset * 2);
+        const int listHeight = std::max(1, static_cast<int>(geometry.list.bottom - geometry.list.top) - listInset * 2);
+        MoveWindow(
+            controls.list,
+            geometry.list.left + listInset,
+            geometry.list.top + listInset,
+            listWidth,
+            listHeight,
+            TRUE);
         if (controls.listItemHeight > 0) {
             SendMessageW(controls.list, LB_SETITEMHEIGHT, 0, controls.listItemHeight);
         }
@@ -120,7 +129,7 @@ void CatalogDialogLayout::Layout(HWND parent, const RECT& client, const CatalogD
         if (!control) {
             continue;
         }
-        MoveWindow(control, pagerLeft, geometry.pager.top + 1, width, std::max(1, metrics_.pagerHeight - 2), TRUE);
+        MoveWindow(control, pagerLeft, geometry.pager.top + 1, width, std::max(1, ThemedControls::CompactButtonHeight(*controls.theme)), TRUE);
         pagerLeft += width + metrics_.horizontalGap;
     }
 
@@ -128,13 +137,13 @@ void CatalogDialogLayout::Layout(HWND parent, const RECT& client, const CatalogD
     const int pageX = nextX - metrics_.horizontalGap - controls.pageTextWidth;
     const int prevX = pageX - metrics_.horizontalGap - controls.pagePrevWidth;
     if (controls.pagePrev) {
-        MoveWindow(controls.pagePrev, prevX, geometry.pager.top + 1, controls.pagePrevWidth, std::max(1, metrics_.pagerHeight - 2), TRUE);
+        MoveWindow(controls.pagePrev, prevX, geometry.pager.top + 1, controls.pagePrevWidth, std::max(1, ThemedControls::CompactButtonHeight(*controls.theme)), TRUE);
     }
     if (controls.pageText) {
-        MoveWindow(controls.pageText, pageX, geometry.pager.top + 1, controls.pageTextWidth, std::max(1, metrics_.pagerHeight - 2), TRUE);
+        MoveWindow(controls.pageText, pageX, geometry.pager.top + 1, controls.pageTextWidth, std::max(1, ThemedControls::CompactButtonHeight(*controls.theme)), TRUE);
     }
     if (controls.pageNext) {
-        MoveWindow(controls.pageNext, nextX, geometry.pager.top + 1, controls.pageNextWidth, std::max(1, metrics_.pagerHeight - 2), TRUE);
+        MoveWindow(controls.pageNext, nextX, geometry.pager.top + 1, controls.pageNextWidth, std::max(1, ThemedControls::CompactButtonHeight(*controls.theme)), TRUE);
     }
 
     if (controls.statusSummary) {

@@ -338,7 +338,7 @@
         <Metric name="height" value="30"/>
         <Metric name="paddingX" value="12"/>
         <Metric name="textHeight" value="20"/>
-        <Metric name="textOffsetY" value="1"/>
+        <Metric name="textOffsetY" value="0"/>
         <Metric name="segmented" value="1"/>
         <Metric name="segmentInset" value="0.5"/>
         <Metric name="groupItemWidth" value="58"/>
@@ -348,8 +348,8 @@
         <Metric name="groupBorderWidth" value="0"/>
         <State name="normal" bg="@surfaceRaised" text="@text" border="rgb(210,216,226)" groupBg="@surfaceRaised" groupBorder="@border"/>
         <State name="hover" bg="@hover" text="@text" border="@border"/>
-        <State name="selected" bg="@surface" text="@accent" border="@accent"/>
-        <State name="selectedHover" bg="@pressed" text="@accent" border="@accent"/>
+        <State name="selected" bg="@accentSoft" text="@accent" border="@accent"/>
+        <State name="selectedHover" bg="@selected" text="@accent" border="@accent"/>
         <State name="focused" border="@focus"/>
         <State name="disabled" bg="@background" text="@disabledText" border="@line"/>
     </Component>
@@ -357,10 +357,10 @@
         <Metric name="radius" value="7"/>
         <Metric name="borderWidth" value="1"/>
         <Metric name="height" value="30"/>
-        <Metric name="compactHeight" value="28"/>
+        <Metric name="compactHeight" value="24"/>
         <Metric name="paddingX" value="12"/>
         <Metric name="textHeight" value="20"/>
-        <Metric name="textOffsetY" value="1"/>
+        <Metric name="textOffsetY" value="0"/>
         <Metric name="pressedOffset" value="1"/>
         <State name="normal" bg="@surface" text="@text" border="@border"/>
         <State name="hover" bg="@hover" text="@text" border="@accent"/>
@@ -407,7 +407,7 @@
     </Component>
     <Component name="list">
         <Metric name="radius" value="7"/>
-        <Metric name="borderWidth" value="1"/>
+        <Metric name="borderWidth" value="2"/>
         <Metric name="paddingX" value="8"/>
         <Metric name="paddingY" value="6"/>
         <State name="normal" bg="@surface" text="@text" border="@border"/>

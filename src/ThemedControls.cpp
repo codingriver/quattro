@@ -50,10 +50,14 @@ std::wstring WindowText(HWND hwnd) {
 }
 
 void FillRoundRect(HDC dc, RECT rect, int radius, COLORREF fill, COLORREF border, int borderWidth) {
+    const int stroke = std::max(1, borderWidth);
     HBRUSH brush = CreateSolidBrush(fill);
-    HPEN pen = CreatePen(PS_SOLID, std::max(1, borderWidth), border);
+    HPEN pen = CreatePen(PS_SOLID, stroke, border);
     HGDIOBJ oldBrush = SelectObject(dc, brush);
     HGDIOBJ oldPen = SelectObject(dc, pen);
+    if (stroke > 1) {
+        InflateRect(&rect, -(stroke / 2), -(stroke / 2));
+    }
     RoundRect(dc, rect.left, rect.top, rect.right, rect.bottom, radius * 2, radius * 2);
     SelectObject(dc, oldPen);
     SelectObject(dc, oldBrush);
@@ -62,10 +66,14 @@ void FillRoundRect(HDC dc, RECT rect, int radius, COLORREF fill, COLORREF border
 }
 
 void DrawRoundRect(HDC dc, RECT rect, int radius, COLORREF border, int borderWidth) {
+    const int stroke = std::max(1, borderWidth);
     HBRUSH brush = reinterpret_cast<HBRUSH>(GetStockObject(NULL_BRUSH));
-    HPEN pen = CreatePen(PS_SOLID, std::max(1, borderWidth), border);
+    HPEN pen = CreatePen(PS_SOLID, stroke, border);
     HGDIOBJ oldBrush = SelectObject(dc, brush);
     HGDIOBJ oldPen = SelectObject(dc, pen);
+    if (stroke > 1) {
+        InflateRect(&rect, -(stroke / 2), -(stroke / 2));
+    }
     RoundRect(dc, rect.left, rect.top, rect.right, rect.bottom, radius * 2, radius * 2);
     SelectObject(dc, oldPen);
     SelectObject(dc, oldBrush);
@@ -186,9 +194,14 @@ LRESULT CALLBACK ThemedControlProc(HWND hwnd, UINT message, WPARAM wParam, LPARA
             } else {
                 RemovePropW(hwnd, kControlSelectedProp);
             }
+            InvalidateRect(hwnd, nullptr, TRUE);
+            return 0;
         }
         break;
     case BM_GETCHECK:
+        if (GetPropW(hwnd, kControlKindProp) == TabButtonKind()) {
+            return GetPropW(hwnd, kControlSelectedProp) != nullptr ? BST_CHECKED : BST_UNCHECKED;
+        }
         if (GetPropW(hwnd, kControlKindProp) == CheckBoxKind()) {
             return IsChecked(hwnd) ? BST_CHECKED : BST_UNCHECKED;
         }
@@ -329,10 +342,7 @@ void DrawCheckBox(const Theme& theme, const DRAWITEMSTRUCT* draw) {
 
 void DrawTabButton(const Theme& theme, const DRAWITEMSTRUCT* draw) {
     const bool disabled = (draw->itemState & ODS_DISABLED) != 0;
-    const bool focused = (draw->itemState & ODS_FOCUS) != 0;
-    const bool selected = GetPropW(draw->hwndItem, kControlSelectedProp) != nullptr ||
-                          ((draw->itemState & ODS_CHECKED) != 0) ||
-                          SendMessageW(draw->hwndItem, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    const bool selected = GetPropW(draw->hwndItem, kControlSelectedProp) != nullptr;
     const bool hover = IsHover(draw->hwndItem);
     const wchar_t* state = disabled ? L"disabled" : (selected ? (hover ? L"selectedHover" : L"selected") : (hover ? L"hover" : L"normal"));
 
@@ -352,7 +362,7 @@ void DrawTabButton(const Theme& theme, const DRAWITEMSTRUCT* draw) {
             segmentRect,
             radius,
             ToColorRef(theme.color(L"tabButton", state, L"bg")),
-            ToColorRef(theme.color(L"tabButton", focused ? L"focused" : state, L"border")),
+            ToColorRef(theme.color(L"tabButton", state, L"border")),
             borderWidth);
     } else {
         FillRoundRect(
@@ -360,7 +370,7 @@ void DrawTabButton(const Theme& theme, const DRAWITEMSTRUCT* draw) {
             rect,
             radius,
             ToColorRef(theme.color(L"tabButton", state, L"bg")),
-            ToColorRef(theme.color(L"tabButton", focused ? L"focused" : state, L"border")),
+            ToColorRef(theme.color(L"tabButton", state, L"border")),
             borderWidth);
     }
 
@@ -568,11 +578,10 @@ HWND CreateCheckBox(HINSTANCE instance, HWND parent, int id, const wchar_t* text
 }
 
 HWND CreateTabButton(HINSTANCE instance, HWND parent, int id, const wchar_t* text, int x, int y, int width, int height, HFONT font, bool selected) {
-    HWND hwnd = CreateWindowExW(0, L"BUTTON", text, WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTORADIOBUTTON | BS_PUSHLIKE | BS_OWNERDRAW,
+    HWND hwnd = CreateWindowExW(0, L"BUTTON", text, WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON | BS_OWNERDRAW,
                                 x, y, width, height, parent, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), instance, nullptr);
     if (hwnd) {
         SendMessageW(hwnd, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
-        SendMessageW(hwnd, BM_SETCHECK, selected ? BST_CHECKED : BST_UNCHECKED, 0);
         SetPropW(hwnd, kControlKindProp, TabButtonKind());
         if (selected) {
             SetPropW(hwnd, kControlSelectedProp, reinterpret_cast<HANDLE>(static_cast<INT_PTR>(1)));
@@ -616,6 +625,20 @@ int EditFontSizePx(const Theme& theme) {
 RECT SingleLineEditRect(const Theme& theme, RECT frame) {
     const int paddingX = EditPaddingX(theme);
     const int controlHeight = static_cast<int>(theme.metric(L"edit", L"singleLineControlHeight", static_cast<float>(EditTextHeight(theme))));
+    const int offsetY = static_cast<int>(theme.metric(L"edit", L"singleLineOffsetY", theme.metric(L"edit", L"textOffsetY", 0.0f)));
+    RECT rect{};
+    rect.left = frame.left + paddingX;
+    rect.right = frame.right - paddingX;
+    rect.top = frame.top + ((frame.bottom - frame.top) - controlHeight) / 2 + offsetY;
+    rect.bottom = rect.top + controlHeight;
+    return rect;
+}
+
+RECT SingleLineEditRectForFrame(const Theme& theme, RECT frame) {
+    const int paddingX = EditPaddingX(theme);
+    const int preferredHeight = static_cast<int>(theme.metric(L"edit", L"singleLineControlHeight", static_cast<float>(EditTextHeight(theme))));
+    const int frameHeight = std::max(1, static_cast<int>(frame.bottom - frame.top));
+    const int controlHeight = std::max(1, std::min(preferredHeight, frameHeight - 2));
     const int offsetY = static_cast<int>(theme.metric(L"edit", L"singleLineOffsetY", theme.metric(L"edit", L"textOffsetY", 0.0f)));
     RECT rect{};
     rect.left = frame.left + paddingX;

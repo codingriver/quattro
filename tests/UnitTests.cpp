@@ -44,10 +44,17 @@ int wmain() {
     Check(ParseInt(L"42").value_or(0) == 42, "ParseInt valid");
     Check(!ParseInt(L"42x").has_value(), "ParseInt invalid");
     Check(!Hex8(StablePathHash(L"abc")).empty(), "StablePathHash");
-    Check(NormalizeTodoTimestamp(L"2026/06/26 09:30") == L"2026-06-26 09:30", "Todo timestamp normalize");
-    Check(ComputeNextTodoDueAt(TodoScheduleKind::Daily, L"2026-06-26 09:30", L"2026-06-26 10:00") == L"2026-06-27 09:30", "Todo daily next due");
-    Check(ComputeNextTodoDueAt(TodoScheduleKind::Monthly, L"2024-01-31 09:00", L"2024-02-01 00:00") == L"2024-02-29 09:00", "Todo monthly month end");
-    Check(ComputeNextTodoDueAt(TodoScheduleKind::Yearly, L"2024-02-29 09:00", L"2025-01-01 00:00") == L"2025-02-28 09:00", "Todo yearly leap day");
+    Check(NormalizeTodoTimestamp(L"2026/06/26 09:30") == L"2026-06-26 09:30:00", "Todo timestamp normalize");
+    Check(ComputeNextTodoDueAt(TodoScheduleKind::Daily, L"2026-06-26 09:30", L"2026-06-26 10:00") == L"2026-06-27 09:30:00", "Todo daily next due");
+    Check(ComputeNextTodoDueAt(TodoScheduleKind::Minutely, 5, L"2026-06-26 09:30:10", L"2026-06-26 09:33:00") == L"2026-06-26 09:35:10", "Todo minute interval next due");
+    Check(ComputeNextTodoDueAt(TodoScheduleKind::Hourly, TodoRepeatMode::FixedPoint, 1, L"2026-06-26 09:15:10", L"2026-06-26 09:30:00") == L"2026-06-26 10:15:10", "Todo hourly fixed point next due");
+    Check(ComputeNextTodoDueAt(TodoScheduleKind::Daily, TodoRepeatMode::Interval, 2, L"2026-06-26 09:30:00", L"2026-06-29 10:00:00") == L"2026-06-30 09:30:00", "Todo daily interval next due");
+    Check(ComputeNextTodoDueAt(TodoScheduleKind::Monthly, L"2024-01-31 09:00", L"2024-02-01 00:00") == L"2024-02-29 09:00:00", "Todo monthly month end");
+    Check(ComputeNextTodoDueAt(TodoScheduleKind::Yearly, L"2024-02-29 09:00", L"2025-01-01 00:00") == L"2025-02-28 09:00:00", "Todo yearly leap day");
+    Check(NormalizeTodoCronExpression(L" 0  30  9  *  *  * ") == L"0 30 9 * * *", "Todo cron normalize");
+    Check(IsValidTodoCronExpression(L"0 30 9 * * *"), "Todo cron valid");
+    Check(!IsValidTodoCronExpression(L"0 99 9 * * *"), "Todo cron invalid");
+    Check(ComputeNextTodoCronDueAt(L"0 30 9 * * *", L"2026-06-26 09:00:00") == L"2026-06-26 09:30:00", "Todo cron daily next due");
 
     const std::filesystem::path temp = std::filesystem::temp_directory_path() / L"quattro_unit_conf.ini";
     std::error_code ec;
@@ -426,11 +433,30 @@ int wmain() {
     todo.scheduleKind = TodoScheduleKind::Once;
     todo.anchorAt = L"2026-06-26 09:30";
     todo.pos = -1;
-    Check(storage.InsertTodoItem(todo) && todo.id > 0 && todo.nextDueAt == L"2026-06-26 09:30" && todo.enabled, "Storage insert todo");
+    Check(storage.InsertTodoItem(todo) && todo.id > 0 && todo.nextDueAt == L"2026-06-26 09:30:00" && todo.enabled, "Storage insert todo");
     todo.content = L"updated details";
     Check(storage.UpdateTodoItem(todo), "Storage update todo");
     Check(storage.SetTodoEnabled(todo.id, false), "Storage disable todo");
     Check(storage.SetTodoCompleted(todo.id, true), "Storage complete todo");
+
+    TodoItem intervalTodo;
+    intervalTodo.tagId = todoTag.id;
+    intervalTodo.title = L"IntervalTodoItem";
+    intervalTodo.scheduleKind = TodoScheduleKind::Minutely;
+    intervalTodo.repeatMode = TodoRepeatMode::Interval;
+    intervalTodo.repeatInterval = 5;
+    intervalTodo.repeatLimit = 3;
+    intervalTodo.anchorAt = L"2026-06-26 09:30:10";
+    intervalTodo.pos = -1;
+    Check(storage.InsertTodoItem(intervalTodo) && intervalTodo.id > 0 && intervalTodo.repeatMode == TodoRepeatMode::Interval, "Storage insert interval todo");
+
+    TodoItem cronTodo;
+    cronTodo.tagId = todoTag.id;
+    cronTodo.title = L"CronTodoItem";
+    cronTodo.scheduleKind = TodoScheduleKind::Cron;
+    cronTodo.cronExpression = L" 0 30 9 * * * ";
+    cronTodo.pos = -1;
+    Check(storage.InsertTodoItem(cronTodo) && cronTodo.id > 0 && cronTodo.cronExpression == L"0 30 9 * * *" && !cronTodo.nextDueAt.empty(), "Storage insert cron todo");
 
     Link link;
     link.name = L"UnitLink";
@@ -463,13 +489,22 @@ int wmain() {
     }
     Check(foundNote, "Storage reload note");
     bool foundTodo = false;
+    bool foundIntervalTodo = false;
+    bool foundCronTodo = false;
     for (const auto& item : loadedModel.todos) {
         if (item.id == todo.id && item.content == L"updated details" && !item.enabled && !item.completedAt.empty()) {
             foundTodo = true;
-            break;
+        }
+        if (item.id == intervalTodo.id && item.repeatMode == TodoRepeatMode::Interval && item.repeatInterval == 5 && item.repeatLimit == 3) {
+            foundIntervalTodo = true;
+        }
+        if (item.id == cronTodo.id && item.scheduleKind == TodoScheduleKind::Cron && item.cronExpression == L"0 30 9 * * *" && !item.nextDueAt.empty()) {
+            foundCronTodo = true;
         }
     }
     Check(foundTodo, "Storage reload todo");
+    Check(foundIntervalTodo, "Storage reload interval todo");
+    Check(foundCronTodo, "Storage reload cron todo");
     Check(storage.SetTodoEnabled(todo.id, true), "Storage enable todo");
     Check(storage.SetTodoCompleted(todo.id, false), "Storage reopen todo");
     Check(storage.DeleteLink(link.id), "Storage delete link");

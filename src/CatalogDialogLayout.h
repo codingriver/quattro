@@ -41,6 +41,7 @@ struct CatalogDialogControls {
     HWND list = nullptr;
     RECT* listFrame = nullptr;
     int listItemHeight = 0;
+    int listFrameInset = 1;
 
     std::vector<std::pair<HWND, int>> pagerLeading;
     HWND pagePrev = nullptr;

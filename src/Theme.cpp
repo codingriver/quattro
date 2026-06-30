@@ -634,10 +634,10 @@ void Theme::SetDefaults() {
     PutMetric(L"button", L"radius", 6.0f);
     PutMetric(L"button", L"borderWidth", 1.0f);
     PutMetric(L"button", L"height", 30.0f);
-    PutMetric(L"button", L"compactHeight", 28.0f);
+    PutMetric(L"button", L"compactHeight", 24.0f);
     PutMetric(L"button", L"paddingX", 12.0f);
     PutMetric(L"button", L"textHeight", 20.0f);
-    PutMetric(L"button", L"textOffsetY", 1.0f);
+    PutMetric(L"button", L"textOffsetY", 0.0f);
     PutMetric(L"button", L"pressedOffset", 1.0f);
     PutMetric(L"iconButton", L"size", 28.0f);
     PutMetric(L"iconButton", L"radius", 7.0f);
@@ -670,7 +670,7 @@ void Theme::SetDefaults() {
     PutMetric(L"tabButton", L"height", 30.0f);
     PutMetric(L"tabButton", L"paddingX", 12.0f);
     PutMetric(L"tabButton", L"textHeight", 20.0f);
-    PutMetric(L"tabButton", L"textOffsetY", 1.0f);
+    PutMetric(L"tabButton", L"textOffsetY", 0.0f);
     PutMetric(L"tabButton", L"segmented", 1.0f);
     PutMetric(L"tabButton", L"segmentInset", 0.5f);
     PutMetric(L"tabButton", L"groupItemWidth", 58.0f);
@@ -696,7 +696,7 @@ void Theme::SetDefaults() {
     PutMetric(L"radio", L"height", 24.0f);
     PutMetric(L"radio", L"gap", 8.0f);
     PutMetric(L"list", L"radius", 7.0f);
-    PutMetric(L"list", L"borderWidth", 1.0f);
+    PutMetric(L"list", L"borderWidth", 2.0f);
     PutMetric(L"list", L"paddingX", 8.0f);
     PutMetric(L"list", L"paddingY", 6.0f);
     PutMetric(L"listItem", L"height", 28.0f);
