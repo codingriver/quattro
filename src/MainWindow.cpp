@@ -1,6 +1,7 @@
 #include "MainWindow.h"
 
 #include "AppLog.h"
+#include "AppStoreDialog.h"
 #include "BuiltinTools.h"
 #include "Elevation.h"
 #include "HotKeyEditor.h"
@@ -2025,6 +2026,9 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         case ID_MENU_PLUGIN_STORE:
             OpenPluginStore();
             return 0;
+        case ID_MENU_APP_STORE:
+            OpenAppStore();
+            return 0;
         case ID_MENU_RESET_LAYOUT:
             ResetLayoutToDefaults();
             return 0;
@@ -3625,6 +3629,10 @@ void MainWindow::OpenPluginStore() {
     }
 }
 
+void MainWindow::OpenAppStore() {
+    ShowAppStoreDialog(hwnd_, instance_, theme_, appDirectory_, config_);
+}
+
 void MainWindow::OpenBuiltinTool(std::size_t index) {
     if (menuToolEngines_.empty()) {
         const auto plugins = pluginRegistry_.LoadPlugins();
@@ -4467,6 +4475,7 @@ void MainWindow::ShowMainMenu(POINT screenPoint) {
     AppendThemedMenuItem(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(systemMenu), L"系统功能", true);
     AppendThemedMenuItem(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(toolMenu), L"工具箱", true);
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_PLUGIN_STORE, L"插件商店");
+    AppendThemedMenuItem(menu, MF_STRING, ID_MENU_APP_STORE, L"网盘管理");
     AppendThemedSeparator(menu);
     AppendUnifiedViewOptionItems(menu);
     AppendThemedSeparator(menu);

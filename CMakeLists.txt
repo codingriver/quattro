@@ -10,6 +10,10 @@ find_package(CURL QUIET)
 find_package(pugixml CONFIG QUIET)
 
 set(QUATTRO_WITH_WEBDAV_LIBS OFF)
+set(QUATTRO_WITH_CURL OFF)
+if(CURL_FOUND)
+    set(QUATTRO_WITH_CURL ON)
+endif()
 if(CURL_FOUND AND TARGET pugixml::pugixml)
     set(QUATTRO_WITH_WEBDAV_LIBS ON)
 else()
@@ -82,6 +86,13 @@ add_executable(Quattro WIN32
     resources/Quattro.rc
     src/main.cpp
     src/AppLog.cpp
+    src/AppStoreCredentialService.cpp
+    src/AppStoreDialog.cpp
+    src/AppStoreManifest.cpp
+    src/AppPackageService.cpp
+    src/AppStoreRegistry.cpp
+    src/AppStoreService.cpp
+    src/AppTransferService.cpp
     src/BuiltinTools.cpp
     src/CatalogDialogLayout.cpp
     src/Config.cpp
@@ -91,6 +102,7 @@ add_executable(Quattro WIN32
     src/HotKeyEditor.cpp
     src/IconService.cpp
     src/JsonValue.cpp
+    src/GitHubReleaseClient.cpp
     src/Launcher.cpp
     src/LinkEditDialog.cpp
     src/MainWindow.cpp
@@ -122,10 +134,17 @@ set_target_properties(Quattro PROPERTIES
 
 add_executable(QuattroTests
     tests/UnitTests.cpp
+    src/AppStoreCredentialService.cpp
+    src/AppStoreManifest.cpp
+    src/AppPackageService.cpp
+    src/AppStoreRegistry.cpp
+    src/AppStoreService.cpp
+    src/AppTransferService.cpp
     src/Config.cpp
     src/ConfigPackageService.cpp
     src/Launcher.cpp
     src/JsonValue.cpp
+    src/GitHubReleaseClient.cpp
     src/MenuCatalog.cpp
     src/PluginRegistry.cpp
     src/PluginStoreService.cpp
@@ -251,6 +270,11 @@ if(QUATTRO_WITH_WEBDAV_LIBS)
     target_compile_definitions(QuattroWebDavAcceptance PRIVATE QUATTRO_WITH_WEBDAV_LIBS)
 endif()
 
+if(QUATTRO_WITH_CURL)
+    target_compile_definitions(Quattro PRIVATE QUATTRO_WITH_CURL)
+    target_compile_definitions(QuattroTests PRIVATE QUATTRO_WITH_CURL)
+endif()
+
 target_compile_options(Quattro PRIVATE
     $<$<CXX_COMPILER_ID:MSVC>:/W4 /permissive- /EHsc /utf-8>
 )
@@ -292,6 +316,7 @@ target_link_libraries(QuattroTests PRIVATE
     ccronexpr
     advapi32
     bcrypt
+    crypt32
     comctl32
     gdi32
     ole32
@@ -303,6 +328,8 @@ target_link_libraries(QuattroTests PRIVATE
 
 if(QUATTRO_WITH_WEBDAV_LIBS)
     target_link_libraries(QuattroTests PRIVATE CURL::libcurl pugixml::pugixml)
+elseif(QUATTRO_WITH_CURL)
+    target_link_libraries(QuattroTests PRIVATE CURL::libcurl)
 endif()
 
 target_link_libraries(QuattroNoteTodoAcceptance PRIVATE
@@ -351,6 +378,7 @@ target_link_libraries(Quattro PRIVATE
     ccronexpr
     advapi32
     bcrypt
+    crypt32
     d2d1
     dwrite
     ole32
@@ -366,6 +394,8 @@ target_link_libraries(Quattro PRIVATE
 
 if(QUATTRO_WITH_WEBDAV_LIBS)
     target_link_libraries(Quattro PRIVATE CURL::libcurl pugixml::pugixml)
+elseif(QUATTRO_WITH_CURL)
+    target_link_libraries(Quattro PRIVATE CURL::libcurl)
 endif()
 
 target_link_options(Quattro PRIVATE

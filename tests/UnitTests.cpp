@@ -1,5 +1,9 @@
 #include "../src/Config.h"
 #include "../src/ConfigPackageService.h"
+#include "../src/AppStoreManifest.h"
+#include "../src/AppPackageService.h"
+#include "../src/AppStoreRegistry.h"
+#include "../src/AppTransferService.h"
 #include "../src/Launcher.h"
 #include "../src/MenuCatalog.h"
 #include "../src/PluginRegistry.h"
@@ -67,6 +71,10 @@ int wmain() {
     config.helpUrl = L"https://help.local/";
     config.updateUrl = L"https://update.local/";
     config.pluginStoreUrl = L"https://plugins.local/index.json";
+    config.appStoreOwner = L"owner";
+    config.appStoreRepo = L"repo";
+    config.appStoreSplitSizeMiB = 256;
+    config.appStoreIncludeDrafts = true;
     config.webDavEnabled = true;
     config.webDavUrl = L"https://dav.local/remote.php/dav/files/unit/";
     config.webDavRemotePath = L"/Quattro/backups/";
@@ -81,6 +89,10 @@ int wmain() {
     Check(loaded.helpUrl == L"https://help.local/", "Config help url");
     Check(loaded.updateUrl == L"https://update.local/", "Config update url");
     Check(loaded.pluginStoreUrl == L"https://plugins.local/index.json", "Config plugin store url");
+    Check(loaded.appStoreOwner == L"owner", "Config app store owner");
+    Check(loaded.appStoreRepo == L"repo", "Config app store repo");
+    Check(loaded.appStoreSplitSizeMiB == 256, "Config app store split size");
+    Check(loaded.appStoreIncludeDrafts, "Config app store include drafts");
     Check(loaded.webDavEnabled, "Config webdav enabled");
     Check(loaded.webDavUrl == L"https://dav.local/remote.php/dav/files/unit/", "Config webdav url");
     Check(loaded.webDavRemotePath == L"/Quattro/backups/", "Config webdav remote path");
@@ -271,12 +283,113 @@ int wmain() {
     Check(MenuIconFor(ID_MENU_TOGGLE_TODO_ENABLED, L"启用待办事项") == MenuIconEye, "Todo enable command icon");
     Check(MenuIconFor(ID_MENU_TODO_SORT_DUE, L"按提醒时间") == MenuIconSort, "Todo sort command icon");
     Check(MenuIconFor(ID_MENU_PLUGIN_STORE, L"插件商店") == MenuIconTools, "Plugin store command icon");
+    Check(MenuIconFor(ID_MENU_APP_STORE, L"网盘管理") == MenuIconTools, "Drive manager command icon");
     Check(MenuIconFor(ID_MENU_TOOL_BASE + 2, L"秒表") == MenuIconTools, "Builtin tool dynamic icon");
     Check(MenuIconFor(ID_MENU_ALL_LAYOUT_LIST, L"列表") == MenuIconList, "List layout icon");
     Check(MenuIconFor(ID_MENU_ALL_LAYOUT_TILE, L"平铺") == MenuIconTile, "Tile layout icon");
     Check(std::filesystem::exists(L"icons/menu/tabler/tabler-icons.ttf"), "Local menu icon font exists");
     Check(std::filesystem::exists(L"icons/menu/tabler/tabler-icons.css"), "Local menu icon css exists");
     Check(std::filesystem::exists(L"icons/menu/tabler/LICENSE"), "Local menu icon license exists");
+
+    const std::wstring manifestText = LR"json({
+  "schema": 1,
+  "appId": "demo.tool",
+  "name": "Demo Tool",
+  "displayName": "Demo Tool Display",
+  "version": "1.0.0",
+  "tag": "demo.tool-v1.0.0",
+  "package": {
+    "format": "zip",
+    "encrypted": true,
+    "splitSize": 268435456,
+    "totalSize": 10,
+    "sha256": "encrypted",
+    "plainSha256": "plain",
+    "parts": [
+      {"index": 1, "name": "package.zip.enc.part001", "size": 10, "sha256": "part"}
+    ]
+  },
+  "encryption": {"enabled": true, "algorithm": "AES-256-GCM", "kdf": "PBKDF2-HMAC-SHA256"},
+  "install": {"target": "apps/installed/{appId}/{version}", "overwrite": true, "steps": [{"type":"ps1","path":"install.ps1","requiresAdmin":true}], "shortcuts": []},
+  "uninstall": {"steps": [], "deleteInstallDir": true, "removeShortcuts": true}
+})json";
+    AppStoreManifest manifest;
+    std::wstring manifestError;
+    Check(ParseAppStoreManifest(manifestText, manifest, manifestError), "App store manifest parse");
+    Check(manifest.category == L"app", "App store manifest default category");
+    Check(manifest.displayName == L"Demo Tool Display", "App store manifest display name");
+    Check(manifest.encrypted, "App store manifest encrypted");
+    Check(AppStoreTagFor(L"{appId}-v{version}", manifest.appId, manifest.version) == L"demo.tool-v1.0.0", "App store tag pattern");
+    AppStoreRelease release;
+    release.tagName = L"demo.tool-v1.0.0";
+    release.assets.push_back(AppStoreReleaseAsset{1, L"manifest.json", static_cast<std::uint64_t>(manifestText.size()), L""});
+    release.assets.push_back(AppStoreReleaseAsset{2, L"package.zip.enc.part001", 10, L""});
+    std::wstring completeReason;
+    Check(!IsManifestCompleteForRelease(manifest, release, false, completeReason), "Encrypted app hidden without token");
+    Check(IsManifestCompleteForRelease(manifest, release, true, completeReason), "Encrypted app visible with token");
+    std::wstring otherManifestText = manifestText;
+    const std::wstring versionLine = L"  \"version\": \"1.0.0\",\n";
+    const std::size_t versionPos = otherManifestText.find(versionLine);
+    if (versionPos != std::wstring::npos) {
+        otherManifestText.insert(versionPos + versionLine.size(), L"  \"category\": \"other\",\n");
+    }
+    AppStoreManifest otherManifest;
+    Check(ParseAppStoreManifest(otherManifestText, otherManifest, manifestError) && otherManifest.category == L"other", "App store manifest other category");
+    manifest.category = L"other";
+    manifest.sourceKind = L"file";
+    manifest.originalName = L"demo.bin";
+    manifest.displayName = L"Demo File";
+    const std::wstring serializedManifest = SerializeAppStoreManifest(manifest);
+    Check(serializedManifest.find(L"\"category\": \"other\"") != std::wstring::npos, "App store manifest serialize category");
+    Check(serializedManifest.find(L"\"sourceKind\": \"file\"") != std::wstring::npos, "App store manifest serialize source kind");
+    Check(serializedManifest.find(L"\"originalName\": \"demo.bin\"") != std::wstring::npos, "App store manifest serialize original name");
+    Check(serializedManifest.find(L"\"install\"") == std::wstring::npos, "App store manifest serialize omits install");
+    Check(serializedManifest.find(L"\"uninstall\"") == std::wstring::npos, "App store manifest serialize omits uninstall");
+
+    const std::filesystem::path appStoreRoot = std::filesystem::temp_directory_path() / L"quattro_appstore_unit";
+    std::filesystem::remove_all(appStoreRoot, ec);
+    AppStoreRegistry appStoreRegistry(appStoreRoot);
+    Check(appStoreRegistry.Initialize(), "App store registry initialize");
+    AppStoreEntry appStoreEntry;
+    appStoreEntry.release = release;
+    appStoreEntry.manifest = manifest;
+    std::wstring downloadTaskId;
+    Check(appStoreRegistry.AddDownloadTask(appStoreEntry, L"owner", L"repo", 268435456, downloadTaskId), "App store add download task");
+    Check(!appStoreRegistry.LoadTasks(L"download").empty(), "App store load download tasks");
+    Check(appStoreRegistry.UpdateTaskProgress(downloadTaskId, 5, 10), "App store update task progress");
+    AppTransferTask loadedDownloadTask;
+    Check(appStoreRegistry.LoadTask(downloadTaskId, loadedDownloadTask) && loadedDownloadTask.transferredBytes == 5 && loadedDownloadTask.totalBytes == 10, "App store load task progress");
+    Check(appStoreRegistry.SetPartStatus(downloadTaskId, 1, L"completed", 10, 2), "App store update part status");
+    const auto appStoreParts = appStoreRegistry.LoadParts(downloadTaskId);
+    Check(!appStoreParts.empty() && appStoreParts.front().status == L"completed" && appStoreParts.front().assetId == 2, "App store load part status");
+    Check(appStoreRegistry.DeleteTask(downloadTaskId), "App store delete task");
+
+    const std::filesystem::path packageSource = appStoreRoot / L"source";
+    const std::filesystem::path packageWork = appStoreRoot / L"work";
+    std::filesystem::create_directories(packageSource, ec);
+    {
+        std::ofstream manifestFile(packageSource / L"manifest.json", std::ios::binary | std::ios::trunc);
+        manifestFile << R"json({"schema":1,"appId":"demo.package","name":"Demo Package","version":"1.0.0","summary":"package"})json";
+        std::ofstream payloadFile(packageSource / L"payload.txt", std::ios::binary | std::ios::trunc);
+        payloadFile << "hello package";
+    }
+    AppConfig packageConfig;
+    packageConfig.appStoreTagPattern = L"{appId}-v{version}";
+    packageConfig.appStoreSplitSizeMiB = 16;
+    AppPackageService packageService(packageWork);
+    const AppPackageBuildResult packageResult = packageService.BuildUploadPackage(packageSource, packageConfig, L"secret-token");
+    Check(packageResult.ok, "App package build encrypted");
+    Check(packageResult.manifest.encrypted, "App package manifest encrypted");
+    Check(!packageResult.partPaths.empty(), "App package split parts");
+    Check(packageResult.manifest.manifestJson.find(L"\"install\"") == std::wstring::npos, "App package manifest omits install");
+    Check(packageResult.manifest.manifestJson.find(L"\"uninstall\"") == std::wstring::npos, "App package manifest omits uninstall");
+    const std::filesystem::path assembled = packageWork / L"assembled.enc";
+    const std::filesystem::path decrypted = packageWork / L"decrypted.zip";
+    std::wstring packageError;
+    Check(packageService.AssembleParts(packageResult.manifest, packageResult.partPaths[0].parent_path(), assembled, packageError), "App package assemble parts");
+    Check(packageService.DecryptPackage(packageResult.manifest, assembled, decrypted, L"secret-token", packageError), "App package decrypt");
+    Check(packageService.VerifyFileSha256(decrypted, packageResult.manifest.plainSha256, packageError), "App package verify plain sha");
+    std::filesystem::remove_all(appStoreRoot, ec);
 
     const std::filesystem::path pluginRoot = std::filesystem::temp_directory_path() / L"quattro_plugin_unit";
     std::filesystem::remove_all(pluginRoot, ec);

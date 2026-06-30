@@ -85,6 +85,12 @@ AppConfig ConfigService::Load() const {
     config.faqUrl = ReadString(L"FaqUrl", L"");
     config.rewardUrl = ReadString(L"RewardUrl", L"");
     config.pluginStoreUrl = ReadString(L"PluginStoreUrl", L"");
+    config.appStoreOwner = ReadString(L"AppStoreOwner", L"");
+    config.appStoreRepo = ReadString(L"AppStoreRepo", L"");
+    config.appStoreDefaultBranch = ReadString(L"AppStoreDefaultBranch", L"main");
+    config.appStoreTagPattern = ReadString(L"AppStoreReleaseTagPattern", L"{appId}-v{version}");
+    config.appStoreSplitSizeMiB = Clamp(ReadInt(L"AppStoreSplitSizeMiB", config.appStoreSplitSizeMiB), 16, 1800);
+    config.appStoreIncludeDrafts = ReadBool(L"AppStoreIncludeDrafts", config.appStoreIncludeDrafts);
     config.webDavEnabled = ReadBool(L"WebDavEnabled", config.webDavEnabled);
     config.webDavUrl = ReadString(L"WebDavUrl", L"");
     config.webDavRemotePath = ReadString(L"WebDavRemotePath", L"/Quattro/backups/");
@@ -126,6 +132,12 @@ void ConfigService::SaveWindowState(const AppConfig& config) const {
     WriteString(L"FaqUrl", config.faqUrl);
     WriteString(L"RewardUrl", config.rewardUrl);
     WriteString(L"PluginStoreUrl", config.pluginStoreUrl);
+    WriteString(L"AppStoreOwner", config.appStoreOwner);
+    WriteString(L"AppStoreRepo", config.appStoreRepo);
+    WriteString(L"AppStoreDefaultBranch", config.appStoreDefaultBranch);
+    WriteString(L"AppStoreReleaseTagPattern", config.appStoreTagPattern);
+    WriteInt(L"AppStoreSplitSizeMiB", config.appStoreSplitSizeMiB);
+    WriteInt(L"AppStoreIncludeDrafts", config.appStoreIncludeDrafts ? 1 : 0);
     WriteInt(L"WebDavEnabled", config.webDavEnabled ? 1 : 0);
     WriteString(L"WebDavUrl", config.webDavUrl);
     WriteString(L"WebDavRemotePath", config.webDavRemotePath);
@@ -180,6 +192,12 @@ void ConfigService::Save(const AppConfig& config) const {
     WriteString(L"FaqUrl", config.faqUrl);
     WriteString(L"RewardUrl", config.rewardUrl);
     WriteString(L"PluginStoreUrl", config.pluginStoreUrl);
+    WriteString(L"AppStoreOwner", config.appStoreOwner);
+    WriteString(L"AppStoreRepo", config.appStoreRepo);
+    WriteString(L"AppStoreDefaultBranch", config.appStoreDefaultBranch);
+    WriteString(L"AppStoreReleaseTagPattern", config.appStoreTagPattern);
+    WriteInt(L"AppStoreSplitSizeMiB", config.appStoreSplitSizeMiB);
+    WriteInt(L"AppStoreIncludeDrafts", config.appStoreIncludeDrafts ? 1 : 0);
     WriteInt(L"WebDavEnabled", config.webDavEnabled ? 1 : 0);
     WriteString(L"WebDavUrl", config.webDavUrl);
     WriteString(L"WebDavRemotePath", config.webDavRemotePath);

@@ -88,6 +88,13 @@ struct AppConfig {
     std::wstring rewardUrl;
     std::wstring pluginStoreUrl;
 
+    std::wstring appStoreOwner;
+    std::wstring appStoreRepo;
+    std::wstring appStoreDefaultBranch = L"main";
+    std::wstring appStoreTagPattern = L"{appId}-v{version}";
+    int appStoreSplitSizeMiB = 256;
+    bool appStoreIncludeDrafts = true;
+
     bool webDavEnabled = false;
     std::wstring webDavUrl;
     std::wstring webDavRemotePath = L"/Quattro/backups/";

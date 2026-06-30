@@ -1,6 +1,8 @@
 #include "SimpleDialogs.h"
 
 #include "AppLog.h"
+#include "AppStoreCredentialService.h"
+#include "GitHubReleaseClient.h"
 #include "HotKeyEditor.h"
 #include "ThemedControls.h"
 #include "Utilities.h"
@@ -35,6 +37,9 @@ constexpr int ID_WEBDAV_CLEAR_PASSWORD = 411;
 constexpr int ID_WEBDAV_UPLOAD = 412;
 constexpr int ID_WEBDAV_DOWNLOAD = 413;
 constexpr int ID_WEBDAV_BACKUP_LIST = 414;
+constexpr int ID_APPSTORE_TEST = 430;
+constexpr int ID_APPSTORE_CLEAR_GITHUB_TOKEN = 431;
+constexpr int ID_APPSTORE_CLEAR_ENCRYPTION_TOKEN = 432;
 
 std::wstring GetText(HWND hwnd) {
     const int length = GetWindowTextLengthW(hwnd);
@@ -564,6 +569,7 @@ private:
         TabHotKeys = 3,
         TabLinks = 4,
         TabWebDav = 5,
+        TabAppStore = 6,
     };
 
     struct TabChild {
@@ -667,17 +673,18 @@ private:
     }
 
     void CreateTabs() {
-        const wchar_t* titles[] = {L"显示", L"行为", L"交互", L"热键", L"链接", L"WebDAV"};
+        const wchar_t* titles[] = {L"显示", L"行为", L"交互", L"热键", L"链接", L"WebDAV", L"网盘管理"};
         const int startX = 30;
         const int startY = 18;
         const int itemWidth = static_cast<int>(theme_.metric(L"tabButton", L"groupItemWidth", 58.0f));
-        const std::array<int, 6> itemWidths{
+        const std::array<int, 7> itemWidths{
             std::max(itemWidth, 58),
             std::max(itemWidth, 58),
             std::max(itemWidth, 58),
             std::max(itemWidth, 58),
             std::max(itemWidth, 58),
             std::max(itemWidth, 76),
+            std::max(itemWidth, 92),
         };
         const int itemGap = static_cast<int>(theme_.metric(L"tabButton", L"groupGap", 0.0f));
         const int separatorWidth = static_cast<int>(theme_.metric(L"tabButton", L"groupBorderWidth", 1.0f));
@@ -688,7 +695,7 @@ private:
         for (int width : itemWidths) {
             stripWidth += width;
         }
-        stripWidth += 5 * itemSpacing;
+        stripWidth += 6 * itemSpacing;
         tabStripRect_ = RECT{
             startX - stripPadding,
             startY - stripPadding,
@@ -696,7 +703,7 @@ private:
             startY + itemHeight + stripPadding};
         int x = startX;
         tabSeparatorXs_.clear();
-        for (int i = 0; i < 6; ++i) {
+        for (int i = 0; i < 7; ++i) {
             HWND button = ThemedControls::CreateTabButton(
                 instance_,
                 hwnd_,
@@ -710,7 +717,7 @@ private:
                 i == TabDisplay);
             tabButtons_.push_back(button);
             x += itemWidths[static_cast<std::size_t>(i)];
-            if (i < 5) {
+            if (i < 6) {
                 tabSeparatorXs_.push_back(x);
                 x += itemSpacing;
             }
@@ -820,6 +827,18 @@ private:
         draft_.faqUrl = GetText(faqUrlEdit_);
         draft_.rewardUrl = GetText(rewardUrlEdit_);
         draft_.pluginStoreUrl = GetText(pluginStoreUrlEdit_);
+        draft_.appStoreOwner = GetText(appStoreOwnerEdit_);
+        draft_.appStoreRepo = GetText(appStoreRepoEdit_);
+        draft_.appStoreDefaultBranch = GetText(appStoreDefaultBranchEdit_);
+        draft_.appStoreTagPattern = GetText(appStoreTagPatternEdit_);
+        draft_.appStoreSplitSizeMiB = ClampNumber(appStoreSplitSizeEdit_, 16, 1800, draft_.appStoreSplitSizeMiB);
+        draft_.appStoreIncludeDrafts = SendMessageW(appStoreIncludeDrafts_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        if (Trim(draft_.appStoreDefaultBranch).empty()) {
+            draft_.appStoreDefaultBranch = L"main";
+        }
+        if (Trim(draft_.appStoreTagPattern).empty()) {
+            draft_.appStoreTagPattern = L"{appId}-v{version}";
+        }
         draft_.webDavEnabled = SendMessageW(webDavEnabled_, BM_GETCHECK, 0, 0) == BST_CHECKED;
         draft_.webDavUrl = GetText(webDavUrlEdit_);
         draft_.webDavRemotePath = GetText(webDavRemotePathEdit_);
@@ -854,6 +873,66 @@ private:
             return false;
         }
         return true;
+    }
+
+    AppConfig ReadAppStoreDraftFromControls() {
+        AppConfig value = draft_;
+        value.appStoreOwner = GetText(appStoreOwnerEdit_);
+        value.appStoreRepo = GetText(appStoreRepoEdit_);
+        value.appStoreDefaultBranch = GetText(appStoreDefaultBranchEdit_);
+        value.appStoreTagPattern = GetText(appStoreTagPatternEdit_);
+        value.appStoreSplitSizeMiB = ClampNumber(appStoreSplitSizeEdit_, 16, 1800, value.appStoreSplitSizeMiB);
+        value.appStoreIncludeDrafts = SendMessageW(appStoreIncludeDrafts_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        if (Trim(value.appStoreDefaultBranch).empty()) {
+            value.appStoreDefaultBranch = L"main";
+        }
+        if (Trim(value.appStoreTagPattern).empty()) {
+            value.appStoreTagPattern = L"{appId}-v{version}";
+        }
+        return value;
+    }
+
+    bool SaveAppStoreSecretsIfNeeded() {
+        AppConfig value = ReadAppStoreDraftFromControls();
+        std::wstring error;
+        const std::wstring githubToken = GetText(appStoreGithubTokenEdit_);
+        if (!githubToken.empty() && !AppStoreCredentialService::SaveSecret(value, AppStoreCredentialService::SecretKind::GitHubToken, githubToken, error)) {
+            MessageBoxW(hwnd_, error.c_str(), L"网盘管理", MB_OK | MB_ICONWARNING);
+            return false;
+        }
+        const std::wstring encryptionToken = GetText(appStoreEncryptionTokenEdit_);
+        if (!encryptionToken.empty() && !AppStoreCredentialService::SaveSecret(value, AppStoreCredentialService::SecretKind::PackageEncryptionToken, encryptionToken, error)) {
+            MessageBoxW(hwnd_, error.c_str(), L"网盘管理", MB_OK | MB_ICONWARNING);
+            return false;
+        }
+        return true;
+    }
+
+    void TestAppStoreConnection() {
+        AppConfig value = ReadAppStoreDraftFromControls();
+        std::wstring token = GetText(appStoreGithubTokenEdit_);
+        std::wstring error;
+        if (token.empty() && !AppStoreCredentialService::LoadSecret(value, AppStoreCredentialService::SecretKind::GitHubToken, token, error)) {
+            MessageBoxW(hwnd_, error.c_str(), L"网盘管理", MB_OK | MB_ICONWARNING);
+            return;
+        }
+        GitHubReleaseClient client(value, token);
+        if (client.TestConnection()) {
+            MessageBoxW(hwnd_, L"GitHub Release 仓库连接成功。", L"网盘管理", MB_OK | MB_ICONINFORMATION);
+        } else {
+            MessageBoxW(hwnd_, client.lastError().c_str(), L"网盘管理", MB_OK | MB_ICONWARNING);
+        }
+    }
+
+    void ClearAppStoreSecret(AppStoreCredentialService::SecretKind kind, HWND edit) {
+        AppConfig value = ReadAppStoreDraftFromControls();
+        std::wstring error;
+        if (AppStoreCredentialService::DeleteSecret(value, kind, error)) {
+            SetWindowTextW(edit, L"");
+            MessageBoxW(hwnd_, L"网盘管理凭据已清除。", L"网盘管理", MB_OK | MB_ICONINFORMATION);
+        } else {
+            MessageBoxW(hwnd_, error.c_str(), L"网盘管理", MB_OK | MB_ICONWARNING);
+        }
     }
 
     void TestWebDavConnection() {
@@ -1041,6 +1120,25 @@ private:
             Button(TabWebDav, ID_WEBDAV_TEST, L"测试连接", 286, 340, 92);
             Button(TabWebDav, ID_WEBDAV_CLEAR_PASSWORD, L"清除密码", 390, 340, 90);
 
+            Label(TabAppStore, L"GitHub Owner", 34, 64, 110);
+            appStoreOwnerEdit_ = FramedEdit(TabAppStore, 214, 34, 88, 206, draft_.appStoreOwner);
+            Label(TabAppStore, L"GitHub Repo", 274, 64, 110);
+            appStoreRepoEdit_ = FramedEdit(TabAppStore, 215, 274, 88, 206, draft_.appStoreRepo);
+            Label(TabAppStore, L"GitHub Token", 34, 132, 110);
+            appStoreGithubTokenEdit_ = FramedEdit(TabAppStore, 216, 34, 156, 206, L"", ES_AUTOHSCROLL | ES_PASSWORD);
+            Label(TabAppStore, L"加密 Token", 274, 132, 110);
+            appStoreEncryptionTokenEdit_ = FramedEdit(TabAppStore, 217, 274, 156, 206, L"", ES_AUTOHSCROLL | ES_PASSWORD);
+            Label(TabAppStore, L"默认分支", 34, 200, 110);
+            appStoreDefaultBranchEdit_ = FramedEdit(TabAppStore, 218, 34, 224, 206, draft_.appStoreDefaultBranch);
+            Label(TabAppStore, L"Tag 规则", 274, 200, 110);
+            appStoreTagPatternEdit_ = FramedEdit(TabAppStore, 219, 274, 224, 206, draft_.appStoreTagPattern);
+            Label(TabAppStore, L"分片 MiB", 34, 268, 110);
+            appStoreSplitSizeEdit_ = NumberEdit(TabAppStore, 221, 34, 292, 90, draft_.appStoreSplitSizeMiB);
+            appStoreIncludeDrafts_ = CheckBox(TabAppStore, 222, L"显示 Draft Release", 274, 296, draft_.appStoreIncludeDrafts, 220);
+            Button(TabAppStore, ID_APPSTORE_TEST, L"测试连接", 34, 386, 92);
+            Button(TabAppStore, ID_APPSTORE_CLEAR_GITHUB_TOKEN, L"清除 GitHub", 140, 386, 104);
+            Button(TabAppStore, ID_APPSTORE_CLEAR_ENCRYPTION_TOKEN, L"清除加密", 258, 386, 104);
+
             const int buttonHeight = ThemedControls::ButtonHeight(theme_);
             ThemedControls::CreateButton(instance_, hwnd_, IDOK, L"确定", 350, 428, 76, buttonHeight, font_, true);
             ThemedControls::CreateButton(instance_, hwnd_, IDCANCEL, L"取消", 442, 428, 76, buttonHeight, font_);
@@ -1089,7 +1187,7 @@ private:
             if (HIWORD(wParam) == EN_SETFOCUS || HIWORD(wParam) == EN_KILLFOCUS) {
                 InvalidateField(reinterpret_cast<HWND>(lParam));
             }
-            if (LOWORD(wParam) >= ID_SETTINGS_TAB_BASE && LOWORD(wParam) < ID_SETTINGS_TAB_BASE + 6) {
+            if (LOWORD(wParam) >= ID_SETTINGS_TAB_BASE && LOWORD(wParam) < ID_SETTINGS_TAB_BASE + 7) {
                 ShowTab(static_cast<int>(LOWORD(wParam) - ID_SETTINGS_TAB_BASE));
                 return 0;
             }
@@ -1134,9 +1232,24 @@ private:
                 DownloadWebDavBackup();
                 return 0;
             }
+            if (LOWORD(wParam) == ID_APPSTORE_TEST) {
+                TestAppStoreConnection();
+                return 0;
+            }
+            if (LOWORD(wParam) == ID_APPSTORE_CLEAR_GITHUB_TOKEN) {
+                ClearAppStoreSecret(AppStoreCredentialService::SecretKind::GitHubToken, appStoreGithubTokenEdit_);
+                return 0;
+            }
+            if (LOWORD(wParam) == ID_APPSTORE_CLEAR_ENCRYPTION_TOKEN) {
+                ClearAppStoreSecret(AppStoreCredentialService::SecretKind::PackageEncryptionToken, appStoreEncryptionTokenEdit_);
+                return 0;
+            }
             if (LOWORD(wParam) == IDOK) {
                 ReadDraft();
                 if (!SaveWebDavPasswordIfNeeded()) {
+                    return 0;
+                }
+                if (!SaveAppStoreSecretsIfNeeded()) {
                     return 0;
                 }
                 config_ = draft_;
@@ -1253,6 +1366,14 @@ private:
     HWND faqUrlEdit_ = nullptr;
     HWND rewardUrlEdit_ = nullptr;
     HWND pluginStoreUrlEdit_ = nullptr;
+    HWND appStoreOwnerEdit_ = nullptr;
+    HWND appStoreRepoEdit_ = nullptr;
+    HWND appStoreGithubTokenEdit_ = nullptr;
+    HWND appStoreEncryptionTokenEdit_ = nullptr;
+    HWND appStoreDefaultBranchEdit_ = nullptr;
+    HWND appStoreTagPatternEdit_ = nullptr;
+    HWND appStoreSplitSizeEdit_ = nullptr;
+    HWND appStoreIncludeDrafts_ = nullptr;
     HWND webDavEnabled_ = nullptr;
     HWND webDavUrlEdit_ = nullptr;
     HWND webDavRemotePathEdit_ = nullptr;

@@ -144,6 +144,7 @@ private:
     void OpenSearch();
     void OpenSettings();
     void OpenPluginStore();
+    void OpenAppStore();
     void OpenBuiltinTool(std::size_t index);
     void ResetLayoutToDefaults();
     void ClearIconCache();
