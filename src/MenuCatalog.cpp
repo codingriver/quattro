@@ -6,7 +6,7 @@
 namespace {
 constexpr const wchar_t* kMenuIconLinkPrefix = L"#menu:";
 
-constexpr std::array<MenuVisualRequirement, 32> kTopRightMenuVisuals{{
+constexpr std::array<MenuVisualRequirement, 31> kTopRightMenuVisuals{{
     {ID_MENU_TOGGLE_TITLE, L"隐藏标题栏", MenuIconEyeOff},
     {ID_MENU_TOGGLE_GROUP, L"隐藏分组", MenuIconEyeOff},
     {ID_MENU_TOGGLE_TAG, L"隐藏标签", MenuIconEyeOff},
@@ -17,7 +17,6 @@ constexpr std::array<MenuVisualRequirement, 32> kTopRightMenuVisuals{{
     {ID_MENU_CLEAR_ICON_CACHE, L"清理图标缓存", MenuIconClear},
     {ID_MENU_SYSTEM_FUNCTION_BASE, L"系统功能", MenuIconSystem},
     {ID_MENU_TOOL_BASE, L"工具箱", MenuIconTools},
-    {ID_MENU_PLUGIN_STORE, L"插件商店", MenuIconTools},
     {ID_MENU_ALL_ICON_SMALL, L"小图标", MenuIconSize},
     {ID_MENU_ALL_ICON_MEDIUM, L"中图标", MenuIconSize},
     {ID_MENU_ALL_ICON_LARGE, L"大图标", MenuIconSize},
@@ -130,7 +129,6 @@ int MenuIconFor(UINT_PTR id, const std::wstring& text) {
     case ID_MENU_RUN_LINK: return MenuIconRun;
     case ID_MENU_TOGGLE_TOPMOST: return MenuIconPin;
     case ID_MENU_SETTINGS: return MenuIconSettings;
-    case ID_MENU_PLUGIN_STORE: return MenuIconTools;
     case ID_MENU_HELP:
     case ID_MENU_FAQ: return MenuIconHelp;
     case ID_MENU_REWARD: return MenuIconReward;
@@ -171,7 +169,7 @@ int MenuIconFor(UINT_PTR id, const std::wstring& text) {
     if (text == L"列表") return MenuIconList;
     if (text == L"平铺") return MenuIconTile;
     if (text == L"系统功能") return MenuIconSystem;
-    if (text == L"工具箱" || text == L"插件商店") return MenuIconTools;
+    if (text == L"工具箱") return MenuIconTools;
     if (text == L"主题" || text == L"皮肤") return MenuIconTheme;
     if (text == L"无可选分组" || text == L"无可选标签" || text == L"无可用功能") return MenuIconInfo;
     return MenuIconNone;

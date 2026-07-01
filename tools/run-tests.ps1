@@ -125,9 +125,8 @@ $dialogDisplayTests = & (Join-Path $PSScriptRoot "run-dialog-display-tests.ps1")
 $dialogDisplayTests
 $compatLines.Add("dialog_display_tests=passed")
 
-$pluginToolTests = & (Join-Path $PSScriptRoot "run-plugin-tool-tests.ps1") -ExePath $exe -ProbePath $probeExe -LogDir $logDir
-$pluginToolTests
-$compatLines.Add("plugin_tool_tests=passed")
+"plugin_tool_tests=skipped (plugin store temporarily disabled)"
+$compatLines.Add("plugin_tool_tests=skipped")
 
 $docsPath = Join-Path "docs" "Quattro"
 

@@ -65,7 +65,7 @@ constexpr int kPluginIconBox = 38;
 CatalogDialogMetrics PluginCatalogMetrics() {
     CatalogDialogMetrics metrics{};
     metrics.contentPaddingX = 24;
-    metrics.toolbarHeight = 26;
+    metrics.toolbarHeight = 34;
     metrics.verticalGap = 4;
     metrics.toolbarY = metrics.verticalGap;
     metrics.statusBarHeight = 22;
@@ -567,6 +567,15 @@ private:
             return 0;
         case WM_ERASEBKGND:
             return 1;
+        case WM_CTLCOLOREDIT: {
+            if (reinterpret_cast<HWND>(lParam) == searchEdit_) {
+                HDC dc = reinterpret_cast<HDC>(wParam);
+                SetTextColor(dc, ToColorRef(theme_.color(L"edit", L"normal", L"text")));
+                SetBkColor(dc, ToColorRef(theme_.color(L"edit", L"normal", L"bg")));
+                return reinterpret_cast<LRESULT>(fieldBrush_ ? fieldBrush_ : GetStockObject(WHITE_BRUSH));
+            }
+            return DefWindowProcW(hwnd_, message, wParam, lParam);
+        }
         case WM_CTLCOLORLISTBOX:
         case WM_CTLCOLORSTATIC: {
             HDC dc = reinterpret_cast<HDC>(wParam);
@@ -711,7 +720,10 @@ private:
     void CreateControls() {
         font_ = ThemedControls::CreateDialogFont();
         HFONT font = font_ ? font_ : reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
+        editFont_ = ThemedControls::CreateEditFont(theme_);
+        HFONT editFont = editFont_ ? editFont_ : font;
         backgroundBrush_ = CreateSolidBrush(ToColorRef(theme_.color(L"dialog", L"normal", L"bg")));
+        fieldBrush_ = CreateSolidBrush(ToColorRef(theme_.color(L"edit", L"normal", L"bg")));
         listBrush_ = CreateSolidBrush(ToColorRef(theme_.color(L"list", L"normal", L"bg")));
 
         const CatalogDialogMetrics& metrics = layout_.metrics();
@@ -736,7 +748,7 @@ private:
             filterX += width + 4;
         }
         summary_ = ThemedControls::CreateStaticText(instance_, hwnd_, L"", 32, 500, 480, statusTextHeight, font, SS_LEFT | SS_CENTERIMAGE);
-        searchFrame_ = RECT{500, metrics.toolbarY + 1, 650, metrics.toolbarY + metrics.toolbarHeight - 1};
+        searchFrame_ = RECT{500, metrics.toolbarY + 1, 650, metrics.toolbarY + 1 + ThemedControls::EditFrameHeight(theme_)};
         searchEdit_ = ThemedControls::CreateSingleLineEdit(
             instance_,
             hwnd_,
@@ -744,7 +756,7 @@ private:
             theme_,
             searchFrame_,
             L"",
-            font,
+            editFont,
             ES_AUTOHSCROLL);
         source_ = CreateWindowExW(
             0,
@@ -1708,9 +1720,17 @@ private:
             DeleteObject(backgroundBrush_);
             backgroundBrush_ = nullptr;
         }
+        if (fieldBrush_) {
+            DeleteObject(fieldBrush_);
+            fieldBrush_ = nullptr;
+        }
         if (listBrush_) {
             DeleteObject(listBrush_);
             listBrush_ = nullptr;
+        }
+        if (editFont_) {
+            DeleteObject(editFont_);
+            editFont_ = nullptr;
         }
         for (auto& [_, icon] : pluginIcons_) {
             if (icon) {
@@ -1758,7 +1778,9 @@ private:
     RECT listFrame_{};
     RECT searchFrame_{};
     HFONT font_ = nullptr;
+    HFONT editFont_ = nullptr;
     HBRUSH backgroundBrush_ = nullptr;
+    HBRUSH fieldBrush_ = nullptr;
     HBRUSH listBrush_ = nullptr;
     std::vector<PluginRecord> plugins_;
     std::vector<int> filteredPluginIndexes_;

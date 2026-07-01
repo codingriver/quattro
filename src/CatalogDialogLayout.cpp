@@ -100,8 +100,11 @@ void CatalogDialogLayout::Layout(HWND parent, const RECT& client, const CatalogD
     if (controls.searchEdit && controls.searchFrame && controls.theme) {
         const int searchRight = trailingX - metrics_.horizontalGap;
         const int searchLeft = std::max(toolbarLeft + metrics_.searchLeftReserve, searchRight - metrics_.searchWidth);
-        *controls.searchFrame = RECT{searchLeft, geometry.toolbar.top + 1, searchRight, geometry.toolbar.bottom - 1};
-        const RECT editRect = ThemedControls::SingleLineEditRectForFrame(*controls.theme, *controls.searchFrame);
+        const int searchHeight = ThemedControls::EditFrameHeight(*controls.theme);
+        const int toolbarHeight = geometry.toolbar.bottom - geometry.toolbar.top;
+        const int searchTop = geometry.toolbar.top + std::max(0, (toolbarHeight - searchHeight) / 2);
+        *controls.searchFrame = RECT{searchLeft, searchTop, searchRight, searchTop + searchHeight};
+        const RECT editRect = ThemedControls::SingleLineEditRect(*controls.theme, *controls.searchFrame);
         MoveWindow(controls.searchEdit, editRect.left, editRect.top, editRect.right - editRect.left, editRect.bottom - editRect.top, TRUE);
     }
 

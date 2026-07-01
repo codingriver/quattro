@@ -207,7 +207,7 @@ int wmain(int argc, wchar_t** argv) {
             }
             SetWindowTextW(rows[row].hwnd, columns[static_cast<std::size_t>(col)].c_str());
             if (rows[row].hwnd == combo) {
-                SetWindowPos(combo, nullptr, 0, 0, rect.right - rect.left, ThemedControls::ComboBoxHeight(theme), SWP_NOZORDER | SWP_NOACTIVATE);
+                SetWindowPos(combo, nullptr, 0, 0, rect.right - rect.left, ThemedControls::ComboBoxDropdownHeight(theme), SWP_NOZORDER | SWP_NOACTIVATE);
                 POINT oldOrigin{};
                 SetViewportOrgEx(dc, rect.left, rect.top, &oldOrigin);
                 SendMessageW(combo, WM_PRINTCLIENT, reinterpret_cast<WPARAM>(dc), PRF_CLIENT);

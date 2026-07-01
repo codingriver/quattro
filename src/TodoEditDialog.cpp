@@ -394,6 +394,10 @@ private:
         return TextWidth(text) + MetricInt(L"global", L"paddingX", 10.0f);
     }
 
+    int ComboBoxWidth(const std::wstring& text) const {
+        return ThemedControls::ComboBoxContentWidth(theme_, TextWidth(text));
+    }
+
     int ContentTop() const {
         return -scrollY_;
     }
@@ -938,7 +942,7 @@ private:
         monthlyDayLabel_ = Text(L"号", 0, 0, TextControlWidth(L"号"), StaticTextHeight());
         customPrefix_ = Text(L"每", 0, 0, TextControlWidth(L"每"), StaticTextHeight());
         customIntervalEdit_ = SingleEdit(IdCustomInterval, 0, 0, ThemedControls::EditFrameHeight(theme_) + ThemedControls::EditPaddingX(theme_) * 2, L"1", ES_NUMBER);
-        customUnitCombo_ = ThemedControls::CreateComboBox(instance_, hwnd_, IdCustomUnit, 0, 0, TextControlWidth(L"天") + MetricInt(L"comboBox", L"arrowWidth", 28.0f), ThemedControls::ComboBoxHeight(theme_), font_, theme_);
+        customUnitCombo_ = ThemedControls::CreateComboBox(instance_, hwnd_, IdCustomUnit, 0, 0, ComboBoxWidth(L"天"), ThemedControls::ComboBoxDropdownHeight(theme_), font_, theme_);
         customSuffix_ = Text(L"重复一次", 0, 0, TextControlWidth(L"重复一次"), StaticTextHeight());
         repeatErrorText_ = Text(L"", 0, 0, 1, StaticTextHeight());
 
@@ -1064,13 +1068,13 @@ private:
             if (showCustom) {
                 const int prefixWidth = TextControlWidth(L"每");
                 const int intervalWidth = fieldHeight + ThemedControls::EditPaddingX(theme_) * 2;
-                const int unitWidth = TextControlWidth(L"天") + MetricInt(L"comboBox", L"arrowWidth", 28.0f);
+                const int unitWidth = ComboBoxWidth(L"天");
                 int customX = fieldX;
                 MoveStatic(customPrefix_, customX, y, prefixWidth, textHeight);
                 customX += prefixWidth + itemGap;
                 SetFrame(customIntervalEdit_, RECT{customX, y, customX + intervalWidth, y + fieldHeight});
                 customX += intervalWidth + itemGap;
-                MoveCombo(customUnitCombo_, customX, y, unitWidth, ThemedControls::ComboBoxHeight(theme_));
+                MoveCombo(customUnitCombo_, customX, y, unitWidth, ThemedControls::ComboBoxDropdownHeight(theme_));
                 customX += unitWidth + itemGap;
                 MoveStatic(customSuffix_, customX, y, TextControlWidth(L"重复一次"), textHeight);
                 y += fieldHeight + rowGap;

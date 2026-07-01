@@ -1999,7 +1999,7 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             OpenSettings();
             return 0;
         case ID_MENU_PLUGIN_STORE:
-            OpenPluginStore();
+            // Plugin store is temporarily disabled; keep the command id reserved.
             return 0;
         case ID_MENU_RESET_LAYOUT:
             ResetLayoutToDefaults();
@@ -4476,7 +4476,6 @@ void MainWindow::ShowMainMenu(POINT screenPoint) {
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_CLEAR_ICON_CACHE, L"清理图标缓存");
     AppendThemedMenuItem(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(systemMenu), L"系统功能", true);
     AppendThemedMenuItem(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(toolMenu), L"工具箱", true);
-    AppendThemedMenuItem(menu, MF_STRING, ID_MENU_PLUGIN_STORE, L"插件商店");
     AppendThemedSeparator(menu);
     AppendUnifiedViewOptionItems(menu);
     AppendThemedSeparator(menu);

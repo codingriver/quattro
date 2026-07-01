@@ -329,7 +329,6 @@
     <Component name="comboBox">
         <Metric name="radius" value="7"/>
         <Metric name="borderWidth" value="1"/>
-        <Metric name="height" value="32"/>
         <Metric name="paddingX" value="9"/>
         <Metric name="itemHeight" value="26"/>
         <Metric name="textHeight" value="20"/>

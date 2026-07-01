@@ -237,10 +237,15 @@ protected:
         switch (message) {
         case WM_CREATE:
             font_ = ThemedControls::CreateDialogFont();
+            editFont_ = ThemedControls::CreateEditFont(theme_);
             backgroundBrush_ = CreateSolidBrush(ToColorRef(theme_.color(L"dialog", L"normal", L"bg")));
+            editBrush_ = CreateSolidBrush(ToColorRef(theme_.color(L"edit", L"normal", L"bg")));
             OnCreate();
             return 0;
         case WM_COMMAND:
+            if (HIWORD(wParam) == EN_SETFOCUS || HIWORD(wParam) == EN_KILLFOCUS) {
+                InvalidateEditFrame(reinterpret_cast<HWND>(lParam));
+            }
             if (OnCommand(LOWORD(wParam), HIWORD(wParam))) {
                 return 0;
             }
@@ -275,12 +280,19 @@ protected:
             RECT rect{};
             GetClientRect(hwnd_, &rect);
             FillRect(dc, &rect, backgroundBrush_ ? backgroundBrush_ : reinterpret_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
+            DrawEditFrames(dc);
             OnPaint(dc);
             EndPaint(hwnd_, &ps);
             return 0;
         }
         case WM_ERASEBKGND:
             return 1;
+        case WM_CTLCOLOREDIT: {
+            HDC dc = reinterpret_cast<HDC>(wParam);
+            SetTextColor(dc, ToColorRef(theme_.color(L"edit", L"normal", L"text")));
+            SetBkColor(dc, ToColorRef(theme_.color(L"edit", L"normal", L"bg")));
+            return reinterpret_cast<LRESULT>(editBrush_ ? editBrush_ : GetStockObject(WHITE_BRUSH));
+        }
         case WM_CTLCOLORSTATIC: {
             HDC dc = reinterpret_cast<HDC>(wParam);
             SetBkMode(dc, TRANSPARENT);
@@ -307,6 +319,14 @@ protected:
                 DeleteObject(backgroundBrush_);
                 backgroundBrush_ = nullptr;
             }
+            if (editBrush_) {
+                DeleteObject(editBrush_);
+                editBrush_ = nullptr;
+            }
+            if (editFont_) {
+                DeleteObject(editFont_);
+                editFont_ = nullptr;
+            }
             return 0;
         default:
             return DefWindowProcW(hwnd_, message, wParam, lParam);
@@ -331,6 +351,20 @@ protected:
         return font_ ? font_ : reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
     }
 
+    HFONT editFont() const {
+        return editFont_ ? editFont_ : font();
+    }
+
+    HWND CreateEdit(int id, int x, int y, int width, const std::wstring& value, DWORD extraStyle = ES_AUTOHSCROLL) {
+        const int height = ThemedControls::EditFrameHeight(theme_);
+        const RECT frame{x, y, x + width, y + height};
+        HWND edit = ThemedControls::CreateSingleLineEdit(instance_, hwnd_, id, theme_, frame, value, editFont(), extraStyle);
+        if (edit) {
+            editFrames_.push_back(EditFrame{frame, edit});
+        }
+        return edit;
+    }
+
     bool IsToolKeyMessage(const MSG& message) const {
         if (message.message != WM_KEYDOWN && message.message != WM_SYSKEYDOWN) {
             return false;
@@ -344,6 +378,26 @@ protected:
             && (GetKeyState(VK_SHIFT) & 0x8000) == 0;
     }
 
+    void DrawEditFrames(HDC dc) {
+        for (const auto& frame : editFrames_) {
+            ThemedControls::DrawFieldFrame(theme_, dc, frame.rect, frame.child);
+        }
+    }
+
+    void InvalidateEditFrame(HWND child) {
+        for (const auto& frame : editFrames_) {
+            if (frame.child == child) {
+                InvalidateRect(hwnd_, &frame.rect, TRUE);
+                return;
+            }
+        }
+    }
+
+    struct EditFrame {
+        RECT rect{};
+        HWND child = nullptr;
+    };
+
     HWND owner_ = nullptr;
     HINSTANCE instance_ = nullptr;
     const Theme& theme_;
@@ -353,7 +407,10 @@ protected:
     int width_ = 0;
     int height_ = 0;
     HFONT font_ = nullptr;
+    HFONT editFont_ = nullptr;
     HBRUSH backgroundBrush_ = nullptr;
+    HBRUSH editBrush_ = nullptr;
+    std::vector<EditFrame> editFrames_;
     bool ownerWasEnabled_ = false;
     bool ownerRestored_ = false;
     bool done_ = false;
@@ -371,18 +428,15 @@ private:
         const std::wstring savedY = registry_.GetSetting(pluginId, L"y", L"0");
 
         ThemedControls::CreateStaticText(instance_, hwnd_, L"坐标（x，y）", 18, 20, 92, 22, font());
-        coord_ = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", (savedX + L", " + savedY).c_str(),
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL, 112, 18, 100, 24, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_CLICK_COORD)), instance_, nullptr);
+        coord_ = CreateEdit(ID_CLICK_COORD, 112, 16, 100, savedX + L", " + savedY);
 
         const int bh = ThemedControls::ButtonHeight(theme_);
         ThemedControls::CreateButton(instance_, hwnd_, ID_CLICK_PICK, L"拾取(&P)", 228, 17, 86, bh, font());
 
         ThemedControls::CreateStaticText(instance_, hwnd_, L"点击次数", 18, 56, 76, 22, font());
-        count_ = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", registry_.GetSetting(pluginId, L"count", L"10").c_str(),
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_NUMBER, 94, 54, 70, 24, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_CLICK_COUNT)), instance_, nullptr);
+        count_ = CreateEdit(ID_CLICK_COUNT, 94, 52, 70, registry_.GetSetting(pluginId, L"count", L"10"), ES_NUMBER);
         ThemedControls::CreateStaticText(instance_, hwnd_, L"间隔(ms)", 184, 56, 76, 22, font());
-        interval_ = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", registry_.GetSetting(pluginId, L"interval", L"1000").c_str(),
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_NUMBER, 260, 54, 86, 24, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_CLICK_INTERVAL)), instance_, nullptr);
+        interval_ = CreateEdit(ID_CLICK_INTERVAL, 260, 52, 86, registry_.GetSetting(pluginId, L"interval", L"1000"), ES_NUMBER);
 
         ThemedControls::CreateStaticText(instance_, hwnd_, L"鼠标按键", 18, 92, 76, 22, font());
         button_ = CreateWindowExW(0, WC_COMBOBOXW, nullptr,
@@ -392,8 +446,7 @@ private:
         SendMessageW(button_, CB_SETCURSEL, registry_.GetSetting(pluginId, L"button", L"left") == L"right" ? 1 : 0, 0);
 
         ThemedControls::CreateStaticText(instance_, hwnd_, L"倒计时(s)", 198, 92, 76, 22, font());
-        countdownEdit_ = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", registry_.GetSetting(pluginId, L"countdown", L"3").c_str(),
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_NUMBER, 276, 90, 70, 24, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_CLICK_COUNTDOWN)), instance_, nullptr);
+        countdownEdit_ = CreateEdit(ID_CLICK_COUNTDOWN, 276, 88, 70, registry_.GetSetting(pluginId, L"countdown", L"3"), ES_NUMBER);
 
         const wchar_t* hotKeys[] = {L"F6", L"F7", L"F8", L"F9", L"F10", L"F11", L"F12"};
 
@@ -407,11 +460,7 @@ private:
             WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST, 276, 126, 70, 180, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_CLICK_PICK_HOTKEY_CONTROL)), instance_, nullptr);
         FillHotKeyCombo(pickHotKey_, registry_.GetSetting(pluginId, L"pickHotKey", L"F9"), hotKeys, 7);
 
-        SendMessageW(coord_, WM_SETFONT, reinterpret_cast<WPARAM>(font()), TRUE);
-        SendMessageW(count_, WM_SETFONT, reinterpret_cast<WPARAM>(font()), TRUE);
-        SendMessageW(interval_, WM_SETFONT, reinterpret_cast<WPARAM>(font()), TRUE);
         SendMessageW(button_, WM_SETFONT, reinterpret_cast<WPARAM>(font()), TRUE);
-        SendMessageW(countdownEdit_, WM_SETFONT, reinterpret_cast<WPARAM>(font()), TRUE);
         SendMessageW(toggleHotKey_, WM_SETFONT, reinterpret_cast<WPARAM>(font()), TRUE);
         SendMessageW(pickHotKey_, WM_SETFONT, reinterpret_cast<WPARAM>(font()), TRUE);
 
@@ -706,19 +755,13 @@ private:
         const std::wstring seconds = registry_.GetSetting(L"quattro.builtin.timer", L"secondsPart", std::to_wstring(fallbackSeconds % 60));
 
         ThemedControls::CreateStaticText(instance_, hwnd_, L"时", 18, 18, 22, 22, font());
-        hours_ = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", hours.c_str(),
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_NUMBER, 42, 16, 46, 24, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_TIMER_HOURS)), instance_, nullptr);
+        hours_ = CreateEdit(ID_TIMER_HOURS, 42, 14, 46, hours, ES_NUMBER);
         ThemedControls::CreateStaticText(instance_, hwnd_, L"分", 102, 18, 22, 22, font());
-        minutes_ = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", minutes.c_str(),
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_NUMBER, 126, 16, 46, 24, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_TIMER_MINUTES)), instance_, nullptr);
+        minutes_ = CreateEdit(ID_TIMER_MINUTES, 126, 14, 46, minutes, ES_NUMBER);
         ThemedControls::CreateStaticText(instance_, hwnd_, L"秒", 186, 18, 22, 22, font());
-        seconds_ = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", seconds.c_str(),
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_NUMBER, 210, 16, 46, 24, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_TIMER_SECONDS)), instance_, nullptr);
+        seconds_ = CreateEdit(ID_TIMER_SECONDS, 210, 14, 46, seconds, ES_NUMBER);
         sound_ = ThemedControls::CreateCheckBox(instance_, hwnd_, ID_TIMER_SOUND, L"声音提醒", 18, 50, 100, ThemedControls::CheckBoxHeight(theme_), font_, registry_.GetSetting(L"quattro.builtin.timer", L"sound", L"1") != L"0");
         topMost_ = ThemedControls::CreateCheckBox(instance_, hwnd_, ID_TIMER_TOPMOST, L"置顶提醒", 132, 50, 100, ThemedControls::CheckBoxHeight(theme_), font_, registry_.GetSetting(L"quattro.builtin.timer", L"topMost", L"1") != L"0");
-        SendMessageW(hours_, WM_SETFONT, reinterpret_cast<WPARAM>(font()), TRUE);
-        SendMessageW(minutes_, WM_SETFONT, reinterpret_cast<WPARAM>(font()), TRUE);
-        SendMessageW(seconds_, WM_SETFONT, reinterpret_cast<WPARAM>(font()), TRUE);
         display_ = ThemedControls::CreateStaticText(instance_, hwnd_, L"00:05:00.000", 18, 84, 238, 26, font(), SS_CENTER);
         const int bh = ThemedControls::ButtonHeight(theme_);
         start_ = ThemedControls::CreateButton(instance_, hwnd_, ID_TIMER_START, L"开始(&S)", 52, 122, 76, bh, font(), true);

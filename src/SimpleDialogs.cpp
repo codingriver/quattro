@@ -818,7 +818,6 @@ private:
         draft_.updateUrl = GetText(updateUrlEdit_);
         draft_.faqUrl = GetText(faqUrlEdit_);
         draft_.rewardUrl = GetText(rewardUrlEdit_);
-        draft_.pluginStoreUrl = GetText(pluginStoreUrlEdit_);
         draft_.webDavEnabled = SendMessageW(webDavEnabled_, BM_GETCHECK, 0, 0) == BST_CHECKED;
         draft_.webDavUrl = GetText(webDavUrlEdit_);
         draft_.webDavRemotePath = GetText(webDavRemotePathEdit_);
@@ -1020,8 +1019,6 @@ private:
             faqUrlEdit_ = FramedEdit(TabLinks, 205, 34, 296, 206, draft_.faqUrl);
             Label(TabLinks, L"赞助链接", 274, 272, 110);
             rewardUrlEdit_ = FramedEdit(TabLinks, 206, 274, 296, 206, draft_.rewardUrl);
-            Label(TabLinks, L"插件商店", 34, 340, 110);
-            pluginStoreUrlEdit_ = FramedEdit(TabLinks, 207, 34, 364, 446, draft_.pluginStoreUrl);
 
             webDavEnabled_ = CheckBox(TabWebDav, 208, L"启用 WebDAV 备份", 34, 64, draft_.webDavEnabled, 220);
             Label(TabWebDav, L"服务器地址", 34, 112, 110);
@@ -1249,7 +1246,6 @@ private:
     HWND updateUrlEdit_ = nullptr;
     HWND faqUrlEdit_ = nullptr;
     HWND rewardUrlEdit_ = nullptr;
-    HWND pluginStoreUrlEdit_ = nullptr;
     HWND webDavEnabled_ = nullptr;
     HWND webDavUrlEdit_ = nullptr;
     HWND webDavRemotePathEdit_ = nullptr;

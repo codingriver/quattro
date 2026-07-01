@@ -549,11 +549,21 @@ RECT TabGroupInnerRect(const Theme& theme, RECT frame) {
 }
 
 int ComboBoxHeight(const Theme& theme) {
-    return ButtonHeight(theme);
+    return std::max(1, EditFrameHeight(theme) - 6);
 }
 
 int ComboBoxItemHeight(const Theme& theme) {
     return static_cast<int>(theme.metric(L"comboBox", L"itemHeight", 24.0f));
+}
+
+int ComboBoxDropdownHeight(const Theme& theme) {
+    return std::max(EditFrameHeight(theme), EditFrameHeight(theme) + ComboBoxItemHeight(theme) * 6);
+}
+
+int ComboBoxContentWidth(const Theme& theme, int textWidth) {
+    const int paddingX = static_cast<int>(theme.metric(L"comboBox", L"paddingX", 9.0f));
+    const int arrowWidth = static_cast<int>(theme.metric(L"comboBox", L"arrowWidth", 28.0f));
+    return textWidth + paddingX * 2 + arrowWidth;
 }
 
 RECT ComboBoxItemTextRect(const Theme& theme, RECT frame) {
@@ -581,8 +591,7 @@ HFONT CreateDialogFont() {
 }
 
 HFONT CreateEditFont(const Theme& theme) {
-    (void)theme;
-    return CreateThemeFontPx(kSingleLineEditFontPx);
+    return CreateThemeFontPx(EditFontSizePx(theme));
 }
 
 HWND CreateStaticText(HINSTANCE instance, HWND parent, const wchar_t* text, int x, int y, int width, int height, HFONT font, DWORD style) {

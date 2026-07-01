@@ -105,6 +105,8 @@ RECT TabGroupInnerRect(const Theme& theme, RECT frame);
 void DrawTabGroupFrame(const Theme& theme, HDC dc, RECT rect);
 int ComboBoxHeight(const Theme& theme);
 int ComboBoxItemHeight(const Theme& theme);
+int ComboBoxDropdownHeight(const Theme& theme);
+int ComboBoxContentWidth(const Theme& theme, int textWidth);
 RECT ComboBoxItemTextRect(const Theme& theme, RECT frame);
 int LabelHeight(const Theme& theme);
 RECT LabelTextRect(const Theme& theme, RECT frame);
