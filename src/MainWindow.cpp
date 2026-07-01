@@ -30,6 +30,8 @@
 #include <cstring>
 #include <cwchar>
 #include <cwctype>
+#include <endpointvolume.h>
+#include <mmdeviceapi.h>
 #include <optional>
 #include <shlobj.h>
 #include <shobjidl.h>
@@ -815,68 +817,8 @@ bool EnsureMenuIconFontLoaded(const std::filesystem::path& appDirectory) {
     return loaded;
 }
 
-wchar_t MenuIconGlyph(int icon) {
-    switch (icon) {
-    case MenuIconFile: return static_cast<wchar_t>(0xEAA4); // file
-    case MenuIconFolder: return static_cast<wchar_t>(0xEAAD); // folder
-    case MenuIconUrl: return static_cast<wchar_t>(0xEB54); // world
-    case MenuIconSystem: return static_cast<wchar_t>(0xEBB6); // apps
-    case MenuIconShield: return static_cast<wchar_t>(0xEB24); // shield
-    case MenuIconOpenFolder: return static_cast<wchar_t>(0xFAF7); // folder-open
-    case MenuIconWindows: return static_cast<wchar_t>(0xECD8); // brand-windows
-    case MenuIconShortcut: return static_cast<wchar_t>(0xEA99); // external-link
-    case MenuIconRefresh: return static_cast<wchar_t>(0xEB13); // refresh
-    case MenuIconMove: return static_cast<wchar_t>(0xF22F); // arrows-move
-    case MenuIconCopy: return static_cast<wchar_t>(0xEA7A); // copy
-    case MenuIconCut: return static_cast<wchar_t>(0xEB1B); // scissors
-    case MenuIconPaste: return static_cast<wchar_t>(0xEA6F); // clipboard
-    case MenuIconEdit: return static_cast<wchar_t>(0xEA98); // edit
-    case MenuIconInfo: return static_cast<wchar_t>(0xEAC5); // info-circle
-    case MenuIconDelete: return static_cast<wchar_t>(0xEB41); // trash
-    case MenuIconSearch: return static_cast<wchar_t>(0xEB1C); // search
-    case MenuIconGroup: return static_cast<wchar_t>(0xEAAE); // folders
-    case MenuIconTag: return static_cast<wchar_t>(0xEF86); // tags
-    case MenuIconTheme: return static_cast<wchar_t>(0xEC0A); // shirt
-    case MenuIconSize: return static_cast<wchar_t>(0xF291); // ruler-measure
-    case MenuIconView: return static_cast<wchar_t>(0xEA03); // adjustments
-    case MenuIconList: return static_cast<wchar_t>(0xEC14); // layout-list
-    case MenuIconTile: return static_cast<wchar_t>(0xEDBA); // layout-grid
-    case MenuIconSort: return static_cast<wchar_t>(0xEB5A); // arrows-sort
-    case MenuIconClear: return static_cast<wchar_t>(0xEF88); // trash-x
-    case MenuIconEye: return static_cast<wchar_t>(0xEA9A); // eye
-    case MenuIconEyeOff: return static_cast<wchar_t>(0xECF0); // eye-off
-    case MenuIconAbout: return static_cast<wchar_t>(0xEAC5); // info-circle
-    case MenuIconExit: return static_cast<wchar_t>(0xEB55); // x
-    case MenuIconRun: return static_cast<wchar_t>(0xED46); // player-play
-    case MenuIconPin: return static_cast<wchar_t>(0xEC9C); // pin
-    case MenuIconPinOff: return static_cast<wchar_t>(0xED60); // pinned
-    case MenuIconSettings: return static_cast<wchar_t>(0xEB20); // settings
-    case MenuIconHelp: return static_cast<wchar_t>(0xF91D); // help-circle
-    case MenuIconReward: return static_cast<wchar_t>(0xEB68); // gift
-    case MenuIconPower: return static_cast<wchar_t>(0xEB0D); // power
-    case MenuIconRestart: return static_cast<wchar_t>(0xEB13); // refresh
-    case MenuIconLogout: return static_cast<wchar_t>(0xEBA8); // logout
-    case MenuIconLock: return static_cast<wchar_t>(0xEAE2); // lock
-    case MenuIconSleep: return static_cast<wchar_t>(0xF228); // zzz
-    case MenuIconMonitor: return static_cast<wchar_t>(0xEA89); // device-desktop
-    case MenuIconVolumeUp: return static_cast<wchar_t>(0xEB51); // volume
-    case MenuIconVolumeDown: return static_cast<wchar_t>(0xEB4F); // volume-2
-    case MenuIconVolumeMute: return static_cast<wchar_t>(0xF1C3); // volume-off
-    case MenuIconTools: return static_cast<wchar_t>(0xEBCA); // tools
-    case MenuIconCalculator: return static_cast<wchar_t>(0xEB80); // calculator
-    case MenuIconTerminal: return static_cast<wchar_t>(0xEBEF); // terminal-2
-    case MenuIconNotebook: return static_cast<wchar_t>(0xEB96); // notebook
-    case MenuIconEnvironment: return static_cast<wchar_t>(0xEF05); // variable
-    case MenuIconUser: return static_cast<wchar_t>(0xEB4D); // user
-    case MenuIconHistory: return static_cast<wchar_t>(0xEBEA); // history
-    case MenuIconCertificate: return static_cast<wchar_t>(0xED76); // certificate
-    case MenuIconComputer: return static_cast<wchar_t>(0xEA89); // device-desktop
-    default: return L'\0';
-    }
-}
-
 bool DrawLocalMenuIcon(HDC dc, const RECT& rc, int icon, bool disabled, COLORREF color, const std::filesystem::path& appDirectory) {
-    const wchar_t glyph = MenuIconGlyph(icon);
+    const wchar_t glyph = MenuIconGlyph(static_cast<MenuIcon>(icon));
     if (glyph == L'\0' || !EnsureMenuIconFontLoaded(appDirectory)) {
         return false;
     }
@@ -1113,6 +1055,36 @@ bool LooksLikeUrlText(const std::wstring& value) {
            lower.rfind(L"https://", 0) == 0 ||
            lower.rfind(L"ftp://", 0) == 0 ||
            lower.rfind(L"www.", 0) == 0;
+}
+
+bool IsVolumeMenuIcon(MenuIcon icon) {
+    return icon == MenuIconVolumeUp ||
+           icon == MenuIconVolumeDown ||
+           icon == MenuIconVolumeMute;
+}
+
+std::optional<std::wstring> CurrentMasterVolumeText() {
+    IMMDeviceEnumerator* enumerator = nullptr;
+    IMMDevice* device = nullptr;
+    IAudioEndpointVolume* endpoint = nullptr;
+    std::optional<std::wstring> result;
+
+    if (SUCCEEDED(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL, IID_PPV_ARGS(&enumerator))) &&
+        SUCCEEDED(enumerator->GetDefaultAudioEndpoint(eRender, eConsole, &device)) &&
+        SUCCEEDED(device->Activate(__uuidof(IAudioEndpointVolume), CLSCTX_ALL, nullptr, reinterpret_cast<void**>(&endpoint)))) {
+        float level = 0.0f;
+        BOOL muted = FALSE;
+        if (SUCCEEDED(endpoint->GetMasterVolumeLevelScalar(&level)) &&
+            SUCCEEDED(endpoint->GetMute(&muted))) {
+            const int percent = static_cast<int>(ClampFloat(level, 0.0f, 1.0f) * 100.0f + 0.5f);
+            result = L"当前音量: " + std::to_wstring(percent) + L"%" + (muted ? L"（已静音）" : L"");
+        }
+    }
+
+    SafeRelease(endpoint);
+    SafeRelease(device);
+    SafeRelease(enumerator);
+    return result;
 }
 
 std::wstring SafeFileName(std::wstring name) {
@@ -1802,6 +1774,10 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         }
         if (command >= ID_MENU_SYSTEM_FUNCTION_BASE && command < ID_MENU_SYSTEM_FUNCTION_BASE + ID_MENU_SYSTEM_FUNCTION_LIMIT) {
             OpenSystemFunction(static_cast<std::size_t>(command - ID_MENU_SYSTEM_FUNCTION_BASE));
+            return 0;
+        }
+        if (command >= ID_MENU_ADD_SYSTEM_FUNCTION_BASE && command < ID_MENU_ADD_SYSTEM_FUNCTION_BASE + ID_MENU_ADD_SYSTEM_FUNCTION_LIMIT) {
+            AddSystemFunction(static_cast<std::size_t>(command - ID_MENU_ADD_SYSTEM_FUNCTION_BASE));
             return 0;
         }
         if (command >= ID_MENU_TOOL_BASE && command < ID_MENU_TOOL_BASE + ID_MENU_TOOL_LIMIT) {
@@ -2773,6 +2749,40 @@ void MainWindow::AddSystemFunction() {
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
+void MainWindow::AddSystemFunction(std::size_t index) {
+    if (EnsureCurrentTag() <= 0) {
+        return;
+    }
+
+    Link link;
+    link.parentGroup = CommandTagId();
+    link.pos = -1;
+    link.showCmd = SW_SHOWNORMAL;
+    if (!ConfigureSystemFunctionLink(index, link)) {
+        return;
+    }
+    link.parentGroup = CommandTagId();
+    link.pos = -1;
+    if (!storageService_.InsertLink(link)) {
+        MessageBoxW(hwnd_, storageService_.lastError().c_str(), L"添加系统功能", MB_OK | MB_ICONWARNING);
+        return;
+    }
+    model_.links.push_back(link);
+    selectedLinkId_ = link.id;
+    currentTagId_ = link.parentGroup;
+    if (Group* tag = FindGroup(currentTagId_); tag && tag->parentGroup != 0) {
+        currentGroupId_ = tag->parentGroup;
+    }
+    config_.currentGroupId = currentGroupId_;
+    config_.currentTagId = currentTagId_;
+    configService_.SaveWindowState(config_);
+    RegisterConfiguredHotKeys();
+    EnsureGroupVisible(currentGroupId_);
+    EnsureTagVisible(currentTagId_);
+    EnsureLinkVisible(selectedLinkId_);
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
 void MainWindow::OpenSystemFunction(std::size_t index) {
     Link link;
     if (!ConfigureSystemFunctionLink(index, link)) {
@@ -3286,7 +3296,7 @@ void MainWindow::AddTodoItem() {
 
     TodoItem item;
     item.tagId = currentTagId_;
-    item.title = L"新的待办事项";
+    item.title.clear();
     item.enabled = true;
     item.scheduleKind = TodoScheduleKind::None;
     item.pos = -1;
@@ -4596,31 +4606,59 @@ void MainWindow::HideLinkTooltip() {
 }
 
 std::wstring MainWindow::LinkTooltipText(const Link& link) const {
+    const auto appendLine = [](std::wstring& text, const std::wstring& line) {
+        if (line.empty()) {
+            return;
+        }
+        if (!text.empty()) {
+            text += L"\r\n";
+        }
+        text += line;
+    };
+
     const std::wstring name = Trim(link.name);
-    std::wstring installLocation = Trim(link.path);
-    if (!installLocation.empty()) {
-        installLocation = IsUrlLink(link) ? NormalizeUrl(installLocation) : ExpandEnvironmentStringsSafe(installLocation);
-    } else if (!Trim(link.workDir).empty()) {
-        installLocation = ExpandEnvironmentStringsSafe(Trim(link.workDir));
-    }
     const std::wstring remark = Trim(link.remark);
+    const SystemFunctionDefinition* systemFunction = SystemFunctionForLink(link);
 
     std::wstring text;
     if (!name.empty()) {
-        text += L"名称: " + name;
+        appendLine(text, L"名称: " + name);
     }
-    if (!installLocation.empty()) {
-        if (!text.empty()) {
-            text += L"\r\n";
+
+    if (systemFunction) {
+        appendLine(text, L"类型: 系统功能");
+        const std::wstring description = !remark.empty() ? remark : Trim(systemFunction->remark);
+        if (!description.empty()) {
+            appendLine(text, L"说明: " + description);
         }
-        text += L"安装位置: " + installLocation;
-    }
-    if (!remark.empty()) {
-        if (!text.empty()) {
-            text += L"\r\n";
+        if (systemFunction->type == 1) {
+            const std::wstring location = ExpandEnvironmentStringsSafe(Trim(systemFunction->target));
+            appendLine(text, L"位置: " + location);
+        } else if (std::wstring(systemFunction->name) == L"hosts") {
+            const std::wstring file = ExpandEnvironmentStringsSafe(Trim(systemFunction->parameter));
+            appendLine(text, L"文件: " + file);
         }
-        text += remark;
+    } else {
+        std::wstring installLocation = Trim(link.path);
+        if (!installLocation.empty()) {
+            installLocation = IsUrlLink(link) ? NormalizeUrl(installLocation) : ExpandEnvironmentStringsSafe(installLocation);
+        } else if (!Trim(link.workDir).empty()) {
+            installLocation = ExpandEnvironmentStringsSafe(Trim(link.workDir));
+        }
+        if (!installLocation.empty()) {
+            appendLine(text, (IsUrlLink(link) ? L"网址: " : L"安装位置: ") + installLocation);
+        }
+        if (!remark.empty()) {
+            appendLine(text, L"备注: " + remark);
+        }
     }
+
+    if (IsVolumeMenuIcon(SystemFunctionMenuIconForLink(link))) {
+        if (const auto volume = CurrentMasterVolumeText()) {
+            appendLine(text, *volume);
+        }
+    }
+    appendLine(text, L"点击次数: " + std::to_wstring(link.runCount));
     return text;
 }
 
@@ -4800,10 +4838,12 @@ void MainWindow::AppendThemeItemsToMenu(HMENU menu) {
 }
 
 void MainWindow::AppendAddLinkItems(HMENU menu) {
+    HMENU systemMenu = CreatePopupMenu();
+    AppendSystemFunctionItems(systemMenu, ID_MENU_ADD_SYSTEM_FUNCTION_BASE);
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_ADD_FILE, L"添加文件");
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_ADD_FOLDER, L"添加文件夹");
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_ADD_URL, L"添加网址");
-    AppendThemedMenuItem(menu, MF_STRING, ID_MENU_ADD_SYSTEM, L"添加系统功能");
+    AppendThemedMenuItem(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(systemMenu), L"添加系统功能", true, -1, -1, MenuIconSystem);
 }
 
 void MainWindow::AppendViewOptionItems(HMENU menu, const Group* tag) {
@@ -4886,9 +4926,12 @@ void MainWindow::AppendUnifiedViewOptionItems(HMENU menu) {
     AppendThemedMenuItem(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(sortMenu), L"统一排序方式", true);
 }
 
-void MainWindow::AppendSystemFunctionItems(HMENU menu) {
+void MainWindow::AppendSystemFunctionItems(HMENU menu, UINT commandBase) {
     const auto functions = SystemFunctions();
-    const std::size_t count = std::min<std::size_t>(functions.size(), ID_MENU_SYSTEM_FUNCTION_LIMIT);
+    const std::size_t limit = commandBase == ID_MENU_ADD_SYSTEM_FUNCTION_BASE
+        ? ID_MENU_ADD_SYSTEM_FUNCTION_LIMIT
+        : ID_MENU_SYSTEM_FUNCTION_LIMIT;
+    const std::size_t count = std::min<std::size_t>(functions.size(), limit);
     const std::size_t columnBreak = count > 18 ? (count + 1) / 2 : count + 1;
     for (std::size_t i = 0; i < count; ++i) {
         UINT flags = MF_STRING;
@@ -4898,7 +4941,7 @@ void MainWindow::AppendSystemFunctionItems(HMENU menu) {
         AppendThemedMenuItem(
             menu,
             flags,
-            ID_MENU_SYSTEM_FUNCTION_BASE + static_cast<UINT>(i),
+            commandBase + static_cast<UINT>(i),
             functions[i].name,
             false,
             functions[i].menuIcon != MenuIconNone ? -1 : SystemFunctionImageIndex(functions[i]),
@@ -4906,7 +4949,7 @@ void MainWindow::AppendSystemFunctionItems(HMENU menu) {
             functions[i].menuIcon);
     }
     if (count == 0) {
-        AppendThemedMenuItem(menu, MF_STRING | MF_GRAYED, ID_MENU_SYSTEM_FUNCTION_BASE, L"无可用功能");
+        AppendThemedMenuItem(menu, MF_STRING | MF_GRAYED, commandBase, L"无可用功能");
     }
 }
 
@@ -5439,10 +5482,6 @@ void MainWindow::DrawLinks(D2D1_RECT_F rect) {
             nameRect = D2D1::RectF(icon.right + Metric(theme_, L"linkItem", L"listTextGap", 8.0f), item.top, item.right - Metric(theme_, L"linkItem", L"listTextRightInset", 6.0f), item.bottom);
             nameFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
             nameFormat->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
-            if (config_.showRunCount) {
-                const float runWidth = Metric(theme_, L"linkItem", L"runCountWidth", 36.0f);
-                nameRect.right = std::max(nameRect.left, item.right - runWidth - Metric(theme_, L"linkItem", L"runCountRightInset", 8.0f));
-            }
         } else {
             const float iconLeft = item.left + (Width(item) - metrics.iconSize) * 0.5f;
             const float iconTop = item.top + Metric(theme_, L"linkItem", L"gridIconTop", 8.0f);
@@ -5465,25 +5504,6 @@ void MainWindow::DrawLinks(D2D1_RECT_F rect) {
             DrawRoundedRect(icon, theme_.color(L"iconFallback", L"normal", L"border"), iconRadius);
         }
         DrawTextBlock(link->name, nameFormat, nameRect, theme_.color(L"linkItem", L"normal", L"text"));
-        if (config_.showRunCount) {
-            smallFormat_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
-            const std::wstring runText = std::to_wstring(link->runCount);
-            if (metrics.layout == 0 || metrics.compactTile) {
-                const float rightInset = Metric(theme_, L"linkItem", L"runCountRightInset", 8.0f);
-                const float width = Metric(theme_, L"linkItem", L"runCountWidth", 36.0f);
-                D2D1_RECT_F runRect = D2D1::RectF(item.right - rightInset - width, item.top, item.right - rightInset, item.bottom);
-                smallFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING);
-                DrawTextBlock(runText, smallFormat_, runRect, theme_.color(L"linkItem", L"normal", L"subtext"));
-            } else {
-                const float width = Metric(theme_, L"linkItem", L"runCountGridWidth", 28.0f);
-                const float height = Metric(theme_, L"linkItem", L"runCountGridHeight", 16.0f);
-                const float rightInset = Metric(theme_, L"linkItem", L"runCountGridRightInset", 4.0f);
-                const float topInset = Metric(theme_, L"linkItem", L"runCountGridTopInset", 3.0f);
-                D2D1_RECT_F runRect = D2D1::RectF(item.right - rightInset - width, item.top + topInset, item.right - rightInset, item.top + topInset + height);
-                smallFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING);
-                DrawTextBlock(runText, smallFormat_, runRect, theme_.color(L"linkItem", L"normal", L"subtext"));
-            }
-        }
         hitAreas_.push_back(HitArea{HitKind::Link, link->id, IntersectRectF(item, rect)});
     }
     renderTarget_->PopAxisAlignedClip();
@@ -5975,16 +5995,25 @@ bool MainWindow::DrawThemedMenuItem(const DRAWITEMSTRUCT* draw) {
     SelectObject(dc, oldFont);
 
     if (item->submenu) {
-        HPEN pen = CreatePen(PS_SOLID, 1, ToColorRef(theme_.color(L"menuItem", item->disabled ? L"disabled" : L"normal", L"text")));
+        const COLORREF arrowColor = ToColorRef(theme_.color(L"menuItem", item->disabled ? L"disabled" : L"normal", L"text"));
+        HPEN pen = CreatePen(PS_SOLID, 1, arrowColor);
+        HBRUSH brush = CreateSolidBrush(arrowColor);
         HGDIOBJ oldPen = SelectObject(dc, pen);
+        HGDIOBJ oldBrush = SelectObject(dc, brush);
         const int midY = (rc.top + rc.bottom) / 2;
         const int arrowRight = static_cast<int>(Metric(theme_, L"menuItem", L"arrowRight", 9.0f));
         const int arrowWidth = static_cast<int>(Metric(theme_, L"menuItem", L"arrowWidth", 5.0f));
         const int arrowHalfHeight = static_cast<int>(Metric(theme_, L"menuItem", L"arrowHalfHeight", 4.0f));
-        MoveToEx(dc, rc.right - arrowRight - arrowWidth, midY - arrowHalfHeight, nullptr);
-        LineTo(dc, rc.right - arrowRight, midY);
-        LineTo(dc, rc.right - arrowRight - arrowWidth, midY + arrowHalfHeight);
+        const int arrowTip = rc.right - arrowRight;
+        POINT points[] = {
+            {arrowTip - arrowWidth, midY - arrowHalfHeight},
+            {arrowTip - arrowWidth, midY + arrowHalfHeight},
+            {arrowTip, midY},
+        };
+        Polygon(dc, points, static_cast<int>(std::size(points)));
+        SelectObject(dc, oldBrush);
         SelectObject(dc, oldPen);
+        DeleteObject(brush);
         DeleteObject(pen);
     }
     return true;

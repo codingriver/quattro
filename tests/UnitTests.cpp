@@ -137,6 +137,10 @@ int wmain() {
         <Metric name="radius" value="9.5"/>
         <State name="normal" bg="rgb(7,8,9)" text="@accent"/>
     </Component>
+    <Component name="miniButton">
+        <Metric name="height" value="21"/>
+        <State name="normal" icon="rgb(10,11,12)"/>
+    </Component>
     <Component name="settings.searchInput">
         <Metric name="height" value="99"/>
         <State name="normal" text="rgb(250,1,1)"/>
@@ -153,6 +157,8 @@ int wmain() {
     Check(Near(customTheme.color(L"label", L"normal", L"text").r, 4.0f / 255.0f), "Theme label component parse");
     Check(Near(customTheme.metric(L"list", L"radius", 0.0f), 9.5f), "Theme list metric parse");
     Check(Near(customTheme.color(L"list", L"normal", L"text").r, accent.r), "Theme list component color reference");
+    Check(Near(customTheme.metric(L"miniButton", L"height", 0.0f), 21.0f), "Theme mini button metric parse");
+    Check(Near(customTheme.color(L"miniButton", L"normal", L"icon").r, 10.0f / 255.0f), "Theme mini button component parse");
     Check(Near(customTheme.metric(L"settings.searchInput", L"height", 11.0f), 11.0f), "Theme ignores unsupported component metric");
     Check(!Near(customTheme.color(L"settings.searchInput", L"normal", L"text").r, 250.0f / 255.0f), "Theme ignores unsupported component color");
     Check(customTheme.color(L"titleButton", L"hover", L"bg").a > 0.9f, "Theme default component state");
@@ -166,6 +172,9 @@ int wmain() {
     Check(Near(fallbackTheme.metric(L"slider", L"thumbSize", 0.0f), 14.0f), "Theme default slider metric");
     Check(fallbackTheme.color(L"global", L"warning", L"text").r > 0.5f, "Theme default semantic warning");
     Check(Near(fallbackTheme.metric(L"global", L"fieldHeight", 0.0f), 32.0f), "Theme default global metric");
+    Check(Near(fallbackTheme.metric(L"miniButton", L"height", 0.0f), 24.0f), "Theme default mini button metric");
+    Check(fallbackTheme.color(L"miniButton", L"hover", L"icon").a > 0.9f, "Theme default mini button hover");
+    Check(Near(fallbackTheme.metric(L"tabButton", L"minTextWidth", 0.0f), 18.0f), "Theme default tab button min text width");
     std::filesystem::remove_all(themeRoot, ec);
 
     Link urlLink;
@@ -194,7 +203,7 @@ int wmain() {
     bool hasComputer = false;
     bool hasStartupFolders = false;
     bool hasPowerActions = false;
-    bool hasAudioActions = false;
+    bool hasRemovedAudioActions = false;
     bool genericCommandActionsHaveIconOverrides = true;
     for (std::size_t i = 0; i < systemFunctions.size(); ++i) {
         if (std::wstring(systemFunctions[i].name) == L"我的电脑") {
@@ -205,6 +214,7 @@ int wmain() {
             Check(systemLink.type == 3, "System function computer type");
             Check(systemLink.path == L"::{20D04FE0-3AEA-1069-A2D8-08002B30309D}", "System function computer path");
             Check(systemLink.parameter.empty(), "System function computer parameter");
+            Check(SystemFunctionForLink(systemLink) != nullptr, "System function computer lookup");
         }
         if (std::wstring(systemFunctions[i].name) == L"系统自启目录" ||
             std::wstring(systemFunctions[i].name) == L"用户自启目录") {
@@ -220,18 +230,7 @@ int wmain() {
         if (std::wstring(systemFunctions[i].name) == L"音量+" ||
             std::wstring(systemFunctions[i].name) == L"音量-" ||
             std::wstring(systemFunctions[i].name) == L"静音") {
-            hasAudioActions = true;
-            genericCommandActionsHaveIconOverrides = genericCommandActionsHaveIconOverrides &&
-                (systemFunctions[i].stockIcon >= 0 || systemFunctions[i].menuIcon != MenuIconNone);
-            if (std::wstring(systemFunctions[i].name) == L"音量+") {
-                Check(systemFunctions[i].menuIcon == MenuIconVolumeUp, "System function volume up icon");
-            }
-            if (std::wstring(systemFunctions[i].name) == L"音量-") {
-                Check(systemFunctions[i].menuIcon == MenuIconVolumeDown, "System function volume down icon");
-            }
-            if (std::wstring(systemFunctions[i].name) == L"静音") {
-                Check(systemFunctions[i].menuIcon == MenuIconVolumeMute, "System function mute icon");
-            }
+            hasRemovedAudioActions = true;
         }
         if (std::wstring(systemFunctions[i].name) == L"关机") {
             Link shutdownLink;
@@ -239,12 +238,15 @@ int wmain() {
             Check(shutdownLink.path == L"shutdown.exe", "System function shutdown path");
             Check(shutdownLink.parameter == L"/s /t 0", "System function shutdown parameter");
             Check(shutdownLink.showCmd == SW_HIDE, "System function shutdown show cmd");
+            MenuIcon parsedIcon = MenuIconNone;
+            Check(TryParseMenuIconLinkIcon(shutdownLink.icon, parsedIcon), "System function shutdown stored menu icon");
+            Check(parsedIcon == MenuIconPower, "System function shutdown stored icon matches menu");
         }
     }
     Check(hasComputer, "System function contains computer");
     Check(hasStartupFolders, "System function contains startup folders");
     Check(hasPowerActions, "System function contains power actions");
-    Check(hasAudioActions, "System function contains audio actions");
+    Check(!hasRemovedAudioActions, "System function excludes audio actions");
     Check(genericCommandActionsHaveIconOverrides, "System function generic command icon overrides");
     Link invalidSystemLink;
     Check(!ConfigureSystemFunctionLink(systemFunctions.size(), invalidSystemLink), "System function invalid index");
@@ -257,7 +259,7 @@ int wmain() {
         Check(std::wstring(MenuIconName(actual)) != L"unknown", "Top-right menu icon has name");
     }
     Check(MenuIconFor(ID_MENU_THEME_BASE + 5, L"custom") == MenuIconTheme, "Theme menu dynamic icon");
-    Check(MenuIconFor(ID_MENU_SYSTEM_FUNCTION_BASE + 35, L"静音") == MenuIconSystem, "System function dynamic icon");
+    Check(MenuIconFor(ID_MENU_SYSTEM_FUNCTION_BASE + 32, L"环境变量") == MenuIconSystem, "System function dynamic icon");
     Check(MenuIconFor(ID_MENU_MOVE_TO_BASE + 12, L"目标标签") == MenuIconMove, "Move target dynamic icon");
     Check(MenuIconFor(ID_MENU_COPY_TO_BASE + 12, L"目标标签") == MenuIconCopy, "Copy target dynamic icon");
     Check(MenuIconFor(ID_MENU_MOVE_TAG_TO_BASE + 12, L"目标分组") == MenuIconMove, "Move tag target dynamic icon");

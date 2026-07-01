@@ -24,7 +24,7 @@ enum ControlId {
     IdCancel,
 };
 
-const std::array<SystemFunctionDefinition, 36> kSystemFunctions{{
+const std::array<SystemFunctionDefinition, 33> kSystemFunctions{{
     {L"我的电脑", L"::{20D04FE0-3AEA-1069-A2D8-08002B30309D}", L"", 3, SW_SHOWNORMAL, L"Windows Shell 系统位置"},
     {L"我的文档", L"shell:Personal", L"", 3, SW_SHOWNORMAL, L"当前用户文档目录"},
     {L"网络", L"::{F02C1A0D-BE21-4350-88B0-7367FC96EF3C}", L"", 3, SW_SHOWNORMAL, L"网络位置"},
@@ -58,9 +58,6 @@ const std::array<SystemFunctionDefinition, 36> kSystemFunctions{{
     {L"睡眠", L"rundll32.exe", L"powrprof.dll,SetSuspendState 0,1,0", 0, SW_HIDE, L"睡眠计算机", -1, MenuIconSleep},
     {L"hosts", L"notepad.exe", L"%windir%\\System32\\drivers\\etc\\hosts", 0, SW_SHOWNORMAL, L"编辑 hosts 文件", -1, MenuIconNotebook},
     {L"环境变量", L"rundll32.exe", L"sysdm.cpl,EditEnvironmentVariables", 0, SW_SHOWNORMAL, L"编辑环境变量", -1, MenuIconEnvironment},
-    {L"音量+", L"powershell.exe", L"-NoProfile -WindowStyle Hidden -Command \"(New-Object -ComObject WScript.Shell).SendKeys([char]175)\"", 0, SW_HIDE, L"提高系统音量", -1, MenuIconVolumeUp},
-    {L"音量-", L"powershell.exe", L"-NoProfile -WindowStyle Hidden -Command \"(New-Object -ComObject WScript.Shell).SendKeys([char]174)\"", 0, SW_HIDE, L"降低系统音量", -1, MenuIconVolumeDown},
-    {L"静音", L"powershell.exe", L"-NoProfile -WindowStyle Hidden -Command \"(New-Object -ComObject WScript.Shell).SendKeys([char]173)\"", 0, SW_HIDE, L"切换静音", -1, MenuIconVolumeMute},
 }};
 
 float ClampFloat(float value, float minValue, float maxValue) {
@@ -350,6 +347,33 @@ int SystemFunctionImageIndex(const SystemFunctionDefinition& item) {
     return 0;
 }
 
+const SystemFunctionDefinition* SystemFunctionForLink(const Link& link) {
+    const std::wstring path = ToLower(Trim(link.path));
+    const std::wstring parameter = Trim(link.parameter);
+    for (const auto& item : kSystemFunctions) {
+        if (path == ToLower(Trim(item.target)) && parameter == Trim(item.parameter)) {
+            return &item;
+        }
+    }
+    return nullptr;
+}
+
+MenuIcon SystemFunctionMenuIconForLink(const Link& link) {
+    MenuIcon storedIcon = MenuIconNone;
+    if (TryParseMenuIconLinkIcon(Trim(link.icon), storedIcon)) {
+        return storedIcon;
+    }
+    if (!Trim(link.icon).empty()) {
+        return MenuIconNone;
+    }
+
+    const auto* item = SystemFunctionForLink(link);
+    if (item && item->menuIcon != MenuIconNone) {
+        return static_cast<MenuIcon>(item->menuIcon);
+    }
+    return MenuIconNone;
+}
+
 bool ConfigureSystemFunctionLink(std::size_t index, Link& link) {
     if (index >= kSystemFunctions.size()) {
         return false;
@@ -362,7 +386,9 @@ bool ConfigureSystemFunctionLink(std::size_t index, Link& link) {
     next.type = item.type;
     next.parameter = item.parameter;
     next.workDir.clear();
-    next.icon.clear();
+    next.icon = item.menuIcon != MenuIconNone
+        ? MenuIconLinkIconValue(static_cast<MenuIcon>(item.menuIcon))
+        : L"";
     next.remark = item.remark;
     next.showCmd = item.showCmd;
     next.isAdmin = false;

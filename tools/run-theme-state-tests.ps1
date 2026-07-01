@@ -29,6 +29,7 @@ foreach ($color in $theme.Theme.Palette.Color) {
 $reservedComponents = @(
     "panel",
     "iconButton",
+    "miniButton",
     "toggle",
     "radio",
     "listItem",
@@ -156,6 +157,7 @@ $mutedBrush = New-Object System.Drawing.SolidBrush (Resolve-ColorValue $palette[
 $columns = @("normal", "hover", "pressed", "focused", "disabled")
 $rowDefs = @(
     @{ label = "Button"; component = "button"; states = @("normal", "hover", "pressed", "focused", "disabled") },
+    @{ label = "Mini"; component = "miniButton"; states = @("normal", "hover", "pressed", "focused", "disabled") },
     @{ label = "Edit"; component = "edit"; states = @("normal", "hover", "focused", "readonly", "error") },
     @{ label = "Combo"; component = "comboBox"; states = @("normal", "hover", "focused", "selected", "disabled") },
     @{ label = "Checkbox"; component = "checkbox"; states = @("normal", "hover", "checked", "checkedHover", "disabled") },

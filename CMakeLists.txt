@@ -357,6 +357,7 @@ target_link_libraries(Quattro PRIVATE
     oleaut32
     shell32
     shlwapi
+    uuid
     wininet
     windowscodecs
     user32

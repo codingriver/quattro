@@ -60,6 +60,12 @@ if ($Help) {
     return
 }
 
+function Format-PackageTimestamp {
+    param([datetime]$Time)
+
+    return $Time.ToString("yyyy-MM-dd HH:mm:ss")
+}
+
 function New-ArchitectureList {
     param([string]$Requested)
 
@@ -271,6 +277,10 @@ if (($architectures | Where-Object { $_.Name -eq "x64" }) -and -not [System.Envi
 $distRoot = Join-Path $root "dist"
 New-Item -ItemType Directory -Force -Path $distRoot | Out-Null
 
+$packageStartTime = Get-Date
+"package date: $($packageStartTime.ToString("yyyy-MM-dd"))"
+"package start: $(Format-PackageTimestamp -Time $packageStartTime)"
+
 $outputs = New-Object System.Collections.Generic.List[string]
 foreach ($arch in $architectures) {
     $useVcpkg = $Backend -eq "vcpkg"
@@ -326,6 +336,9 @@ foreach ($arch in $architectures) {
     }
 }
 
+$packageEndTime = Get-Date
+"package end: $(Format-PackageTimestamp -Time $packageEndTime)"
+"package duration: $([int][math]::Round(($packageEndTime - $packageStartTime).TotalSeconds))s"
 "package complete"
 "artifacts:"
 foreach ($output in $outputs) {

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "MenuCatalog.h"
 #include "Models.h"
 #include "Theme.h"
 
@@ -21,6 +22,8 @@ struct SystemFunctionDefinition {
 
 std::span<const SystemFunctionDefinition> SystemFunctions();
 int SystemFunctionImageIndex(const SystemFunctionDefinition& item);
+const SystemFunctionDefinition* SystemFunctionForLink(const Link& link);
+MenuIcon SystemFunctionMenuIconForLink(const Link& link);
 bool ConfigureSystemFunctionLink(std::size_t index, Link& link);
 
 class SystemFunctionDialog {

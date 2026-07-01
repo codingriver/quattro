@@ -303,10 +303,6 @@ private:
         return ThemedControls::CreateButton(instance_, hwnd_, id, text, x, y, width, height, font_, id == IdOk);
     }
 
-    HWND Combo(int id, int x, int y, int width, int dropHeight = 220) {
-        return ThemedControls::CreateComboBox(instance_, hwnd_, id, x, y, width, dropHeight, font_, theme_);
-    }
-
     void PaintBackground(HDC hdc) {
         RECT rect{};
         GetClientRect(hwnd_, &rect);

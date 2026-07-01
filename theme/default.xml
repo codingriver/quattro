@@ -10,7 +10,7 @@
            per-screen override. Unsupported components are ignored by the
            loader.
         3. Customize common controls through the shared categories below:
-           text, label, panel, field, edit, button, iconButton, checkbox,
+           text, label, panel, field, edit, button, iconButton, miniButton, checkbox,
            toggle, radio, comboBox, tabButton, list, listItem, scrollbar,
            slider, dialog, menuItem, linkItem, majorNavItem, minorNavItem,
            titleButton, tooltip, separator, etc.
@@ -184,7 +184,6 @@
     <Component name="field">
         <Metric name="radius" value="7"/>
         <Metric name="borderWidth" value="1"/>
-        <Metric name="height" value="32"/>
         <Metric name="paddingX" value="9"/>
         <Metric name="textHeight" value="20"/>
         <Metric name="textOffsetY" value="1"/>
@@ -294,6 +293,20 @@
         <State name="pressed" bg="@pressed" icon="@accent"/>
         <State name="disabled" icon="@disabledText"/>
     </Component>
+    <Component name="miniButton">
+        <Metric name="width" value="26"/>
+        <Metric name="height" value="24"/>
+        <Metric name="radius" value="6"/>
+        <Metric name="borderWidth" value="1"/>
+        <Metric name="arrowSize" value="5"/>
+        <Metric name="arrowStrokeWidth" value="2"/>
+        <Metric name="pressedOffset" value="1"/>
+        <State name="normal" bg="@surface" border="@border" icon="@mutedText"/>
+        <State name="hover" bg="@hover" border="@accent" icon="@accent"/>
+        <State name="pressed" bg="@pressed" border="@accent" icon="@accent"/>
+        <State name="focused" border="@focus"/>
+        <State name="disabled" bg="@background" border="@line" icon="@disabledText"/>
+    </Component>
     <Component name="edit">
         <Metric name="radius" value="7"/>
         <Metric name="borderWidth" value="1"/>
@@ -337,6 +350,7 @@
         <Metric name="borderWidth" value="1"/>
         <Metric name="height" value="30"/>
         <Metric name="paddingX" value="12"/>
+        <Metric name="minTextWidth" value="18"/>
         <Metric name="textHeight" value="20"/>
         <Metric name="textOffsetY" value="0"/>
         <Metric name="segmented" value="1"/>

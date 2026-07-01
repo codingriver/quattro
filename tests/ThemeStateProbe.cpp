@@ -163,6 +163,7 @@ int wmain(int argc, wchar_t** argv) {
     }
 
     HWND button = ThemedControls::CreateButton(instance, parent, 101, L"button", 0, 0, 124, ThemedControls::ButtonHeight(theme), font);
+    HWND mini = ThemedControls::CreateMiniButton(instance, parent, 105, L"up", 0, 0, 42, ThemedControls::MiniButtonHeight(theme), font);
     HWND check = ThemedControls::CreateCheckBox(instance, parent, 102, L"checkbox", 0, 0, 124, ThemedControls::CheckBoxHeight(theme), font, false);
     HWND tab = ThemedControls::CreateTabButton(instance, parent, 103, L"tab", 0, 0, 124, ThemedControls::TabButtonHeight(theme), font, false);
     HWND combo = ThemedControls::CreateComboBox(instance, parent, 104, 0, 0, 124, 180, font, theme);
@@ -176,12 +177,13 @@ int wmain(int argc, wchar_t** argv) {
         int height;
     } rows[] = {
         {L"Button", button, ODT_BUTTON, ThemedControls::ButtonHeight(theme)},
+        {L"Mini", mini, ODT_BUTTON, ThemedControls::MiniButtonHeight(theme)},
         {L"Combo", combo, ODT_COMBOBOX, ThemedControls::ComboBoxHeight(theme)},
         {L"Checkbox", check, ODT_BUTTON, ThemedControls::CheckBoxHeight(theme)},
         {L"Tab", tab, ODT_BUTTON, ThemedControls::TabButtonHeight(theme)},
     };
 
-    for (int row = 0; row < 4; ++row) {
+    for (int row = 0; row < 5; ++row) {
         const int y = startY + row * 58;
         DrawLabel(dc, bold ? bold : font, rows[row].label, RECT{24, y, 112, y + 34}, ToColorRef(theme.color(L"global", L"normal", L"text")));
         for (int col = 0; col < 5; ++col) {
@@ -216,7 +218,7 @@ int wmain(int argc, wchar_t** argv) {
         }
     }
 
-    const int sampleY = 322;
+    const int sampleY = 370;
     DrawLabel(dc, bold ? bold : font, L"Basic", RECT{24, sampleY, 112, sampleY + 34}, ToColorRef(theme.color(L"global", L"normal", L"text")));
     DrawLabel(dc, font, L"label text", RECT{startX, sampleY, startX + 124, sampleY + ThemedControls::LabelHeight(theme)}, ToColorRef(theme.color(L"label", L"normal", L"text")));
     RECT fieldRect{startX + cellW, sampleY, startX + cellW + 124, sampleY + ThemedControls::FieldFrameHeight(theme)};
@@ -228,7 +230,7 @@ int wmain(int argc, wchar_t** argv) {
     RECT listText{listRect.left + 8, listRect.top + 8, listRect.right - 8, listRect.top + 28};
     DrawLabel(dc, font, L"list", listText, ToColorRef(theme.color(L"list", L"normal", L"text")));
 
-    const int reservedY = 392;
+    const int reservedY = 440;
     DrawLabel(dc, bold ? bold : font, L"Reserved", RECT{24, reservedY, 112, reservedY + 34}, ToColorRef(theme.color(L"global", L"normal", L"text")));
 
     const int panelRadius = static_cast<int>(theme.metric(L"panel", L"radius", 7.0f));

@@ -16,6 +16,10 @@ HANDLE ButtonKind() {
     return reinterpret_cast<HANDLE>(static_cast<INT_PTR>(1));
 }
 
+HANDLE MiniButtonKind() {
+    return reinterpret_cast<HANDLE>(static_cast<INT_PTR>(5));
+}
+
 HANDLE CheckBoxKind() {
     return reinterpret_cast<HANDLE>(static_cast<INT_PTR>(2));
 }
@@ -298,6 +302,45 @@ void DrawButton(const Theme& theme, const DRAWITEMSTRUCT* draw) {
     DrawTextW(draw->hDC, text.c_str(), static_cast<int>(text.size()), &textRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 }
 
+void DrawMiniButton(const Theme& theme, const DRAWITEMSTRUCT* draw) {
+    const bool disabled = (draw->itemState & ODS_DISABLED) != 0;
+    const bool pressed = (draw->itemState & ODS_SELECTED) != 0;
+    const bool focused = (draw->itemState & ODS_FOCUS) != 0;
+    const bool hover = IsHover(draw->hwndItem);
+    const wchar_t* state = disabled ? L"disabled" : (pressed ? L"pressed" : (hover ? L"hover" : L"normal"));
+
+    RECT rect = draw->rcItem;
+    FillRoundRect(
+        draw->hDC,
+        rect,
+        static_cast<int>(theme.metric(L"miniButton", L"radius", 5.0f)),
+        ToColorRef(theme.color(L"miniButton", state, L"bg")),
+        ToColorRef(theme.color(L"miniButton", focused ? L"focused" : state, L"border")),
+        static_cast<int>(theme.metric(L"miniButton", L"borderWidth", 1.0f)));
+
+    const std::wstring text = WindowText(draw->hwndItem);
+    const bool down = text == L"down" || text == L"next" || text == L"v";
+    const int size = static_cast<int>(theme.metric(L"miniButton", L"arrowSize", 5.0f));
+    const int stroke = static_cast<int>(theme.metric(L"miniButton", L"arrowStrokeWidth", 2.0f));
+    const int cy = (rect.top + rect.bottom) / 2 + (pressed ? static_cast<int>(theme.metric(L"miniButton", L"pressedOffset", 1.0f)) : 0);
+    const int cx = (rect.left + rect.right) / 2 + (pressed ? static_cast<int>(theme.metric(L"miniButton", L"pressedOffset", 1.0f)) : 0);
+    POINT points[3]{};
+    if (down) {
+        points[0] = POINT{cx - size, cy - 2};
+        points[1] = POINT{cx, cy + 3};
+        points[2] = POINT{cx + size, cy - 2};
+    } else {
+        points[0] = POINT{cx - size, cy + 2};
+        points[1] = POINT{cx, cy - 3};
+        points[2] = POINT{cx + size, cy + 2};
+    }
+    HPEN pen = CreatePen(PS_SOLID, std::max(1, stroke), ToColorRef(theme.color(L"miniButton", state, L"icon")));
+    HGDIOBJ oldPen = SelectObject(draw->hDC, pen);
+    Polyline(draw->hDC, points, 3);
+    SelectObject(draw->hDC, oldPen);
+    DeleteObject(pen);
+}
+
 void DrawCheckBox(const Theme& theme, const DRAWITEMSTRUCT* draw) {
     const bool disabled = (draw->itemState & ODS_DISABLED) != 0;
     const bool focused = (draw->itemState & ODS_FOCUS) != 0;
@@ -442,6 +485,10 @@ int CompactButtonHeight(const Theme& theme) {
     return static_cast<int>(theme.metric(L"button", L"compactHeight", 28.0f));
 }
 
+int MiniButtonHeight(const Theme& theme) {
+    return static_cast<int>(theme.metric(L"miniButton", L"height", 24.0f));
+}
+
 int ButtonPaddingX(const Theme& theme) {
     return static_cast<int>(theme.metric(L"button", L"paddingX", 12.0f));
 }
@@ -483,7 +530,15 @@ int TabButtonHeight(const Theme& theme) {
 }
 
 RECT TabButtonTextRect(const Theme& theme, RECT frame) {
-    return TextRectFromMetrics(theme, L"tabButton", frame, 20.0f, true);
+    RECT rect = TextRectFromMetrics(theme, L"tabButton", frame, 20.0f, true);
+    const int width = frame.right - frame.left;
+    const int minTextWidth = static_cast<int>(theme.metric(L"tabButton", L"minTextWidth", 18.0f));
+    if (width > 0 && (rect.right - rect.left) < minTextWidth) {
+        const int paddingX = std::max(2, (width - minTextWidth) / 2);
+        rect.left = frame.left + paddingX;
+        rect.right = frame.right - paddingX;
+    }
+    return rect;
 }
 
 RECT TabGroupInnerRect(const Theme& theme, RECT frame) {
@@ -494,7 +549,7 @@ RECT TabGroupInnerRect(const Theme& theme, RECT frame) {
 }
 
 int ComboBoxHeight(const Theme& theme) {
-    return static_cast<int>(theme.metric(L"comboBox", L"height", 32.0f));
+    return ButtonHeight(theme);
 }
 
 int ComboBoxItemHeight(const Theme& theme) {
@@ -560,6 +615,17 @@ HWND CreateButton(HINSTANCE instance, HWND parent, int id, const wchar_t* text, 
     if (hwnd) {
         SendMessageW(hwnd, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
         SetPropW(hwnd, kControlKindProp, ButtonKind());
+        AttachThemedBehavior(hwnd);
+    }
+    return hwnd;
+}
+
+HWND CreateMiniButton(HINSTANCE instance, HWND parent, int id, const wchar_t* text, int x, int y, int width, int height, HFONT font) {
+    HWND hwnd = CreateWindowExW(0, L"BUTTON", text, WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON | BS_OWNERDRAW,
+                                x, y, width, height, parent, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), instance, nullptr);
+    if (hwnd) {
+        SendMessageW(hwnd, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+        SetPropW(hwnd, kControlKindProp, MiniButtonKind());
         AttachThemedBehavior(hwnd);
     }
     return hwnd;
@@ -784,6 +850,10 @@ bool Draw(const Theme& theme, const DRAWITEMSTRUCT* draw) {
     }
     if (kind == ButtonKind()) {
         DrawButton(theme, draw);
+        return true;
+    }
+    if (kind == MiniButtonKind()) {
+        DrawMiniButton(theme, draw);
         return true;
     }
     if (kind == CheckBoxKind()) {

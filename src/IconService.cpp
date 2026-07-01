@@ -1,6 +1,8 @@
 #include "IconService.h"
 
+#include "MenuCatalog.h"
 #include "ShellItemService.h"
+#include "SystemFunctionDialog.h"
 #include "Utilities.h"
 
 #include <shellapi.h>
@@ -8,7 +10,9 @@
 #include <shlwapi.h>
 #include <wininet.h>
 
+#include <algorithm>
 #include <array>
+#include <cstdint>
 
 namespace {
 template <typename T>
@@ -51,6 +55,120 @@ HICON StockIcon(SHSTOCKICONID id) {
         return info.hIcon;
     }
     return nullptr;
+}
+
+bool EnsureMenuIconFontLoaded(const std::filesystem::path& appDirectory) {
+    static std::filesystem::path loadedPath;
+    static bool loaded = false;
+
+    const std::filesystem::path fontPath = appDirectory / L"icons" / L"menu" / L"tabler" / L"tabler-icons.ttf";
+    if (loaded && loadedPath == fontPath) {
+        return true;
+    }
+    loadedPath = fontPath;
+    loaded = FileExists(fontPath) && AddFontResourceExW(fontPath.c_str(), FR_PRIVATE, nullptr) > 0;
+    return loaded;
+}
+
+bool UsesDangerMenuIconColor(MenuIcon icon) {
+    return icon == MenuIconDelete ||
+           icon == MenuIconClear ||
+           icon == MenuIconExit ||
+           icon == MenuIconPower;
+}
+
+HICON CreateMenuIconHandle(MenuIcon icon, const std::filesystem::path& appDirectory) {
+    const wchar_t glyph = MenuIconGlyph(icon);
+    if (glyph == L'\0' || !EnsureMenuIconFontLoaded(appDirectory)) {
+        return nullptr;
+    }
+
+    constexpr int size = 64;
+    BITMAPINFO info{};
+    info.bmiHeader.biSize = sizeof(info.bmiHeader);
+    info.bmiHeader.biWidth = size;
+    info.bmiHeader.biHeight = -size;
+    info.bmiHeader.biPlanes = 1;
+    info.bmiHeader.biBitCount = 32;
+    info.bmiHeader.biCompression = BI_RGB;
+
+    void* pixels = nullptr;
+    HDC screen = GetDC(nullptr);
+    HBITMAP color = CreateDIBSection(screen, &info, DIB_RGB_COLORS, &pixels, nullptr, 0);
+    HDC dc = CreateCompatibleDC(screen);
+    ReleaseDC(nullptr, screen);
+    if (!color || !dc || !pixels) {
+        if (dc) {
+            DeleteDC(dc);
+        }
+        if (color) {
+            DeleteObject(color);
+        }
+        return nullptr;
+    }
+
+    HGDIOBJ oldBitmap = SelectObject(dc, color);
+    std::fill_n(static_cast<std::uint32_t*>(pixels), size * size, 0);
+    HFONT font = CreateFontW(
+        -54,
+        0,
+        0,
+        0,
+        FW_NORMAL,
+        FALSE,
+        FALSE,
+        FALSE,
+        DEFAULT_CHARSET,
+        OUT_DEFAULT_PRECIS,
+        CLIP_DEFAULT_PRECIS,
+        CLEARTYPE_QUALITY,
+        DEFAULT_PITCH | FF_DONTCARE,
+        L"tabler-icons");
+    if (!font) {
+        SelectObject(dc, oldBitmap);
+        DeleteDC(dc);
+        DeleteObject(color);
+        return nullptr;
+    }
+
+    const COLORREF iconColor = UsesDangerMenuIconColor(icon) ? RGB(228, 48, 58) : RGB(0, 153, 215);
+    const int oldBkMode = SetBkMode(dc, TRANSPARENT);
+    const COLORREF oldTextColor = SetTextColor(dc, iconColor);
+    HGDIOBJ oldFont = SelectObject(dc, font);
+    RECT rect{0, 0, size, size};
+    DrawTextW(dc, &glyph, 1, &rect, DT_SINGLELINE | DT_CENTER | DT_VCENTER | DT_NOCLIP);
+    SelectObject(dc, oldFont);
+    SetTextColor(dc, oldTextColor);
+    SetBkMode(dc, oldBkMode);
+    DeleteObject(font);
+
+    auto* argb = static_cast<std::uint32_t*>(pixels);
+    for (int i = 0; i < size * size; ++i) {
+        if ((argb[i] & 0x00ffffff) != 0) {
+            argb[i] |= 0xff000000;
+        }
+    }
+
+    HBITMAP mask = CreateBitmap(size, size, 1, 1, nullptr);
+    ICONINFO iconInfo{};
+    iconInfo.fIcon = TRUE;
+    iconInfo.hbmColor = color;
+    iconInfo.hbmMask = mask;
+    HICON result = CreateIconIndirect(&iconInfo);
+
+    SelectObject(dc, oldBitmap);
+    DeleteDC(dc);
+    DeleteObject(mask);
+    DeleteObject(color);
+    return result;
+}
+
+std::wstring LinkIconCacheToken(const Link& link) {
+    const MenuIcon icon = SystemFunctionMenuIconForLink(link);
+    if (MenuIconIsRenderable(icon)) {
+        return MenuIconLinkIconValue(icon);
+    }
+    return link.icon;
 }
 
 std::wstring ResolveExecutableLikePath(const std::wstring& value) {
@@ -285,6 +403,13 @@ bool IconService::SaveIconPng(HICON icon, const std::filesystem::path& path) con
 }
 
 HICON IconService::ExtractIconForLink(const Link& link) const {
+    const MenuIcon menuIcon = SystemFunctionMenuIconForLink(link);
+    if (MenuIconIsRenderable(menuIcon)) {
+        if (HICON icon = CreateMenuIconHandle(menuIcon, appDirectory_)) {
+            return icon;
+        }
+    }
+
     const std::wstring iconPath = Trim(link.icon);
     if (!iconPath.empty() && iconPath != L"#url" && iconPath != L"默认系统缓存图标") {
         const std::wstring resolvedIcon = ResolveExecutableLikePath(iconPath);
@@ -383,11 +508,11 @@ bool IconService::CreateBitmapFromIcon(ID2D1RenderTarget* renderTarget, HICON ic
 }
 
 std::wstring IconService::CacheKey(const Link& link) const {
-    return std::to_wstring(link.id) + L"|" + ToLower(link.path) + L"|" + link.icon;
+    return std::to_wstring(link.id) + L"|" + ToLower(link.path) + L"|" + LinkIconCacheToken(link);
 }
 
 std::filesystem::path IconService::CachePath(const Link& link) const {
-    const std::wstring hash = Hex8(StablePathHash(ToLower(link.path + L"|" + link.icon)));
+    const std::wstring hash = Hex8(StablePathHash(ToLower(link.path + L"|" + LinkIconCacheToken(link))));
     const std::wstring prefix = link.id > 0 ? (L"link_" + std::to_wstring(link.id)) : L"link";
     return appDirectory_ / L"icons" / L"cache" / (prefix + L"_" + hash + L"_32.png");
 }

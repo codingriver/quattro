@@ -38,6 +38,7 @@ bool IsAllowedComponent(const std::wstring& component) {
         L"dialog",
         L"edit",
         L"iconButton",
+        L"miniButton",
         L"comboBox",
         L"tabButton",
         L"button",
@@ -370,6 +371,19 @@ void Theme::SetDefaults() {
     PutState(L"iconButton", L"hover", L"icon", palette_[L"accent"]);
     PutState(L"iconButton", L"pressed", L"bg", palette_[L"pressed"]);
     PutState(L"iconButton", L"disabled", L"icon", palette_[L"disabledText"]);
+    PutState(L"miniButton", L"normal", L"bg", palette_[L"surface"]);
+    PutState(L"miniButton", L"normal", L"border", palette_[L"border"]);
+    PutState(L"miniButton", L"normal", L"icon", palette_[L"mutedText"]);
+    PutState(L"miniButton", L"hover", L"bg", palette_[L"hover"]);
+    PutState(L"miniButton", L"hover", L"border", palette_[L"accent"]);
+    PutState(L"miniButton", L"hover", L"icon", palette_[L"accent"]);
+    PutState(L"miniButton", L"pressed", L"bg", palette_[L"pressed"]);
+    PutState(L"miniButton", L"pressed", L"border", palette_[L"accent"]);
+    PutState(L"miniButton", L"pressed", L"icon", palette_[L"accent"]);
+    PutState(L"miniButton", L"focused", L"border", palette_[L"focus"]);
+    PutState(L"miniButton", L"disabled", L"bg", palette_[L"background"]);
+    PutState(L"miniButton", L"disabled", L"border", palette_[L"line"]);
+    PutState(L"miniButton", L"disabled", L"icon", palette_[L"disabledText"]);
     PutState(L"edit", L"normal", L"bg", palette_[L"surface"]);
     PutState(L"edit", L"normal", L"text", palette_[L"text"]);
     PutState(L"edit", L"normal", L"border", palette_[L"border"]);
@@ -642,6 +656,13 @@ void Theme::SetDefaults() {
     PutMetric(L"iconButton", L"size", 28.0f);
     PutMetric(L"iconButton", L"radius", 7.0f);
     PutMetric(L"iconButton", L"iconSize", 16.0f);
+    PutMetric(L"miniButton", L"width", 26.0f);
+    PutMetric(L"miniButton", L"height", 24.0f);
+    PutMetric(L"miniButton", L"radius", 6.0f);
+    PutMetric(L"miniButton", L"borderWidth", 1.0f);
+    PutMetric(L"miniButton", L"arrowSize", 5.0f);
+    PutMetric(L"miniButton", L"arrowStrokeWidth", 2.0f);
+    PutMetric(L"miniButton", L"pressedOffset", 1.0f);
     PutMetric(L"edit", L"radius", 7.0f);
     PutMetric(L"edit", L"borderWidth", 1.0f);
     PutMetric(L"edit", L"height", 32.0f);
@@ -655,7 +676,6 @@ void Theme::SetDefaults() {
     PutMetric(L"edit", L"multiLinePaddingBottom", 7.0f);
     PutMetric(L"comboBox", L"radius", 7.0f);
     PutMetric(L"comboBox", L"borderWidth", 1.0f);
-    PutMetric(L"comboBox", L"height", 32.0f);
     PutMetric(L"comboBox", L"paddingX", 9.0f);
     PutMetric(L"comboBox", L"itemHeight", 26.0f);
     PutMetric(L"comboBox", L"textHeight", 20.0f);
@@ -669,6 +689,7 @@ void Theme::SetDefaults() {
     PutMetric(L"tabButton", L"borderWidth", 1.0f);
     PutMetric(L"tabButton", L"height", 30.0f);
     PutMetric(L"tabButton", L"paddingX", 12.0f);
+    PutMetric(L"tabButton", L"minTextWidth", 18.0f);
     PutMetric(L"tabButton", L"textHeight", 20.0f);
     PutMetric(L"tabButton", L"textOffsetY", 0.0f);
     PutMetric(L"tabButton", L"segmented", 1.0f);

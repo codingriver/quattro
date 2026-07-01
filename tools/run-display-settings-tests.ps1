@@ -399,9 +399,6 @@ try {
     $tagRightAlign = Capture-Case -BaseRunDir $runDir -Name "tag-right-align" -Config @{
         TagAlign = "right"
     }
-    $noRunCount = Capture-Case -BaseRunDir $runDir -Name "no-run-count" -Config @{
-        bRunCount = 0
-    }
     $wrappedNames = Capture-Case -BaseRunDir $runDir -Name "wrapped-names" -Config @{
         bLnkNameSingleline = 0
     }
@@ -418,7 +415,6 @@ try {
     Assert-ReportValue -CaseName "right-nav" -Name "group_width" -Expected "112"
     Assert-ReportValue -CaseName "right-nav" -Name "tag_width" -Expected "136"
     Assert-ReportValue -CaseName "tag-right-align" -Name "tag_align" -Expected "right"
-    Assert-ReportValue -CaseName "no-run-count" -Name "show_run_count" -Expected "0"
     Assert-ReportValue -CaseName "wrapped-names" -Name "link_name_single_line" -Expected "0"
     Assert-ReportValue -CaseName "all-visible" -Name "show_tooltip" -Expected "1"
 
@@ -426,8 +422,6 @@ try {
     Assert-RegionChanged -LeftPath $all -RightPath $hiddenTitleItems -Name "title_date_and_buttons_visibility" -X 130 -Y 4 -Width 290 -Height 30 -MinChanged 12
     Assert-RegionChanged -LeftPath $all -RightPath $rightNav -Name "right_side_group_and_tag_layout" -X 0 -Y 34 -Width 430 -Height 500 -MinChanged 500
     Assert-RegionChanged -LeftPath $all -RightPath $tagRightAlign -Name "tag_text_alignment" -X 0 -Y 74 -Width 130 -Height 420 -MinChanged 18
-    Assert-RegionChanged -LeftPath $all -RightPath $noRunCount -Name "run_count_visibility" -X 335 -Y 72 -Width 80 -Height 220 -MinChanged 8
-
     "display_settings_tests=passed"
     "screenshot_all_visible=$all"
     "screenshot_title_hidden=$titleHidden"
@@ -435,7 +429,6 @@ try {
     "screenshot_hidden_title_items=$hiddenTitleItems"
     "screenshot_right_nav=$rightNav"
     "screenshot_tag_right_align=$tagRightAlign"
-    "screenshot_no_run_count=$noRunCount"
     "screenshot_wrapped_names=$wrappedNames"
 } finally {
     if ($null -eq $previousNoFocus) {

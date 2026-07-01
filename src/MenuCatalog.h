@@ -94,6 +94,8 @@ constexpr UINT ID_MENU_SYSTEM_FUNCTION_BASE = 46000;
 constexpr UINT ID_MENU_SYSTEM_FUNCTION_LIMIT = 100;
 constexpr UINT ID_MENU_TOOL_BASE = 47000;
 constexpr UINT ID_MENU_TOOL_LIMIT = 100;
+constexpr UINT ID_MENU_ADD_SYSTEM_FUNCTION_BASE = 48000;
+constexpr UINT ID_MENU_ADD_SYSTEM_FUNCTION_LIMIT = 100;
 constexpr UINT ID_MENU_DYNAMIC_TARGET_LIMIT = 500;
 
 enum MenuIcon {
@@ -163,4 +165,7 @@ struct MenuVisualRequirement {
 int MenuIconFor(UINT_PTR id, const std::wstring& text);
 const wchar_t* MenuIconName(MenuIcon icon);
 bool MenuIconIsRenderable(MenuIcon icon);
+wchar_t MenuIconGlyph(MenuIcon icon);
+std::wstring MenuIconLinkIconValue(MenuIcon icon);
+bool TryParseMenuIconLinkIcon(const std::wstring& value, MenuIcon& icon);
 std::span<const MenuVisualRequirement> RequiredTopRightMenuVisuals();

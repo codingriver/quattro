@@ -4,6 +4,7 @@
 #include "ConfigPackageService.h"
 #include "IconService.h"
 #include "Launcher.h"
+#include "MenuCatalog.h"
 #include "Models.h"
 #include "PluginRegistry.h"
 #include "Storage.h"
@@ -109,6 +110,7 @@ private:
     void AddFolder();
     void AddUrl();
     void AddSystemFunction();
+    void AddSystemFunction(std::size_t index);
     void OpenSystemFunction(std::size_t index);
     void EditLink(int linkId);
     void DeleteLink(int linkId);
@@ -197,7 +199,7 @@ private:
     void AppendViewOptionItems(HMENU menu, const Group* tag);
     void AppendTodoSortItems(HMENU menu, const Group* tag);
     void AppendUnifiedViewOptionItems(HMENU menu);
-    void AppendSystemFunctionItems(HMENU menu);
+    void AppendSystemFunctionItems(HMENU menu, UINT commandBase = ID_MENU_SYSTEM_FUNCTION_BASE);
     void AppendToolItems(HMENU menu);
     std::vector<int> GroupTargetIds(int excludedGroupId) const;
     std::vector<int> GroupedTagTargetIds(int excludedTagId) const;

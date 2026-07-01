@@ -19,6 +19,17 @@ HWND CreateButton(
     HFONT font,
     bool defaultButton = false);
 
+HWND CreateMiniButton(
+    HINSTANCE instance,
+    HWND parent,
+    int id,
+    const wchar_t* text,
+    int x,
+    int y,
+    int width,
+    int height,
+    HFONT font);
+
 HWND CreateCheckBox(
     HINSTANCE instance,
     HWND parent,
@@ -84,6 +95,7 @@ int CompactButtonHeight(const Theme& theme);
 int ButtonPaddingX(const Theme& theme);
 int ButtonTextHeight(const Theme& theme);
 RECT ButtonTextRect(const Theme& theme, RECT frame, bool pressed = false);
+int MiniButtonHeight(const Theme& theme);
 int CheckBoxHeight(const Theme& theme);
 RECT CheckBoxBoxRect(const Theme& theme, RECT frame);
 RECT CheckBoxTextRect(const Theme& theme, RECT frame);

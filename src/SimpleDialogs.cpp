@@ -788,7 +788,6 @@ private:
         draft_.hideWhenInactive = SendMessageW(hideInactive_, BM_GETCHECK, 0, 0) == BST_CHECKED;
         draft_.hideAfterLink = SendMessageW(hideAfterLink_, BM_GETCHECK, 0, 0) == BST_CHECKED;
         draft_.hideOnStart = SendMessageW(hideOnStart_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-        draft_.showRunCount = SendMessageW(showRunCount_, BM_GETCHECK, 0, 0) == BST_CHECKED;
         draft_.doubleClickToRun = SendMessageW(doubleClick_, BM_GETCHECK, 0, 0) == BST_CHECKED;
         draft_.hideNotifyIcon = SendMessageW(hideNotify_, BM_GETCHECK, 0, 0) == BST_CHECKED;
         draft_.deleteConfirm = SendMessageW(deleteConfirm_, BM_GETCHECK, 0, 0) == BST_CHECKED;
@@ -953,15 +952,14 @@ private:
             showTitle_ = CheckBox(TabDisplay, 101, L"显示标题栏", 34, 64, draft_.showTitle);
             showGroup_ = CheckBox(TabDisplay, 102, L"显示分组栏", 282, 64, draft_.showGroup);
             showTag_ = CheckBox(TabDisplay, 103, L"显示标签栏", 34, 94, draft_.showTag);
-            showRunCount_ = CheckBox(TabDisplay, 108, L"显示运行次数", 282, 94, draft_.showRunCount);
-            showDate_ = CheckBox(TabDisplay, 113, L"显示日期", 34, 124, draft_.showDate);
-            showSearchButton_ = CheckBox(TabDisplay, 114, L"显示搜索按钮", 282, 124, draft_.showSearchButton);
-            showMenuButton_ = CheckBox(TabDisplay, 115, L"显示菜单按钮", 34, 154, draft_.showMenuButton);
-            showSkinButton_ = CheckBox(TabDisplay, 121, L"显示主题按钮", 282, 154, draft_.showSkinButton);
-            linkNameSingleLine_ = CheckBox(TabDisplay, 118, L"启动项名称单行", 34, 184, draft_.linkNameSingleLine);
-            showTooltip_ = CheckBox(TabDisplay, 119, L"显示提示", 282, 184, draft_.showTooltip);
-            groupRight_ = CheckBox(TabDisplay, 120, L"分组栏在右侧", 34, 214, draft_.groupRight);
-            tagRight_ = CheckBox(TabDisplay, 122, L"标签栏在右侧", 282, 214, draft_.tagRight);
+            showDate_ = CheckBox(TabDisplay, 113, L"显示日期", 282, 94, draft_.showDate);
+            showSearchButton_ = CheckBox(TabDisplay, 114, L"显示搜索按钮", 34, 124, draft_.showSearchButton);
+            showMenuButton_ = CheckBox(TabDisplay, 115, L"显示菜单按钮", 282, 124, draft_.showMenuButton);
+            showSkinButton_ = CheckBox(TabDisplay, 121, L"显示主题按钮", 34, 154, draft_.showSkinButton);
+            linkNameSingleLine_ = CheckBox(TabDisplay, 118, L"启动项名称单行", 282, 154, draft_.linkNameSingleLine);
+            showTooltip_ = CheckBox(TabDisplay, 119, L"显示提示", 34, 184, draft_.showTooltip);
+            groupRight_ = CheckBox(TabDisplay, 120, L"分组栏在右侧", 282, 184, draft_.groupRight);
+            tagRight_ = CheckBox(TabDisplay, 122, L"标签栏在右侧", 34, 214, draft_.tagRight);
 
             Label(TabDisplay, L"透明度", 34, 260, 76);
             alphaEdit_ = NumberEdit(TabDisplay, 201, 118, 254, 78, draft_.alpha);
@@ -1217,7 +1215,6 @@ private:
     HWND hideInactive_ = nullptr;
     HWND hideAfterLink_ = nullptr;
     HWND hideOnStart_ = nullptr;
-    HWND showRunCount_ = nullptr;
     HWND doubleClick_ = nullptr;
     HWND hideNotify_ = nullptr;
     HWND deleteConfirm_ = nullptr;

@@ -7,52 +7,85 @@
 #include <algorithm>
 #include <array>
 #include <ctime>
-#include <vector>
 #include <commctrl.h>
+#include <string>
+#include <vector>
 #include <windowsx.h>
 
 namespace {
 constexpr int IdTitle = 101;
 constexpr int IdContent = 102;
-constexpr int IdEnabled = 105;
-constexpr int IdModeNone = 110;
-constexpr int IdModeOnce = 111;
-constexpr int IdModeFixedRecurring = 112;
-constexpr int IdAdvancedToggle = 121;
-constexpr int IdCronExpression = 122;
-constexpr int IdRepeatRule = 130;
-constexpr int IdUnitSecond = 140;
-constexpr int IdUnitMinute = 141;
-constexpr int IdUnitHour = 142;
-constexpr int IdUnitDay = 143;
-constexpr int IdUnitWeek = 144;
-constexpr int IdUnitMonth = 145;
-constexpr int IdUnitYear = 146;
-constexpr int IdYear = 150;
-constexpr int IdMonth = 151;
-constexpr int IdDay = 152;
-constexpr int IdHour = 153;
-constexpr int IdMinute = 154;
-constexpr int IdSecond = 155;
-constexpr int IdWeekday = 156;
+constexpr int IdReminderToggle = 104;
+constexpr int IdTime = 150;
+constexpr int IdRepeatNone = 160;
+constexpr int IdRepeatDaily = 161;
+constexpr int IdRepeatWorkday = 162;
+constexpr int IdRepeatWeekly = 163;
+constexpr int IdRepeatMonthly = 164;
+constexpr int IdRepeatCustom = 165;
+constexpr int IdWeekdayBase = 180;
+constexpr int IdMonthlyFixed = 200;
+constexpr int IdMonthlyDay = 202;
+constexpr int IdCustomInterval = 220;
+constexpr int IdCustomUnit = 221;
+constexpr int IdAdvancedToggle = 240;
+constexpr int IdEndNever = 250;
+constexpr int IdEndCount = 252;
+constexpr int IdEndCountValue = 253;
 
-enum class ReminderMode {
-    None,
-    Once,
-    Recurring,
-};
+constexpr int kDialogWidth = 560;
+constexpr int kDialogHeight = 640;
+constexpr int kLabelX = 28;
+constexpr int kFieldX = 108;
+constexpr int kFieldWidth = 416;
+constexpr int kContentTop = 18;
+constexpr int kCalendarWidth = 224;
+constexpr int kCalendarHeight = 190;
+constexpr int kCalendarHeaderHeight = 30;
+constexpr int kCalendarWeekdayHeight = 22;
+constexpr int kCalendarCellHeight = 22;
+constexpr int kCalendarMonthCellWidth = 64;
+constexpr int kCalendarMonthCellHeight = 23;
+constexpr int kCalendarYearCellWidth = 80;
+constexpr int kCalendarYearCellHeight = 23;
 
 enum class RepeatRule {
-    None = 0,
-    Hourly,
+    None,
     Daily,
     Workday,
-    Weekend,
     Weekly,
     Monthly,
-    Yearly,
     Custom,
 };
+
+enum class EndMode {
+    Never,
+    Count,
+};
+
+enum class CalendarPickerMode {
+    Day,
+    Month,
+    Year,
+};
+
+struct FieldFrame {
+    RECT rect{};
+    HWND child = nullptr;
+    bool multiLine = false;
+    bool error = false;
+};
+
+float ClampFloat(float value, float minValue, float maxValue) {
+    return std::max(minValue, std::min(maxValue, value));
+}
+
+COLORREF ToColorRef(Color color) {
+    const auto byte = [](float value) -> BYTE {
+        return static_cast<BYTE>(ClampFloat(value, 0.0f, 1.0f) * 255.0f + 0.5f);
+    };
+    return RGB(byte(color.r), byte(color.g), byte(color.b));
+}
 
 std::wstring GetText(HWND hwnd) {
     const int length = GetWindowTextLengthW(hwnd);
@@ -64,33 +97,15 @@ std::wstring GetText(HWND hwnd) {
     return text;
 }
 
-int GetInt(HWND hwnd, int fallback, int minValue, int maxValue) {
+int GetInt(HWND hwnd, int fallback) {
     auto parsed = ParseInt(GetText(hwnd));
-    int value = parsed.value_or(fallback);
-    return std::max(minValue, std::min(maxValue, value));
+    return parsed.value_or(fallback);
 }
 
 std::wstring TwoDigits(int value) {
     wchar_t buffer[8]{};
     swprintf_s(buffer, L"%02d", value);
     return buffer;
-}
-
-std::wstring FourDigits(int value) {
-    wchar_t buffer[8]{};
-    swprintf_s(buffer, L"%04d", value);
-    return buffer;
-}
-
-float ClampFloat(float value, float minValue, float maxValue) {
-    return std::max(minValue, std::min(maxValue, value));
-}
-
-COLORREF ToColorRef(Color color) {
-    const auto byte = [](float value) -> BYTE {
-        return static_cast<BYTE>(ClampFloat(value, 0.0f, 1.0f) * 255.0f + 0.5f);
-    };
-    return RGB(byte(color.r), byte(color.g), byte(color.b));
 }
 
 bool IsLeapYear(int year) {
@@ -108,6 +123,18 @@ int DaysInMonth(int year, int month) {
     return kDays[month - 1];
 }
 
+std::time_t ToTimeT(const SYSTEMTIME& value) {
+    std::tm tm{};
+    tm.tm_year = static_cast<int>(value.wYear) - 1900;
+    tm.tm_mon = static_cast<int>(value.wMonth) - 1;
+    tm.tm_mday = static_cast<int>(value.wDay);
+    tm.tm_hour = static_cast<int>(value.wHour);
+    tm.tm_min = static_cast<int>(value.wMinute);
+    tm.tm_sec = static_cast<int>(value.wSecond);
+    tm.tm_isdst = -1;
+    return std::mktime(&tm);
+}
+
 SYSTEMTIME FromTimeT(std::time_t value) {
     std::tm tm{};
     localtime_s(&tm, &value);
@@ -122,28 +149,37 @@ SYSTEMTIME FromTimeT(std::time_t value) {
     return result;
 }
 
-std::time_t ToTimeT(const SYSTEMTIME& value) {
-    std::tm tm{};
-    tm.tm_year = static_cast<int>(value.wYear) - 1900;
-    tm.tm_mon = static_cast<int>(value.wMonth) - 1;
-    tm.tm_mday = static_cast<int>(value.wDay);
-    tm.tm_hour = static_cast<int>(value.wHour);
-    tm.tm_min = static_cast<int>(value.wMinute);
-    tm.tm_sec = static_cast<int>(value.wSecond);
-    tm.tm_isdst = -1;
-    return std::mktime(&tm);
+SYSTEMTIME AddDays(SYSTEMTIME value, int days) {
+    return FromTimeT(ToTimeT(value) + static_cast<std::time_t>(days) * 24 * 60 * 60);
+}
+
+SYSTEMTIME AddMonths(SYSTEMTIME value, int months) {
+    int year = static_cast<int>(value.wYear);
+    int month = static_cast<int>(value.wMonth) + months;
+    while (month > 12) {
+        month -= 12;
+        ++year;
+    }
+    while (month < 1) {
+        month += 12;
+        --year;
+    }
+    value.wYear = static_cast<WORD>(year);
+    value.wMonth = static_cast<WORD>(month);
+    value.wDay = static_cast<WORD>(std::min<int>(value.wDay, DaysInMonth(year, month)));
+    return value;
+}
+
+SYSTEMTIME DateOnly(SYSTEMTIME value) {
+    value.wHour = 0;
+    value.wMinute = 0;
+    value.wSecond = 0;
+    value.wMilliseconds = 0;
+    return value;
 }
 
 int DayOfWeek(SYSTEMTIME value) {
-    const std::time_t t = ToTimeT(value);
-    if (t == static_cast<std::time_t>(-1)) {
-        return 0;
-    }
-    return FromTimeT(t).wDayOfWeek;
-}
-
-SYSTEMTIME AddDays(SYSTEMTIME value, int days) {
-    return FromTimeT(ToTimeT(value) + static_cast<std::time_t>(days) * 24 * 60 * 60);
+    return FromTimeT(ToTimeT(value)).wDayOfWeek;
 }
 
 SYSTEMTIME DateForWeekday(SYSTEMTIME base, int weekday) {
@@ -155,162 +191,56 @@ SYSTEMTIME DateForWeekday(SYSTEMTIME base, int weekday) {
     return AddDays(base, delta);
 }
 
-const wchar_t* WeekdayText(int weekday) {
+const wchar_t* ShortWeekdayText(int weekday) {
+    static constexpr const wchar_t* kTexts[] = {L"日", L"一", L"二", L"三", L"四", L"五", L"六"};
+    return (weekday >= 0 && weekday <= 6) ? kTexts[weekday] : kTexts[0];
+}
+
+const wchar_t* LongWeekdayText(int weekday) {
     static constexpr const wchar_t* kTexts[] = {L"周日", L"周一", L"周二", L"周三", L"周四", L"周五", L"周六"};
-    if (weekday < 0 || weekday > 6) {
-        return kTexts[0];
-    }
-    return kTexts[weekday];
+    return (weekday >= 0 && weekday <= 6) ? kTexts[weekday] : kTexts[0];
 }
 
-int CronWeekday(int weekday) {
-    return std::max(0, std::min(6, weekday));
+std::wstring CronBase(const SYSTEMTIME& anchor) {
+    return std::to_wstring(anchor.wSecond) + L" " + std::to_wstring(anchor.wMinute) + L" " + std::to_wstring(anchor.wHour);
 }
 
-bool IsUnitButton(int id) {
-    return id >= IdUnitSecond && id <= IdUnitYear;
+std::wstring CronWeekdays(const std::array<bool, 7>& weekdays) {
+    std::wstring result;
+    for (int i = 0; i < 7; ++i) {
+        if (!weekdays[i]) {
+            continue;
+        }
+        if (!result.empty()) {
+            result += L",";
+        }
+        result += std::to_wstring(i);
+    }
+    return result;
 }
 
-TodoScheduleKind UnitFromButton(int id) {
-    switch (id) {
-    case IdUnitSecond:
-        return TodoScheduleKind::Secondly;
-    case IdUnitMinute:
-        return TodoScheduleKind::Minutely;
-    case IdUnitHour:
-        return TodoScheduleKind::Hourly;
-    case IdUnitWeek:
-        return TodoScheduleKind::Weekly;
-    case IdUnitMonth:
-        return TodoScheduleKind::Monthly;
-    case IdUnitYear:
-        return TodoScheduleKind::Yearly;
-    case IdUnitDay:
-    default:
-        return TodoScheduleKind::Daily;
-    }
+bool SameTodoTime(const std::wstring& left, const std::wstring& right) {
+    SYSTEMTIME l{};
+    SYSTEMTIME r{};
+    return TryParseTodoTimestamp(left, l) && TryParseTodoTimestamp(right, r) && ToTimeT(l) == ToTimeT(r);
 }
 
-int ButtonFromUnit(TodoScheduleKind unit) {
-    switch (unit) {
-    case TodoScheduleKind::Secondly:
-        return IdUnitSecond;
-    case TodoScheduleKind::Minutely:
-        return IdUnitMinute;
-    case TodoScheduleKind::Hourly:
-        return IdUnitHour;
-    case TodoScheduleKind::Weekly:
-        return IdUnitWeek;
-    case TodoScheduleKind::Monthly:
-        return IdUnitMonth;
-    case TodoScheduleKind::Yearly:
-        return IdUnitYear;
-    case TodoScheduleKind::Daily:
-    default:
-        return IdUnitDay;
+bool TryParseHourMinute(const std::wstring& text, int& hour, int& minute) {
+    int parsedHour = 0;
+    int parsedMinute = 0;
+    if (swscanf_s(Trim(text).c_str(), L"%d:%d", &parsedHour, &parsedMinute) != 2) {
+        return false;
     }
+    if (parsedHour < 0 || parsedHour > 23 || parsedMinute < 0 || parsedMinute > 59) {
+        return false;
+    }
+    hour = parsedHour;
+    minute = parsedMinute;
+    return true;
 }
 
-std::wstring TimePointText(TodoScheduleKind unit, const SYSTEMTIME& value) {
-    switch (unit) {
-    case TodoScheduleKind::Secondly:
-        return L"";
-    case TodoScheduleKind::Minutely:
-        return TwoDigits(value.wSecond) + L" 秒";
-    case TodoScheduleKind::Hourly:
-        return TwoDigits(value.wMinute) + L" 分 " + TwoDigits(value.wSecond) + L" 秒";
-    case TodoScheduleKind::Daily:
-        return TwoDigits(value.wHour) + L":" + TwoDigits(value.wMinute) + L":" + TwoDigits(value.wSecond);
-    case TodoScheduleKind::Weekly:
-        return std::wstring(WeekdayText(DayOfWeek(value))) + L" " + TwoDigits(value.wHour) + L":" +
-            TwoDigits(value.wMinute) + L":" + TwoDigits(value.wSecond);
-    case TodoScheduleKind::Monthly:
-        return std::to_wstring(value.wDay) + L" 日 " + TwoDigits(value.wHour) + L":" +
-            TwoDigits(value.wMinute) + L":" + TwoDigits(value.wSecond);
-    case TodoScheduleKind::Yearly:
-        return TwoDigits(value.wMonth) + L" 月 " + TwoDigits(value.wDay) + L" 日 " +
-            TwoDigits(value.wHour) + L":" + TwoDigits(value.wMinute) + L":" + TwoDigits(value.wSecond);
-    default:
-        return FormatTodoTimestamp(value);
-    }
-}
-
-const wchar_t* RepeatRuleText(RepeatRule rule) {
-    switch (rule) {
-    case RepeatRule::Hourly:
-        return L"每小时";
-    case RepeatRule::Daily:
-        return L"每日";
-    case RepeatRule::Workday:
-        return L"每工作日";
-    case RepeatRule::Weekend:
-        return L"每周末";
-    case RepeatRule::Weekly:
-        return L"每周";
-    case RepeatRule::Monthly:
-        return L"每月";
-    case RepeatRule::Yearly:
-        return L"每年";
-    case RepeatRule::Custom:
-        return L"自定义规则";
-    case RepeatRule::None:
-    default:
-        return L"不重复";
-    }
-}
-
-TodoScheduleKind ScheduleKindFromRepeatRule(RepeatRule rule) {
-    switch (rule) {
-    case RepeatRule::Hourly:
-        return TodoScheduleKind::Hourly;
-    case RepeatRule::Daily:
-        return TodoScheduleKind::Daily;
-    case RepeatRule::Weekly:
-        return TodoScheduleKind::Weekly;
-    case RepeatRule::Monthly:
-        return TodoScheduleKind::Monthly;
-    case RepeatRule::Yearly:
-        return TodoScheduleKind::Yearly;
-    case RepeatRule::Workday:
-    case RepeatRule::Weekend:
-    case RepeatRule::Custom:
-        return TodoScheduleKind::Cron;
-    case RepeatRule::None:
-    default:
-        return TodoScheduleKind::Once;
-    }
-}
-
-RepeatRule RepeatRuleFromScheduleKind(TodoScheduleKind kind) {
-    switch (kind) {
-    case TodoScheduleKind::Hourly:
-        return RepeatRule::Hourly;
-    case TodoScheduleKind::Daily:
-        return RepeatRule::Daily;
-    case TodoScheduleKind::Weekly:
-        return RepeatRule::Weekly;
-    case TodoScheduleKind::Monthly:
-        return RepeatRule::Monthly;
-    case TodoScheduleKind::Yearly:
-        return RepeatRule::Yearly;
-    case TodoScheduleKind::Cron:
-        return RepeatRule::Custom;
-    case TodoScheduleKind::Once:
-    default:
-        return RepeatRule::None;
-    }
-}
-
-std::wstring CronExpressionForRepeatRule(RepeatRule rule, const SYSTEMTIME& anchor) {
-    const std::wstring base = std::to_wstring(anchor.wSecond) + L" " + std::to_wstring(anchor.wMinute) + L" " +
-        std::to_wstring(anchor.wHour);
-    if (rule == RepeatRule::Workday) {
-        return base + L" * * 1-5";
-    }
-    if (rule == RepeatRule::Weekend) {
-        return base + L" * * 0,6";
-    }
-    return {};
+std::wstring DateSummaryText(const SYSTEMTIME& value) {
+    return std::to_wstring(value.wMonth) + L"月" + std::to_wstring(value.wDay) + L"日";
 }
 
 class DialogWindow {
@@ -332,15 +262,17 @@ public:
 
         RECT ownerRect{};
         GetWindowRect(owner_, &ownerRect);
+        const int x = ownerRect.left + ((ownerRect.right - ownerRect.left) - kDialogWidth) / 2;
+        const int y = ownerRect.top + ((ownerRect.bottom - ownerRect.top) - kDialogHeight) / 2;
         hwnd_ = CreateWindowExW(
             WS_EX_DLGMODALFRAME | WS_EX_WINDOWEDGE,
             wc.lpszClassName,
-            isNew_ ? L"新增待办事项" : L"编辑待办事项",
-            WS_CAPTION | WS_SYSMENU | WS_POPUP | WS_CLIPCHILDREN,
-            ownerRect.left + 58,
-            ownerRect.top + 72,
-            520,
-            382,
+            isNew_ ? L"新建待办" : L"编辑待办",
+            WS_CAPTION | WS_SYSMENU | WS_POPUP | WS_CLIPCHILDREN | WS_VSCROLL,
+            x,
+            y,
+            kDialogWidth,
+            kDialogHeight,
             owner_,
             nullptr,
             instance_,
@@ -350,6 +282,7 @@ public:
         }
 
         ownerWasEnabled_ = ShowModalWindow(owner_, hwnd_);
+        ShowWindow(hwnd_, SW_SHOW);
         UpdateWindow(hwnd_);
 
         MSG message{};
@@ -365,53 +298,6 @@ public:
     }
 
 private:
-    struct FieldFrame {
-        RECT rect{};
-        HWND child = nullptr;
-        bool multiLine = false;
-    };
-
-    struct TimePart {
-        HWND edit = nullptr;
-        HWND label = nullptr;
-        int width = 42;
-    };
-
-    void AttachTooltip(HWND hwnd, const wchar_t* text) {
-        if (!tooltip_ || !hwnd) {
-            return;
-        }
-        TOOLINFOW tool{};
-        tool.cbSize = sizeof(tool);
-        tool.uFlags = TTF_SUBCLASS | TTF_IDISHWND;
-        tool.hwnd = hwnd_;
-        tool.uId = reinterpret_cast<UINT_PTR>(hwnd);
-        tool.lpszText = const_cast<LPWSTR>(text);
-        SendMessageW(tooltip_, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&tool));
-    }
-
-    void EnsureTooltip() {
-        if (tooltip_) {
-            return;
-        }
-        tooltip_ = CreateWindowExW(
-            WS_EX_TOPMOST,
-            TOOLTIPS_CLASSW,
-            nullptr,
-            WS_POPUP | TTS_NOPREFIX | TTS_ALWAYSTIP,
-            CW_USEDEFAULT,
-            CW_USEDEFAULT,
-            CW_USEDEFAULT,
-            CW_USEDEFAULT,
-            hwnd_,
-            nullptr,
-            instance_,
-            nullptr);
-        if (tooltip_) {
-            SendMessageW(tooltip_, TTM_SETMAXTIPWIDTH, 0, 360);
-        }
-    }
-
     static LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
         DialogWindow* dialog = nullptr;
         if (message == WM_NCCREATE) {
@@ -425,38 +311,101 @@ private:
         return dialog ? dialog->Handle(message, wParam, lParam) : DefWindowProcW(hwnd, message, wParam, lParam);
     }
 
-    HWND Label(const wchar_t* text, int x, int y, int width = 64) {
-        return ThemedControls::CreateLabelText(instance_, hwnd_, text, x, y, width, theme_, font_, SS_RIGHT);
+    int ClientHeight() const {
+        RECT rect{};
+        GetClientRect(hwnd_, &rect);
+        return rect.bottom - rect.top;
     }
 
-    HWND StaticText(const wchar_t* text, int x, int y, int width, int height = 20) {
-        return ThemedControls::CreateStaticText(instance_, hwnd_, text, x, y, width, height, font_, SS_LEFT | SS_CENTERIMAGE);
+    int ContentBottomLimit() const {
+        return ClientHeight() - FooterHeight();
     }
 
-    HWND SingleEdit(int id, int x, int y, int width, const std::wstring& value, DWORD extraStyle = ES_AUTOHSCROLL) {
-        const int height = ThemedControls::EditFrameHeight(theme_);
-        RECT frame{x, y, x + width, y + height};
-        HWND edit = ThemedControls::CreateSingleLineEdit(instance_, hwnd_, id, theme_, frame, value, editFont_ ? editFont_ : font_, extraStyle);
-        fields_.push_back(FieldFrame{frame, edit, false});
-        return edit;
+    int DrawerWidth() const {
+        return kDialogWidth;
     }
 
-    HWND MultiEdit(int id, int x, int y, int width, int height, const std::wstring& value) {
-        RECT frame{x, y, x + width, y + height};
-        HWND edit = ThemedControls::CreateMultiLineEdit(instance_, hwnd_, id, theme_, frame, value, editFont_ ? editFont_ : font_);
-        fields_.push_back(FieldFrame{frame, edit, true});
-        return edit;
+    int HeaderHeight() const {
+        return 0;
     }
 
-    void SetFrame(HWND child, RECT frame) {
-        for (auto& item : fields_) {
-            if (item.child == child) {
-                item.rect = frame;
-                const RECT editRect = item.multiLine ? ThemedControls::MultiLineEditRect(theme_, frame) : ThemedControls::SingleLineEditRect(theme_, frame);
-                MoveWindow(child, editRect.left, editRect.top, editRect.right - editRect.left, editRect.bottom - editRect.top, TRUE);
-                return;
-            }
+    int MetricInt(const wchar_t* component, const wchar_t* name, float fallback) const {
+        return static_cast<int>(theme_.metric(component, name, fallback));
+    }
+
+    int ContentInsetX() const {
+        return kLabelX;
+    }
+
+    int FieldX() const {
+        return kFieldX;
+    }
+
+    int FieldRight() const {
+        return kFieldX + kFieldWidth;
+    }
+
+    int FieldWidth() const {
+        return kFieldWidth;
+    }
+
+    int SectionGap() const {
+        return MetricInt(L"global", L"sectionGap", 16.0f);
+    }
+
+    int RowGap() const {
+        return MetricInt(L"global", L"rowGap", 6.0f);
+    }
+
+    int ItemGap() const {
+        return MetricInt(L"global", L"itemGap", 8.0f);
+    }
+
+    int StaticTextHeight() const {
+        return MetricInt(L"text", L"textHeight", 20.0f);
+    }
+
+    int FooterHeight() const {
+        return ThemedControls::ButtonHeight(theme_) + RowGap() * 2;
+    }
+
+    int TextWidth(const std::wstring& text, HFONT font = nullptr) const {
+        HDC dc = GetDC(hwnd_);
+        if (!dc) {
+            return static_cast<int>(text.size()) * 14;
         }
+        HFONT oldFont = reinterpret_cast<HFONT>(SelectObject(dc, font ? font : font_));
+        SIZE size{};
+        GetTextExtentPoint32W(dc, text.c_str(), static_cast<int>(text.size()), &size);
+        SelectObject(dc, oldFont);
+        ReleaseDC(hwnd_, dc);
+        return size.cx;
+    }
+
+    int ButtonWidth(const std::wstring& text) const {
+        return TextWidth(text) + ThemedControls::ButtonPaddingX(theme_) * 2;
+    }
+
+    int TabWidth(const std::wstring& text) const {
+        return TextWidth(text) + MetricInt(L"tabButton", L"paddingX", 12.0f) * 2;
+    }
+
+    int TextControlWidth(const std::wstring& text) const {
+        return TextWidth(text) + MetricInt(L"global", L"paddingX", 10.0f);
+    }
+
+    int ContentTop() const {
+        return -scrollY_;
+    }
+
+    bool IntersectsContentViewport(int top, int height) const {
+        const int visibleTop = top - scrollY_;
+        const int visibleBottom = visibleTop + height;
+        return visibleBottom > HeaderHeight() && visibleTop < ClientHeight() - FooterHeight();
+    }
+
+    COLORREF ColorFor(const wchar_t* component, const wchar_t* state, const wchar_t* role) const {
+        return ToColorRef(theme_.color(component, state, role));
     }
 
     void SetVisible(HWND hwnd, bool visible) {
@@ -471,378 +420,468 @@ private:
         }
     }
 
+    HWND Label(const wchar_t* text, int x, int y, int width = 180) {
+        return ThemedControls::CreateLabelText(instance_, hwnd_, text, x, y - scrollY_, width, theme_, font_, SS_LEFT);
+    }
+
+    HWND Text(const wchar_t* text, int x, int y, int width, int height = 20) {
+        return ThemedControls::CreateStaticText(instance_, hwnd_, text, x, y - scrollY_, width, height, font_, SS_LEFT | SS_CENTERIMAGE);
+    }
+
+    HWND SingleEdit(int id, int x, int y, int width, const std::wstring& value, DWORD extraStyle = ES_AUTOHSCROLL) {
+        const int height = ThemedControls::EditFrameHeight(theme_);
+        RECT frame{x, y, x + width, y + height};
+        HWND edit = ThemedControls::CreateSingleLineEdit(instance_, hwnd_, id, theme_, Offset(frame), value, editFont_ ? editFont_ : font_, extraStyle);
+        fields_.push_back(FieldFrame{frame, edit, false, false});
+        return edit;
+    }
+
+    HWND MultiEdit(int id, int x, int y, int width, int height, const std::wstring& value) {
+        RECT frame{x, y, x + width, y + height};
+        HWND edit = ThemedControls::CreateMultiLineEdit(instance_, hwnd_, id, theme_, Offset(frame), value, editFont_ ? editFont_ : font_);
+        fields_.push_back(FieldFrame{frame, edit, true, false});
+        return edit;
+    }
+
+    RECT Offset(RECT rect) const {
+        rect.top -= scrollY_;
+        rect.bottom -= scrollY_;
+        return rect;
+    }
+
+    void MoveStatic(HWND hwnd, int x, int y, int width, int height) {
+        if (hwnd) {
+            MoveWindow(hwnd, x, y - scrollY_, width, height, TRUE);
+            ShowWindow(hwnd, IntersectsContentViewport(y, height) ? SW_SHOW : SW_HIDE);
+        }
+    }
+
+    void MoveButton(HWND hwnd, int x, int y, int width, int height) {
+        if (hwnd) {
+            MoveWindow(hwnd, x, y - scrollY_, width, height, TRUE);
+            ShowWindow(hwnd, IntersectsContentViewport(y, height) ? SW_SHOW : SW_HIDE);
+        }
+    }
+
+    void MoveCombo(HWND hwnd, int x, int y, int width, int height) {
+        if (hwnd) {
+            MoveWindow(hwnd, x, y - scrollY_, width, height, TRUE);
+            ShowWindow(hwnd, IntersectsContentViewport(y, ThemedControls::ComboBoxHeight(theme_)) ? SW_SHOW : SW_HIDE);
+        }
+    }
+
+    void SetFrame(HWND child, RECT frame) {
+        for (auto& item : fields_) {
+            if (item.child == child) {
+                item.rect = frame;
+                const RECT editRect = item.multiLine ? ThemedControls::MultiLineEditRect(theme_, Offset(frame)) : ThemedControls::SingleLineEditRect(theme_, Offset(frame));
+                MoveWindow(child, editRect.left, editRect.top, editRect.right - editRect.left, editRect.bottom - editRect.top, TRUE);
+                ShowWindow(child, IntersectsContentViewport(frame.top, frame.bottom - frame.top) ? SW_SHOW : SW_HIDE);
+                return;
+            }
+        }
+    }
+
+    void SetFieldError(HWND child, bool error) {
+        for (auto& item : fields_) {
+            if (item.child == child) {
+                item.error = error;
+                break;
+            }
+        }
+    }
+
     void SetTabChecked(HWND hwnd, bool checked) {
         if (hwnd) {
             SendMessageW(hwnd, BM_SETCHECK, checked ? BST_CHECKED : BST_UNCHECKED, 0);
         }
     }
 
-    void SetWindowTextIf(HWND hwnd, const wchar_t* text) {
-        if (hwnd) {
-            SetWindowTextW(hwnd, text);
-        }
+    bool IsTabChecked(HWND hwnd) const {
+        return hwnd && SendMessageW(hwnd, BM_GETCHECK, 0, 0) == BST_CHECKED;
     }
 
-    void SetWindowTextIf(HWND hwnd, const std::wstring& text) {
-        if (hwnd) {
-            SetWindowTextW(hwnd, text.c_str());
-        }
+    void SetTimeText(int hour, int minute) {
+        SetWindowTextW(timeEdit_, (TwoDigits(hour) + L":" + TwoDigits(minute)).c_str());
     }
 
-    ReminderMode InitialMode() const {
-        if (draft_.scheduleKind == TodoScheduleKind::Once) {
-            return ReminderMode::Once;
-        }
-        if (IsRecurringTodoSchedule(draft_.scheduleKind)) {
-            return ReminderMode::Recurring;
-        }
-        return ReminderMode::None;
+    bool TryReadTime(int& hour, int& minute) const {
+        return TryParseHourMinute(GetText(timeEdit_), hour, minute);
     }
 
-    TodoScheduleKind InitialUnit() const {
-        if (draft_.scheduleKind == TodoScheduleKind::Cron) {
-            return TodoScheduleKind::Daily;
+    void FillSimpleCombo(HWND combo, const std::vector<std::wstring>& items, int selected) {
+        SendMessageW(combo, CB_RESETCONTENT, 0, 0);
+        for (const auto& item : items) {
+            SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(item.c_str()));
         }
-        return IsRecurringTodoSchedule(draft_.scheduleKind) ? draft_.scheduleKind : TodoScheduleKind::Daily;
+        SendMessageW(combo, CB_SETCURSEL, selected, 0);
     }
 
-    RepeatRule InitialRepeatRule() const {
-        if (draft_.scheduleKind == TodoScheduleKind::None || draft_.scheduleKind == TodoScheduleKind::Once) {
-            return RepeatRule::None;
-        }
-        return RepeatRuleFromScheduleKind(draft_.scheduleKind);
+    int ComboIndex(HWND combo, int fallback = 0) const {
+        const int index = static_cast<int>(SendMessageW(combo, CB_GETCURSEL, 0, 0));
+        return index >= 0 ? index : fallback;
     }
 
-    void FillRepeatRules() {
-        SendMessageW(repeatCombo_, CB_RESETCONTENT, 0, 0);
-        const RepeatRule rules[] = {
-            RepeatRule::None,
-            RepeatRule::Hourly,
-            RepeatRule::Daily,
-            RepeatRule::Workday,
-            RepeatRule::Weekend,
-            RepeatRule::Weekly,
-            RepeatRule::Monthly,
-            RepeatRule::Yearly,
-            RepeatRule::Custom,
-        };
-        for (RepeatRule rule : rules) {
-            SendMessageW(repeatCombo_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(RepeatRuleText(rule)));
-        }
-    }
-
-    RepeatRule SelectedRepeatRule() const {
-        const int selected = static_cast<int>(SendMessageW(repeatCombo_, CB_GETCURSEL, 0, 0));
-        if (selected < static_cast<int>(RepeatRule::None) || selected > static_cast<int>(RepeatRule::Custom)) {
-            return RepeatRule::None;
-        }
-        return static_cast<RepeatRule>(selected);
-    }
-
-    void FillWeekdays() {
-        for (int i = 0; i < 7; ++i) {
-            SendMessageW(weekdayCombo_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(WeekdayText(i)));
-        }
-    }
-
-    void SetInputText(HWND edit, const std::wstring& text) {
-        if (edit) {
-            SetWindowTextW(edit, text.c_str());
-        }
-    }
-
-    void LoadTimeFields() {
+    SYSTEMTIME InitialAnchor() const {
         SYSTEMTIME value{};
-        if (draft_.anchorAt.empty() || !TryParseTodoTimestamp(draft_.anchorAt, value)) {
-            GetLocalTime(&value);
+        if (!draft_.anchorAt.empty() && TryParseTodoTimestamp(draft_.anchorAt, value)) {
+            return value;
         }
-        SetInputText(yearEdit_, FourDigits(value.wYear));
-        SetInputText(monthEdit_, TwoDigits(value.wMonth));
-        SetInputText(dayEdit_, TwoDigits(value.wDay));
-        SetInputText(hourEdit_, TwoDigits(value.wHour));
-        SetInputText(minuteEdit_, TwoDigits(value.wMinute));
-        SetInputText(secondEdit_, TwoDigits(value.wSecond));
-        SendMessageW(weekdayCombo_, CB_SETCURSEL, DayOfWeek(value), 0);
-    }
-
-    void SelectMode(ReminderMode mode) {
-        mode_ = mode;
-        SetTabChecked(modeNone_, mode == ReminderMode::None);
-        SetTabChecked(modeOnce_, mode != ReminderMode::None);
-        SetTabChecked(modeFixedRecurring_, false);
-        UpdateState();
-    }
-
-    void SelectReminderEnabled(bool enabled) {
-        mode_ = enabled ? (SelectedRepeatRule() == RepeatRule::None ? ReminderMode::Once : ReminderMode::Recurring) : ReminderMode::None;
-        SetTabChecked(modeNone_, !enabled);
-        SetTabChecked(modeOnce_, enabled);
-        SetTabChecked(modeFixedRecurring_, false);
-        UpdateState();
-    }
-
-    void SelectRepeatRule(RepeatRule rule) {
-        SendMessageW(repeatCombo_, CB_SETCURSEL, static_cast<WPARAM>(rule), 0);
-        if (mode_ != ReminderMode::None) {
-            mode_ = rule == RepeatRule::None ? ReminderMode::Once : ReminderMode::Recurring;
-        }
-        UpdateState();
-    }
-
-    void SelectRecurringMode() {
-        mode_ = ReminderMode::Recurring;
-        SetTabChecked(modeNone_, false);
-        SetTabChecked(modeOnce_, false);
-        SetTabChecked(modeFixedRecurring_, true);
-        SelectUnit(unit_);
-        UpdateState();
-    }
-
-    std::wstring GeneratedCronExpression() const {
-        if (item_.scheduleKind == TodoScheduleKind::Cron && !scheduleEdited_) {
-            return item_.cronExpression;
-        }
-        if (mode_ != ReminderMode::Recurring) {
-            return {};
-        }
-        const SYSTEMTIME anchor = ReadAnchorTime();
-        switch (unit_) {
-        case TodoScheduleKind::Secondly:
-            return L"* * * * * *";
-        case TodoScheduleKind::Minutely:
-            return std::to_wstring(anchor.wSecond) + L" * * * * *";
-        case TodoScheduleKind::Hourly:
-            return std::to_wstring(anchor.wSecond) + L" " + std::to_wstring(anchor.wMinute) + L" * * * *";
-        case TodoScheduleKind::Daily:
-            return std::to_wstring(anchor.wSecond) + L" " + std::to_wstring(anchor.wMinute) + L" " +
-                std::to_wstring(anchor.wHour) + L" * * *";
-        case TodoScheduleKind::Weekly:
-            return std::to_wstring(anchor.wSecond) + L" " + std::to_wstring(anchor.wMinute) + L" " +
-                std::to_wstring(anchor.wHour) + L" * * " + std::to_wstring(CronWeekday(DayOfWeek(anchor)));
-        case TodoScheduleKind::Monthly:
-            return std::to_wstring(anchor.wSecond) + L" " + std::to_wstring(anchor.wMinute) + L" " +
-                std::to_wstring(anchor.wHour) + L" " + std::to_wstring(anchor.wDay) + L" * *";
-        case TodoScheduleKind::Yearly:
-            return std::to_wstring(anchor.wSecond) + L" " + std::to_wstring(anchor.wMinute) + L" " +
-                std::to_wstring(anchor.wHour) + L" " + std::to_wstring(anchor.wDay) + L" " +
-                std::to_wstring(anchor.wMonth) + L" *";
-        default:
-            return {};
-        }
-    }
-
-    void SyncCronExpression() {
-        if (!cronEdit_ || cronEdited_ || updatingCronEdit_) {
-            return;
-        }
-        updatingCronEdit_ = true;
-        SetWindowTextIf(cronEdit_, NormalizeTodoCronExpression(GeneratedCronExpression()));
-        updatingCronEdit_ = false;
-    }
-
-    void SelectUnit(TodoScheduleKind unit) {
-        unit_ = unit;
-        for (HWND button : unitButtons_) {
-            SetTabChecked(button, false);
-        }
-        const int id = ButtonFromUnit(unit);
-        for (HWND button : unitButtons_) {
-            if (button && GetDlgCtrlID(button) == id) {
-                SetTabChecked(button, true);
-                break;
-            }
-        }
-        UpdateState();
-    }
-
-    void ShowTimePart(TimePart part, int& x, int y, bool enabled) {
-        const int labelWidth = 18;
-        const int frameHeight = ThemedControls::EditFrameHeight(theme_);
-        RECT frame{x, y, x + part.width, y + frameHeight};
-        SetFrame(part.edit, frame);
-        MoveWindow(part.label, frame.right + 2, y + 5, labelWidth, 20, TRUE);
-        SetVisible(part.edit, true);
-        SetVisible(part.label, true);
-        SetEnabled(part.edit, enabled);
-        x += part.width + labelWidth + 6;
-    }
-
-    void HideTimePart(TimePart part) {
-        SetVisible(part.edit, false);
-        SetVisible(part.label, false);
-    }
-
-    void LayoutTimeInputs() {
-        const bool hasTime = mode_ != ReminderMode::None;
-        const int y = timeY_;
-        int x = 106;
-
-        HideTimePart(yearPart_);
-        HideTimePart(monthPart_);
-        HideTimePart(dayPart_);
-        HideTimePart(hourPart_);
-        HideTimePart(minutePart_);
-        HideTimePart(secondPart_);
-        SetVisible(weekdayCombo_, false);
-
-        if (!hasTime) {
-            return;
-        }
-        ShowTimePart(yearPart_, x, y, true);
-        ShowTimePart(monthPart_, x, y, true);
-        ShowTimePart(dayPart_, x, y, true);
-        ShowTimePart(hourPart_, x, y, true);
-        ShowTimePart(minutePart_, x, y, true);
-        ShowTimePart(secondPart_, x, y, true);
-    }
-
-    void UpdateState() {
-        const bool hasTime = mode_ != ReminderMode::None;
-        timeY_ = 98;
-        const int repeatY = 140;
-        const int previewY = hasTime ? 178 : 100;
-        const int contentY = hasTime ? 214 : 126;
-        const int contentHeight = hasTime ? 78 : 118;
-        const int buttonHeight = ThemedControls::ButtonHeight(theme_);
-        const int windowHeight = contentY + contentHeight + 18 + buttonHeight + 22;
-        SetWindowPos(hwnd_, nullptr, 0, 0, 520, std::max(382, windowHeight), SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
-
-        SetVisible(loopLabel_, hasTime);
-        SetVisible(repeatCombo_, hasTime);
-        SetEnabled(repeatCombo_, hasTime);
-        for (HWND button : unitButtons_) {
-            SetVisible(button, false);
-        }
-        SetVisible(advancedButton_, false);
-        SetVisible(cronLabel_, false);
-        SetVisible(cronEdit_, false);
-        SetVisible(cronHint_, false);
-
-        SetVisible(timeLabel_, hasTime);
-        SetWindowTextIf(timeLabel_, L"时间");
-        MoveWindow(timeLabel_, 24, timeY_ + 8, 64, ThemedControls::LabelHeight(theme_), TRUE);
-        MoveWindow(loopLabel_, 24, repeatY + 6, 64, ThemedControls::LabelHeight(theme_), TRUE);
-        MoveWindow(repeatCombo_, 106, repeatY, 160, 180, TRUE);
-        MoveWindow(previewText_, 106, previewY, 370, ThemedControls::LabelHeight(theme_), TRUE);
-        MoveWindow(contentLabel_, 24, contentY + 6, 64, ThemedControls::LabelHeight(theme_), TRUE);
-        SetFrame(contentEdit_, RECT{106, contentY, 476, contentY + contentHeight});
-        const int buttonY = contentY + contentHeight + 18;
-        MoveWindow(okButton_, 318, buttonY, 74, buttonHeight, TRUE);
-        MoveWindow(cancelButton_, 404, buttonY, 74, buttonHeight, TRUE);
-        LayoutTimeInputs();
-        UpdatePreview();
-        InvalidateRect(hwnd_, nullptr, TRUE);
-    }
-
-    SYSTEMTIME ReadAnchorTime() const {
-        SYSTEMTIME now{};
-        GetLocalTime(&now);
-        SYSTEMTIME value = now;
-
-        value.wYear = static_cast<WORD>(GetInt(yearEdit_, now.wYear, 1900, 9999));
-        value.wMonth = static_cast<WORD>(GetInt(monthEdit_, now.wMonth, 1, 12));
-        value.wDay = static_cast<WORD>(GetInt(dayEdit_, now.wDay, 1, DaysInMonth(value.wYear, value.wMonth)));
-        value.wHour = static_cast<WORD>(GetInt(hourEdit_, now.wHour, 0, 23));
-        value.wMinute = static_cast<WORD>(GetInt(minuteEdit_, now.wMinute, 0, 59));
-        value.wSecond = static_cast<WORD>(GetInt(secondEdit_, now.wSecond, 0, 59));
+        GetLocalTime(&value);
+        value.wSecond = 0;
         value.wMilliseconds = 0;
         return value;
     }
 
-    std::wstring PreviewText() const {
-        if (mode_ == ReminderMode::None) {
-            return L"无提醒";
+    RepeatRule InitialRepeatRule() const {
+        if (draft_.scheduleKind == TodoScheduleKind::Daily) {
+            return RepeatRule::Daily;
         }
-        const RepeatRule rule = SelectedRepeatRule();
-        if (rule == RepeatRule::Custom && item_.scheduleKind == TodoScheduleKind::Cron && !scheduleEdited_) {
-            const std::wstring nextDueAt = ComputeNextTodoDueAt(item_, CurrentTodoTimestamp());
-            return L"自定义重复规则" + (nextDueAt.empty() ? L"" : L"，下次 " + nextDueAt);
+        if (draft_.scheduleKind == TodoScheduleKind::Weekly) {
+            return RepeatRule::Weekly;
+        }
+        if (draft_.scheduleKind == TodoScheduleKind::Monthly) {
+            return RepeatRule::Monthly;
+        }
+        if (draft_.scheduleKind == TodoScheduleKind::Cron) {
+            const std::wstring cron = NormalizeTodoCronExpression(draft_.cronExpression);
+            if (cron.find(L"1-5") != std::wstring::npos) {
+                return RepeatRule::Workday;
+            }
+            return RepeatRule::Weekly;
+        }
+        return RepeatRule::None;
+    }
+
+    void LoadInitialState() {
+        hasReminder_ = draft_.scheduleKind != TodoScheduleKind::None;
+        reminderExpanded_ = hasReminder_;
+        repeatRule_ = InitialRepeatRule();
+        endMode_ = draft_.repeatLimit > 0 ? EndMode::Count : EndMode::Never;
+
+        SYSTEMTIME anchor = InitialAnchor();
+        selectedDate_ = DateOnly(anchor);
+        calendarYear_ = selectedDate_.wYear;
+        calendarMonth_ = selectedDate_.wMonth;
+        SetTimeText(anchor.wHour, anchor.wMinute);
+        SetWindowTextW(monthlyDayEdit_, std::to_wstring(std::max<int>(1, anchor.wDay)).c_str());
+        SetWindowTextW(customIntervalEdit_, std::to_wstring(std::max(1, draft_.repeatInterval)).c_str());
+        SetWindowTextW(endCountEdit_, std::to_wstring(std::max(1, draft_.repeatLimit)).c_str());
+
+        weekdaySelected_.fill(false);
+        if (draft_.scheduleKind == TodoScheduleKind::Cron) {
+            const std::wstring cron = NormalizeTodoCronExpression(draft_.cronExpression);
+            for (int i = 0; i < 7; ++i) {
+                if (cron.find(std::to_wstring(i)) != std::wstring::npos || (i >= 1 && i <= 5 && cron.find(L"1-5") != std::wstring::npos)) {
+                    weekdaySelected_[i] = true;
+                }
+            }
+        } else if (draft_.scheduleKind == TodoScheduleKind::Weekly) {
+            weekdaySelected_[DayOfWeek(anchor)] = true;
+        }
+        if (std::none_of(weekdaySelected_.begin(), weekdaySelected_.end(), [](bool selected) { return selected; })) {
+            weekdaySelected_[DayOfWeek(anchor)] = true;
+        }
+    }
+
+    SYSTEMTIME ReadAnchorTime() const {
+        SYSTEMTIME value = selectedDate_;
+        int hour = 0;
+        int minute = 0;
+        if (!TryReadTime(hour, minute)) {
+            SYSTEMTIME now{};
+            GetLocalTime(&now);
+            hour = now.wHour;
+            minute = now.wMinute;
+        }
+        value.wHour = static_cast<WORD>(hour);
+        value.wMinute = static_cast<WORD>(minute);
+        value.wSecond = 0;
+        value.wMilliseconds = 0;
+        return value;
+    }
+
+    std::wstring WeekdaySummary() const {
+        std::wstring text;
+        for (int i = 0; i < 7; ++i) {
+            if (!weekdaySelected_[i]) {
+                continue;
+            }
+            if (!text.empty()) {
+                text += L"、";
+            }
+            text += LongWeekdayText(i);
+        }
+        return text;
+    }
+
+    std::wstring RepeatSummary() const {
+        if (!hasReminder_) {
+            return L"未设置";
+        }
+        switch (repeatRule_) {
+        case RepeatRule::Daily:
+            return L"每天";
+        case RepeatRule::Workday:
+            return L"工作日";
+        case RepeatRule::Weekly:
+            return L"每周" + WeekdaySummary();
+        case RepeatRule::Monthly:
+            return L"每月 " + std::to_wstring(GetInt(monthlyDayEdit_, ReadAnchorTime().wDay)) + L" 号";
+        case RepeatRule::Custom: {
+            const int interval = std::max(1, GetInt(customIntervalEdit_, 1));
+            const int unit = ComboIndex(customUnitCombo_, 0);
+            if (unit == 1) {
+                return L"每 " + std::to_wstring(interval) + L" 周" + (WeekdaySummary().empty() ? L"" : L"，" + WeekdaySummary());
+            }
+            if (unit == 2) {
+                return L"每 " + std::to_wstring(interval) + L" 月";
+            }
+            return L"每 " + std::to_wstring(interval) + L" 天";
+        }
+        case RepeatRule::None:
+        default:
+            return L"不重复";
+        }
+    }
+
+    std::wstring ReminderSummary() const {
+        if (!hasReminder_) {
+            return L"未设置";
         }
         const SYSTEMTIME anchor = ReadAnchorTime();
-        const std::wstring anchorText = FormatTodoTimestamp(anchor);
-        if (rule == RepeatRule::None) {
-            return L"提醒：" + anchorText;
-        }
-
-        TodoItem preview{};
-        preview.enabled = true;
-        preview.anchorAt = anchorText;
-        preview.repeatMode = TodoRepeatMode::FixedPoint;
-        preview.repeatInterval = 1;
-        preview.scheduleKind = ScheduleKindFromRepeatRule(rule);
-        if (rule == RepeatRule::Workday || rule == RepeatRule::Weekend) {
-            preview.cronExpression = CronExpressionForRepeatRule(rule, anchor);
-        }
-        const std::wstring nextDueAt = ComputeNextTodoDueAt(preview, CurrentTodoTimestamp());
-        return std::wstring(RepeatRuleText(rule)) + L"提醒" + (nextDueAt.empty() ? L"" : L"，下次 " + nextDueAt);
+        return DateSummaryText(anchor) + L" " + LongWeekdayText(DayOfWeek(anchor)) + L" " +
+            TwoDigits(anchor.wHour) + L":" + TwoDigits(anchor.wMinute) + L" · " + RepeatSummary();
     }
 
-    void UpdatePreview() {
-        if (previewText_) {
-            SetWindowTextW(previewText_, PreviewText().c_str());
+    std::wstring Snapshot() const {
+        std::wstring result = Trim(GetText(titleEdit_)) + L"\n" + Trim(GetText(contentEdit_)) + L"\n";
+        result += hasReminder_ ? L"1\n" : L"0\n";
+        result += ReminderSummary() + L"\n";
+        result += GetText(timeEdit_) + L"\n";
+        result += std::to_wstring(static_cast<int>(repeatRule_)) + L"\n";
+        result += std::to_wstring(GetInt(customIntervalEdit_, 1)) + L"\n";
+        result += std::to_wstring(ComboIndex(customUnitCombo_, 0)) + L"\n";
+        result += std::to_wstring(static_cast<int>(endMode_)) + L"\n";
+        result += std::to_wstring(GetInt(endCountEdit_, 1)) + L"\n";
+        for (bool selected : weekdaySelected_) {
+            result += selected ? L"1" : L"0";
         }
+        return result;
     }
 
-    bool Accept() {
-        draft_.title = Trim(GetText(titleEdit_));
-        if (draft_.title.empty()) {
-            MessageBoxW(hwnd_, L"标题不能为空。", L"待办事项", MB_OK | MB_ICONWARNING);
-            SetFocus(titleEdit_);
+    bool IsDirty() const {
+        if (!initialized_) {
             return false;
         }
+        if (Snapshot() != initialSnapshot_) {
+            return true;
+        }
+        if (isNew_) {
+            return !Trim(GetText(titleEdit_)).empty() || !Trim(GetText(contentEdit_)).empty() || hasReminder_;
+        }
+        return false;
+    }
 
+    void SelectRepeatRule(RepeatRule rule) {
+        repeatRule_ = rule;
+        SetTabChecked(repeatNone_, rule == RepeatRule::None);
+        SetTabChecked(repeatDaily_, rule == RepeatRule::Daily);
+        SetTabChecked(repeatWorkday_, rule == RepeatRule::Workday);
+        SetTabChecked(repeatWeekly_, rule == RepeatRule::Weekly);
+        SetTabChecked(repeatMonthly_, rule == RepeatRule::Monthly);
+        SetTabChecked(repeatCustom_, rule == RepeatRule::Custom);
+        Layout();
+    }
+
+    void SelectEndMode(EndMode mode) {
+        endMode_ = mode;
+        SetTabChecked(endNeverButton_, mode == EndMode::Never);
+        SetTabChecked(endCountButton_, mode == EndMode::Count);
+        Layout();
+    }
+
+    void SetWeekday(int index, bool selected) {
+        if (index < 0 || index > 6) {
+            return;
+        }
+        weekdaySelected_[index] = selected;
+        SetTabChecked(weekdayButtons_[index], selected);
+        Layout();
+    }
+
+    void SyncWeekdayButtons() {
+        for (int i = 0; i < 7; ++i) {
+            SetTabChecked(weekdayButtons_[i], weekdaySelected_[i]);
+        }
+    }
+
+    void UpdateSaveState() {
+        const bool canSave = !Trim(GetText(titleEdit_)).empty();
+        EnableWindow(okButton_, canSave ? TRUE : FALSE);
+    }
+
+    void ClearErrors() {
+        titleError_.clear();
+        reminderError_.clear();
+        repeatError_.clear();
+        SetFieldError(titleEdit_, false);
+        SetFieldError(timeEdit_, false);
+        SetFieldError(monthlyDayEdit_, false);
+        SetFieldError(customIntervalEdit_, false);
+        SetFieldError(endCountEdit_, false);
+    }
+
+    bool Validate() {
+        ClearErrors();
+        bool ok = true;
+        if (Trim(GetText(titleEdit_)).empty()) {
+            titleError_ = L"请输入待办标题";
+            SetFieldError(titleEdit_, true);
+            SetFocus(titleEdit_);
+            ok = false;
+        }
+        if (hasReminder_) {
+            const SYSTEMTIME anchor = ReadAnchorTime();
+            int hour = 0;
+            int minute = 0;
+            if (!TryReadTime(hour, minute)) {
+                reminderError_ = L"请输入 HH:MM 格式的有效时间";
+                SetFieldError(timeEdit_, true);
+                ok = false;
+            }
+            if (anchor.wDay < 1 || anchor.wDay > DaysInMonth(anchor.wYear, anchor.wMonth)) {
+                reminderError_ = L"请输入有效提醒时间";
+                ok = false;
+            }
+            if ((repeatRule_ == RepeatRule::Weekly || (repeatRule_ == RepeatRule::Custom && ComboIndex(customUnitCombo_, 0) == 1)) &&
+                std::none_of(weekdaySelected_.begin(), weekdaySelected_.end(), [](bool selected) { return selected; })) {
+                repeatError_ = L"每周至少选择 1 天";
+                ok = false;
+            }
+            if (repeatRule_ == RepeatRule::Monthly || (repeatRule_ == RepeatRule::Custom && ComboIndex(customUnitCombo_, 0) == 2)) {
+                const int day = GetInt(monthlyDayEdit_, 0);
+                if (day < 1 || day > 31) {
+                    repeatError_ = L"每月固定日期必须在 1-31 之间";
+                    SetFieldError(monthlyDayEdit_, true);
+                    ok = false;
+                } else if (day > DaysInMonth(anchor.wYear, anchor.wMonth)) {
+                    repeatError_ = L"该日期在当前月份不存在，提醒已过期";
+                    SetFieldError(monthlyDayEdit_, true);
+                    ok = false;
+                }
+            }
+            if (repeatRule_ == RepeatRule::Custom && GetInt(customIntervalEdit_, 0) < 1) {
+                repeatError_ = L"重复间隔不能小于 1";
+                SetFieldError(customIntervalEdit_, true);
+                ok = false;
+            }
+            if (advancedExpanded_ && endMode_ == EndMode::Count && GetInt(endCountEdit_, 0) < 1) {
+                repeatError_ = L"完成次数不能小于 1";
+                SetFieldError(endCountEdit_, true);
+                ok = false;
+            }
+        }
+        Layout();
+        if (!ok) {
+            InvalidateRect(hwnd_, nullptr, TRUE);
+        }
+        return ok;
+    }
+
+    void ApplyToDraft() {
+        draft_.title = Trim(GetText(titleEdit_));
         draft_.content = Trim(GetText(contentEdit_));
-        draft_.enabled = SendMessageW(enabledCheck_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        draft_.enabled = true;
 
         const TodoScheduleKind oldKind = draft_.scheduleKind;
         const TodoRepeatMode oldRepeatMode = draft_.repeatMode;
         const int oldInterval = draft_.repeatInterval;
         const int oldLimit = draft_.repeatLimit;
         const std::wstring oldAnchor = draft_.anchorAt;
-        const std::wstring oldCronExpression = draft_.cronExpression;
-        const RepeatRule rule = SelectedRepeatRule();
+        const std::wstring oldCron = draft_.cronExpression;
 
-        if (mode_ == ReminderMode::None) {
+        if (!hasReminder_) {
             draft_.scheduleKind = TodoScheduleKind::None;
             draft_.repeatMode = TodoRepeatMode::FixedPoint;
-            draft_.cronExpression.clear();
-            draft_.anchorAt.clear();
-            draft_.nextDueAt.clear();
             draft_.repeatInterval = 1;
             draft_.repeatLimit = 0;
             draft_.repeatFinished = 0;
-        } else if (rule == RepeatRule::Custom && item_.scheduleKind == TodoScheduleKind::Cron && !scheduleEdited_) {
-            draft_.scheduleKind = item_.scheduleKind;
-            draft_.repeatMode = item_.repeatMode;
-            draft_.repeatInterval = item_.repeatInterval;
-            draft_.repeatLimit = item_.repeatLimit;
-            draft_.repeatFinished = item_.repeatFinished;
-            draft_.cronExpression = item_.cronExpression;
-            draft_.anchorAt = item_.anchorAt;
-            draft_.nextDueAt = ComputeNextTodoDueAt(draft_, CurrentTodoTimestamp());
-        } else {
-            const SYSTEMTIME anchor = ReadAnchorTime();
-            draft_.scheduleKind = ScheduleKindFromRepeatRule(rule);
-            draft_.repeatMode = TodoRepeatMode::FixedPoint;
-            draft_.repeatInterval = 1;
-            draft_.repeatLimit = 0;
-            draft_.anchorAt = FormatTodoTimestamp(anchor);
-            draft_.cronExpression = (rule == RepeatRule::Workday || rule == RepeatRule::Weekend) ? CronExpressionForRepeatRule(rule, anchor) : L"";
-            if (draft_.scheduleKind == TodoScheduleKind::Cron && !IsValidTodoCronExpression(draft_.cronExpression)) {
-                MessageBoxW(hwnd_, L"重复规则无效，请重新选择。", L"待办事项", MB_OK | MB_ICONWARNING);
-                return false;
-            }
-            if (draft_.scheduleKind != oldKind || draft_.repeatMode != oldRepeatMode || draft_.repeatInterval != oldInterval ||
-                draft_.repeatLimit != oldLimit || draft_.anchorAt != oldAnchor || draft_.cronExpression != oldCronExpression) {
-                draft_.repeatFinished = 0;
-            }
-            draft_.nextDueAt = ComputeNextTodoDueAt(draft_, CurrentTodoTimestamp());
-            if (draft_.nextDueAt.empty()) {
-                MessageBoxW(hwnd_, L"请输入有效时间。", L"待办事项", MB_OK | MB_ICONWARNING);
-                return false;
-            }
+            draft_.cronExpression.clear();
+            draft_.anchorAt.clear();
+            draft_.nextDueAt.clear();
+            return;
         }
 
+        SYSTEMTIME anchor = ReadAnchorTime();
+        draft_.anchorAt = FormatTodoTimestamp(anchor);
+        draft_.repeatMode = TodoRepeatMode::FixedPoint;
+        draft_.repeatInterval = 1;
+        draft_.repeatLimit = advancedExpanded_ && endMode_ == EndMode::Count ? std::max(1, GetInt(endCountEdit_, 1)) : 0;
+        draft_.cronExpression.clear();
+
+        switch (repeatRule_) {
+        case RepeatRule::Daily:
+            draft_.scheduleKind = TodoScheduleKind::Daily;
+            break;
+        case RepeatRule::Workday:
+            draft_.scheduleKind = TodoScheduleKind::Cron;
+            draft_.cronExpression = CronBase(anchor) + L" * * 1-5";
+            break;
+        case RepeatRule::Weekly:
+            draft_.scheduleKind = TodoScheduleKind::Cron;
+            draft_.cronExpression = CronBase(anchor) + L" * * " + CronWeekdays(weekdaySelected_);
+            break;
+        case RepeatRule::Monthly:
+            draft_.scheduleKind = TodoScheduleKind::Cron;
+            draft_.cronExpression = CronBase(anchor) + L" " + std::to_wstring(std::max(1, std::min(31, GetInt(monthlyDayEdit_, anchor.wDay)))) + L" * *";
+            break;
+        case RepeatRule::Custom: {
+            const int interval = std::max(1, GetInt(customIntervalEdit_, 1));
+            draft_.repeatInterval = interval;
+            draft_.repeatMode = TodoRepeatMode::Interval;
+            const int unit = ComboIndex(customUnitCombo_, 0);
+            if (unit == 1) {
+                draft_.scheduleKind = TodoScheduleKind::Weekly;
+                for (int i = 0; i < 7; ++i) {
+                    if (weekdaySelected_[i]) {
+                        anchor = DateForWeekday(anchor, i);
+                        break;
+                    }
+                }
+                draft_.anchorAt = FormatTodoTimestamp(anchor);
+            } else if (unit == 2) {
+                anchor.wDay = static_cast<WORD>(std::max(1, std::min(31, GetInt(monthlyDayEdit_, anchor.wDay))));
+                draft_.anchorAt = FormatTodoTimestamp(anchor);
+                draft_.scheduleKind = TodoScheduleKind::Monthly;
+            } else {
+                draft_.scheduleKind = TodoScheduleKind::Daily;
+            }
+            break;
+        }
+        case RepeatRule::None:
+        default:
+            draft_.scheduleKind = TodoScheduleKind::Once;
+            break;
+        }
+
+        if (draft_.scheduleKind == TodoScheduleKind::Cron && !IsValidTodoCronExpression(draft_.cronExpression)) {
+            draft_.scheduleKind = TodoScheduleKind::Once;
+            draft_.cronExpression.clear();
+        }
+
+        if (draft_.scheduleKind != oldKind || draft_.repeatMode != oldRepeatMode || draft_.repeatInterval != oldInterval ||
+            draft_.repeatLimit != oldLimit || !SameTodoTime(draft_.anchorAt, oldAnchor) || draft_.cronExpression != oldCron) {
+            draft_.repeatFinished = 0;
+        }
+        draft_.nextDueAt = ComputeNextTodoDueAt(draft_, CurrentTodoTimestamp());
+    }
+
+    bool Accept() {
+        if (!Validate()) {
+            return false;
+        }
+        ApplyToDraft();
         item_ = draft_;
         accepted_ = true;
         done_ = true;
@@ -850,101 +889,706 @@ private:
         return true;
     }
 
+    bool ConfirmCloseIfDirty() {
+        if (!IsDirty()) {
+            return true;
+        }
+        const wchar_t* message = isNew_ ? L"已填写内容，确定放弃创建？" : L"已修改内容，确定放弃修改？";
+        return MessageBoxW(hwnd_, message, isNew_ ? L"新建待办" : L"编辑待办", MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) == IDYES;
+    }
+
+    void FillCombos() {
+        FillSimpleCombo(customUnitCombo_, {L"天", L"周", L"月"}, 0);
+    }
+
+    void CreateControls() {
+        font_ = ThemedControls::CreateDialogFont();
+        editFont_ = ThemedControls::CreateEditFont(theme_);
+        backgroundBrush_ = CreateSolidBrush(ColorFor(L"dialog", L"normal", L"bg"));
+        editBrush_ = CreateSolidBrush(ColorFor(L"edit", L"normal", L"bg"));
+
+        titleLabel_ = Label(L"待办标题 *", 0, 0, TextControlWidth(L"待办标题 *"));
+        titleEdit_ = SingleEdit(IdTitle, 0, 0, 1, draft_.title);
+        SendMessageW(titleEdit_, EM_SETCUEBANNER, FALSE, reinterpret_cast<LPARAM>(L"请输入待办标题..."));
+        titleErrorText_ = Text(L"", 0, 0, 1, StaticTextHeight());
+
+        contentLabel_ = Label(L"备注说明", 0, 0, TextControlWidth(L"备注说明"));
+        contentEdit_ = MultiEdit(IdContent, 0, 0, 1, ThemedControls::EditFrameHeight(theme_) + StaticTextHeight() + RowGap(), draft_.content);
+        SendMessageW(contentEdit_, EM_SETCUEBANNER, FALSE, reinterpret_cast<LPARAM>(L"补充描述、步骤、附件链接..."));
+
+        reminderButton_ = ThemedControls::CreateButton(instance_, hwnd_, IdReminderToggle, L"", 0, 0, 1, 1, font_);
+        ShowWindow(reminderButton_, SW_HIDE);
+        timeEdit_ = SingleEdit(IdTime, 260, 0, 78, L"00:00");
+
+        const int tabHeight = ThemedControls::TabButtonHeight(theme_);
+        repeatNone_ = ThemedControls::CreateTabButton(instance_, hwnd_, IdRepeatNone, L"不重复", 0, 0, TabWidth(L"不重复"), tabHeight, font_, false);
+        repeatDaily_ = ThemedControls::CreateTabButton(instance_, hwnd_, IdRepeatDaily, L"每天", 0, 0, TabWidth(L"每天"), tabHeight, font_, false);
+        repeatWorkday_ = ThemedControls::CreateTabButton(instance_, hwnd_, IdRepeatWorkday, L"工作日", 0, 0, TabWidth(L"工作日"), tabHeight, font_, false);
+        repeatWeekly_ = ThemedControls::CreateTabButton(instance_, hwnd_, IdRepeatWeekly, L"每周", 0, 0, TabWidth(L"每周"), tabHeight, font_, false);
+        repeatMonthly_ = ThemedControls::CreateTabButton(instance_, hwnd_, IdRepeatMonthly, L"每月", 0, 0, TabWidth(L"每月"), tabHeight, font_, false);
+        repeatCustom_ = ThemedControls::CreateTabButton(instance_, hwnd_, IdRepeatCustom, L"自定义", 0, 0, TabWidth(L"自定义"), tabHeight, font_, false);
+
+        for (int i = 0; i < 7; ++i) {
+            weekdayButtons_[i] = ThemedControls::CreateTabButton(instance_, hwnd_, IdWeekdayBase + i, ShortWeekdayText(i), 0, 0, TabWidth(ShortWeekdayText(i)), tabHeight, font_, false);
+        }
+
+        workdayHint_ = Text(L"默认周一至周五执行", 0, 0, TextControlWidth(L"默认周一至周五执行"), StaticTextHeight());
+        monthlyFixedButton_ = ThemedControls::CreateTabButton(instance_, hwnd_, IdMonthlyFixed, L"每月固定", 0, 0, TabWidth(L"每月固定"), tabHeight, font_, false);
+        monthlyDayEdit_ = SingleEdit(IdMonthlyDay, 0, 0, ThemedControls::EditFrameHeight(theme_) + ThemedControls::EditPaddingX(theme_) * 2, L"1", ES_NUMBER);
+        monthlyDayLabel_ = Text(L"号", 0, 0, TextControlWidth(L"号"), StaticTextHeight());
+        customPrefix_ = Text(L"每", 0, 0, TextControlWidth(L"每"), StaticTextHeight());
+        customIntervalEdit_ = SingleEdit(IdCustomInterval, 0, 0, ThemedControls::EditFrameHeight(theme_) + ThemedControls::EditPaddingX(theme_) * 2, L"1", ES_NUMBER);
+        customUnitCombo_ = ThemedControls::CreateComboBox(instance_, hwnd_, IdCustomUnit, 0, 0, TextControlWidth(L"天") + MetricInt(L"comboBox", L"arrowWidth", 28.0f), ThemedControls::ComboBoxHeight(theme_), font_, theme_);
+        customSuffix_ = Text(L"重复一次", 0, 0, TextControlWidth(L"重复一次"), StaticTextHeight());
+        repeatErrorText_ = Text(L"", 0, 0, 1, StaticTextHeight());
+
+        advancedButton_ = ThemedControls::CreateButton(instance_, hwnd_, IdAdvancedToggle, L"高级设置", 0, 0, ButtonWidth(L"高级设置"), ThemedControls::CompactButtonHeight(theme_), font_);
+        endNeverButton_ = ThemedControls::CreateTabButton(instance_, hwnd_, IdEndNever, L"永不结束", 0, 0, TabWidth(L"永不结束"), tabHeight, font_, false);
+        endCountButton_ = ThemedControls::CreateTabButton(instance_, hwnd_, IdEndCount, L"完成 N 次", 0, 0, TabWidth(L"完成 N 次"), tabHeight, font_, false);
+        endCountEdit_ = SingleEdit(IdEndCountValue, 0, 0, ThemedControls::EditFrameHeight(theme_) + ThemedControls::EditPaddingX(theme_) * 2, L"1", ES_NUMBER);
+
+        okButton_ = ThemedControls::CreateButton(instance_, hwnd_, IDOK, isNew_ ? L"保存待办" : L"保存", 0, 0, ButtonWidth(isNew_ ? L"保存待办" : L"保存"), ThemedControls::ButtonHeight(theme_), font_, true);
+        cancelButton_ = ThemedControls::CreateButton(instance_, hwnd_, IDCANCEL, L"取消", 0, 0, ButtonWidth(L"取消"), ThemedControls::ButtonHeight(theme_), font_);
+
+        FillCombos();
+        LoadInitialState();
+        SelectRepeatRule(repeatRule_);
+        SetTabChecked(monthlyFixedButton_, true);
+        SelectEndMode(endMode_);
+        SyncWeekdayButtons();
+        UpdateSaveState();
+        initialized_ = true;
+        initialSnapshot_ = Snapshot();
+        SetFocus(titleEdit_);
+        SendMessageW(titleEdit_, EM_SETSEL, 0, -1);
+    }
+
+    void Layout() {
+        if (!hwnd_) {
+            return;
+        }
+
+        const int fieldHeight = ThemedControls::EditFrameHeight(theme_);
+        const int labelHeight = ThemedControls::LabelHeight(theme_);
+        const int tabHeight = ThemedControls::TabButtonHeight(theme_);
+        const int insetX = ContentInsetX();
+        const int fieldX = FieldX();
+        const int contentRight = FieldRight();
+        const int contentWidth = FieldWidth();
+        const int rowGap = RowGap();
+        const int itemGap = ItemGap();
+        const int textHeight = StaticTextHeight();
+        const int multiEditHeight = fieldHeight + textHeight + rowGap;
+        const int labelOffsetY = std::max(0, (fieldHeight - labelHeight) / 2);
+        int y = kContentTop;
+
+        MoveStatic(titleLabel_, insetX, y + labelOffsetY, TextControlWidth(L"待办标题 *"), labelHeight);
+        SetFrame(titleEdit_, RECT{fieldX, y, contentRight, y + fieldHeight});
+        y += fieldHeight;
+        const bool hasTitleError = !titleError_.empty();
+        SetVisible(titleErrorText_, hasTitleError);
+        if (hasTitleError) {
+            SetWindowTextW(titleErrorText_, titleError_.c_str());
+            MoveStatic(titleErrorText_, fieldX, y + rowGap, contentWidth, textHeight);
+            y += textHeight + rowGap;
+        }
+
+        y += itemGap;
+        MoveStatic(contentLabel_, insetX, y + labelOffsetY, TextControlWidth(L"备注说明"), labelHeight);
+        SetFrame(contentEdit_, RECT{fieldX, y, contentRight, y + multiEditHeight});
+        y += multiEditHeight + itemGap;
+
+        const int reminderHeight = fieldHeight + rowGap * 2;
+        reminderRect_ = RECT{fieldX, y, contentRight, y + reminderHeight};
+        y += reminderHeight;
+        if (!reminderError_.empty()) {
+            y += textHeight + rowGap;
+        }
+        if (reminderExpanded_) {
+            y += rowGap;
+            calendarRect_ = RECT{fieldX, y, fieldX + kCalendarWidth, y + kCalendarHeight};
+            const int timeX = calendarRect_.right + itemGap + MetricInt(L"global", L"rowGap", 6.0f);
+            SetFrame(timeEdit_, RECT{timeX, y, timeX + 82, y + fieldHeight});
+            SetVisible(timeEdit_, true);
+            y += kCalendarHeight + rowGap;
+
+            repeatLabelY_ = y;
+            y += labelHeight + rowGap;
+            int x = fieldX;
+            const std::array<std::pair<HWND, int>, 6> repeatButtons{{
+                {repeatNone_, TabWidth(L"不重复")}, {repeatDaily_, TabWidth(L"每天")}, {repeatWorkday_, TabWidth(L"工作日")},
+                {repeatWeekly_, TabWidth(L"每周")}, {repeatMonthly_, TabWidth(L"每月")}, {repeatCustom_, TabWidth(L"自定义")},
+            }};
+            for (const auto& [button, width] : repeatButtons) {
+                MoveButton(button, x, y, width, tabHeight);
+                x += width + itemGap;
+            }
+            y += tabHeight + rowGap;
+
+            const bool showWeekdays = repeatRule_ == RepeatRule::Weekly || (repeatRule_ == RepeatRule::Custom && ComboIndex(customUnitCombo_, 0) == 1);
+            const bool showMonthly = repeatRule_ == RepeatRule::Monthly || (repeatRule_ == RepeatRule::Custom && ComboIndex(customUnitCombo_, 0) == 2);
+            const bool showCustom = repeatRule_ == RepeatRule::Custom;
+            SetVisible(workdayHint_, repeatRule_ == RepeatRule::Workday);
+            if (repeatRule_ == RepeatRule::Workday) {
+                MoveStatic(workdayHint_, fieldX, y, TextControlWidth(L"默认周一至周五执行"), textHeight);
+                y += textHeight + rowGap;
+            }
+
+            const int weekdayButtonSize = TabWidth(L"日");
+            for (int i = 0; i < 7; ++i) {
+                SetVisible(weekdayButtons_[i], showWeekdays);
+                if (showWeekdays) {
+                    MoveButton(weekdayButtons_[i], fieldX + i * (weekdayButtonSize + itemGap), y, weekdayButtonSize, tabHeight);
+                }
+            }
+            if (showWeekdays) {
+                y += tabHeight + rowGap;
+            }
+
+            SetVisible(monthlyFixedButton_, showMonthly);
+            SetVisible(monthlyDayEdit_, showMonthly);
+            SetVisible(monthlyDayLabel_, showMonthly);
+            if (showMonthly) {
+                const int fixedWidth = TabWidth(L"每月固定");
+                const int dayWidth = fieldHeight + ThemedControls::EditPaddingX(theme_) * 2;
+                MoveButton(monthlyFixedButton_, fieldX, y, fixedWidth, tabHeight);
+                SetFrame(monthlyDayEdit_, RECT{fieldX + fixedWidth + itemGap, y, fieldX + fixedWidth + itemGap + dayWidth, y + fieldHeight});
+                MoveStatic(monthlyDayLabel_, fieldX + fixedWidth + itemGap + dayWidth + itemGap, y, TextControlWidth(L"号"), textHeight);
+                y += fieldHeight + rowGap;
+            }
+
+            SetVisible(customPrefix_, showCustom);
+            SetVisible(customIntervalEdit_, showCustom);
+            SetVisible(customUnitCombo_, showCustom);
+            SetVisible(customSuffix_, showCustom);
+            if (showCustom) {
+                const int prefixWidth = TextControlWidth(L"每");
+                const int intervalWidth = fieldHeight + ThemedControls::EditPaddingX(theme_) * 2;
+                const int unitWidth = TextControlWidth(L"天") + MetricInt(L"comboBox", L"arrowWidth", 28.0f);
+                int customX = fieldX;
+                MoveStatic(customPrefix_, customX, y, prefixWidth, textHeight);
+                customX += prefixWidth + itemGap;
+                SetFrame(customIntervalEdit_, RECT{customX, y, customX + intervalWidth, y + fieldHeight});
+                customX += intervalWidth + itemGap;
+                MoveCombo(customUnitCombo_, customX, y, unitWidth, ThemedControls::ComboBoxHeight(theme_));
+                customX += unitWidth + itemGap;
+                MoveStatic(customSuffix_, customX, y, TextControlWidth(L"重复一次"), textHeight);
+                y += fieldHeight + rowGap;
+            }
+
+            const bool hasRepeatError = !repeatError_.empty();
+            SetVisible(repeatErrorText_, hasRepeatError);
+            if (hasRepeatError) {
+                SetWindowTextW(repeatErrorText_, repeatError_.c_str());
+                MoveStatic(repeatErrorText_, fieldX, y, contentWidth, textHeight);
+                y += textHeight + rowGap;
+            }
+
+        } else {
+            HideReminderChildren();
+        }
+
+        MoveButton(advancedButton_, fieldX, y, ButtonWidth(L"高级设置"), ThemedControls::CompactButtonHeight(theme_));
+        y += ThemedControls::CompactButtonHeight(theme_) + rowGap;
+        const bool recurring = hasReminder_ && repeatRule_ != RepeatRule::None;
+        SetEnabled(advancedButton_, recurring);
+        SetVisible(endNeverButton_, advancedExpanded_);
+        SetVisible(endCountButton_, advancedExpanded_);
+        SetVisible(endCountEdit_, advancedExpanded_ && endMode_ == EndMode::Count);
+        if (advancedExpanded_) {
+            const int neverWidth = TabWidth(L"永不结束");
+            const int countWidth = TabWidth(L"完成 N 次");
+            const int countEditWidth = fieldHeight + ThemedControls::EditPaddingX(theme_) * 2;
+            MoveButton(endNeverButton_, fieldX, y, neverWidth, tabHeight);
+            MoveButton(endCountButton_, fieldX + neverWidth + itemGap, y, countWidth, tabHeight);
+            SetFrame(endCountEdit_, RECT{fieldX + neverWidth + itemGap + countWidth + itemGap, y, fieldX + neverWidth + itemGap + countWidth + itemGap + countEditWidth, y + fieldHeight});
+            y += fieldHeight + rowGap;
+            SetEnabled(endNeverButton_, recurring);
+            SetEnabled(endCountButton_, recurring);
+            SetEnabled(endCountEdit_, recurring && endMode_ == EndMode::Count);
+            y += rowGap;
+        }
+
+        contentHeight_ = y + rowGap;
+        if (ClampScrollToContent()) {
+            Layout();
+            return;
+        }
+        LayoutFooter();
+        UpdateScrollBar();
+        InvalidateRect(hwnd_, nullptr, TRUE);
+    }
+
+    void HideReminderChildren() {
+        SetVisible(timeEdit_, false);
+        for (HWND button : {repeatNone_, repeatDaily_, repeatWorkday_, repeatWeekly_, repeatMonthly_, repeatCustom_}) {
+            SetVisible(button, false);
+        }
+        for (HWND button : weekdayButtons_) {
+            SetVisible(button, false);
+        }
+        SetVisible(workdayHint_, false);
+        SetVisible(monthlyFixedButton_, false);
+        SetVisible(monthlyDayEdit_, false);
+        SetVisible(monthlyDayLabel_, false);
+        SetVisible(customPrefix_, false);
+        SetVisible(customIntervalEdit_, false);
+        SetVisible(customUnitCombo_, false);
+        SetVisible(customSuffix_, false);
+        SetVisible(repeatErrorText_, false);
+    }
+
+    void LayoutFooter() {
+        const int buttonHeight = ThemedControls::ButtonHeight(theme_);
+        const int footerHeight = FooterHeight();
+        const int insetX = ContentInsetX();
+        const int itemGap = ItemGap();
+        const int y = ClientHeight() - footerHeight + (footerHeight - buttonHeight) / 2;
+        const int okWidth = ButtonWidth(isNew_ ? L"保存待办" : L"保存");
+        const int cancelWidth = ButtonWidth(L"取消");
+        MoveWindow(okButton_, DrawerWidth() - insetX - okWidth, y, okWidth, buttonHeight, TRUE);
+        MoveWindow(cancelButton_, DrawerWidth() - insetX - okWidth - itemGap - cancelWidth, y, cancelWidth, buttonHeight, TRUE);
+    }
+
+    void UpdateScrollBar() {
+        SCROLLINFO info{};
+        info.cbSize = sizeof(info);
+        info.fMask = SIF_RANGE | SIF_PAGE | SIF_POS;
+        info.nMin = 0;
+        info.nMax = std::max(0, contentHeight_ - 1);
+        info.nPage = std::max(1, ContentBottomLimit() - HeaderHeight());
+        info.nPos = scrollY_;
+        SetScrollInfo(hwnd_, SB_VERT, &info, TRUE);
+    }
+
+    bool ClampScrollToContent() {
+        const int page = std::max(1, ContentBottomLimit() - HeaderHeight());
+        const int maxPos = std::max(0, contentHeight_ - page);
+        const int next = std::max(0, std::min(scrollY_, maxPos));
+        if (next == scrollY_) {
+            return false;
+        }
+        scrollY_ = next;
+        return true;
+    }
+
+    void ScrollTo(int position) {
+        const int page = std::max(1, ContentBottomLimit() - HeaderHeight());
+        const int maxPos = std::max(0, contentHeight_ - page);
+        const int next = std::max(0, std::min(maxPos, position));
+        if (next == scrollY_) {
+            return;
+        }
+        scrollY_ = next;
+        Layout();
+    }
+
+    void DrawLine(HDC dc, int y) {
+        HPEN pen = CreatePen(PS_SOLID, MetricInt(L"separator", L"thickness", 1.0f), ColorFor(L"separator", L"normal", L"line"));
+        HGDIOBJ oldPen = SelectObject(dc, pen);
+        MoveToEx(dc, 0, y, nullptr);
+        LineTo(dc, DrawerWidth(), y);
+        SelectObject(dc, oldPen);
+        DeleteObject(pen);
+    }
+
+    void DrawPanel(HDC dc, RECT rect, bool selected, bool error) {
+        const wchar_t* state = error ? L"selected" : (selected ? L"selected" : L"normal");
+        HBRUSH brush = CreateSolidBrush(ColorFor(L"panel", state, L"bg"));
+        HPEN pen = CreatePen(PS_SOLID, MetricInt(L"panel", L"borderWidth", 1.0f), ColorFor(L"panel", state, L"border"));
+        HGDIOBJ oldBrush = SelectObject(dc, brush);
+        HGDIOBJ oldPen = SelectObject(dc, pen);
+        const int radius = static_cast<int>(theme_.metric(L"panel", L"radius", 7.0f));
+        RoundRect(dc, rect.left, rect.top, rect.right, rect.bottom, radius * 2, radius * 2);
+        SelectObject(dc, oldPen);
+        SelectObject(dc, oldBrush);
+        DeleteObject(pen);
+        DeleteObject(brush);
+    }
+
+    void DrawRoundFill(HDC dc, RECT rect, int radius, COLORREF bg, COLORREF border) {
+        HBRUSH brush = CreateSolidBrush(bg);
+        HPEN pen = CreatePen(PS_SOLID, 1, border);
+        HGDIOBJ oldBrush = SelectObject(dc, brush);
+        HGDIOBJ oldPen = SelectObject(dc, pen);
+        RoundRect(dc, rect.left, rect.top, rect.right, rect.bottom, radius * 2, radius * 2);
+        SelectObject(dc, oldPen);
+        SelectObject(dc, oldBrush);
+        DeleteObject(pen);
+        DeleteObject(brush);
+    }
+
+    void DrawTextIn(HDC dc, const std::wstring& text, RECT rect, COLORREF color, UINT format, HFONT font = nullptr) {
+        SetBkMode(dc, TRANSPARENT);
+        SetTextColor(dc, color);
+        HFONT oldFont = reinterpret_cast<HFONT>(SelectObject(dc, font ? font : font_));
+        DrawTextW(dc, text.c_str(), static_cast<int>(text.size()), &rect, format);
+        SelectObject(dc, oldFont);
+    }
+
+    RECT CalendarPrevRect() const {
+        return RECT{calendarRect_.left + 8, calendarRect_.top + 5, calendarRect_.left + 30, calendarRect_.top + 27};
+    }
+
+    RECT CalendarNextRect() const {
+        return RECT{calendarRect_.right - 30, calendarRect_.top + 5, calendarRect_.right - 8, calendarRect_.top + 27};
+    }
+
+    RECT CalendarYearTitleRect() const {
+        return RECT{calendarRect_.left + 72, calendarRect_.top + 5, calendarRect_.left + 130, calendarRect_.top + 28};
+    }
+
+    RECT CalendarMonthTitleRect() const {
+        return RECT{calendarRect_.left + 130, calendarRect_.top + 5, calendarRect_.left + 166, calendarRect_.top + 28};
+    }
+
+    int CalendarDayFromPoint(POINT point) const {
+        if (calendarPickerMode_ != CalendarPickerMode::Day) {
+            return 0;
+        }
+        const int logicalY = point.y + scrollY_;
+        if (point.x < calendarRect_.left || point.x >= calendarRect_.right ||
+            logicalY < calendarRect_.top + kCalendarHeaderHeight + kCalendarWeekdayHeight ||
+            logicalY >= calendarRect_.bottom) {
+            return 0;
+        }
+
+        SYSTEMTIME first{};
+        first.wYear = static_cast<WORD>(calendarYear_);
+        first.wMonth = static_cast<WORD>(calendarMonth_);
+        first.wDay = 1;
+        const int firstOffset = DayOfWeek(first);
+        const int cellWidth = kCalendarWidth / 7;
+        const int col = std::max(0, std::min(6, static_cast<int>(point.x - calendarRect_.left) / cellWidth));
+        const int row = std::max(0, std::min(5, static_cast<int>(logicalY - calendarRect_.top - kCalendarHeaderHeight - kCalendarWeekdayHeight) / kCalendarCellHeight));
+        const int day = row * 7 + col - firstOffset + 1;
+        return (day >= 1 && day <= DaysInMonth(calendarYear_, calendarMonth_)) ? day : 0;
+    }
+
+    int CalendarMonthFromPoint(POINT point) const {
+        if (calendarPickerMode_ != CalendarPickerMode::Month) {
+            return 0;
+        }
+        const int logicalY = point.y + scrollY_;
+        const int gridLeft = calendarRect_.left + 46;
+        const int gridTop = calendarRect_.top + 42;
+        if (point.x < gridLeft || point.x >= gridLeft + kCalendarMonthCellWidth * 2 ||
+            logicalY < gridTop || logicalY >= gridTop + kCalendarMonthCellHeight * 6) {
+            return 0;
+        }
+        const int col = static_cast<int>(point.x - gridLeft) / kCalendarMonthCellWidth;
+        const int row = static_cast<int>(logicalY - gridTop) / kCalendarMonthCellHeight;
+        const int month = row * 2 + col + 1;
+        return month >= 1 && month <= 12 ? month : 0;
+    }
+
+    void ChangeCalendarMonth(int delta) {
+        if (calendarPickerMode_ == CalendarPickerMode::Year) {
+            calendarYearPageStart_ = std::max(1900, calendarYearPageStart_ + delta * 12);
+            InvalidateRect(hwnd_, nullptr, TRUE);
+            return;
+        }
+        if (calendarPickerMode_ == CalendarPickerMode::Month) {
+            calendarYear_ = std::max(1900, calendarYear_ + delta);
+            InvalidateRect(hwnd_, nullptr, TRUE);
+            return;
+        }
+        SYSTEMTIME value{};
+        value.wYear = static_cast<WORD>(calendarYear_);
+        value.wMonth = static_cast<WORD>(calendarMonth_);
+        value.wDay = 1;
+        value = AddMonths(value, delta);
+        calendarYear_ = value.wYear;
+        calendarMonth_ = value.wMonth;
+        InvalidateRect(hwnd_, nullptr, TRUE);
+    }
+
+    void SelectCalendarMonth(int month) {
+        if (month < 1 || month > 12) {
+            return;
+        }
+        calendarMonth_ = month;
+        selectedDate_.wYear = static_cast<WORD>(calendarYear_);
+        selectedDate_.wMonth = static_cast<WORD>(calendarMonth_);
+        selectedDate_.wDay = static_cast<WORD>(std::min<int>(selectedDate_.wDay, DaysInMonth(calendarYear_, calendarMonth_)));
+        calendarPickerMode_ = CalendarPickerMode::Day;
+        Layout();
+    }
+
+    int CalendarYearFromPoint(POINT point) const {
+        if (calendarPickerMode_ != CalendarPickerMode::Year) {
+            return 0;
+        }
+        const int logicalY = point.y + scrollY_;
+        const int gridLeft = calendarRect_.left + 28;
+        const int gridTop = calendarRect_.top + 42;
+        if (point.x < gridLeft || point.x >= gridLeft + kCalendarYearCellWidth * 2 ||
+            logicalY < gridTop || logicalY >= gridTop + kCalendarYearCellHeight * 6) {
+            return 0;
+        }
+        const int col = static_cast<int>(point.x - gridLeft) / kCalendarYearCellWidth;
+        const int row = static_cast<int>(logicalY - gridTop) / kCalendarYearCellHeight;
+        return calendarYearPageStart_ + row * 2 + col;
+    }
+
+    void SelectCalendarYear(int year) {
+        if (year < 1900) {
+            return;
+        }
+        calendarYear_ = year;
+        selectedDate_.wYear = static_cast<WORD>(calendarYear_);
+        selectedDate_.wDay = static_cast<WORD>(std::min<int>(selectedDate_.wDay, DaysInMonth(calendarYear_, calendarMonth_)));
+        calendarPickerMode_ = CalendarPickerMode::Day;
+        Layout();
+    }
+
+    void SelectCalendarDay(int day) {
+        if (day < 1 || day > DaysInMonth(calendarYear_, calendarMonth_)) {
+            return;
+        }
+        selectedDate_.wYear = static_cast<WORD>(calendarYear_);
+        selectedDate_.wMonth = static_cast<WORD>(calendarMonth_);
+        selectedDate_.wDay = static_cast<WORD>(day);
+        selectedDate_ = DateOnly(selectedDate_);
+        SetWindowTextW(monthlyDayEdit_, std::to_wstring(day).c_str());
+        Layout();
+    }
+
+    void DrawCalendar(HDC dc) {
+        RECT rect = Offset(calendarRect_);
+        DrawPanel(dc, rect, false, false);
+
+        RECT prev = Offset(CalendarPrevRect());
+        RECT next = Offset(CalendarNextRect());
+        DrawRoundFill(dc, prev, 4, ColorFor(L"iconButton", L"normal", L"bg"), ColorFor(L"panel", L"normal", L"border"));
+        DrawRoundFill(dc, next, 4, ColorFor(L"iconButton", L"normal", L"bg"), ColorFor(L"panel", L"normal", L"border"));
+        DrawTextIn(dc, L"<", prev, ColorFor(L"text", L"muted", L"text"), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        DrawTextIn(dc, L">", next, ColorFor(L"text", L"muted", L"text"), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+        if (calendarPickerMode_ == CalendarPickerMode::Year) {
+            const std::wstring title = std::to_wstring(calendarYearPageStart_) + L"-" + std::to_wstring(calendarYearPageStart_ + 11);
+            DrawTextIn(dc, title, RECT{rect.left + 42, rect.top + 6, rect.right - 42, rect.top + 28}, ColorFor(L"text", L"normal", L"text"), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            const int gridLeft = rect.left + 28;
+            const int gridTop = rect.top + 42;
+            for (int i = 0; i < 12; ++i) {
+                const int year = calendarYearPageStart_ + i;
+                const int row = i / 2;
+                const int col = i % 2;
+                RECT cell{
+                    gridLeft + col * kCalendarYearCellWidth + 6,
+                    gridTop + row * kCalendarYearCellHeight + 3,
+                    gridLeft + (col + 1) * kCalendarYearCellWidth - 6,
+                    gridTop + (row + 1) * kCalendarYearCellHeight - 3,
+                };
+                const bool selected = selectedDate_.wYear == year;
+                if (selected) {
+                    DrawRoundFill(dc, cell, 6, ColorFor(L"panel", L"selected", L"border"), ColorFor(L"panel", L"selected", L"border"));
+                }
+                DrawTextIn(dc, std::to_wstring(year), cell, selected ? ColorFor(L"panel", L"normal", L"bg") : ColorFor(L"text", L"normal", L"text"), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            }
+            return;
+        }
+
+        RECT yearTitle = Offset(CalendarYearTitleRect());
+        RECT monthTitle = Offset(CalendarMonthTitleRect());
+        DrawRoundFill(dc, yearTitle, 5, ColorFor(L"miniButton", L"normal", L"bg"), ColorFor(L"miniButton", L"normal", L"border"));
+        DrawRoundFill(dc, monthTitle, 5, ColorFor(L"miniButton", L"normal", L"bg"), ColorFor(L"miniButton", L"normal", L"border"));
+        DrawTextIn(dc, std::to_wstring(calendarYear_) + L"年", yearTitle, ColorFor(L"text", L"normal", L"text"), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        DrawTextIn(dc, std::to_wstring(calendarMonth_) + L"月", monthTitle, ColorFor(L"text", L"normal", L"text"), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+        if (calendarPickerMode_ == CalendarPickerMode::Month) {
+            static constexpr const wchar_t* kMonths[] = {
+                L"1月", L"2月", L"3月", L"4月", L"5月", L"6月",
+                L"7月", L"8月", L"9月", L"10月", L"11月", L"12月",
+            };
+            const int gridLeft = rect.left + 46;
+            const int gridTop = rect.top + 42;
+            for (int month = 1; month <= 12; ++month) {
+                const int index = month - 1;
+                const int row = index / 2;
+                const int col = index % 2;
+                RECT cell{
+                    gridLeft + col * kCalendarMonthCellWidth + 4,
+                    gridTop + row * kCalendarMonthCellHeight + 3,
+                    gridLeft + (col + 1) * kCalendarMonthCellWidth - 4,
+                    gridTop + (row + 1) * kCalendarMonthCellHeight - 3,
+                };
+                const bool selected = selectedDate_.wYear == calendarYear_ && selectedDate_.wMonth == month;
+                if (selected) {
+                    DrawRoundFill(dc, cell, 6, ColorFor(L"panel", L"selected", L"border"), ColorFor(L"panel", L"selected", L"border"));
+                }
+                DrawTextIn(dc, kMonths[index], cell, selected ? ColorFor(L"panel", L"normal", L"bg") : ColorFor(L"text", L"normal", L"text"), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            }
+            return;
+        }
+
+        const int cellWidth = kCalendarWidth / 7;
+        int y = rect.top + kCalendarHeaderHeight;
+        for (int i = 0; i < 7; ++i) {
+            RECT weekday{rect.left + i * cellWidth, y, rect.left + (i + 1) * cellWidth, y + kCalendarWeekdayHeight};
+            DrawTextIn(dc, ShortWeekdayText(i), weekday, ColorFor(L"text", L"muted", L"text"), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        }
+
+        SYSTEMTIME first{};
+        first.wYear = static_cast<WORD>(calendarYear_);
+        first.wMonth = static_cast<WORD>(calendarMonth_);
+        first.wDay = 1;
+        const int firstOffset = DayOfWeek(first);
+        const int days = DaysInMonth(calendarYear_, calendarMonth_);
+        SYSTEMTIME today{};
+        GetLocalTime(&today);
+        today = DateOnly(today);
+        y += kCalendarWeekdayHeight;
+        for (int day = 1; day <= days; ++day) {
+            const int index = firstOffset + day - 1;
+            const int row = index / 7;
+            const int col = index % 7;
+            RECT cell{
+                rect.left + col * cellWidth + 3,
+                y + row * kCalendarCellHeight + 1,
+                rect.left + (col + 1) * cellWidth - 3,
+                y + (row + 1) * kCalendarCellHeight - 1,
+            };
+            const bool selected = selectedDate_.wYear == calendarYear_ && selectedDate_.wMonth == calendarMonth_ && selectedDate_.wDay == day;
+            const bool isToday = today.wYear == calendarYear_ && today.wMonth == calendarMonth_ && today.wDay == day;
+            if (selected) {
+                DrawRoundFill(dc, cell, 5, ColorFor(L"panel", L"selected", L"border"), ColorFor(L"panel", L"selected", L"border"));
+            } else if (isToday) {
+                DrawRoundFill(dc, cell, 5, ColorFor(L"panel", L"normal", L"bg"), ColorFor(L"panel", L"selected", L"border"));
+            }
+            DrawTextIn(dc, std::to_wstring(day), cell, selected ? ColorFor(L"panel", L"normal", L"bg") : ColorFor(L"text", L"normal", L"text"), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        }
+    }
+
+    void Paint(HDC dc) {
+        RECT client{};
+        GetClientRect(hwnd_, &client);
+        FillRect(dc, &client, backgroundBrush_ ? backgroundBrush_ : reinterpret_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
+
+        for (const auto& frame : fields_) {
+            if (frame.child && IsWindowVisible(frame.child)) {
+                ThemedControls::DrawFieldFrame(theme_, dc, Offset(frame.rect), frame.child, false, frame.error);
+            }
+        }
+
+        RECT reminder = Offset(reminderRect_);
+        DrawPanel(dc, reminder, hasReminder_, !reminderError_.empty());
+        const int panelPadX = MetricInt(L"panel", L"paddingX", 10.0f);
+        const int panelPadY = MetricInt(L"panel", L"paddingY", 8.0f);
+        const int textHeight = StaticTextHeight();
+        DrawTextIn(dc, L"提醒时间", RECT{reminder.left + panelPadX, reminder.top + panelPadY, reminder.left + panelPadX + TextControlWidth(L"提醒时间"), reminder.top + panelPadY + textHeight}, ColorFor(L"text", L"normal", L"text"), DT_LEFT | DT_SINGLELINE);
+        const std::wstring summary = ReminderSummary();
+        const int arrowWidth = MetricInt(L"iconButton", L"iconSize", 16.0f);
+        DrawTextIn(dc, summary, RECT{reminder.left + panelPadX + TextControlWidth(L"提醒时间") + ItemGap(), reminder.top + panelPadY, reminder.right - panelPadX - arrowWidth, reminder.top + panelPadY + textHeight}, hasReminder_ ? ColorFor(L"text", L"accent", L"text") : ColorFor(L"text", L"muted", L"text"), DT_RIGHT | DT_SINGLELINE | DT_END_ELLIPSIS);
+        DrawTextIn(dc, reminderExpanded_ ? L"⌃" : L"⌄", RECT{reminder.right - panelPadX - arrowWidth, reminder.top + panelPadY, reminder.right - panelPadX, reminder.top + panelPadY + textHeight}, ColorFor(L"text", L"muted", L"text"), DT_CENTER | DT_SINGLELINE);
+        if (!reminderError_.empty()) {
+            DrawTextIn(dc, reminderError_, RECT{FieldX(), reminder.bottom + RowGap(), FieldRight(), reminder.bottom + RowGap() + textHeight}, ColorFor(L"text", L"danger", L"text"), DT_LEFT | DT_SINGLELINE);
+        }
+
+        if (reminderExpanded_) {
+            DrawCalendar(dc);
+            DrawTextIn(dc, L"重复规则", RECT{FieldX(), repeatLabelY_ - scrollY_, FieldRight(), repeatLabelY_ - scrollY_ + ThemedControls::LabelHeight(theme_)}, ColorFor(L"label", L"normal", L"text"), DT_LEFT | DT_SINGLELINE);
+        }
+
+        RECT footer{0, ClientHeight() - FooterHeight(), client.right, ClientHeight()};
+        HBRUSH footerBrush = CreateSolidBrush(ColorFor(L"panel", L"normal", L"bg"));
+        FillRect(dc, &footer, footerBrush);
+        DeleteObject(footerBrush);
+        DrawLine(dc, footer.top);
+    }
+
     LRESULT Handle(UINT message, WPARAM wParam, LPARAM lParam) {
         switch (message) {
-        case WM_CREATE: {
-            font_ = reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
-            editFont_ = ThemedControls::CreateEditFont(theme_);
-            backgroundBrush_ = CreateSolidBrush(ToColorRef(theme_.color(L"dialog", L"normal", L"bg")));
-            editBrush_ = CreateSolidBrush(ToColorRef(theme_.color(L"edit", L"normal", L"bg")));
-            EnsureTooltip();
-
-            mode_ = InitialMode();
-            unit_ = InitialUnit();
-            repeatRule_ = InitialRepeatRule();
-
-            Label(L"标题", 24, 22);
-            titleEdit_ = SingleEdit(IdTitle, 106, 16, 292, draft_.title);
-            enabledCheck_ = ThemedControls::CreateCheckBox(instance_, hwnd_, IdEnabled, L"启用", 414, 20, 66, ThemedControls::CheckBoxHeight(theme_), font_, draft_.enabled);
-
-            Label(L"提醒", 24, 64);
-            const int tabHeight = ThemedControls::TabButtonHeight(theme_);
-            modeNone_ = ThemedControls::CreateTabButton(instance_, hwnd_, IdModeNone, L"无提醒", 106, 58, 68, tabHeight, font_, false);
-            modeOnce_ = ThemedControls::CreateTabButton(instance_, hwnd_, IdModeOnce, L"提醒", 178, 58, 52, tabHeight, font_, false);
-            modeFixedRecurring_ = ThemedControls::CreateTabButton(instance_, hwnd_, IdModeFixedRecurring, L"循环", 234, 58, 52, tabHeight, font_, false);
-            SetVisible(modeFixedRecurring_, false);
-
-            loopLabel_ = Label(L"重复规则", 12, 146, 76);
-            repeatCombo_ = ThemedControls::CreateComboBox(instance_, hwnd_, IdRepeatRule, 106, 140, 160, 180, font_, theme_);
-            FillRepeatRules();
-            SendMessageW(repeatCombo_, CB_SETCURSEL, static_cast<WPARAM>(repeatRule_), 0);
-            unitButtons_ = {
-                ThemedControls::CreateTabButton(instance_, hwnd_, IdUnitSecond, L"秒", 106, 132, 38, tabHeight, font_, false),
-                ThemedControls::CreateTabButton(instance_, hwnd_, IdUnitMinute, L"分", 145, 132, 38, tabHeight, font_, false),
-                ThemedControls::CreateTabButton(instance_, hwnd_, IdUnitHour, L"时", 184, 132, 38, tabHeight, font_, false),
-                ThemedControls::CreateTabButton(instance_, hwnd_, IdUnitDay, L"日", 223, 132, 38, tabHeight, font_, false),
-                ThemedControls::CreateTabButton(instance_, hwnd_, IdUnitWeek, L"周", 262, 132, 38, tabHeight, font_, false),
-                ThemedControls::CreateTabButton(instance_, hwnd_, IdUnitMonth, L"月", 301, 132, 38, tabHeight, font_, false),
-                ThemedControls::CreateTabButton(instance_, hwnd_, IdUnitYear, L"年", 340, 132, 38, tabHeight, font_, false),
-            };
-            timeLabel_ = Label(L"时间", 24, 180);
-            yearEdit_ = SingleEdit(IdYear, 106, 174, 52, L"", ES_NUMBER);
-            yearLabel_ = StaticText(L"年", 162, 179, 20);
-            monthEdit_ = SingleEdit(IdMonth, 106, 174, 42, L"", ES_NUMBER);
-            monthLabel_ = StaticText(L"月", 152, 179, 20);
-            dayEdit_ = SingleEdit(IdDay, 106, 174, 42, L"", ES_NUMBER);
-            dayLabel_ = StaticText(L"日", 152, 179, 20);
-            hourEdit_ = SingleEdit(IdHour, 106, 174, 42, L"", ES_NUMBER);
-            hourLabel_ = StaticText(L"时", 152, 179, 20);
-            minuteEdit_ = SingleEdit(IdMinute, 106, 174, 42, L"", ES_NUMBER);
-            minuteLabel_ = StaticText(L"分", 152, 179, 20);
-            secondEdit_ = SingleEdit(IdSecond, 106, 174, 42, L"", ES_NUMBER);
-            secondLabel_ = StaticText(L"秒", 152, 179, 20);
-            weekdayCombo_ = ThemedControls::CreateComboBox(instance_, hwnd_, IdWeekday, 106, 174, 72, 180, font_, theme_);
-            FillWeekdays();
-            yearPart_ = TimePart{yearEdit_, yearLabel_, 50};
-            monthPart_ = TimePart{monthEdit_, monthLabel_, 34};
-            dayPart_ = TimePart{dayEdit_, dayLabel_, 34};
-            hourPart_ = TimePart{hourEdit_, hourLabel_, 34};
-            minutePart_ = TimePart{minuteEdit_, minuteLabel_, 34};
-            secondPart_ = TimePart{secondEdit_, secondLabel_, 34};
-            LoadTimeFields();
-
-            previewText_ = ThemedControls::CreateLabelText(instance_, hwnd_, L"", 106, 206, 370, theme_, font_, SS_LEFT);
-            const int buttonHeight = ThemedControls::ButtonHeight(theme_);
-            advancedExpanded_ = false;
-            cronEdited_ = false;
-            advancedButton_ = ThemedControls::CreateButton(instance_, hwnd_, IdAdvancedToggle, L"高级选项", 106, 204, 92, buttonHeight, font_);
-            AttachTooltip(advancedButton_, L"展开后可查看或手动编辑实际保存的 Crontab 表达式。");
-            cronLabel_ = Label(L"Cron", 24, 248);
-            cronEdit_ = SingleEdit(IdCronExpression, 106, 242, 264, draft_.cronExpression);
-            cronHint_ = StaticText(L"与上方时间同步；手动修改后保存时优先使用此表达式", 106, 274, 370, 20);
-            AttachTooltip(cronEdit_, L"六段 Crontab：秒 分 时 日 月 周。修改后会作为自定义规则保存。");
-
-            contentLabel_ = Label(L"内容", 24, 240);
-            contentEdit_ = MultiEdit(IdContent, 106, 234, 370, 72, draft_.content);
-
-            okButton_ = ThemedControls::CreateButton(instance_, hwnd_, IDOK, L"确定", 318, 324, 74, buttonHeight, font_, true);
-            cancelButton_ = ThemedControls::CreateButton(instance_, hwnd_, IDCANCEL, L"取消", 404, 324, 74, buttonHeight, font_);
-
-            SelectMode(mode_);
-            SelectRepeatRule(repeatRule_);
-            initialized_ = true;
-            SetFocus(titleEdit_);
-            SendMessageW(titleEdit_, EM_SETSEL, 0, -1);
+        case WM_CREATE:
+            CreateControls();
+            Layout();
+            return 0;
+        case WM_SIZE:
+            Layout();
+            return 0;
+        case WM_VSCROLL: {
+            SCROLLINFO info{};
+            info.cbSize = sizeof(info);
+            info.fMask = SIF_ALL;
+            GetScrollInfo(hwnd_, SB_VERT, &info);
+            int pos = scrollY_;
+            switch (LOWORD(wParam)) {
+            case SB_LINEUP: pos -= 32; break;
+            case SB_LINEDOWN: pos += 32; break;
+            case SB_PAGEUP: pos -= static_cast<int>(info.nPage); break;
+            case SB_PAGEDOWN: pos += static_cast<int>(info.nPage); break;
+            case SB_THUMBTRACK: pos = info.nTrackPos; break;
+            default: break;
+            }
+            ScrollTo(pos);
+            return 0;
+        }
+        case WM_MOUSEWHEEL:
+            ScrollTo(scrollY_ - GET_WHEEL_DELTA_WPARAM(wParam) / WHEEL_DELTA * 80);
+            return 0;
+        case WM_LBUTTONUP: {
+            POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+            RECT reminder = Offset(reminderRect_);
+            if (PtInRect(&reminder, point)) {
+                reminderExpanded_ = !reminderExpanded_;
+                if (reminderExpanded_) {
+                    hasReminder_ = true;
+                    SetVisible(timeEdit_, true);
+                }
+                Layout();
+                return 0;
+            }
+            if (reminderExpanded_) {
+                RECT prev = Offset(CalendarPrevRect());
+                RECT next = Offset(CalendarNextRect());
+                RECT yearTitle = Offset(CalendarYearTitleRect());
+                RECT monthTitle = Offset(CalendarMonthTitleRect());
+                if (PtInRect(&prev, point)) {
+                    ChangeCalendarMonth(-1);
+                    return 0;
+                }
+                if (PtInRect(&next, point)) {
+                    ChangeCalendarMonth(1);
+                    return 0;
+                }
+                if (PtInRect(&yearTitle, point)) {
+                    calendarYearPageStart_ = calendarYear_ - ((calendarYear_ - 1900) % 12);
+                    calendarPickerMode_ = calendarPickerMode_ == CalendarPickerMode::Year ? CalendarPickerMode::Day : CalendarPickerMode::Year;
+                    InvalidateRect(hwnd_, nullptr, TRUE);
+                    return 0;
+                }
+                if (PtInRect(&monthTitle, point)) {
+                    calendarPickerMode_ = calendarPickerMode_ == CalendarPickerMode::Month ? CalendarPickerMode::Day : CalendarPickerMode::Month;
+                    InvalidateRect(hwnd_, nullptr, TRUE);
+                    return 0;
+                }
+                const int year = CalendarYearFromPoint(point);
+                if (year > 0) {
+                    SelectCalendarYear(year);
+                    return 0;
+                }
+                const int month = CalendarMonthFromPoint(point);
+                if (month > 0) {
+                    SelectCalendarMonth(month);
+                    return 0;
+                }
+                const int day = CalendarDayFromPoint(point);
+                if (day > 0) {
+                    SelectCalendarDay(day);
+                    return 0;
+                }
+                if (calendarPickerMode_ != CalendarPickerMode::Day) {
+                    calendarPickerMode_ = CalendarPickerMode::Day;
+                    InvalidateRect(hwnd_, nullptr, TRUE);
+                    return 0;
+                }
+            }
             return 0;
         }
         case WM_PAINT: {
             PAINTSTRUCT ps{};
             HDC dc = BeginPaint(hwnd_, &ps);
-            RECT rect{};
-            GetClientRect(hwnd_, &rect);
-            FillRect(dc, &rect, backgroundBrush_ ? backgroundBrush_ : reinterpret_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
-            for (const auto& frame : fields_) {
-                if (frame.child && IsWindowVisible(frame.child)) {
-                    ThemedControls::DrawFieldFrame(theme_, dc, frame.rect, frame.child, !IsWindowEnabled(frame.child));
-                }
-            }
+            Paint(dc);
             EndPaint(hwnd_, &ps);
             return 0;
         }
@@ -953,16 +1597,18 @@ private:
         case WM_CTLCOLOREDIT: {
             HDC dc = reinterpret_cast<HDC>(wParam);
             HWND child = reinterpret_cast<HWND>(lParam);
-            SetTextColor(dc, ToColorRef(theme_.color(L"edit", IsWindowEnabled(child) ? L"normal" : L"disabled", L"text")));
-            SetBkColor(dc, ToColorRef(theme_.color(L"edit", IsWindowEnabled(child) ? L"normal" : L"disabled", L"bg")));
+            SetTextColor(dc, ColorFor(L"edit", IsWindowEnabled(child) ? L"normal" : L"disabled", L"text"));
+            SetBkColor(dc, ColorFor(L"edit", IsWindowEnabled(child) ? L"normal" : L"disabled", L"bg"));
             return reinterpret_cast<LRESULT>(editBrush_ ? editBrush_ : GetStockObject(WHITE_BRUSH));
         }
         case WM_CTLCOLORSTATIC:
         case WM_CTLCOLORLISTBOX:
         case WM_CTLCOLORBTN: {
             HDC dc = reinterpret_cast<HDC>(wParam);
+            HWND child = reinterpret_cast<HWND>(lParam);
             SetBkMode(dc, TRANSPARENT);
-            SetTextColor(dc, ToColorRef(theme_.color(L"label", IsWindowEnabled(reinterpret_cast<HWND>(lParam)) ? L"normal" : L"disabled", L"text")));
+            const bool dangerText = child == titleErrorText_ || child == repeatErrorText_;
+            SetTextColor(dc, dangerText ? ColorFor(L"text", L"danger", L"text") : ColorFor(L"label", IsWindowEnabled(child) ? L"normal" : L"disabled", L"text"));
             return reinterpret_cast<LRESULT>(backgroundBrush_ ? backgroundBrush_ : GetStockObject(WHITE_BRUSH));
         }
         case WM_DRAWITEM:
@@ -972,63 +1618,74 @@ private:
             return 0;
         case WM_COMMAND: {
             const int id = LOWORD(wParam);
-            if (id == IdModeNone) {
-                scheduleEdited_ = initialized_;
-                SelectMode(ReminderMode::None);
-                return 0;
-            }
-            if (id == IdModeOnce) {
-                scheduleEdited_ = initialized_;
-                SelectReminderEnabled(true);
-                return 0;
-            }
-            if (id == IdModeFixedRecurring) {
-                scheduleEdited_ = initialized_;
-                SelectReminderEnabled(true);
-                return 0;
-            }
-            if (id == IdRepeatRule && HIWORD(wParam) == CBN_SELCHANGE) {
-                scheduleEdited_ = initialized_;
-                repeatRule_ = SelectedRepeatRule();
-                SelectRepeatRule(repeatRule_);
-                return 0;
-            }
-            if (HIWORD(wParam) == EN_CHANGE) {
-                if (id >= IdYear && id <= IdSecond) {
-                    scheduleEdited_ = initialized_;
-                }
-                UpdatePreview();
-            }
-            if (LOWORD(wParam) == IDOK) {
+            if (id == IDOK) {
                 Accept();
                 return 0;
             }
-            if (LOWORD(wParam) == IDCANCEL) {
-                done_ = true;
-                DestroyWindow(hwnd_);
+            if (id == IDCANCEL) {
+                if (ConfirmCloseIfDirty()) {
+                    done_ = true;
+                    DestroyWindow(hwnd_);
+                }
                 return 0;
+            }
+            if (id == IdRepeatNone) { SelectRepeatRule(RepeatRule::None); return 0; }
+            if (id == IdRepeatDaily) { SelectRepeatRule(RepeatRule::Daily); return 0; }
+            if (id == IdRepeatWorkday) { SelectRepeatRule(RepeatRule::Workday); return 0; }
+            if (id == IdRepeatWeekly) { SelectRepeatRule(RepeatRule::Weekly); return 0; }
+            if (id == IdRepeatMonthly) { SelectRepeatRule(RepeatRule::Monthly); return 0; }
+            if (id == IdRepeatCustom) { SelectRepeatRule(RepeatRule::Custom); return 0; }
+            if (id >= IdWeekdayBase && id < IdWeekdayBase + 7) {
+                const int index = id - IdWeekdayBase;
+                SetWeekday(index, !weekdaySelected_[index]);
+                return 0;
+            }
+            if (id == IdMonthlyFixed) { SetTabChecked(monthlyFixedButton_, true); return 0; }
+            if (id == IdAdvancedToggle) {
+                advancedExpanded_ = !advancedExpanded_;
+                Layout();
+                return 0;
+            }
+            if (id == IdEndNever) { SelectEndMode(EndMode::Never); return 0; }
+            if (id == IdEndCount) { SelectEndMode(EndMode::Count); return 0; }
+            if (id == IdTitle && HIWORD(wParam) == EN_CHANGE) {
+                UpdateSaveState();
+                if (!Trim(GetText(titleEdit_)).empty() && !titleError_.empty()) {
+                    titleError_.clear();
+                    SetFieldError(titleEdit_, false);
+                    Layout();
+                }
+            }
+            if ((id == IdCustomUnit && HIWORD(wParam) == CBN_SELCHANGE) ||
+                HIWORD(wParam) == EN_CHANGE) {
+                Layout();
             }
             return 0;
         }
         case WM_CLOSE:
-            done_ = true;
-            DestroyWindow(hwnd_);
+            if (ConfirmCloseIfDirty()) {
+                done_ = true;
+                DestroyWindow(hwnd_);
+            }
             return 0;
         case WM_DESTROY:
             done_ = true;
             RestoreModalOwner(owner_, ownerWasEnabled_, ownerRestored_);
+            if (font_) {
+                DeleteObject(font_);
+                font_ = nullptr;
+            }
             if (editFont_) {
                 DeleteObject(editFont_);
+                editFont_ = nullptr;
             }
             if (backgroundBrush_) {
                 DeleteObject(backgroundBrush_);
+                backgroundBrush_ = nullptr;
             }
             if (editBrush_) {
                 DeleteObject(editBrush_);
-            }
-            if (tooltip_) {
-                DestroyWindow(tooltip_);
-                tooltip_ = nullptr;
+                editBrush_ = nullptr;
             }
             return 0;
         default:
@@ -1039,43 +1696,35 @@ private:
     HWND owner_ = nullptr;
     HINSTANCE instance_ = nullptr;
     HWND hwnd_ = nullptr;
+    HWND titleLabel_ = nullptr;
     HWND titleEdit_ = nullptr;
-    HWND contentEdit_ = nullptr;
-    HWND enabledCheck_ = nullptr;
-    HWND modeNone_ = nullptr;
-    HWND modeOnce_ = nullptr;
-    HWND modeFixedRecurring_ = nullptr;
-    HWND loopLabel_ = nullptr;
-    HWND repeatCombo_ = nullptr;
-    HWND advancedButton_ = nullptr;
-    HWND cronLabel_ = nullptr;
-    HWND cronEdit_ = nullptr;
-    HWND cronHint_ = nullptr;
-    std::array<HWND, 7> unitButtons_{};
-    HWND yearEdit_ = nullptr;
-    HWND yearLabel_ = nullptr;
-    HWND monthEdit_ = nullptr;
-    HWND monthLabel_ = nullptr;
-    HWND dayEdit_ = nullptr;
-    HWND dayLabel_ = nullptr;
-    HWND hourEdit_ = nullptr;
-    HWND hourLabel_ = nullptr;
-    HWND minuteEdit_ = nullptr;
-    HWND minuteLabel_ = nullptr;
-    HWND secondEdit_ = nullptr;
-    HWND secondLabel_ = nullptr;
-    HWND weekdayCombo_ = nullptr;
-    HWND timeLabel_ = nullptr;
-    HWND previewText_ = nullptr;
+    HWND titleErrorText_ = nullptr;
     HWND contentLabel_ = nullptr;
+    HWND contentEdit_ = nullptr;
+    HWND reminderButton_ = nullptr;
+    HWND timeEdit_ = nullptr;
+    HWND repeatNone_ = nullptr;
+    HWND repeatDaily_ = nullptr;
+    HWND repeatWorkday_ = nullptr;
+    HWND repeatWeekly_ = nullptr;
+    HWND repeatMonthly_ = nullptr;
+    HWND repeatCustom_ = nullptr;
+    std::array<HWND, 7> weekdayButtons_{};
+    HWND workdayHint_ = nullptr;
+    HWND monthlyFixedButton_ = nullptr;
+    HWND monthlyDayEdit_ = nullptr;
+    HWND monthlyDayLabel_ = nullptr;
+    HWND customPrefix_ = nullptr;
+    HWND customIntervalEdit_ = nullptr;
+    HWND customUnitCombo_ = nullptr;
+    HWND customSuffix_ = nullptr;
+    HWND repeatErrorText_ = nullptr;
+    HWND advancedButton_ = nullptr;
+    HWND endNeverButton_ = nullptr;
+    HWND endCountButton_ = nullptr;
+    HWND endCountEdit_ = nullptr;
     HWND okButton_ = nullptr;
     HWND cancelButton_ = nullptr;
-    TimePart yearPart_{};
-    TimePart monthPart_{};
-    TimePart dayPart_{};
-    TimePart hourPart_{};
-    TimePart minutePart_{};
-    TimePart secondPart_{};
     HFONT font_ = nullptr;
     HFONT editFont_ = nullptr;
     HBRUSH backgroundBrush_ = nullptr;
@@ -1083,19 +1732,30 @@ private:
     const Theme& theme_;
     TodoItem& item_;
     TodoItem draft_;
-    ReminderMode mode_ = ReminderMode::None;
-    TodoScheduleKind unit_ = TodoScheduleKind::Daily;
+    RECT reminderRect_{};
+    RECT calendarRect_{};
+    SYSTEMTIME selectedDate_{};
+    std::array<bool, 7> weekdaySelected_{};
     RepeatRule repeatRule_ = RepeatRule::None;
-    int timeY_ = 148;
-    HWND tooltip_ = nullptr;
+    EndMode endMode_ = EndMode::Never;
+    std::wstring titleError_;
+    std::wstring reminderError_;
+    std::wstring repeatError_;
+    std::wstring initialSnapshot_;
+    int scrollY_ = 0;
+    int contentHeight_ = 0;
+    int repeatLabelY_ = 0;
+    int calendarYear_ = 1900;
+    int calendarMonth_ = 1;
+    int calendarYearPageStart_ = 2020;
     bool isNew_ = false;
+    bool hasReminder_ = false;
+    bool reminderExpanded_ = false;
+    CalendarPickerMode calendarPickerMode_ = CalendarPickerMode::Day;
+    bool advancedExpanded_ = false;
     bool ownerWasEnabled_ = false;
     bool ownerRestored_ = false;
     bool initialized_ = false;
-    bool scheduleEdited_ = false;
-    bool advancedExpanded_ = false;
-    bool cronEdited_ = false;
-    bool updatingCronEdit_ = false;
     bool accepted_ = false;
     bool done_ = false;
     std::vector<FieldFrame> fields_;
