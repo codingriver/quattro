@@ -23,11 +23,6 @@ on:
         options:
           - Release
           - Debug
-      run_tests:
-        description: "Build and run unit tests before packaging"
-        required: true
-        default: true
-        type: boolean
       use_upx:
         description: "Compress packaged exe with UPX"
         required: true
@@ -70,11 +65,9 @@ jobs:
           $isTagBuild = "${{ github.event_name }}" -eq "push"
           $platform = if ($isTagBuild) { "all" } else { "${{ inputs.platform }}" }
           $configuration = if ($isTagBuild) { "Release" } else { "${{ inputs.configuration }}" }
-          $runTests = if ($isTagBuild) { "true" } else { "${{ inputs.run_tests }}" }
           $useUpx = if ($isTagBuild) { "true" } else { "${{ inputs.use_upx }}" }
           $publishRelease = if ($isTagBuild) { "true" } else { "${{ inputs.publish_release }}" }
           $releaseTag = if ($isTagBuild) { "${{ github.ref_name }}" } else { "${{ inputs.release_tag }}" }
-          $runTests = $runTests.ToLowerInvariant()
           $useUpx = $useUpx.ToLowerInvariant()
           $publishRelease = $publishRelease.ToLowerInvariant()
 
@@ -84,7 +77,6 @@ jobs:
 
           "platform=$platform" >> $env:GITHUB_OUTPUT
           "configuration=$configuration" >> $env:GITHUB_OUTPUT
-          "run_tests=$runTests" >> $env:GITHUB_OUTPUT
           "use_upx=$useUpx" >> $env:GITHUB_OUTPUT
           "publish_release=$publishRelease" >> $env:GITHUB_OUTPUT
           "release_tag=$releaseTag" >> $env:GITHUB_OUTPUT
@@ -99,6 +91,10 @@ jobs:
           key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json') }}
           restore-keys: |
             vcpkg-${{ runner.os }}-
+
+      - name: Prepare vcpkg binary cache
+        run: |
+          New-Item -ItemType Directory -Force -Path "$env:VCPKG_DEFAULT_BINARY_CACHE" | Out-Null
 
       - name: Bootstrap vcpkg
         run: |
@@ -116,7 +112,7 @@ jobs:
           path: |
             build-vcpkg-x86
             build-vcpkg-x64
-          key: build-${{ runner.os }}-${{ steps.options.outputs.configuration }}-${{ steps.options.outputs.platform }}-${{ hashFiles('CMakeLists.txt', 'CMakePresets.json', 'vcpkg.json', 'src/**', 'tests/**', 'resources/**', 'theme/**', 'icons/**', 'docs/**', 'plugins/**', 'tools/**') }}
+          key: build-${{ runner.os }}-${{ steps.options.outputs.configuration }}-${{ steps.options.outputs.platform }}-${{ hashFiles('CMakeLists.txt', 'CMakePresets.json', 'vcpkg.json', 'src/**', 'resources/**', 'theme/**', 'icons/**', 'docs/**', 'plugins/**', 'tools/**') }}
           restore-keys: |
             build-${{ runner.os }}-${{ steps.options.outputs.configuration }}-
 
@@ -134,9 +130,6 @@ jobs:
             $args += "-All"
           } else {
             $args += @("-Platform", "${{ steps.options.outputs.platform }}")
-          }
-          if ("${{ steps.options.outputs.run_tests }}" -eq "true") {
-            $args += "-Test"
           }
           if ("${{ steps.options.outputs.use_upx }}" -eq "true") {
             choco install upx -y --no-progress

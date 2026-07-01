@@ -1,277 +1,109 @@
-# Quattro
-
-Windows 10 原生桌面快速启动器。当前工程使用 C++20 + Win32 + Direct2D + DirectWrite，目标是保持轻量、便携和低运行时依赖。
-
-## 当前开发状态
-
-- 已完成 Win32 应用入口、单实例、窗口唤醒。
-- 已完成 `conf.ini` 读取与窗口状态保存；缺失时使用代码内置默认配置。
-- 已完成 Direct2D/DirectWrite 主窗口绘制，包括标题栏、分组栏、标签栏、列表布局和平铺布局。
-- 已完成主窗口布局优化：分组位于顶部横向导航，标签页位于左侧导航，内容区提供清晰空状态。
-- 已完成主题 XML 的基础颜色解析、回退主题和运行期主题切换。
-- 已完成启动项执行入口，支持普通打开、URL 归一化、管理员运行和自定义目录打开命令。
-- 已集成 SQLite amalgamation，静态编译进主程序。
-- 已完成启动项新增、编辑、删除的原生窗口。
-- 已完成启动项新增/编辑窗口的紧凑表单重排。
-- 已完成托盘图标，支持显示/隐藏、退出和新增启动项入口。
-- 已完成启动项图标的内存提取和绘制。
-- 已完成分组、标签新增/编辑/删除。
-- 已完成本地搜索窗口，支持按名称、路径、参数、备注匹配并运行。
-- 已完成搜索结果右键菜单，支持运行、打开所在目录和复制路径。
-- 已完成主窗口/搜索热键注册入口，读取 `nMainHotKey`、`nSearchHotKey`。
-- 已完成右键菜单增强：运行、编辑、删除、打开所在目录、复制路径。
-- 已完成拖拽导入、剪贴板导入和基础设置窗口。
-- 已完成 OLE 拖拽导入，支持文件列表、Unicode 文本/URL 和 Shell IDList，保留 `WM_DROPFILES` 降级路径。
-- 已完成自动停靠贴边隐藏、鼠标靠近恢复、失焦隐藏、延迟停靠和全屏前台窗口避让。
-- 已扩展设置窗口，覆盖常用显示、窗口行为、运行统计、热键和打开目录命令。
-- 已完成标签内排序：按位置、运行次数、名称；支持标签级列表/平铺布局和图标尺寸切换。
-- 已完成首字母式轻量排序键：英文按首字母，数字按数字组，中文和其他字符稳定排序。
-- 已完成特殊标签：`全部` 汇总当前分组启动项，`待办` 汇总含待办标记的启动项。
-- 已完成文件图标缓存：URL 图标从 `icons/url` 读取，程序/文件/文件夹图标运行时缓存到 `icons/cache`。
-- 已完成设置页热键录入和清除。
-- 已完成启动项移动到标签、复制到标签，以及分组、标签、启动项上移/下移。
-- 已完成开机自启动同步、启动项热键直接运行、内部复制/剪切/粘贴、图标缓存清理、帮助/关于/检查更新入口、日志、启动报告、验证脚本和打包脚本。
-- 已完成配置化帮助/更新/FAQ/赞助链接、启动失败修复入口、单项图标刷新、系统位置启动项类型。
-- 已完成 Shell/PIDL 深度兼容：`Links.Pidl` 读写、PIDL 校验、虚拟 Shell 对象打开、路径失效兜底和打开所在位置。
-- 已完成单 exe 发布模式：默认资源内嵌到程序，首次运行时自动释放缺失的主题、URL 图标和文档；配置和数据库在运行时按需生成。
-- 已完成插件商店基础能力：内置工具启用/禁用、声明式商店索引、启动项包安装/删除、插件贡献追踪和安全路径校验。
-- 已完成首批内置工具插件：连点器、计时器、秒表。
-- 已完成轻量单元测试目标，覆盖配置、工具函数、Storage CRUD、PIDL BLOB 回读和 Launcher 目标识别。
-- 已完成兼容测试报告，记录系统、DPI、显示器、权限、拖拽支持、冒烟和打包结果。
-
-## 构建、测试与打包
-
-要求：
+# Quattro快速启动器
 
-- Windows 10
-- Visual Studio 2022，安装 C++ 桌面开发工作负载
-- CMake 3.20+
-- PowerShell 5+
+Quattro 是一个 Windows 桌面快速启动器，用来集中管理常用软件、文件、文件夹、网址和系统位置。它追求轻量、便携、打开快，适合把每天反复使用的入口收进一个紧凑的小面板里。
 
-### 普通构建
+## 快速开始
 
-首次配置 x64 构建目录：
+1. 下载并运行 `Quattro-x64.exe`。
+2. 第一次启动后，右键托盘图标或主窗口空白处添加启动项。
+3. 把常用程序、文件、文件夹、网址拖进窗口，也可以复制路径或网址后从菜单导入。
+4. 用分组和标签整理入口，例如“工作”“工具”“文档”“常用网址”。
+5. 在设置里配置主窗口热键和搜索热键，之后就可以随时呼出 Quattro。
 
-```powershell
-cmake -S . -B build -G "Visual Studio 17 2022" -A x64
-```
+Quattro 默认使用单 exe 方式分发。首次运行会自动释放缺失的默认主题、菜单图标和插件商店索引；配置和数据库会在本机运行目录或用户数据目录中生成。
 
-编译 Release：
+## 常用功能
 
-```powershell
-cmake --build build --config Release -- /m
-```
+- 快速启动：支持打开程序、文件、文件夹、网址和 Windows 系统位置。
+- 分组和标签：用顶部分组和侧边标签管理大量启动项。
+- 搜索运行：按名称、路径、参数、备注搜索启动项并直接运行。
+- 拖拽导入：支持拖入文件、文件夹、文本、URL 和 Shell 对象。
+- 右键操作：运行、编辑、删除、复制路径、打开所在目录、移动到标签、复制到标签。
+- 图标显示：自动提取程序、文件、文件夹图标；URL 可使用本地图标；系统功能带菜单图标。
+- 多种视图：标签内支持列表和平铺布局，也可以调整图标大小。
+- 排序管理：支持按位置、运行次数、名称排序，并提供上移、下移等手动整理方式。
+- 热键呼出：可设置主窗口热键、搜索热键和单个启动项热键。
+- 托盘常驻：可从托盘显示/隐藏主窗口、添加启动项或退出。
+- 开机自启：在设置中启用或关闭随系统启动。
+- 运行统计：记录启动项使用次数，方便按使用频率整理。
 
-常用产物：
+## 亮点功能
 
-```text
-build/Release/Quattro.exe
-build/Release/QuattroTests.exe
-build/Release/QuattroDbProbe.exe
-build/Release/QuattroDbSeed.exe
-```
+- 贴边隐藏：窗口可自动停靠到屏幕边缘，鼠标靠近时恢复，减少桌面占用。
+- 失焦隐藏：切到其他窗口后自动收起，适合做随叫随到的轻量启动面板。
+- 全部标签：自动汇总当前分组下所有启动项。
+- 待办标签：可把启动项标记为待办，并集中查看。
+- 待办提醒：支持待办启用、禁用和提醒时间。
+- Shell 兼容：支持控制面板、系统位置、虚拟 Shell 对象等不只是普通文件路径的入口。
+- 管理员运行：启动项可配置为以管理员身份运行。
+- 自定义打开目录命令：可按自己的文件管理器习惯打开所在目录。
+- WebDAV 备份恢复：可配置 WebDAV，用于配置包备份、恢复和迁移。
+- 插件商店：内置工具和声明式启动项包可通过插件商店安装、启用、禁用或删除。
+- 内置小工具：提供连点器、计时器、秒表等轻量工具。
+- 主题系统：通过主题文件统一控制文字、面板、按钮、列表、菜单等公共组件样式。
 
-如果使用平台专用构建目录，项目约定为：
+## 基础用法
 
-```powershell
-cmake -S . -B build-x64 -G "Visual Studio 17 2022" -A x64
-cmake --build build-x64 --config Release -- /m
+### 添加启动项
 
-cmake -S . -B build-x86 -G "Visual Studio 17 2022" -A Win32
-cmake --build build-x86 --config Release -- /m
-```
+可以通过以下方式添加：
 
-构建时会自动生成内嵌默认资源。默认资源来自 `README.md`，以及存在时的 `theme/`、`icons/menu/`、`icons/url/`、`docs/`。`conf.ini` 是运行时本地配置文件，缺失时使用代码默认值并在保存设置时生成；`db/link.db` 缺失时会自动创建表结构和默认分组/标签。
+- 把文件、文件夹或快捷方式拖进 Quattro。
+- 复制网址或路径后使用导入入口。
+- 在窗口菜单中选择新增启动项。
+- 在插件商店安装声明式启动项包。
 
-### 测试
+添加后可以编辑名称、路径、参数、备注、图标、运行方式和待办信息。
 
-运行完整验证：
+### 整理启动项
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\tools\run-tests.ps1 -Package
-```
+推荐按“场景”建立分组，再按“用途”建立标签。例如：
 
-`run-tests.ps1` 会执行：
+- 工作：项目、文档、后台、常用系统工具。
+- 个人：网址、影音、素材、下载目录。
+- 维护：控制面板、服务、注册表、终端、备份入口。
 
-- 配置并编译 `build/Release`
-- 运行 `QuattroTests.exe` 单元测试
-- 运行 UI 冒烟测试
-- 运行菜单测试
-- 运行滚动测试
-- 运行弹窗显示测试
-- 扫描已移除或敏感实现词
-- 当传入 `-Package` 时，额外调用打包脚本生成发布包
+启动项可以在标签之间移动或复制；标签内可以切换列表/平铺布局，并按名称、运行次数或手动顺序整理。
 
-测试日志和兼容报告输出到：
+### 搜索和运行
 
-```text
-build/Release/logs/
-build/Release/logs/compatibility-report.txt
-```
+配置搜索热键后，可以直接呼出搜索窗口。搜索会匹配启动项名称、路径、参数和备注。搜索结果支持直接运行，也支持右键打开所在目录或复制路径。
 
-只运行单元测试时，可以先构建，再直接执行：
+### 备份迁移
 
-```powershell
-.\build\Release\QuattroTests.exe
-```
+Quattro 的配置、启动项数据、插件贡献和 URL 图标可通过配置包导入导出。需要多设备同步时，可以在设置中配置 WebDAV 备份恢复。
 
-### 冒烟测试
+## 文件和数据
 
-只跑主窗口和托盘行为冒烟测试：
+- `conf.ini`：本机配置，保存窗口、热键、行为和显示设置。
+- `db/link.db`：启动项、分组、标签、插件贡献等数据。
+- `icons/cache/`：运行时生成的图标缓存。
+- `icons/url/`：可放置自定义 URL 图标。
+- `theme/default.xml`：默认主题。
+- `plugins/store/index.json`：默认插件商店索引。
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\tools\run-ui-smoke.ps1 -ExePath .\build\Release\Quattro.exe
-```
+如果 exe 所在目录不可写，Quattro 会使用当前用户本地数据目录保存运行时文件。
 
-如果省略 `-ExePath`，脚本默认使用 `build/<Configuration>/Quattro.exe`：
+## 常见问题
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\tools\run-ui-smoke.ps1 -Configuration Release
-```
+### 为什么第一次运行会生成一些文件夹？
 
-独立 UI 测试脚本：
+Quattro 是便携应用，但需要保存你的配置、启动项数据库、图标缓存和默认资源。首次运行时会自动生成缺失目录。
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\tools\run-menu-tests.ps1 -ExePath .\build\Release\Quattro.exe -ProbePath .\build\Release\QuattroDbProbe.exe
-powershell -ExecutionPolicy Bypass -File .\tools\run-scroll-tests.ps1 -ExePath .\build\Release\Quattro.exe -SeedPath .\build\Release\QuattroDbSeed.exe
-powershell -ExecutionPolicy Bypass -File .\tools\run-dialog-display-tests.ps1 -ExePath .\build\Release\Quattro.exe
-```
+### URL 没有网站图标怎么办？
 
-这些脚本会启动真实 `Quattro.exe`，通过 Win32 消息和窗口枚举验证基础交互。运行前建议关闭已运行的 Quattro 实例，避免单实例唤醒影响测试。
+可以把 `.png` 或 `.ico` 图标放入 `icons/url/`，文件名使用网站 host，例如 `example.com.png`。没有自定义图标时会使用系统或默认图标。
 
-### 打包
+### 程序不能覆盖更新怎么办？
 
-一键打包，默认只构建并打包 `dist` 内的 64 位主程序，不构建测试程序和辅助工具，也不运行测试：
+如果 Quattro 正在运行，Windows 会锁定 exe。先从托盘退出 Quattro，再替换新版 exe。
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\tools\build.ps1
-```
+### 可以只带一个 exe 使用吗？
 
-打包前构建测试程序和辅助工具，并运行单元测试：
+可以。默认发布包就是单 exe。缺失的默认资源会在首次运行时释放，配置和数据库按需创建。
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\tools\build.ps1 --test
-```
-
-执行旧默认的根目录单 exe 打包流程：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\tools\build.ps1 -FlatPackage
-```
-
-生成 32 位和 64 位单 exe：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\tools\build.ps1 --all
-```
-
-只打 32 位：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\tools\build.ps1 -Platform x86
-```
-
-清理后重新打包：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\tools\build.ps1 -Clean
-```
-
-生成传统目录包：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\tools\build.ps1 -FullPackage
-```
-
-使用 UPX 压缩发布 exe 后再生成 zip：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\tools\build.ps1 -Upx
-```
-
-如果 `upx.exe` 不在 `PATH` 中，可以显式指定路径：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\tools\build.ps1 -Upx -UpxPath C:\tools\upx\upx.exe
-```
-
-兼容旧命令；默认已不运行单元测试：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\tools\build.ps1 -SkipTests
-```
-
-查看帮助：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\tools\build.ps1 --help
-```
-
-脚本每次执行只清理并覆盖本次目标产物，完成后在控制台列出本次生成的 `artifacts` 绝对路径。
-
-默认产物：
-
-```text
-dist/Quattro-x64.exe
-dist/Quattro-x64.zip
-```
-
-`--all` 会同时生成 `dist/Quattro-x86.exe`、`dist/Quattro-x64.exe` 和对应 zip；`-FullPackage` 会额外生成传统目录包。
-
-默认发布包可以只分发 `dist/Quattro-x64.exe`。需要旧默认产物 `dist/Quattro.exe` 和 `dist/Quattro.zip` 时使用 `-FlatPackage`。程序首次运行会在可写目录释放缺失资源；如果 exe 同级目录不可写，会使用当前用户本地数据目录。
-
-传入 `-Upx` 时，脚本只压缩复制到 `dist` 的发布 exe，不会修改 `build-*` 目录中的原始编译产物；zip 会基于压缩后的 exe 创建。
-
-如果本次目标 exe 正在运行，Windows 会锁定文件导致覆盖失败；先退出 Quattro 后再打包即可。
-
-### GitHub Actions 自动发布
-
-仓库提供 `.github/workflows/package-release.yml` 用于 CI 打包发布：
-
-- 推送 `v*` 标签时自动打包 `x86` 和 `x64`，上传 Actions artifact，并创建或更新同名 GitHub Release。
-- 在 GitHub 的 `Actions` 页面手动运行 `Package and Release` 时，可以选择平台、构建配置、是否运行单元测试、是否使用 UPX，以及是否发布 Release；`use_upx` 默认开启。
-- GitHub Actions 打包固定使用单 exe 模式且不生成 zip，默认产物会经过 UPX 压缩；手动运行即使不发布 Release，也会上传 `dist` 下生成的 exe，作为手动打包入口。
-- GitHub Release 附件同样只发布 exe，例如 `Quattro-x64.exe`、`Quattro-x86.exe`。
-
-自动发布示例：
-
-```powershell
-git tag v1.0.0
-git push origin v1.0.0
-```
-
-手动发布 Release 时，需要勾选 `publish_release` 并填写 `release_tag`，例如 `v1.0.0`。
-
-## SQLite
-
-SQLite 使用官方 amalgamation 静态编译到 `Quattro.exe`，无需额外携带 `sqlite3.dll`。业务数据只使用运行时生成的 `db/link.db`；图标缓存使用 `icons/cache/*.png` 文件，不使用单独的图标数据库。
-
-## 插件商店
-
-插件商店入口位于主菜单。当前支持：
-
-- 内置工具插件：连点器、计时器、秒表，可启用/禁用。
-- 声明式启动项包：从 `plugins/store/index.json` 或 `PluginStoreUrl` 指向的远程 manifest/index 读取，安装后创建分组、标签和启动项。
-- 产品化商店列表：显示名称、版本、状态、分类，支持未安装/已安装/已启用/已禁用筛选、滚动和分页。
-- 插件详情提示：悬浮插件列表行时显示添加时间、远程链接、主页、作者和权限等信息。
-- 插件贡献追踪：删除普通插件时会移除它创建的启动项和资源文件。
-
-默认示例商店会随单 exe 首次运行释放到：
-
-```text
-plugins/store/index.json
-```
-
-插件格式和安全边界见 `docs/plugin-store.md`。
-
-## 下一步
-
-- 外部文件索引集成已延期，详见需求 TODO 文档。
-- 增加更多实机兼容测试样本。
-
-## 参考说明
+## 图标说明
 
 - 菜单本地图标库使用 Tabler Icons Webfont 3.44.0，项目内文件位于 `icons/menu/tabler/`。
-- Tabler Icons 使用 MIT License；许可证文本已随图标库保存为 `icons/menu/tabler/LICENSE`。
+- Tabler Icons 使用 MIT License；许可证文本随图标库保存为 `icons/menu/tabler/LICENSE`。
 - 图标来源参考：https://tabler.io/icons 和 https://www.jsdelivr.com/package/npm/@tabler/icons-webfont
-

@@ -37,7 +37,7 @@ Options:
   -Platform x86|x64        Build a single platform. Default: x64.
   -Configuration <name>    Build configuration. Default: Release.
   -Clean                   Remove the selected build directory before configure.
-  -Test                    Build test/helper tools and run unit tests before packaging.
+  -Test                    Build local test/helper tools and run unit tests before packaging. Requires local tests/ sources.
   -SkipTests               Compatibility no-op; tests are skipped unless -Test is specified.
   -NoZip                   Create package directories only, without zip archives.
   -FullPackage             Include external resource folders beside the exe.
@@ -85,7 +85,8 @@ function Ensure-Configured {
         [string]$BuildDir,
         [string]$CMakePlatform,
         [string]$VcpkgTriplet = "",
-        [switch]$UseVcpkg
+        [switch]$UseVcpkg,
+        [switch]$BuildTests
     )
 
     $cache = Join-Path $BuildDir "CMakeCache.txt"
@@ -95,8 +96,10 @@ function Ensure-Configured {
         $expectedSource = "CMAKE_HOME_DIRECTORY:INTERNAL=$($root.Replace('\', '/'))"
         $expectedToolchain = "CMAKE_TOOLCHAIN_FILE:FILEPATH=$($root.Replace('\', '/'))/.vcpkg-root/scripts/buildsystems/vcpkg.cmake"
         $expectedTriplet = "VCPKG_TARGET_TRIPLET:STRING=$VcpkgTriplet"
+        $expectedTestOption = "QUATTRO_BUILD_TESTS:BOOL=ON"
         if ($cacheText -notmatch [regex]::Escape($expected) -or
             $cacheText -notmatch [regex]::Escape($expectedSource) -or
+            ($BuildTests -and $cacheText -notmatch [regex]::Escape($expectedTestOption)) -or
             ($UseVcpkg -and ($cacheText -notmatch [regex]::Escape($expectedToolchain) -or
                              $cacheText -notmatch [regex]::Escape($expectedTriplet)))) {
             Remove-DirectoryRobust -Path $BuildDir
@@ -114,6 +117,9 @@ function Ensure-Configured {
                 "-DCMAKE_TOOLCHAIN_FILE=$($toolchain.Replace('\', '/'))",
                 "-DVCPKG_TARGET_TRIPLET=$VcpkgTriplet"
             )
+        }
+        if ($BuildTests) {
+            $configureArgs += "-DQUATTRO_BUILD_TESTS=ON"
         }
         & cmake @configureArgs
     }
@@ -267,6 +273,10 @@ if ($Test -and $SkipTests) {
     throw "-Test and -SkipTests cannot be used together."
 }
 
+if ($Test -and !(Test-Path (Join-Path $root "tests\UnitTests.cpp"))) {
+    throw "-Test requires local tests/ sources, which are intentionally not part of the public repository."
+}
+
 if ($FlatPackage -and ($All -or $Platform -ne "x64" -or $FullPackage)) {
     throw "-FlatPackage can only be used with the default x64 single-exe package flow."
 }
@@ -292,7 +302,7 @@ foreach ($arch in $architectures) {
     }
 
     Remove-LegacyBuildOutputs -OutputDir (Join-Path $buildDir $Configuration)
-    Ensure-Configured -BuildDir $buildDir -CMakePlatform $arch.CMakePlatform -VcpkgTriplet $arch.VcpkgTriplet -UseVcpkg:$useVcpkg
+    Ensure-Configured -BuildDir $buildDir -CMakePlatform $arch.CMakePlatform -VcpkgTriplet $arch.VcpkgTriplet -UseVcpkg:$useVcpkg -BuildTests:$Test
     Invoke-PackageBuild -BuildDir $buildDir -IncludeTestTools:$Test
     Remove-LegacyBuildOutputs -OutputDir (Join-Path $buildDir $Configuration)
 

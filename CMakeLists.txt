@@ -6,6 +6,8 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+option(QUATTRO_BUILD_TESTS "Build local Quattro test tools" OFF)
+
 find_package(CURL QUIET)
 find_package(pugixml CONFIG QUIET)
 
@@ -120,6 +122,27 @@ set_target_properties(Quattro PROPERTIES
     OUTPUT_NAME "Quattro"
 )
 
+target_compile_definitions(Quattro PRIVATE
+    UNICODE
+    _UNICODE
+    WINVER=0x0A00
+    _WIN32_WINNT=0x0A00
+    NOMINMAX
+)
+
+if(QUATTRO_WITH_WEBDAV_LIBS)
+    target_compile_definitions(Quattro PRIVATE QUATTRO_WITH_WEBDAV_LIBS)
+endif()
+
+target_compile_options(Quattro PRIVATE
+    $<$<CXX_COMPILER_ID:MSVC>:/W4 /permissive- /EHsc /utf-8>
+)
+
+target_include_directories(Quattro PRIVATE
+    src
+)
+
+if(QUATTRO_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/UnitTests.cpp")
 add_executable(QuattroTests
     tests/UnitTests.cpp
     src/Config.cpp
@@ -189,14 +212,6 @@ add_executable(QuattroWebDavAcceptance
     src/WebDavRecoveryService.cpp
 )
 
-target_compile_definitions(Quattro PRIVATE
-    UNICODE
-    _UNICODE
-    WINVER=0x0A00
-    _WIN32_WINNT=0x0A00
-    NOMINMAX
-)
-
 target_compile_definitions(QuattroTests PRIVATE
     UNICODE
     _UNICODE
@@ -246,14 +261,9 @@ target_compile_definitions(QuattroWebDavAcceptance PRIVATE
 )
 
 if(QUATTRO_WITH_WEBDAV_LIBS)
-    target_compile_definitions(Quattro PRIVATE QUATTRO_WITH_WEBDAV_LIBS)
     target_compile_definitions(QuattroTests PRIVATE QUATTRO_WITH_WEBDAV_LIBS)
     target_compile_definitions(QuattroWebDavAcceptance PRIVATE QUATTRO_WITH_WEBDAV_LIBS)
 endif()
-
-target_compile_options(Quattro PRIVATE
-    $<$<CXX_COMPILER_ID:MSVC>:/W4 /permissive- /EHsc /utf-8>
-)
 
 target_compile_options(QuattroTests PRIVATE
     $<$<CXX_COMPILER_ID:MSVC>:/W4 /permissive- /EHsc /utf-8>
@@ -277,10 +287,6 @@ target_compile_options(QuattroThemeStateProbe PRIVATE
 
 target_compile_options(QuattroWebDavAcceptance PRIVATE
     $<$<CXX_COMPILER_ID:MSVC>:/W4 /permissive- /EHsc /utf-8>
-)
-
-target_include_directories(Quattro PRIVATE
-    src
 )
 
 target_include_directories(QuattroThemeStateProbe PRIVATE
@@ -344,6 +350,9 @@ target_link_libraries(QuattroWebDavAcceptance PRIVATE
 
 if(QUATTRO_WITH_WEBDAV_LIBS)
     target_link_libraries(QuattroWebDavAcceptance PRIVATE CURL::libcurl pugixml::pugixml)
+endif()
+elseif(QUATTRO_BUILD_TESTS)
+    message(WARNING "QUATTRO_BUILD_TESTS is ON, but local tests/ sources were not found. Test targets will be skipped.")
 endif()
 
 target_link_libraries(Quattro PRIVATE

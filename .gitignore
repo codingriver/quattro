@@ -11,6 +11,12 @@
 /db/
 /logs/
 /icons/
+!/icons/
+/icons/*
+!/icons/menu/
+/icons/menu/*
+!/icons/menu/tabler/
+!/icons/menu/tabler/**
 /docs/
 
 /resources/icons/quattro-app-icon.png
@@ -59,6 +65,13 @@
 *.log
 *.tmp
 *.temp
+
+# Local/manual test scripts
+/tests/
+/tools/run-tests.ps1
+/tools/run-*-tests.ps1
+/tools/run-ui-smoke.ps1
+/tools/run-note-todo-acceptance.ps1
 
 # Local tool caches
 /.wrangler/
