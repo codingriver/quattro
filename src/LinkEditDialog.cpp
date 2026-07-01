@@ -1,5 +1,7 @@
 #include "LinkEditDialog.h"
 
+#include "../resources/resource.h"
+
 #include "AppLog.h"
 #include "HotKeyEditor.h"
 #include "ShellItemService.h"
@@ -114,6 +116,8 @@ public:
         wc.lpfnWndProc = DialogWindow::WindowProc;
         wc.hInstance = instance_;
         wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+        wc.hIcon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_QUATTRO_APP_ICON));
+        wc.hIconSm = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_QUATTRO_APP_ICON));
         wc.hbrBackground = nullptr;
         wc.lpszClassName = L"QuattroLinkEditDialog";
         RegisterClassExW(&wc);

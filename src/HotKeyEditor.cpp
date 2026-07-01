@@ -1,5 +1,7 @@
 #include "HotKeyEditor.h"
 
+#include "../resources/resource.h"
+
 #include "ThemedControls.h"
 #include "Utilities.h"
 
@@ -23,6 +25,8 @@ private:
         wc.lpfnWndProc = HotKeyCapture::Proc;
         wc.hInstance = instance_;
         wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+        wc.hIcon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_QUATTRO_APP_ICON));
+        wc.hIconSm = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_QUATTRO_APP_ICON));
         wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
         wc.lpszClassName = L"QuattroHotKeyCaptureDialog";
         RegisterClassExW(&wc);

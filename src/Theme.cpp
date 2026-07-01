@@ -525,7 +525,7 @@ void Theme::SetDefaults() {
     PutMetric(L"title", L"iconLeft", 9.0f);
     PutMetric(L"title", L"iconTop", 7.0f);
     PutMetric(L"title", L"textGap", 7.0f);
-    PutMetric(L"title", L"textEnd", 134.0f);
+    PutMetric(L"title", L"textEnd", 178.0f);
     PutMetric(L"majorNav", L"height", 34.0f);
     PutMetric(L"majorNavItem", L"offsetX", 4.0f);
     PutMetric(L"majorNavItem", L"minWidth", 72.0f);

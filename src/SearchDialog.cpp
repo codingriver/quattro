@@ -1,5 +1,7 @@
 #include "SearchDialog.h"
 
+#include "../resources/resource.h"
+
 #include "ShellItemService.h"
 #include "ThemedControls.h"
 #include "Utilities.h"
@@ -79,6 +81,8 @@ public:
         wc.lpfnWndProc = SearchWindow::Proc;
         wc.hInstance = instance_;
         wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+        wc.hIcon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_QUATTRO_APP_ICON));
+        wc.hIconSm = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_QUATTRO_APP_ICON));
         wc.hbrBackground = nullptr;
         wc.lpszClassName = L"QuattroSearchDialog";
         RegisterClassExW(&wc);

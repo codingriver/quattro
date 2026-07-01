@@ -60,6 +60,7 @@ constexpr const wchar_t* kTooltipBorderProp = L"QuattroTooltipBorder";
 constexpr const wchar_t* kTooltipPaddingXProp = L"QuattroTooltipPaddingX";
 constexpr const wchar_t* kTooltipPaddingYProp = L"QuattroTooltipPaddingY";
 constexpr const wchar_t* kTooltipLineGapProp = L"QuattroTooltipLineGap";
+constexpr const wchar_t* kAppDisplayName = L"Quattro快速启动器";
 
 template <typename T>
 void SafeRelease(T*& value) {
@@ -1089,7 +1090,7 @@ std::optional<std::wstring> CurrentMasterVolumeText() {
 std::wstring SafeFileName(std::wstring name) {
     name = Trim(name);
     if (name.empty()) {
-        name = L"Quattro";
+        name = kAppDisplayName;
     }
     for (wchar_t& ch : name) {
         if (ch == L'<' || ch == L'>' || ch == L':' || ch == L'"' ||
@@ -1320,7 +1321,7 @@ bool MainWindow::Create() {
     hwnd_ = CreateWindowExW(
         WS_EX_APPWINDOW | WS_EX_LAYERED,
         wc.lpszClassName,
-        L"Quattro",
+        kAppDisplayName,
         style,
         position.x,
         position.y,
@@ -3537,7 +3538,7 @@ bool MainWindow::EnsureNotificationIcon() {
     data.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
     data.uCallbackMessage = WM_QUATTRO_TRAY;
     data.hIcon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_QUATTRO_APP_ICON));
-    wcscpy_s(data.szTip, L"Quattro");
+    wcscpy_s(data.szTip, kAppDisplayName);
     if (Shell_NotifyIconW(NIM_ADD, &data)) {
         trayIconVisible_ = true;
     }
@@ -3751,7 +3752,7 @@ void MainWindow::OnUrlIconDownloaded(int linkId, bool success) {
 void MainWindow::ShowAbout() {
     const std::wstring privilegeText = runningAsAdmin_ ? L"管理员" : L"普通用户";
     const std::wstring message =
-        L"Quattro\n\n轻量级 Windows 快速启动工具\nC++ / Win32 / Direct2D / DirectWrite\n\n当前权限：" + privilegeText;
+        std::wstring(kAppDisplayName) + L"\n\n轻量级 Windows 快速启动工具\nC++ / Win32 / Direct2D / DirectWrite\n\n开源仓库：https://github.com/codingriver/quattro\n当前权限：" + privilegeText;
     MessageBoxW(
         hwnd_,
         message.c_str(),
@@ -4083,7 +4084,7 @@ void MainWindow::ExportConfigPackage() {
     ofn.hwndOwner = hwnd_;
     ofn.lpstrFile = buffer.data();
     ofn.nMaxFile = static_cast<DWORD>(buffer.size());
-    ofn.lpstrFilter = L"Quattro 配置包 (*.q4cfg)\0*.q4cfg\0所有文件\0*.*\0";
+    ofn.lpstrFilter = L"Quattro快速启动器 配置包 (*.q4cfg)\0*.q4cfg\0所有文件\0*.*\0";
     ofn.lpstrDefExt = L"q4cfg";
     ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
     if (!GetSaveFileNameW(&ofn)) {
@@ -4110,7 +4111,7 @@ void MainWindow::ImportConfigPackageMerge() {
     ofn.hwndOwner = hwnd_;
     ofn.lpstrFile = buffer.data();
     ofn.nMaxFile = static_cast<DWORD>(buffer.size());
-    ofn.lpstrFilter = L"Quattro 配置包 (*.q4cfg)\0*.q4cfg\0所有文件\0*.*\0";
+    ofn.lpstrFilter = L"Quattro快速启动器 配置包 (*.q4cfg)\0*.q4cfg\0所有文件\0*.*\0";
     ofn.lpstrDefExt = L"q4cfg";
     ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
     if (!GetOpenFileNameW(&ofn)) {
@@ -4432,7 +4433,7 @@ void MainWindow::InitializeTrayIcon() {
     data.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
     data.uCallbackMessage = WM_QUATTRO_TRAY;
     data.hIcon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_QUATTRO_APP_ICON));
-    wcscpy_s(data.szTip, L"Quattro");
+    wcscpy_s(data.szTip, kAppDisplayName);
     if (Shell_NotifyIconW(NIM_ADD, &data)) {
         trayIconVisible_ = true;
     }
@@ -5242,7 +5243,7 @@ void MainWindow::DrawTitle(D2D1_RECT_F rect) {
     const float titleTextEnd = std::max(appIcon.right, std::min(titleTextDesiredEnd, titleTextMaxEnd));
     D2D1_RECT_F nameRect = D2D1::RectF(appIcon.right + Metric(theme_, L"title", L"textGap", 7.0f), rect.top, titleTextEnd, rect.bottom);
     titleFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
-    DrawTextBlock(L"Quattro", titleFormat_, nameRect, theme_.color(L"title", L"normal", L"text"));
+    DrawTextBlock(kAppDisplayName, titleFormat_, nameRect, theme_.color(L"title", L"normal", L"text"));
 
     if (config_.showDate) {
         D2D1_RECT_F dateRect = D2D1::RectF(titleTextEnd, rect.top, rect.right - buttonReserve, rect.bottom);

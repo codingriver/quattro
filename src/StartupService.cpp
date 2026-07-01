@@ -7,11 +7,25 @@
 #include <windows.h>
 
 namespace {
+constexpr const wchar_t* kAppDisplayName = L"Quattro快速启动器";
+constexpr const wchar_t* kStartupShortcutName = L"Quattro快速启动器.lnk";
+constexpr const wchar_t* kLegacyStartupShortcutName = L"Quattro.lnk";
+
 std::filesystem::path StartupShortcutPath() {
     PWSTR folder = nullptr;
     std::filesystem::path result;
     if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Startup, KF_FLAG_CREATE, nullptr, &folder)) && folder) {
-        result = std::filesystem::path(folder) / L"Quattro.lnk";
+        result = std::filesystem::path(folder) / kStartupShortcutName;
+        CoTaskMemFree(folder);
+    }
+    return result;
+}
+
+std::filesystem::path LegacyStartupShortcutPath() {
+    PWSTR folder = nullptr;
+    std::filesystem::path result;
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Startup, KF_FLAG_CREATE, nullptr, &folder)) && folder) {
+        result = std::filesystem::path(folder) / kLegacyStartupShortcutName;
         CoTaskMemFree(folder);
     }
     return result;
@@ -27,7 +41,7 @@ bool CreateShortcut(const std::filesystem::path& shortcutPath, const std::filesy
 
     shellLink->SetPath(exePath.c_str());
     shellLink->SetWorkingDirectory(exePath.parent_path().c_str());
-    shellLink->SetDescription(L"Quattro");
+    shellLink->SetDescription(kAppDisplayName);
     shellLink->SetIconLocation(exePath.c_str(), 0);
 
     IPersistFile* persistFile = nullptr;
@@ -61,7 +75,14 @@ bool SyncStartupShortcut(const std::filesystem::path& appDirectory, bool enabled
             error = L"无法创建 Startup 目录。";
             return false;
         }
-        return CreateShortcut(shortcutPath, appDirectory / L"Quattro.exe", error);
+        const bool created = CreateShortcut(shortcutPath, appDirectory / L"Quattro.exe", error);
+        if (created) {
+            const std::filesystem::path legacyShortcutPath = LegacyStartupShortcutPath();
+            if (!legacyShortcutPath.empty() && legacyShortcutPath != shortcutPath) {
+                std::filesystem::remove(legacyShortcutPath, ec);
+            }
+        }
+        return created;
     }
 
     if (std::filesystem::exists(shortcutPath, ec)) {
@@ -71,11 +92,23 @@ bool SyncStartupShortcut(const std::filesystem::path& appDirectory, bool enabled
             return false;
         }
     }
+    const std::filesystem::path legacyShortcutPath = LegacyStartupShortcutPath();
+    if (!legacyShortcutPath.empty() && std::filesystem::exists(legacyShortcutPath, ec)) {
+        std::filesystem::remove(legacyShortcutPath, ec);
+        if (ec) {
+            error = L"删除旧开机自启动快捷方式失败。";
+            return false;
+        }
+    }
     return true;
 }
 
 bool StartupShortcutExists(const std::filesystem::path&) {
     std::error_code ec;
     const std::filesystem::path shortcutPath = StartupShortcutPath();
-    return !shortcutPath.empty() && std::filesystem::is_regular_file(shortcutPath, ec);
+    if (!shortcutPath.empty() && std::filesystem::is_regular_file(shortcutPath, ec)) {
+        return true;
+    }
+    const std::filesystem::path legacyShortcutPath = LegacyStartupShortcutPath();
+    return !legacyShortcutPath.empty() && std::filesystem::is_regular_file(legacyShortcutPath, ec);
 }

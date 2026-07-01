@@ -275,7 +275,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     MainWindow window(instance, appDirectory, configService, storageService, config, model, theme);
     if (!window.Create()) {
         WriteAppLog(L"主窗口初始化失败。");
-        MessageBoxW(nullptr, L"主窗口初始化失败。", L"Quattro", MB_ICONERROR | MB_OK);
+        MessageBoxW(nullptr, L"主窗口初始化失败。", L"Quattro快速启动器", MB_ICONERROR | MB_OK);
         if (SUCCEEDED(ole)) {
             OleUninitialize();
         }

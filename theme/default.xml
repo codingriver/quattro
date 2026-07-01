@@ -77,7 +77,7 @@
         <Metric name="iconLeft" value="9"/>
         <Metric name="iconTop" value="7"/>
         <Metric name="textGap" value="7"/>
-        <Metric name="textEnd" value="134"/>
+        <Metric name="textEnd" value="178"/>
         <State name="normal" bg="@surface" text="@accent" subtext="@mutedText" line="@line"/>
     </Component>
     <Component name="titleButton">

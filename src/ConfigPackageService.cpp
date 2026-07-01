@@ -696,7 +696,7 @@ ConfigPackageReport ConfigPackageService::ImportPackageMerge(const std::filesyst
     }
     if (GetManifest(packageDb.get(), L"app") != L"Quattro" ||
         GetManifest(packageDb.get(), L"formatVersion") != std::to_wstring(kPackageFormatVersion)) {
-        report.message = L"不是有效的 Quattro 配置包。";
+        report.message = L"不是有效的 Quattro快速启动器 配置包。";
         return report;
     }
 

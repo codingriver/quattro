@@ -1,5 +1,7 @@
 #include "SimpleDialogs.h"
 
+#include "../resources/resource.h"
+
 #include "AppLog.h"
 #include "HotKeyEditor.h"
 #include "ThemedControls.h"
@@ -125,6 +127,8 @@ public:
         wc.lpfnWndProc = TextDialog::Proc;
         wc.hInstance = instance_;
         wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+        wc.hIcon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_QUATTRO_APP_ICON));
+        wc.hIconSm = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_QUATTRO_APP_ICON));
         wc.hbrBackground = nullptr;
         wc.lpszClassName = className.c_str();
         if (!RegisterClassExW(&wc)) {
@@ -315,6 +319,8 @@ public:
         wc.lpfnWndProc = WebDavBackupSelectionDialog::Proc;
         wc.hInstance = instance_;
         wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+        wc.hIcon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_QUATTRO_APP_ICON));
+        wc.hIconSm = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_QUATTRO_APP_ICON));
         wc.hbrBackground = nullptr;
         wc.lpszClassName = className.c_str();
         if (!RegisterClassExW(&wc)) {
@@ -510,6 +516,8 @@ public:
         wc.lpfnWndProc = SettingsDialog::Proc;
         wc.hInstance = instance_;
         wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+        wc.hIcon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_QUATTRO_APP_ICON));
+        wc.hIconSm = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_QUATTRO_APP_ICON));
         wc.hbrBackground = nullptr;
         wc.lpszClassName = L"QuattroSettingsDialog";
         if (!RegisterClassExW(&wc)) {

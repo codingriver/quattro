@@ -1,5 +1,7 @@
 #include "UrlEditDialog.h"
 
+#include "../resources/resource.h"
+
 #include "ThemedControls.h"
 #include "Utilities.h"
 
@@ -67,6 +69,8 @@ public:
         wc.lpfnWndProc = DialogWindow::WindowProc;
         wc.hInstance = instance_;
         wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+        wc.hIcon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_QUATTRO_APP_ICON));
+        wc.hIconSm = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_QUATTRO_APP_ICON));
         wc.hbrBackground = nullptr;
         wc.lpszClassName = L"QuattroUrlEditDialog";
         RegisterClassExW(&wc);

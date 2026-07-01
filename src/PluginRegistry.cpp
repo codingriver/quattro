@@ -137,7 +137,7 @@ std::vector<PluginRecord> PluginRegistry::BuiltinPlugins() {
     clicker.engine = L"clicker";
     clicker.description = L"按指定坐标、次数和间隔连续执行鼠标点击。";
     clicker.permissions = L"鼠标控制, 热键停止";
-    clicker.author = L"Quattro";
+    clicker.author = L"Quattro快速启动器";
     clicker.license = L"Built-in";
     clicker.builtin = true;
     clicker.deletable = false;
@@ -153,7 +153,7 @@ std::vector<PluginRecord> PluginRegistry::BuiltinPlugins() {
     timer.engine = L"timer";
     timer.description = L"设置倒计时，到点后弹窗提醒。";
     timer.permissions = L"提醒";
-    timer.author = L"Quattro";
+    timer.author = L"Quattro快速启动器";
     timer.license = L"Built-in";
     timer.builtin = true;
     timer.deletable = false;
@@ -168,7 +168,7 @@ std::vector<PluginRecord> PluginRegistry::BuiltinPlugins() {
     stopwatch.kind = L"builtin-tool";
     stopwatch.engine = L"stopwatch";
     stopwatch.description = L"提供开始、暂停、重置和计次。";
-    stopwatch.author = L"Quattro";
+    stopwatch.author = L"Quattro快速启动器";
     stopwatch.license = L"Built-in";
     stopwatch.builtin = true;
     stopwatch.deletable = false;
