@@ -1,0 +1,175 @@
+name: Package and Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: "Package platform"
+        required: true
+        default: "x64"
+        type: choice
+        options:
+          - x64
+          - x86
+          - all
+      configuration:
+        description: "Build configuration"
+        required: true
+        default: "Release"
+        type: choice
+        options:
+          - Release
+          - Debug
+      run_tests:
+        description: "Build and run unit tests before packaging"
+        required: true
+        default: true
+        type: boolean
+      use_upx:
+        description: "Compress packaged exe with UPX"
+        required: true
+        default: true
+        type: boolean
+      publish_release:
+        description: "Create/update a GitHub Release"
+        required: true
+        default: false
+        type: boolean
+      release_tag:
+        description: "Release tag for manual publishing, for example v1.0.0"
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    name: Package Quattro
+    runs-on: windows-2022
+
+    defaults:
+      run:
+        shell: pwsh
+
+    env:
+      VCPKG_ROOT: ${{ github.workspace }}\.vcpkg-root
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}\.vcpkg-cache
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set package options
+        id: options
+        run: |
+          $isTagBuild = "${{ github.event_name }}" -eq "push"
+          $platform = if ($isTagBuild) { "all" } else { "${{ inputs.platform }}" }
+          $configuration = if ($isTagBuild) { "Release" } else { "${{ inputs.configuration }}" }
+          $runTests = if ($isTagBuild) { "true" } else { "${{ inputs.run_tests }}" }
+          $useUpx = if ($isTagBuild) { "true" } else { "${{ inputs.use_upx }}" }
+          $publishRelease = if ($isTagBuild) { "true" } else { "${{ inputs.publish_release }}" }
+          $releaseTag = if ($isTagBuild) { "${{ github.ref_name }}" } else { "${{ inputs.release_tag }}" }
+          $runTests = $runTests.ToLowerInvariant()
+          $useUpx = $useUpx.ToLowerInvariant()
+          $publishRelease = $publishRelease.ToLowerInvariant()
+
+          if ($publishRelease -eq "true" -and [string]::IsNullOrWhiteSpace($releaseTag)) {
+            throw "release_tag is required when publish_release is enabled for a manual run."
+          }
+
+          "platform=$platform" >> $env:GITHUB_OUTPUT
+          "configuration=$configuration" >> $env:GITHUB_OUTPUT
+          "run_tests=$runTests" >> $env:GITHUB_OUTPUT
+          "use_upx=$useUpx" >> $env:GITHUB_OUTPUT
+          "publish_release=$publishRelease" >> $env:GITHUB_OUTPUT
+          "release_tag=$releaseTag" >> $env:GITHUB_OUTPUT
+
+      - name: Cache vcpkg sources and packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            .vcpkg-root
+            .vcpkg-cache
+            vcpkg_installed
+          key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json') }}
+          restore-keys: |
+            vcpkg-${{ runner.os }}-
+
+      - name: Bootstrap vcpkg
+        run: |
+          if (!(Test-Path "$env:VCPKG_ROOT\vcpkg.exe")) {
+            if (Test-Path "$env:VCPKG_ROOT") {
+              Remove-Item -LiteralPath "$env:VCPKG_ROOT" -Recurse -Force
+            }
+            git clone --depth 1 https://github.com/microsoft/vcpkg "$env:VCPKG_ROOT"
+            & "$env:VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics
+          }
+
+      - name: Cache build directories
+        uses: actions/cache@v4
+        with:
+          path: |
+            build-vcpkg-x86
+            build-vcpkg-x64
+          key: build-${{ runner.os }}-${{ steps.options.outputs.configuration }}-${{ steps.options.outputs.platform }}-${{ hashFiles('CMakeLists.txt', 'CMakePresets.json', 'vcpkg.json', 'src/**', 'tests/**', 'resources/**', 'theme/**', 'icons/**', 'docs/**', 'plugins/**', 'tools/**') }}
+          restore-keys: |
+            build-${{ runner.os }}-${{ steps.options.outputs.configuration }}-
+
+      - name: Package
+        run: |
+          $args = @(
+            "-ExecutionPolicy", "Bypass",
+            "-File", ".\tools\build.ps1",
+            "-Configuration", "${{ steps.options.outputs.configuration }}",
+            "-Backend", "vcpkg",
+            "-NoZip"
+          )
+
+          if ("${{ steps.options.outputs.platform }}" -eq "all") {
+            $args += "-All"
+          } else {
+            $args += @("-Platform", "${{ steps.options.outputs.platform }}")
+          }
+          if ("${{ steps.options.outputs.run_tests }}" -eq "true") {
+            $args += "-Test"
+          }
+          if ("${{ steps.options.outputs.use_upx }}" -eq "true") {
+            choco install upx -y --no-progress
+            $args += "-Upx"
+          }
+
+          & powershell @args
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: quattro-${{ steps.options.outputs.platform }}-${{ steps.options.outputs.configuration }}
+          path: |
+            dist/Quattro-*.exe
+            dist/Quattro.exe
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish GitHub Release
+        if: steps.options.outputs.publish_release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "${{ steps.options.outputs.release_tag }}"
+          $files = @(Get-ChildItem -LiteralPath dist -Filter "Quattro-*.exe" -File | ForEach-Object { $_.FullName })
+          $files += @(Get-ChildItem -LiteralPath dist -Filter "Quattro.exe" -File | ForEach-Object { $_.FullName })
+          if ($files.Count -eq 0) {
+            throw "No release assets were found under dist."
+          }
+
+          $existing = gh release view $tag 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag @files --clobber
+          } else {
+            gh release create $tag @files --title $tag --generate-notes --target "${{ github.sha }}"
+          }

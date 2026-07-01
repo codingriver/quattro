@@ -212,17 +212,35 @@ powershell -ExecutionPolicy Bypass -File .\tools\build.ps1 --help
 默认产物：
 
 ```text
-dist/x64/Quattro.exe
+dist/Quattro-x64.exe
 dist/Quattro-x64.zip
 ```
 
-`--all` 会同时生成 `dist/x86/Quattro.exe`、`dist/x64/Quattro.exe` 和对应 zip；`-FullPackage` 会额外生成传统目录包。
+`--all` 会同时生成 `dist/Quattro-x86.exe`、`dist/Quattro-x64.exe` 和对应 zip；`-FullPackage` 会额外生成传统目录包。
 
-默认发布包可以只分发 `dist/x64/Quattro.exe`。需要旧默认产物 `dist/Quattro.exe` 和 `dist/Quattro.zip` 时使用 `-FlatPackage`。程序首次运行会在可写目录释放缺失资源；如果 exe 同级目录不可写，会使用当前用户本地数据目录。
+默认发布包可以只分发 `dist/Quattro-x64.exe`。需要旧默认产物 `dist/Quattro.exe` 和 `dist/Quattro.zip` 时使用 `-FlatPackage`。程序首次运行会在可写目录释放缺失资源；如果 exe 同级目录不可写，会使用当前用户本地数据目录。
 
 传入 `-Upx` 时，脚本只压缩复制到 `dist` 的发布 exe，不会修改 `build-*` 目录中的原始编译产物；zip 会基于压缩后的 exe 创建。
 
 如果本次目标 exe 正在运行，Windows 会锁定文件导致覆盖失败；先退出 Quattro 后再打包即可。
+
+### GitHub Actions 自动发布
+
+仓库提供 `.github/workflows/package-release.yml` 用于 CI 打包发布：
+
+- 推送 `v*` 标签时自动打包 `x86` 和 `x64`，上传 Actions artifact，并创建或更新同名 GitHub Release。
+- 在 GitHub 的 `Actions` 页面手动运行 `Package and Release` 时，可以选择平台、构建配置、是否运行单元测试、是否使用 UPX，以及是否发布 Release；`use_upx` 默认开启。
+- GitHub Actions 打包固定使用单 exe 模式且不生成 zip，默认产物会经过 UPX 压缩；手动运行即使不发布 Release，也会上传 `dist` 下生成的 exe，作为手动打包入口。
+- GitHub Release 附件同样只发布 exe，例如 `Quattro-x64.exe`、`Quattro-x86.exe`。
+
+自动发布示例：
+
+```powershell
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+手动发布 Release 时，需要勾选 `publish_release` 并填写 `release_tag`，例如 `v1.0.0`。
 
 ## SQLite
 

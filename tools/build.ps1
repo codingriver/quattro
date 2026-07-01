@@ -29,7 +29,7 @@ Usage:
   powershell -ExecutionPolicy Bypass -File .\tools\$scriptName [options]
 
 Defaults:
-  Builds and packages x64 Quattro with the vcpkg backend, creates dist\x64\Quattro.exe and Quattro-x64.zip.
+  Builds and packages x64 Quattro with the vcpkg backend, creates dist\Quattro-x64.exe and Quattro-x64.zip.
 
 Options:
   --all, -All              Build both x86 and x64 packages.
@@ -194,6 +194,7 @@ function Publish-Package {
         [string]$BuildDir,
         [string]$DistName,
         [string]$SingleExeDirectory = "",
+        [string]$SingleExeFileName = "Quattro.exe",
         [switch]$SingleExe,
         [switch]$Zip
     )
@@ -216,7 +217,7 @@ function Publish-Package {
             $singleExeDirectoryPath = Join-Path $distRoot $SingleExeDirectory
         }
         New-Item -ItemType Directory -Force -Path $singleExeDirectoryPath | Out-Null
-        $singleExePath = Join-Path $singleExeDirectoryPath "Quattro.exe"
+        $singleExePath = Join-Path $singleExeDirectoryPath $SingleExeFileName
         if (Test-Path $singleExePath) {
             Remove-Item -LiteralPath $singleExePath -Force
         }
@@ -313,7 +314,7 @@ foreach ($arch in $architectures) {
     if (!$FullPackage) {
         $packageArgs.SingleExe = $true
         if (!$flatSingleExeX64) {
-            $packageArgs.SingleExeDirectory = $arch.Name
+            $packageArgs.SingleExeFileName = "$distName.exe"
         }
     }
     if (!$NoZip) {
@@ -325,7 +326,7 @@ foreach ($arch in $architectures) {
         $singleExeOutput = if ($flatSingleExeX64) {
             Join-Path $distRoot "Quattro.exe"
         } else {
-            Join-Path (Join-Path $distRoot $arch.Name) "Quattro.exe"
+            Join-Path $distRoot "$distName.exe"
         }
         $outputs.Add($singleExeOutput) | Out-Null
     } else {
