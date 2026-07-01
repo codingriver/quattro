@@ -84,7 +84,6 @@ AppConfig ConfigService::Load() const {
     config.updateUrl = ReadString(L"UpdateUrl", L"");
     config.faqUrl = ReadString(L"FaqUrl", L"");
     config.rewardUrl = ReadString(L"RewardUrl", L"");
-    config.pluginStoreUrl = ReadString(L"PluginStoreUrl", L"");
     config.webDavEnabled = ReadBool(L"WebDavEnabled", config.webDavEnabled);
     config.webDavUrl = ReadString(L"WebDavUrl", L"");
     config.webDavRemotePath = ReadString(L"WebDavRemotePath", L"/Quattro/backups/");
@@ -125,7 +124,6 @@ void ConfigService::SaveWindowState(const AppConfig& config) const {
     WriteString(L"UpdateUrl", config.updateUrl);
     WriteString(L"FaqUrl", config.faqUrl);
     WriteString(L"RewardUrl", config.rewardUrl);
-    WriteString(L"PluginStoreUrl", config.pluginStoreUrl);
     WriteInt(L"WebDavEnabled", config.webDavEnabled ? 1 : 0);
     WriteString(L"WebDavUrl", config.webDavUrl);
     WriteString(L"WebDavRemotePath", config.webDavRemotePath);
@@ -179,7 +177,6 @@ void ConfigService::Save(const AppConfig& config) const {
     WriteString(L"UpdateUrl", config.updateUrl);
     WriteString(L"FaqUrl", config.faqUrl);
     WriteString(L"RewardUrl", config.rewardUrl);
-    WriteString(L"PluginStoreUrl", config.pluginStoreUrl);
     WriteInt(L"WebDavEnabled", config.webDavEnabled ? 1 : 0);
     WriteString(L"WebDavUrl", config.webDavUrl);
     WriteString(L"WebDavRemotePath", config.webDavRemotePath);

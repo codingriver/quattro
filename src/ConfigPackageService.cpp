@@ -407,7 +407,7 @@ void MergePluginSettings(sqlite3* sourceDb, sqlite3* targetDb, ConfigPackageRepo
     }
     SQLiteStatement query(sourceDb, L"SELECT PluginID,Key,Value FROM PluginSettings ORDER BY PluginID,Key;");
     if (!query.ok()) {
-        report.warnings.push_back(L"读取导入包插件设置失败。");
+        report.warnings.push_back(L"读取导入包工具设置失败。");
         return;
     }
     while (query.step() == SQLITE_ROW) {
@@ -417,7 +417,7 @@ void MergePluginSettings(sqlite3* sourceDb, sqlite3* targetDb, ConfigPackageRepo
 
         SQLiteStatement exists(targetDb, L"SELECT Value FROM PluginSettings WHERE PluginID=? AND Key=?;");
         if (!exists.ok()) {
-            report.warnings.push_back(L"检查插件设置冲突失败。");
+            report.warnings.push_back(L"检查工具设置冲突失败。");
             return;
         }
         exists.bindText(1, pluginId);
@@ -428,7 +428,7 @@ void MergePluginSettings(sqlite3* sourceDb, sqlite3* targetDb, ConfigPackageRepo
 
         SQLiteStatement insert(targetDb, L"INSERT INTO PluginSettings(PluginID,Key,Value) VALUES(?,?,?);");
         if (!insert.ok()) {
-            report.warnings.push_back(L"写入插件设置失败。");
+            report.warnings.push_back(L"写入工具设置失败。");
             return;
         }
         insert.bindText(1, pluginId);

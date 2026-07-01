@@ -9,13 +9,17 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 option(QUATTRO_BUILD_TESTS "Build local Quattro test tools" OFF)
 
 find_package(CURL QUIET)
-find_package(pugixml CONFIG QUIET)
+
+set(QUATTRO_WITH_CURL OFF)
+if(CURL_FOUND)
+    set(QUATTRO_WITH_CURL ON)
+endif()
 
 set(QUATTRO_WITH_WEBDAV_LIBS OFF)
-if(CURL_FOUND AND TARGET pugixml::pugixml)
+if(CURL_FOUND)
     set(QUATTRO_WITH_WEBDAV_LIBS ON)
 else()
-    message(WARNING "CURL and/or pugixml were not found. WebDAV backup UI will build, but network operations will report that the third-party backend is unavailable.")
+    message(WARNING "CURL was not found. WebDAV backup UI will build, but network operations will report that the third-party backend is unavailable.")
 endif()
 
 set(EMBEDDED_ASSET_INPUTS
@@ -26,7 +30,6 @@ file(GLOB_RECURSE EMBEDDED_ASSET_DIR_INPUTS CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/theme/*"
     "${CMAKE_CURRENT_SOURCE_DIR}/icons/menu/*"
     "${CMAKE_CURRENT_SOURCE_DIR}/icons/url/*"
-    "${CMAKE_CURRENT_SOURCE_DIR}/plugins/store/*"
     "${CMAKE_CURRENT_SOURCE_DIR}/docs/*"
 )
 list(APPEND EMBEDDED_ASSET_INPUTS ${EMBEDDED_ASSET_DIR_INPUTS})
@@ -52,12 +55,20 @@ add_library(ccronexpr STATIC
     third_party/ccronexpr/ccronexpr.c
 )
 
+add_library(pugixml STATIC
+    third_party/pugixml/pugixml.cpp
+)
+
 target_include_directories(sqlite3 PUBLIC
     third_party/sqlite
 )
 
 target_include_directories(ccronexpr PUBLIC
     third_party/ccronexpr
+)
+
+target_include_directories(pugixml PUBLIC
+    third_party/pugixml
 )
 
 target_compile_definitions(sqlite3 PRIVATE
@@ -79,6 +90,10 @@ target_compile_options(ccronexpr PRIVATE
     $<$<C_COMPILER_ID:MSVC>:/W0 /utf-8>
 )
 
+target_compile_options(pugixml PRIVATE
+    $<$<CXX_COMPILER_ID:MSVC>:/W0 /utf-8>
+)
+
 add_executable(Quattro WIN32
     ${EMBEDDED_ASSETS_CPP}
     resources/Quattro.rc
@@ -97,9 +112,7 @@ add_executable(Quattro WIN32
     src/LinkEditDialog.cpp
     src/MainWindow.cpp
     src/MenuCatalog.cpp
-    src/PluginManagerDialog.cpp
     src/PluginRegistry.cpp
-    src/PluginStoreService.cpp
     src/SearchDialog.cpp
     src/ShellItemService.cpp
     src/SimpleDialogs.cpp
@@ -111,6 +124,7 @@ add_executable(Quattro WIN32
     src/TodoEditDialog.cpp
     src/TodoSchedule.cpp
     src/UrlEditDialog.cpp
+    src/UrlIconDownloadService.cpp
     src/Utilities.cpp
     src/WebDavBackupService.cpp
     src/WebDavClient.cpp
@@ -133,6 +147,9 @@ target_compile_definitions(Quattro PRIVATE
 if(QUATTRO_WITH_WEBDAV_LIBS)
     target_compile_definitions(Quattro PRIVATE QUATTRO_WITH_WEBDAV_LIBS)
 endif()
+if(QUATTRO_WITH_CURL)
+    target_compile_definitions(Quattro PRIVATE QUATTRO_WITH_CURL)
+endif()
 
 target_compile_options(Quattro PRIVATE
     $<$<CXX_COMPILER_ID:MSVC>:/W4 /permissive- /EHsc /utf-8>
@@ -151,7 +168,6 @@ add_executable(QuattroTests
     src/JsonValue.cpp
     src/MenuCatalog.cpp
     src/PluginRegistry.cpp
-    src/PluginStoreService.cpp
     src/ShellItemService.cpp
     src/Storage.cpp
     src/SystemFunctionDialog.cpp
@@ -308,7 +324,7 @@ target_link_libraries(QuattroTests PRIVATE
 )
 
 if(QUATTRO_WITH_WEBDAV_LIBS)
-    target_link_libraries(QuattroTests PRIVATE CURL::libcurl pugixml::pugixml)
+    target_link_libraries(QuattroTests PRIVATE CURL::libcurl pugixml)
 endif()
 
 target_link_libraries(QuattroNoteTodoAcceptance PRIVATE
@@ -349,7 +365,7 @@ target_link_libraries(QuattroWebDavAcceptance PRIVATE
 )
 
 if(QUATTRO_WITH_WEBDAV_LIBS)
-    target_link_libraries(QuattroWebDavAcceptance PRIVATE CURL::libcurl pugixml::pugixml)
+    target_link_libraries(QuattroWebDavAcceptance PRIVATE CURL::libcurl pugixml)
 endif()
 elseif(QUATTRO_BUILD_TESTS)
     message(WARNING "QUATTRO_BUILD_TESTS is ON, but local tests/ sources were not found. Test targets will be skipped.")
@@ -375,7 +391,7 @@ target_link_libraries(Quattro PRIVATE
 )
 
 if(QUATTRO_WITH_WEBDAV_LIBS)
-    target_link_libraries(Quattro PRIVATE CURL::libcurl pugixml::pugixml)
+    target_link_libraries(Quattro PRIVATE CURL::libcurl pugixml)
 endif()
 
 target_link_options(Quattro PRIVATE

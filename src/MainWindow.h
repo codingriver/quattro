@@ -9,6 +9,7 @@
 #include "PluginRegistry.h"
 #include "Storage.h"
 #include "Theme.h"
+#include "UrlIconDownloadService.h"
 
 #include <d2d1.h>
 #include <dwrite.h>
@@ -26,6 +27,7 @@
 
 constexpr UINT WM_QUATTRO_WAKEUP = WM_APP + 0x65;
 constexpr UINT WM_QUATTRO_TRAY = WM_APP + 0x66;
+constexpr UINT WM_QUATTRO_URL_ICON_DOWNLOADED = WM_APP + 0x67;
 
 class OleDropTarget;
 
@@ -145,12 +147,13 @@ private:
     bool EnsureNotificationIcon();
     void OpenSearch();
     void OpenSettings();
-    void OpenPluginStore();
     void OpenBuiltinTool(std::size_t index);
     void ResetLayoutToDefaults();
     void ClearIconCache();
     void RefreshAllIcons();
     void RefreshLinkIcon(int linkId);
+    void RequestInitialUrlIconDownload(const Link& link);
+    void OnUrlIconDownloaded(int linkId, bool success);
     void ShowAbout();
     void OpenHelp();
     void OpenFaq();
@@ -284,6 +287,7 @@ private:
     Theme theme_;
     Launcher launcher_;
     IconService iconService_;
+    UrlIconDownloadService urlIconDownloadService_;
 
     int currentGroupId_ = 0;
     int currentTagId_ = 0;

@@ -26,14 +26,6 @@ struct PluginRecord {
     bool deletable = true;
     bool enabled = false;
     bool installed = false;
-    bool favorite = false;
-};
-
-struct PluginContribution {
-    std::wstring pluginId;
-    std::wstring objectType;
-    int objectId = 0;
-    std::wstring objectPath;
 };
 
 class PluginRegistry {
@@ -42,15 +34,8 @@ public:
 
     bool Initialize();
     std::vector<PluginRecord> LoadPlugins();
-    bool UpsertStorePlugin(const PluginRecord& plugin);
-    bool MarkInstalled(const PluginRecord& plugin, const std::wstring& installPath);
-    bool RemovePlugin(const std::wstring& pluginId);
     bool SetEnabled(const std::wstring& pluginId, bool enabled);
-    bool SetFavorite(const std::wstring& pluginId, bool favorite);
     bool IsEnabled(const std::wstring& pluginId);
-    bool RecordContribution(const std::wstring& pluginId, const std::wstring& objectType, int objectId, const std::wstring& objectPath = L"");
-    std::vector<PluginContribution> LoadContributions(const std::wstring& pluginId);
-    bool ClearContributions(const std::wstring& pluginId);
     std::wstring GetSetting(const std::wstring& pluginId, const std::wstring& key, const std::wstring& fallback = L"");
     bool SetSetting(const std::wstring& pluginId, const std::wstring& key, const std::wstring& value);
     const std::wstring& lastError() const { return lastError_; }

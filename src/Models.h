@@ -86,7 +86,6 @@ struct AppConfig {
     std::wstring updateUrl;
     std::wstring faqUrl;
     std::wstring rewardUrl;
-    std::wstring pluginStoreUrl;
 
     bool webDavEnabled = false;
     std::wstring webDavUrl;

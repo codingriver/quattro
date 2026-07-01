@@ -6,7 +6,6 @@
 #include "HotKeyEditor.h"
 #include "LinkEditDialog.h"
 #include "MenuCatalog.h"
-#include "PluginManagerDialog.h"
 #include "SearchDialog.h"
 #include "ShellItemService.h"
 #include "SimpleDialogs.h"
@@ -251,7 +250,7 @@ std::wstring FormatConfigPackageReport(const ConfigPackageReport& report) {
         text += L"\n新增启动项: " + std::to_wstring(report.linksAdded);
         text += L"\n新增便签: " + std::to_wstring(report.notesAdded);
         text += L"\n新增待办: " + std::to_wstring(report.todosAdded);
-        text += L"\n新增插件设置: " + std::to_wstring(report.pluginSettingsAdded);
+        text += L"\n新增工具设置: " + std::to_wstring(report.pluginSettingsAdded);
         text += L"\n新增 URL 图标: " + std::to_wstring(report.urlIconsAdded);
     }
     if (!report.warnings.empty()) {
@@ -1230,6 +1229,7 @@ MainWindow::MainWindow(
       theme_(std::move(theme)),
       launcher_(appDirectory_, &config_),
       iconService_(appDirectory_),
+      urlIconDownloadService_(appDirectory_),
       runningAsAdmin_(IsRunningAsAdmin()) {
     if (config_.preferAdminRun != runningAsAdmin_) {
         config_.preferAdminRun = runningAsAdmin_;
@@ -1408,6 +1408,9 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             ShowTrayMenu(point);
             return 0;
         }
+        return 0;
+    case WM_QUATTRO_URL_ICON_DOWNLOADED:
+        OnUrlIconDownloaded(static_cast<int>(wParam), lParam != 0);
         return 0;
     case WM_NCHITTEST: {
         POINT screenPoint{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
@@ -1998,9 +2001,6 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         case ID_MENU_SETTINGS:
             OpenSettings();
             return 0;
-        case ID_MENU_PLUGIN_STORE:
-            // Plugin store is temporarily disabled; keep the command id reserved.
-            return 0;
         case ID_MENU_RESET_LAYOUT:
             ResetLayoutToDefaults();
             return 0;
@@ -2080,6 +2080,7 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         return DefWindowProcW(hwnd_, message, wParam, lParam);
     case WM_DESTROY:
         SaveCurrentNotePage();
+        urlIconDownloadService_.Shutdown();
         HideLinkTooltip();
         if (tooltip_) {
             DestroyWindow(tooltip_);
@@ -2637,6 +2638,7 @@ void MainWindow::AddLink() {
         return;
     }
     model_.links.push_back(link);
+    RequestInitialUrlIconDownload(link);
     RegisterConfiguredHotKeys();
     selectedLinkId_ = link.id;
     currentTagId_ = link.parentGroup;
@@ -2721,6 +2723,7 @@ void MainWindow::AddUrl() {
     }
     model_.links.push_back(link);
     selectedLinkId_ = link.id;
+    RequestInitialUrlIconDownload(link);
     RegisterConfiguredHotKeys();
     EnsureLinkVisible(selectedLinkId_);
     InvalidateRect(hwnd_, nullptr, FALSE);
@@ -3626,20 +3629,11 @@ void MainWindow::OpenSettings() {
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
-void MainWindow::OpenPluginStore() {
-    if (ShowPluginManagerDialog(hwnd_, instance_, theme_, pluginRegistry_, storageService_, appDirectory_, config_.pluginStoreUrl)) {
-        model_ = storageService_.Load();
-        SelectInitialItems();
-        RegisterConfiguredHotKeys();
-        InvalidateRect(hwnd_, nullptr, FALSE);
-    }
-}
-
 void MainWindow::OpenBuiltinTool(std::size_t index) {
     if (menuToolEngines_.empty()) {
         const auto plugins = pluginRegistry_.LoadPlugins();
         for (const auto& plugin : plugins) {
-            if (!plugin.enabled || plugin.kind != L"builtin-tool" || plugin.engine.empty()) {
+            if (plugin.kind != L"builtin-tool" || plugin.engine.empty()) {
                 continue;
             }
             if (menuToolEngines_.size() >= ID_MENU_TOOL_LIMIT) {
@@ -3730,8 +3724,28 @@ void MainWindow::RefreshLinkIcon(int linkId) {
     if (!link) {
         return;
     }
+    if (IsUrlLink(*link)) {
+        urlIconDownloadService_.RequestManualRefresh(hwnd_, WM_QUATTRO_URL_ICON_DOWNLOADED, *link);
+        return;
+    }
     iconService_.RefreshDiskCache(*link);
     InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void MainWindow::RequestInitialUrlIconDownload(const Link& link) {
+    if (IsUrlLink(link)) {
+        urlIconDownloadService_.RequestInitialDownload(hwnd_, WM_QUATTRO_URL_ICON_DOWNLOADED, link);
+    }
+}
+
+void MainWindow::OnUrlIconDownloaded(int linkId, bool success) {
+    if (!success) {
+        return;
+    }
+    if (Link* link = FindLink(linkId)) {
+        iconService_.RefreshDiskCache(*link);
+        InvalidateRect(hwnd_, nullptr, FALSE);
+    }
 }
 
 void MainWindow::ShowAbout() {
@@ -4032,6 +4046,7 @@ void MainWindow::ImportPath(const std::wstring& path) {
     if (storageService_.InsertLink(link)) {
         model_.links.push_back(link);
         selectedLinkId_ = link.id;
+        RequestInitialUrlIconDownload(link);
         RegisterConfiguredHotKeys();
         EnsureGroupVisible(currentGroupId_);
         EnsureTagVisible(currentTagId_);
@@ -4104,7 +4119,7 @@ void MainWindow::ImportConfigPackageMerge() {
 
     const int confirm = MessageBoxW(
         hwnd_,
-        L"将把配置包中的分组、标签、启动项、便签、待办和插件设置合并到当前数据。\n\n当前数据不会被覆盖，导入前会自动备份。",
+        L"将把配置包中的分组、标签、启动项、便签、待办和工具设置合并到当前数据。\n\n当前数据不会被覆盖，导入前会自动备份。",
         L"合并导入配置包",
         MB_OKCANCEL | MB_ICONINFORMATION);
     if (confirm != IDOK) {
@@ -4161,7 +4176,7 @@ void MainWindow::DownloadWebDavBackupMerge() {
 
     const int confirm = MessageBoxW(
         hwnd_,
-        L"将下载该 WebDAV 备份，并把其中的分组、标签、启动项、便签、待办和插件设置合并到当前数据。\n\n当前数据不会被覆盖，导入前会自动备份。",
+        L"将下载该 WebDAV 备份，并把其中的分组、标签、启动项、便签、待办和工具设置合并到当前数据。\n\n当前数据不会被覆盖，导入前会自动备份。",
         L"下载 WebDAV 备份",
         MB_OKCANCEL | MB_ICONINFORMATION);
     if (confirm != IDOK) {
@@ -4956,7 +4971,7 @@ void MainWindow::AppendToolItems(HMENU menu) {
     menuToolEngines_.clear();
     const auto plugins = pluginRegistry_.LoadPlugins();
     for (const auto& plugin : plugins) {
-        if (!plugin.enabled || plugin.kind != L"builtin-tool" || plugin.engine.empty()) {
+        if (plugin.kind != L"builtin-tool" || plugin.engine.empty()) {
             continue;
         }
         if (menuToolEngines_.size() >= ID_MENU_TOOL_LIMIT) {
@@ -4967,7 +4982,7 @@ void MainWindow::AppendToolItems(HMENU menu) {
         AppendThemedMenuItem(menu, MF_STRING, command, plugin.name, false, -1, -1, MenuIconTools);
     }
     if (menuToolEngines_.empty()) {
-        AppendThemedMenuItem(menu, MF_STRING | MF_GRAYED, ID_MENU_TOOL_BASE, L"无已启用工具");
+        AppendThemedMenuItem(menu, MF_STRING | MF_GRAYED, ID_MENU_TOOL_BASE, L"无可用工具");
     }
 }
 

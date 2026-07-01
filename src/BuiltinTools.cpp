@@ -1205,6 +1205,6 @@ bool ShowBuiltinTool(HWND owner, HINSTANCE instance, const Theme& theme, PluginR
         StopwatchDialog dialog(owner, instance, theme, registry);
         return dialog.Run();
     }
-    MessageBoxW(owner, L"这个内置工具暂不可用。", L"插件商店", MB_OK | MB_ICONINFORMATION);
+    MessageBoxW(owner, L"这个内置工具暂不可用。", L"工具箱", MB_OK | MB_ICONINFORMATION);
     return false;
 }

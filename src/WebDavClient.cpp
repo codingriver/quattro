@@ -31,7 +31,7 @@ WebDavClient::WebDavClient(AppConfig config, std::wstring password)
 }
 
 bool WebDavClient::TestConnection() {
-    lastError_ = L"当前构建未启用 libcurl/pugixml WebDAV 后端。请通过 vcpkg 安装依赖后重新配置构建。";
+    lastError_ = L"当前构建未启用 libcurl WebDAV 后端。请通过 vcpkg 安装 curl 依赖后重新配置构建。";
     return false;
 }
 

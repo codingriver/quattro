@@ -79,7 +79,7 @@ std::wstring FormatConfigPackageReportText(const ConfigPackageReport& report) {
         text += L"\n新增启动项: " + std::to_wstring(report.linksAdded);
         text += L"\n新增便签: " + std::to_wstring(report.notesAdded);
         text += L"\n新增待办: " + std::to_wstring(report.todosAdded);
-        text += L"\n新增插件设置: " + std::to_wstring(report.pluginSettingsAdded);
+        text += L"\n新增工具设置: " + std::to_wstring(report.pluginSettingsAdded);
         text += L"\n新增 URL 图标: " + std::to_wstring(report.urlIconsAdded);
     }
     if (!report.warnings.empty()) {
@@ -921,7 +921,7 @@ private:
 
         const int confirm = MessageBoxW(
             hwnd_,
-            L"将下载所选 WebDAV 备份，并把其中的分组、标签、启动项、便签、待办和插件设置合并到当前数据。\n\n当前数据不会被覆盖，导入前会自动备份。",
+            L"将下载所选 WebDAV 备份，并把其中的分组、标签、启动项、便签、待办和工具设置合并到当前数据。\n\n当前数据不会被覆盖，导入前会自动备份。",
             L"从云端下载",
             MB_OKCANCEL | MB_ICONINFORMATION);
         if (confirm != IDOK) {

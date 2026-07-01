@@ -46,7 +46,7 @@ foreach ($file in @("README.md")) {
     }
 }
 
-foreach ($dir in @("theme", "icons/menu", "icons/url", "plugins/store", "docs")) {
+foreach ($dir in @("theme", "icons/menu", "icons/url", "docs")) {
     $path = Join-Path $rootPath $dir
     if (Test-Path -LiteralPath $path) {
         Get-ChildItem -LiteralPath $path -Recurse -File |

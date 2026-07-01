@@ -141,7 +141,7 @@ std::vector<PluginRecord> PluginRegistry::BuiltinPlugins() {
     clicker.license = L"Built-in";
     clicker.builtin = true;
     clicker.deletable = false;
-    clicker.enabled = false;
+    clicker.enabled = true;
     clicker.installed = true;
 
     PluginRecord timer;
@@ -224,12 +224,7 @@ bool PluginRegistry::EnsureSchema(void* rawDb) {
         "PluginID TEXT NOT NULL,"
         "Key TEXT NOT NULL,"
         "Value TEXT,"
-        "PRIMARY KEY(PluginID,Key));"
-        "CREATE TABLE IF NOT EXISTS PluginContributions("
-        "PluginID TEXT NOT NULL,"
-        "ObjectType TEXT NOT NULL,"
-        "ObjectID INTEGER NOT NULL,"
-        "ObjectPath TEXT);",
+        "PRIMARY KEY(PluginID,Key));",
         lastError_)) {
         return false;
     }
@@ -254,9 +249,6 @@ bool PluginRegistry::EnsureSchema(void* rawDb) {
     if (!HasColumn(db, L"Plugins", L"Sha256")) {
         Exec(db, "ALTER TABLE Plugins ADD COLUMN Sha256 TEXT;", lastError_);
     }
-    if (!HasColumn(db, L"PluginContributions", L"ObjectPath")) {
-        Exec(db, "ALTER TABLE PluginContributions ADD COLUMN ObjectPath TEXT;", lastError_);
-    }
     return lastError_.empty();
 }
 
@@ -271,7 +263,7 @@ bool PluginRegistry::UpsertBuiltinPlugins(void* rawDb) {
             L"Engine=excluded.Engine,Description=excluded.Description,Permissions=excluded.Permissions,"
             L"Author=excluded.Author,License=excluded.License,PackageUrl=excluded.PackageUrl,"
             L"HomepageUrl=excluded.HomepageUrl,SourceUrl=excluded.SourceUrl,AddedAt=excluded.AddedAt,Sha256=excluded.Sha256,"
-            L"Builtin=excluded.Builtin,Deletable=excluded.Deletable,Installed=1,UpdatedAt=CURRENT_TIMESTAMP;");
+            L"Builtin=excluded.Builtin,Deletable=excluded.Deletable,Enabled=excluded.Enabled,Installed=1,UpdatedAt=CURRENT_TIMESTAMP;");
         if (!row.ok()) {
             lastError_ = L"插件注册 SQL 准备失败。";
             return false;
@@ -317,10 +309,9 @@ std::vector<PluginRecord> PluginRegistry::LoadPlugins() {
     }
 
     SQLiteStatement statement(db.get(),
-        L"SELECT p.ID,p.Name,p.Version,p.Category,p.Kind,p.Engine,p.Description,p.Permissions,p.Author,p.License,p.PackageUrl,p.HomepageUrl,p.SourceUrl,p.AddedAt,p.Sha256,p.Builtin,p.Deletable,p.Enabled,p.Installed,p.CreatedAt,p.UpdatedAt,COALESCE(s.Value,'') "
-        L"FROM Plugins p "
-        L"LEFT JOIN PluginSettings s ON s.PluginID=p.ID AND s.Key='favorite' "
-        L"ORDER BY p.Builtin DESC,p.Category,p.Name;");
+        L"SELECT ID,Name,Version,Category,Kind,Engine,Description,Permissions,Author,License,PackageUrl,HomepageUrl,SourceUrl,AddedAt,Sha256,Builtin,Deletable,Enabled,Installed,CreatedAt,UpdatedAt "
+        L"FROM Plugins "
+        L"ORDER BY Builtin DESC,Category,Name;");
     if (!statement.ok()) {
         lastError_ = L"读取插件列表失败。";
         return plugins;
@@ -348,135 +339,18 @@ std::vector<PluginRecord> PluginRegistry::LoadPlugins() {
         plugin.installed = statement.columnInt(18) != 0;
         plugin.createdAt = statement.columnText(19);
         plugin.updatedAt = statement.columnText(20);
-        plugin.favorite = statement.columnText(21) == L"1";
         plugins.push_back(std::move(plugin));
     }
     return plugins;
 }
 
-bool PluginRegistry::UpsertStorePlugin(const PluginRecord& plugin) {
-    lastError_.clear();
-    SQLiteDatabase db(appDirectory_ / L"db" / L"link.db");
-    if (!db.ok()) {
-        lastError_ = db.Error();
-        return false;
-    }
-    if (!EnsureSchema(db.get()) || !UpsertBuiltinPlugins(db.get())) {
-        return false;
-    }
-    SQLiteStatement statement(db.get(),
-        L"INSERT INTO Plugins(ID,Name,Version,Category,Kind,Engine,Description,Permissions,Author,License,PackageUrl,HomepageUrl,SourceUrl,AddedAt,Sha256,Builtin,Deletable,Enabled,Installed) "
-        L"VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,0,0) "
-        L"ON CONFLICT(ID) DO UPDATE SET "
-        L"Name=excluded.Name,Version=excluded.Version,Category=excluded.Category,Kind=excluded.Kind,"
-        L"Engine=excluded.Engine,Description=excluded.Description,Permissions=excluded.Permissions,"
-        L"Author=excluded.Author,License=excluded.License,PackageUrl=excluded.PackageUrl,"
-        L"HomepageUrl=excluded.HomepageUrl,SourceUrl=excluded.SourceUrl,AddedAt=excluded.AddedAt,Sha256=excluded.Sha256,"
-        L"Deletable=excluded.Deletable,UpdatedAt=CURRENT_TIMESTAMP;");
-    if (!statement.ok()) {
-        lastError_ = L"更新商店插件失败。";
-        return false;
-    }
-    statement.bindText(1, plugin.id);
-    statement.bindText(2, plugin.name);
-    statement.bindText(3, plugin.version);
-    statement.bindText(4, plugin.category);
-    statement.bindText(5, plugin.kind);
-    statement.bindText(6, plugin.engine);
-    statement.bindText(7, plugin.description);
-    statement.bindText(8, plugin.permissions);
-    statement.bindText(9, plugin.author);
-    statement.bindText(10, plugin.license);
-    statement.bindText(11, plugin.packageUrl);
-    statement.bindText(12, plugin.homepageUrl);
-    statement.bindText(13, plugin.sourceUrl);
-    statement.bindText(14, plugin.addedAt);
-    statement.bindText(15, plugin.sha256);
-    statement.bindInt(16, plugin.deletable ? 1 : 0);
-    if (statement.step() != SQLITE_DONE) {
-        const void* message = sqlite3_errmsg16(db.get());
-        lastError_ = message ? static_cast<const wchar_t*>(message) : L"更新商店插件失败。";
-        return false;
-    }
-    return true;
-}
-
-bool PluginRegistry::MarkInstalled(const PluginRecord& plugin, const std::wstring& installPath) {
-    lastError_.clear();
-    SQLiteDatabase db(appDirectory_ / L"db" / L"link.db");
-    if (!db.ok()) {
-        lastError_ = db.Error();
-        return false;
-    }
-    if (!EnsureSchema(db.get()) || !UpsertBuiltinPlugins(db.get())) {
-        return false;
-    }
-    SQLiteStatement statement(db.get(),
-        L"INSERT INTO Plugins(ID,Name,Version,Category,Kind,Engine,Description,Permissions,Author,License,PackageUrl,HomepageUrl,SourceUrl,AddedAt,Sha256,Builtin,Deletable,Enabled,Installed,InstallPath) "
-        L"VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,1,1,?) "
-        L"ON CONFLICT(ID) DO UPDATE SET "
-        L"Name=excluded.Name,Version=excluded.Version,Category=excluded.Category,Kind=excluded.Kind,"
-        L"Engine=excluded.Engine,Description=excluded.Description,Permissions=excluded.Permissions,"
-        L"Author=excluded.Author,License=excluded.License,PackageUrl=excluded.PackageUrl,"
-        L"HomepageUrl=excluded.HomepageUrl,SourceUrl=excluded.SourceUrl,AddedAt=excluded.AddedAt,Sha256=excluded.Sha256,"
-        L"Deletable=excluded.Deletable,Enabled=1,Installed=1,InstallPath=excluded.InstallPath,UpdatedAt=CURRENT_TIMESTAMP;");
-    if (!statement.ok()) {
-        lastError_ = L"标记插件已安装失败。";
-        return false;
-    }
-    statement.bindText(1, plugin.id);
-    statement.bindText(2, plugin.name);
-    statement.bindText(3, plugin.version);
-    statement.bindText(4, plugin.category);
-    statement.bindText(5, plugin.kind);
-    statement.bindText(6, plugin.engine);
-    statement.bindText(7, plugin.description);
-    statement.bindText(8, plugin.permissions);
-    statement.bindText(9, plugin.author);
-    statement.bindText(10, plugin.license);
-    statement.bindText(11, plugin.packageUrl);
-    statement.bindText(12, plugin.homepageUrl);
-    statement.bindText(13, plugin.sourceUrl);
-    statement.bindText(14, plugin.addedAt);
-    statement.bindText(15, plugin.sha256);
-    statement.bindInt(16, plugin.deletable ? 1 : 0);
-    statement.bindText(17, installPath);
-    if (statement.step() != SQLITE_DONE) {
-        const void* message = sqlite3_errmsg16(db.get());
-        lastError_ = message ? static_cast<const wchar_t*>(message) : L"标记插件已安装失败。";
-        return false;
-    }
-    return true;
-}
-
-bool PluginRegistry::RemovePlugin(const std::wstring& pluginId) {
-    lastError_.clear();
-    SQLiteDatabase db(appDirectory_ / L"db" / L"link.db");
-    if (!db.ok()) {
-        lastError_ = db.Error();
-        return false;
-    }
-    if (!EnsureSchema(db.get())) {
-        return false;
-    }
-    SQLiteStatement statement(db.get(),
-        L"UPDATE Plugins SET Enabled=0,Installed=0,InstallPath='',UpdatedAt=CURRENT_TIMESTAMP "
-        L"WHERE ID=? AND Builtin=0;");
-    if (!statement.ok()) {
-        lastError_ = L"删除插件记录失败。";
-        return false;
-    }
-    statement.bindText(1, pluginId);
-    if (statement.step() != SQLITE_DONE) {
-        const void* message = sqlite3_errmsg16(db.get());
-        lastError_ = message ? static_cast<const wchar_t*>(message) : L"删除插件记录失败。";
-        return false;
-    }
-    return true;
-}
-
 bool PluginRegistry::SetEnabled(const std::wstring& pluginId, bool enabled) {
     lastError_.clear();
+    for (const auto& plugin : BuiltinPlugins()) {
+        if (plugin.id == pluginId) {
+            return Initialize();
+        }
+    }
     SQLiteDatabase db(appDirectory_ / L"db" / L"link.db");
     if (!db.ok()) {
         lastError_ = db.Error();
@@ -500,11 +374,12 @@ bool PluginRegistry::SetEnabled(const std::wstring& pluginId, bool enabled) {
     return true;
 }
 
-bool PluginRegistry::SetFavorite(const std::wstring& pluginId, bool favorite) {
-    return SetSetting(pluginId, L"favorite", favorite ? L"1" : L"0");
-}
-
 bool PluginRegistry::IsEnabled(const std::wstring& pluginId) {
+    for (const auto& plugin : BuiltinPlugins()) {
+        if (plugin.id == pluginId) {
+            return true;
+        }
+    }
     SQLiteDatabase db(appDirectory_ / L"db" / L"link.db");
     if (!db.ok()) {
         return false;
@@ -518,85 +393,6 @@ bool PluginRegistry::IsEnabled(const std::wstring& pluginId) {
     }
     statement.bindText(1, pluginId);
     return statement.step() == SQLITE_ROW && statement.columnInt(0) != 0;
-}
-
-bool PluginRegistry::RecordContribution(const std::wstring& pluginId, const std::wstring& objectType, int objectId, const std::wstring& objectPath) {
-    lastError_.clear();
-    SQLiteDatabase db(appDirectory_ / L"db" / L"link.db");
-    if (!db.ok()) {
-        lastError_ = db.Error();
-        return false;
-    }
-    if (!EnsureSchema(db.get())) {
-        return false;
-    }
-    SQLiteStatement statement(db.get(), L"INSERT INTO PluginContributions(PluginID,ObjectType,ObjectID,ObjectPath) VALUES(?,?,?,?);");
-    if (!statement.ok()) {
-        lastError_ = L"记录插件贡献失败。";
-        return false;
-    }
-    statement.bindText(1, pluginId);
-    statement.bindText(2, objectType);
-    statement.bindInt(3, objectId);
-    statement.bindText(4, objectPath);
-    if (statement.step() != SQLITE_DONE) {
-        const void* message = sqlite3_errmsg16(db.get());
-        lastError_ = message ? static_cast<const wchar_t*>(message) : L"记录插件贡献失败。";
-        return false;
-    }
-    return true;
-}
-
-std::vector<PluginContribution> PluginRegistry::LoadContributions(const std::wstring& pluginId) {
-    lastError_.clear();
-    std::vector<PluginContribution> contributions;
-    SQLiteDatabase db(appDirectory_ / L"db" / L"link.db");
-    if (!db.ok()) {
-        lastError_ = db.Error();
-        return contributions;
-    }
-    if (!EnsureSchema(db.get())) {
-        return contributions;
-    }
-    SQLiteStatement statement(db.get(), L"SELECT PluginID,ObjectType,ObjectID,ObjectPath FROM PluginContributions WHERE PluginID=? ORDER BY rowid DESC;");
-    if (!statement.ok()) {
-        lastError_ = L"读取插件贡献失败。";
-        return contributions;
-    }
-    statement.bindText(1, pluginId);
-    while (statement.step() == SQLITE_ROW) {
-        PluginContribution item;
-        item.pluginId = statement.columnText(0);
-        item.objectType = statement.columnText(1);
-        item.objectId = statement.columnInt(2);
-        item.objectPath = statement.columnText(3);
-        contributions.push_back(std::move(item));
-    }
-    return contributions;
-}
-
-bool PluginRegistry::ClearContributions(const std::wstring& pluginId) {
-    lastError_.clear();
-    SQLiteDatabase db(appDirectory_ / L"db" / L"link.db");
-    if (!db.ok()) {
-        lastError_ = db.Error();
-        return false;
-    }
-    if (!EnsureSchema(db.get())) {
-        return false;
-    }
-    SQLiteStatement statement(db.get(), L"DELETE FROM PluginContributions WHERE PluginID=?;");
-    if (!statement.ok()) {
-        lastError_ = L"清理插件贡献记录失败。";
-        return false;
-    }
-    statement.bindText(1, pluginId);
-    if (statement.step() != SQLITE_DONE) {
-        const void* message = sqlite3_errmsg16(db.get());
-        lastError_ = message ? static_cast<const wchar_t*>(message) : L"清理插件贡献记录失败。";
-        return false;
-    }
-    return true;
 }
 
 std::wstring PluginRegistry::GetSetting(const std::wstring& pluginId, const std::wstring& key, const std::wstring& fallback) {
