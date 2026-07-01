@@ -65,7 +65,7 @@ struct AppConfig {
     int posY = 0;
     int groupWidth = 72;
     bool autoGroupWidth = false;
-    int tagWidth = 83;
+    int tagWidth = 124;
     bool autoTagHeight = false;
     int attrWidth = 0;
     int attrHeight = 0;

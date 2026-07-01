@@ -15,7 +15,6 @@
 namespace {
 constexpr int IdTitle = 101;
 constexpr int IdContent = 102;
-constexpr int IdReminderToggle = 104;
 constexpr int IdTime = 150;
 constexpr int IdRepeatNone = 160;
 constexpr int IdRepeatDaily = 161;
@@ -558,8 +557,7 @@ private:
     }
 
     void LoadInitialState() {
-        hasReminder_ = draft_.scheduleKind != TodoScheduleKind::None;
-        reminderExpanded_ = hasReminder_;
+        hasReminder_ = true;
         repeatRule_ = InitialRepeatRule();
         endMode_ = draft_.repeatLimit > 0 ? EndMode::Count : EndMode::Never;
 
@@ -650,12 +648,9 @@ private:
     }
 
     std::wstring ReminderSummary() const {
-        if (!hasReminder_) {
-            return L"未设置";
-        }
         const SYSTEMTIME anchor = ReadAnchorTime();
         return DateSummaryText(anchor) + L" " + LongWeekdayText(DayOfWeek(anchor)) + L" " +
-            TwoDigits(anchor.wHour) + L":" + TwoDigits(anchor.wMinute) + L" · " + RepeatSummary();
+            TwoDigits(anchor.wHour) + L":" + TwoDigits(anchor.wMinute);
     }
 
     std::wstring Snapshot() const {
@@ -682,7 +677,7 @@ private:
             return true;
         }
         if (isNew_) {
-            return !Trim(GetText(titleEdit_)).empty() || !Trim(GetText(contentEdit_)).empty() || hasReminder_;
+            return !Trim(GetText(titleEdit_)).empty() || !Trim(GetText(contentEdit_)).empty();
         }
         return false;
     }
@@ -920,8 +915,7 @@ private:
         contentEdit_ = MultiEdit(IdContent, 0, 0, 1, ThemedControls::EditFrameHeight(theme_) + StaticTextHeight() + RowGap(), draft_.content);
         SendMessageW(contentEdit_, EM_SETCUEBANNER, FALSE, reinterpret_cast<LPARAM>(L"补充描述、步骤、附件链接..."));
 
-        reminderButton_ = ThemedControls::CreateButton(instance_, hwnd_, IdReminderToggle, L"", 0, 0, 1, 1, font_);
-        ShowWindow(reminderButton_, SW_HIDE);
+        timeLabel_ = Text(L"时间", 0, 0, TextControlWidth(L"时间"), StaticTextHeight());
         timeEdit_ = SingleEdit(IdTime, 260, 0, 78, L"00:00");
 
         const int tabHeight = ThemedControls::TabButtonHeight(theme_);
@@ -943,7 +937,7 @@ private:
         customPrefix_ = Text(L"每", 0, 0, TextControlWidth(L"每"), StaticTextHeight());
         customIntervalEdit_ = SingleEdit(IdCustomInterval, 0, 0, ThemedControls::EditFrameHeight(theme_) + ThemedControls::EditPaddingX(theme_) * 2, L"1", ES_NUMBER);
         customUnitCombo_ = ThemedControls::CreateComboBox(instance_, hwnd_, IdCustomUnit, 0, 0, ComboBoxWidth(L"天"), ThemedControls::ComboBoxDropdownHeight(theme_), font_, theme_);
-        customSuffix_ = Text(L"重复一次", 0, 0, TextControlWidth(L"重复一次"), StaticTextHeight());
+        customSuffix_ = Text(L"重复", 0, 0, TextControlWidth(L"重复"), StaticTextHeight());
         repeatErrorText_ = Text(L"", 0, 0, 1, StaticTextHeight());
 
         advancedButton_ = ThemedControls::CreateButton(instance_, hwnd_, IdAdvancedToggle, L"高级设置", 0, 0, ButtonWidth(L"高级设置"), ThemedControls::CompactButtonHeight(theme_), font_);
@@ -1002,94 +996,90 @@ private:
         SetFrame(contentEdit_, RECT{fieldX, y, contentRight, y + multiEditHeight});
         y += multiEditHeight + itemGap;
 
-        const int reminderHeight = fieldHeight + rowGap * 2;
-        reminderRect_ = RECT{fieldX, y, contentRight, y + reminderHeight};
+        const int reminderHeight = fieldHeight;
+        reminderRect_ = RECT{insetX, y, contentRight, y + reminderHeight};
         y += reminderHeight;
         if (!reminderError_.empty()) {
             y += textHeight + rowGap;
         }
-        if (reminderExpanded_) {
-            y += rowGap;
-            calendarRect_ = RECT{fieldX, y, fieldX + kCalendarWidth, y + kCalendarHeight};
-            const int timeX = calendarRect_.right + itemGap + MetricInt(L"global", L"rowGap", 6.0f);
-            SetFrame(timeEdit_, RECT{timeX, y, timeX + 82, y + fieldHeight});
-            SetVisible(timeEdit_, true);
-            y += kCalendarHeight + rowGap;
+        y += rowGap;
+        calendarRect_ = RECT{fieldX, y, fieldX + kCalendarWidth, y + kCalendarHeight};
+        const int sideX = calendarRect_.right + itemGap + rowGap;
+        MoveStatic(timeLabel_, sideX, y + labelOffsetY, TextControlWidth(L"时间"), labelHeight);
+        SetFrame(timeEdit_, RECT{sideX, y + fieldHeight, sideX + 82, y + fieldHeight * 2});
+        SetVisible(timeLabel_, true);
+        SetVisible(timeEdit_, true);
+        y += kCalendarHeight + rowGap;
 
-            repeatLabelY_ = y;
-            y += labelHeight + rowGap;
-            int x = fieldX;
-            const std::array<std::pair<HWND, int>, 6> repeatButtons{{
-                {repeatNone_, TabWidth(L"不重复")}, {repeatDaily_, TabWidth(L"每天")}, {repeatWorkday_, TabWidth(L"工作日")},
-                {repeatWeekly_, TabWidth(L"每周")}, {repeatMonthly_, TabWidth(L"每月")}, {repeatCustom_, TabWidth(L"自定义")},
-            }};
-            for (const auto& [button, width] : repeatButtons) {
-                MoveButton(button, x, y, width, tabHeight);
-                x += width + itemGap;
-            }
-            y += tabHeight + rowGap;
+        repeatLabelY_ = y;
+        int x = fieldX;
+        const std::array<std::pair<HWND, int>, 6> repeatButtons{{
+            {repeatNone_, TabWidth(L"不重复")}, {repeatDaily_, TabWidth(L"每天")}, {repeatWorkday_, TabWidth(L"工作日")},
+            {repeatWeekly_, TabWidth(L"每周")}, {repeatMonthly_, TabWidth(L"每月")}, {repeatCustom_, TabWidth(L"自定义")},
+        }};
+        for (const auto& [button, width] : repeatButtons) {
+            MoveButton(button, x, y, width, tabHeight);
+            x += width + itemGap;
+        }
+        y += tabHeight + rowGap;
 
-            const bool showWeekdays = repeatRule_ == RepeatRule::Weekly || (repeatRule_ == RepeatRule::Custom && ComboIndex(customUnitCombo_, 0) == 1);
-            const bool showMonthly = repeatRule_ == RepeatRule::Monthly || (repeatRule_ == RepeatRule::Custom && ComboIndex(customUnitCombo_, 0) == 2);
-            const bool showCustom = repeatRule_ == RepeatRule::Custom;
-            SetVisible(workdayHint_, repeatRule_ == RepeatRule::Workday);
-            if (repeatRule_ == RepeatRule::Workday) {
-                MoveStatic(workdayHint_, fieldX, y, TextControlWidth(L"默认周一至周五执行"), textHeight);
-                y += textHeight + rowGap;
-            }
+        const bool showWeekdays = repeatRule_ == RepeatRule::Weekly || (repeatRule_ == RepeatRule::Custom && ComboIndex(customUnitCombo_, 0) == 1);
+        const bool showMonthly = repeatRule_ == RepeatRule::Monthly || (repeatRule_ == RepeatRule::Custom && ComboIndex(customUnitCombo_, 0) == 2);
+        const bool showCustom = repeatRule_ == RepeatRule::Custom;
+        SetVisible(workdayHint_, repeatRule_ == RepeatRule::Workday);
+        if (repeatRule_ == RepeatRule::Workday) {
+            MoveStatic(workdayHint_, fieldX, y, TextControlWidth(L"默认周一至周五执行"), textHeight);
+            y += textHeight + rowGap;
+        }
 
-            const int weekdayButtonSize = TabWidth(L"日");
-            for (int i = 0; i < 7; ++i) {
-                SetVisible(weekdayButtons_[i], showWeekdays);
-                if (showWeekdays) {
-                    MoveButton(weekdayButtons_[i], fieldX + i * (weekdayButtonSize + itemGap), y, weekdayButtonSize, tabHeight);
-                }
-            }
+        const int weekdayButtonSize = TabWidth(L"日");
+        for (int i = 0; i < 7; ++i) {
+            SetVisible(weekdayButtons_[i], showWeekdays);
             if (showWeekdays) {
-                y += tabHeight + rowGap;
+                MoveButton(weekdayButtons_[i], fieldX + i * (weekdayButtonSize + itemGap), y, weekdayButtonSize, tabHeight);
             }
+        }
+        if (showWeekdays) {
+            y += tabHeight + rowGap;
+        }
 
-            SetVisible(monthlyFixedButton_, showMonthly);
-            SetVisible(monthlyDayEdit_, showMonthly);
-            SetVisible(monthlyDayLabel_, showMonthly);
-            if (showMonthly) {
-                const int fixedWidth = TabWidth(L"每月固定");
-                const int dayWidth = fieldHeight + ThemedControls::EditPaddingX(theme_) * 2;
-                MoveButton(monthlyFixedButton_, fieldX, y, fixedWidth, tabHeight);
-                SetFrame(monthlyDayEdit_, RECT{fieldX + fixedWidth + itemGap, y, fieldX + fixedWidth + itemGap + dayWidth, y + fieldHeight});
-                MoveStatic(monthlyDayLabel_, fieldX + fixedWidth + itemGap + dayWidth + itemGap, y, TextControlWidth(L"号"), textHeight);
-                y += fieldHeight + rowGap;
-            }
+        SetVisible(monthlyFixedButton_, showMonthly);
+        SetVisible(monthlyDayEdit_, showMonthly);
+        SetVisible(monthlyDayLabel_, showMonthly);
+        if (showMonthly) {
+            const int fixedWidth = TabWidth(L"每月固定");
+            const int dayWidth = fieldHeight + ThemedControls::EditPaddingX(theme_) * 2;
+            MoveButton(monthlyFixedButton_, fieldX, y, fixedWidth, tabHeight);
+            SetFrame(monthlyDayEdit_, RECT{fieldX + fixedWidth + itemGap, y, fieldX + fixedWidth + itemGap + dayWidth, y + fieldHeight});
+            MoveStatic(monthlyDayLabel_, fieldX + fixedWidth + itemGap + dayWidth + itemGap, y + labelOffsetY, TextControlWidth(L"号"), textHeight);
+            y += fieldHeight + rowGap;
+        }
 
-            SetVisible(customPrefix_, showCustom);
-            SetVisible(customIntervalEdit_, showCustom);
-            SetVisible(customUnitCombo_, showCustom);
-            SetVisible(customSuffix_, showCustom);
-            if (showCustom) {
-                const int prefixWidth = TextControlWidth(L"每");
-                const int intervalWidth = fieldHeight + ThemedControls::EditPaddingX(theme_) * 2;
-                const int unitWidth = ComboBoxWidth(L"天");
-                int customX = fieldX;
-                MoveStatic(customPrefix_, customX, y, prefixWidth, textHeight);
-                customX += prefixWidth + itemGap;
-                SetFrame(customIntervalEdit_, RECT{customX, y, customX + intervalWidth, y + fieldHeight});
-                customX += intervalWidth + itemGap;
-                MoveCombo(customUnitCombo_, customX, y, unitWidth, ThemedControls::ComboBoxDropdownHeight(theme_));
-                customX += unitWidth + itemGap;
-                MoveStatic(customSuffix_, customX, y, TextControlWidth(L"重复一次"), textHeight);
-                y += fieldHeight + rowGap;
-            }
+        SetVisible(customPrefix_, showCustom);
+        SetVisible(customIntervalEdit_, showCustom);
+        SetVisible(customUnitCombo_, showCustom);
+        SetVisible(customSuffix_, showCustom);
+        if (showCustom) {
+            const int prefixWidth = TextControlWidth(L"每");
+            const int intervalWidth = fieldHeight + ThemedControls::EditPaddingX(theme_) * 2;
+            const int unitWidth = ComboBoxWidth(L"天");
+            int customX = fieldX + itemGap * 2;
+            MoveStatic(customPrefix_, customX, y + labelOffsetY, prefixWidth, textHeight);
+            customX += prefixWidth + itemGap;
+            SetFrame(customIntervalEdit_, RECT{customX, y, customX + intervalWidth, y + fieldHeight});
+            customX += intervalWidth + itemGap;
+            MoveCombo(customUnitCombo_, customX, y, unitWidth, ThemedControls::ComboBoxDropdownHeight(theme_));
+            customX += unitWidth + itemGap;
+            MoveStatic(customSuffix_, customX, y + labelOffsetY, TextControlWidth(L"重复"), textHeight);
+            y += fieldHeight + rowGap;
+        }
 
-            const bool hasRepeatError = !repeatError_.empty();
-            SetVisible(repeatErrorText_, hasRepeatError);
-            if (hasRepeatError) {
-                SetWindowTextW(repeatErrorText_, repeatError_.c_str());
-                MoveStatic(repeatErrorText_, fieldX, y, contentWidth, textHeight);
-                y += textHeight + rowGap;
-            }
-
-        } else {
-            HideReminderChildren();
+        const bool hasRepeatError = !repeatError_.empty();
+        SetVisible(repeatErrorText_, hasRepeatError);
+        if (hasRepeatError) {
+            SetWindowTextW(repeatErrorText_, repeatError_.c_str());
+            MoveStatic(repeatErrorText_, fieldX, y, contentWidth, textHeight);
+            y += textHeight + rowGap;
         }
 
         MoveButton(advancedButton_, fieldX, y, ButtonWidth(L"高级设置"), ThemedControls::CompactButtonHeight(theme_));
@@ -1121,25 +1111,6 @@ private:
         LayoutFooter();
         UpdateScrollBar();
         InvalidateRect(hwnd_, nullptr, TRUE);
-    }
-
-    void HideReminderChildren() {
-        SetVisible(timeEdit_, false);
-        for (HWND button : {repeatNone_, repeatDaily_, repeatWorkday_, repeatWeekly_, repeatMonthly_, repeatCustom_}) {
-            SetVisible(button, false);
-        }
-        for (HWND button : weekdayButtons_) {
-            SetVisible(button, false);
-        }
-        SetVisible(workdayHint_, false);
-        SetVisible(monthlyFixedButton_, false);
-        SetVisible(monthlyDayEdit_, false);
-        SetVisible(monthlyDayLabel_, false);
-        SetVisible(customPrefix_, false);
-        SetVisible(customIntervalEdit_, false);
-        SetVisible(customUnitCombo_, false);
-        SetVisible(customSuffix_, false);
-        SetVisible(repeatErrorText_, false);
     }
 
     void LayoutFooter() {
@@ -1476,23 +1447,18 @@ private:
         }
 
         RECT reminder = Offset(reminderRect_);
-        DrawPanel(dc, reminder, hasReminder_, !reminderError_.empty());
-        const int panelPadX = MetricInt(L"panel", L"paddingX", 10.0f);
-        const int panelPadY = MetricInt(L"panel", L"paddingY", 8.0f);
         const int textHeight = StaticTextHeight();
-        DrawTextIn(dc, L"提醒时间", RECT{reminder.left + panelPadX, reminder.top + panelPadY, reminder.left + panelPadX + TextControlWidth(L"提醒时间"), reminder.top + panelPadY + textHeight}, ColorFor(L"text", L"normal", L"text"), DT_LEFT | DT_SINGLELINE);
+        const int labelOffsetY = std::max(0, (static_cast<int>(reminder.bottom - reminder.top) - ThemedControls::LabelHeight(theme_)) / 2);
+        DrawTextIn(dc, L"提醒时间", RECT{ContentInsetX(), reminder.top + labelOffsetY, FieldX(), reminder.bottom}, ColorFor(L"label", L"normal", L"text"), DT_LEFT | DT_SINGLELINE | DT_VCENTER);
         const std::wstring summary = ReminderSummary();
-        const int arrowWidth = MetricInt(L"iconButton", L"iconSize", 16.0f);
-        DrawTextIn(dc, summary, RECT{reminder.left + panelPadX + TextControlWidth(L"提醒时间") + ItemGap(), reminder.top + panelPadY, reminder.right - panelPadX - arrowWidth, reminder.top + panelPadY + textHeight}, hasReminder_ ? ColorFor(L"text", L"accent", L"text") : ColorFor(L"text", L"muted", L"text"), DT_RIGHT | DT_SINGLELINE | DT_END_ELLIPSIS);
-        DrawTextIn(dc, reminderExpanded_ ? L"⌃" : L"⌄", RECT{reminder.right - panelPadX - arrowWidth, reminder.top + panelPadY, reminder.right - panelPadX, reminder.top + panelPadY + textHeight}, ColorFor(L"text", L"muted", L"text"), DT_CENTER | DT_SINGLELINE);
+        DrawTextIn(dc, summary, RECT{FieldX(), reminder.top + labelOffsetY, reminder.right, reminder.bottom}, ColorFor(L"text", L"accent", L"text"), DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
         if (!reminderError_.empty()) {
             DrawTextIn(dc, reminderError_, RECT{FieldX(), reminder.bottom + RowGap(), FieldRight(), reminder.bottom + RowGap() + textHeight}, ColorFor(L"text", L"danger", L"text"), DT_LEFT | DT_SINGLELINE);
         }
 
-        if (reminderExpanded_) {
-            DrawCalendar(dc);
-            DrawTextIn(dc, L"重复规则", RECT{FieldX(), repeatLabelY_ - scrollY_, FieldRight(), repeatLabelY_ - scrollY_ + ThemedControls::LabelHeight(theme_)}, ColorFor(L"label", L"normal", L"text"), DT_LEFT | DT_SINGLELINE);
-        }
+        DrawCalendar(dc);
+        const int repeatLabelOffsetY = std::max(0, (ThemedControls::TabButtonHeight(theme_) - ThemedControls::LabelHeight(theme_)) / 2);
+        DrawTextIn(dc, L"重复规则", RECT{ContentInsetX(), repeatLabelY_ - scrollY_ + repeatLabelOffsetY, FieldX(), repeatLabelY_ - scrollY_ + ThemedControls::TabButtonHeight(theme_)}, ColorFor(L"label", L"normal", L"text"), DT_LEFT | DT_SINGLELINE | DT_VCENTER);
 
         RECT footer{0, ClientHeight() - FooterHeight(), client.right, ClientHeight()};
         HBRUSH footerBrush = CreateSolidBrush(ColorFor(L"panel", L"normal", L"bg"));
@@ -1532,60 +1498,48 @@ private:
             return 0;
         case WM_LBUTTONUP: {
             POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
-            RECT reminder = Offset(reminderRect_);
-            if (PtInRect(&reminder, point)) {
-                reminderExpanded_ = !reminderExpanded_;
-                if (reminderExpanded_) {
-                    hasReminder_ = true;
-                    SetVisible(timeEdit_, true);
-                }
-                Layout();
+            RECT prev = Offset(CalendarPrevRect());
+            RECT next = Offset(CalendarNextRect());
+            RECT yearTitle = Offset(CalendarYearTitleRect());
+            RECT monthTitle = Offset(CalendarMonthTitleRect());
+            if (PtInRect(&prev, point)) {
+                ChangeCalendarMonth(-1);
                 return 0;
             }
-            if (reminderExpanded_) {
-                RECT prev = Offset(CalendarPrevRect());
-                RECT next = Offset(CalendarNextRect());
-                RECT yearTitle = Offset(CalendarYearTitleRect());
-                RECT monthTitle = Offset(CalendarMonthTitleRect());
-                if (PtInRect(&prev, point)) {
-                    ChangeCalendarMonth(-1);
-                    return 0;
-                }
-                if (PtInRect(&next, point)) {
-                    ChangeCalendarMonth(1);
-                    return 0;
-                }
-                if (PtInRect(&yearTitle, point)) {
-                    calendarYearPageStart_ = calendarYear_ - ((calendarYear_ - 1900) % 12);
-                    calendarPickerMode_ = calendarPickerMode_ == CalendarPickerMode::Year ? CalendarPickerMode::Day : CalendarPickerMode::Year;
-                    InvalidateRect(hwnd_, nullptr, TRUE);
-                    return 0;
-                }
-                if (PtInRect(&monthTitle, point)) {
-                    calendarPickerMode_ = calendarPickerMode_ == CalendarPickerMode::Month ? CalendarPickerMode::Day : CalendarPickerMode::Month;
-                    InvalidateRect(hwnd_, nullptr, TRUE);
-                    return 0;
-                }
-                const int year = CalendarYearFromPoint(point);
-                if (year > 0) {
-                    SelectCalendarYear(year);
-                    return 0;
-                }
-                const int month = CalendarMonthFromPoint(point);
-                if (month > 0) {
-                    SelectCalendarMonth(month);
-                    return 0;
-                }
-                const int day = CalendarDayFromPoint(point);
-                if (day > 0) {
-                    SelectCalendarDay(day);
-                    return 0;
-                }
-                if (calendarPickerMode_ != CalendarPickerMode::Day) {
-                    calendarPickerMode_ = CalendarPickerMode::Day;
-                    InvalidateRect(hwnd_, nullptr, TRUE);
-                    return 0;
-                }
+            if (PtInRect(&next, point)) {
+                ChangeCalendarMonth(1);
+                return 0;
+            }
+            if (PtInRect(&yearTitle, point)) {
+                calendarYearPageStart_ = calendarYear_ - ((calendarYear_ - 1900) % 12);
+                calendarPickerMode_ = calendarPickerMode_ == CalendarPickerMode::Year ? CalendarPickerMode::Day : CalendarPickerMode::Year;
+                InvalidateRect(hwnd_, nullptr, TRUE);
+                return 0;
+            }
+            if (PtInRect(&monthTitle, point)) {
+                calendarPickerMode_ = calendarPickerMode_ == CalendarPickerMode::Month ? CalendarPickerMode::Day : CalendarPickerMode::Month;
+                InvalidateRect(hwnd_, nullptr, TRUE);
+                return 0;
+            }
+            const int year = CalendarYearFromPoint(point);
+            if (year > 0) {
+                SelectCalendarYear(year);
+                return 0;
+            }
+            const int month = CalendarMonthFromPoint(point);
+            if (month > 0) {
+                SelectCalendarMonth(month);
+                return 0;
+            }
+            const int day = CalendarDayFromPoint(point);
+            if (day > 0) {
+                SelectCalendarDay(day);
+                return 0;
+            }
+            if (calendarPickerMode_ != CalendarPickerMode::Day) {
+                calendarPickerMode_ = CalendarPickerMode::Day;
+                InvalidateRect(hwnd_, nullptr, TRUE);
+                return 0;
             }
             return 0;
         }
@@ -1705,7 +1659,7 @@ private:
     HWND titleErrorText_ = nullptr;
     HWND contentLabel_ = nullptr;
     HWND contentEdit_ = nullptr;
-    HWND reminderButton_ = nullptr;
+    HWND timeLabel_ = nullptr;
     HWND timeEdit_ = nullptr;
     HWND repeatNone_ = nullptr;
     HWND repeatDaily_ = nullptr;
@@ -1754,7 +1708,6 @@ private:
     int calendarYearPageStart_ = 2020;
     bool isNew_ = false;
     bool hasReminder_ = false;
-    bool reminderExpanded_ = false;
     CalendarPickerMode calendarPickerMode_ = CalendarPickerMode::Day;
     bool advancedExpanded_ = false;
     bool ownerWasEnabled_ = false;
