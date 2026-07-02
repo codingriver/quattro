@@ -4751,11 +4751,6 @@ void MainWindow::ShowMainMenu(POINT screenPoint) {
     AppendThemedSeparator(menu);
     AppendUnifiedViewOptionItems(menu);
     AppendThemedSeparator(menu);
-    AppendThemedMenuItem(menu, MF_STRING, ID_MENU_IMPORT_CLIPBOARD, L"从剪贴板导入");
-    AppendThemedMenuItem(menu, MF_STRING, ID_MENU_IMPORT_CONFIG_MERGE, L"合并导入配置包...");
-    AppendThemedMenuItem(menu, MF_STRING, ID_MENU_EXPORT_CONFIG, L"导出配置包...");
-    AppendThemedMenuItem(menu, MF_STRING, ID_MENU_UPLOAD_WEBDAV_BACKUP, L"上传 WebDAV 备份...");
-    AppendThemedMenuItem(menu, MF_STRING, ID_MENU_DOWNLOAD_WEBDAV_BACKUP, L"下载 WebDAV 备份...");
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_UPDATE, L"更新");
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_EXIT, L"关闭退出");
     ActivateWindow(hwnd_);

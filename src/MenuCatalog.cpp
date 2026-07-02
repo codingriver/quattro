@@ -6,7 +6,7 @@
 namespace {
 constexpr const wchar_t* kMenuIconLinkPrefix = L"#menu:";
 
-constexpr std::array<MenuVisualRequirement, 31> kTopRightMenuVisuals{{
+constexpr std::array<MenuVisualRequirement, 27> kTopRightMenuVisuals{{
     {ID_MENU_TOGGLE_TITLE, L"隐藏标题栏", MenuIconEyeOff},
     {ID_MENU_TOGGLE_GROUP, L"隐藏分组", MenuIconEyeOff},
     {ID_MENU_TOGGLE_TAG, L"隐藏标签", MenuIconEyeOff},
@@ -28,11 +28,6 @@ constexpr std::array<MenuVisualRequirement, 31> kTopRightMenuVisuals{{
     {0, L"统一图标大小", MenuIconSize},
     {0, L"统一查看方式", MenuIconView},
     {0, L"统一排序方式", MenuIconSort},
-    {ID_MENU_IMPORT_CLIPBOARD, L"从剪贴板导入", MenuIconPaste},
-    {ID_MENU_IMPORT_CONFIG_MERGE, L"合并导入配置包", MenuIconPaste},
-    {ID_MENU_EXPORT_CONFIG, L"导出配置包", MenuIconCopy},
-    {ID_MENU_UPLOAD_WEBDAV_BACKUP, L"上传 WebDAV 备份", MenuIconCopy},
-    {ID_MENU_DOWNLOAD_WEBDAV_BACKUP, L"下载 WebDAV 备份", MenuIconPaste},
     {ID_MENU_UPDATE, L"更新", MenuIconRefresh},
     {ID_MENU_HELP, L"帮助说明", MenuIconHelp},
     {ID_MENU_EXIT, L"关闭退出", MenuIconExit},
