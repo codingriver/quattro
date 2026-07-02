@@ -2,6 +2,7 @@
 
 #include "../resources/resource.h"
 
+#include "SimpleDialogs.h"
 #include "ThemedControls.h"
 #include "TodoSchedule.h"
 #include "Utilities.h"
@@ -15,6 +16,8 @@
 #include <windowsx.h>
 
 namespace {
+#define MessageBoxW(owner, message, title, flags) ShowThemedMessageBox((owner), instance_, theme_, (message), (title), (flags))
+
 constexpr int IdTitle = 101;
 constexpr int IdContent = 102;
 constexpr int IdTime = 150;

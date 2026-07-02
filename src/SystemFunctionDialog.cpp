@@ -2,6 +2,7 @@
 
 #include "../resources/resource.h"
 
+#include "DialogLayout.h"
 #include "MenuCatalog.h"
 #include "ShellItemService.h"
 #include "ThemedControls.h"
@@ -203,6 +204,12 @@ private:
             return 0;
         case WM_NOTIFY: {
             const auto* notify = reinterpret_cast<NMHDR*>(lParam);
+            if (notify && notify->idFrom == IdList && notify->code == NM_CUSTOMDRAW) {
+                LRESULT result = 0;
+                if (ThemedControls::HandleListViewCustomDraw(theme_, lParam, result)) {
+                    return result;
+                }
+            }
             if (notify && notify->idFrom == IdList && notify->code == NM_DBLCLK) {
                 Accept();
                 return 0;
@@ -275,18 +282,23 @@ private:
         }
         editFont_ = ThemedControls::CreateEditFont(theme_);
 
-        filterFrame_ = RECT{14, 14, 502, 14 + ThemedControls::EditFrameHeight(theme_)};
+        const DialogLayoutMetrics layout = GetDialogLayoutMetrics(theme_, DialogLayoutKind::Overlay);
+        const int editHeight = ThemedControls::EditFrameHeight(theme_);
+        filterFrame_ = RECT{layout.contentInsetX, layout.contentInsetY, kDialogWidth - layout.contentInsetX, layout.contentInsetY + editHeight};
         filter_ = ThemedControls::CreateSingleLineEdit(instance_, hwnd_, IdFilter, theme_, filterFrame_, L"", editFont_ ? editFont_ : font_);
 
+        const int buttonHeight = ThemedControls::ButtonHeight(theme_);
+        const int footerY = kDialogHeight - layout.contentInsetY * 2 - layout.footerGap - buttonHeight;
+        listFrame_ = RECT{layout.contentInsetX, filterFrame_.bottom + layout.sectionGap, kDialogWidth - layout.contentInsetX, footerY - layout.footerGap};
         list_ = CreateWindowExW(
             0,
             WC_LISTVIEWW,
             nullptr,
             WS_CHILD | WS_VISIBLE | WS_TABSTOP | LVS_ICON | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
-            14,
-            58,
-            488,
-            286,
+            listFrame_.left + 2,
+            listFrame_.top + 2,
+            listFrame_.right - listFrame_.left - 4,
+            listFrame_.bottom - listFrame_.top - 4,
             hwnd_,
             reinterpret_cast<HMENU>(IdList),
             instance_,
@@ -310,9 +322,8 @@ private:
 
         PopulateList();
 
-        const int buttonHeight = ThemedControls::ButtonHeight(theme_);
-        okButton_ = ThemedControls::CreatePrimaryButton(instance_, hwnd_, IdOk, L"确定", 336, 360, 76, buttonHeight, font_, true);
-        ThemedControls::CreateButton(instance_, hwnd_, IdCancel, L"取消", 426, 360, 76, buttonHeight, font_);
+        okButton_ = ThemedControls::CreatePrimaryButton(instance_, hwnd_, IdOk, L"确定", layout.FooterButtonX(kDialogWidth, 0, 2), footerY, layout.footerButtonWidth, buttonHeight, font_, true);
+        ThemedControls::CreateButton(instance_, hwnd_, IdCancel, L"取消", layout.FooterButtonX(kDialogWidth, 1, 2), footerY, layout.footerButtonWidth, buttonHeight, font_);
         UpdateOkState();
         SetFocus(filter_);
     }
@@ -352,8 +363,7 @@ private:
         GetClientRect(hwnd_, &rect);
         FillRect(dc, &rect, backgroundBrush_ ? backgroundBrush_ : reinterpret_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
         ThemedControls::DrawFieldFrame(theme_, dc, filterFrame_, filter_);
-        const RECT listFrame{12, 56, 504, 346};
-        ThemedControls::DrawListFrame(theme_, dc, listFrame, list_);
+        ThemedControls::DrawListFrame(theme_, dc, listFrame_, list_);
     }
 
     void Accept() {
@@ -399,6 +409,7 @@ private:
     HBRUSH backgroundBrush_ = nullptr;
     HBRUSH fieldBrush_ = nullptr;
     RECT filterFrame_{};
+    RECT listFrame_{};
     HWND filter_ = nullptr;
     HWND list_ = nullptr;
     HWND okButton_ = nullptr;

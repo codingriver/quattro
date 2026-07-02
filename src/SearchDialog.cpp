@@ -2,6 +2,7 @@
 
 #include "../resources/resource.h"
 
+#include "DialogLayout.h"
 #include "ShellItemService.h"
 #include "ThemedControls.h"
 #include "Utilities.h"
@@ -213,18 +214,24 @@ private:
     LRESULT Handle(UINT message, WPARAM wParam, LPARAM lParam) {
         switch (message) {
         case WM_CREATE: {
-            font_ = reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
+            font_ = ThemedControls::CreateDialogFont();
+            if (!font_) {
+                font_ = reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
+            } else {
+                ownsFont_ = true;
+            }
             editFont_ = ThemedControls::CreateEditFont(theme_);
             backgroundBrush_ = CreateSolidBrush(ToColorRef(theme_.color(L"dialog", L"normal", L"bg")));
             fieldBrush_ = CreateSolidBrush(ToColorRef(theme_.color(L"edit", L"normal", L"bg")));
+            const DialogLayoutMetrics layout = GetDialogLayoutMetrics(theme_, DialogLayoutKind::Overlay);
             const int fieldHeight = ThemedControls::EditFrameHeight(theme_);
-            editFrame_ = RECT{18, 16, 522, 16 + fieldHeight};
-            listFrame_ = RECT{18, 62, 522, 350};
+            editFrame_ = RECT{layout.contentInsetX, layout.contentInsetY, 536, layout.contentInsetY + fieldHeight};
+            listFrame_ = RECT{layout.contentInsetX, editFrame_.bottom + layout.sectionGap, 536, 350};
             edit_ = ThemedControls::CreateSingleLineEdit(instance_, hwnd_, 100, theme_, editFrame_, L"", editFont_ ? editFont_ : font_);
             SetWindowSubclass(edit_, EditProc, 1, reinterpret_cast<DWORD_PTR>(this));
             list_ = CreateWindowExW(0, WC_LISTVIEWW, L"",
                                     WS_CHILD | WS_VISIBLE | WS_TABSTOP | LVS_REPORT | LVS_NOCOLUMNHEADER | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
-                                    20, 64, 500, 284, hwnd_, reinterpret_cast<HMENU>(101), instance_, nullptr);
+                                    26, 64, 508, 284, hwnd_, reinterpret_cast<HMENU>(101), instance_, nullptr);
             SetFont(list_, font_);
             ListView_SetExtendedListViewStyle(list_, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER);
             ListView_SetBkColor(list_, ToColorRef(theme_.color(L"list", L"normal", L"bg")));
@@ -315,7 +322,13 @@ private:
         }
         case WM_NOTIFY: {
             auto* hdr = reinterpret_cast<NMHDR*>(lParam);
-            if (hdr->hwndFrom == list_ && hdr->code == NM_DBLCLK) {
+            if (hdr && hdr->hwndFrom == list_ && hdr->code == NM_CUSTOMDRAW) {
+                LRESULT result = 0;
+                if (ThemedControls::HandleListViewCustomDraw(theme_, lParam, result)) {
+                    return result;
+                }
+            }
+            if (hdr && hdr->hwndFrom == list_ && hdr->code == NM_DBLCLK) {
                 AcceptSelected();
                 return 0;
             }
@@ -361,6 +374,10 @@ private:
                 DeleteObject(editFont_);
                 editFont_ = nullptr;
             }
+            if (ownsFont_ && font_) {
+                DeleteObject(font_);
+                font_ = nullptr;
+            }
             if (backgroundBrush_) {
                 DeleteObject(backgroundBrush_);
                 backgroundBrush_ = nullptr;
@@ -401,13 +418,15 @@ private:
         }
         const int width = client.right - client.left;
         const int height = client.bottom - client.top;
-        const int margin = 18;
+        const DialogLayoutMetrics layout = GetDialogLayoutMetrics(theme_, DialogLayoutKind::Overlay);
         const int fieldHeight = ThemedControls::EditFrameHeight(theme_);
-        editFrame_ = RECT{margin, 16, std::max(margin + 80, width - margin), 16 + fieldHeight};
-        const int listTop = 62;
-        const int statusTop = std::max(listTop + 80, height - 42);
-        listFrame_ = RECT{margin, listTop, std::max(margin + 80, width - margin), statusTop - 8};
-        statusFrame_ = RECT{margin + 2, statusTop, std::max(margin + 80, width - margin), statusTop + 24};
+        const int right = std::max(layout.contentInsetX + 80, width - layout.contentInsetX);
+        editFrame_ = RECT{layout.contentInsetX, layout.contentInsetY, right, layout.contentInsetY + fieldHeight};
+        const int listTop = editFrame_.bottom + layout.sectionGap;
+        constexpr int statusHeight = 24;
+        const int statusTop = std::max(listTop + 80, height - layout.contentInsetY - statusHeight);
+        listFrame_ = RECT{layout.contentInsetX, listTop, right, statusTop - layout.rowGap};
+        statusFrame_ = RECT{layout.contentInsetX + 2, statusTop, right, statusTop + statusHeight};
         if (edit_) {
             const int paddingX = ThemedControls::EditPaddingX(theme_);
             const int paddingY = std::max(2, (ThemedControls::EditFrameHeight(theme_) - 20) / 2);
@@ -591,6 +610,7 @@ private:
     std::wstring initialQuery_;
     bool ownerWasEnabled_ = false;
     bool ownerRestored_ = false;
+    bool ownsFont_ = false;
     bool done_ = false;
 };
 }

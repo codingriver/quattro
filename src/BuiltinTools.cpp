@@ -3,6 +3,8 @@
 #include "../resources/resource.h"
 
 #include "AppLog.h"
+#include "DialogLayout.h"
+#include "SimpleDialogs.h"
 #include "ThemedControls.h"
 #include "Utilities.h"
 
@@ -189,15 +191,21 @@ public:
 
         RECT ownerRect{};
         GetWindowRect(owner_, &ownerRect);
+        const DWORD exStyle = WS_EX_DLGMODALFRAME | WS_EX_WINDOWEDGE;
+        const DWORD style = WS_CAPTION | WS_SYSMENU | WS_POPUP;
+        RECT windowRect{0, 0, width_, height_};
+        AdjustWindowRectEx(&windowRect, style, FALSE, exStyle);
+        const int windowWidth = windowRect.right - windowRect.left;
+        const int windowHeight = windowRect.bottom - windowRect.top;
         hwnd_ = CreateWindowExW(
-            WS_EX_DLGMODALFRAME | WS_EX_WINDOWEDGE,
+            exStyle,
             className.c_str(),
             title_.c_str(),
-            WS_CAPTION | WS_SYSMENU | WS_POPUP,
+            style,
             ownerRect.left + 70,
             ownerRect.top + 70,
-            width_,
-            height_,
+            windowWidth,
+            windowHeight,
             owner_,
             nullptr,
             instance_,
@@ -244,6 +252,7 @@ protected:
             editFont_ = ThemedControls::CreateEditFont(theme_);
             backgroundBrush_ = CreateSolidBrush(ToColorRef(theme_.color(L"dialog", L"normal", L"bg")));
             editBrush_ = CreateSolidBrush(ToColorRef(theme_.color(L"edit", L"normal", L"bg")));
+            listBrush_ = CreateSolidBrush(ToColorRef(theme_.color(L"list", L"normal", L"bg")));
             OnCreate();
             return 0;
         case WM_COMMAND:
@@ -303,6 +312,12 @@ protected:
             SetTextColor(dc, ToColorRef(theme_.color(L"label", L"normal", L"text")));
             return reinterpret_cast<LRESULT>(backgroundBrush_ ? backgroundBrush_ : GetStockObject(WHITE_BRUSH));
         }
+        case WM_CTLCOLORLISTBOX: {
+            HDC dc = reinterpret_cast<HDC>(wParam);
+            SetTextColor(dc, ToColorRef(theme_.color(L"list", L"normal", L"text")));
+            SetBkColor(dc, ToColorRef(theme_.color(L"list", L"normal", L"bg")));
+            return reinterpret_cast<LRESULT>(listBrush_ ? listBrush_ : GetStockObject(WHITE_BRUSH));
+        }
         case WM_DRAWITEM:
             if (ThemedControls::Draw(theme_, reinterpret_cast<const DRAWITEMSTRUCT*>(lParam))) {
                 return TRUE;
@@ -326,6 +341,10 @@ protected:
             if (editBrush_) {
                 DeleteObject(editBrush_);
                 editBrush_ = nullptr;
+            }
+            if (listBrush_) {
+                DeleteObject(listBrush_);
+                listBrush_ = nullptr;
             }
             if (editFont_) {
                 DeleteObject(editFont_);
@@ -357,6 +376,10 @@ protected:
 
     HFONT editFont() const {
         return editFont_ ? editFont_ : font();
+    }
+
+    DialogLayoutMetrics CompactLayout() const {
+        return GetDialogLayoutMetrics(theme_, DialogLayoutKind::Compact);
     }
 
     HWND CreateEdit(int id, int x, int y, int width, const std::wstring& value, DWORD extraStyle = ES_AUTOHSCROLL) {
@@ -414,6 +437,7 @@ protected:
     HFONT editFont_ = nullptr;
     HBRUSH backgroundBrush_ = nullptr;
     HBRUSH editBrush_ = nullptr;
+    HBRUSH listBrush_ = nullptr;
     std::vector<EditFrame> editFrames_;
     bool ownerWasEnabled_ = false;
     bool ownerRestored_ = false;
@@ -431,48 +455,65 @@ private:
         const std::wstring savedX = registry_.GetSetting(pluginId, L"x", L"0");
         const std::wstring savedY = registry_.GetSetting(pluginId, L"y", L"0");
 
-        ThemedControls::CreateStaticText(instance_, hwnd_, L"坐标（x，y）", 18, 20, 92, 22, font());
-        coord_ = CreateEdit(ID_CLICK_COORD, 112, 16, 100, savedX + L", " + savedY);
-
+        const DialogLayoutMetrics layout = CompactLayout();
+        const int editHeight = ThemedControls::EditFrameHeight(theme_);
+        const int labelHeight = ThemedControls::LabelHeight(theme_);
         const int bh = ThemedControls::ButtonHeight(theme_);
-        ThemedControls::CreateButton(instance_, hwnd_, ID_CLICK_PICK, L"拾取(&P)", 228, 17, 86, bh, font());
+        const int rowStep = layout.RowStep(bh);
+        const int labelOffsetY = std::max(0, (editHeight - labelHeight) / 2);
+        const int left = layout.contentInsetX;
+        const int fieldX = layout.fieldX;
+        const int fieldW = 70;
+        const int rightLabelX = fieldX + fieldW + layout.controlGapX + layout.labelGap;
+        const int rightFieldX = rightLabelX + layout.labelWidth - layout.labelGap;
+        const int row0 = layout.contentInsetY;
+        const int row1 = row0 + rowStep;
+        const int row2 = row1 + rowStep;
+        const int row3 = row2 + rowStep;
 
-        ThemedControls::CreateStaticText(instance_, hwnd_, L"点击次数", 18, 56, 76, 22, font());
-        count_ = CreateEdit(ID_CLICK_COUNT, 112, 52, 70, registry_.GetSetting(pluginId, L"count", L"10"), ES_NUMBER);
-        ThemedControls::CreateStaticText(instance_, hwnd_, L"间隔(ms)", 198, 56, 76, 22, font());
-        interval_ = CreateEdit(ID_CLICK_INTERVAL, 276, 52, 70, registry_.GetSetting(pluginId, L"interval", L"1000"), ES_NUMBER);
+        ThemedControls::CreateStaticText(instance_, hwnd_, L"坐标（x，y）", left, row0 + labelOffsetY, layout.labelWidth, labelHeight, font());
+        coord_ = CreateEdit(ID_CLICK_COORD, fieldX, row0, 100, savedX + L", " + savedY);
+        ThemedControls::CreateButton(instance_, hwnd_, ID_CLICK_PICK, L"拾取(&P)", fieldX + 100 + layout.controlGapX, row0 + 1, layout.footerButtonWidth, bh, font());
 
-        ThemedControls::CreateStaticText(instance_, hwnd_, L"鼠标按键", 18, 92, 76, 22, font());
-        button_ = CreateWindowExW(0, WC_COMBOBOXW, nullptr,
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST, 112, 90, 88, 180, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_CLICK_BUTTON)), instance_, nullptr);
+        ThemedControls::CreateStaticText(instance_, hwnd_, L"点击次数", left, row1 + labelOffsetY, layout.labelWidth, labelHeight, font());
+        count_ = CreateEdit(ID_CLICK_COUNT, fieldX, row1, fieldW, registry_.GetSetting(pluginId, L"count", L"10"), ES_NUMBER);
+        ThemedControls::CreateStaticText(instance_, hwnd_, L"间隔(ms)", rightLabelX, row1 + labelOffsetY, layout.labelWidth, labelHeight, font());
+        interval_ = CreateEdit(ID_CLICK_INTERVAL, rightFieldX, row1, fieldW, registry_.GetSetting(pluginId, L"interval", L"1000"), ES_NUMBER);
+
+        ThemedControls::CreateStaticText(instance_, hwnd_, L"鼠标按键", left, row2 + labelOffsetY, layout.labelWidth, labelHeight, font());
+        button_ = ThemedControls::CreateComboBox(instance_, hwnd_, ID_CLICK_BUTTON, fieldX, row2 + 2, layout.footerButtonWidth, ThemedControls::ComboBoxDropdownHeight(theme_), font(), theme_);
         SendMessageW(button_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"左键"));
         SendMessageW(button_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"右键"));
         SendMessageW(button_, CB_SETCURSEL, registry_.GetSetting(pluginId, L"button", L"left") == L"right" ? 1 : 0, 0);
 
-        ThemedControls::CreateStaticText(instance_, hwnd_, L"倒计时(s)", 214, 92, 76, 22, font());
-        countdownEdit_ = CreateEdit(ID_CLICK_COUNTDOWN, 276, 88, 70, registry_.GetSetting(pluginId, L"countdown", L"3"), ES_NUMBER);
+        ThemedControls::CreateStaticText(instance_, hwnd_, L"倒计时(s)", rightLabelX, row2 + labelOffsetY, layout.labelWidth, labelHeight, font());
+        countdownEdit_ = CreateEdit(ID_CLICK_COUNTDOWN, rightFieldX, row2, fieldW, registry_.GetSetting(pluginId, L"countdown", L"3"), ES_NUMBER);
 
         const wchar_t* hotKeys[] = {L"F6", L"F7", L"F8", L"F9", L"F10", L"F11", L"F12"};
 
-        ThemedControls::CreateStaticText(instance_, hwnd_, L"启动停止热键", 18, 128, 96, 22, font());
-        toggleHotKey_ = CreateWindowExW(0, WC_COMBOBOXW, nullptr,
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST, 112, 126, 68, 180, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_CLICK_HOTKEY)), instance_, nullptr);
+        ThemedControls::CreateStaticText(instance_, hwnd_, L"启动停止热键", left, row3 + labelOffsetY, layout.labelWidth + layout.labelGap, labelHeight, font());
+        toggleHotKey_ = ThemedControls::CreateComboBox(instance_, hwnd_, ID_CLICK_HOTKEY, fieldX, row3 + 2, fieldW, ThemedControls::ComboBoxDropdownHeight(theme_), font(), theme_);
         FillHotKeyCombo(toggleHotKey_, registry_.GetSetting(pluginId, L"toggleHotKey", registry_.GetSetting(pluginId, L"stopHotKey", L"F8")), hotKeys, 7);
 
-        ThemedControls::CreateStaticText(instance_, hwnd_, L"拾取热键", 198, 128, 76, 22, font());
-        pickHotKey_ = CreateWindowExW(0, WC_COMBOBOXW, nullptr,
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST, 276, 126, 70, 180, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_CLICK_PICK_HOTKEY_CONTROL)), instance_, nullptr);
+        ThemedControls::CreateStaticText(instance_, hwnd_, L"拾取热键", rightLabelX, row3 + labelOffsetY, layout.labelWidth, labelHeight, font());
+        pickHotKey_ = ThemedControls::CreateComboBox(instance_, hwnd_, ID_CLICK_PICK_HOTKEY_CONTROL, rightFieldX, row3 + 2, fieldW, ThemedControls::ComboBoxDropdownHeight(theme_), font(), theme_);
         FillHotKeyCombo(pickHotKey_, registry_.GetSetting(pluginId, L"pickHotKey", L"F9"), hotKeys, 7);
 
-        SendMessageW(button_, WM_SETFONT, reinterpret_cast<WPARAM>(font()), TRUE);
-        SendMessageW(toggleHotKey_, WM_SETFONT, reinterpret_cast<WPARAM>(font()), TRUE);
-        SendMessageW(pickHotKey_, WM_SETFONT, reinterpret_cast<WPARAM>(font()), TRUE);
-
-        toggle_ = ThemedControls::CreateButton(instance_, hwnd_, ID_CLICK_TOGGLE, L"启动(&S)", 126, 154, 110, bh, font(), true);
-        status_ = ThemedControls::CreateStaticText(instance_, hwnd_, L"就绪。", 18, 188, 190, 22, font());
-        progress_ = CreateWindowExW(0, L"STATIC", L"当前点击：0 / 0",
-            WS_CHILD | WS_VISIBLE | SS_RIGHT, 218, 188, 104, 22, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_CLICK_PROGRESS)), instance_, nullptr);
-        SendMessageW(progress_, WM_SETFONT, reinterpret_cast<WPARAM>(font()), TRUE);
+        const int toggleY = row3 + rowStep + layout.footerGap;
+        toggle_ = ThemedControls::CreateButton(
+            instance_,
+            hwnd_,
+            ID_CLICK_TOGGLE,
+            L"启动(&S)",
+            layout.FooterButtonX(width_, 0, 1),
+            toggleY,
+            layout.footerButtonWidth,
+            bh,
+            font(),
+            true);
+        const int statusY = toggleY + bh + layout.rowGap;
+        status_ = ThemedControls::CreateStaticText(instance_, hwnd_, L"就绪。", left, statusY, width_ - left * 2 - 120, labelHeight, font());
+        progress_ = ThemedControls::CreateStaticText(instance_, hwnd_, L"当前点击：0 / 0", width_ - left - 120, statusY, 120, labelHeight, font(), SS_RIGHT);
         RegisterToolHotKeys();
     }
 
@@ -762,20 +803,38 @@ private:
         const std::wstring minutes = registry_.GetSetting(L"quattro.builtin.timer", L"minutes", std::to_wstring((fallbackSeconds / 60) % 60));
         const std::wstring seconds = registry_.GetSetting(L"quattro.builtin.timer", L"secondsPart", std::to_wstring(fallbackSeconds % 60));
 
-        ThemedControls::CreateStaticText(instance_, hwnd_, L"时", 18, 18, 22, 22, font());
-        hours_ = CreateEdit(ID_TIMER_HOURS, 42, 14, 46, hours, ES_NUMBER);
-        ThemedControls::CreateStaticText(instance_, hwnd_, L"分", 102, 18, 22, 22, font());
-        minutes_ = CreateEdit(ID_TIMER_MINUTES, 126, 14, 46, minutes, ES_NUMBER);
-        ThemedControls::CreateStaticText(instance_, hwnd_, L"秒", 186, 18, 22, 22, font());
-        seconds_ = CreateEdit(ID_TIMER_SECONDS, 210, 14, 46, seconds, ES_NUMBER);
-        sound_ = ThemedControls::CreateCheckBox(instance_, hwnd_, ID_TIMER_SOUND, L"声音提醒", 18, 50, 100, ThemedControls::CheckBoxHeight(theme_), font_, registry_.GetSetting(L"quattro.builtin.timer", L"sound", L"1") != L"0");
-        topMost_ = ThemedControls::CreateCheckBox(instance_, hwnd_, ID_TIMER_TOPMOST, L"置顶提醒", 132, 50, 100, ThemedControls::CheckBoxHeight(theme_), font_, registry_.GetSetting(L"quattro.builtin.timer", L"topMost", L"1") != L"0");
-        display_ = ThemedControls::CreateStaticText(instance_, hwnd_, L"00:05:00.000", 18, 84, 238, 26, font(), SS_CENTER);
+        const DialogLayoutMetrics layout = CompactLayout();
+        const int editHeight = ThemedControls::EditFrameHeight(theme_);
+        const int labelHeight = ThemedControls::LabelHeight(theme_);
+        const int labelOffsetY = std::max(0, (editHeight - labelHeight) / 2);
+        const int unitLabelW = 22;
+        const int unitFieldW = 46;
+        const int unitStep = unitLabelW + unitFieldW + layout.controlGapX + layout.labelGap / 2;
+        const int unitGroupW = unitStep * 2 + unitLabelW + layout.controlGapX / 2 + unitFieldW;
+        const int unitGroupX = layout.CenteredGroupX(width_, unitGroupW);
+        const int row0 = layout.contentInsetY;
+        const int row1 = row0 + layout.RowStep(ThemedControls::ButtonHeight(theme_));
+        const int row2 = row1 + layout.RowStep(ThemedControls::ButtonHeight(theme_));
+        ThemedControls::CreateStaticText(instance_, hwnd_, L"时", unitGroupX, row0 + labelOffsetY, unitLabelW, labelHeight, font());
+        hours_ = CreateEdit(ID_TIMER_HOURS, unitGroupX + unitLabelW + layout.controlGapX / 2, row0, unitFieldW, hours, ES_NUMBER);
+        ThemedControls::CreateStaticText(instance_, hwnd_, L"分", unitGroupX + unitStep, row0 + labelOffsetY, unitLabelW, labelHeight, font());
+        minutes_ = CreateEdit(ID_TIMER_MINUTES, unitGroupX + unitStep + unitLabelW + layout.controlGapX / 2, row0, unitFieldW, minutes, ES_NUMBER);
+        ThemedControls::CreateStaticText(instance_, hwnd_, L"秒", unitGroupX + unitStep * 2, row0 + labelOffsetY, unitLabelW, labelHeight, font());
+        seconds_ = CreateEdit(ID_TIMER_SECONDS, unitGroupX + unitStep * 2 + unitLabelW + layout.controlGapX / 2, row0, unitFieldW, seconds, ES_NUMBER);
+        const int checkBoxW = 100;
+        const int checkGroupW = checkBoxW * 2 + layout.controlGapX + layout.labelGap;
+        const int checkGroupX = layout.CenteredGroupX(width_, checkGroupW);
+        sound_ = ThemedControls::CreateCheckBox(instance_, hwnd_, ID_TIMER_SOUND, L"声音提醒", checkGroupX, row1, checkBoxW, ThemedControls::CheckBoxHeight(theme_), font_, registry_.GetSetting(L"quattro.builtin.timer", L"sound", L"1") != L"0");
+        topMost_ = ThemedControls::CreateCheckBox(instance_, hwnd_, ID_TIMER_TOPMOST, L"置顶提醒", checkGroupX + checkBoxW + layout.controlGapX + layout.labelGap, row1, checkBoxW, ThemedControls::CheckBoxHeight(theme_), font_, registry_.GetSetting(L"quattro.builtin.timer", L"topMost", L"1") != L"0");
+        display_ = ThemedControls::CreateStaticText(instance_, hwnd_, L"00:05:00.000", layout.contentInsetX, row2, width_ - layout.contentInsetX * 2, 26, font(), SS_CENTER);
         const int bh = ThemedControls::ButtonHeight(theme_);
-        start_ = ThemedControls::CreateButton(instance_, hwnd_, ID_TIMER_START, L"开始(&S)", 52, 122, 76, bh, font(), true);
-        pause_ = ThemedControls::CreateButton(instance_, hwnd_, ID_TIMER_PAUSE, L"暂停(&P)", 52, 122, 76, bh, font());
-        reset_ = ThemedControls::CreateButton(instance_, hwnd_, ID_TIMER_RESET, L"重置(&R)", 146, 122, 76, bh, font());
-        status_ = ThemedControls::CreateStaticText(instance_, hwnd_, L"", 18, 158, 238, 22, font(), SS_CENTER);
+        const int buttonWidth = layout.footerButtonWidth;
+        const int buttonY = row2 + 26 + layout.sectionGap;
+        const int buttonsX = layout.CenteredGroupX(width_, buttonWidth * 2 + layout.footerButtonGap);
+        start_ = ThemedControls::CreateButton(instance_, hwnd_, ID_TIMER_START, L"开始(&S)", buttonsX, buttonY, buttonWidth, bh, font(), true);
+        pause_ = ThemedControls::CreateButton(instance_, hwnd_, ID_TIMER_PAUSE, L"暂停(&P)", buttonsX, buttonY, buttonWidth, bh, font());
+        reset_ = ThemedControls::CreateButton(instance_, hwnd_, ID_TIMER_RESET, L"重置(&R)", buttonsX + buttonWidth + layout.footerButtonGap, buttonY, buttonWidth, bh, font());
+        status_ = ThemedControls::CreateStaticText(instance_, hwnd_, L"", layout.contentInsetX, buttonY + bh + layout.rowGap, width_ - layout.contentInsetX * 2, labelHeight, font(), SS_CENTER);
         UpdateDisplay(ReadDurationMs());
         UpdateButtons();
     }
@@ -982,19 +1041,43 @@ public:
 
 private:
     void OnCreate() override {
-        display_ = ThemedControls::CreateStaticText(instance_, hwnd_, L"00:00:00.000", 12, 16, 178, 34, font(), SS_CENTER);
+        const DialogLayoutMetrics layout = CompactLayout();
+        const int left = layout.contentInsetX;
+        const int contentWidth = width_ - left * 2;
+        const int displayY = layout.contentInsetY;
+        const int displayHeight = 34;
+        display_ = ThemedControls::CreateStaticText(instance_, hwnd_, L"00:00:00.000", left, displayY, contentWidth, displayHeight, font(), SS_CENTER);
         const int bh = ThemedControls::ButtonHeight(theme_);
-        start_ = ThemedControls::CreateButton(instance_, hwnd_, ID_SW_START, L"开始(&S)", 12, 58, 86, bh, font(), true);
-        pause_ = ThemedControls::CreateButton(instance_, hwnd_, ID_SW_PAUSE, L"暂停(&P)", 12, 58, 86, bh, font());
-        ThemedControls::CreateButton(instance_, hwnd_, ID_SW_LAP, L"计次(&L)", 104, 58, 86, bh, font());
-        ThemedControls::CreateButton(instance_, hwnd_, ID_SW_RESET, L"重置(&R)", 12, 92, 86, bh, font());
-        ThemedControls::CreateButton(instance_, hwnd_, ID_SW_COPY, L"复制(&C)", 104, 92, 86, bh, font());
-        ThemedControls::CreateButton(instance_, hwnd_, ID_SW_EXPORT, L"导出(&E)", 12, 126, 178, bh, font());
-        laps_ = CreateWindowExW(WS_EX_CLIENTEDGE, L"LISTBOX", nullptr,
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL, 12, 164, 178, 110, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_SW_LAPS)), instance_, nullptr);
-        SendMessageW(laps_, WM_SETFONT, reinterpret_cast<WPARAM>(font()), TRUE);
+        const int buttonWidth = (contentWidth - layout.controlGapX) / 2;
+        const int buttonRow0 = displayY + displayHeight + layout.rowGap;
+        const int buttonRow1 = buttonRow0 + bh + layout.rowGap;
+        const int buttonRow2 = buttonRow1 + bh + layout.rowGap;
+        const int rightButtonX = left + buttonWidth + layout.controlGapX;
+        start_ = ThemedControls::CreateButton(instance_, hwnd_, ID_SW_START, L"开始(&S)", left, buttonRow0, buttonWidth, bh, font(), true);
+        pause_ = ThemedControls::CreateButton(instance_, hwnd_, ID_SW_PAUSE, L"暂停(&P)", left, buttonRow0, buttonWidth, bh, font());
+        ThemedControls::CreateButton(instance_, hwnd_, ID_SW_LAP, L"计次(&L)", rightButtonX, buttonRow0, buttonWidth, bh, font());
+        ThemedControls::CreateButton(instance_, hwnd_, ID_SW_RESET, L"重置(&R)", left, buttonRow1, buttonWidth, bh, font());
+        ThemedControls::CreateButton(instance_, hwnd_, ID_SW_COPY, L"复制(&C)", rightButtonX, buttonRow1, buttonWidth, bh, font());
+        ThemedControls::CreateButton(instance_, hwnd_, ID_SW_EXPORT, L"导出(&E)", left, buttonRow2, contentWidth, bh, font());
+        const int lapsTop = buttonRow2 + bh + layout.sectionGap;
+        lapsFrame_ = RECT{left, lapsTop, width_ - left, height_ - layout.contentInsetY - layout.sectionGap - layout.rowGap};
+        laps_ = ThemedControls::CreateListBox(
+            instance_,
+            hwnd_,
+            ID_SW_LAPS,
+            lapsFrame_.left + 2,
+            lapsFrame_.top + 2,
+            lapsFrame_.right - lapsFrame_.left - 4,
+            lapsFrame_.bottom - lapsFrame_.top - 4,
+            font(),
+            theme_,
+            WS_VSCROLL);
         LoadLapHistory();
         UpdateControls();
+    }
+
+    void OnPaint(HDC dc) override {
+        ThemedControls::DrawListFrame(theme_, dc, lapsFrame_, laps_);
     }
 
     bool OnCommand(int id, int) override {
@@ -1203,7 +1286,7 @@ private:
         std::ofstream file(path.c_str(), std::ios::binary | std::ios::trunc);
         const std::wstring text = ExportText();
         if (!file) {
-            MessageBoxW(hwnd_, L"导出失败。", L"秒表", MB_OK | MB_ICONWARNING);
+            ShowThemedMessageBox(hwnd_, instance_, theme_, L"导出失败。", L"秒表", MB_OK | MB_ICONWARNING);
             return;
         }
         const int length = WideCharToMultiByte(CP_UTF8, 0, text.c_str(), static_cast<int>(text.size()), nullptr, 0, nullptr, nullptr);
@@ -1211,12 +1294,13 @@ private:
         WideCharToMultiByte(CP_UTF8, 0, text.c_str(), static_cast<int>(text.size()), bytes.data(), length, nullptr, nullptr);
         file.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
         if (!file.good()) {
-            MessageBoxW(hwnd_, L"导出失败。", L"秒表", MB_OK | MB_ICONWARNING);
+            ShowThemedMessageBox(hwnd_, instance_, theme_, L"导出失败。", L"秒表", MB_OK | MB_ICONWARNING);
         }
     }
 
     HWND display_ = nullptr;
     HWND laps_ = nullptr;
+    RECT lapsFrame_{};
     HWND start_ = nullptr;
     HWND pause_ = nullptr;
     bool running_ = false;
@@ -1239,6 +1323,6 @@ bool ShowBuiltinTool(HWND owner, HINSTANCE instance, const Theme& theme, PluginR
         StopwatchDialog dialog(owner, instance, theme, registry);
         return dialog.Run();
     }
-    MessageBoxW(owner, L"这个内置工具暂不可用。", L"工具箱", MB_OK | MB_ICONINFORMATION);
+    ShowThemedMessageBox(owner, instance, theme, L"这个内置工具暂不可用。", L"工具箱", MB_OK | MB_ICONINFORMATION);
     return false;
 }

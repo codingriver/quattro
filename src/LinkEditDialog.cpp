@@ -3,8 +3,10 @@
 #include "../resources/resource.h"
 
 #include "AppLog.h"
+#include "DialogLayout.h"
 #include "HotKeyEditor.h"
 #include "ShellItemService.h"
+#include "SimpleDialogs.h"
 #include "ThemedControls.h"
 #include "Utilities.h"
 
@@ -21,11 +23,10 @@
 #include <vector>
 
 namespace {
+#define MessageBoxW(owner, message, title, flags) ShowThemedMessageBox((owner), instance_, theme_, (message), (title), (flags))
+
 constexpr int kDialogWidth = 560;
 constexpr int kDialogHeight = 540;
-constexpr int kLabelX = 28;
-constexpr int kFieldX = 108;
-constexpr int kFieldWidth = 416;
 
 enum ControlId {
     IdTag = 1001,
@@ -306,7 +307,7 @@ private:
         bool readOnly = false;
     };
 
-    HWND Label(const wchar_t* text, int x, int y, int width = 74) {
+    HWND Label(const wchar_t* text, int x, int y, int width) {
         return ThemedControls::CreateLabelText(instance_, hwnd_, text, x, y + 7, width, theme_, editFont_ ? editFont_ : font_, SS_LEFT);
     }
 
@@ -360,58 +361,65 @@ private:
         editFont_ = ThemedControls::CreateEditFont(theme_);
 
         const bool isUrl = LooksLikeUrl(link_);
-        const int rowStep = RowStep();
+        const DialogLayoutMetrics layout = GetDialogLayoutMetrics(theme_, DialogLayoutKind::Standard);
+        const int rowStep = layout.RowStep(FieldHeight());
         const int buttonHeight = ButtonHeight();
-        int y = 24;
-        Label(L"名称 *", kLabelX, y);
-        nameEdit_ = Edit(IdName, kFieldX, y, kFieldWidth, link_.name);
+        const int fieldWidth = kDialogWidth - layout.fieldX - layout.contentInsetX;
+        const int browseButtonWidth = 32;
+        const int browseFieldWidth = fieldWidth - browseButtonWidth - layout.controlGapX;
+        const int browseButtonX = layout.fieldX + browseFieldWidth + layout.controlGapX;
+        int y = layout.contentInsetY;
+        Label(L"名称 *", layout.contentInsetX, y, layout.labelWidth);
+        nameEdit_ = Edit(IdName, layout.fieldX, y, fieldWidth, link_.name);
 
         y += rowStep;
-        Label(isUrl ? L"网址 *" : L"路径 *", kLabelX, y);
-        pathEdit_ = Edit(IdPath, kFieldX, y, 374, link_.path);
-        Button(IdBrowseFile, L"...", 492, y + 1, 32, buttonHeight);
+        Label(isUrl ? L"网址 *" : L"路径 *", layout.contentInsetX, y, layout.labelWidth);
+        pathEdit_ = Edit(IdPath, layout.fieldX, y, browseFieldWidth, link_.path);
+        Button(IdBrowseFile, L"...", browseButtonX, y + 1, browseButtonWidth, buttonHeight);
 
         y += rowStep;
-        Label(L"图标", kLabelX, y);
-        iconEdit_ = Edit(IdIcon, kFieldX, y, 374, link_.icon.empty() ? (isUrl ? L"#url" : L"默认系统缓存图标") : link_.icon);
-        Button(IdBrowseFolder, L"...", 492, y + 1, 32, buttonHeight);
+        Label(L"图标", layout.contentInsetX, y, layout.labelWidth);
+        iconEdit_ = Edit(IdIcon, layout.fieldX, y, browseFieldWidth, link_.icon.empty() ? (isUrl ? L"#url" : L"默认系统缓存图标") : link_.icon);
+        Button(IdBrowseFolder, L"...", browseButtonX, y + 1, browseButtonWidth, buttonHeight);
 
         y += rowStep;
-        Label(L"参数", kLabelX, y);
-        parameterEdit_ = Edit(IdParameter, kFieldX, y, kFieldWidth, link_.parameter);
+        Label(L"参数", layout.contentInsetX, y, layout.labelWidth);
+        parameterEdit_ = Edit(IdParameter, layout.fieldX, y, fieldWidth, link_.parameter);
 
         y += rowStep;
-        Label(L"工作目录", kLabelX, y);
-        workDirEdit_ = Edit(IdWorkDir, kFieldX, y, kFieldWidth, link_.workDir);
+        Label(L"工作目录", layout.contentInsetX, y, layout.labelWidth);
+        workDirEdit_ = Edit(IdWorkDir, layout.fieldX, y, fieldWidth, link_.workDir);
 
         y += rowStep;
         adminCheck_ = ThemedControls::CreateCheckBox(
             instance_, hwnd_, IdAdmin, isUrl ? L"以隐私模式运行" : L"以管理员身份运行",
-            kFieldX, y + 4, 220, ThemedControls::CheckBoxHeight(theme_), font_, link_.isAdmin);
+            layout.fieldX, y + 4, 220, ThemedControls::CheckBoxHeight(theme_), font_, link_.isAdmin);
         SendMessageW(adminCheck_, BM_SETCHECK, link_.isAdmin ? BST_CHECKED : BST_UNCHECKED, 0);
 
         y += rowStep;
-        Label(L"颜色", kLabelX, y);
+        Label(L"颜色", layout.contentInsetX, y, layout.labelWidth);
         std::wstring colorText = link_.isCustomColor && !link_.customColor.empty() ? link_.customColor : L"#ff000000";
-        customColorEdit_ = Edit(IdCustomColorEdit, kFieldX, y, 374, colorText);
-        Button(IdPickColor, L"...", 492, y + 1, 32, buttonHeight);
+        customColorEdit_ = Edit(IdCustomColorEdit, layout.fieldX, y, browseFieldWidth, colorText);
+        Button(IdPickColor, L"...", browseButtonX, y + 1, browseButtonWidth, buttonHeight);
 
         y += rowStep;
-        Label(L"快捷键", kLabelX, y);
+        Label(L"快捷键", layout.contentInsetX, y, layout.labelWidth);
+        const int hotKeyClearWidth = layout.footerButtonWidth;
+        const int hotKeyWidth = fieldWidth - hotKeyClearWidth - layout.controlGapX;
         hotKeyText_ = ThemedControls::CreateButton(instance_, hwnd_, IdHotKeyCapture, LinkHotKeyText(capturedHotKey_).c_str(),
-                                                   kFieldX, y + 1, 326, buttonHeight, font_);
-        Button(IdHotKeyClear, L"清除", 448, y + 1, 76, buttonHeight);
+                                                   layout.fieldX, y + 1, hotKeyWidth, buttonHeight, font_);
+        Button(IdHotKeyClear, L"清除", layout.fieldX + hotKeyWidth + layout.controlGapX, y + 1, hotKeyClearWidth, buttonHeight);
 
         y += rowStep;
-        Label(L"备注", kLabelX, y);
-        const int remarkHeight = FieldHeight() * 2 + static_cast<int>(theme_.metric(L"global", L"sectionGap", 16.0f)) + 8;
-        const RECT remarkFrame{kFieldX, y, kFieldX + kFieldWidth, y + remarkHeight};
+        Label(L"备注", layout.contentInsetX, y, layout.labelWidth);
+        const int remarkHeight = FieldHeight() * 2 + layout.sectionGap + 8;
+        const RECT remarkFrame{layout.fieldX, y, layout.fieldX + fieldWidth, y + remarkHeight};
         remarkEdit_ = ThemedControls::CreateMultiLineEdit(instance_, hwnd_, IdRemark, theme_, remarkFrame, link_.remark, font_);
         fieldFrames_.push_back(FieldFrame{remarkFrame, remarkEdit_, false});
 
-        const int footerY = remarkFrame.bottom + static_cast<int>(theme_.metric(L"global", L"sectionGap", 16.0f));
-        Button(IdOk, L"确定", 356, footerY, 76, buttonHeight);
-        Button(IdCancel, L"取消", 448, footerY, 76, buttonHeight);
+        const int footerY = layout.FooterY(remarkFrame.bottom);
+        Button(IdOk, L"确定", layout.FooterButtonX(kDialogWidth, 0, 2), footerY, layout.footerButtonWidth, buttonHeight);
+        Button(IdCancel, L"取消", layout.FooterButtonX(kDialogWidth, 1, 2), footerY, layout.footerButtonWidth, buttonHeight);
     }
 
     int FieldHeight() const {

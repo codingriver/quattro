@@ -3,6 +3,7 @@
 #include "../resources/resource.h"
 
 #include "AppLog.h"
+#include "DialogLayout.h"
 #include "HotKeyEditor.h"
 #include "ThemedControls.h"
 #include "Utilities.h"
@@ -37,6 +38,10 @@ constexpr int ID_WEBDAV_CLEAR_PASSWORD = 411;
 constexpr int ID_WEBDAV_UPLOAD = 412;
 constexpr int ID_WEBDAV_DOWNLOAD = 413;
 constexpr int ID_WEBDAV_BACKUP_LIST = 414;
+
+bool SearchFeatureEnabled() {
+    return false;
+}
 
 std::wstring GetText(HWND hwnd) {
     const int length = GetWindowTextLengthW(hwnd);
@@ -113,6 +118,225 @@ std::wstring FormatBackupListItem(const WebDavRemoteFile& backup) {
     }
     return text;
 }
+
+int EstimateMessageRows(const std::wstring& message) {
+    int rows = 1;
+    int lineLength = 0;
+    for (wchar_t ch : message) {
+        if (ch == L'\r') {
+            continue;
+        }
+        if (ch == L'\n') {
+            ++rows;
+            lineLength = 0;
+            continue;
+        }
+        ++lineLength;
+        if (lineLength >= 34) {
+            ++rows;
+            lineLength = 0;
+        }
+    }
+    return std::max(1, rows);
+}
+
+class ThemedMessageDialog {
+public:
+    ThemedMessageDialog(HWND owner, HINSTANCE instance, const Theme& theme, std::wstring message, std::wstring title, UINT flags)
+        : owner_(owner), instance_(instance), theme_(theme), message_(std::move(message)), title_(std::move(title)), flags_(flags) {}
+
+    int Run() {
+        WNDCLASSEXW wc{};
+        wc.cbSize = sizeof(wc);
+        wc.lpfnWndProc = ThemedMessageDialog::Proc;
+        wc.hInstance = instance_;
+        wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+        wc.hIcon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_QUATTRO_APP_ICON));
+        wc.hIconSm = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_QUATTRO_APP_ICON));
+        wc.hbrBackground = nullptr;
+        wc.lpszClassName = L"QuattroThemedMessageDialog";
+        RegisterClassExW(&wc);
+
+        const int rows = EstimateMessageRows(message_);
+        width_ = 430;
+        height_ = std::max(150, 112 + rows * 20);
+
+        RECT ownerRect{};
+        if (owner_) {
+            GetWindowRect(owner_, &ownerRect);
+        } else {
+            SystemParametersInfoW(SPI_GETWORKAREA, 0, &ownerRect, 0);
+        }
+        const int ownerWidth = ownerRect.right - ownerRect.left;
+        const int ownerHeight = ownerRect.bottom - ownerRect.top;
+        const int x = ownerRect.left + std::max(0, (ownerWidth - width_) / 2);
+        const int y = ownerRect.top + std::max(0, (ownerHeight - height_) / 2);
+
+        hwnd_ = CreateWindowExW(
+            WS_EX_DLGMODALFRAME | WS_EX_WINDOWEDGE,
+            wc.lpszClassName,
+            title_.empty() ? L"提示" : title_.c_str(),
+            WS_CAPTION | WS_SYSMENU | WS_POPUP,
+            x,
+            y,
+            width_,
+            height_,
+            owner_,
+            nullptr,
+            instance_,
+            this);
+        if (!hwnd_) {
+            return MessageBoxW(owner_, message_.c_str(), title_.c_str(), flags_);
+        }
+
+        ownerWasEnabled_ = ShowModalWindow(owner_, hwnd_);
+        UpdateWindow(hwnd_);
+
+        MSG message{};
+        while (!done_ && GetMessageW(&message, nullptr, 0, 0) > 0) {
+            if (!IsDialogMessageW(hwnd_, &message)) {
+                TranslateMessage(&message);
+                DispatchMessageW(&message);
+            }
+        }
+        RestoreModalOwner(owner_, ownerWasEnabled_, ownerRestored_);
+        return result_;
+    }
+
+private:
+    static LRESULT CALLBACK Proc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
+        ThemedMessageDialog* dialog = nullptr;
+        if (message == WM_NCCREATE) {
+            auto* create = reinterpret_cast<CREATESTRUCTW*>(lParam);
+            dialog = static_cast<ThemedMessageDialog*>(create->lpCreateParams);
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(dialog));
+            dialog->hwnd_ = hwnd;
+        } else {
+            dialog = reinterpret_cast<ThemedMessageDialog*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+        }
+        return dialog ? dialog->Handle(message, wParam, lParam) : DefWindowProcW(hwnd, message, wParam, lParam);
+    }
+
+    bool YesNo() const {
+        return (flags_ & MB_TYPEMASK) == MB_YESNO;
+    }
+
+    bool OkCancel() const {
+        return (flags_ & MB_TYPEMASK) == MB_OKCANCEL;
+    }
+
+    void Close(int result) {
+        result_ = result;
+        done_ = true;
+        DestroyWindow(hwnd_);
+    }
+
+    LRESULT Handle(UINT message, WPARAM wParam, LPARAM lParam) {
+        switch (message) {
+        case WM_CREATE: {
+            font_ = ThemedControls::CreateDialogFont();
+            if (!font_) {
+                font_ = reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
+            } else {
+                ownsFont_ = true;
+            }
+            backgroundBrush_ = CreateSolidBrush(ToColorRef(theme_.color(L"dialog", L"normal", L"bg")));
+            const DialogLayoutMetrics layout = GetDialogLayoutMetrics(theme_, DialogLayoutKind::Mini);
+            const int buttonHeight = ThemedControls::ButtonHeight(theme_);
+            RECT client{};
+            GetClientRect(hwnd_, &client);
+            const int clientWidth = client.right - client.left;
+            const int clientHeight = client.bottom - client.top;
+            const int y = layout.FooterButtonY(clientHeight, buttonHeight);
+            if (YesNo()) {
+                ThemedControls::CreatePrimaryButton(instance_, hwnd_, IDYES, L"是", layout.FooterButtonX(clientWidth, 0, 2), y, layout.footerButtonWidth, buttonHeight, font_, true);
+                ThemedControls::CreateButton(instance_, hwnd_, IDNO, L"否", layout.FooterButtonX(clientWidth, 1, 2), y, layout.footerButtonWidth, buttonHeight, font_);
+            } else if (OkCancel()) {
+                ThemedControls::CreatePrimaryButton(instance_, hwnd_, IDOK, L"确定", layout.FooterButtonX(clientWidth, 0, 2), y, layout.footerButtonWidth, buttonHeight, font_, true);
+                ThemedControls::CreateButton(instance_, hwnd_, IDCANCEL, L"取消", layout.FooterButtonX(clientWidth, 1, 2), y, layout.footerButtonWidth, buttonHeight, font_);
+            } else {
+                ThemedControls::CreatePrimaryButton(instance_, hwnd_, IDOK, L"确定", layout.FooterButtonX(clientWidth, 0, 1), y, layout.footerButtonWidth, buttonHeight, font_, true);
+            }
+            return 0;
+        }
+        case WM_PAINT: {
+            PAINTSTRUCT ps{};
+            HDC dc = BeginPaint(hwnd_, &ps);
+            RECT rect{};
+            GetClientRect(hwnd_, &rect);
+            FillRect(dc, &rect, backgroundBrush_ ? backgroundBrush_ : reinterpret_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
+            const DialogLayoutMetrics layout = GetDialogLayoutMetrics(theme_, DialogLayoutKind::Mini);
+            const int buttonTop = layout.FooterButtonY(rect.bottom - rect.top, ThemedControls::ButtonHeight(theme_));
+            RECT textRect{layout.contentInsetX, layout.contentInsetY, rect.right - layout.contentInsetX, buttonTop - layout.footerGap};
+            SetBkMode(dc, TRANSPARENT);
+            SetTextColor(dc, ToColorRef(theme_.color(L"label", L"normal", L"text")));
+            HFONT oldFont = reinterpret_cast<HFONT>(SelectObject(dc, font_));
+            DrawTextW(dc, message_.c_str(), static_cast<int>(message_.size()), &textRect, DT_LEFT | DT_WORDBREAK | DT_END_ELLIPSIS);
+            SelectObject(dc, oldFont);
+            EndPaint(hwnd_, &ps);
+            return 0;
+        }
+        case WM_ERASEBKGND:
+            return 1;
+        case WM_DRAWITEM:
+            if (ThemedControls::Draw(theme_, reinterpret_cast<const DRAWITEMSTRUCT*>(lParam))) {
+                return TRUE;
+            }
+            return 0;
+        case WM_COMMAND:
+            switch (LOWORD(wParam)) {
+            case IDYES:
+                Close(IDYES);
+                return 0;
+            case IDNO:
+                Close(IDNO);
+                return 0;
+            case IDOK:
+                Close(IDOK);
+                return 0;
+            case IDCANCEL:
+                Close(IDCANCEL);
+                return 0;
+            default:
+                return 0;
+            }
+        case WM_CLOSE:
+            Close(YesNo() ? IDNO : IDCANCEL);
+            return 0;
+        case WM_DESTROY:
+            RestoreModalOwner(owner_, ownerWasEnabled_, ownerRestored_);
+            if (ownsFont_ && font_) {
+                DeleteObject(font_);
+                font_ = nullptr;
+            }
+            if (backgroundBrush_) {
+                DeleteObject(backgroundBrush_);
+                backgroundBrush_ = nullptr;
+            }
+            done_ = true;
+            return 0;
+        default:
+            return DefWindowProcW(hwnd_, message, wParam, lParam);
+        }
+    }
+
+    HWND owner_ = nullptr;
+    HINSTANCE instance_ = nullptr;
+    HWND hwnd_ = nullptr;
+    const Theme& theme_;
+    std::wstring message_;
+    std::wstring title_;
+    UINT flags_ = MB_OK;
+    int width_ = 430;
+    int height_ = 150;
+    int result_ = IDOK;
+    HFONT font_ = nullptr;
+    HBRUSH backgroundBrush_ = nullptr;
+    bool ownsFont_ = false;
+    bool ownerWasEnabled_ = false;
+    bool ownerRestored_ = false;
+    bool done_ = false;
+};
 
 class TextDialog {
 public:
@@ -192,17 +416,27 @@ private:
     LRESULT Handle(UINT message, WPARAM wParam, LPARAM lParam) {
         switch (message) {
         case WM_CREATE: {
-            HFONT font = reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
+            font_ = ThemedControls::CreateDialogFont();
+            if (!font_) {
+                font_ = reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
+            } else {
+                ownsFont_ = true;
+            }
             editFont_ = ThemedControls::CreateEditFont(theme_);
             backgroundBrush_ = CreateSolidBrush(ToColorRef(theme_.color(L"dialog", L"normal", L"bg")));
             fieldBrush_ = CreateSolidBrush(ToColorRef(theme_.color(L"edit", L"normal", L"bg")));
-            ThemedControls::CreateLabelText(instance_, hwnd_, label_.c_str(), 24, 18, 320, theme_, font);
+            const DialogLayoutMetrics layout = GetDialogLayoutMetrics(theme_, DialogLayoutKind::Mini);
+            const int contentWidth = 390 - layout.contentInsetX * 2;
+            const int labelY = layout.contentInsetY;
+            ThemedControls::CreateLabelText(instance_, hwnd_, label_.c_str(), layout.contentInsetX, labelY, contentWidth, theme_, font_);
             const int fieldHeight = ThemedControls::EditFrameHeight(theme_);
-            editFrame_ = RECT{24, 42, 346, 42 + fieldHeight};
-            edit_ = ThemedControls::CreateSingleLineEdit(instance_, hwnd_, 100, theme_, editFrame_, value_, editFont_ ? editFont_ : font);
+            const int editY = labelY + ThemedControls::LabelHeight(theme_) + layout.rowGap;
+            editFrame_ = RECT{layout.contentInsetX, editY, layout.contentInsetX + contentWidth, editY + fieldHeight};
+            edit_ = ThemedControls::CreateSingleLineEdit(instance_, hwnd_, 100, theme_, editFrame_, value_, editFont_ ? editFont_ : font_);
             const int buttonHeight = ThemedControls::ButtonHeight(theme_);
-            ThemedControls::CreatePrimaryButton(instance_, hwnd_, IDOK, L"确定", 198, 88, 72, buttonHeight, font, true);
-            ThemedControls::CreateButton(instance_, hwnd_, IDCANCEL, L"取消", 286, 88, 72, buttonHeight, font);
+            const int footerY = layout.FooterY(editFrame_.bottom);
+            ThemedControls::CreatePrimaryButton(instance_, hwnd_, IDOK, L"确定", layout.FooterButtonX(390, 0, 2), footerY, layout.footerButtonWidth, buttonHeight, font_, true);
+            ThemedControls::CreateButton(instance_, hwnd_, IDCANCEL, L"取消", layout.FooterButtonX(390, 1, 2), footerY, layout.footerButtonWidth, buttonHeight, font_);
             SetFocus(edit_);
             SendMessageW(edit_, EM_SETSEL, 0, -1);
             return 0;
@@ -243,7 +477,7 @@ private:
             if (LOWORD(wParam) == IDOK) {
                 std::wstring next = Trim(GetText(edit_));
                 if (next.empty()) {
-                    MessageBoxW(hwnd_, L"名称不能为空。", title_.c_str(), MB_OK | MB_ICONWARNING);
+                    ShowThemedMessageBox(hwnd_, instance_, theme_, L"名称不能为空。", title_, MB_OK | MB_ICONWARNING);
                     return 0;
                 }
                 value_ = next;
@@ -269,6 +503,10 @@ private:
                 DeleteObject(editFont_);
                 editFont_ = nullptr;
             }
+            if (ownsFont_ && font_) {
+                DeleteObject(font_);
+                font_ = nullptr;
+            }
             if (backgroundBrush_) {
                 DeleteObject(backgroundBrush_);
                 backgroundBrush_ = nullptr;
@@ -292,9 +530,11 @@ private:
     std::wstring label_;
     std::wstring& value_;
     RECT editFrame_{};
+    HFONT font_ = nullptr;
     HBRUSH backgroundBrush_ = nullptr;
     HBRUSH fieldBrush_ = nullptr;
     HFONT editFont_ = nullptr;
+    bool ownsFont_ = false;
     bool ownerWasEnabled_ = false;
     bool ownerRestored_ = false;
     bool accepted_ = false;
@@ -382,7 +622,7 @@ private:
     void AcceptSelection() {
         const int selected = static_cast<int>(SendMessageW(list_, LB_GETCURSEL, 0, 0));
         if (selected < 0 || selected >= static_cast<int>(backups_.size())) {
-            MessageBoxW(hwnd_, L"请选择一个备份文件。", L"选择 WebDAV 备份", MB_OK | MB_ICONWARNING);
+            ShowThemedMessageBox(hwnd_, instance_, theme_, L"请选择一个备份文件。", L"选择 WebDAV 备份", MB_OK | MB_ICONWARNING);
             return;
         }
         selectedName_ = backups_[static_cast<std::size_t>(selected)].name;
@@ -394,24 +634,25 @@ private:
     LRESULT Handle(UINT message, WPARAM wParam, LPARAM lParam) {
         switch (message) {
         case WM_CREATE: {
-            font_ = reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
+            font_ = ThemedControls::CreateDialogFont();
+            if (!font_) {
+                font_ = reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
+            } else {
+                ownsFont_ = true;
+            }
             backgroundBrush_ = CreateSolidBrush(ToColorRef(theme_.color(L"dialog", L"normal", L"bg")));
             listBrush_ = CreateSolidBrush(ToColorRef(theme_.color(L"list", L"normal", L"bg")));
             ThemedControls::CreateLabelText(instance_, hwnd_, L"云端备份记录", 24, 20, 180, theme_, font_);
-            list_ = CreateWindowExW(
-                0,
-                L"LISTBOX",
-                nullptr,
-                WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL | LBS_NOTIFY | LBS_HASSTRINGS,
+            list_ = ThemedControls::CreateListBox(
+                instance_,
+                hwnd_,
+                ID_WEBDAV_BACKUP_LIST,
                 24,
                 48,
                 500,
                 238,
-                hwnd_,
-                reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_WEBDAV_BACKUP_LIST)),
-                instance_,
-                nullptr);
-            SendMessageW(list_, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
+                font_,
+                theme_);
             for (const auto& backup : backups_) {
                 SendMessageW(list_, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(FormatBackupListItem(backup).c_str()));
             }
@@ -485,6 +726,10 @@ private:
                 DeleteObject(listBrush_);
                 listBrush_ = nullptr;
             }
+            if (ownsFont_ && font_) {
+                DeleteObject(font_);
+                font_ = nullptr;
+            }
             return 0;
         default:
             return DefWindowProcW(hwnd_, message, wParam, lParam);
@@ -501,6 +746,7 @@ private:
     std::wstring& selectedName_;
     HBRUSH backgroundBrush_ = nullptr;
     HBRUSH listBrush_ = nullptr;
+    bool ownsFont_ = false;
     bool ownerWasEnabled_ = false;
     bool ownerRestored_ = false;
     bool accepted_ = false;
@@ -810,7 +1056,8 @@ private:
         draft_.deleteConfirm = SendMessageW(deleteConfirm_, BM_GETCHECK, 0, 0) == BST_CHECKED;
         draft_.saveRunCount = SendMessageW(saveRunCount_, BM_GETCHECK, 0, 0) == BST_CHECKED;
         draft_.showDate = SendMessageW(showDate_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-        draft_.showSearchButton = SendMessageW(showSearchButton_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        draft_.showSearchButton = SearchFeatureEnabled() && showSearchButton_ &&
+            SendMessageW(showSearchButton_, BM_GETCHECK, 0, 0) == BST_CHECKED;
         draft_.showMenuButton = SendMessageW(showMenuButton_, BM_GETCHECK, 0, 0) == BST_CHECKED;
         draft_.showSkinButton = SendMessageW(showSkinButton_, BM_GETCHECK, 0, 0) == BST_CHECKED;
         draft_.autoRun = SendMessageW(autoRun_, BM_GETCHECK, 0, 0) == BST_CHECKED;
@@ -818,7 +1065,8 @@ private:
         draft_.showTooltip = SendMessageW(showTooltip_, BM_GETCHECK, 0, 0) == BST_CHECKED;
         draft_.groupRight = SendMessageW(groupRight_, BM_GETCHECK, 0, 0) == BST_CHECKED;
         draft_.tagRight = SendMessageW(tagRight_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-        draft_.focusSearch = SendMessageW(focusSearch_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        draft_.focusSearch = SearchFeatureEnabled() && focusSearch_ &&
+            SendMessageW(focusSearch_, BM_GETCHECK, 0, 0) == BST_CHECKED;
         draft_.mouseEnterActiveGroup = SendMessageW(enterActiveGroup_, BM_GETCHECK, 0, 0) == BST_CHECKED;
         draft_.mouseEnterActiveTag = SendMessageW(enterActiveTag_, BM_GETCHECK, 0, 0) == BST_CHECKED;
         draft_.tagAlign = tagAlignIndex_ == 0 ? L"left" : (tagAlignIndex_ == 2 ? L"right" : L"center");
@@ -829,7 +1077,12 @@ private:
         draft_.dockDelay = ClampNumber(dockDelayEdit_, 0, 5000, draft_.dockDelay);
         draft_.activeGroupDelay = ClampNumber(groupDelayEdit_, 0, 5000, draft_.activeGroupDelay);
         draft_.activeTagDelay = ClampNumber(tagDelayEdit_, 0, 5000, draft_.activeTagDelay);
-        draft_.searchCount = ClampNumber(searchCountEdit_, 0, 10000, draft_.searchCount);
+        if (SearchFeatureEnabled() && searchCountEdit_) {
+            draft_.searchCount = ClampNumber(searchCountEdit_, 0, 10000, draft_.searchCount);
+        }
+        if (!SearchFeatureEnabled()) {
+            draft_.searchHotKey = 0;
+        }
         draft_.openDirCommand = GetText(openDirEdit_);
         draft_.helpUrl = GetText(helpUrlEdit_);
         draft_.updateUrl = GetText(updateUrlEdit_);
@@ -865,7 +1118,7 @@ private:
         }
         std::wstring error;
         if (!WebDavCredentialService::SavePassword(draft_, password, error)) {
-            MessageBoxW(hwnd_, error.c_str(), L"WebDAV 备份", MB_OK | MB_ICONWARNING);
+            ShowThemedMessageBox(hwnd_, instance_, theme_, error, L"WebDAV 备份", MB_OK | MB_ICONWARNING);
             return false;
         }
         return true;
@@ -877,14 +1130,14 @@ private:
         std::wstring password = GetText(webDavPasswordEdit_);
         std::wstring error;
         if (password.empty() && !WebDavCredentialService::LoadPassword(value, password, error)) {
-            MessageBoxW(hwnd_, error.c_str(), L"WebDAV 备份", MB_OK | MB_ICONWARNING);
+            ShowThemedMessageBox(hwnd_, instance_, theme_, error, L"WebDAV 备份", MB_OK | MB_ICONWARNING);
             return;
         }
         WebDavClient client(value, password);
         if (client.TestConnection()) {
-            MessageBoxW(hwnd_, L"WebDAV 连接成功。", L"WebDAV 备份", MB_OK | MB_ICONINFORMATION);
+            ShowThemedMessageBox(hwnd_, instance_, theme_, L"WebDAV 连接成功。", L"WebDAV 备份", MB_OK | MB_ICONINFORMATION);
         } else {
-            MessageBoxW(hwnd_, client.lastError().c_str(), L"WebDAV 备份", MB_OK | MB_ICONWARNING);
+            ShowThemedMessageBox(hwnd_, instance_, theme_, client.lastError(), L"WebDAV 备份", MB_OK | MB_ICONWARNING);
         }
     }
 
@@ -893,9 +1146,9 @@ private:
         std::wstring error;
         if (WebDavCredentialService::DeletePassword(value, error)) {
             SetWindowTextW(webDavPasswordEdit_, L"");
-            MessageBoxW(hwnd_, L"WebDAV 密码已清除。", L"WebDAV 备份", MB_OK | MB_ICONINFORMATION);
+            ShowThemedMessageBox(hwnd_, instance_, theme_, L"WebDAV 密码已清除。", L"WebDAV 备份", MB_OK | MB_ICONINFORMATION);
         } else {
-            MessageBoxW(hwnd_, error.c_str(), L"WebDAV 备份", MB_OK | MB_ICONWARNING);
+            ShowThemedMessageBox(hwnd_, instance_, theme_, error, L"WebDAV 备份", MB_OK | MB_ICONWARNING);
         }
     }
 
@@ -913,7 +1166,7 @@ private:
         }
         WebDavBackupService service(appDirectory_, draft_);
         const WebDavBackupReport report = service.UploadBackup();
-        MessageBoxW(hwnd_, report.message.c_str(), L"上传到云端", MB_OK | (report.ok ? MB_ICONINFORMATION : MB_ICONWARNING));
+        ShowThemedMessageBox(hwnd_, instance_, theme_, report.message, L"上传到云端", MB_OK | (report.ok ? MB_ICONINFORMATION : MB_ICONWARNING));
     }
 
     void DownloadWebDavBackup() {
@@ -924,11 +1177,11 @@ private:
         std::vector<WebDavRemoteFile> backups;
         std::wstring error;
         if (!service.ListBackups(backups, error)) {
-            MessageBoxW(hwnd_, error.c_str(), L"从云端下载", MB_OK | MB_ICONWARNING);
+            ShowThemedMessageBox(hwnd_, instance_, theme_, error, L"从云端下载", MB_OK | MB_ICONWARNING);
             return;
         }
         if (backups.empty()) {
-            MessageBoxW(hwnd_, L"远端目录中没有可用的 .q4cfg 备份。", L"从云端下载", MB_OK | MB_ICONINFORMATION);
+            ShowThemedMessageBox(hwnd_, instance_, theme_, L"远端目录中没有可用的 .q4cfg 备份。", L"从云端下载", MB_OK | MB_ICONINFORMATION);
             return;
         }
         std::wstring fileName = backups.front().name;
@@ -936,8 +1189,10 @@ private:
             return;
         }
 
-        const int confirm = MessageBoxW(
+        const int confirm = ShowThemedMessageBox(
             hwnd_,
+            instance_,
+            theme_,
             L"将下载所选 WebDAV 备份，并把其中的分组、标签、启动项、便签、待办和工具设置合并到当前数据。\n\n当前数据不会被覆盖，导入前会自动备份。",
             L"从云端下载",
             MB_OKCANCEL | MB_ICONINFORMATION);
@@ -952,13 +1207,18 @@ private:
         const std::wstring text = report.importReport.message.empty()
             ? report.message
             : FormatConfigPackageReportText(report.importReport);
-        MessageBoxW(hwnd_, text.c_str(), L"从云端下载", MB_OK | (report.ok ? MB_ICONINFORMATION : MB_ICONWARNING));
+        ShowThemedMessageBox(hwnd_, instance_, theme_, text, L"从云端下载", MB_OK | (report.ok ? MB_ICONINFORMATION : MB_ICONWARNING));
     }
 
     LRESULT Handle(UINT message, WPARAM wParam, LPARAM lParam) {
         switch (message) {
         case WM_CREATE: {
-            font_ = reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
+            font_ = ThemedControls::CreateDialogFont();
+            if (!font_) {
+                font_ = reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
+            } else {
+                ownsFont_ = true;
+            }
             editFont_ = ThemedControls::CreateEditFont(theme_);
             backgroundBrush_ = CreateSolidBrush(ToColorRef(theme_.color(L"dialog", L"normal", L"bg")));
             fieldBrush_ = CreateSolidBrush(ToColorRef(theme_.color(L"edit", L"normal", L"bg")));
@@ -969,13 +1229,15 @@ private:
             showGroup_ = CheckBox(TabDisplay, 102, L"显示分组栏", 282, 64, draft_.showGroup);
             showTag_ = CheckBox(TabDisplay, 103, L"显示标签栏", 34, 94, draft_.showTag);
             showDate_ = CheckBox(TabDisplay, 113, L"显示日期", 282, 94, draft_.showDate);
-            showSearchButton_ = CheckBox(TabDisplay, 114, L"显示搜索按钮", 34, 124, draft_.showSearchButton);
             showMenuButton_ = CheckBox(TabDisplay, 115, L"显示菜单按钮", 282, 124, draft_.showMenuButton);
-            showSkinButton_ = CheckBox(TabDisplay, 121, L"显示主题按钮", 34, 154, draft_.showSkinButton);
+            showSkinButton_ = CheckBox(TabDisplay, 121, L"显示主题按钮", 34, 124, draft_.showSkinButton);
             linkNameSingleLine_ = CheckBox(TabDisplay, 118, L"启动项名称单行", 282, 154, draft_.linkNameSingleLine);
-            showTooltip_ = CheckBox(TabDisplay, 119, L"显示提示", 34, 184, draft_.showTooltip);
+            showTooltip_ = CheckBox(TabDisplay, 119, L"显示提示", 34, 154, draft_.showTooltip);
             groupRight_ = CheckBox(TabDisplay, 120, L"分组栏在右侧", 282, 184, draft_.groupRight);
-            tagRight_ = CheckBox(TabDisplay, 122, L"标签栏在右侧", 34, 214, draft_.tagRight);
+            tagRight_ = CheckBox(TabDisplay, 122, L"标签栏在右侧", 34, 184, draft_.tagRight);
+            if (SearchFeatureEnabled()) {
+                showSearchButton_ = CheckBox(TabDisplay, 114, L"显示搜索按钮", 34, 124, draft_.showSearchButton);
+            }
 
             Label(TabDisplay, L"透明度", 34, 260, 76);
             alphaEdit_ = NumberEdit(TabDisplay, 201, 118, 254, 78, draft_.alpha);
@@ -1008,7 +1270,6 @@ private:
             Label(TabBehavior, L"ms", 214, 238, 32);
 
             doubleClick_ = CheckBox(TabInteraction, 109, L"双击运行", 34, 64, draft_.doubleClickToRun);
-            focusSearch_ = CheckBox(TabInteraction, 123, L"打开搜索时聚焦输入框", 282, 64, draft_.focusSearch);
             enterActiveGroup_ = CheckBox(TabInteraction, 124, L"鼠标进入激活分组", 34, 94, draft_.mouseEnterActiveGroup);
             enterActiveTag_ = CheckBox(TabInteraction, 125, L"鼠标进入激活标签", 282, 94, draft_.mouseEnterActiveTag);
             Label(TabInteraction, L"分组激活延迟", 34, 154, 100);
@@ -1017,17 +1278,22 @@ private:
             Label(TabInteraction, L"标签激活延迟", 282, 154, 100);
             tagDelayEdit_ = NumberEdit(TabInteraction, ID_TAG_DELAY, 392, 148, 88, draft_.activeTagDelay);
             Label(TabInteraction, L"ms", 488, 154, 32);
-            Label(TabInteraction, L"搜索计数", 34, 208, 88);
-            searchCountEdit_ = FramedStatic(TabInteraction, 144, 202, 88, std::to_wstring(draft_.searchCount));
+            if (SearchFeatureEnabled()) {
+                focusSearch_ = CheckBox(TabInteraction, 123, L"打开搜索时聚焦输入框", 282, 64, draft_.focusSearch);
+                Label(TabInteraction, L"搜索计数", 34, 208, 88);
+                searchCountEdit_ = FramedStatic(TabInteraction, 144, 202, 88, std::to_wstring(draft_.searchCount));
+            }
 
             Label(TabHotKeys, L"主窗口热键", 34, 74, 84);
             mainHotKeyText_ = FramedStatic(TabHotKeys, 128, 66, 210, FormatHotKeyText(draft_.mainHotKey));
             Button(TabHotKeys, ID_MAIN_HOTKEY_CAPTURE, L"录入", 354, 68, 56);
             Button(TabHotKeys, ID_MAIN_HOTKEY_CLEAR, L"清除", 424, 68, 56);
-            Label(TabHotKeys, L"搜索热键", 34, 128, 84);
-            searchHotKeyText_ = FramedStatic(TabHotKeys, 128, 120, 210, FormatHotKeyText(draft_.searchHotKey));
-            Button(TabHotKeys, ID_SEARCH_HOTKEY_CAPTURE, L"录入", 354, 122, 56);
-            Button(TabHotKeys, ID_SEARCH_HOTKEY_CLEAR, L"清除", 424, 122, 56);
+            if (SearchFeatureEnabled()) {
+                Label(TabHotKeys, L"搜索热键", 34, 128, 84);
+                searchHotKeyText_ = FramedStatic(TabHotKeys, 128, 120, 210, FormatHotKeyText(draft_.searchHotKey));
+                Button(TabHotKeys, ID_SEARCH_HOTKEY_CAPTURE, L"录入", 354, 122, 56);
+                Button(TabHotKeys, ID_SEARCH_HOTKEY_CLEAR, L"清除", 424, 122, 56);
+            }
 
             Label(TabLinks, L"打开目录命令", 34, 68, 110);
             openDirEdit_ = FramedEdit(TabLinks, 202, 34, 92, 446, draft_.openDirCommand);
@@ -1123,12 +1389,12 @@ private:
                 UpdateHotKeyLabels();
                 return 0;
             }
-            if (LOWORD(wParam) == ID_SEARCH_HOTKEY_CAPTURE) {
+            if (SearchFeatureEnabled() && LOWORD(wParam) == ID_SEARCH_HOTKEY_CAPTURE) {
                 draft_.searchHotKey = ShowHotKeyCaptureDialog(hwnd_, instance_, theme_, draft_.searchHotKey);
                 UpdateHotKeyLabels();
                 return 0;
             }
-            if (LOWORD(wParam) == ID_SEARCH_HOTKEY_CLEAR) {
+            if (SearchFeatureEnabled() && LOWORD(wParam) == ID_SEARCH_HOTKEY_CLEAR) {
                 draft_.searchHotKey = 0;
                 UpdateHotKeyLabels();
                 return 0;
@@ -1189,6 +1455,10 @@ private:
                 DeleteObject(readOnlyFieldBrush_);
                 readOnlyFieldBrush_ = nullptr;
             }
+            if (ownsFont_ && font_) {
+                DeleteObject(font_);
+                font_ = nullptr;
+            }
             return 0;
         default:
             return DefWindowProcW(hwnd_, message, wParam, lParam);
@@ -1216,6 +1486,7 @@ private:
     HBRUSH backgroundBrush_ = nullptr;
     HBRUSH fieldBrush_ = nullptr;
     HBRUSH readOnlyFieldBrush_ = nullptr;
+    bool ownsFont_ = false;
     bool ownerWasEnabled_ = false;
     bool ownerRestored_ = false;
     int currentTab_ = TabDisplay;
@@ -1280,6 +1551,11 @@ private:
 
 bool ShowTextInputDialog(HWND owner, HINSTANCE instance, const Theme& theme, const std::wstring& title, const std::wstring& label, std::wstring& value) {
     TextDialog dialog(owner, instance, theme, title, label, value);
+    return dialog.Run();
+}
+
+int ShowThemedMessageBox(HWND owner, HINSTANCE instance, const Theme& theme, const std::wstring& message, const std::wstring& title, UINT flags) {
+    ThemedMessageDialog dialog(owner, instance, theme, message, title, flags);
     return dialog.Run();
 }
 

@@ -189,9 +189,10 @@ private:
     void ShowLinkMenu(int linkId, POINT screenPoint);
     void CreateTooltip();
     void ApplyTooltipTheme();
-    void HideLinkTooltip();
-    void UpdateLinkTooltip(const HitArea& hit, POINT screenPoint);
+    void HideItemTooltip();
+    void UpdateItemTooltip(const HitArea& hit, POINT screenPoint);
     std::wstring LinkTooltipText(const Link& link) const;
+    std::wstring TodoTooltipText(const TodoItem& item) const;
     void ShowGroupMenu(int groupId, POINT screenPoint);
     void ShowGroupBlankMenu(POINT screenPoint);
     void ShowTagMenu(int tagId, POINT screenPoint);
@@ -325,7 +326,8 @@ private:
     HWND tooltip_ = nullptr;
     TOOLINFOW tooltipInfo_{};
     std::wstring tooltipText_;
-    int tooltipLinkId_ = 0;
+    HitKind tooltipItemKind_ = HitKind::None;
+    int tooltipItemId_ = 0;
     bool trackingMouse_ = false;
     bool trayIconVisible_ = false;
     bool hotKeysRegistered_ = false;
@@ -349,6 +351,7 @@ private:
     UINT_PTR reminderScanTimerId_ = 0;
     UINT_PTR reminderPanelTimerId_ = 0;
     HWND reminderPanel_ = nullptr;
+    HFONT tooltipFont_ = nullptr;
     HFONT reminderPanelFont_ = nullptr;
     std::unordered_set<std::wstring> shownReminderKeys_;
 

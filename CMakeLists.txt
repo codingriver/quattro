@@ -214,6 +214,34 @@ add_executable(QuattroThemeStateProbe
     src/Utilities.cpp
 )
 
+add_executable(QuattroUiScreenshotAcceptance
+    tests/UiScreenshotAcceptance.cpp
+    src/AppLog.cpp
+    src/BuiltinTools.cpp
+    src/ConfigPackageService.cpp
+    src/HotKeyEditor.cpp
+    src/JsonValue.cpp
+    src/Launcher.cpp
+    src/LinkEditDialog.cpp
+    src/MenuCatalog.cpp
+    src/PluginRegistry.cpp
+    src/SearchDialog.cpp
+    src/ShellItemService.cpp
+    src/SimpleDialogs.cpp
+    src/Storage.cpp
+    src/SystemFunctionDialog.cpp
+    src/Theme.cpp
+    src/ThemedControls.cpp
+    src/TodoEditDialog.cpp
+    src/TodoSchedule.cpp
+    src/UrlEditDialog.cpp
+    src/Utilities.cpp
+    src/WebDavBackupService.cpp
+    src/WebDavClient.cpp
+    src/WebDavCredentialService.cpp
+    src/WebDavRecoveryService.cpp
+)
+
 add_executable(QuattroWebDavAcceptance
     tests/WebDavAcceptance.cpp
     src/Config.cpp
@@ -268,6 +296,14 @@ target_compile_definitions(QuattroThemeStateProbe PRIVATE
     NOMINMAX
 )
 
+target_compile_definitions(QuattroUiScreenshotAcceptance PRIVATE
+    UNICODE
+    _UNICODE
+    WINVER=0x0A00
+    _WIN32_WINNT=0x0A00
+    NOMINMAX
+)
+
 target_compile_definitions(QuattroWebDavAcceptance PRIVATE
     UNICODE
     _UNICODE
@@ -278,6 +314,7 @@ target_compile_definitions(QuattroWebDavAcceptance PRIVATE
 
 if(QUATTRO_WITH_WEBDAV_LIBS)
     target_compile_definitions(QuattroTests PRIVATE QUATTRO_WITH_WEBDAV_LIBS)
+    target_compile_definitions(QuattroUiScreenshotAcceptance PRIVATE QUATTRO_WITH_WEBDAV_LIBS)
     target_compile_definitions(QuattroWebDavAcceptance PRIVATE QUATTRO_WITH_WEBDAV_LIBS)
 endif()
 
@@ -298,6 +335,10 @@ target_compile_options(QuattroDbSeed PRIVATE
 )
 
 target_compile_options(QuattroThemeStateProbe PRIVATE
+    $<$<CXX_COMPILER_ID:MSVC>:/W4 /permissive- /EHsc /utf-8>
+)
+
+target_compile_options(QuattroUiScreenshotAcceptance PRIVATE
     $<$<CXX_COMPILER_ID:MSVC>:/W4 /permissive- /EHsc /utf-8>
 )
 
@@ -356,6 +397,25 @@ target_link_libraries(QuattroThemeStateProbe PRIVATE
     shell32
     user32
 )
+
+target_link_libraries(QuattroUiScreenshotAcceptance PRIVATE
+    sqlite3
+    ccronexpr
+    advapi32
+    bcrypt
+    comctl32
+    gdiplus
+    gdi32
+    ole32
+    shell32
+    shlwapi
+    user32
+    wininet
+)
+
+if(QUATTRO_WITH_WEBDAV_LIBS)
+    target_link_libraries(QuattroUiScreenshotAcceptance PRIVATE CURL::libcurl pugixml)
+endif()
 
 target_link_libraries(QuattroWebDavAcceptance PRIVATE
     sqlite3

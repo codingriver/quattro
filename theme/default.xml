@@ -286,6 +286,50 @@
         <State name="success" icon="@success"/>
     </Component>
     <Component name="dialog">
+        <Metric name="contentInsetX" value="28"/>
+        <Metric name="contentInsetY" value="24"/>
+        <Metric name="labelWidth" value="74"/>
+        <Metric name="labelGap" value="6"/>
+        <Metric name="rowGap" value="8"/>
+        <Metric name="sectionGap" value="16"/>
+        <Metric name="footerGap" value="16"/>
+        <Metric name="footerInsetY" value="24"/>
+        <Metric name="controlGapX" value="12"/>
+        <Metric name="footerButtonWidth" value="76"/>
+        <Metric name="footerButtonGap" value="16"/>
+        <Metric name="compactContentInsetX" value="18"/>
+        <Metric name="compactContentInsetY" value="16"/>
+        <Metric name="compactLabelWidth" value="84"/>
+        <Metric name="compactLabelGap" value="10"/>
+        <Metric name="compactRowGap" value="6"/>
+        <Metric name="compactSectionGap" value="12"/>
+        <Metric name="compactFooterGap" value="12"/>
+        <Metric name="compactFooterInsetY" value="16"/>
+        <Metric name="compactControlGapX" value="10"/>
+        <Metric name="compactFooterButtonWidth" value="86"/>
+        <Metric name="compactFooterButtonGap" value="10"/>
+        <Metric name="miniContentInsetX" value="24"/>
+        <Metric name="miniContentInsetY" value="18"/>
+        <Metric name="miniLabelWidth" value="0"/>
+        <Metric name="miniLabelGap" value="0"/>
+        <Metric name="miniRowGap" value="8"/>
+        <Metric name="miniSectionGap" value="12"/>
+        <Metric name="miniFooterGap" value="14"/>
+        <Metric name="miniFooterInsetY" value="18"/>
+        <Metric name="miniControlGapX" value="12"/>
+        <Metric name="miniFooterButtonWidth" value="72"/>
+        <Metric name="miniFooterButtonGap" value="16"/>
+        <Metric name="overlayContentInsetX" value="24"/>
+        <Metric name="overlayContentInsetY" value="16"/>
+        <Metric name="overlayLabelWidth" value="0"/>
+        <Metric name="overlayLabelGap" value="0"/>
+        <Metric name="overlayRowGap" value="8"/>
+        <Metric name="overlaySectionGap" value="14"/>
+        <Metric name="overlayFooterGap" value="8"/>
+        <Metric name="overlayFooterInsetY" value="16"/>
+        <Metric name="overlayControlGapX" value="10"/>
+        <Metric name="overlayFooterButtonWidth" value="76"/>
+        <Metric name="overlayFooterButtonGap" value="12"/>
         <State name="normal" bg="@background" text="@text"/>
     </Component>
     <Component name="iconButton">
@@ -388,10 +432,10 @@
     <Component name="primaryButton">
         <!-- Confirm/Save/primary action buttons. Sizing metrics reuse the button
              category; only colors are defined here so the accent color of primary
-             actions can be tuned independently. Defaults to a red call-to-action. -->
-        <State name="normal" bg="@danger" text="@checkMark" border="@danger"/>
-        <State name="hover" bg="rgb(210,42,52)" text="@checkMark" border="rgb(210,42,52)"/>
-        <State name="pressed" bg="rgb(158,22,32)" text="@checkMark" border="rgb(158,22,32)"/>
+             actions can be tuned independently. Defaults to the main accent. -->
+        <State name="normal" bg="@accent" text="@checkMark" border="@accent"/>
+        <State name="hover" bg="rgb(31,91,235)" text="@checkMark" border="rgb(31,91,235)"/>
+        <State name="pressed" bg="rgb(24,72,190)" text="@checkMark" border="rgb(24,72,190)"/>
         <State name="focused" border="@focus"/>
         <State name="disabled" bg="@surfaceRaised" text="@disabledText" border="@line"/>
     </Component>

@@ -77,6 +77,18 @@ HWND CreateComboBox(
     HFONT font,
     const Theme& theme);
 
+HWND CreateListBox(
+    HINSTANCE instance,
+    HWND parent,
+    int id,
+    int x,
+    int y,
+    int width,
+    int height,
+    HFONT font,
+    const Theme& theme,
+    DWORD extraStyle = LBS_NOTIFY | LBS_HASSTRINGS | WS_VSCROLL);
+
 HFONT CreateDialogFont();
 HFONT CreateEditFont(const Theme& theme);
 
@@ -120,6 +132,8 @@ int ComboBoxItemHeight(const Theme& theme);
 int ComboBoxDropdownHeight(const Theme& theme);
 int ComboBoxContentWidth(const Theme& theme, int textWidth);
 RECT ComboBoxItemTextRect(const Theme& theme, RECT frame);
+int ListBoxItemHeight(const Theme& theme);
+RECT ListItemTextRect(const Theme& theme, RECT frame);
 int LabelHeight(const Theme& theme);
 RECT LabelTextRect(const Theme& theme, RECT frame);
 int FieldFrameHeight(const Theme& theme);
@@ -183,5 +197,6 @@ void DrawListFrame(
     bool readOnly = false);
 
 bool Draw(const Theme& theme, const DRAWITEMSTRUCT* draw);
+bool HandleListViewCustomDraw(const Theme& theme, LPARAM lParam, LRESULT& result);
 
 }

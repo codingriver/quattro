@@ -2,6 +2,8 @@
 
 #include "../resources/resource.h"
 
+#include "DialogLayout.h"
+#include "SimpleDialogs.h"
 #include "ThemedControls.h"
 #include "Utilities.h"
 
@@ -13,11 +15,10 @@
 #include <vector>
 
 namespace {
-constexpr int kDialogWidth = 500;
-constexpr int kDialogHeight = 250;
-constexpr int kLabelX = 28;
-constexpr int kFieldX = 108;
-constexpr int kFieldWidth = 360;
+#define MessageBoxW(owner, message, title, flags) ShowThemedMessageBox((owner), instance_, theme_, (message), (title), (flags))
+
+constexpr int kDialogWidth = 560;
+constexpr int kDialogHeight = 286;
 
 enum ControlId {
     IdName = 1001,
@@ -219,8 +220,8 @@ private:
         HWND child = nullptr;
     };
 
-    HWND Label(const wchar_t* text, int x, int y) {
-        return ThemedControls::CreateLabelText(instance_, hwnd_, text, x, y + 4, 58, theme_, font_, SS_RIGHT);
+    HWND Label(const wchar_t* text, int x, int y, int width) {
+        return ThemedControls::CreateLabelText(instance_, hwnd_, text, x, y + 7, width, theme_, editFont_ ? editFont_ : font_, SS_LEFT);
     }
 
     HWND Edit(int id, int x, int y, int width, const std::wstring& value, DWORD extraStyle = ES_AUTOHSCROLL) {
@@ -243,22 +244,28 @@ private:
         }
         editFont_ = ThemedControls::CreateEditFont(theme_);
 
-        const int rowStep = FieldHeight() + static_cast<int>(theme_.metric(L"global", L"itemGap", 8.0f));
-        int y = 24;
-        Label(L"名称", kLabelX, y);
-        nameEdit_ = Edit(IdName, kFieldX, y - 2, kFieldWidth, link_.name);
+        const DialogLayoutMetrics layout = GetDialogLayoutMetrics(theme_, DialogLayoutKind::Standard);
+        const int rowStep = layout.RowStep(FieldHeight());
+        const int fieldWidth = kDialogWidth - layout.fieldX - layout.contentInsetX;
+        int y = layout.contentInsetY;
+        Label(L"名称", layout.contentInsetX, y, layout.labelWidth);
+        nameEdit_ = Edit(IdName, layout.fieldX, y, fieldWidth, link_.name);
 
         y += rowStep;
-        Label(L"URL链接 *", kLabelX, y);
-        urlEdit_ = Edit(IdUrl, kFieldX, y - 2, kFieldWidth, link_.path);
+        Label(L"URL链接 *", layout.contentInsetX, y, layout.labelWidth);
+        urlEdit_ = Edit(IdUrl, layout.fieldX, y, fieldWidth, link_.path);
 
         y += rowStep;
-        Label(L"备注", kLabelX, y);
-        remarkEdit_ = Edit(IdRemark, kFieldX, y - 2, kFieldWidth, link_.remark, ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL);
+        Label(L"备注", layout.contentInsetX, y, layout.labelWidth);
+        remarkEdit_ = Edit(IdRemark, layout.fieldX, y, fieldWidth, link_.remark, ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL);
 
-        const int footerY = y - 2 + FieldHeight() * 2 + 14 + static_cast<int>(theme_.metric(L"global", L"sectionGap", 16.0f));
-        ThemedControls::CreatePrimaryButton(instance_, hwnd_, IdOk, L"确定", 306, footerY, 76, ButtonHeight(), font_, true);
-        ThemedControls::CreateButton(instance_, hwnd_, IdCancel, L"取消", 392, footerY, 76, ButtonHeight(), font_);
+        const int footerY = layout.FooterY(y + FieldHeight() * 2 + 14);
+        ThemedControls::CreatePrimaryButton(instance_, hwnd_, IdOk, L"确定",
+                                            layout.FooterButtonX(kDialogWidth, 0, 2), footerY,
+                                            layout.footerButtonWidth, ButtonHeight(), font_, true);
+        ThemedControls::CreateButton(instance_, hwnd_, IdCancel, L"取消",
+                                     layout.FooterButtonX(kDialogWidth, 1, 2), footerY,
+                                     layout.footerButtonWidth, ButtonHeight(), font_);
     }
 
     int FieldHeight() const {

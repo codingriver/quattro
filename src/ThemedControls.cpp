@@ -36,6 +36,10 @@ HANDLE ComboBoxKind() {
     return reinterpret_cast<HANDLE>(static_cast<INT_PTR>(4));
 }
 
+HANDLE ListBoxKind() {
+    return reinterpret_cast<HANDLE>(static_cast<INT_PTR>(7));
+}
+
 float ClampFloat(float value, float minValue, float maxValue) {
     return std::max(minValue, std::min(maxValue, value));
 }
@@ -473,6 +477,29 @@ void DrawComboBox(const Theme& theme, const DRAWITEMSTRUCT* draw) {
     SetTextColor(draw->hDC, ToColorRef(theme.color(L"comboBox", state, L"text")));
     DrawTextW(draw->hDC, buffer, -1, &textRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 }
+
+void DrawListBox(const Theme& theme, const DRAWITEMSTRUCT* draw) {
+    RECT rect = draw->rcItem;
+    const bool disabled = (draw->itemState & ODS_DISABLED) != 0;
+    const bool selected = (draw->itemState & ODS_SELECTED) != 0;
+    const bool focused = (draw->itemState & ODS_FOCUS) != 0;
+    const wchar_t* state = disabled ? L"disabled" : (selected ? L"selected" : (focused ? L"focused" : L"normal"));
+
+    HBRUSH brush = CreateSolidBrush(ToColorRef(theme.color(L"listItem", state, L"bg")));
+    FillRect(draw->hDC, &rect, brush);
+    DeleteObject(brush);
+
+    if (draw->itemID == static_cast<UINT>(-1)) {
+        return;
+    }
+
+    wchar_t buffer[1024]{};
+    SendMessageW(draw->hwndItem, LB_GETTEXT, draw->itemID, reinterpret_cast<LPARAM>(buffer));
+    RECT textRect = ThemedControls::ListItemTextRect(theme, rect);
+    SetBkMode(draw->hDC, TRANSPARENT);
+    SetTextColor(draw->hDC, ToColorRef(theme.color(L"listItem", state, L"text")));
+    DrawTextW(draw->hDC, buffer, -1, &textRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+}
 }
 
 namespace ThemedControls {
@@ -599,6 +626,14 @@ RECT ComboBoxItemTextRect(const Theme& theme, RECT frame) {
     return TextRectFromMetrics(theme, L"comboBox", frame, 20.0f, true);
 }
 
+int ListBoxItemHeight(const Theme& theme) {
+    return static_cast<int>(theme.metric(L"listItem", L"height", 28.0f));
+}
+
+RECT ListItemTextRect(const Theme& theme, RECT frame) {
+    return TextRectFromMetrics(theme, L"listItem", frame, 20.0f, true);
+}
+
 int LabelHeight(const Theme& theme) {
     return static_cast<int>(theme.metric(L"label", L"height", 20.0f));
 }
@@ -716,6 +751,29 @@ HWND CreateComboBox(HINSTANCE instance, HWND parent, int id, int x, int y, int w
         SendMessageW(hwnd, CB_SETITEMHEIGHT, 0, static_cast<LPARAM>(ComboBoxItemHeight(theme)));
         SetPropW(hwnd, kControlKindProp, ComboBoxKind());
         SetPropW(hwnd, kControlThemeProp, const_cast<Theme*>(&theme));
+        AttachThemedBehavior(hwnd);
+    }
+    return hwnd;
+}
+
+HWND CreateListBox(HINSTANCE instance, HWND parent, int id, int x, int y, int width, int height, HFONT font, const Theme& theme, DWORD extraStyle) {
+    HWND hwnd = CreateWindowExW(
+        0,
+        L"LISTBOX",
+        nullptr,
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | LBS_OWNERDRAWFIXED | extraStyle,
+        x,
+        y,
+        width,
+        height,
+        parent,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),
+        instance,
+        nullptr);
+    if (hwnd) {
+        SendMessageW(hwnd, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+        SendMessageW(hwnd, LB_SETITEMHEIGHT, 0, static_cast<LPARAM>(ListBoxItemHeight(theme)));
+        SetPropW(hwnd, kControlKindProp, ListBoxKind());
         AttachThemedBehavior(hwnd);
     }
     return hwnd;
@@ -894,6 +952,10 @@ bool Draw(const Theme& theme, const DRAWITEMSTRUCT* draw) {
         DrawComboBox(theme, draw);
         return true;
     }
+    if (draw->CtlType == ODT_LISTBOX && kind == ListBoxKind()) {
+        DrawListBox(theme, draw);
+        return true;
+    }
     if (draw->CtlType != ODT_BUTTON) {
         return false;
     }
@@ -916,6 +978,31 @@ bool Draw(const Theme& theme, const DRAWITEMSTRUCT* draw) {
     if (kind == TabButtonKind()) {
         DrawTabButton(theme, draw);
         return true;
+    }
+    return false;
+}
+
+bool HandleListViewCustomDraw(const Theme& theme, LPARAM lParam, LRESULT& result) {
+    auto* draw = reinterpret_cast<NMLVCUSTOMDRAW*>(lParam);
+    if (!draw) {
+        return false;
+    }
+
+    switch (draw->nmcd.dwDrawStage) {
+    case CDDS_PREPAINT:
+        result = CDRF_NOTIFYITEMDRAW;
+        return true;
+    case CDDS_ITEMPREPAINT: {
+        const bool selected = (draw->nmcd.uItemState & CDIS_SELECTED) != 0;
+        const bool focused = (draw->nmcd.uItemState & CDIS_FOCUS) != 0;
+        const wchar_t* state = selected ? L"selected" : (focused ? L"focused" : L"normal");
+        draw->clrText = ToColorRef(theme.color(selected ? L"listItem" : L"list", state, L"text"));
+        draw->clrTextBk = ToColorRef(theme.color(selected ? L"listItem" : L"list", state, L"bg"));
+        result = CDRF_DODEFAULT;
+        return true;
+    }
+    default:
+        break;
     }
     return false;
 }

@@ -61,7 +61,13 @@ constexpr const wchar_t* kTooltipBorderProp = L"QuattroTooltipBorder";
 constexpr const wchar_t* kTooltipPaddingXProp = L"QuattroTooltipPaddingX";
 constexpr const wchar_t* kTooltipPaddingYProp = L"QuattroTooltipPaddingY";
 constexpr const wchar_t* kTooltipLineGapProp = L"QuattroTooltipLineGap";
+constexpr const wchar_t* kTooltipRadiusProp = L"QuattroTooltipRadius";
+constexpr const wchar_t* kTooltipBorderWidthProp = L"QuattroTooltipBorderWidth";
 constexpr const wchar_t* kAppDisplayName = L"Quattro快速启动器";
+
+bool SearchFeatureEnabled() {
+    return false;
+}
 
 template <typename T>
 void SafeRelease(T*& value) {
@@ -159,6 +165,15 @@ LRESULT CALLBACK TooltipWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARA
     switch (message) {
     case WM_ERASEBKGND:
         return 1;
+    case WM_LBUTTONUP:
+        if (GetDlgCtrlID(hwnd) == ID_REMINDER_PANEL) {
+            HWND parent = GetParent(hwnd);
+            if (parent) {
+                SendMessageW(parent, WM_COMMAND, MAKEWPARAM(ID_REMINDER_PANEL, 0), reinterpret_cast<LPARAM>(hwnd));
+            }
+            return 0;
+        }
+        return DefWindowProcW(hwnd, message, wParam, lParam);
     case WM_PAINT: {
         PAINTSTRUCT ps{};
         HDC dc = BeginPaint(hwnd, &ps);
@@ -167,22 +182,34 @@ LRESULT CALLBACK TooltipWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARA
         const COLORREF bg = WindowPropColor(hwnd, kTooltipBgProp, RGB(32, 32, 32));
         const COLORREF text = WindowPropColor(hwnd, kTooltipTextProp, RGB(255, 255, 255));
         const COLORREF border = WindowPropColor(hwnd, kTooltipBorderProp, bg);
+        const int radius = WindowPropInt(hwnd, kTooltipRadiusProp, 0);
+        const int borderWidth = WindowPropInt(hwnd, kTooltipBorderWidthProp, 1);
         HBRUSH brush = CreateSolidBrush(bg);
-        FillRect(dc, &rect, brush);
-        DeleteObject(brush);
-        HPEN pen = CreatePen(PS_SOLID, 1, border);
+        HPEN customPen = borderWidth > 0 ? CreatePen(PS_SOLID, borderWidth, border) : nullptr;
+        HPEN pen = customPen ? customPen : reinterpret_cast<HPEN>(GetStockObject(NULL_PEN));
         HPEN previousPen = reinterpret_cast<HPEN>(SelectObject(dc, pen));
-        HBRUSH previousBrush = reinterpret_cast<HBRUSH>(SelectObject(dc, GetStockObject(NULL_BRUSH)));
-        Rectangle(dc, rect.left, rect.top, rect.right, rect.bottom);
+        HBRUSH previousBrush = reinterpret_cast<HBRUSH>(SelectObject(dc, brush));
+        if (radius > 0) {
+            const int diameter = radius * 2;
+            RoundRect(dc, rect.left, rect.top, rect.right, rect.bottom, diameter, diameter);
+        } else {
+            Rectangle(dc, rect.left, rect.top, rect.right, rect.bottom);
+        }
         SelectObject(dc, previousBrush);
         SelectObject(dc, previousPen);
-        DeleteObject(pen);
+        if (customPen) {
+            DeleteObject(customPen);
+        }
+        DeleteObject(brush);
 
         wchar_t buffer[1024]{};
         GetWindowTextW(hwnd, buffer, static_cast<int>(std::size(buffer)));
         SetBkMode(dc, TRANSPARENT);
         SetTextColor(dc, text);
-        HFONT font = reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
+        HFONT font = reinterpret_cast<HFONT>(SendMessageW(hwnd, WM_GETFONT, 0, 0));
+        if (!font) {
+            font = reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
+        }
         HFONT previousFont = reinterpret_cast<HFONT>(SelectObject(dc, font));
         const int paddingX = WindowPropInt(hwnd, kTooltipPaddingXProp, 8);
         const int paddingY = WindowPropInt(hwnd, kTooltipPaddingYProp, 7);
@@ -205,6 +232,8 @@ LRESULT CALLBACK TooltipWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARA
         RemovePropW(hwnd, kTooltipPaddingXProp);
         RemovePropW(hwnd, kTooltipPaddingYProp);
         RemovePropW(hwnd, kTooltipLineGapProp);
+        RemovePropW(hwnd, kTooltipRadiusProp);
+        RemovePropW(hwnd, kTooltipBorderWidthProp);
         return 0;
     default:
         return DefWindowProcW(hwnd, message, wParam, lParam);
@@ -681,6 +710,32 @@ std::wstring LimitNotificationText(const std::wstring& value, std::size_t limit)
         return value;
     }
     return value.substr(0, limit > 3 ? limit - 3 : limit) + L"...";
+}
+
+std::vector<std::wstring> LimitedTooltipContentLines(const std::wstring& value) {
+    constexpr std::size_t kMaxLines = 3;
+    constexpr std::size_t kMaxLineLength = 120;
+    std::vector<std::wstring> lines;
+    bool truncated = false;
+    for (auto line : SplitTooltipLines(Trim(value))) {
+        line = Trim(line);
+        if (line.empty()) {
+            continue;
+        }
+        if (line.size() > kMaxLineLength) {
+            line = line.substr(0, kMaxLineLength - 3) + L"...";
+            truncated = true;
+        }
+        if (lines.size() >= kMaxLines) {
+            truncated = true;
+            break;
+        }
+        lines.push_back(std::move(line));
+    }
+    if (truncated && !lines.empty() && lines.back().size() >= 3 && lines.back().substr(lines.back().size() - 3) != L"...") {
+        lines.back() += L"...";
+    }
+    return lines;
 }
 
 std::wstring InitialSortKey(const std::wstring& value) {
@@ -1288,6 +1343,8 @@ private:
     MainWindow* window_ = nullptr;
 };
 
+#define MessageBoxW(owner, message, title, flags) ShowThemedMessageBox((owner), instance_, theme_, (message), (title), (flags))
+
 MainWindow::MainWindow(
     HINSTANCE instance,
     std::filesystem::path appDirectory,
@@ -1336,6 +1393,10 @@ MainWindow::~MainWindow() {
     if (reminderPanel_) {
         DestroyWindow(reminderPanel_);
         reminderPanel_ = nullptr;
+    }
+    if (tooltipFont_) {
+        DeleteObject(tooltipFont_);
+        tooltipFont_ = nullptr;
     }
     if (reminderPanelFont_) {
         DeleteObject(reminderPanelFont_);
@@ -1549,7 +1610,7 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             }
             return 0;
         }
-        if (wParam == ID_HOTKEY_SEARCH) {
+        if (SearchFeatureEnabled() && wParam == ID_HOTKEY_SEARCH) {
             OpenSearch();
             return 0;
         }
@@ -1623,7 +1684,7 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         OnResize(LOWORD(lParam), HIWORD(lParam));
         return 0;
     case WM_MOVE:
-        HideLinkTooltip();
+        HideItemTooltip();
         SaveWindowState();
         return 0;
     case WM_MOUSEMOVE: {
@@ -1661,11 +1722,11 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         }
         POINT screenPoint{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
         ClientToScreen(hwnd_, &screenPoint);
-        UpdateLinkTooltip(next, screenPoint);
+        UpdateItemTooltip(next, screenPoint);
         return 0;
     }
     case WM_MOUSELEAVE:
-        HideLinkTooltip();
+        HideItemTooltip();
         trackingMouse_ = false;
         hover_ = {};
         pendingHoverActivationKind_ = HitKind::None;
@@ -1677,21 +1738,21 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         InvalidateRect(hwnd_, nullptr, FALSE);
         return 0;
     case WM_MOUSEWHEEL: {
-        HideLinkTooltip();
+        HideItemTooltip();
         POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
         ScreenToClient(hwnd_, &point);
         ScrollAtPoint(static_cast<float>(point.x), static_cast<float>(point.y), GET_WHEEL_DELTA_WPARAM(wParam), false);
         return 0;
     }
     case WM_MOUSEHWHEEL: {
-        HideLinkTooltip();
+        HideItemTooltip();
         POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
         ScreenToClient(hwnd_, &point);
         ScrollAtPoint(static_cast<float>(point.x), static_cast<float>(point.y), GET_WHEEL_DELTA_WPARAM(wParam), true);
         return 0;
     }
     case WM_LBUTTONDOWN: {
-        HideLinkTooltip();
+        HideItemTooltip();
         SetFocus(hwnd_);
         selectionByKeyboard_ = false;
         const float x = static_cast<float>(GET_X_LPARAM(lParam));
@@ -1748,7 +1809,7 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         }
     }
     case WM_RBUTTONUP: {
-        HideLinkTooltip();
+        HideItemTooltip();
         SetFocus(hwnd_);
         selectionByKeyboard_ = false;
         const float x = static_cast<float>(GET_X_LPARAM(lParam));
@@ -1789,7 +1850,7 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         return 0;
     }
     case WM_LBUTTONDBLCLK: {
-        HideLinkTooltip();
+        HideItemTooltip();
         const float x = static_cast<float>(GET_X_LPARAM(lParam));
         const float y = static_cast<float>(GET_Y_LPARAM(lParam));
         HitArea hit = HitTest(x, y);
@@ -2187,8 +2248,7 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         }
         return DefWindowProcW(hwnd_, message, wParam, lParam);
     case WM_CHAR:
-        // Type-to-search: printable characters open the search dialog seeded with the typed text.
-        if (wParam >= 0x20 && wParam != 0x7F) {
+        if (SearchFeatureEnabled() && wParam >= 0x20 && wParam != 0x7F) {
             const Group* tag = FindGroup(currentTagId_);
             const bool textTag = tag && (IsNoteTag(*tag) || IsTodoItemsTag(*tag));
             if (!textTag && GetFocus() == hwnd_) {
@@ -2221,7 +2281,7 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
     case WM_DESTROY:
         SaveCurrentNotePage();
         urlIconDownloadService_.Shutdown();
-        HideLinkTooltip();
+        HideItemTooltip();
         if (tooltip_) {
             DestroyWindow(tooltip_);
             tooltip_ = nullptr;
@@ -3615,10 +3675,7 @@ void MainWindow::ShowTodoReminderPanel(const TodoItem& item) {
     HideTodoReminderPanel();
 
     if (!reminderPanelFont_) {
-        reminderPanelFont_ = CreateFontW(
-            -14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-            DEFAULT_PITCH | FF_DONTCARE, L"Microsoft YaHei UI");
+        reminderPanelFont_ = ThemedControls::CreateDialogFont();
     }
 
     RECT work{};
@@ -3638,11 +3695,20 @@ void MainWindow::ShowTodoReminderPanel(const TodoItem& item) {
     const std::wstring text = L"待办提醒\r\n" + LimitNotificationText(item.title, 80) +
         (Trim(item.content).empty() ? L"" : (L"\r\n" + LimitNotificationText(Trim(item.content), 160)));
 
+    WNDCLASSEXW wc{};
+    wc.cbSize = sizeof(wc);
+    wc.lpfnWndProc = TooltipWindowProc;
+    wc.hInstance = instance_;
+    wc.hCursor = LoadCursorW(nullptr, IDC_HAND);
+    wc.lpszClassName = kTooltipWindowClass;
+    wc.hbrBackground = nullptr;
+    RegisterClassExW(&wc);
+
     reminderPanel_ = CreateWindowExW(
         WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
-        L"STATIC",
+        kTooltipWindowClass,
         text.c_str(),
-        WS_POPUP | WS_BORDER | SS_LEFT | SS_NOTIFY,
+        WS_POPUP,
         x,
         y,
         width,
@@ -3655,6 +3721,27 @@ void MainWindow::ShowTodoReminderPanel(const TodoItem& item) {
         return;
     }
     SendMessageW(reminderPanel_, WM_SETFONT, reinterpret_cast<WPARAM>(reminderPanelFont_), TRUE);
+    const int paddingX = static_cast<int>(std::max(0.0f, Metric(theme_, L"tooltip", L"paddingX", 8.0f)));
+    const int paddingY = static_cast<int>(std::max(0.0f, Metric(theme_, L"tooltip", L"paddingY", 7.0f)));
+    const int lineGap = static_cast<int>(std::max(0.0f, Metric(theme_, L"tooltip", L"lineGap", 4.0f)));
+    const int radius = static_cast<int>(std::max(0.0f, Metric(theme_, L"tooltip", L"radius", 6.0f)));
+    const int borderWidth = static_cast<int>(std::max(0.0f, Metric(theme_, L"tooltip", L"borderWidth", 1.0f)));
+    SetPropW(reminderPanel_, kTooltipBgProp, reinterpret_cast<HANDLE>(static_cast<UINT_PTR>(ToColorRef(theme_.color(L"tooltip", L"normal", L"bg")))));
+    SetPropW(reminderPanel_, kTooltipTextProp, reinterpret_cast<HANDLE>(static_cast<UINT_PTR>(ToColorRef(theme_.color(L"tooltip", L"normal", L"text")))));
+    SetPropW(reminderPanel_, kTooltipBorderProp, reinterpret_cast<HANDLE>(static_cast<UINT_PTR>(ToColorRef(theme_.color(L"tooltip", L"normal", L"border")))));
+    SetPropW(reminderPanel_, kTooltipPaddingXProp, reinterpret_cast<HANDLE>(static_cast<UINT_PTR>(paddingX)));
+    SetPropW(reminderPanel_, kTooltipPaddingYProp, reinterpret_cast<HANDLE>(static_cast<UINT_PTR>(paddingY)));
+    SetPropW(reminderPanel_, kTooltipLineGapProp, reinterpret_cast<HANDLE>(static_cast<UINT_PTR>(lineGap)));
+    SetPropW(reminderPanel_, kTooltipRadiusProp, reinterpret_cast<HANDLE>(static_cast<UINT_PTR>(radius)));
+    SetPropW(reminderPanel_, kTooltipBorderWidthProp, reinterpret_cast<HANDLE>(static_cast<UINT_PTR>(borderWidth)));
+    if (radius > 0) {
+        HRGN region = CreateRoundRectRgn(0, 0, width + 1, height + 1, radius * 2, radius * 2);
+        if (!region || SetWindowRgn(reminderPanel_, region, TRUE) == 0) {
+            if (region) {
+                DeleteObject(region);
+            }
+        }
+    }
     ShowWindow(reminderPanel_, SW_SHOWNOACTIVATE);
     SetWindowPos(reminderPanel_, HWND_TOPMOST, x, y, width, height, SWP_NOACTIVATE | SWP_SHOWWINDOW);
     reminderPanelTimerId_ = SetTimer(hwnd_, ID_TIMER_REMINDER_PANEL, 12000, nullptr);
@@ -3733,6 +3820,9 @@ void MainWindow::CopyLinkPath(int linkId) {
 }
 
 void MainWindow::OpenSearch() {
+    if (!SearchFeatureEnabled()) {
+        return;
+    }
     int linkId = SearchDialog::Show(hwnd_, instance_, theme_, model_, config_);
     configService_.SaveWindowState(config_);
     if (linkId > 0) {
@@ -4013,6 +4103,31 @@ void MainWindow::ApplyTheme(const std::wstring& themeName) {
     theme_ = Theme::Load(appDirectory_ / L"theme", config_.theme);
     configService_.Save(config_);
     ResetMenuVisuals();
+    if (tooltipFont_) {
+        if (tooltip_) {
+            SendMessageW(tooltip_, WM_SETFONT, 0, TRUE);
+        }
+        DeleteObject(tooltipFont_);
+        tooltipFont_ = nullptr;
+    }
+    if (reminderPanelFont_) {
+        if (reminderPanel_) {
+            SendMessageW(reminderPanel_, WM_SETFONT, 0, TRUE);
+        }
+        DeleteObject(reminderPanelFont_);
+        reminderPanelFont_ = nullptr;
+    }
+    HFONT newNoteEditFont = ThemedControls::CreateEditFont(theme_);
+    if (newNoteEditFont) {
+        HFONT oldNoteEditFont = noteEditFont_;
+        noteEditFont_ = newNoteEditFont;
+        if (noteEdit_) {
+            SendMessageW(noteEdit_, WM_SETFONT, reinterpret_cast<WPARAM>(noteEditFont_), TRUE);
+        }
+        if (oldNoteEditFont) {
+            DeleteObject(oldNoteEditFont);
+        }
+    }
     ApplyTooltipTheme();
     if (noteEditBrush_) {
         DeleteObject(noteEditBrush_);
@@ -4090,7 +4205,7 @@ void MainWindow::UpdateDockState() {
 }
 
 void MainWindow::DockHide() {
-    HideLinkTooltip();
+    HideItemTooltip();
     if (dockHidden_) {
         return;
     }
@@ -4491,7 +4606,7 @@ void MainWindow::ApplyConfigRuntimeChanges(const AppConfig& previous) {
     SetLayeredWindowAttributes(hwnd_, 0, static_cast<BYTE>(config_.alpha), LWA_ALPHA);
     SetWindowPos(hwnd_, config_.topMost ? HWND_TOPMOST : HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
     if (previous.showTooltip != config_.showTooltip && !config_.showTooltip) {
-        HideLinkTooltip();
+        HideItemTooltip();
     }
     if (previous.hideNotifyIcon != config_.hideNotifyIcon) {
         RemoveTrayIcon();
@@ -4540,7 +4655,7 @@ void MainWindow::RegisterConfiguredHotKeys() {
     if (config_.mainHotKey != 0) {
         registerHotKey(ID_HOTKEY_MAIN, config_.mainHotKey, L"主窗口");
     }
-    if (config_.searchHotKey != 0) {
+    if (SearchFeatureEnabled() && config_.searchHotKey != 0) {
         registerHotKey(ID_HOTKEY_SEARCH, config_.searchHotKey, L"搜索");
     }
 
@@ -4665,7 +4780,7 @@ void MainWindow::ShowMainMenu(POINT screenPoint) {
 }
 
 void MainWindow::ShowLinkMenu(int linkId, POINT screenPoint) {
-    HideLinkTooltip();
+    HideItemTooltip();
     ResetMenuVisuals();
     HMENU menu = CreatePopupMenu();
     Link* link = FindLink(linkId);
@@ -4758,23 +4873,34 @@ void MainWindow::ApplyTooltipTheme() {
     if (!tooltip_) {
         return;
     }
+    if (!tooltipFont_) {
+        tooltipFont_ = ThemedControls::CreateDialogFont();
+    }
+    if (tooltipFont_) {
+        SendMessageW(tooltip_, WM_SETFONT, reinterpret_cast<WPARAM>(tooltipFont_), TRUE);
+    }
     const int paddingX = static_cast<int>(std::max(0.0f, Metric(theme_, L"tooltip", L"paddingX", 8.0f)));
     const int paddingY = static_cast<int>(std::max(0.0f, Metric(theme_, L"tooltip", L"paddingY", 5.0f)));
     const int lineGap = static_cast<int>(std::max(0.0f, Metric(theme_, L"tooltip", L"lineGap", 4.0f)));
+    const int radius = static_cast<int>(std::max(0.0f, Metric(theme_, L"tooltip", L"radius", 6.0f)));
+    const int borderWidth = static_cast<int>(std::max(0.0f, Metric(theme_, L"tooltip", L"borderWidth", 1.0f)));
     SetPropW(tooltip_, kTooltipBgProp, reinterpret_cast<HANDLE>(static_cast<UINT_PTR>(ToColorRef(theme_.color(L"tooltip", L"normal", L"bg")))));
     SetPropW(tooltip_, kTooltipTextProp, reinterpret_cast<HANDLE>(static_cast<UINT_PTR>(ToColorRef(theme_.color(L"tooltip", L"normal", L"text")))));
     SetPropW(tooltip_, kTooltipBorderProp, reinterpret_cast<HANDLE>(static_cast<UINT_PTR>(ToColorRef(theme_.color(L"tooltip", L"normal", L"border")))));
     SetPropW(tooltip_, kTooltipPaddingXProp, reinterpret_cast<HANDLE>(static_cast<UINT_PTR>(paddingX)));
     SetPropW(tooltip_, kTooltipPaddingYProp, reinterpret_cast<HANDLE>(static_cast<UINT_PTR>(paddingY)));
     SetPropW(tooltip_, kTooltipLineGapProp, reinterpret_cast<HANDLE>(static_cast<UINT_PTR>(lineGap)));
+    SetPropW(tooltip_, kTooltipRadiusProp, reinterpret_cast<HANDLE>(static_cast<UINT_PTR>(radius)));
+    SetPropW(tooltip_, kTooltipBorderWidthProp, reinterpret_cast<HANDLE>(static_cast<UINT_PTR>(borderWidth)));
 }
 
-void MainWindow::HideLinkTooltip() {
+void MainWindow::HideItemTooltip() {
     if (!tooltip_) {
         return;
     }
     ShowWindow(tooltip_, SW_HIDE);
-    tooltipLinkId_ = 0;
+    tooltipItemKind_ = HitKind::None;
+    tooltipItemId_ = 0;
 }
 
 std::wstring MainWindow::LinkTooltipText(const Link& link) const {
@@ -4834,21 +4960,86 @@ std::wstring MainWindow::LinkTooltipText(const Link& link) const {
     return text;
 }
 
-void MainWindow::UpdateLinkTooltip(const HitArea& hit, POINT screenPoint) {
-    if (!config_.showTooltip || hit.kind != HitKind::Link) {
-        HideLinkTooltip();
+std::wstring MainWindow::TodoTooltipText(const TodoItem& item) const {
+    const auto appendLine = [](std::wstring& text, const std::wstring& line) {
+        if (line.empty()) {
+            return;
+        }
+        if (!text.empty()) {
+            text += L"\r\n";
+        }
+        text += line;
+    };
+
+    std::wstring text;
+    const std::wstring title = Trim(item.title);
+    if (!title.empty()) {
+        appendLine(text, L"标题: " + title);
+    }
+
+    std::wstring status = L"待办";
+    if (!item.enabled) {
+        status = L"已禁用";
+    } else if (!item.completedAt.empty()) {
+        status = L"已完成";
+    } else if (IsTodoOverdue(item)) {
+        status = L"已逾期";
+    }
+    appendLine(text, L"状态: " + status);
+
+    const bool recurring = IsRecurringTodoSchedule(item.scheduleKind);
+    if (recurring) {
+        appendLine(text, L"重复: " + TodoScheduleText(item));
+        if (!item.nextDueAt.empty()) {
+            appendLine(text, L"下次: " + item.nextDueAt);
+        }
+        appendLine(text, L"已执行: " + std::to_wstring(std::max(0, item.repeatFinished)) + L" 次");
+        if (item.repeatLimit > 0) {
+            appendLine(text, L"进度: " + std::to_wstring(std::max(0, item.repeatFinished)) + L"/" + std::to_wstring(item.repeatLimit));
+        }
+    } else if (item.scheduleKind == TodoScheduleKind::Once && !item.nextDueAt.empty()) {
+        appendLine(text, L"时间: " + item.nextDueAt);
+    }
+
+    if (!item.completedAt.empty()) {
+        appendLine(text, L"完成时间: " + item.completedAt);
+    }
+
+    const auto contentLines = LimitedTooltipContentLines(item.content);
+    for (std::size_t i = 0; i < contentLines.size(); ++i) {
+        appendLine(text, (i == 0 ? L"内容: " : L"      ") + contentLines[i]);
+    }
+
+    return text;
+}
+
+void MainWindow::UpdateItemTooltip(const HitArea& hit, POINT screenPoint) {
+    if (!config_.showTooltip) {
+        HideItemTooltip();
         return;
     }
 
-    Link* link = FindLink(hit.id);
-    if (!link) {
-        HideLinkTooltip();
+    std::wstring text;
+    if (hit.kind == HitKind::Link) {
+        Link* link = FindLink(hit.id);
+        if (!link) {
+            HideItemTooltip();
+            return;
+        }
+        text = LinkTooltipText(*link);
+    } else if (hit.kind == HitKind::Todo) {
+        TodoItem* item = FindTodoItem(hit.id);
+        if (!item) {
+            HideItemTooltip();
+            return;
+        }
+        text = TodoTooltipText(*item);
+    } else {
+        HideItemTooltip();
         return;
     }
-
-    const std::wstring text = LinkTooltipText(*link);
     if (text.empty()) {
-        HideLinkTooltip();
+        HideItemTooltip();
         return;
     }
 
@@ -4859,10 +5050,11 @@ void MainWindow::UpdateLinkTooltip(const HitArea& hit, POINT screenPoint) {
         return;
     }
 
-    if (tooltipLinkId_ != hit.id || tooltipText_ != text) {
+    if (tooltipItemKind_ != hit.kind || tooltipItemId_ != hit.id || tooltipText_ != text) {
         tooltipText_ = text;
         SetWindowTextW(tooltip_, tooltipText_.c_str());
-        tooltipLinkId_ = hit.id;
+        tooltipItemKind_ = hit.kind;
+        tooltipItemId_ = hit.id;
     }
 
     HDC dc = GetDC(tooltip_);
@@ -4895,6 +5087,17 @@ void MainWindow::UpdateLinkTooltip(const HitArea& hit, POINT screenPoint) {
     }
 
     SetWindowPos(tooltip_, HWND_TOPMOST, x, y, width, height, SWP_NOACTIVATE);
+    const int radius = WindowPropInt(tooltip_, kTooltipRadiusProp, 0);
+    if (radius > 0) {
+        HRGN region = CreateRoundRectRgn(0, 0, width + 1, height + 1, radius * 2, radius * 2);
+        if (!region || SetWindowRgn(tooltip_, region, TRUE) == 0) {
+            if (region) {
+                DeleteObject(region);
+            }
+        }
+    } else {
+        SetWindowRgn(tooltip_, nullptr, TRUE);
+    }
     ShowWindow(tooltip_, SW_SHOWNA);
     SetWindowPos(tooltip_, HWND_TOPMOST, x, y, width, height, SWP_NOACTIVATE | SWP_SHOWWINDOW);
     InvalidateRect(tooltip_, nullptr, TRUE);
@@ -5011,6 +5214,8 @@ void MainWindow::AppendThemeItemsToMenu(HMENU menu) {
 
 void MainWindow::AppendAddLinkItems(HMENU menu) {
     HMENU systemMenu = CreatePopupMenu();
+    AppendThemedMenuItem(systemMenu, MF_STRING, ID_MENU_ADD_SYSTEM, L"搜索/选择系统功能...", false, -1, -1, MenuIconSystem);
+    AppendThemedSeparator(systemMenu);
     AppendSystemFunctionItems(systemMenu, ID_MENU_ADD_SYSTEM_FUNCTION_BASE);
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_ADD_FILE, L"添加文件");
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_ADD_FOLDER, L"添加文件夹");
@@ -5278,7 +5483,7 @@ bool MainWindow::IsEffectivelyVisible() const {
 }
 
 void MainWindow::HideMainWindow() {
-    HideLinkTooltip();
+    HideItemTooltip();
     if (dockHidden_) {
         const int width = dockRestoreRect_.right - dockRestoreRect_.left;
         const int height = dockRestoreRect_.bottom - dockRestoreRect_.top;
@@ -5385,7 +5590,7 @@ void MainWindow::DrawTitle(D2D1_RECT_F rect) {
     };
     auto isTitleButtonVisible = [&](HitKind kind) {
         return !((kind == HitKind::MenuButton && !config_.showMenuButton) ||
-                 (kind == HitKind::SearchButton && !config_.showSearchButton) ||
+                 (kind == HitKind::SearchButton && (!SearchFeatureEnabled() || !config_.showSearchButton)) ||
                  (kind == HitKind::SkinButton && !config_.showSkinButton));
     };
     int visibleButtonCount = 0;
@@ -6525,6 +6730,9 @@ MainWindow::HitArea MainWindow::CursorHitArea() const {
 }
 
 void MainWindow::OpenSearchWithPrefix(const std::wstring& prefix) {
+    if (!SearchFeatureEnabled()) {
+        return;
+    }
     int linkId = SearchDialog::Show(hwnd_, instance_, theme_, model_, config_, prefix);
     configService_.SaveWindowState(config_);
     if (linkId > 0) {
@@ -6745,7 +6953,7 @@ bool MainWindow::HandleKeyDown(WPARAM key) {
         }
         return true;
     case 'F':
-        if (ctrl) {
+        if (SearchFeatureEnabled() && ctrl) {
             OpenSearch();
             return true;
         }
@@ -7002,22 +7210,16 @@ void MainWindow::EnsureNoteEdit(const D2D1_RECT_F& rect, const Group& tag) {
     }
 
     if (!noteEdit_) {
-        noteEdit_ = CreateWindowExW(
-            0,
-            L"EDIT",
-            content.c_str(),
-            WS_CHILD | WS_CLIPSIBLINGS | WS_TABSTOP | ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN | WS_VSCROLL,
-            editRect.left,
-            editRect.top,
-            editRect.right - editRect.left,
-            editRect.bottom - editRect.top,
-            hwnd_,
-            reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_NOTE_EDIT)),
+        noteEdit_ = ThemedControls::CreateMultiLineEdit(
             instance_,
-            nullptr);
+            hwnd_,
+            ID_NOTE_EDIT,
+            theme_,
+            frame,
+            content,
+            noteEditFont_,
+            ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN | WS_VSCROLL | WS_CLIPSIBLINGS);
         if (noteEdit_) {
-            SendMessageW(noteEdit_, WM_SETFONT, reinterpret_cast<WPARAM>(noteEditFont_), TRUE);
-            SendMessageW(noteEdit_, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, MAKELPARAM(0, 0));
             noteEditTagId_ = tag.id;
             noteEditFrame_ = editRect;
             noteDirty_ = false;
