@@ -1410,6 +1410,7 @@ MainWindow::~MainWindow() {
     DiscardDeviceResources();
     SafeRelease(titleFormat_);
     SafeRelease(textFormat_);
+    SafeRelease(navSelectedFormat_);
     SafeRelease(smallFormat_);
     SafeRelease(uiWicFactory_);
     SafeRelease(dwriteFactory_);
@@ -1446,6 +1447,8 @@ bool MainWindow::Create() {
                                      DWRITE_FONT_STRETCH_NORMAL, 16.0f, L"zh-cn", &titleFormat_);
     dwriteFactory_->CreateTextFormat(L"Microsoft YaHei UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
                                      DWRITE_FONT_STRETCH_NORMAL, 13.0f, L"zh-cn", &textFormat_);
+    dwriteFactory_->CreateTextFormat(L"Microsoft YaHei UI", nullptr, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_FONT_STYLE_NORMAL,
+                                     DWRITE_FONT_STRETCH_NORMAL, 13.0f, L"zh-cn", &navSelectedFormat_);
     dwriteFactory_->CreateTextFormat(L"Microsoft YaHei UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
                                      DWRITE_FONT_STRETCH_NORMAL, 11.0f, L"zh-cn", &smallFormat_);
     if (!titleFormat_ || !textFormat_ || !smallFormat_) {
@@ -1457,6 +1460,10 @@ bool MainWindow::Create() {
     titleFormat_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
     textFormat_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
     smallFormat_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+    if (navSelectedFormat_) {
+        navSelectedFormat_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+        navSelectedFormat_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+    }
 
     const DWORD style = WS_POPUP | WS_THICKFRAME | WS_MINIMIZEBOX | WS_CLIPCHILDREN;
     const POINT position = ClampWindowPosition(config_.posX, config_.posY, config_.width, config_.height);
@@ -5607,7 +5614,6 @@ void MainWindow::DrawGroups(D2D1_RECT_F rect) {
 
     FillRect(rect, theme_.color(L"majorNav", L"normal", L"bg"));
     const bool vertical = Height(rect) > Width(rect);
-    DrawTabGroupFrame(rect);
 
     renderTarget_->PushAxisAlignedClip(rect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
     const float groupPadding = Metric(theme_, L"tabButton", L"groupPadding", 3.0f);
@@ -5615,10 +5621,9 @@ void MainWindow::DrawGroups(D2D1_RECT_F rect) {
     if (vertical) {
         const float topInset = groupPadding;
         const float itemHeight = Metric(theme_, L"tabButton", L"height", Metric(theme_, L"majorNavItem", L"verticalHeight", 32.0f));
-        const float itemGap = Metric(theme_, L"tabButton", L"groupGap", 0.0f);
+        const float itemGap = Metric(theme_, L"majorNavItem", L"verticalGap", 2.0f);
         const float leftInset = groupPadding;
         float y = rect.top + topInset - groupScrollOffset_;
-        bool firstVisible = true;
         for (const auto& group : MajorGroups()) {
             D2D1_RECT_F item = D2D1::RectF(rect.left + leftInset, y, rect.right - groupPadding, y + itemHeight);
             if (item.bottom < rect.top + topInset) {
@@ -5628,17 +5633,14 @@ void MainWindow::DrawGroups(D2D1_RECT_F rect) {
             if (item.top > rect.bottom - 2.0f) {
                 break;
             }
-            if (!firstVisible) {
-                DrawTabGroupSeparator(D2D1::RectF(rect.left, item.top, rect.right, item.top), false);
-            }
             const bool selected = group.id == currentGroupId_;
             const bool hovered = IsHover(HitKind::Group, group.id);
-            DrawTabGroupItem(item, group.name, selected, hovered, textFormat_);
+            DrawMajorNavItem(item, group.name, selected, hovered, true);
             hitAreas_.push_back(HitArea{HitKind::Group, group.id, IntersectRectF(item, rect)});
             y += itemHeight + itemGap;
-            firstVisible = false;
         }
         renderTarget_->PopAxisAlignedClip();
+        FillRect(D2D1::RectF(rect.left, rect.bottom - 1.0f, rect.right, rect.bottom), theme_.color(L"majorNav", L"normal", L"line"));
         DrawScrollBar(rect, groupScrollOffset_, MaxGroupScrollOffset(rect), false);
         return;
     }
@@ -5647,7 +5649,6 @@ void MainWindow::DrawGroups(D2D1_RECT_F rect) {
     const float itemHeight = Metric(theme_, L"tabButton", L"height", 30.0f);
     const float y = rect.top + std::max(0.0f, (Height(rect) - itemHeight) * 0.5f);
     const float itemGap = Metric(theme_, L"tabButton", L"groupGap", 0.0f);
-    bool firstVisible = true;
     for (const auto& group : MajorGroups()) {
         const float itemWidth = TabGroupItemWidth(theme_, group.name, textFormat_, MeasureTextWidth(group.name, textFormat_));
         D2D1_RECT_F item = D2D1::RectF(x, y, x + itemWidth, y + itemHeight);
@@ -5658,17 +5659,14 @@ void MainWindow::DrawGroups(D2D1_RECT_F rect) {
         if (item.left > rect.right - 2.0f) {
             break;
         }
-        if (!firstVisible) {
-            DrawTabGroupSeparator(D2D1::RectF(item.left, rect.top, item.left, rect.bottom), true);
-        }
         const bool selected = group.id == currentGroupId_;
         const bool hovered = IsHover(HitKind::Group, group.id);
-        DrawTabGroupItem(item, group.name, selected, hovered, textFormat_);
+        DrawMajorNavItem(item, group.name, selected, hovered, false);
         hitAreas_.push_back(HitArea{HitKind::Group, group.id, IntersectRectF(item, rect)});
         x += itemWidth + itemGap;
-        firstVisible = false;
     }
     renderTarget_->PopAxisAlignedClip();
+    FillRect(D2D1::RectF(rect.left, rect.bottom - 1.0f, rect.right, rect.bottom), theme_.color(L"majorNav", L"normal", L"line"));
 }
 
 void MainWindow::DrawTags(D2D1_RECT_F rect) {
@@ -5677,24 +5675,13 @@ void MainWindow::DrawTags(D2D1_RECT_F rect) {
     }
 
     FillRect(rect, theme_.color(L"minorNav", L"normal", L"bg"));
-    DrawTabGroupFrame(rect);
-
-    if (config_.tagAlign == L"right") {
-        textFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING);
-    } else if (config_.tagAlign == L"center") {
-        textFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
-    } else {
-        textFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
-    }
-    textFormat_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
 
     renderTarget_->PushAxisAlignedClip(rect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
     const float groupPadding = Metric(theme_, L"tabButton", L"groupPadding", 3.0f);
     const float topInset = groupPadding;
     const float itemHeight = Metric(theme_, L"tabButton", L"height", Metric(theme_, L"minorNavItem", L"height", 32.0f));
-    const float itemGap = Metric(theme_, L"tabButton", L"groupGap", 0.0f);
+    const float itemGap = Metric(theme_, L"minorNavItem", L"gap", 2.0f);
     float y = rect.top + topInset - tagScrollOffset_;
-    bool firstVisible = true;
     for (const auto& tag : TagsForCurrentGroup()) {
         D2D1_RECT_F item = D2D1::RectF(rect.left + groupPadding, y, rect.right - groupPadding, y + itemHeight);
         if (item.bottom < rect.top + topInset) {
@@ -5704,64 +5691,83 @@ void MainWindow::DrawTags(D2D1_RECT_F rect) {
         if (item.top > rect.bottom - 2.0f) {
             break;
         }
-        if (!firstVisible) {
-            DrawTabGroupSeparator(D2D1::RectF(rect.left, item.top, rect.right, item.top), false);
-        }
         const bool selected = tag.id == currentTagId_;
         const bool hovered = IsHover(HitKind::Tag, tag.id);
-        DrawTabGroupItem(item, tag.name, selected, hovered, textFormat_);
+        DrawMinorNavItem(item, tag.name, selected, hovered);
         hitAreas_.push_back(HitArea{HitKind::Tag, tag.id, IntersectRectF(item, rect)});
         y += itemHeight + itemGap;
-        firstVisible = false;
     }
     renderTarget_->PopAxisAlignedClip();
     DrawScrollBar(rect, tagScrollOffset_, MaxTagScrollOffset(rect), false);
 }
 
-void MainWindow::DrawTabGroupFrame(D2D1_RECT_F rect) {
-    if (Width(rect) <= 0.0f || Height(rect) <= 0.0f) {
-        return;
+void MainWindow::DrawMajorNavItem(D2D1_RECT_F rect, const std::wstring& text, bool selected, bool hovered, bool vertical) {
+    const wchar_t* state = selected ? L"selected" : (hovered ? L"hover" : L"normal");
+    // Hover背景：轻浮出的浅底，无边框，弱于选中态
+    if (hovered && !selected) {
+        const float insetX = Metric(theme_, L"majorNavItem", L"hoverInsetX", 3.0f);
+        const float insetY = Metric(theme_, L"majorNavItem", L"hoverInsetY", 4.0f);
+        const float radius = Metric(theme_, L"majorNavItem", L"radius", 7.0f);
+        FillRoundedRect(Inset(rect, insetX, insetY), theme_.color(L"majorNavItem", L"hover", L"bg"), radius);
     }
-    const float radius = Metric(theme_, L"tabButton", L"groupRadius", 10.0f);
-    const float borderWidth = Metric(theme_, L"tabButton", L"groupBorderWidth", 1.0f);
-    if (borderWidth <= 0.0f) {
-        FillRect(rect, theme_.color(L"tabButton", L"normal", L"groupBg"));
-        return;
-    }
-    const D2D1_RECT_F frame = Inset(rect, borderWidth * 0.5f, borderWidth * 0.5f);
-    FillRoundedRect(frame, theme_.color(L"tabButton", L"normal", L"groupBg"), radius);
-    DrawRoundedRect(frame, theme_.color(L"tabButton", L"normal", L"groupBorder"), radius, borderWidth);
-}
 
-void MainWindow::DrawTabGroupItem(D2D1_RECT_F rect, const std::wstring& text, bool selected, bool hovered, IDWriteTextFormat* format) {
-    const wchar_t* state = selected ? (hovered ? L"selectedHover" : L"selected") : (hovered ? L"hover" : L"normal");
-    const float inset = theme_.metric(L"tabButton", L"segmented", 0.0f) > 0.5f
-        ? Metric(theme_, L"tabButton", L"segmentInset", 2.0f)
-        : 0.0f;
-    const D2D1_RECT_F segment = Inset(rect, inset, inset);
-    const float radius = Metric(theme_, L"tabButton", L"radius", 8.0f);
-    const float borderWidth = Metric(theme_, L"tabButton", L"borderWidth", 1.0f);
-    FillRoundedRect(segment, theme_.color(L"tabButton", state, L"bg"), radius);
-    DrawRoundedRect(segment, theme_.color(L"tabButton", state, L"border"), radius, borderWidth);
-
+    // 选中态：accent 字色 + 半粗字 + 边缘 accent 指示条
+    IDWriteTextFormat* format = (selected && navSelectedFormat_) ? navSelectedFormat_ : textFormat_;
     format->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
     format->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
     const float paddingX = Metric(theme_, L"tabButton", L"paddingX", 12.0f);
-    DrawTextBlock(text, format, Inset(rect, paddingX, 0.0f), theme_.color(L"tabButton", state, L"text"));
+    DrawTextBlock(text, format, Inset(rect, paddingX, 0.0f), theme_.color(L"majorNavItem", state, L"text"));
+
+    if (selected) {
+        const float thickness = Metric(theme_, L"majorNavItem", L"indicatorHeight", 3.0f);
+        const float insetX = Metric(theme_, L"majorNavItem", L"indicatorInsetX", 10.0f);
+        const float radius = Metric(theme_, L"majorNavItem", L"indicatorRadius", 2.0f);
+        const Color accent = theme_.color(L"majorNavItem", L"selected", L"accent");
+        D2D1_RECT_F bar;
+        if (vertical) {
+            // 竖排：左侧竖条
+            bar = D2D1::RectF(rect.left, rect.top + insetX, rect.left + thickness, rect.bottom - insetX);
+        } else {
+            // 横排：底部指示条
+            bar = D2D1::RectF(rect.left + insetX, rect.bottom - thickness, rect.right - insetX, rect.bottom);
+        }
+        FillRoundedRect(bar, accent, radius);
+    }
 }
 
-void MainWindow::DrawTabGroupSeparator(const D2D1_RECT_F& rect, bool horizontal) {
-    const float width = Metric(theme_, L"tabButton", L"groupBorderWidth", 1.0f);
-    if (width <= 0.0f) {
-        return;
+void MainWindow::DrawMinorNavItem(D2D1_RECT_F rect, const std::wstring& text, bool selected, bool hovered) {
+    const wchar_t* state = selected ? L"selected" : (hovered ? L"hover" : L"normal");
+    const float topInset = Metric(theme_, L"minorNavItem", L"topInset", 2.0f);
+    const float bottomInset = Metric(theme_, L"minorNavItem", L"bottomInset", 2.0f);
+    const D2D1_RECT_F body = D2D1::RectF(rect.left, rect.top + topInset, rect.right, rect.bottom - bottomInset);
+    const float radius = Metric(theme_, L"minorNavItem", L"radius", 6.0f);
+
+    // 选中/hover 浅底，无边框
+    if (selected || hovered) {
+        FillRoundedRect(body, theme_.color(L"minorNavItem", state, L"bg"), radius);
     }
-    if (horizontal) {
-        const float half = width * 0.5f;
-        FillRect(D2D1::RectF(rect.left - half, rect.top, rect.left + half, rect.bottom), theme_.color(L"tabButton", L"normal", L"groupBorder"));
+
+    // 选中态：左侧 accent 竖条
+    if (selected) {
+        const float accentWidth = Metric(theme_, L"minorNavItem", L"accentWidth", 3.0f);
+        const float accentInsetY = Metric(theme_, L"minorNavItem", L"accentInsetY", 3.0f);
+        const Color accent = theme_.color(L"minorNavItem", L"selected", L"accent");
+        FillRoundedRect(D2D1::RectF(body.left, body.top + accentInsetY, body.left + accentWidth, body.bottom - accentInsetY),
+                        accent, accentWidth * 0.5f);
+    }
+
+    if (config_.tagAlign == L"right") {
+        textFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING);
+    } else if (config_.tagAlign == L"center") {
+        textFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
     } else {
-        const float half = width * 0.5f;
-        FillRect(D2D1::RectF(rect.left, rect.top - half, rect.right, rect.top + half), theme_.color(L"tabButton", L"normal", L"groupBorder"));
+        textFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
     }
+    textFormat_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+    const float textInsetX = Metric(theme_, L"minorNavItem", L"textInsetX", 10.0f);
+    DrawTextBlock(text, textFormat_, D2D1::RectF(rect.left + textInsetX, rect.top, rect.right - textInsetX, rect.bottom),
+                  theme_.color(L"minorNavItem", state, L"text"));
+    textFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
 }
 
 void MainWindow::DrawLinks(D2D1_RECT_F rect) {
@@ -5788,14 +5794,7 @@ void MainWindow::DrawLinks(D2D1_RECT_F rect) {
     auto links = LinksForCurrentTag();
     if (links.empty()) {
         textFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
-        const float emptyInsetX = Metric(theme_, L"content", L"emptyTextInsetX", 20.0f);
-        const float emptyTop = Metric(theme_, L"content", L"emptyTextTop", 24.0f);
-        const float emptyHeight = Metric(theme_, L"content", L"emptyTextHeight", 30.0f);
-        D2D1_RECT_F emptyText = D2D1::RectF(rect.left + emptyInsetX, rect.top + emptyTop, rect.right - emptyInsetX, rect.top + emptyTop + emptyHeight);
-        DrawTextBlock(L"当前标签没有启动项", textFormat_, emptyText, theme_.color(L"content", L"empty", L"text"));
-        D2D1_RECT_F hintText = D2D1::RectF(rect.left + emptyInsetX, emptyText.bottom + 6.0f, rect.right - emptyInsetX, emptyText.bottom + 6.0f + emptyHeight);
-        DrawTextBlock(L"拖入文件、文件夹或网址即可添加", textFormat_, hintText, theme_.color(L"content", L"empty", L"text"));
-        DrawEmptyAddButton(rect, hintText.bottom + 10.0f, L"添加启动项");
+        DrawEmptyState(rect, L"当前标签没有启动项", L"拖入文件、文件夹或网址即可添加", L"添加启动项");
         return;
     }
 
@@ -5876,6 +5875,67 @@ void MainWindow::DrawLinks(D2D1_RECT_F rect) {
     DrawScrollBar(rect, linkScrollOffset_, MaxLinkScrollOffset(rect), false);
 }
 
+void MainWindow::DrawEmptyState(const D2D1_RECT_F& contentRect, const std::wstring& title, const std::wstring& hint, const std::wstring& buttonLabel) {
+    const float iconSize = Metric(theme_, L"content", L"emptyIconSize", 56.0f);
+    const float iconRadius = Metric(theme_, L"content", L"emptyIconRadius", 14.0f);
+    const float iconStroke = Metric(theme_, L"content", L"emptyIconStroke", 2.0f);
+    const float glyphHalf = Metric(theme_, L"content", L"emptyIconGlyph", 15.0f) * 0.5f;
+    const float iconGap = Metric(theme_, L"content", L"emptyIconGap", 18.0f);
+    const float titleGap = Metric(theme_, L"content", L"emptyTitleGap", 8.0f);
+    const float hintGap = Metric(theme_, L"content", L"emptyHintGap", 20.0f);
+    const float shiftY = Metric(theme_, L"content", L"emptyBlockShiftY", -16.0f);
+    const float lineHeight = Metric(theme_, L"content", L"emptyTextHeight", 30.0f);
+    const float textInsetX = Metric(theme_, L"content", L"emptyTextInsetX", 20.0f);
+    const float buttonHeight = Metric(theme_, L"button", L"height", 30.0f);
+
+    const bool hasHint = !hint.empty();
+    const bool hasButton = !buttonLabel.empty();
+    // 计算整块高度用于垂直居中
+    float blockHeight = iconSize + iconGap + lineHeight;
+    if (hasHint) blockHeight += titleGap + lineHeight;
+    if (hasButton) blockHeight += hintGap + buttonHeight;
+
+    const float centerX = (contentRect.left + contentRect.right) * 0.5f;
+    float y = contentRect.top + std::max(12.0f, (Height(contentRect) - blockHeight) * 0.5f + shiftY);
+
+    // 柔和图标：accentSoft 圆角方块底 + accent 描边 + 加号意象
+    const D2D1_RECT_F iconRect = D2D1::RectF(centerX - iconSize * 0.5f, y, centerX + iconSize * 0.5f, y + iconSize);
+    FillRoundedRect(iconRect, theme_.color(L"content", L"empty", L"iconBg"), iconRadius);
+    DrawRoundedRect(iconRect, theme_.color(L"content", L"empty", L"icon"), iconRadius, iconStroke);
+    hitAreas_.push_back(HitArea{HitKind::AddButton, 1, iconRect});
+    const float icx = (iconRect.left + iconRect.right) * 0.5f;
+    const float icy = (iconRect.top + iconRect.bottom) * 0.5f;
+    ID2D1SolidColorBrush* glyphBrush = nullptr;
+    if (SUCCEEDED(renderTarget_->CreateSolidColorBrush(theme_.color(L"content", L"empty", L"icon").d2d(), &glyphBrush)) && glyphBrush) {
+        renderTarget_->DrawLine(D2D1::Point2F(icx - glyphHalf, icy), D2D1::Point2F(icx + glyphHalf, icy), glyphBrush, iconStroke);
+        renderTarget_->DrawLine(D2D1::Point2F(icx, icy - glyphHalf), D2D1::Point2F(icx, icy + glyphHalf), glyphBrush, iconStroke);
+        glyphBrush->Release();
+    }
+    y = iconRect.bottom + iconGap;
+
+    // 主标题
+    textFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+    textFormat_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+    D2D1_RECT_F titleRect = D2D1::RectF(contentRect.left + textInsetX, y, contentRect.right - textInsetX, y + lineHeight);
+    DrawTextBlock(title, textFormat_, titleRect, theme_.color(L"content", L"empty", L"title"));
+    y = titleRect.bottom;
+
+    // 副提示
+    if (hasHint) {
+        y += titleGap;
+        smallFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+        smallFormat_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+        D2D1_RECT_F hintRect = D2D1::RectF(contentRect.left + textInsetX, y, contentRect.right - textInsetX, y + lineHeight);
+        DrawTextBlock(hint, smallFormat_, hintRect, theme_.color(L"content", L"empty", L"hint"));
+        y = hintRect.bottom;
+    }
+
+    // 主色按钮
+    if (hasButton) {
+        DrawEmptyAddButton(contentRect, y + hintGap - 14.0f, buttonLabel);
+    }
+}
+
 void MainWindow::DrawEmptyAddButton(const D2D1_RECT_F& contentRect, float topY, const std::wstring& label) {
     const bool hovered = IsHover(HitKind::AddButton, 0);
     const float radius = Metric(theme_, L"button", L"radius", 7.0f);
@@ -5891,11 +5951,12 @@ void MainWindow::DrawEmptyAddButton(const D2D1_RECT_F& contentRect, float topY, 
     const float top = topY + 14.0f;
     D2D1_RECT_F button = D2D1::RectF(centerX - buttonWidth * 0.5f, top, centerX + buttonWidth * 0.5f, top + height);
 
+    // 主色实心按钮（primaryButton）
     const wchar_t* state = hovered ? L"hover" : L"normal";
-    FillRoundedRect(button, theme_.color(L"button", state, L"bg"), radius);
-    DrawRoundedRect(button, theme_.color(L"button", state, L"border"), radius, Metric(theme_, L"button", L"borderWidth", 1.0f));
+    FillRoundedRect(button, theme_.color(L"primaryButton", state, L"bg"), radius);
+    DrawRoundedRect(button, theme_.color(L"primaryButton", state, L"border"), radius, Metric(theme_, L"button", L"borderWidth", 1.0f));
 
-    const Color iconColor = theme_.color(L"button", state, L"text");
+    const Color iconColor = theme_.color(L"primaryButton", state, L"text");
     const float contentWidth = plusHalf * 2.0f + plusGap + textWidth;
     const float contentLeft = button.left + (Width(button) - contentWidth) * 0.5f;
     const float cy = (button.top + button.bottom) * 0.5f;
@@ -5909,7 +5970,7 @@ void MainWindow::DrawEmptyAddButton(const D2D1_RECT_F& contentRect, float topY, 
 
     D2D1_RECT_F textRect = D2D1::RectF(px + plusHalf + plusGap, button.top, button.right - paddingX, button.bottom);
     textFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
-    DrawTextBlock(label, textFormat_, textRect, theme_.color(L"button", state, L"text"));
+    DrawTextBlock(label, textFormat_, textRect, iconColor);
     textFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
 
     hitAreas_.push_back(HitArea{HitKind::AddButton, 0, button});
@@ -5935,13 +5996,7 @@ void MainWindow::DrawNotePage(D2D1_RECT_F rect, const Group& tag) {
 void MainWindow::DrawTodoItems(D2D1_RECT_F rect, const Group&) {
     auto items = TodosForCurrentTag();
     if (items.empty()) {
-        textFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
-        const float emptyInsetX = Metric(theme_, L"content", L"emptyTextInsetX", 20.0f);
-        const float emptyTop = Metric(theme_, L"content", L"emptyTextTop", 24.0f);
-        const float emptyHeight = Metric(theme_, L"content", L"emptyTextHeight", 30.0f);
-        D2D1_RECT_F emptyText = D2D1::RectF(rect.left + emptyInsetX, rect.top + emptyTop, rect.right - emptyInsetX, rect.top + emptyTop + emptyHeight);
-        DrawTextBlock(L"当前标签没有待办事项", textFormat_, emptyText, theme_.color(L"content", L"empty", L"text"));
-        DrawEmptyAddButton(rect, emptyText.bottom, L"添加待办事项");
+        DrawEmptyState(rect, L"当前标签没有待办事项", L"", L"添加待办事项");
         return;
     }
 

@@ -220,12 +220,12 @@ private:
     void DrawTitle(D2D1_RECT_F rect);
     void DrawGroups(D2D1_RECT_F rect);
     void DrawTags(D2D1_RECT_F rect);
-    void DrawTabGroupFrame(D2D1_RECT_F rect);
-    void DrawTabGroupItem(D2D1_RECT_F rect, const std::wstring& text, bool selected, bool hovered, IDWriteTextFormat* format);
-    void DrawTabGroupSeparator(const D2D1_RECT_F& rect, bool horizontal);
+    void DrawMajorNavItem(D2D1_RECT_F rect, const std::wstring& text, bool selected, bool hovered, bool vertical);
+    void DrawMinorNavItem(D2D1_RECT_F rect, const std::wstring& text, bool selected, bool hovered);
     void DrawLinks(D2D1_RECT_F rect);
     void DrawNotePage(D2D1_RECT_F rect, const Group& tag);
     void DrawTodoItems(D2D1_RECT_F rect, const Group& tag);
+    void DrawEmptyState(const D2D1_RECT_F& contentRect, const std::wstring& title, const std::wstring& hint, const std::wstring& buttonLabel);
     void DrawEmptyAddButton(const D2D1_RECT_F& contentRect, float topY, const std::wstring& label);
     void DrawButtonIcon(HitKind kind, D2D1_RECT_F rect, const Color& color);
     ID2D1Bitmap* LoadAppIconBitmap();
@@ -360,6 +360,7 @@ private:
     ID2D1HwndRenderTarget* renderTarget_ = nullptr;
     IDWriteTextFormat* titleFormat_ = nullptr;
     IDWriteTextFormat* textFormat_ = nullptr;
+    IDWriteTextFormat* navSelectedFormat_ = nullptr;
     IDWriteTextFormat* smallFormat_ = nullptr;
     std::unordered_map<std::wstring, ID2D1Bitmap*> uiBitmapCache_;
     std::vector<std::unique_ptr<MenuItemData>> activeMenuItems_;

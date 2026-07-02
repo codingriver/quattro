@@ -121,9 +121,15 @@
         <Metric name="verticalBottomInset" value="2"/>
         <Metric name="verticalHeight" value="32"/>
         <Metric name="verticalGap" value="2"/>
+        <Metric name="radius" value="7"/>
+        <Metric name="hoverInsetX" value="3"/>
+        <Metric name="hoverInsetY" value="4"/>
+        <Metric name="indicatorHeight" value="3"/>
+        <Metric name="indicatorInsetX" value="10"/>
+        <Metric name="indicatorRadius" value="2"/>
         <State name="normal" text="@text"/>
         <State name="hover" bg="@majorHover" text="@text"/>
-        <State name="selected" bg="@surface" text="@accent"/>
+        <State name="selected" bg="@surface" text="@accent" accent="@accent"/>
     </Component>
     <Component name="minorNav">
         <Metric name="width" value="72"/>
@@ -148,8 +154,16 @@
         <Metric name="emptyTextInsetX" value="20"/>
         <Metric name="emptyTextTop" value="24"/>
         <Metric name="emptyTextHeight" value="30"/>
+        <Metric name="emptyIconSize" value="56"/>
+        <Metric name="emptyIconRadius" value="14"/>
+        <Metric name="emptyIconStroke" value="2"/>
+        <Metric name="emptyIconGlyph" value="15"/>
+        <Metric name="emptyIconGap" value="18"/>
+        <Metric name="emptyTitleGap" value="8"/>
+        <Metric name="emptyHintGap" value="20"/>
+        <Metric name="emptyBlockShiftY" value="-16"/>
         <State name="normal" bg="@background"/>
-        <State name="empty" text="@emptyText"/>
+        <State name="empty" text="@emptyText" title="@text" hint="@mutedText" icon="@accent" iconBg="@accentSoft"/>
     </Component>
     <Component name="text">
         <Metric name="textHeight" value="20"/>
