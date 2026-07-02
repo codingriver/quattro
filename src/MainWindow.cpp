@@ -6,11 +6,10 @@
 #include "HotKeyEditor.h"
 #include "LinkEditDialog.h"
 #include "MenuCatalog.h"
-#include "SearchDialog.h"
 #include "ShellItemService.h"
 #include "SimpleDialogs.h"
 #include "StartupService.h"
-#include "SystemFunctionDialog.h"
+#include "SystemFunctions.h"
 #include "ThemedControls.h"
 #include "TodoEditDialog.h"
 #include "TodoSchedule.h"
@@ -43,7 +42,6 @@
 
 namespace {
 constexpr int ID_HOTKEY_MAIN = 1;
-constexpr int ID_HOTKEY_SEARCH = 2;
 constexpr int ID_HOTKEY_LINK_BASE = 1000;
 constexpr int ID_NOTE_EDIT = 2100;
 constexpr int ID_REMINDER_PANEL = 2101;
@@ -64,10 +62,6 @@ constexpr const wchar_t* kTooltipLineGapProp = L"QuattroTooltipLineGap";
 constexpr const wchar_t* kTooltipRadiusProp = L"QuattroTooltipRadius";
 constexpr const wchar_t* kTooltipBorderWidthProp = L"QuattroTooltipBorderWidth";
 constexpr const wchar_t* kAppDisplayName = L"Quattro快速启动器";
-
-bool SearchFeatureEnabled() {
-    return false;
-}
 
 template <typename T>
 void SafeRelease(T*& value) {
@@ -1168,7 +1162,6 @@ void DrawMenuIcon(HDC dc, const RECT& rc, int icon, bool disabled, COLORREF colo
     case MenuIconGroup: drawn = DrawStockMenuIcon(dc, rc, SIID_FOLDER); break;
     case MenuIconInfo: drawn = DrawStockMenuIcon(dc, rc, SIID_INFO); break;
     case MenuIconDelete: drawn = DrawStockMenuIcon(dc, rc, SIID_DELETE); break;
-    case MenuIconSearch: drawn = DrawStockMenuIcon(dc, rc, SIID_FIND); break;
     default:
         break;
     }
@@ -1610,10 +1603,6 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             }
             return 0;
         }
-        if (SearchFeatureEnabled() && wParam == ID_HOTKEY_SEARCH) {
-            OpenSearch();
-            return 0;
-        }
         if (wParam >= ID_HOTKEY_LINK_BASE) {
             const int linkId = LinkIdFromHotKeyId(static_cast<int>(wParam));
             if (linkId > 0) {
@@ -1761,9 +1750,6 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         switch (hit.kind) {
         case HitKind::CloseButton:
             HideMainWindow();
-            return 0;
-        case HitKind::SearchButton:
-            OpenSearch();
             return 0;
         case HitKind::MenuButton:
             {
@@ -1963,9 +1949,6 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         case ID_MENU_ADD_URL:
             AddUrl();
             return 0;
-        case ID_MENU_ADD_SYSTEM:
-            AddSystemFunction();
-            return 0;
         case ID_MENU_CLEAR_TAG_LINKS:
             ClearCurrentTagLinks();
             return 0;
@@ -2158,9 +2141,6 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         case ID_MENU_TOGGLE_TOPMOST:
             ToggleConfigVisibility(&AppConfig::topMost);
             return 0;
-        case ID_MENU_SEARCH:
-            OpenSearch();
-            return 0;
         case ID_MENU_SETTINGS:
             OpenSettings();
             return 0;
@@ -2225,7 +2205,6 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             const HitArea hit = CursorHitArea();
             switch (hit.kind) {
             case HitKind::CloseButton:
-            case HitKind::SearchButton:
             case HitKind::MenuButton:
             case HitKind::SkinButton:
             case HitKind::AddButton:
@@ -2245,16 +2224,6 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
     case WM_KEYDOWN:
         if (HandleKeyDown(wParam)) {
             return 0;
-        }
-        return DefWindowProcW(hwnd_, message, wParam, lParam);
-    case WM_CHAR:
-        if (SearchFeatureEnabled() && wParam >= 0x20 && wParam != 0x7F) {
-            const Group* tag = FindGroup(currentTagId_);
-            const bool textTag = tag && (IsNoteTag(*tag) || IsTodoItemsTag(*tag));
-            if (!textTag && GetFocus() == hwnd_) {
-                OpenSearchWithPrefix(std::wstring(1, static_cast<wchar_t>(wParam)));
-                return 0;
-            }
         }
         return DefWindowProcW(hwnd_, message, wParam, lParam);
     case WM_MEASUREITEM:
@@ -2930,29 +2899,6 @@ void MainWindow::AddUrl() {
     model_.links.push_back(link);
     selectedLinkId_ = link.id;
     RequestInitialUrlIconDownload(link);
-    RegisterConfiguredHotKeys();
-    EnsureLinkVisible(selectedLinkId_);
-    InvalidateRect(hwnd_, nullptr, FALSE);
-}
-
-void MainWindow::AddSystemFunction() {
-    if (EnsureCurrentTag() <= 0) {
-        return;
-    }
-
-    Link link;
-    link.parentGroup = currentTagId_;
-    link.pos = -1;
-    link.showCmd = SW_SHOWNORMAL;
-    if (!SystemFunctionDialog::Show(hwnd_, instance_, theme_, link)) {
-        return;
-    }
-    if (!storageService_.InsertLink(link)) {
-        MessageBoxW(hwnd_, storageService_.lastError().c_str(), L"添加系统功能", MB_OK | MB_ICONWARNING);
-        return;
-    }
-    model_.links.push_back(link);
-    selectedLinkId_ = link.id;
     RegisterConfiguredHotKeys();
     EnsureLinkVisible(selectedLinkId_);
     InvalidateRect(hwnd_, nullptr, FALSE);
@@ -3819,18 +3765,6 @@ void MainWindow::CopyLinkPath(int linkId) {
     CloseClipboard();
 }
 
-void MainWindow::OpenSearch() {
-    if (!SearchFeatureEnabled()) {
-        return;
-    }
-    int linkId = SearchDialog::Show(hwnd_, instance_, theme_, model_, config_);
-    configService_.SaveWindowState(config_);
-    if (linkId > 0) {
-        selectedLinkId_ = linkId;
-        RunLink(linkId);
-    }
-}
-
 void MainWindow::OpenSettings() {
     AppConfig previous = config_;
     AppConfig next = config_;
@@ -3895,7 +3829,6 @@ void MainWindow::ResetLayoutToDefaults() {
     config_.showTitle = defaults.showTitle;
     config_.showGroup = defaults.showGroup;
     config_.showTag = defaults.showTag;
-    config_.showSearchButton = defaults.showSearchButton;
     config_.showMenuButton = defaults.showMenuButton;
     config_.showSkinButton = defaults.showSkinButton;
     config_.topMost = defaults.topMost;
@@ -4612,7 +4545,7 @@ void MainWindow::ApplyConfigRuntimeChanges(const AppConfig& previous) {
         RemoveTrayIcon();
         InitializeTrayIcon();
     }
-    if (previous.mainHotKey != config_.mainHotKey || previous.searchHotKey != config_.searchHotKey) {
+    if (previous.mainHotKey != config_.mainHotKey) {
         UnregisterConfiguredHotKeys();
         RegisterConfiguredHotKeys();
     }
@@ -4655,10 +4588,6 @@ void MainWindow::RegisterConfiguredHotKeys() {
     if (config_.mainHotKey != 0) {
         registerHotKey(ID_HOTKEY_MAIN, config_.mainHotKey, L"主窗口");
     }
-    if (SearchFeatureEnabled() && config_.searchHotKey != 0) {
-        registerHotKey(ID_HOTKEY_SEARCH, config_.searchHotKey, L"搜索");
-    }
-
     int nextHotKeyId = ID_HOTKEY_LINK_BASE;
     for (const auto& link : model_.links) {
         if (link.hotKey == 0) {
@@ -4685,7 +4614,6 @@ void MainWindow::UnregisterConfiguredHotKeys() {
         return;
     }
     UnregisterHotKey(hwnd_, ID_HOTKEY_MAIN);
-    UnregisterHotKey(hwnd_, ID_HOTKEY_SEARCH);
     for (const auto& [hotKeyId, _] : registeredLinkHotKeys_) {
         UnregisterHotKey(hwnd_, hotKeyId);
     }
@@ -5214,8 +5142,6 @@ void MainWindow::AppendThemeItemsToMenu(HMENU menu) {
 
 void MainWindow::AppendAddLinkItems(HMENU menu) {
     HMENU systemMenu = CreatePopupMenu();
-    AppendThemedMenuItem(systemMenu, MF_STRING, ID_MENU_ADD_SYSTEM, L"搜索/选择系统功能...", false, -1, -1, MenuIconSystem);
-    AppendThemedSeparator(systemMenu);
     AppendSystemFunctionItems(systemMenu, ID_MENU_ADD_SYSTEM_FUNCTION_BASE);
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_ADD_FILE, L"添加文件");
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_ADD_FOLDER, L"添加文件夹");
@@ -5582,15 +5508,13 @@ void MainWindow::DrawTitle(D2D1_RECT_F rect) {
     const float buttonRightInset = Metric(theme_, L"titleButton", L"rightInset", 4.0f);
     const float buttonTopInset = Metric(theme_, L"titleButton", L"topInset", 4.0f);
     const float buttonReserveInset = Metric(theme_, L"titleButton", L"reserveInset", 16.0f);
-    const std::array<HitKind, 4> buttons = {
+    const std::array<HitKind, 3> buttons = {
         HitKind::CloseButton,
         HitKind::SkinButton,
         HitKind::MenuButton,
-        HitKind::SearchButton,
     };
     auto isTitleButtonVisible = [&](HitKind kind) {
         return !((kind == HitKind::MenuButton && !config_.showMenuButton) ||
-                 (kind == HitKind::SearchButton && (!SearchFeatureEnabled() || !config_.showSearchButton)) ||
                  (kind == HitKind::SkinButton && !config_.showSkinButton));
     };
     int visibleButtonCount = 0;
@@ -6081,9 +6005,6 @@ void MainWindow::DrawButtonIcon(HitKind kind, D2D1_RECT_F rect, const Color& col
     const float iconHalf = Metric(theme_, L"titleButton", L"iconHalf", 5.0f);
     const float menuHalfWidth = Metric(theme_, L"titleButton", L"menuHalfWidth", 6.0f);
     const float menuLineGap = Metric(theme_, L"titleButton", L"menuLineGap", 5.0f);
-    const float searchRadius = Metric(theme_, L"titleButton", L"searchRadius", 5.0f);
-    const float searchOffset = Metric(theme_, L"titleButton", L"searchOffset", 2.0f);
-    const float searchHandle = Metric(theme_, L"titleButton", L"searchHandle", 7.0f);
     if (kind == HitKind::CloseButton) {
         renderTarget_->DrawLine(D2D1::Point2F(cx - iconHalf, cy - iconHalf), D2D1::Point2F(cx + iconHalf, cy + iconHalf), brush, stroke);
         renderTarget_->DrawLine(D2D1::Point2F(cx + iconHalf, cy - iconHalf), D2D1::Point2F(cx - iconHalf, cy + iconHalf), brush, stroke);
@@ -6091,9 +6012,6 @@ void MainWindow::DrawButtonIcon(HitKind kind, D2D1_RECT_F rect, const Color& col
         renderTarget_->DrawLine(D2D1::Point2F(cx - menuHalfWidth, cy - menuLineGap), D2D1::Point2F(cx + menuHalfWidth, cy - menuLineGap), brush, stroke);
         renderTarget_->DrawLine(D2D1::Point2F(cx - menuHalfWidth, cy), D2D1::Point2F(cx + menuHalfWidth, cy), brush, stroke);
         renderTarget_->DrawLine(D2D1::Point2F(cx - menuHalfWidth, cy + menuLineGap), D2D1::Point2F(cx + menuHalfWidth, cy + menuLineGap), brush, stroke);
-    } else if (kind == HitKind::SearchButton) {
-        renderTarget_->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(cx - searchOffset, cy - searchOffset), searchRadius, searchRadius), brush, stroke);
-        renderTarget_->DrawLine(D2D1::Point2F(cx + searchOffset, cy + searchOffset), D2D1::Point2F(cx + searchHandle, cy + searchHandle), brush, stroke);
     } else if (kind == HitKind::AddButton) {
         renderTarget_->DrawLine(D2D1::Point2F(cx - menuHalfWidth, cy), D2D1::Point2F(cx + menuHalfWidth, cy), brush, stroke);
         renderTarget_->DrawLine(D2D1::Point2F(cx, cy - menuHalfWidth), D2D1::Point2F(cx, cy + menuHalfWidth), brush, stroke);
@@ -6729,18 +6647,6 @@ MainWindow::HitArea MainWindow::CursorHitArea() const {
     return HitTest(static_cast<float>(point.x), static_cast<float>(point.y));
 }
 
-void MainWindow::OpenSearchWithPrefix(const std::wstring& prefix) {
-    if (!SearchFeatureEnabled()) {
-        return;
-    }
-    int linkId = SearchDialog::Show(hwnd_, instance_, theme_, model_, config_, prefix);
-    configService_.SaveWindowState(config_);
-    if (linkId > 0) {
-        selectedLinkId_ = linkId;
-        RunLink(linkId);
-    }
-}
-
 void MainWindow::MoveLinkSelection(int dx, int dy) {
     auto links = LinksForCurrentTag();
     if (links.empty()) {
@@ -6952,12 +6858,6 @@ bool MainWindow::HandleKeyDown(WPARAM key) {
             EditLink(selectedLinkId_);
         }
         return true;
-    case 'F':
-        if (SearchFeatureEnabled() && ctrl) {
-            OpenSearch();
-            return true;
-        }
-        return false;
     case 'N':
         if (ctrl) {
             if (todoTag) {

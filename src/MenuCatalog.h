@@ -18,7 +18,6 @@ constexpr UINT ID_MENU_DELETE_GROUP = 40011;
 constexpr UINT ID_MENU_ADD_TAG = 40012;
 constexpr UINT ID_MENU_EDIT_TAG = 40013;
 constexpr UINT ID_MENU_DELETE_TAG = 40014;
-constexpr UINT ID_MENU_SEARCH = 40015;
 constexpr UINT ID_MENU_SETTINGS = 40016;
 constexpr UINT ID_MENU_IMPORT_CLIPBOARD = 40017;
 constexpr UINT ID_MENU_SORT_POS = 40018;
@@ -40,7 +39,6 @@ constexpr UINT ID_MENU_REWARD = 40033;
 constexpr UINT ID_MENU_ADD_FILE = 40034;
 constexpr UINT ID_MENU_ADD_FOLDER = 40035;
 constexpr UINT ID_MENU_ADD_URL = 40036;
-constexpr UINT ID_MENU_ADD_SYSTEM = 40037;
 constexpr UINT ID_MENU_CLEAR_TAG_LINKS = 40038;
 constexpr UINT ID_MENU_RUN_ADMIN = 40039;
 constexpr UINT ID_MENU_RUN_PRIVATE = 40040;
@@ -115,7 +113,6 @@ enum MenuIcon {
     MenuIconEdit,
     MenuIconInfo,
     MenuIconDelete,
-    MenuIconSearch,
     MenuIconGroup,
     MenuIconTag,
     MenuIconTheme,

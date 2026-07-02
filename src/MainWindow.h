@@ -55,7 +55,6 @@ private:
     enum class HitKind {
         None,
         CloseButton,
-        SearchButton,
         MenuButton,
         SkinButton,
         AddButton,
@@ -112,7 +111,6 @@ private:
     void AddFile();
     void AddFolder();
     void AddUrl();
-    void AddSystemFunction();
     void AddSystemFunction(std::size_t index);
     void OpenSystemFunction(std::size_t index);
     void EditLink(int linkId);
@@ -146,7 +144,6 @@ private:
     void HideTodoReminderPanel();
     void ShowTodoSystemNotification(const TodoItem& item);
     bool EnsureNotificationIcon();
-    void OpenSearch();
     void OpenSettings();
     void OpenBuiltinTool(std::size_t index);
     void ResetLayoutToDefaults();
@@ -261,7 +258,6 @@ private:
     void SelectAdjacentTag(int direction);
     void SelectAdjacentGroup(int direction);
     bool HandleKeyDown(WPARAM key);
-    void OpenSearchWithPrefix(const std::wstring& prefix);
     HitArea CursorHitArea() const;
 
     std::vector<Group> MajorGroups() const;

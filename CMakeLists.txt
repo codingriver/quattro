@@ -113,12 +113,11 @@ add_executable(Quattro WIN32
     src/MainWindow.cpp
     src/MenuCatalog.cpp
     src/PluginRegistry.cpp
-    src/SearchDialog.cpp
     src/ShellItemService.cpp
     src/SimpleDialogs.cpp
     src/StartupService.cpp
     src/Storage.cpp
-    src/SystemFunctionDialog.cpp
+    src/SystemFunctions.cpp
     src/Theme.cpp
     src/ThemedControls.cpp
     src/TodoEditDialog.cpp
@@ -170,7 +169,7 @@ add_executable(QuattroTests
     src/PluginRegistry.cpp
     src/ShellItemService.cpp
     src/Storage.cpp
-    src/SystemFunctionDialog.cpp
+    src/SystemFunctions.cpp
     src/Theme.cpp
     src/ThemedControls.cpp
     src/TodoSchedule.cpp
@@ -225,11 +224,10 @@ add_executable(QuattroUiScreenshotAcceptance
     src/LinkEditDialog.cpp
     src/MenuCatalog.cpp
     src/PluginRegistry.cpp
-    src/SearchDialog.cpp
     src/ShellItemService.cpp
     src/SimpleDialogs.cpp
     src/Storage.cpp
-    src/SystemFunctionDialog.cpp
+    src/SystemFunctions.cpp
     src/Theme.cpp
     src/ThemedControls.cpp
     src/TodoEditDialog.cpp

@@ -45,7 +45,6 @@ struct AppConfig {
     bool hideNotifyIcon = false;
     bool preferAdminRun = false;
     bool showDate = true;
-    bool showSearchButton = true;
     bool showMenuButton = true;
     bool showSkinButton = false;
 
@@ -57,7 +56,6 @@ struct AppConfig {
     int currentGroupId = 0;
     int currentTagId = 0;
     int mainHotKey = 0;
-    int searchHotKey = 0;
 
     int width = 388;
     int height = 560;
@@ -71,10 +69,6 @@ struct AppConfig {
     int attrHeight = 0;
 
     int version = 0;
-    int searchX = -1;
-    int searchY = -1;
-    int searchCount = 0;
-    bool focusSearch = false;
     int alpha = 255;
 
     bool groupRight = false;

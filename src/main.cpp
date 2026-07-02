@@ -148,7 +148,6 @@ void WriteStartupReport(
     file << "show_tag=" << (config.showTag ? 1 : 0) << "\n";
     file << "show_run_count=" << (config.showRunCount ? 1 : 0) << "\n";
     file << "show_date=" << (config.showDate ? 1 : 0) << "\n";
-    file << "show_search_button=" << (config.showSearchButton ? 1 : 0) << "\n";
     file << "show_menu_button=" << (config.showMenuButton ? 1 : 0) << "\n";
     file << "show_skin_button=" << (config.showSkinButton ? 1 : 0) << "\n";
     file << "link_name_single_line=" << (config.linkNameSingleLine ? 1 : 0) << "\n";
@@ -176,9 +175,6 @@ void WriteStartupReport(
     file << "active_group_delay=" << config.activeGroupDelay << "\n";
     file << "active_tag_delay=" << config.activeTagDelay << "\n";
     file << "main_hot_key=" << config.mainHotKey << "\n";
-    file << "search_hot_key=" << config.searchHotKey << "\n";
-    file << "search_count=" << config.searchCount << "\n";
-    file << "focus_search=" << (config.focusSearch ? 1 : 0) << "\n";
     file << "open_dir_command=" << WideToUtf8(config.openDirCommand) << "\n";
     file << "help_url=" << WideToUtf8(config.helpUrl) << "\n";
     file << "update_url=" << WideToUtf8(config.updateUrl) << "\n";

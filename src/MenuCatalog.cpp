@@ -80,7 +80,6 @@ int MenuIconFor(UINT_PTR id, const std::wstring& text) {
     case ID_MENU_ADD_FILE: return MenuIconFile;
     case ID_MENU_ADD_FOLDER: return MenuIconFolder;
     case ID_MENU_ADD_URL: return MenuIconUrl;
-    case ID_MENU_ADD_SYSTEM: return MenuIconSystem;
     case ID_MENU_RUN_ADMIN: return MenuIconShield;
     case ID_MENU_RUN_PRIVATE: return MenuIconUrl;
     case ID_MENU_OPEN_LOCATION: return MenuIconOpenFolder;
@@ -112,7 +111,6 @@ int MenuIconFor(UINT_PTR id, const std::wstring& text) {
     case ID_MENU_DELETE_LINK:
     case ID_MENU_DELETE_GROUP:
     case ID_MENU_DELETE_TAG: return MenuIconDelete;
-    case ID_MENU_SEARCH: return MenuIconSearch;
     case ID_MENU_ADD_GROUP: return MenuIconGroup;
     case ID_MENU_ADD_TAG: return MenuIconTag;
     case ID_MENU_ADD_NOTE_TAG: return MenuIconNotebook;
@@ -194,7 +192,6 @@ const wchar_t* MenuIconName(MenuIcon icon) {
     case MenuIconEdit: return L"edit";
     case MenuIconInfo: return L"info";
     case MenuIconDelete: return L"delete";
-    case MenuIconSearch: return L"search";
     case MenuIconGroup: return L"group";
     case MenuIconTag: return L"tag";
     case MenuIconTheme: return L"theme";
@@ -258,7 +255,6 @@ wchar_t MenuIconGlyph(MenuIcon icon) {
     case MenuIconEdit: return static_cast<wchar_t>(0xEA98); // edit
     case MenuIconInfo: return static_cast<wchar_t>(0xEAC5); // info-circle
     case MenuIconDelete: return static_cast<wchar_t>(0xEB41); // trash
-    case MenuIconSearch: return static_cast<wchar_t>(0xEB1C); // search
     case MenuIconGroup: return static_cast<wchar_t>(0xEAAE); // folders
     case MenuIconTag: return static_cast<wchar_t>(0xEF86); // tags
     case MenuIconTheme: return static_cast<wchar_t>(0xEC0A); // shirt

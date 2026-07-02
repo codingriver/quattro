@@ -2,7 +2,7 @@
 
 #include "MenuCatalog.h"
 #include "ShellItemService.h"
-#include "SystemFunctionDialog.h"
+#include "SystemFunctions.h"
 #include "Utilities.h"
 
 #include <shellapi.h>

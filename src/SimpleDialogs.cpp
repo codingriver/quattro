@@ -22,14 +22,11 @@ namespace {
 constexpr int ID_SETTINGS_TAB_BASE = 280;
 constexpr int ID_MAIN_HOTKEY_CAPTURE = 301;
 constexpr int ID_MAIN_HOTKEY_CLEAR = 302;
-constexpr int ID_SEARCH_HOTKEY_CAPTURE = 303;
-constexpr int ID_SEARCH_HOTKEY_CLEAR = 304;
 constexpr int ID_GROUP_WIDTH = 401;
 constexpr int ID_TAG_WIDTH = 402;
 constexpr int ID_DOCK_DELAY = 403;
 constexpr int ID_GROUP_DELAY = 404;
 constexpr int ID_TAG_DELAY = 405;
-constexpr int ID_SEARCH_COUNT = 406;
 constexpr int ID_TAG_ALIGN_LEFT = 407;
 constexpr int ID_TAG_ALIGN_CENTER = 408;
 constexpr int ID_TAG_ALIGN_RIGHT = 409;
@@ -38,10 +35,6 @@ constexpr int ID_WEBDAV_CLEAR_PASSWORD = 411;
 constexpr int ID_WEBDAV_UPLOAD = 412;
 constexpr int ID_WEBDAV_DOWNLOAD = 413;
 constexpr int ID_WEBDAV_BACKUP_LIST = 414;
-
-bool SearchFeatureEnabled() {
-    return false;
-}
 
 std::wstring GetText(HWND hwnd) {
     const int length = GetWindowTextLengthW(hwnd);
@@ -108,14 +101,92 @@ std::wstring FormatFileSize(std::uint64_t bytes) {
     return std::to_wstring(bytes) + L" B";
 }
 
+int EnglishMonthIndex(const std::wstring& month) {
+    static constexpr const wchar_t* kMonths[] = {
+        L"Jan", L"Feb", L"Mar", L"Apr", L"May", L"Jun",
+        L"Jul", L"Aug", L"Sep", L"Oct", L"Nov", L"Dec"};
+    for (int i = 0; i < 12; ++i) {
+        if (_wcsicmp(month.c_str(), kMonths[i]) == 0) {
+            return i + 1;
+        }
+    }
+    return 0;
+}
+
+std::wstring ChineseDateTimeText(int year, int month, int day, int hour, int minute) {
+    if (year <= 0 || month <= 0 || day <= 0) {
+        return {};
+    }
+    wchar_t buffer[64]{};
+    swprintf_s(buffer, L"%d年%d月%d日 %02d:%02d", year, month, day, hour, minute);
+    return buffer;
+}
+
+std::wstring FormatBackupModifiedDate(const std::wstring& value) {
+    if (value.empty()) {
+        return {};
+    }
+
+    int year = 0;
+    int month = 0;
+    int day = 0;
+    int hour = 0;
+    int minute = 0;
+    int second = 0;
+    wchar_t monthText[8]{};
+    if (swscanf_s(value.c_str(), L"%*3ls, %d %7ls %d %d:%d:%d", &day, monthText, static_cast<unsigned>(std::size(monthText)), &year, &hour, &minute, &second) == 6) {
+        month = EnglishMonthIndex(monthText);
+        const std::wstring formatted = ChineseDateTimeText(year, month, day, hour, minute);
+        if (!formatted.empty()) {
+            return formatted;
+        }
+    }
+    if (swscanf_s(value.c_str(), L"%d-%d-%d %d:%d", &year, &month, &day, &hour, &minute) == 5) {
+        const std::wstring formatted = ChineseDateTimeText(year, month, day, hour, minute);
+        if (!formatted.empty()) {
+            return formatted;
+        }
+    }
+    return value;
+}
+
 std::wstring FormatBackupListItem(const WebDavRemoteFile& backup) {
     std::wstring text = backup.name;
     if (backup.size > 0) {
         text += L"    " + FormatFileSize(backup.size);
     }
     if (!backup.lastModified.empty()) {
-        text += L"    " + backup.lastModified;
+        text += L"    " + FormatBackupModifiedDate(backup.lastModified);
     }
+    return text;
+}
+
+std::wstring WrapLongToken(const std::wstring& value, std::size_t maxCharsPerLine) {
+    if (value.size() <= maxCharsPerLine || maxCharsPerLine == 0) {
+        return value;
+    }
+    std::wstring text;
+    for (std::size_t i = 0; i < value.size(); i += maxCharsPerLine) {
+        if (!text.empty()) {
+            text += L"\n";
+        }
+        text += value.substr(i, maxCharsPerLine);
+    }
+    return text;
+}
+
+std::wstring FormatBackupConfirmationText(const WebDavRemoteFile& backup) {
+    std::wstring text =
+        L"请确认要下载并合并以下 WebDAV 备份：\n\n"
+        L"文件名:\n" + WrapLongToken(backup.name, 42) + L"\n"
+        L"文件大小: " + FormatFileSize(backup.size);
+    const std::wstring modified = FormatBackupModifiedDate(backup.lastModified);
+    if (!modified.empty()) {
+        text += L"\n备份时间: " + modified;
+    }
+    text +=
+        L"\n\n将把该备份中的分组、标签、启动项、便签、待办和工具设置合并到当前数据。"
+        L"\n当前数据不会被覆盖，导入前会自动备份。";
     return text;
 }
 
@@ -140,6 +211,23 @@ int EstimateMessageRows(const std::wstring& message) {
     return std::max(1, rows);
 }
 
+int MeasureMessageTextHeight(const std::wstring& message, int width) {
+    HFONT font = ThemedControls::CreateDialogFont();
+    if (!font) {
+        font = reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
+    }
+    HDC dc = GetDC(nullptr);
+    HFONT oldFont = reinterpret_cast<HFONT>(SelectObject(dc, font));
+    RECT rect{0, 0, std::max(1, width), 0};
+    DrawTextW(dc, message.c_str(), static_cast<int>(message.size()), &rect, DT_LEFT | DT_WORDBREAK | DT_CALCRECT);
+    SelectObject(dc, oldFont);
+    ReleaseDC(nullptr, dc);
+    if (font && font != GetStockObject(DEFAULT_GUI_FONT)) {
+        DeleteObject(font);
+    }
+    return std::max(20, static_cast<int>(rect.bottom - rect.top));
+}
+
 class ThemedMessageDialog {
 public:
     ThemedMessageDialog(HWND owner, HINSTANCE instance, const Theme& theme, std::wstring message, std::wstring title, UINT flags)
@@ -157,9 +245,18 @@ public:
         wc.lpszClassName = L"QuattroThemedMessageDialog";
         RegisterClassExW(&wc);
 
-        const int rows = EstimateMessageRows(message_);
         width_ = 430;
-        height_ = std::max(150, 112 + rows * 20);
+        const DialogLayoutMetrics layout = GetDialogLayoutMetrics(theme_, DialogLayoutKind::Mini);
+        const int buttonHeight = ThemedControls::ButtonHeight(theme_);
+        const int textWidth = width_ - layout.contentInsetX * 2;
+        const int textHeight = MeasureMessageTextHeight(message_, textWidth);
+        const int clientHeight = std::max(150, layout.contentInsetY + textHeight + layout.footerGap + buttonHeight + layout.footerInsetY);
+        const DWORD exStyle = WS_EX_DLGMODALFRAME | WS_EX_WINDOWEDGE;
+        const DWORD style = WS_CAPTION | WS_SYSMENU | WS_POPUP;
+        RECT windowRect{0, 0, width_, clientHeight};
+        AdjustWindowRectEx(&windowRect, style, FALSE, exStyle);
+        const int windowWidth = windowRect.right - windowRect.left;
+        const int windowHeight = windowRect.bottom - windowRect.top;
 
         RECT ownerRect{};
         if (owner_) {
@@ -169,18 +266,18 @@ public:
         }
         const int ownerWidth = ownerRect.right - ownerRect.left;
         const int ownerHeight = ownerRect.bottom - ownerRect.top;
-        const int x = ownerRect.left + std::max(0, (ownerWidth - width_) / 2);
-        const int y = ownerRect.top + std::max(0, (ownerHeight - height_) / 2);
+        const int x = ownerRect.left + std::max(0, (ownerWidth - windowWidth) / 2);
+        const int y = ownerRect.top + std::max(0, (ownerHeight - windowHeight) / 2);
 
         hwnd_ = CreateWindowExW(
-            WS_EX_DLGMODALFRAME | WS_EX_WINDOWEDGE,
+            exStyle,
             wc.lpszClassName,
             title_.empty() ? L"提示" : title_.c_str(),
-            WS_CAPTION | WS_SYSMENU | WS_POPUP,
+            style,
             x,
             y,
-            width_,
-            height_,
+            windowWidth,
+            windowHeight,
             owner_,
             nullptr,
             instance_,
@@ -271,7 +368,7 @@ private:
             SetBkMode(dc, TRANSPARENT);
             SetTextColor(dc, ToColorRef(theme_.color(L"label", L"normal", L"text")));
             HFONT oldFont = reinterpret_cast<HFONT>(SelectObject(dc, font_));
-            DrawTextW(dc, message_.c_str(), static_cast<int>(message_.size()), &textRect, DT_LEFT | DT_WORDBREAK | DT_END_ELLIPSIS);
+            DrawTextW(dc, message_.c_str(), static_cast<int>(message_.size()), &textRect, DT_LEFT | DT_WORDBREAK);
             SelectObject(dc, oldFont);
             EndPaint(hwnd_, &ps);
             return 0;
@@ -367,15 +464,21 @@ public:
         hwnd_ = nullptr;
         RECT ownerRect{};
         GetWindowRect(owner_, &ownerRect);
+        constexpr int kClientWidth = 390;
+        constexpr int kClientHeight = 162;
+        const DWORD exStyle = WS_EX_DLGMODALFRAME | WS_EX_WINDOWEDGE;
+        const DWORD style = WS_CAPTION | WS_SYSMENU | WS_POPUP;
+        RECT windowRect{0, 0, kClientWidth, kClientHeight};
+        AdjustWindowRectEx(&windowRect, style, FALSE, exStyle);
         hwnd_ = CreateWindowExW(
-            WS_EX_DLGMODALFRAME | WS_EX_WINDOWEDGE,
+            exStyle,
             className.c_str(),
             title_.c_str(),
-            WS_CAPTION | WS_SYSMENU | WS_POPUP,
+            style,
             ownerRect.left + 80,
             ownerRect.top + 100,
-            390,
-            162,
+            windowRect.right - windowRect.left,
+            windowRect.bottom - windowRect.top,
             owner_,
             nullptr,
             instance_,
@@ -426,7 +529,11 @@ private:
             backgroundBrush_ = CreateSolidBrush(ToColorRef(theme_.color(L"dialog", L"normal", L"bg")));
             fieldBrush_ = CreateSolidBrush(ToColorRef(theme_.color(L"edit", L"normal", L"bg")));
             const DialogLayoutMetrics layout = GetDialogLayoutMetrics(theme_, DialogLayoutKind::Mini);
-            const int contentWidth = 390 - layout.contentInsetX * 2;
+            RECT client{};
+            GetClientRect(hwnd_, &client);
+            const int clientWidth = client.right - client.left;
+            const int clientHeight = client.bottom - client.top;
+            const int contentWidth = clientWidth - layout.contentInsetX * 2;
             const int labelY = layout.contentInsetY;
             ThemedControls::CreateLabelText(instance_, hwnd_, label_.c_str(), layout.contentInsetX, labelY, contentWidth, theme_, font_);
             const int fieldHeight = ThemedControls::EditFrameHeight(theme_);
@@ -434,9 +541,9 @@ private:
             editFrame_ = RECT{layout.contentInsetX, editY, layout.contentInsetX + contentWidth, editY + fieldHeight};
             edit_ = ThemedControls::CreateSingleLineEdit(instance_, hwnd_, 100, theme_, editFrame_, value_, editFont_ ? editFont_ : font_);
             const int buttonHeight = ThemedControls::ButtonHeight(theme_);
-            const int footerY = layout.FooterY(editFrame_.bottom);
-            ThemedControls::CreatePrimaryButton(instance_, hwnd_, IDOK, L"确定", layout.FooterButtonX(390, 0, 2), footerY, layout.footerButtonWidth, buttonHeight, font_, true);
-            ThemedControls::CreateButton(instance_, hwnd_, IDCANCEL, L"取消", layout.FooterButtonX(390, 1, 2), footerY, layout.footerButtonWidth, buttonHeight, font_);
+            const int footerY = layout.FooterButtonY(clientHeight, buttonHeight);
+            ThemedControls::CreatePrimaryButton(instance_, hwnd_, IDOK, L"确定", layout.FooterButtonX(clientWidth, 0, 2), footerY, layout.footerButtonWidth, buttonHeight, font_, true);
+            ThemedControls::CreateButton(instance_, hwnd_, IDCANCEL, L"取消", layout.FooterButtonX(clientWidth, 1, 2), footerY, layout.footerButtonWidth, buttonHeight, font_);
             SetFocus(edit_);
             SendMessageW(edit_, EM_SETSEL, 0, -1);
             return 0;
@@ -619,6 +726,67 @@ private:
         return dialog ? dialog->Handle(message, wParam, lParam) : DefWindowProcW(hwnd, message, wParam, lParam);
     }
 
+    int TextWidth(HDC dc, const std::wstring& text) const {
+        SIZE size{};
+        GetTextExtentPoint32W(dc, text.c_str(), static_cast<int>(text.size()), &size);
+        return size.cx;
+    }
+
+    int BackupSizeColumnWidth(HDC dc) const {
+        int width = TextWidth(dc, L"888 KB");
+        for (const auto& backup : backups_) {
+            width = std::max(width, TextWidth(dc, FormatFileSize(backup.size)));
+        }
+        return width + 12;
+    }
+
+    int BackupDateColumnWidth(HDC dc) const {
+        int width = TextWidth(dc, L"2026年12月30日 23:59");
+        for (const auto& backup : backups_) {
+            width = std::max(width, TextWidth(dc, FormatBackupModifiedDate(backup.lastModified)));
+        }
+        return width + 12;
+    }
+
+    bool DrawBackupListItem(const DRAWITEMSTRUCT* draw) {
+        if (!draw || draw->CtlID != ID_WEBDAV_BACKUP_LIST) {
+            return false;
+        }
+
+        RECT rect = draw->rcItem;
+        const bool selected = (draw->itemState & ODS_SELECTED) != 0;
+        const bool focused = (draw->itemState & ODS_FOCUS) != 0;
+        const wchar_t* state = selected ? L"selected" : (focused ? L"focused" : L"normal");
+        HBRUSH brush = CreateSolidBrush(ToColorRef(theme_.color(selected ? L"listItem" : L"list", state, L"bg")));
+        FillRect(draw->hDC, &rect, brush);
+        DeleteObject(brush);
+
+        if (draw->itemID == static_cast<UINT>(-1) || draw->itemID >= backups_.size()) {
+            return true;
+        }
+
+        const auto& backup = backups_[draw->itemID];
+        const std::wstring sizeText = FormatFileSize(backup.size);
+        const std::wstring dateText = FormatBackupModifiedDate(backup.lastModified);
+        RECT textRect = ThemedControls::ListItemTextRect(theme_, rect);
+        const int gap = 10;
+        const int dateWidth = BackupDateColumnWidth(draw->hDC);
+        const int sizeWidth = BackupSizeColumnWidth(draw->hDC);
+        RECT dateRect{textRect.right - dateWidth, textRect.top, textRect.right, textRect.bottom};
+        RECT sizeRect{dateRect.left - gap - sizeWidth, textRect.top, dateRect.left - gap, textRect.bottom};
+        RECT nameRect{textRect.left, textRect.top, sizeRect.left - gap, textRect.bottom};
+        if (nameRect.right < nameRect.left) {
+            nameRect.right = nameRect.left;
+        }
+
+        SetBkMode(draw->hDC, TRANSPARENT);
+        SetTextColor(draw->hDC, ToColorRef(theme_.color(selected ? L"listItem" : L"list", state, L"text")));
+        DrawTextW(draw->hDC, backup.name.c_str(), static_cast<int>(backup.name.size()), &nameRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        DrawTextW(draw->hDC, sizeText.c_str(), static_cast<int>(sizeText.size()), &sizeRect, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
+        DrawTextW(draw->hDC, dateText.c_str(), static_cast<int>(dateText.size()), &dateRect, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
+        return true;
+    }
+
     void AcceptSelection() {
         const int selected = static_cast<int>(SendMessageW(list_, LB_GETCURSEL, 0, 0));
         if (selected < 0 || selected >= static_cast<int>(backups_.size())) {
@@ -692,6 +860,9 @@ private:
             return reinterpret_cast<LRESULT>(backgroundBrush_ ? backgroundBrush_ : GetStockObject(WHITE_BRUSH));
         }
         case WM_DRAWITEM:
+            if (DrawBackupListItem(reinterpret_cast<const DRAWITEMSTRUCT*>(lParam))) {
+                return TRUE;
+            }
             if (ThemedControls::Draw(theme_, reinterpret_cast<const DRAWITEMSTRUCT*>(lParam))) {
                 return TRUE;
             }
@@ -1056,8 +1227,6 @@ private:
         draft_.deleteConfirm = SendMessageW(deleteConfirm_, BM_GETCHECK, 0, 0) == BST_CHECKED;
         draft_.saveRunCount = SendMessageW(saveRunCount_, BM_GETCHECK, 0, 0) == BST_CHECKED;
         draft_.showDate = SendMessageW(showDate_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-        draft_.showSearchButton = SearchFeatureEnabled() && showSearchButton_ &&
-            SendMessageW(showSearchButton_, BM_GETCHECK, 0, 0) == BST_CHECKED;
         draft_.showMenuButton = SendMessageW(showMenuButton_, BM_GETCHECK, 0, 0) == BST_CHECKED;
         draft_.showSkinButton = SendMessageW(showSkinButton_, BM_GETCHECK, 0, 0) == BST_CHECKED;
         draft_.autoRun = SendMessageW(autoRun_, BM_GETCHECK, 0, 0) == BST_CHECKED;
@@ -1065,8 +1234,6 @@ private:
         draft_.showTooltip = SendMessageW(showTooltip_, BM_GETCHECK, 0, 0) == BST_CHECKED;
         draft_.groupRight = SendMessageW(groupRight_, BM_GETCHECK, 0, 0) == BST_CHECKED;
         draft_.tagRight = SendMessageW(tagRight_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-        draft_.focusSearch = SearchFeatureEnabled() && focusSearch_ &&
-            SendMessageW(focusSearch_, BM_GETCHECK, 0, 0) == BST_CHECKED;
         draft_.mouseEnterActiveGroup = SendMessageW(enterActiveGroup_, BM_GETCHECK, 0, 0) == BST_CHECKED;
         draft_.mouseEnterActiveTag = SendMessageW(enterActiveTag_, BM_GETCHECK, 0, 0) == BST_CHECKED;
         draft_.tagAlign = tagAlignIndex_ == 0 ? L"left" : (tagAlignIndex_ == 2 ? L"right" : L"center");
@@ -1077,12 +1244,6 @@ private:
         draft_.dockDelay = ClampNumber(dockDelayEdit_, 0, 5000, draft_.dockDelay);
         draft_.activeGroupDelay = ClampNumber(groupDelayEdit_, 0, 5000, draft_.activeGroupDelay);
         draft_.activeTagDelay = ClampNumber(tagDelayEdit_, 0, 5000, draft_.activeTagDelay);
-        if (SearchFeatureEnabled() && searchCountEdit_) {
-            draft_.searchCount = ClampNumber(searchCountEdit_, 0, 10000, draft_.searchCount);
-        }
-        if (!SearchFeatureEnabled()) {
-            draft_.searchHotKey = 0;
-        }
         draft_.openDirCommand = GetText(openDirEdit_);
         draft_.helpUrl = GetText(helpUrlEdit_);
         draft_.updateUrl = GetText(updateUrlEdit_);
@@ -1188,12 +1349,19 @@ private:
         if (!ShowWebDavBackupSelectionDialog(hwnd_, instance_, theme_, backups, fileName)) {
             return;
         }
+        auto selectedBackup = std::find_if(backups.begin(), backups.end(), [&](const WebDavRemoteFile& backup) {
+            return backup.name == fileName;
+        });
+        if (selectedBackup == backups.end()) {
+            ShowThemedMessageBox(hwnd_, instance_, theme_, L"未找到所选 WebDAV 备份，请重新选择。", L"从云端下载", MB_OK | MB_ICONWARNING);
+            return;
+        }
 
         const int confirm = ShowThemedMessageBox(
             hwnd_,
             instance_,
             theme_,
-            L"将下载所选 WebDAV 备份，并把其中的分组、标签、启动项、便签、待办和工具设置合并到当前数据。\n\n当前数据不会被覆盖，导入前会自动备份。",
+            FormatBackupConfirmationText(*selectedBackup),
             L"从云端下载",
             MB_OKCANCEL | MB_ICONINFORMATION);
         if (confirm != IDOK) {
@@ -1235,9 +1403,6 @@ private:
             showTooltip_ = CheckBox(TabDisplay, 119, L"显示提示", 34, 154, draft_.showTooltip);
             groupRight_ = CheckBox(TabDisplay, 120, L"分组栏在右侧", 282, 184, draft_.groupRight);
             tagRight_ = CheckBox(TabDisplay, 122, L"标签栏在右侧", 34, 184, draft_.tagRight);
-            if (SearchFeatureEnabled()) {
-                showSearchButton_ = CheckBox(TabDisplay, 114, L"显示搜索按钮", 34, 124, draft_.showSearchButton);
-            }
 
             Label(TabDisplay, L"透明度", 34, 260, 76);
             alphaEdit_ = NumberEdit(TabDisplay, 201, 118, 254, 78, draft_.alpha);
@@ -1278,22 +1443,11 @@ private:
             Label(TabInteraction, L"标签激活延迟", 282, 154, 100);
             tagDelayEdit_ = NumberEdit(TabInteraction, ID_TAG_DELAY, 392, 148, 88, draft_.activeTagDelay);
             Label(TabInteraction, L"ms", 488, 154, 32);
-            if (SearchFeatureEnabled()) {
-                focusSearch_ = CheckBox(TabInteraction, 123, L"打开搜索时聚焦输入框", 282, 64, draft_.focusSearch);
-                Label(TabInteraction, L"搜索计数", 34, 208, 88);
-                searchCountEdit_ = FramedStatic(TabInteraction, 144, 202, 88, std::to_wstring(draft_.searchCount));
-            }
 
             Label(TabHotKeys, L"主窗口热键", 34, 74, 84);
             mainHotKeyText_ = FramedStatic(TabHotKeys, 128, 66, 210, FormatHotKeyText(draft_.mainHotKey));
             Button(TabHotKeys, ID_MAIN_HOTKEY_CAPTURE, L"录入", 354, 68, 56);
             Button(TabHotKeys, ID_MAIN_HOTKEY_CLEAR, L"清除", 424, 68, 56);
-            if (SearchFeatureEnabled()) {
-                Label(TabHotKeys, L"搜索热键", 34, 128, 84);
-                searchHotKeyText_ = FramedStatic(TabHotKeys, 128, 120, 210, FormatHotKeyText(draft_.searchHotKey));
-                Button(TabHotKeys, ID_SEARCH_HOTKEY_CAPTURE, L"录入", 354, 122, 56);
-                Button(TabHotKeys, ID_SEARCH_HOTKEY_CLEAR, L"清除", 424, 122, 56);
-            }
 
             Label(TabLinks, L"打开目录命令", 34, 68, 110);
             openDirEdit_ = FramedEdit(TabLinks, 202, 34, 92, 446, draft_.openDirCommand);
@@ -1389,16 +1543,6 @@ private:
                 UpdateHotKeyLabels();
                 return 0;
             }
-            if (SearchFeatureEnabled() && LOWORD(wParam) == ID_SEARCH_HOTKEY_CAPTURE) {
-                draft_.searchHotKey = ShowHotKeyCaptureDialog(hwnd_, instance_, theme_, draft_.searchHotKey);
-                UpdateHotKeyLabels();
-                return 0;
-            }
-            if (SearchFeatureEnabled() && LOWORD(wParam) == ID_SEARCH_HOTKEY_CLEAR) {
-                draft_.searchHotKey = 0;
-                UpdateHotKeyLabels();
-                return 0;
-            }
             if (LOWORD(wParam) == ID_WEBDAV_TEST) {
                 TestWebDavConnection();
                 return 0;
@@ -1469,9 +1613,6 @@ private:
         if (mainHotKeyText_) {
             SetWindowTextW(mainHotKeyText_, FormatHotKeyText(draft_.mainHotKey).c_str());
         }
-        if (searchHotKeyText_) {
-            SetWindowTextW(searchHotKeyText_, FormatHotKeyText(draft_.searchHotKey).c_str());
-        }
     }
 
     HWND owner_ = nullptr;
@@ -1508,7 +1649,6 @@ private:
     HWND deleteConfirm_ = nullptr;
     HWND saveRunCount_ = nullptr;
     HWND showDate_ = nullptr;
-    HWND showSearchButton_ = nullptr;
     HWND showMenuButton_ = nullptr;
     HWND showSkinButton_ = nullptr;
     HWND autoRun_ = nullptr;
@@ -1516,7 +1656,6 @@ private:
     HWND showTooltip_ = nullptr;
     HWND groupRight_ = nullptr;
     HWND tagRight_ = nullptr;
-    HWND focusSearch_ = nullptr;
     HWND enterActiveGroup_ = nullptr;
     HWND enterActiveTag_ = nullptr;
     HWND alphaEdit_ = nullptr;
@@ -1525,13 +1664,11 @@ private:
     HWND dockDelayEdit_ = nullptr;
     HWND groupDelayEdit_ = nullptr;
     HWND tagDelayEdit_ = nullptr;
-    HWND searchCountEdit_ = nullptr;
     int tagAlignIndex_ = 1;
     HWND tagAlignLeft_ = nullptr;
     HWND tagAlignCenter_ = nullptr;
     HWND tagAlignRight_ = nullptr;
     HWND mainHotKeyText_ = nullptr;
-    HWND searchHotKeyText_ = nullptr;
     HWND openDirEdit_ = nullptr;
     HWND helpUrlEdit_ = nullptr;
     HWND updateUrlEdit_ = nullptr;

@@ -2,9 +2,6 @@
 
 #include "MenuCatalog.h"
 #include "Models.h"
-#include "Theme.h"
-
-#include <windows.h>
 
 #include <cstddef>
 #include <span>
@@ -25,8 +22,3 @@ int SystemFunctionImageIndex(const SystemFunctionDefinition& item);
 const SystemFunctionDefinition* SystemFunctionForLink(const Link& link);
 MenuIcon SystemFunctionMenuIconForLink(const Link& link);
 bool ConfigureSystemFunctionLink(std::size_t index, Link& link);
-
-class SystemFunctionDialog {
-public:
-    static bool Show(HWND owner, HINSTANCE instance, const Theme& theme, Link& link);
-};

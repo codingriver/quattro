@@ -40,7 +40,6 @@ AppConfig ConfigService::Load() const {
     config.hideNotifyIcon = ReadBool(L"bHideNotify", config.hideNotifyIcon);
     config.preferAdminRun = ReadBool(L"bPreferAdminRun", config.preferAdminRun);
     config.showDate = ReadBool(L"bShowDate", config.showDate);
-    config.showSearchButton = ReadBool(L"bShowBtnSearch", config.showSearchButton);
     config.showMenuButton = ReadBool(L"bShowBtnMenu", config.showMenuButton);
     config.showSkinButton = ReadBool(L"bShowBtnSkin", config.showSkinButton);
 
@@ -52,7 +51,6 @@ AppConfig ConfigService::Load() const {
     config.currentGroupId = ReadInt(L"nCurGroup", config.currentGroupId);
     config.currentTagId = ReadInt(L"nCurTag", config.currentTagId);
     config.mainHotKey = ReadInt(L"nMainHotKey", config.mainHotKey);
-    config.searchHotKey = ReadInt(L"nSearchHotKey", config.searchHotKey);
 
     config.width = Clamp(ReadInt(L"nWidth", config.width), 260, 1800);
     config.height = Clamp(ReadInt(L"nHeight", config.height), 320, 1600);
@@ -66,10 +64,6 @@ AppConfig ConfigService::Load() const {
     config.attrHeight = ReadInt(L"nAttrHeight", config.attrHeight);
 
     config.version = ReadInt(L"nVersion", config.version);
-    config.searchX = ReadInt(L"nSearchX", config.searchX);
-    config.searchY = ReadInt(L"nSearchY", config.searchY);
-    config.searchCount = ReadInt(L"nSearchCount", config.searchCount);
-    config.focusSearch = ReadBool(L"bFocusSearch", config.focusSearch);
     config.alpha = Clamp(ReadInt(L"nAlpha", config.alpha), 64, 255);
 
     config.groupRight = ReadBool(L"bGroupRight", config.groupRight);
@@ -105,7 +99,6 @@ void ConfigService::SaveWindowState(const AppConfig& config) const {
     WriteInt(L"bDoubleClick", config.doubleClickToRun ? 1 : 0);
     WriteInt(L"bHideNotify", config.hideNotifyIcon ? 1 : 0);
     WriteInt(L"bShowDate", config.showDate ? 1 : 0);
-    WriteInt(L"bShowBtnSearch", config.showSearchButton ? 1 : 0);
     WriteInt(L"bShowBtnMenu", config.showMenuButton ? 1 : 0);
     WriteInt(L"bShowBtnSkin", config.showSkinButton ? 1 : 0);
     WriteInt(L"bGroupRight", config.groupRight ? 1 : 0);
@@ -116,7 +109,6 @@ void ConfigService::SaveWindowState(const AppConfig& config) const {
     WriteInt(L"bMouseEnterActiveTag", config.mouseEnterActiveTag ? 1 : 0);
     WriteInt(L"nActiveGroupDelay", config.activeGroupDelay);
     WriteInt(L"nActiveTagDelay", config.activeTagDelay);
-    WriteInt(L"bFocusSearch", config.focusSearch ? 1 : 0);
     WriteString(L"TagAlign", config.tagAlign);
     WriteInt(L"nAlpha", config.alpha);
     WriteString(L"OpenDirCmd", config.openDirCommand);
@@ -133,9 +125,6 @@ void ConfigService::SaveWindowState(const AppConfig& config) const {
     WriteInt(L"nHeight", config.height);
     WriteInt(L"nPosX", config.posX);
     WriteInt(L"nPosY", config.posY);
-    WriteInt(L"nSearchX", config.searchX);
-    WriteInt(L"nSearchY", config.searchY);
-    WriteInt(L"nSearchCount", config.searchCount);
     WriteInt(L"nCurGroup", config.currentGroupId);
     WriteInt(L"nCurTag", config.currentTagId);
     WriteInt(L"bAutoDock", config.autoDock ? 1 : 0);
@@ -156,10 +145,8 @@ void ConfigService::Save(const AppConfig& config) const {
     WriteInt(L"bSaveRunCount", config.saveRunCount ? 1 : 0);
     WriteInt(L"bPreferAdminRun", config.preferAdminRun ? 1 : 0);
     WriteInt(L"bShowDate", config.showDate ? 1 : 0);
-    WriteInt(L"bShowBtnSearch", config.showSearchButton ? 1 : 0);
     WriteInt(L"bShowBtnMenu", config.showMenuButton ? 1 : 0);
     WriteInt(L"bShowBtnSkin", config.showSkinButton ? 1 : 0);
-    WriteInt(L"bFocusSearch", config.focusSearch ? 1 : 0);
     WriteInt(L"bGroupRight", config.groupRight ? 1 : 0);
     WriteInt(L"bTagRight", config.tagRight ? 1 : 0);
     WriteInt(L"nGroupWidth", config.groupWidth);
@@ -169,7 +156,6 @@ void ConfigService::Save(const AppConfig& config) const {
     WriteInt(L"nActiveGroupDelay", config.activeGroupDelay);
     WriteInt(L"nActiveTagDelay", config.activeTagDelay);
     WriteInt(L"nMainHotKey", config.mainHotKey);
-    WriteInt(L"nSearchHotKey", config.searchHotKey);
     WriteString(L"TagAlign", config.tagAlign);
     WriteString(L"Theme", config.theme);
     WriteString(L"OpenDirCmd", config.openDirCommand);
