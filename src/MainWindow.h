@@ -223,6 +223,9 @@ private:
     void DrawMajorNavItem(D2D1_RECT_F rect, const std::wstring& text, bool selected, bool hovered, bool vertical);
     void DrawMinorNavItem(D2D1_RECT_F rect, const std::wstring& text, bool selected, bool hovered);
     void DrawLinks(D2D1_RECT_F rect);
+    void DrawContentCard(const D2D1_RECT_F& fullRect);
+    D2D1_RECT_F CardRectFor(const D2D1_RECT_F& regionRect) const;
+    D2D1_RECT_F CardContentRectFor(const D2D1_RECT_F& regionRect) const;
     void DrawNotePage(D2D1_RECT_F rect, const Group& tag);
     void DrawTodoItems(D2D1_RECT_F rect, const Group& tag);
     void DrawEmptyState(const D2D1_RECT_F& contentRect, const std::wstring& title, const std::wstring& hint, const std::wstring& buttonLabel);

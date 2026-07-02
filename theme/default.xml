@@ -148,7 +148,7 @@
         <Metric name="visibilityPadding" value="8"/>
         <State name="normal" text="@text"/>
         <State name="hover" bg="@minorHover" text="@text"/>
-        <State name="selected" bg="@selected" text="@text" accent="@accent"/>
+        <State name="selected" bg="@accentSoft" text="@accent" accent="@accent"/>
     </Component>
     <Component name="content">
         <Metric name="emptyTextInsetX" value="20"/>
@@ -162,7 +162,15 @@
         <Metric name="emptyTitleGap" value="8"/>
         <Metric name="emptyHintGap" value="20"/>
         <Metric name="emptyBlockShiftY" value="-16"/>
+        <Metric name="cardMargin" value="8"/>
+        <Metric name="cardGap" value="8"/>
+        <Metric name="cardTopGap" value="6"/>
+        <Metric name="cardRadius" value="8"/>
+        <Metric name="cardBorderWidth" value="1"/>
+        <Metric name="cardPaddingX" value="6"/>
+        <Metric name="cardPaddingY" value="6"/>
         <State name="normal" bg="@background"/>
+        <State name="card" bg="@surface" border="@border"/>
         <State name="empty" text="@emptyText" title="@text" hint="@mutedText" icon="@accent" iconBg="@accentSoft"/>
     </Component>
     <Component name="text">

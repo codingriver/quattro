@@ -5674,31 +5674,32 @@ void MainWindow::DrawTags(D2D1_RECT_F rect) {
         return;
     }
 
-    FillRect(rect, theme_.color(L"minorNav", L"normal", L"bg"));
+    FillRect(rect, theme_.color(L"content", L"normal", L"bg"));
+    DrawContentCard(rect);
+    const D2D1_RECT_F content = CardContentRectFor(rect);
 
-    renderTarget_->PushAxisAlignedClip(rect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-    const float groupPadding = Metric(theme_, L"tabButton", L"groupPadding", 3.0f);
-    const float topInset = groupPadding;
+    renderTarget_->PushAxisAlignedClip(content, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+    const float topInset = Metric(theme_, L"minorNavItem", L"topInset", 2.0f);
     const float itemHeight = Metric(theme_, L"tabButton", L"height", Metric(theme_, L"minorNavItem", L"height", 32.0f));
     const float itemGap = Metric(theme_, L"minorNavItem", L"gap", 2.0f);
-    float y = rect.top + topInset - tagScrollOffset_;
+    float y = content.top + topInset - tagScrollOffset_;
     for (const auto& tag : TagsForCurrentGroup()) {
-        D2D1_RECT_F item = D2D1::RectF(rect.left + groupPadding, y, rect.right - groupPadding, y + itemHeight);
-        if (item.bottom < rect.top + topInset) {
+        D2D1_RECT_F item = D2D1::RectF(content.left, y, content.right, y + itemHeight);
+        if (item.bottom < content.top + topInset) {
             y += itemHeight + itemGap;
             continue;
         }
-        if (item.top > rect.bottom - 2.0f) {
+        if (item.top > content.bottom - 2.0f) {
             break;
         }
         const bool selected = tag.id == currentTagId_;
         const bool hovered = IsHover(HitKind::Tag, tag.id);
         DrawMinorNavItem(item, tag.name, selected, hovered);
-        hitAreas_.push_back(HitArea{HitKind::Tag, tag.id, IntersectRectF(item, rect)});
+        hitAreas_.push_back(HitArea{HitKind::Tag, tag.id, IntersectRectF(item, content)});
         y += itemHeight + itemGap;
     }
     renderTarget_->PopAxisAlignedClip();
-    DrawScrollBar(rect, tagScrollOffset_, MaxTagScrollOffset(rect), false);
+    DrawScrollBar(content, tagScrollOffset_, MaxTagScrollOffset(rect), false);
 }
 
 void MainWindow::DrawMajorNavItem(D2D1_RECT_F rect, const std::wstring& text, bool selected, bool hovered, bool vertical) {
@@ -5770,61 +5771,135 @@ void MainWindow::DrawMinorNavItem(D2D1_RECT_F rect, const std::wstring& text, bo
     textFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
 }
 
+D2D1_RECT_F MainWindow::CardRectFor(const D2D1_RECT_F& regionRect) const {
+    const float margin = Metric(theme_, L"content", L"cardMargin", 8.0f);
+    const float halfGap = Metric(theme_, L"content", L"cardGap", 8.0f) * 0.5f;
+    const float topGap = Metric(theme_, L"content", L"cardTopGap", 6.0f);
+
+    // 判断每条边是否贴着窗口外沿（用外边距），否则是与相邻卡片的中缝（用半个间距）
+    float windowWidth = regionRect.right;
+    float windowHeight = regionRect.bottom;
+    if (hwnd_) {
+        RECT client{};
+        if (GetClientRect(hwnd_, &client)) {
+            windowWidth = static_cast<float>(client.right - client.left);
+            windowHeight = static_cast<float>(client.bottom - client.top);
+        }
+    }
+    const float eps = 1.0f;
+    const bool leftOuter = regionRect.left <= eps;
+    const bool rightOuter = regionRect.right >= windowWidth - eps;
+    const bool bottomOuter = regionRect.bottom >= windowHeight - eps;
+
+    const float insetLeft = leftOuter ? margin : halfGap;
+    const float insetRight = rightOuter ? margin : halfGap;
+    const float insetTop = topGap;  // 顶部总是紧邻分组栏或标题栏，用较小的间距
+    const float insetBottom = bottomOuter ? margin : halfGap;
+
+    D2D1_RECT_F card = D2D1::RectF(regionRect.left + insetLeft, regionRect.top + insetTop,
+                                   regionRect.right - insetRight, regionRect.bottom - insetBottom);
+    if (card.right < card.left) card.right = card.left;
+    if (card.bottom < card.top) card.bottom = card.top;
+    return card;
+}
+
+D2D1_RECT_F MainWindow::CardContentRectFor(const D2D1_RECT_F& regionRect) const {
+    const float padX = Metric(theme_, L"content", L"cardPaddingX", 6.0f);
+    const float padY = Metric(theme_, L"content", L"cardPaddingY", 6.0f);
+    D2D1_RECT_F card = CardRectFor(regionRect);
+    D2D1_RECT_F content = D2D1::RectF(card.left + padX, card.top + padY, card.right - padX, card.bottom - padY);
+    if (content.right < content.left) content.right = content.left;
+    if (content.bottom < content.top) content.bottom = content.top;
+    return content;
+}
+
+void MainWindow::DrawContentCard(const D2D1_RECT_F& fullRect) {
+    const float radius = Metric(theme_, L"content", L"cardRadius", 8.0f);
+    const float borderWidth = Metric(theme_, L"content", L"cardBorderWidth", 1.0f);
+
+    const D2D1_RECT_F card = CardRectFor(fullRect);
+    if (Width(card) <= 0.0f || Height(card) <= 0.0f) {
+        return;
+    }
+
+    // 扁平干净卡片：白底 + 一根利落边框，靠对比而非阴影建立层次
+    FillRoundedRect(card, theme_.color(L"content", L"card", L"bg"), radius);
+    DrawRoundedRect(card, theme_.color(L"content", L"card", L"border"), radius, borderWidth);
+}
+
 void MainWindow::DrawLinks(D2D1_RECT_F rect) {
     FillRect(rect, theme_.color(L"content", L"normal", L"bg"));
-    if (dragOver_) {
-        Color highlight = theme_.color(L"content", L"empty", L"text");
-        highlight.a = 0.14f;
-        FillRect(rect, highlight);
-        Color borderColor = theme_.color(L"content", L"empty", L"text");
-        borderColor.a = 0.38f;
-        DrawRect(D2D1::RectF(rect.left + 1.0f, rect.top + 1.0f, rect.right - 1.0f, rect.bottom - 1.0f), borderColor, 2.0f);
-    }
     const Group* currentTag = FindGroup(currentTagId_);
     if (currentTag && IsNoteTag(*currentTag)) {
+        if (dragOver_) {
+            Color highlight = theme_.color(L"content", L"empty", L"text");
+            highlight.a = 0.14f;
+            FillRect(rect, highlight);
+            Color borderColor = theme_.color(L"content", L"empty", L"text");
+            borderColor.a = 0.38f;
+            DrawRect(D2D1::RectF(rect.left + 1.0f, rect.top + 1.0f, rect.right - 1.0f, rect.bottom - 1.0f), borderColor, 2.0f);
+        }
         DrawNotePage(rect, *currentTag);
         return;
     }
     if (currentTag && IsTodoItemsTag(*currentTag)) {
+        if (dragOver_) {
+            Color highlight = theme_.color(L"content", L"empty", L"text");
+            highlight.a = 0.14f;
+            FillRect(rect, highlight);
+            Color borderColor = theme_.color(L"content", L"empty", L"text");
+            borderColor.a = 0.38f;
+            DrawRect(D2D1::RectF(rect.left + 1.0f, rect.top + 1.0f, rect.right - 1.0f, rect.bottom - 1.0f), borderColor, 2.0f);
+        }
         HideNoteEdit();
         DrawTodoItems(rect, *currentTag);
         return;
     }
     HideNoteEdit();
+
+    // 启动项：灰底上托一张白色圆角卡片
+    DrawContentCard(rect);
+    const D2D1_RECT_F content = CardContentRectFor(rect);
+    if (dragOver_) {
+        const float radius = Metric(theme_, L"content", L"cardRadius", 10.0f);
+        const Color accent = theme_.color(L"majorNavItem", L"selected", L"accent");
+        Color highlight = accent;
+        highlight.a = 0.10f;
+        const D2D1_RECT_F card = CardRectFor(rect);
+        FillRoundedRect(card, highlight, radius);
+        DrawRoundedRect(card, accent, radius, 2.0f);
+    }
+
     auto links = LinksForCurrentTag();
     if (links.empty()) {
         textFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
-        DrawEmptyState(rect, L"当前标签没有启动项", L"拖入文件、文件夹或网址即可添加", L"添加启动项");
+        DrawEmptyState(content, L"当前标签没有启动项", L"拖入文件、文件夹或网址即可添加", L"添加启动项");
         return;
     }
 
     const Group* tag = FindGroup(currentTagId_);
-    const LinkLayoutMetrics metrics = MakeLinkLayout(theme_, rect, tag);
+    const LinkLayoutMetrics metrics = MakeLinkLayout(theme_, content, tag);
 
-    renderTarget_->PushAxisAlignedClip(rect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+    renderTarget_->PushAxisAlignedClip(content, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+    const float itemRadius = Metric(theme_, L"list", L"radius", 7.0f);
     for (std::size_t index = 0; index < links.size(); ++index) {
         Link* link = links[index];
-        D2D1_RECT_F item = LinkItemRect(rect, metrics, static_cast<int>(index), linkScrollOffset_);
-        if (item.bottom < rect.top + 2.0f) {
+        D2D1_RECT_F item = LinkItemRect(content, metrics, static_cast<int>(index), linkScrollOffset_);
+        if (item.bottom < content.top + 2.0f) {
             continue;
         }
-        if (item.top > rect.bottom - 2.0f) {
+        if (item.top > content.bottom - 2.0f) {
             break;
         }
 
-        FillRect(item, theme_.color(L"linkItem", L"normal", L"bg"));
         if (link->id == selectedLinkId_) {
-            FillRect(item, theme_.color(L"linkItem", L"selected", L"bg"));
-            FillRect(D2D1::RectF(item.left, item.top, item.left + Metric(theme_, L"linkItem", L"selectedAccentWidth", 4.0f), item.bottom), theme_.color(L"linkItem", L"selected", L"accent"));
+            FillRoundedRect(item, theme_.color(L"linkItem", L"selected", L"bg"), itemRadius);
+            FillRect(D2D1::RectF(item.left, item.top + 2.0f, item.left + Metric(theme_, L"linkItem", L"selectedAccentWidth", 4.0f), item.bottom - 2.0f), theme_.color(L"linkItem", L"selected", L"accent"));
             if (selectionByKeyboard_) {
-                DrawRoundedRect(
-                    Inset(item, 1.5f, 1.5f),
-                    theme_.color(L"linkItem", L"selected", L"accent"),
-                    Metric(theme_, L"list", L"radius", 7.0f),
-                    1.0f);
+                DrawRoundedRect(Inset(item, 1.5f, 1.5f), theme_.color(L"linkItem", L"selected", L"accent"), itemRadius, 1.0f);
             }
         } else if (IsHover(HitKind::Link, link->id)) {
-            FillRect(item, theme_.color(L"linkItem", L"hover", L"bg"));
+            FillRoundedRect(item, theme_.color(L"linkItem", L"hover", L"bg"), itemRadius);
         }
         if (link->isCustomColor) {
             if (auto color = ParseCustomColor(link->customColor)) {
@@ -5869,10 +5944,10 @@ void MainWindow::DrawLinks(D2D1_RECT_F rect) {
             DrawRoundedRect(icon, theme_.color(L"iconFallback", L"normal", L"border"), iconRadius);
         }
         DrawTextBlock(link->name, nameFormat, nameRect, theme_.color(L"linkItem", L"normal", L"text"));
-        hitAreas_.push_back(HitArea{HitKind::Link, link->id, IntersectRectF(item, rect)});
+        hitAreas_.push_back(HitArea{HitKind::Link, link->id, IntersectRectF(item, content)});
     }
     renderTarget_->PopAxisAlignedClip();
-    DrawScrollBar(rect, linkScrollOffset_, MaxLinkScrollOffset(rect), false);
+    DrawScrollBar(content, linkScrollOffset_, MaxLinkScrollOffset(rect), false);
 }
 
 void MainWindow::DrawEmptyState(const D2D1_RECT_F& contentRect, const std::wstring& title, const std::wstring& hint, const std::wstring& buttonLabel) {
@@ -6560,14 +6635,14 @@ float MainWindow::MaxTagScrollOffset(const D2D1_RECT_F& rect) const {
     }
 
     const auto tags = TagsForCurrentGroup();
-    const float groupPadding = Metric(theme_, L"tabButton", L"groupPadding", 3.0f);
+    const D2D1_RECT_F content = CardContentRectFor(rect);
+    const float topInset = Metric(theme_, L"minorNavItem", L"topInset", 2.0f);
+    const float bottomInset = Metric(theme_, L"minorNavItem", L"bottomInset", 2.0f);
     const float itemHeight = Metric(theme_, L"tabButton", L"height", Metric(theme_, L"minorNavItem", L"height", 32.0f));
-    const float itemGap = Metric(theme_, L"tabButton", L"groupGap", 0.0f);
-    const float topInset = groupPadding;
-    const float bottomInset = groupPadding;
+    const float itemGap = Metric(theme_, L"minorNavItem", L"gap", 2.0f);
     const float contentHeight = topInset + bottomInset + static_cast<float>(tags.size()) * itemHeight
         + static_cast<float>(tags.empty() ? 0 : tags.size() - 1) * itemGap;
-    return std::max(0.0f, contentHeight - Height(rect));
+    return std::max(0.0f, contentHeight - Height(content));
 }
 
 float MainWindow::MaxLinkScrollOffset(const D2D1_RECT_F& rect) const {
@@ -6589,9 +6664,10 @@ float MainWindow::MaxLinkScrollOffset(const D2D1_RECT_F& rect) const {
     }
 
     const Group* tag = FindGroup(currentTagId_);
-    const LinkLayoutMetrics metrics = MakeLinkLayout(theme_, rect, tag);
+    const D2D1_RECT_F content = CardContentRectFor(rect);
+    const LinkLayoutMetrics metrics = MakeLinkLayout(theme_, content, tag);
     const float contentHeight = LinkContentHeight(links.size(), metrics);
-    return std::max(0.0f, contentHeight - Height(rect));
+    return std::max(0.0f, contentHeight - Height(content));
 }
 
 float MainWindow::TodoContentHeight(const D2D1_RECT_F&) const {
@@ -6667,18 +6743,18 @@ void MainWindow::EnsureTagVisible(int tagId) {
     }
     D2D1_RECT_F title{}, groupsRect{}, tagsRect{}, linksRect{};
     BuildLayout(static_cast<float>(client.right - client.left), static_cast<float>(client.bottom - client.top), title, groupsRect, tagsRect, linksRect);
-    const float groupPadding = Metric(theme_, L"tabButton", L"groupPadding", 3.0f);
-    const float topInset = groupPadding;
+    const D2D1_RECT_F content = CardContentRectFor(tagsRect);
+    const float topInset = Metric(theme_, L"minorNavItem", L"topInset", 2.0f);
     const float itemHeight = Metric(theme_, L"tabButton", L"height", Metric(theme_, L"minorNavItem", L"height", 32.0f));
-    const float itemGap = Metric(theme_, L"tabButton", L"groupGap", 0.0f);
+    const float itemGap = Metric(theme_, L"minorNavItem", L"gap", 2.0f);
     const float visibilityPadding = Metric(theme_, L"minorNavItem", L"visibilityPadding", 8.0f);
-    float y = tagsRect.top + topInset;
+    float y = content.top + topInset;
     for (const auto& tag : TagsForCurrentGroup()) {
         if (tag.id == tagId) {
-            if (y - tagScrollOffset_ < tagsRect.top + visibilityPadding) {
-                tagScrollOffset_ = y - tagsRect.top - visibilityPadding;
-            } else if (y + itemHeight - tagScrollOffset_ > tagsRect.bottom - visibilityPadding) {
-                tagScrollOffset_ = y + itemHeight - tagsRect.bottom + visibilityPadding;
+            if (y - tagScrollOffset_ < content.top + visibilityPadding) {
+                tagScrollOffset_ = y - content.top - visibilityPadding;
+            } else if (y + itemHeight - tagScrollOffset_ > content.bottom - visibilityPadding) {
+                tagScrollOffset_ = y + itemHeight - content.bottom + visibilityPadding;
             }
             tagScrollOffset_ = ClampFloat(tagScrollOffset_, 0.0f, MaxTagScrollOffset(tagsRect));
             return;
@@ -6707,16 +6783,17 @@ void MainWindow::EnsureLinkVisible(int linkId) {
 
     const int index = static_cast<int>(std::distance(links.begin(), it));
     const Group* tag = FindGroup(currentTagId_);
-    const LinkLayoutMetrics metrics = MakeLinkLayout(theme_, linksRect, tag);
-    const D2D1_RECT_F item = LinkItemRect(linksRect, metrics, index, 0.0f);
+    const D2D1_RECT_F content = CardContentRectFor(linksRect);
+    const LinkLayoutMetrics metrics = MakeLinkLayout(theme_, content, tag);
+    const D2D1_RECT_F item = LinkItemRect(content, metrics, index, 0.0f);
     const float itemTop = item.top;
     const float itemBottom = item.bottom;
 
     const float visibilityPadding = Metric(theme_, L"linkItem", L"visibilityPadding", 8.0f);
-    if (itemTop - linkScrollOffset_ < linksRect.top + visibilityPadding) {
-        linkScrollOffset_ = itemTop - linksRect.top - visibilityPadding;
-    } else if (itemBottom - linkScrollOffset_ > linksRect.bottom - visibilityPadding) {
-        linkScrollOffset_ = itemBottom - linksRect.bottom + visibilityPadding;
+    if (itemTop - linkScrollOffset_ < content.top + visibilityPadding) {
+        linkScrollOffset_ = itemTop - content.top - visibilityPadding;
+    } else if (itemBottom - linkScrollOffset_ > content.bottom - visibilityPadding) {
+        linkScrollOffset_ = itemBottom - content.bottom + visibilityPadding;
     }
     linkScrollOffset_ = ClampFloat(linkScrollOffset_, 0.0f, MaxLinkScrollOffset(linksRect));
 }
@@ -6775,7 +6852,8 @@ void MainWindow::MoveLinkSelection(int dx, int dy) {
     D2D1_RECT_F title{}, groupsRect{}, tagsRect{}, linksRect{};
     BuildLayout(static_cast<float>(client.right - client.left), static_cast<float>(client.bottom - client.top), title, groupsRect, tagsRect, linksRect);
     const Group* tag = FindGroup(currentTagId_);
-    const LinkLayoutMetrics metrics = MakeLinkLayout(theme_, linksRect, tag);
+    const D2D1_RECT_F content = CardContentRectFor(linksRect);
+    const LinkLayoutMetrics metrics = MakeLinkLayout(theme_, content, tag);
     const int columns = std::max(1, metrics.columns);
     const int count = static_cast<int>(links.size());
 
