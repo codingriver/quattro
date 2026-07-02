@@ -22,6 +22,7 @@ constexpr int kDialogHeight = 430;
 
 enum ControlId {
     IdList = 1001,
+    IdFilter,
     IdOk,
     IdCancel,
 };
@@ -71,6 +72,16 @@ COLORREF ToColorRef(Color color) {
         return static_cast<BYTE>(ClampFloat(value, 0.0f, 1.0f) * 255.0f + 0.5f);
     };
     return RGB(byte(color.r), byte(color.g), byte(color.b));
+}
+
+std::wstring GetWindowTextString(HWND hwnd) {
+    const int length = GetWindowTextLengthW(hwnd);
+    std::wstring text(static_cast<std::size_t>(length) + 1, L'\0');
+    if (length > 0) {
+        GetWindowTextW(hwnd, text.data(), length + 1);
+    }
+    text.resize(static_cast<std::size_t>(length));
+    return text;
 }
 
 std::wstring ResolveSystemIconTarget(const std::wstring& value) {
@@ -179,6 +190,12 @@ private:
         case WM_ERASEBKGND: {
             return 1;
         }
+        case WM_CTLCOLOREDIT: {
+            HDC dc = reinterpret_cast<HDC>(wParam);
+            SetTextColor(dc, ToColorRef(theme_.color(L"edit", L"normal", L"text")));
+            SetBkColor(dc, ToColorRef(theme_.color(L"edit", L"normal", L"bg")));
+            return reinterpret_cast<LRESULT>(fieldBrush_ ? fieldBrush_ : GetStockObject(WHITE_BRUSH));
+        }
         case WM_DRAWITEM:
             if (ThemedControls::Draw(theme_, reinterpret_cast<const DRAWITEMSTRUCT*>(lParam))) {
                 return TRUE;
@@ -190,9 +207,28 @@ private:
                 Accept();
                 return 0;
             }
+            if (notify && notify->idFrom == IdList && notify->code == LVN_KEYDOWN) {
+                const auto* key = reinterpret_cast<const NMLVKEYDOWN*>(lParam);
+                if (key->wVKey == VK_RETURN) {
+                    Accept();
+                    return 0;
+                }
+            }
+            if (notify && notify->idFrom == IdList && notify->code == LVN_ITEMCHANGED) {
+                UpdateOkState();
+                return 0;
+            }
             return 0;
         }
         case WM_COMMAND:
+            if (LOWORD(wParam) == IdFilter && HIWORD(wParam) == EN_CHANGE) {
+                PopulateList();
+                return 0;
+            }
+            if (LOWORD(wParam) == IdFilter && (HIWORD(wParam) == EN_SETFOCUS || HIWORD(wParam) == EN_KILLFOCUS)) {
+                InvalidateRect(hwnd_, &filterFrame_, TRUE);
+                return 0;
+            }
             if (LOWORD(wParam) == IdOk) {
                 Accept();
                 return 0;
@@ -210,9 +246,17 @@ private:
             if (font_ && ownsFont_) {
                 DeleteObject(font_);
             }
+            if (editFont_) {
+                DeleteObject(editFont_);
+                editFont_ = nullptr;
+            }
             if (backgroundBrush_) {
                 DeleteObject(backgroundBrush_);
                 backgroundBrush_ = nullptr;
+            }
+            if (fieldBrush_) {
+                DeleteObject(fieldBrush_);
+                fieldBrush_ = nullptr;
             }
             done_ = true;
             return 0;
@@ -223,21 +267,26 @@ private:
 
     void CreateControls() {
         backgroundBrush_ = CreateSolidBrush(ToColorRef(theme_.color(L"dialog", L"normal", L"bg")));
+        fieldBrush_ = CreateSolidBrush(ToColorRef(theme_.color(L"edit", L"normal", L"bg")));
         font_ = ThemedControls::CreateDialogFont();
         ownsFont_ = font_ != nullptr;
         if (!font_) {
             font_ = reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
         }
+        editFont_ = ThemedControls::CreateEditFont(theme_);
+
+        filterFrame_ = RECT{14, 14, 502, 14 + ThemedControls::EditFrameHeight(theme_)};
+        filter_ = ThemedControls::CreateSingleLineEdit(instance_, hwnd_, IdFilter, theme_, filterFrame_, L"", editFont_ ? editFont_ : font_);
 
         list_ = CreateWindowExW(
-            WS_EX_CLIENTEDGE,
+            0,
             WC_LISTVIEWW,
             nullptr,
             WS_CHILD | WS_VISIBLE | WS_TABSTOP | LVS_ICON | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
             14,
-            14,
+            58,
             488,
-            330,
+            286,
             hwnd_,
             reinterpret_cast<HMENU>(IdList),
             instance_,
@@ -259,37 +308,74 @@ private:
             ListView_SetImageList(list_, imageList, LVSIL_NORMAL);
         }
 
+        PopulateList();
+
+        const int buttonHeight = ThemedControls::ButtonHeight(theme_);
+        okButton_ = ThemedControls::CreatePrimaryButton(instance_, hwnd_, IdOk, L"确定", 336, 360, 76, buttonHeight, font_, true);
+        ThemedControls::CreateButton(instance_, hwnd_, IdCancel, L"取消", 426, 360, 76, buttonHeight, font_);
+        UpdateOkState();
+        SetFocus(filter_);
+    }
+
+    void PopulateList() {
+        visibleIndices_.clear();
+        const std::wstring query = ToLower(Trim(GetWindowTextString(filter_)));
+        ListView_DeleteAllItems(list_);
+        int rowIndex = 0;
         for (int i = 0; i < static_cast<int>(kSystemFunctions.size()); ++i) {
             const auto& item = kSystemFunctions[static_cast<std::size_t>(i)];
+            if (!query.empty() &&
+                ToLower(item.name).find(query) == std::wstring::npos &&
+                ToLower(item.remark).find(query) == std::wstring::npos &&
+                ToLower(item.target).find(query) == std::wstring::npos) {
+                continue;
+            }
             const int imageIndex = SystemFunctionImageIndex(item);
 
             LVITEMW row{};
             row.mask = LVIF_TEXT | LVIF_IMAGE | LVIF_PARAM;
-            row.iItem = i;
+            row.iItem = rowIndex++;
             row.pszText = const_cast<wchar_t*>(item.name);
             row.iImage = imageIndex;
             row.lParam = i;
             ListView_InsertItem(list_, &row);
+            visibleIndices_.push_back(i);
         }
-        ListView_SetItemState(list_, 0, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
-
-        const int buttonHeight = ThemedControls::ButtonHeight(theme_);
-        ThemedControls::CreateButton(instance_, hwnd_, IdOk, L"确定", 336, 360, 76, buttonHeight, font_, true);
-        ThemedControls::CreateButton(instance_, hwnd_, IdCancel, L"取消", 426, 360, 76, buttonHeight, font_);
+        if (!visibleIndices_.empty()) {
+            ListView_SetItemState(list_, 0, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+        }
+        UpdateOkState();
     }
 
     void PaintBackground(HDC dc) {
         RECT rect{};
         GetClientRect(hwnd_, &rect);
         FillRect(dc, &rect, backgroundBrush_ ? backgroundBrush_ : reinterpret_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
+        ThemedControls::DrawFieldFrame(theme_, dc, filterFrame_, filter_);
+        const RECT listFrame{12, 56, 504, 346};
+        ThemedControls::DrawListFrame(theme_, dc, listFrame, list_);
     }
 
     void Accept() {
         const int selected = ListView_GetNextItem(list_, -1, LVNI_SELECTED);
-        if (!ConfigureSystemFunctionLink(static_cast<std::size_t>(selected), link_)) {
+        if (selected < 0) {
+            UpdateOkState();
+            return;
+        }
+        LVITEMW row{};
+        row.mask = LVIF_PARAM;
+        row.iItem = selected;
+        if (!ListView_GetItem(list_, &row) ||
+            !ConfigureSystemFunctionLink(static_cast<std::size_t>(row.lParam), link_)) {
             return;
         }
         Close(true);
+    }
+
+    void UpdateOkState() {
+        if (okButton_) {
+            EnableWindow(okButton_, ListView_GetNextItem(list_, -1, LVNI_SELECTED) >= 0 ? TRUE : FALSE);
+        }
     }
 
     void Close(bool accepted) {
@@ -308,9 +394,15 @@ private:
     bool done_ = false;
     bool accepted_ = false;
     HFONT font_ = nullptr;
+    HFONT editFont_ = nullptr;
     bool ownsFont_ = false;
     HBRUSH backgroundBrush_ = nullptr;
+    HBRUSH fieldBrush_ = nullptr;
+    RECT filterFrame_{};
+    HWND filter_ = nullptr;
     HWND list_ = nullptr;
+    HWND okButton_ = nullptr;
+    std::vector<int> visibleIndices_;
 };
 }
 

@@ -18,6 +18,11 @@ namespace {
 constexpr UINT ID_SEARCH_RUN = 50001;
 constexpr UINT ID_SEARCH_OPEN_LOCATION = 50002;
 constexpr UINT ID_SEARCH_COPY_PATH = 50003;
+constexpr UINT_PTR ID_SEARCH_DEBOUNCE_TIMER = 1;
+constexpr int kSearchDefaultWidth = 560;
+constexpr int kSearchDefaultHeight = 430;
+constexpr int kSearchMinWidth = 420;
+constexpr int kSearchMinHeight = 300;
 
 std::wstring GetText(HWND hwnd) {
     const int length = GetWindowTextLengthW(hwnd);
@@ -48,6 +53,47 @@ bool ContainsText(const std::wstring& haystack, const std::wstring& needle) {
     return ToLower(haystack).find(ToLower(needle)) != std::wstring::npos;
 }
 
+int MatchScore(const Link& link, const std::wstring& query) {
+    const std::wstring needle = ToLower(Trim(query));
+    if (needle.empty()) {
+        return 1;
+    }
+    const std::wstring name = ToLower(link.name);
+    const std::wstring path = ToLower(link.path);
+    const std::wstring parameter = ToLower(link.parameter);
+    const std::wstring remark = ToLower(link.remark);
+    if (name.rfind(needle, 0) == 0) {
+        return 400;
+    }
+    if (name.find(needle) != std::wstring::npos) {
+        return 300;
+    }
+    if (path.find(needle) != std::wstring::npos) {
+        return 200;
+    }
+    if (remark.find(needle) != std::wstring::npos) {
+        return 100;
+    }
+    if (parameter.find(needle) != std::wstring::npos) {
+        return 80;
+    }
+    return 0;
+}
+
+POINT ClampDialogPosition(int x, int y, int width, int height) {
+    RECT proposed{x, y, x + width, y + height};
+    HMONITOR monitor = MonitorFromRect(&proposed, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO info{};
+    info.cbSize = sizeof(info);
+    if (!GetMonitorInfoW(monitor, &info)) {
+        return POINT{x, y};
+    }
+    const RECT work = info.rcWork;
+    const int clampedX = std::max(static_cast<int>(work.left), std::min(x, static_cast<int>(work.right) - width));
+    const int clampedY = std::max(static_cast<int>(work.top), std::min(y, static_cast<int>(work.bottom) - height));
+    return POINT{clampedX, clampedY};
+}
+
 void CopyText(HWND owner, const std::wstring& text) {
     if (!OpenClipboard(owner)) {
         return;
@@ -72,8 +118,8 @@ void CopyText(HWND owner, const std::wstring& text) {
 
 class SearchWindow {
 public:
-    SearchWindow(HWND owner, HINSTANCE instance, const Theme& theme, const AppModel& model, AppConfig& config)
-        : owner_(owner), instance_(instance), theme_(theme), model_(model), config_(config) {}
+    SearchWindow(HWND owner, HINSTANCE instance, const Theme& theme, const AppModel& model, AppConfig& config, std::wstring initialQuery)
+        : owner_(owner), instance_(instance), theme_(theme), model_(model), config_(config), initialQuery_(std::move(initialQuery)) {}
 
     int Run() {
         WNDCLASSEXW wc{};
@@ -95,15 +141,16 @@ public:
             x = config_.searchX;
             y = config_.searchY;
         }
+        const POINT position = ClampDialogPosition(x, y, kSearchDefaultWidth, kSearchDefaultHeight);
         hwnd_ = CreateWindowExW(
             WS_EX_DLGMODALFRAME | WS_EX_WINDOWEDGE,
             wc.lpszClassName,
             L"搜索",
-            WS_CAPTION | WS_SYSMENU | WS_POPUP | WS_CLIPCHILDREN,
-            x,
-            y,
-            560,
-            430,
+            WS_CAPTION | WS_SYSMENU | WS_POPUP | WS_CLIPCHILDREN | WS_THICKFRAME,
+            position.x,
+            position.y,
+            kSearchDefaultWidth,
+            kSearchDefaultHeight,
             owner_,
             nullptr,
             instance_,
@@ -127,6 +174,29 @@ public:
     }
 
 private:
+    static LRESULT CALLBACK EditProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR, DWORD_PTR refData) {
+        auto* self = reinterpret_cast<SearchWindow*>(refData);
+        if (self && message == WM_KEYDOWN &&
+            (wParam == VK_UP || wParam == VK_DOWN || wParam == VK_PRIOR || wParam == VK_NEXT)) {
+            switch (wParam) {
+            case VK_UP:
+                self->MoveListSelection(-1);
+                break;
+            case VK_DOWN:
+                self->MoveListSelection(1);
+                break;
+            case VK_PRIOR:
+                self->MoveListSelection(-8);
+                break;
+            case VK_NEXT:
+                self->MoveListSelection(8);
+                break;
+            }
+            return 0;
+        }
+        return DefSubclassProc(hwnd, message, wParam, lParam);
+    }
+
     static LRESULT CALLBACK Proc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
         SearchWindow* window = nullptr;
         if (message == WM_NCCREATE) {
@@ -151,6 +221,7 @@ private:
             editFrame_ = RECT{18, 16, 522, 16 + fieldHeight};
             listFrame_ = RECT{18, 62, 522, 350};
             edit_ = ThemedControls::CreateSingleLineEdit(instance_, hwnd_, 100, theme_, editFrame_, L"", editFont_ ? editFont_ : font_);
+            SetWindowSubclass(edit_, EditProc, 1, reinterpret_cast<DWORD_PTR>(this));
             list_ = CreateWindowExW(0, WC_LISTVIEWW, L"",
                                     WS_CHILD | WS_VISIBLE | WS_TABSTOP | LVS_REPORT | LVS_NOCOLUMNHEADER | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
                                     20, 64, 500, 284, hwnd_, reinterpret_cast<HMENU>(101), instance_, nullptr);
@@ -167,8 +238,16 @@ private:
             col.pszText = const_cast<LPWSTR>(L"路径");
             col.cx = 320;
             ListView_InsertColumn(list_, 1, &col);
+            LayoutControls();
             Refresh();
             SetFocus(config_.focusSearch ? edit_ : list_);
+            if (!initialQuery_.empty()) {
+                SetWindowTextW(edit_, initialQuery_.c_str());
+                SetFocus(edit_);
+                const int len = GetWindowTextLengthW(edit_);
+                SendMessageW(edit_, EM_SETSEL, static_cast<WPARAM>(len), static_cast<LPARAM>(len));
+                Refresh();
+            }
             return 0;
         }
         case WM_PAINT: {
@@ -177,6 +256,7 @@ private:
             PaintBackground(dc);
             ThemedControls::DrawFieldFrame(theme_, dc, editFrame_, edit_);
             ThemedControls::DrawListFrame(theme_, dc, listFrame_, list_, true);
+            DrawStatus(dc);
             EndPaint(hwnd_, &ps);
             return 0;
         }
@@ -184,6 +264,7 @@ private:
             PaintBackground(reinterpret_cast<HDC>(wParam));
             ThemedControls::DrawFieldFrame(theme_, reinterpret_cast<HDC>(wParam), editFrame_, edit_);
             ThemedControls::DrawListFrame(theme_, reinterpret_cast<HDC>(wParam), listFrame_, list_, true);
+            DrawStatus(reinterpret_cast<HDC>(wParam));
             return 0;
         case WM_ERASEBKGND:
             return 1;
@@ -195,7 +276,7 @@ private:
         }
         case WM_COMMAND:
             if (LOWORD(wParam) == 100 && HIWORD(wParam) == EN_CHANGE) {
-                Refresh();
+                SetTimer(hwnd_, ID_SEARCH_DEBOUNCE_TIMER, 100, nullptr);
                 return 0;
             }
             if (LOWORD(wParam) == 100 && (HIWORD(wParam) == EN_SETFOCUS || HIWORD(wParam) == EN_KILLFOCUS)) {
@@ -215,6 +296,23 @@ private:
                 return 0;
             }
             return 0;
+        case WM_TIMER:
+            if (wParam == ID_SEARCH_DEBOUNCE_TIMER) {
+                KillTimer(hwnd_, ID_SEARCH_DEBOUNCE_TIMER);
+                Refresh();
+                return 0;
+            }
+            return 0;
+        case WM_SIZE:
+            LayoutControls();
+            InvalidateRect(hwnd_, nullptr, TRUE);
+            return 0;
+        case WM_GETMINMAXINFO: {
+            auto* info = reinterpret_cast<MINMAXINFO*>(lParam);
+            info->ptMinTrackSize.x = kSearchMinWidth;
+            info->ptMinTrackSize.y = kSearchMinHeight;
+            return 0;
+        }
         case WM_NOTIFY: {
             auto* hdr = reinterpret_cast<NMHDR*>(lParam);
             if (hdr->hwndFrom == list_ && hdr->code == NM_DBLCLK) {
@@ -254,6 +352,10 @@ private:
         case WM_DESTROY:
             SavePosition();
             done_ = true;
+            KillTimer(hwnd_, ID_SEARCH_DEBOUNCE_TIMER);
+            if (edit_) {
+                RemoveWindowSubclass(edit_, EditProc, 1);
+            }
             RestoreModalOwner(owner_, ownerWasEnabled_, ownerRestored_);
             if (editFont_) {
                 DeleteObject(editFont_);
@@ -279,17 +381,79 @@ private:
         FillRect(dc, &rect, backgroundBrush_ ? backgroundBrush_ : reinterpret_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
     }
 
+    void DrawStatus(HDC dc) {
+        SetBkMode(dc, TRANSPARENT);
+        SetTextColor(dc, ToColorRef(theme_.color(L"label", L"normal", L"text")));
+        RECT statusRect = statusFrame_;
+        const std::wstring text = resultCount_ == 0
+            ? L"无匹配结果"
+            : (std::to_wstring(resultCount_) + L" 条结果");
+        DrawTextW(dc, text.c_str(), static_cast<int>(text.size()), &statusRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    }
+
+    void LayoutControls() {
+        if (!hwnd_) {
+            return;
+        }
+        RECT client{};
+        if (!GetClientRect(hwnd_, &client)) {
+            return;
+        }
+        const int width = client.right - client.left;
+        const int height = client.bottom - client.top;
+        const int margin = 18;
+        const int fieldHeight = ThemedControls::EditFrameHeight(theme_);
+        editFrame_ = RECT{margin, 16, std::max(margin + 80, width - margin), 16 + fieldHeight};
+        const int listTop = 62;
+        const int statusTop = std::max(listTop + 80, height - 42);
+        listFrame_ = RECT{margin, listTop, std::max(margin + 80, width - margin), statusTop - 8};
+        statusFrame_ = RECT{margin + 2, statusTop, std::max(margin + 80, width - margin), statusTop + 24};
+        if (edit_) {
+            const int paddingX = ThemedControls::EditPaddingX(theme_);
+            const int paddingY = std::max(2, (ThemedControls::EditFrameHeight(theme_) - 20) / 2);
+            SetWindowPos(edit_, nullptr, editFrame_.left + paddingX, editFrame_.top + paddingY,
+                         std::max(20, static_cast<int>(editFrame_.right - editFrame_.left) - paddingX * 2),
+                         std::max(20, static_cast<int>(editFrame_.bottom - editFrame_.top) - paddingY * 2),
+                         SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+        if (list_) {
+            SetWindowPos(list_, nullptr, listFrame_.left + 2, listFrame_.top + 2,
+                         std::max(20, static_cast<int>(listFrame_.right - listFrame_.left) - 4),
+                         std::max(20, static_cast<int>(listFrame_.bottom - listFrame_.top) - 4),
+                         SWP_NOZORDER | SWP_NOACTIVATE);
+            const int listWidth = std::max(40, static_cast<int>(listFrame_.right - listFrame_.left) - 8);
+            const int nameWidth = std::max(120, listWidth / 3);
+            ListView_SetColumnWidth(list_, 0, nameWidth);
+            ListView_SetColumnWidth(list_, 1, std::max(120, listWidth - nameWidth));
+        }
+    }
+
     void Refresh() {
         results_.clear();
         const std::wstring query = Trim(GetText(edit_));
+        struct ScoredResult {
+            int id = 0;
+            int score = 0;
+            std::wstring name;
+        };
+        std::vector<ScoredResult> scored;
         for (const auto& link : model_.links) {
-            if (query.empty() ||
-                ContainsText(link.name, query) ||
-                ContainsText(link.path, query) ||
-                ContainsText(link.parameter, query) ||
-                ContainsText(link.remark, query)) {
-                results_.push_back(link.id);
+            const int score = MatchScore(link, query);
+            if (score > 0) {
+                scored.push_back(ScoredResult{link.id, score, ToLower(link.name)});
             }
+        }
+        std::sort(scored.begin(), scored.end(), [](const ScoredResult& left, const ScoredResult& right) {
+            if (left.score != right.score) {
+                return left.score > right.score;
+            }
+            if (left.name != right.name) {
+                return left.name < right.name;
+            }
+            return left.id < right.id;
+        });
+        for (const auto& item : scored) {
+            results_.push_back(item.id);
         }
         ListView_DeleteAllItems(list_);
         int row = 0;
@@ -310,6 +474,8 @@ private:
         if (row > 0) {
             ListView_SetItemState(list_, 0, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
         }
+        resultCount_ = row;
+        InvalidateRect(hwnd_, nullptr, TRUE);
     }
 
     const Link* FindLink(int id) const {
@@ -335,6 +501,22 @@ private:
             done_ = true;
             DestroyWindow(hwnd_);
         }
+    }
+
+    void MoveListSelection(int delta) {
+        const int count = ListView_GetItemCount(list_);
+        if (count <= 0) {
+            return;
+        }
+        int current = ListView_GetNextItem(list_, -1, LVNI_SELECTED);
+        int next = current < 0 ? (delta > 0 ? 0 : count - 1) : current + delta;
+        next = std::max(0, std::min(count - 1, next));
+        if (next == current) {
+            return;
+        }
+        ListView_SetItemState(list_, -1, 0, LVIS_SELECTED | LVIS_FOCUSED);
+        ListView_SetItemState(list_, next, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+        ListView_EnsureVisible(list_, next, FALSE);
     }
 
     const Link* SelectedLink() const {
@@ -399,20 +581,23 @@ private:
     HBRUSH fieldBrush_ = nullptr;
     RECT editFrame_{};
     RECT listFrame_{};
+    RECT statusFrame_{};
     const Theme& theme_;
     const AppModel& model_;
     AppConfig& config_;
     std::vector<int> results_;
+    int resultCount_ = 0;
     int selectedId_ = 0;
+    std::wstring initialQuery_;
     bool ownerWasEnabled_ = false;
     bool ownerRestored_ = false;
     bool done_ = false;
 };
 }
 
-int SearchDialog::Show(HWND owner, HINSTANCE instance, const Theme& theme, const AppModel& model, AppConfig& config) {
+int SearchDialog::Show(HWND owner, HINSTANCE instance, const Theme& theme, const AppModel& model, AppConfig& config, const std::wstring& initialQuery) {
     ++config.searchCount;
-    SearchWindow window(owner, instance, theme, model, config);
+    SearchWindow window(owner, instance, theme, model, config, initialQuery);
     return window.Run();
 }
 

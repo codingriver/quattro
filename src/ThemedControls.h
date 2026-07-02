@@ -19,6 +19,18 @@ HWND CreateButton(
     HFONT font,
     bool defaultButton = false);
 
+HWND CreatePrimaryButton(
+    HINSTANCE instance,
+    HWND parent,
+    int id,
+    const wchar_t* text,
+    int x,
+    int y,
+    int width,
+    int height,
+    HFONT font,
+    bool defaultButton = true);
+
 HWND CreateMiniButton(
     HINSTANCE instance,
     HWND parent,

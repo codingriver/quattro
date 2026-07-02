@@ -42,6 +42,7 @@ bool IsAllowedComponent(const std::wstring& component) {
         L"comboBox",
         L"tabButton",
         L"button",
+        L"primaryButton",
         L"checkbox",
         L"toggle",
         L"radio",
@@ -363,6 +364,10 @@ void Theme::SetDefaults() {
     PutState(L"menuItem", L"hover", L"icon", palette_[L"mutedText"]);
     PutState(L"menuItem", L"checked", L"mark", palette_[L"accent"]);
     PutState(L"menuItem", L"checked", L"icon", palette_[L"accent"]);
+    PutState(L"menuItem", L"accent", L"icon", palette_[L"accent"]);
+    PutState(L"menuItem", L"danger", L"icon", palette_[L"danger"]);
+    PutState(L"menuItem", L"warning", L"icon", palette_[L"warning"]);
+    PutState(L"menuItem", L"success", L"icon", palette_[L"success"]);
     PutState(L"dialog", L"normal", L"bg", palette_[L"background"]);
     PutState(L"dialog", L"normal", L"text", palette_[L"text"]);
     PutState(L"iconButton", L"normal", L"bg", Color{1, 1, 1, 0});
@@ -458,6 +463,19 @@ void Theme::SetDefaults() {
     PutState(L"button", L"disabled", L"bg", palette_[L"background"]);
     PutState(L"button", L"disabled", L"text", palette_[L"disabledText"]);
     PutState(L"button", L"disabled", L"border", palette_[L"line"]);
+    PutState(L"primaryButton", L"normal", L"bg", palette_[L"danger"]);
+    PutState(L"primaryButton", L"normal", L"text", palette_[L"white"]);
+    PutState(L"primaryButton", L"normal", L"border", palette_[L"danger"]);
+    PutState(L"primaryButton", L"hover", L"bg", Color{0.82f, 0.16f, 0.20f, 1});
+    PutState(L"primaryButton", L"hover", L"text", palette_[L"white"]);
+    PutState(L"primaryButton", L"hover", L"border", Color{0.82f, 0.16f, 0.20f, 1});
+    PutState(L"primaryButton", L"pressed", L"bg", Color{0.62f, 0.08f, 0.12f, 1});
+    PutState(L"primaryButton", L"pressed", L"text", palette_[L"white"]);
+    PutState(L"primaryButton", L"pressed", L"border", Color{0.62f, 0.08f, 0.12f, 1});
+    PutState(L"primaryButton", L"focused", L"border", palette_[L"focus"]);
+    PutState(L"primaryButton", L"disabled", L"bg", palette_[L"surfaceRaised"]);
+    PutState(L"primaryButton", L"disabled", L"text", palette_[L"disabledText"]);
+    PutState(L"primaryButton", L"disabled", L"border", palette_[L"line"]);
     PutState(L"checkbox", L"normal", L"text", palette_[L"text"]);
     PutState(L"checkbox", L"normal", L"boxBg", palette_[L"surface"]);
     PutState(L"checkbox", L"normal", L"border", palette_[L"border"]);

@@ -201,7 +201,7 @@ private:
             editFrame_ = RECT{24, 42, 346, 42 + fieldHeight};
             edit_ = ThemedControls::CreateSingleLineEdit(instance_, hwnd_, 100, theme_, editFrame_, value_, editFont_ ? editFont_ : font);
             const int buttonHeight = ThemedControls::ButtonHeight(theme_);
-            ThemedControls::CreateButton(instance_, hwnd_, IDOK, L"确定", 198, 88, 72, buttonHeight, font, true);
+            ThemedControls::CreatePrimaryButton(instance_, hwnd_, IDOK, L"确定", 198, 88, 72, buttonHeight, font, true);
             ThemedControls::CreateButton(instance_, hwnd_, IDCANCEL, L"取消", 286, 88, 72, buttonHeight, font);
             SetFocus(edit_);
             SendMessageW(edit_, EM_SETSEL, 0, -1);
@@ -399,7 +399,7 @@ private:
             listBrush_ = CreateSolidBrush(ToColorRef(theme_.color(L"list", L"normal", L"bg")));
             ThemedControls::CreateLabelText(instance_, hwnd_, L"云端备份记录", 24, 20, 180, theme_, font_);
             list_ = CreateWindowExW(
-                WS_EX_CLIENTEDGE,
+                0,
                 L"LISTBOX",
                 nullptr,
                 WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL | LBS_NOTIFY | LBS_HASSTRINGS,
@@ -420,7 +420,7 @@ private:
             }
 
             const int buttonHeight = ThemedControls::ButtonHeight(theme_);
-            ThemedControls::CreateButton(instance_, hwnd_, IDOK, L"下载", 360, 310, 76, buttonHeight, font_, true);
+            ThemedControls::CreatePrimaryButton(instance_, hwnd_, IDOK, L"下载", 360, 310, 76, buttonHeight, font_, true);
             ThemedControls::CreateButton(instance_, hwnd_, IDCANCEL, L"取消", 452, 310, 76, buttonHeight, font_);
             SetFocus(list_);
             return 0;
@@ -431,6 +431,8 @@ private:
             RECT rect{};
             GetClientRect(hwnd_, &rect);
             FillRect(dc, &rect, backgroundBrush_ ? backgroundBrush_ : reinterpret_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
+            const RECT listFrame{22, 46, 526, 288};
+            ThemedControls::DrawListFrame(theme_, dc, listFrame, list_);
             EndPaint(hwnd_, &ps);
             return 0;
         }
@@ -551,6 +553,13 @@ public:
         UpdateWindow(hwnd_);
         MSG message{};
         while (!done_ && GetMessageW(&message, nullptr, 0, 0) > 0) {
+            if (message.message == WM_KEYDOWN &&
+                message.wParam == VK_TAB &&
+                (GetKeyState(VK_CONTROL) & 0x8000) != 0) {
+                const bool reverse = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+                ShowTab((currentTab_ + (reverse ? 5 : 1)) % 6);
+                continue;
+            }
             if (!IsDialogMessageW(hwnd_, &message)) {
                 TranslateMessage(&message);
                 DispatchMessageW(&message);
@@ -996,6 +1005,7 @@ private:
             saveRunCount_ = CheckBox(TabBehavior, 112, L"保存运行次数", 34, 184, draft_.saveRunCount);
             Label(TabBehavior, L"停靠延迟", 34, 238, 76);
             dockDelayEdit_ = NumberEdit(TabBehavior, ID_DOCK_DELAY, 118, 232, 88, draft_.dockDelay);
+            Label(TabBehavior, L"ms", 214, 238, 32);
 
             doubleClick_ = CheckBox(TabInteraction, 109, L"双击运行", 34, 64, draft_.doubleClickToRun);
             focusSearch_ = CheckBox(TabInteraction, 123, L"打开搜索时聚焦输入框", 282, 64, draft_.focusSearch);
@@ -1003,10 +1013,12 @@ private:
             enterActiveTag_ = CheckBox(TabInteraction, 125, L"鼠标进入激活标签", 282, 94, draft_.mouseEnterActiveTag);
             Label(TabInteraction, L"分组激活延迟", 34, 154, 100);
             groupDelayEdit_ = NumberEdit(TabInteraction, ID_GROUP_DELAY, 144, 148, 88, draft_.activeGroupDelay);
+            Label(TabInteraction, L"ms", 240, 154, 32);
             Label(TabInteraction, L"标签激活延迟", 282, 154, 100);
             tagDelayEdit_ = NumberEdit(TabInteraction, ID_TAG_DELAY, 392, 148, 88, draft_.activeTagDelay);
+            Label(TabInteraction, L"ms", 488, 154, 32);
             Label(TabInteraction, L"搜索计数", 34, 208, 88);
-            searchCountEdit_ = NumberEdit(TabInteraction, ID_SEARCH_COUNT, 144, 202, 88, draft_.searchCount);
+            searchCountEdit_ = FramedStatic(TabInteraction, 144, 202, 88, std::to_wstring(draft_.searchCount));
 
             Label(TabHotKeys, L"主窗口热键", 34, 74, 84);
             mainHotKeyText_ = FramedStatic(TabHotKeys, 128, 66, 210, FormatHotKeyText(draft_.mainHotKey));
@@ -1025,27 +1037,27 @@ private:
             updateUrlEdit_ = FramedEdit(TabLinks, 204, 34, 228, 446, draft_.updateUrl);
             Label(TabLinks, L"FAQ 链接", 34, 272, 110);
             faqUrlEdit_ = FramedEdit(TabLinks, 205, 34, 296, 206, draft_.faqUrl);
-            Label(TabLinks, L"赞助链接", 274, 272, 110);
-            rewardUrlEdit_ = FramedEdit(TabLinks, 206, 274, 296, 206, draft_.rewardUrl);
+            Label(TabLinks, L"赞助链接", 282, 272, 110);
+            rewardUrlEdit_ = FramedEdit(TabLinks, 206, 282, 296, 198, draft_.rewardUrl);
 
             webDavEnabled_ = CheckBox(TabWebDav, 208, L"启用 WebDAV 备份", 34, 64, draft_.webDavEnabled, 220);
             Label(TabWebDav, L"服务器地址", 34, 112, 110);
             webDavUrlEdit_ = FramedEdit(TabWebDav, 209, 34, 136, 446, draft_.webDavUrl);
             Label(TabWebDav, L"远端目录", 34, 184, 110);
             webDavRemotePathEdit_ = FramedEdit(TabWebDav, 210, 34, 208, 206, draft_.webDavRemotePath);
-            Label(TabWebDav, L"保留数量", 274, 184, 110);
-            webDavKeepCountEdit_ = NumberEdit(TabWebDav, 211, 274, 208, 90, draft_.webDavKeepCount);
+            Label(TabWebDav, L"保留数量", 282, 184, 110);
+            webDavKeepCountEdit_ = NumberEdit(TabWebDav, 211, 282, 208, 90, draft_.webDavKeepCount);
             Label(TabWebDav, L"用户名", 34, 256, 110);
             webDavUserNameEdit_ = FramedEdit(TabWebDav, 212, 34, 280, 206, draft_.webDavUserName);
-            Label(TabWebDav, L"密码/应用密码", 274, 256, 130);
-            webDavPasswordEdit_ = FramedEdit(TabWebDav, 213, 274, 280, 206, L"", ES_AUTOHSCROLL | ES_PASSWORD);
+            Label(TabWebDav, L"密码/应用密码", 282, 256, 130);
+            webDavPasswordEdit_ = FramedEdit(TabWebDav, 213, 282, 280, 198, L"", ES_AUTOHSCROLL | ES_PASSWORD);
             Button(TabWebDav, ID_WEBDAV_UPLOAD, L"上传到云端", 34, 340, 104);
             Button(TabWebDav, ID_WEBDAV_DOWNLOAD, L"从云端下载", 150, 340, 104);
             Button(TabWebDav, ID_WEBDAV_TEST, L"测试连接", 286, 340, 92);
             Button(TabWebDav, ID_WEBDAV_CLEAR_PASSWORD, L"清除密码", 390, 340, 90);
 
             const int buttonHeight = ThemedControls::ButtonHeight(theme_);
-            ThemedControls::CreateButton(instance_, hwnd_, IDOK, L"确定", 350, 428, 76, buttonHeight, font_, true);
+            ThemedControls::CreatePrimaryButton(instance_, hwnd_, IDOK, L"确定", 350, 428, 76, buttonHeight, font_, true);
             ThemedControls::CreateButton(instance_, hwnd_, IDCANCEL, L"取消", 442, 428, 76, buttonHeight, font_);
             ShowTab(TabDisplay);
             return 0;
@@ -1102,7 +1114,7 @@ private:
                 return 0;
             }
             if (LOWORD(wParam) == ID_MAIN_HOTKEY_CAPTURE) {
-                draft_.mainHotKey = ShowHotKeyCaptureDialog(hwnd_, instance_, draft_.mainHotKey);
+                draft_.mainHotKey = ShowHotKeyCaptureDialog(hwnd_, instance_, theme_, draft_.mainHotKey);
                 UpdateHotKeyLabels();
                 return 0;
             }
@@ -1112,7 +1124,7 @@ private:
                 return 0;
             }
             if (LOWORD(wParam) == ID_SEARCH_HOTKEY_CAPTURE) {
-                draft_.searchHotKey = ShowHotKeyCaptureDialog(hwnd_, instance_, draft_.searchHotKey);
+                draft_.searchHotKey = ShowHotKeyCaptureDialog(hwnd_, instance_, theme_, draft_.searchHotKey);
                 UpdateHotKeyLabels();
                 return 0;
             }
@@ -1295,4 +1307,3 @@ bool ShowSettingsDialog(
     }
     return accepted;
 }
-

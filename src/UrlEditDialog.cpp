@@ -15,6 +15,9 @@
 namespace {
 constexpr int kDialogWidth = 500;
 constexpr int kDialogHeight = 250;
+constexpr int kLabelX = 28;
+constexpr int kFieldX = 108;
+constexpr int kFieldWidth = 360;
 
 enum ControlId {
     IdName = 1001,
@@ -56,6 +59,19 @@ std::wstring UrlHostOrText(const std::wstring& value) {
         return std::wstring(host, parts.dwHostNameLength);
     }
     return Trim(value);
+}
+
+bool IsValidUrlText(const std::wstring& value) {
+    const std::wstring url = NormalizeUrl(value);
+    if (!HasUrlScheme(url)) {
+        return false;
+    }
+    URL_COMPONENTSW parts{};
+    wchar_t host[260]{};
+    parts.dwStructSize = sizeof(parts);
+    parts.lpszHostName = host;
+    parts.dwHostNameLength = static_cast<DWORD>(sizeof(host) / sizeof(host[0]));
+    return InternetCrackUrlW(url.c_str(), 0, 0, &parts) && parts.dwHostNameLength > 0;
 }
 
 class DialogWindow {
@@ -227,17 +243,22 @@ private:
         }
         editFont_ = ThemedControls::CreateEditFont(theme_);
 
-        Label(L"名称", 18, 24);
-        nameEdit_ = Edit(IdName, 84, 22, 384, link_.name);
+        const int rowStep = FieldHeight() + static_cast<int>(theme_.metric(L"global", L"itemGap", 8.0f));
+        int y = 24;
+        Label(L"名称", kLabelX, y);
+        nameEdit_ = Edit(IdName, kFieldX, y - 2, kFieldWidth, link_.name);
 
-        Label(L"URL链接", 18, 60);
-        urlEdit_ = Edit(IdUrl, 84, 58, 384, link_.path);
+        y += rowStep;
+        Label(L"URL链接 *", kLabelX, y);
+        urlEdit_ = Edit(IdUrl, kFieldX, y - 2, kFieldWidth, link_.path);
 
-        Label(L"备注", 18, 96);
-        remarkEdit_ = Edit(IdRemark, 84, 94, 384, link_.remark, ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL);
+        y += rowStep;
+        Label(L"备注", kLabelX, y);
+        remarkEdit_ = Edit(IdRemark, kFieldX, y - 2, kFieldWidth, link_.remark, ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL);
 
-        ThemedControls::CreateButton(instance_, hwnd_, IdOk, L"确定", 306, 188, 76, ButtonHeight(), font_, true);
-        ThemedControls::CreateButton(instance_, hwnd_, IdCancel, L"取消", 392, 188, 76, ButtonHeight(), font_);
+        const int footerY = y - 2 + FieldHeight() * 2 + 14 + static_cast<int>(theme_.metric(L"global", L"sectionGap", 16.0f));
+        ThemedControls::CreatePrimaryButton(instance_, hwnd_, IdOk, L"确定", 306, footerY, 76, ButtonHeight(), font_, true);
+        ThemedControls::CreateButton(instance_, hwnd_, IdCancel, L"取消", 392, footerY, 76, ButtonHeight(), font_);
     }
 
     int FieldHeight() const {
@@ -284,6 +305,11 @@ private:
         }
         if (next.path.empty()) {
             MessageBoxW(hwnd_, L"请输入 URL 链接。", L"网址", MB_OK | MB_ICONWARNING);
+            SetFocus(urlEdit_);
+            return;
+        }
+        if (!IsValidUrlText(next.path)) {
+            MessageBoxW(hwnd_, L"请输入有效的 URL 链接。", L"网址", MB_OK | MB_ICONWARNING);
             SetFocus(urlEdit_);
             return;
         }

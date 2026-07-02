@@ -13,7 +13,9 @@
 #include <shobjidl.h>
 #include <windowsx.h>
 
+#include <algorithm>
 #include <cstdio>
+#include <cwctype>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -101,6 +103,22 @@ std::wstring DialogTitleForLink(const Link& link, bool isNew) {
 
 std::wstring LinkHotKeyText(int key) {
     return key == 0 ? L"无" : FormatHotKeyText(key);
+}
+
+bool IsValidColorHex(const std::wstring& value) {
+    std::wstring text = Trim(value);
+    if (text.empty()) {
+        return true;
+    }
+    if (!text.empty() && text.front() == L'#') {
+        text.erase(text.begin());
+    }
+    if (text.size() != 6 && text.size() != 8) {
+        return false;
+    }
+    return std::all_of(text.begin(), text.end(), [](wchar_t ch) {
+        return std::iswxdigit(ch) != 0;
+    });
 }
 
 class DialogWindow {
@@ -234,7 +252,7 @@ private:
                 BrowseFolder(workDirEdit_);
                 return 0;
             case IdHotKeyCapture:
-                capturedHotKey_ = ShowHotKeyCaptureDialog(hwnd_, instance_, capturedHotKey_);
+                capturedHotKey_ = ShowHotKeyCaptureDialog(hwnd_, instance_, theme_, capturedHotKey_);
                 UpdateHotKeyLabel();
                 return 0;
             case IdHotKeyClear:
@@ -304,7 +322,10 @@ private:
         if (height <= 0) {
             height = ButtonHeight();
         }
-        return ThemedControls::CreateButton(instance_, hwnd_, id, text, x, y, width, height, font_, id == IdOk);
+        if (id == IdOk) {
+            return ThemedControls::CreatePrimaryButton(instance_, hwnd_, id, text, x, y, width, height, font_, true);
+        }
+        return ThemedControls::CreateButton(instance_, hwnd_, id, text, x, y, width, height, font_, false);
     }
 
     void PaintBackground(HDC hdc) {
@@ -342,11 +363,11 @@ private:
         const int rowStep = RowStep();
         const int buttonHeight = ButtonHeight();
         int y = 24;
-        Label(L"名称", kLabelX, y);
+        Label(L"名称 *", kLabelX, y);
         nameEdit_ = Edit(IdName, kFieldX, y, kFieldWidth, link_.name);
 
         y += rowStep;
-        Label(isUrl ? L"网址" : L"路径", kLabelX, y);
+        Label(isUrl ? L"网址 *" : L"路径 *", kLabelX, y);
         pathEdit_ = Edit(IdPath, kFieldX, y, 374, link_.path);
         Button(IdBrowseFile, L"...", 492, y + 1, 32, buttonHeight);
 
@@ -378,7 +399,8 @@ private:
         y += rowStep;
         Label(L"快捷键", kLabelX, y);
         hotKeyText_ = ThemedControls::CreateButton(instance_, hwnd_, IdHotKeyCapture, LinkHotKeyText(capturedHotKey_).c_str(),
-                                                   kFieldX, y + 1, kFieldWidth, buttonHeight, font_);
+                                                   kFieldX, y + 1, 326, buttonHeight, font_);
+        Button(IdHotKeyClear, L"清除", 448, y + 1, 76, buttonHeight);
 
         y += rowStep;
         Label(L"备注", kLabelX, y);
@@ -387,8 +409,9 @@ private:
         remarkEdit_ = ThemedControls::CreateMultiLineEdit(instance_, hwnd_, IdRemark, theme_, remarkFrame, link_.remark, font_);
         fieldFrames_.push_back(FieldFrame{remarkFrame, remarkEdit_, false});
 
-        Button(IdOk, L"确定", 356, 458, 76, buttonHeight);
-        Button(IdCancel, L"取消", 448, 458, 76, buttonHeight);
+        const int footerY = remarkFrame.bottom + static_cast<int>(theme_.metric(L"global", L"sectionGap", 16.0f));
+        Button(IdOk, L"确定", 356, footerY, 76, buttonHeight);
+        Button(IdCancel, L"取消", 448, footerY, 76, buttonHeight);
     }
 
     int FieldHeight() const {
@@ -641,6 +664,11 @@ private:
         if (next.path.empty()) {
             MessageBoxW(hwnd_, L"请输入路径或网址。", L"启动项", MB_OK | MB_ICONWARNING);
             SetFocus(pathEdit_);
+            return;
+        }
+        if (!IsValidColorHex(next.customColor)) {
+            MessageBoxW(hwnd_, L"颜色必须是 #RRGGBB 或 #AARRGGBB 格式。", L"启动项", MB_OK | MB_ICONWARNING);
+            SetFocus(customColorEdit_);
             return;
         }
         if (next.parentGroup <= 0) {

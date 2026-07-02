@@ -249,6 +249,27 @@ bool PluginRegistry::EnsureSchema(void* rawDb) {
     if (!HasColumn(db, L"Plugins", L"Sha256")) {
         Exec(db, "ALTER TABLE Plugins ADD COLUMN Sha256 TEXT;", lastError_);
     }
+    if (!HasColumn(db, L"Plugins", L"Builtin")) {
+        Exec(db, "ALTER TABLE Plugins ADD COLUMN Builtin INTEGER DEFAULT 0;", lastError_);
+    }
+    if (!HasColumn(db, L"Plugins", L"Deletable")) {
+        Exec(db, "ALTER TABLE Plugins ADD COLUMN Deletable INTEGER DEFAULT 1;", lastError_);
+    }
+    if (!HasColumn(db, L"Plugins", L"Enabled")) {
+        Exec(db, "ALTER TABLE Plugins ADD COLUMN Enabled INTEGER DEFAULT 0;", lastError_);
+    }
+    if (!HasColumn(db, L"Plugins", L"Installed")) {
+        Exec(db, "ALTER TABLE Plugins ADD COLUMN Installed INTEGER DEFAULT 0;", lastError_);
+    }
+    if (!HasColumn(db, L"Plugins", L"InstallPath")) {
+        Exec(db, "ALTER TABLE Plugins ADD COLUMN InstallPath TEXT;", lastError_);
+    }
+    if (!HasColumn(db, L"Plugins", L"CreatedAt")) {
+        Exec(db, "ALTER TABLE Plugins ADD COLUMN CreatedAt TEXT;", lastError_);
+    }
+    if (!HasColumn(db, L"Plugins", L"UpdatedAt")) {
+        Exec(db, "ALTER TABLE Plugins ADD COLUMN UpdatedAt TEXT;", lastError_);
+    }
     return lastError_.empty();
 }
 
@@ -263,7 +284,9 @@ bool PluginRegistry::UpsertBuiltinPlugins(void* rawDb) {
             L"Engine=excluded.Engine,Description=excluded.Description,Permissions=excluded.Permissions,"
             L"Author=excluded.Author,License=excluded.License,PackageUrl=excluded.PackageUrl,"
             L"HomepageUrl=excluded.HomepageUrl,SourceUrl=excluded.SourceUrl,AddedAt=excluded.AddedAt,Sha256=excluded.Sha256,"
-            L"Builtin=excluded.Builtin,Deletable=excluded.Deletable,Enabled=excluded.Enabled,Installed=1,UpdatedAt=CURRENT_TIMESTAMP;");
+            L"Builtin=excluded.Builtin,Deletable=excluded.Deletable,"
+            L"Enabled=CASE WHEN Plugins.Builtin=excluded.Builtin THEN Plugins.Enabled ELSE excluded.Enabled END,"
+            L"Installed=1,UpdatedAt=CURRENT_TIMESTAMP;");
         if (!row.ok()) {
             lastError_ = L"插件注册 SQL 准备失败。";
             return false;
@@ -346,11 +369,6 @@ std::vector<PluginRecord> PluginRegistry::LoadPlugins() {
 
 bool PluginRegistry::SetEnabled(const std::wstring& pluginId, bool enabled) {
     lastError_.clear();
-    for (const auto& plugin : BuiltinPlugins()) {
-        if (plugin.id == pluginId) {
-            return Initialize();
-        }
-    }
     SQLiteDatabase db(appDirectory_ / L"db" / L"link.db");
     if (!db.ok()) {
         lastError_ = db.Error();
@@ -375,13 +393,13 @@ bool PluginRegistry::SetEnabled(const std::wstring& pluginId, bool enabled) {
 }
 
 bool PluginRegistry::IsEnabled(const std::wstring& pluginId) {
-    for (const auto& plugin : BuiltinPlugins()) {
-        if (plugin.id == pluginId) {
-            return true;
-        }
-    }
     SQLiteDatabase db(appDirectory_ / L"db" / L"link.db");
     if (!db.ok()) {
+        for (const auto& plugin : BuiltinPlugins()) {
+            if (plugin.id == pluginId) {
+                return plugin.enabled;
+            }
+        }
         return false;
     }
     if (!EnsureSchema(db.get()) || !UpsertBuiltinPlugins(db.get())) {

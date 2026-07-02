@@ -20,6 +20,10 @@ HANDLE MiniButtonKind() {
     return reinterpret_cast<HANDLE>(static_cast<INT_PTR>(5));
 }
 
+HANDLE PrimaryButtonKind() {
+    return reinterpret_cast<HANDLE>(static_cast<INT_PTR>(6));
+}
+
 HANDLE CheckBoxKind() {
     return reinterpret_cast<HANDLE>(static_cast<INT_PTR>(2));
 }
@@ -297,6 +301,31 @@ void DrawButton(const Theme& theme, const DRAWITEMSTRUCT* draw) {
 
     SetBkMode(draw->hDC, TRANSPARENT);
     SetTextColor(draw->hDC, ToColorRef(theme.color(L"button", state, L"text")));
+    std::wstring text = WindowText(draw->hwndItem);
+    RECT textRect = ThemedControls::ButtonTextRect(theme, rect, pressed);
+    DrawTextW(draw->hDC, text.c_str(), static_cast<int>(text.size()), &textRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+}
+
+void DrawPrimaryButton(const Theme& theme, const DRAWITEMSTRUCT* draw) {
+    const bool disabled = (draw->itemState & ODS_DISABLED) != 0;
+    const bool pressed = (draw->itemState & ODS_SELECTED) != 0;
+    const bool focused = (draw->itemState & ODS_FOCUS) != 0;
+    const bool hover = IsHover(draw->hwndItem);
+    const wchar_t* state = disabled ? L"disabled" : (pressed ? L"pressed" : (hover ? L"hover" : L"normal"));
+
+    RECT rect = draw->rcItem;
+    const int radius = static_cast<int>(theme.metric(L"button", L"radius", 6.0f));
+    const int borderWidth = static_cast<int>(theme.metric(L"button", L"borderWidth", 1.0f));
+    FillRoundRect(
+        draw->hDC,
+        rect,
+        radius,
+        ToColorRef(theme.color(L"primaryButton", state, L"bg")),
+        ToColorRef(theme.color(L"primaryButton", focused ? L"focused" : state, L"border")),
+        borderWidth);
+
+    SetBkMode(draw->hDC, TRANSPARENT);
+    SetTextColor(draw->hDC, ToColorRef(theme.color(L"primaryButton", state, L"text")));
     std::wstring text = WindowText(draw->hwndItem);
     RECT textRect = ThemedControls::ButtonTextRect(theme, rect, pressed);
     DrawTextW(draw->hDC, text.c_str(), static_cast<int>(text.size()), &textRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
@@ -629,6 +658,17 @@ HWND CreateButton(HINSTANCE instance, HWND parent, int id, const wchar_t* text, 
     return hwnd;
 }
 
+HWND CreatePrimaryButton(HINSTANCE instance, HWND parent, int id, const wchar_t* text, int x, int y, int width, int height, HFONT font, bool defaultButton) {
+    const DWORD style = WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW | (defaultButton ? BS_DEFPUSHBUTTON : BS_PUSHBUTTON);
+    HWND hwnd = CreateWindowExW(0, L"BUTTON", text, style, x, y, width, height, parent, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), instance, nullptr);
+    if (hwnd) {
+        SendMessageW(hwnd, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+        SetPropW(hwnd, kControlKindProp, PrimaryButtonKind());
+        AttachThemedBehavior(hwnd);
+    }
+    return hwnd;
+}
+
 HWND CreateMiniButton(HINSTANCE instance, HWND parent, int id, const wchar_t* text, int x, int y, int width, int height, HFONT font) {
     HWND hwnd = CreateWindowExW(0, L"BUTTON", text, WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON | BS_OWNERDRAW,
                                 x, y, width, height, parent, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), instance, nullptr);
@@ -859,6 +899,10 @@ bool Draw(const Theme& theme, const DRAWITEMSTRUCT* draw) {
     }
     if (kind == ButtonKind()) {
         DrawButton(theme, draw);
+        return true;
+    }
+    if (kind == PrimaryButtonKind()) {
+        DrawPrimaryButton(theme, draw);
         return true;
     }
     if (kind == MiniButtonKind()) {

@@ -10,7 +10,7 @@
            per-screen override. Unsupported components are ignored by the
            loader.
         3. Customize common controls through the shared categories below:
-           text, label, panel, field, edit, button, iconButton, miniButton, checkbox,
+           text, label, panel, field, edit, button, primaryButton, iconButton, miniButton, checkbox,
            toggle, radio, comboBox, tabButton, list, listItem, scrollbar,
            slider, dialog, menuItem, linkItem, majorNavItem, minorNavItem,
            titleButton, tooltip, separator, etc.
@@ -280,6 +280,10 @@
         <State name="hover" bg="@menuHover" text="@text" icon="@mutedText"/>
         <State name="disabled" text="@disabledText" icon="@disabledText"/>
         <State name="checked" mark="@accent" icon="@accent"/>
+        <State name="accent" icon="@accent"/>
+        <State name="danger" icon="@danger"/>
+        <State name="warning" icon="@warning"/>
+        <State name="success" icon="@success"/>
     </Component>
     <Component name="dialog">
         <State name="normal" bg="@background" text="@text"/>
@@ -378,6 +382,16 @@
         <State name="normal" bg="@surface" text="@text" border="@border"/>
         <State name="hover" bg="@hover" text="@text" border="@accent"/>
         <State name="pressed" bg="@pressed" text="@text" border="@accent"/>
+        <State name="focused" border="@focus"/>
+        <State name="disabled" bg="@surfaceRaised" text="@disabledText" border="@line"/>
+    </Component>
+    <Component name="primaryButton">
+        <!-- Confirm/Save/primary action buttons. Sizing metrics reuse the button
+             category; only colors are defined here so the accent color of primary
+             actions can be tuned independently. Defaults to a red call-to-action. -->
+        <State name="normal" bg="@danger" text="@checkMark" border="@danger"/>
+        <State name="hover" bg="rgb(210,42,52)" text="@checkMark" border="rgb(210,42,52)"/>
+        <State name="pressed" bg="rgb(158,22,32)" text="@checkMark" border="rgb(158,22,32)"/>
         <State name="focused" border="@focus"/>
         <State name="disabled" bg="@surfaceRaised" text="@disabledText" border="@line"/>
     </Component>

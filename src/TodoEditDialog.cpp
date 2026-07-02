@@ -769,7 +769,7 @@ private:
                     SetFieldError(monthlyDayEdit_, true);
                     ok = false;
                 } else if (day > DaysInMonth(anchor.wYear, anchor.wMonth)) {
-                    repeatError_ = L"该日期在当前月份不存在，提醒已过期";
+                    repeatError_ = L"该月无 " + std::to_wstring(day) + L" 号，将顺延";
                     SetFieldError(monthlyDayEdit_, true);
                     ok = false;
                 }
@@ -944,12 +944,12 @@ private:
         customSuffix_ = Text(L"重复", 0, 0, TextControlWidth(L"重复"), StaticTextHeight());
         repeatErrorText_ = Text(L"", 0, 0, 1, StaticTextHeight());
 
-        advancedButton_ = ThemedControls::CreateButton(instance_, hwnd_, IdAdvancedToggle, L"高级设置", 0, 0, ButtonWidth(L"高级设置"), ThemedControls::CompactButtonHeight(theme_), font_);
+        advancedButton_ = ThemedControls::CreateButton(instance_, hwnd_, IdAdvancedToggle, L"高级设置 ▼", 0, 0, ButtonWidth(L"高级设置 ▼"), ThemedControls::CompactButtonHeight(theme_), font_);
         endNeverButton_ = ThemedControls::CreateTabButton(instance_, hwnd_, IdEndNever, L"永不结束", 0, 0, TabWidth(L"永不结束"), tabHeight, font_, false);
         endCountButton_ = ThemedControls::CreateTabButton(instance_, hwnd_, IdEndCount, L"完成 N 次", 0, 0, TabWidth(L"完成 N 次"), tabHeight, font_, false);
         endCountEdit_ = SingleEdit(IdEndCountValue, 0, 0, ThemedControls::EditFrameHeight(theme_) + ThemedControls::EditPaddingX(theme_) * 2, L"1", ES_NUMBER);
 
-        okButton_ = ThemedControls::CreateButton(instance_, hwnd_, IDOK, isNew_ ? L"保存待办" : L"保存", 0, 0, ButtonWidth(isNew_ ? L"保存待办" : L"保存"), ThemedControls::ButtonHeight(theme_), font_, true);
+        okButton_ = ThemedControls::CreatePrimaryButton(instance_, hwnd_, IDOK, isNew_ ? L"保存待办" : L"保存", 0, 0, ButtonWidth(isNew_ ? L"保存待办" : L"保存"), ThemedControls::ButtonHeight(theme_), font_, true);
         cancelButton_ = ThemedControls::CreateButton(instance_, hwnd_, IDCANCEL, L"取消", 0, 0, ButtonWidth(L"取消"), ThemedControls::ButtonHeight(theme_), font_);
 
         FillCombos();
@@ -1086,7 +1086,9 @@ private:
             y += textHeight + rowGap;
         }
 
-        MoveButton(advancedButton_, fieldX, y, ButtonWidth(L"高级设置"), ThemedControls::CompactButtonHeight(theme_));
+        const std::wstring advancedText = advancedExpanded_ ? L"高级设置 ▲" : L"高级设置 ▼";
+        SetWindowTextW(advancedButton_, advancedText.c_str());
+        MoveButton(advancedButton_, fieldX, y, ButtonWidth(advancedText), ThemedControls::CompactButtonHeight(theme_));
         y += ThemedControls::CompactButtonHeight(theme_) + rowGap;
         const bool recurring = hasReminder_ && repeatRule_ != RepeatRule::None;
         SetEnabled(advancedButton_, recurring);
@@ -1333,6 +1335,78 @@ private:
         Layout();
     }
 
+    void SelectCalendarDate(SYSTEMTIME date) {
+        date = DateOnly(date);
+        selectedDate_ = date;
+        calendarYear_ = date.wYear;
+        calendarMonth_ = date.wMonth;
+        SetWindowTextW(monthlyDayEdit_, std::to_wstring(static_cast<int>(date.wDay)).c_str());
+        Layout();
+    }
+
+    void MoveCalendarSelection(int dayDelta) {
+        if (calendarPickerMode_ != CalendarPickerMode::Day) {
+            calendarPickerMode_ = CalendarPickerMode::Day;
+            InvalidateRect(hwnd_, nullptr, TRUE);
+            return;
+        }
+        SelectCalendarDate(AddDays(selectedDate_, dayDelta));
+    }
+
+    bool HandleCalendarKey(WPARAM key) {
+        switch (key) {
+        case VK_LEFT:
+            MoveCalendarSelection(-1);
+            return true;
+        case VK_RIGHT:
+            MoveCalendarSelection(1);
+            return true;
+        case VK_UP:
+            MoveCalendarSelection(-7);
+            return true;
+        case VK_DOWN:
+            MoveCalendarSelection(7);
+            return true;
+        case VK_RETURN:
+        case VK_SPACE:
+            SelectCalendarDay(static_cast<int>(selectedDate_.wDay));
+            return true;
+        default:
+            return false;
+        }
+    }
+
+    void ValidateMonthlyDayInline() {
+        const bool relevant = hasReminder_ &&
+            (repeatRule_ == RepeatRule::Monthly ||
+             (repeatRule_ == RepeatRule::Custom && ComboIndex(customUnitCombo_, 0) == 2));
+        if (!relevant) {
+            if (repeatError_ == L"每月固定日期必须在 1-31 之间" ||
+                repeatError_.find(L"该月无 ") == 0) {
+                repeatError_.clear();
+                SetFieldError(monthlyDayEdit_, false);
+            }
+            return;
+        }
+        const int day = GetInt(monthlyDayEdit_, 0);
+        if (day < 1 || day > 31) {
+            repeatError_ = L"每月固定日期必须在 1-31 之间";
+            SetFieldError(monthlyDayEdit_, true);
+            return;
+        }
+        const int maxDay = DaysInMonth(selectedDate_.wYear, selectedDate_.wMonth);
+        if (day > maxDay) {
+            repeatError_ = L"该月无 " + std::to_wstring(day) + L" 号，将顺延";
+            SetFieldError(monthlyDayEdit_, true);
+            return;
+        }
+        if (repeatError_ == L"每月固定日期必须在 1-31 之间" ||
+            repeatError_.find(L"该月无 ") == 0) {
+            repeatError_.clear();
+            SetFieldError(monthlyDayEdit_, false);
+        }
+    }
+
     void DrawCalendar(HDC dc) {
         RECT rect = Offset(calendarRect_);
         DrawPanel(dc, rect, false, false);
@@ -1502,6 +1576,11 @@ private:
             return 0;
         case WM_LBUTTONUP: {
             POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+            RECT calendar = Offset(calendarRect_);
+            calendarFocused_ = PtInRect(&calendar, point) != FALSE;
+            if (calendarFocused_) {
+                SetFocus(hwnd_);
+            }
             RECT prev = Offset(CalendarPrevRect());
             RECT next = Offset(CalendarNextRect());
             RECT yearTitle = Offset(CalendarYearTitleRect());
@@ -1578,6 +1657,11 @@ private:
                 return TRUE;
             }
             return 0;
+        case WM_KEYDOWN:
+            if (calendarFocused_ && HandleCalendarKey(wParam)) {
+                return 0;
+            }
+            return DefWindowProcW(hwnd_, message, wParam, lParam);
         case WM_COMMAND: {
             const int id = LOWORD(wParam);
             if (id == IDOK) {
@@ -1620,6 +1704,9 @@ private:
             }
             if ((id == IdCustomUnit && HIWORD(wParam) == CBN_SELCHANGE) ||
                 HIWORD(wParam) == EN_CHANGE) {
+                if (id == IdMonthlyDay && HIWORD(wParam) == EN_CHANGE) {
+                    ValidateMonthlyDayInline();
+                }
                 Layout();
             }
             return 0;
@@ -1713,6 +1800,7 @@ private:
     bool isNew_ = false;
     bool hasReminder_ = false;
     CalendarPickerMode calendarPickerMode_ = CalendarPickerMode::Day;
+    bool calendarFocused_ = false;
     bool advancedExpanded_ = false;
     bool ownerWasEnabled_ = false;
     bool ownerRestored_ = false;

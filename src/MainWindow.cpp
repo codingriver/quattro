@@ -37,6 +37,7 @@
 #include <shellapi.h>
 #include <sstream>
 #include <system_error>
+#include <thread>
 #include <uxtheme.h>
 #include <windowsx.h>
 
@@ -95,6 +96,16 @@ Color RgbColor(int r, int g, int b, float a = 1.0f) {
         ClampFloat(static_cast<float>(g) / 255.0f, 0.0f, 1.0f),
         ClampFloat(static_cast<float>(b) / 255.0f, 0.0f, 1.0f),
         ClampFloat(a, 0.0f, 1.0f)};
+}
+
+// Linear blend between two colors. t=0 returns a, t=1 returns b.
+Color LerpColor(const Color& a, const Color& b, float t) {
+    t = ClampFloat(t, 0.0f, 1.0f);
+    return Color{
+        a.r + (b.r - a.r) * t,
+        a.g + (b.g - a.g) * t,
+        a.b + (b.b - a.b) * t,
+        a.a + (b.a - a.a) * t};
 }
 
 COLORREF WindowPropColor(HWND hwnd, const wchar_t* name, COLORREF fallback) {
@@ -403,6 +414,26 @@ struct TodoVisualStyle {
     Color tagText;
 };
 
+struct WebDavAsyncResult {
+    bool download = false;
+    WebDavBackupReport report;
+};
+
+// Derive a full todo card style from a single semantic accent color, blending
+// toward the theme surface (for soft backgrounds) and toward text (for readable
+// foregrounds). This keeps todo state colors in sync with the active theme
+// instead of hardcoding per-state RGB values.
+TodoVisualStyle MakeTodoStyle(const Color& accent, const Color& surface, const Color& text) {
+    TodoVisualStyle style{};
+    style.bg = LerpColor(surface, accent, 0.12f);
+    style.border = LerpColor(surface, accent, 0.45f);
+    style.dot = accent;
+    style.title = LerpColor(accent, text, 0.55f);
+    style.tagBg = LerpColor(surface, accent, 0.18f);
+    style.tagText = LerpColor(accent, text, 0.35f);
+    return style;
+}
+
 LinkLayoutMetrics MakeLinkLayout(const Theme& theme, const D2D1_RECT_F& rect, const Group* tag) {
     LinkLayoutMetrics metrics;
     metrics.layout = EffectiveLinkLayout(tag);
@@ -676,6 +707,41 @@ struct ThemeMenuItem {
     std::wstring label;
 };
 
+std::vector<PluginRecord> BuiltinToolMenuPlugins(const std::vector<PluginRecord>& loaded) {
+    std::vector<PluginRecord> tools;
+    const auto builtins = PluginRegistry::BuiltinPlugins();
+    for (const auto& builtin : builtins) {
+        if (builtin.kind != L"builtin-tool" || builtin.engine.empty()) {
+            continue;
+        }
+        PluginRecord item = builtin;
+        for (const auto& plugin : loaded) {
+            if (plugin.kind == L"builtin-tool" && (plugin.id == builtin.id || plugin.engine == builtin.engine)) {
+                item = plugin;
+                if (item.id.empty()) item.id = builtin.id;
+                if (item.name.empty()) item.name = builtin.name;
+                if (item.engine.empty()) item.engine = builtin.engine;
+                if (item.kind.empty()) item.kind = builtin.kind;
+                break;
+            }
+        }
+        tools.push_back(std::move(item));
+    }
+
+    for (const auto& plugin : loaded) {
+        if (plugin.kind != L"builtin-tool" || plugin.engine.empty()) {
+            continue;
+        }
+        const auto exists = std::find_if(tools.begin(), tools.end(), [&](const PluginRecord& item) {
+            return item.id == plugin.id || item.engine == plugin.engine;
+        });
+        if (exists == tools.end()) {
+            tools.push_back(plugin);
+        }
+    }
+    return tools;
+}
+
 std::wstring XmlAttributeValue(const std::wstring& tag, const std::wstring& name) {
     const std::wstring pattern = name + L"=\"";
     std::size_t begin = tag.find(pattern);
@@ -817,7 +883,17 @@ bool EnsureMenuIconFontLoaded(const std::filesystem::path& appDirectory) {
     return loaded;
 }
 
-bool DrawLocalMenuIcon(HDC dc, const RECT& rc, int icon, bool disabled, COLORREF color, const std::filesystem::path& appDirectory) {
+struct MenuIconPalette {
+    COLORREF accent = RGB(0, 153, 215);
+    COLORREF danger = RGB(228, 48, 58);
+    COLORREF warning = RGB(245, 180, 40);
+    COLORREF success = RGB(24, 150, 92);
+    COLORREF muted = RGB(100, 116, 139);
+    COLORREF disabled = RGB(160, 168, 178);
+    COLORREF neutral = RGB(255, 255, 255);
+};
+
+bool DrawLocalMenuIcon(HDC dc, const RECT& rc, int icon, bool disabled, COLORREF color, const MenuIconPalette& palette, const std::filesystem::path& appDirectory) {
     const wchar_t glyph = MenuIconGlyph(static_cast<MenuIcon>(icon));
     if (glyph == L'\0' || !EnsureMenuIconFontLoaded(appDirectory)) {
         return false;
@@ -843,8 +919,8 @@ bool DrawLocalMenuIcon(HDC dc, const RECT& rc, int icon, bool disabled, COLORREF
         return false;
     }
 
-    const COLORREF accent = disabled ? RGB(160, 168, 178) :
-        (icon == MenuIconDelete || icon == MenuIconClear || icon == MenuIconExit || icon == MenuIconPower ? RGB(228, 48, 58) : RGB(0, 153, 215));
+    const COLORREF accent = disabled ? palette.disabled :
+        (icon == MenuIconDelete || icon == MenuIconClear || icon == MenuIconExit || icon == MenuIconPower ? palette.danger : palette.accent);
     const int oldBkMode = SetBkMode(dc, TRANSPARENT);
     const COLORREF oldTextColor = SetTextColor(dc, color == CLR_INVALID ? accent : color);
     HGDIOBJ oldFont = SelectObject(dc, font);
@@ -857,19 +933,19 @@ bool DrawLocalMenuIcon(HDC dc, const RECT& rc, int icon, bool disabled, COLORREF
     return true;
 }
 
-void DrawFallbackMenuIcon(HDC dc, const RECT& rc, int icon, bool disabled, COLORREF color) {
-    const COLORREF blue = disabled ? RGB(150, 150, 150) : (color == CLR_INVALID ? RGB(0, 120, 215) : color);
-    const COLORREF red = disabled ? RGB(150, 150, 150) : (color == CLR_INVALID ? RGB(230, 50, 45) : color);
-    const COLORREF mutedColor = disabled ? RGB(170, 170, 170) : RGB(100, 116, 139);
-    const COLORREF amber = disabled ? RGB(170, 170, 170) : RGB(245, 180, 40);
-    const COLORREF green = disabled ? RGB(170, 170, 170) : RGB(24, 150, 92);
+void DrawFallbackMenuIcon(HDC dc, const RECT& rc, int icon, bool disabled, COLORREF color, const MenuIconPalette& palette) {
+    const COLORREF blue = disabled ? palette.disabled : (color == CLR_INVALID ? palette.accent : color);
+    const COLORREF red = disabled ? palette.disabled : (color == CLR_INVALID ? palette.danger : color);
+    const COLORREF mutedColor = disabled ? palette.disabled : palette.muted;
+    const COLORREF amber = disabled ? palette.disabled : palette.warning;
+    const COLORREF green = disabled ? palette.disabled : palette.success;
     const int l = rc.left + 1;
     const int t = rc.top + 1;
     const int r = rc.right - 1;
     const int b = rc.bottom - 1;
     HPEN pen = CreatePen(PS_SOLID, 2, icon == MenuIconDelete || icon == MenuIconClear ? red : blue);
     HGDIOBJ oldPen = SelectObject(dc, pen);
-    HBRUSH brush = CreateSolidBrush(icon == MenuIconFolder ? amber : RGB(255, 255, 255));
+    HBRUSH brush = CreateSolidBrush(icon == MenuIconFolder ? amber : palette.neutral);
     HGDIOBJ oldBrush = SelectObject(dc, brush);
 
     switch (icon) {
@@ -963,7 +1039,7 @@ void DrawFallbackMenuIcon(HDC dc, const RECT& rc, int icon, bool disabled, COLOR
         break;
     case MenuIconTheme:
         {
-            HBRUSH fillBrush = CreateSolidBrush(disabled ? RGB(170, 170, 170) : RGB(255, 255, 255));
+            HBRUSH fillBrush = CreateSolidBrush(disabled ? palette.disabled : palette.neutral);
             HGDIOBJ previousBrush = SelectObject(dc, fillBrush);
             Ellipse(dc, l + 1, t + 1, r - 1, b - 1);
             SelectObject(dc, previousBrush);
@@ -992,7 +1068,7 @@ void DrawFallbackMenuIcon(HDC dc, const RECT& rc, int icon, bool disabled, COLOR
         break;
     case MenuIconReward:
         {
-            HBRUSH fillBrush = CreateSolidBrush(disabled ? RGB(170, 170, 170) : RGB(255, 232, 140));
+            HBRUSH fillBrush = CreateSolidBrush(disabled ? palette.disabled : palette.warning);
             HGDIOBJ previousBrush = SelectObject(dc, fillBrush);
             Ellipse(dc, l + 2, t + 2, r - 2, b - 2);
             SelectObject(dc, previousBrush);
@@ -1020,7 +1096,7 @@ void DrawFallbackMenuIcon(HDC dc, const RECT& rc, int icon, bool disabled, COLOR
     DeleteObject(pen);
 }
 
-void DrawMenuIcon(HDC dc, const RECT& rc, int icon, bool disabled, COLORREF color, const std::filesystem::path& appDirectory) {
+void DrawMenuIcon(HDC dc, const RECT& rc, int icon, bool disabled, COLORREF color, const MenuIconPalette& palette, const std::filesystem::path& appDirectory) {
     if (icon == MenuIconNone) {
         return;
     }
@@ -1042,10 +1118,10 @@ void DrawMenuIcon(HDC dc, const RECT& rc, int icon, bool disabled, COLORREF colo
         break;
     }
     if (!drawn) {
-        drawn = DrawLocalMenuIcon(dc, rc, icon, disabled, color, appDirectory);
+        drawn = DrawLocalMenuIcon(dc, rc, icon, disabled, color, palette, appDirectory);
     }
     if (!drawn) {
-        DrawFallbackMenuIcon(dc, rc, icon, disabled, color);
+        DrawFallbackMenuIcon(dc, rc, icon, disabled, color, palette);
     }
 }
 
@@ -1413,6 +1489,26 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
     case WM_QUATTRO_URL_ICON_DOWNLOADED:
         OnUrlIconDownloaded(static_cast<int>(wParam), lParam != 0);
         return 0;
+    case WM_QUATTRO_WEBDAV_DONE: {
+        std::unique_ptr<WebDavAsyncResult> result(reinterpret_cast<WebDavAsyncResult*>(lParam));
+        if (!result) {
+            return 0;
+        }
+        if (result->download && result->report.ok) {
+            model_ = storageService_.Load();
+            SelectInitialItems();
+            pluginRegistry_.Initialize();
+            RegisterConfiguredHotKeys();
+            ClearUiBitmaps();
+            InvalidateRect(hwnd_, nullptr, FALSE);
+        }
+        const std::wstring text = result->report.importReport.message.empty()
+            ? result->report.message
+            : FormatConfigPackageReport(result->report.importReport);
+        MessageBoxW(hwnd_, text.c_str(), result->download ? L"下载 WebDAV 备份" : L"上传 WebDAV 备份",
+                    MB_OK | (result->report.ok ? MB_ICONINFORMATION : MB_ICONWARNING));
+        return 0;
+    }
     case WM_NCHITTEST: {
         POINT screenPoint{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
         POINT clientPoint = screenPoint;
@@ -1435,7 +1531,9 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         if (top) return HTTOP;
         if (bottom) return HTBOTTOM;
 
-        const int titleHeight = config_.showTitle ? 34 : 0;
+        const int titleHeight = config_.showTitle
+            ? static_cast<int>(Metric(theme_, L"title", L"height", 34.0f))
+            : 0;
         const int titleButtonsWidth = 116;
         if (clientPoint.y >= 0 && clientPoint.y < titleHeight && clientPoint.x < width - titleButtonsWidth) {
             return HTCAPTION;
@@ -1595,6 +1693,7 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
     case WM_LBUTTONDOWN: {
         HideLinkTooltip();
         SetFocus(hwnd_);
+        selectionByKeyboard_ = false;
         const float x = static_cast<float>(GET_X_LPARAM(lParam));
         const float y = static_cast<float>(GET_Y_LPARAM(lParam));
         HitArea hit = HitTest(x, y);
@@ -1651,6 +1750,7 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
     case WM_RBUTTONUP: {
         HideLinkTooltip();
         SetFocus(hwnd_);
+        selectionByKeyboard_ = false;
         const float x = static_cast<float>(GET_X_LPARAM(lParam));
         const float y = static_cast<float>(GET_Y_LPARAM(lParam));
         HitArea hit = HitTest(x, y);
@@ -1702,8 +1802,9 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
     }
     case WM_GETMINMAXINFO: {
         auto* info = reinterpret_cast<MINMAXINFO*>(lParam);
-        info->ptMinTrackSize.x = 260;
-        info->ptMinTrackSize.y = 320;
+        const UINT dpi = hwnd_ ? GetDpiForWindow(hwnd_) : 96;
+        info->ptMinTrackSize.x = MulDiv(260, dpi, 96);
+        info->ptMinTrackSize.y = MulDiv(320, dpi, 96);
         return 0;
     }
     case WM_CLOSE:
@@ -2058,6 +2159,44 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             return 0;
         }
         }
+    case WM_SETCURSOR:
+        if (LOWORD(lParam) == HTCLIENT) {
+            const HitArea hit = CursorHitArea();
+            switch (hit.kind) {
+            case HitKind::CloseButton:
+            case HitKind::SearchButton:
+            case HitKind::MenuButton:
+            case HitKind::SkinButton:
+            case HitKind::AddButton:
+            case HitKind::Group:
+            case HitKind::Tag:
+            case HitKind::Link:
+            case HitKind::Todo:
+                SetCursor(LoadCursorW(nullptr, IDC_HAND));
+                return TRUE;
+            default:
+                break;
+            }
+        }
+        return DefWindowProcW(hwnd_, message, wParam, lParam);
+    case WM_GETDLGCODE:
+        return DLGC_WANTALLKEYS | DLGC_WANTARROWS | DLGC_WANTCHARS;
+    case WM_KEYDOWN:
+        if (HandleKeyDown(wParam)) {
+            return 0;
+        }
+        return DefWindowProcW(hwnd_, message, wParam, lParam);
+    case WM_CHAR:
+        // Type-to-search: printable characters open the search dialog seeded with the typed text.
+        if (wParam >= 0x20 && wParam != 0x7F) {
+            const Group* tag = FindGroup(currentTagId_);
+            const bool textTag = tag && (IsNoteTag(*tag) || IsTodoItemsTag(*tag));
+            if (!textTag && GetFocus() == hwnd_) {
+                OpenSearchWithPrefix(std::wstring(1, static_cast<wchar_t>(wParam)));
+                return 0;
+            }
+        }
+        return DefWindowProcW(hwnd_, message, wParam, lParam);
     case WM_MEASUREITEM:
         if (MeasureThemedMenuItem(reinterpret_cast<MEASUREITEMSTRUCT*>(lParam))) {
             return TRUE;
@@ -2155,6 +2294,9 @@ void MainWindow::SelectGroup(int groupId) {
     currentGroupId_ = groupId;
     const auto tags = TagsForCurrentGroup();
     currentTagId_ = tags.empty() ? 0 : tags.front().id;
+    selectedLinkId_ = 0;
+    selectedTodoId_ = 0;
+    selectionByKeyboard_ = false;
     tagScrollOffset_ = 0.0f;
     linkScrollOffset_ = 0.0f;
     config_.currentGroupId = currentGroupId_;
@@ -2174,6 +2316,9 @@ void MainWindow::SelectTag(int tagId) {
 
     SaveCurrentNotePage();
     currentTagId_ = tagId;
+    selectedLinkId_ = 0;
+    selectedTodoId_ = 0;
+    selectionByKeyboard_ = false;
     linkScrollOffset_ = 0.0f;
     config_.currentTagId = currentTagId_;
     configService_.SaveWindowState(config_);
@@ -3632,7 +3777,7 @@ void MainWindow::OpenSettings() {
 
 void MainWindow::OpenBuiltinTool(std::size_t index) {
     if (menuToolEngines_.empty()) {
-        const auto plugins = pluginRegistry_.LoadPlugins();
+        const auto plugins = BuiltinToolMenuPlugins(pluginRegistry_.LoadPlugins());
         for (const auto& plugin : plugins) {
             if (plugin.kind != L"builtin-tool" || plugin.engine.empty()) {
                 continue;
@@ -3641,9 +3786,13 @@ void MainWindow::OpenBuiltinTool(std::size_t index) {
                 break;
             }
             menuToolEngines_.push_back(plugin.engine);
+            menuToolEnabled_.push_back(plugin.enabled);
         }
     }
     if (index >= menuToolEngines_.size()) {
+        return;
+    }
+    if (index < menuToolEnabled_.size() && !menuToolEnabled_[index]) {
         return;
     }
     ShowBuiltinTool(hwnd_, instance_, theme_, pluginRegistry_, menuToolEngines_[index]);
@@ -4150,9 +4299,18 @@ void MainWindow::UploadWebDavBackup() {
     SaveCurrentNotePage();
     SaveWindowState();
 
-    WebDavBackupService service(appDirectory_, config_);
-    const WebDavBackupReport report = service.UploadBackup();
-    MessageBoxW(hwnd_, report.message.c_str(), L"上传 WebDAV 备份", MB_OK | (report.ok ? MB_ICONINFORMATION : MB_ICONWARNING));
+    const HWND target = hwnd_;
+    const std::filesystem::path appDirectory = appDirectory_;
+    const AppConfig config = config_;
+    std::thread([target, appDirectory, config]() {
+        WebDavBackupService service(appDirectory, config);
+        auto* result = new WebDavAsyncResult();
+        result->download = false;
+        result->report = service.UploadBackup();
+        if (!PostMessageW(target, WM_QUATTRO_WEBDAV_DONE, 0, reinterpret_cast<LPARAM>(result))) {
+            delete result;
+        }
+    }).detach();
 }
 
 void MainWindow::DownloadWebDavBackupMerge() {
@@ -4184,19 +4342,18 @@ void MainWindow::DownloadWebDavBackupMerge() {
         return;
     }
 
-    const WebDavBackupReport report = service.DownloadAndImportMerge(fileName);
-    if (report.ok) {
-        model_ = storageService_.Load();
-        SelectInitialItems();
-        pluginRegistry_.Initialize();
-        RegisterConfiguredHotKeys();
-        ClearUiBitmaps();
-        InvalidateRect(hwnd_, nullptr, FALSE);
-    }
-    const std::wstring text = report.importReport.message.empty()
-        ? report.message
-        : FormatConfigPackageReport(report.importReport);
-    MessageBoxW(hwnd_, text.c_str(), L"下载 WebDAV 备份", MB_OK | (report.ok ? MB_ICONINFORMATION : MB_ICONWARNING));
+    const HWND target = hwnd_;
+    const std::filesystem::path appDirectory = appDirectory_;
+    const AppConfig config = config_;
+    std::thread([target, appDirectory, config, fileName]() {
+        WebDavBackupService worker(appDirectory, config);
+        auto* result = new WebDavAsyncResult();
+        result->download = true;
+        result->report = worker.DownloadAndImportMerge(fileName);
+        if (!PostMessageW(target, WM_QUATTRO_WEBDAV_DONE, 0, reinterpret_cast<LPARAM>(result))) {
+            delete result;
+        }
+    }).detach();
 }
 
 bool MainWindow::ImportDropData(IDataObject* dataObject) {
@@ -4970,7 +5127,8 @@ void MainWindow::AppendSystemFunctionItems(HMENU menu, UINT commandBase) {
 
 void MainWindow::AppendToolItems(HMENU menu) {
     menuToolEngines_.clear();
-    const auto plugins = pluginRegistry_.LoadPlugins();
+    menuToolEnabled_.clear();
+    const auto plugins = BuiltinToolMenuPlugins(pluginRegistry_.LoadPlugins());
     for (const auto& plugin : plugins) {
         if (plugin.kind != L"builtin-tool" || plugin.engine.empty()) {
             continue;
@@ -4980,7 +5138,8 @@ void MainWindow::AppendToolItems(HMENU menu) {
         }
         const UINT command = ID_MENU_TOOL_BASE + static_cast<UINT>(menuToolEngines_.size());
         menuToolEngines_.push_back(plugin.engine);
-        AppendThemedMenuItem(menu, MF_STRING, command, plugin.name, false, -1, -1, MenuIconTools);
+        menuToolEnabled_.push_back(plugin.enabled);
+        AppendThemedMenuItem(menu, MF_STRING | (plugin.enabled ? 0 : MF_GRAYED), command, plugin.name, false, -1, -1, MenuIconTools);
     }
     if (menuToolEngines_.empty()) {
         AppendThemedMenuItem(menu, MF_STRING | MF_GRAYED, ID_MENU_TOOL_BASE, L"无可用工具");
@@ -5238,19 +5397,13 @@ void MainWindow::DrawTitle(D2D1_RECT_F rect) {
     const float buttonReserve = visibleButtonCount > 0
         ? buttonReserveInset + static_cast<float>(visibleButtonCount) * buttonSize + static_cast<float>(visibleButtonCount - 1) * buttonGap
         : buttonReserveInset;
-    const float titleTextDesiredEnd = rect.left + Metric(theme_, L"title", L"textEnd", 134.0f);
+    const float titleTextLeft = appIcon.right + Metric(theme_, L"title", L"textGap", 7.0f);
     const float titleTextMaxEnd = rect.right - buttonReserve - Metric(theme_, L"title", L"textGap", 7.0f);
-    const float titleTextEnd = std::max(appIcon.right, std::min(titleTextDesiredEnd, titleTextMaxEnd));
-    D2D1_RECT_F nameRect = D2D1::RectF(appIcon.right + Metric(theme_, L"title", L"textGap", 7.0f), rect.top, titleTextEnd, rect.bottom);
+    // Let the title use all the space up to the buttons so it is never clipped.
+    const float titleTextEnd = std::max(titleTextLeft, titleTextMaxEnd);
+    D2D1_RECT_F nameRect = D2D1::RectF(titleTextLeft, rect.top, titleTextEnd, rect.bottom);
     titleFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
     DrawTextBlock(kAppDisplayName, titleFormat_, nameRect, theme_.color(L"title", L"normal", L"text"));
-
-    if (config_.showDate) {
-        D2D1_RECT_F dateRect = D2D1::RectF(titleTextEnd, rect.top, rect.right - buttonReserve, rect.bottom);
-        dateRect.right = rect.right - buttonReserve;
-        smallFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
-        DrawTextBlock(TodayText(), smallFormat_, dateRect, theme_.color(L"title", L"normal", L"subtext"));
-    }
 
     float buttonRight = rect.right - buttonRightInset;
     for (HitKind kind : buttons) {
@@ -5452,6 +5605,7 @@ void MainWindow::DrawLinks(D2D1_RECT_F rect) {
         const float emptyHeight = Metric(theme_, L"content", L"emptyTextHeight", 30.0f);
         D2D1_RECT_F emptyText = D2D1::RectF(rect.left + emptyInsetX, rect.top + emptyTop, rect.right - emptyInsetX, rect.top + emptyTop + emptyHeight);
         DrawTextBlock(L"当前标签没有启动项", textFormat_, emptyText, theme_.color(L"content", L"empty", L"text"));
+        DrawEmptyAddButton(rect, emptyText.bottom, L"添加启动项");
         return;
     }
 
@@ -5473,6 +5627,13 @@ void MainWindow::DrawLinks(D2D1_RECT_F rect) {
         if (link->id == selectedLinkId_) {
             FillRect(item, theme_.color(L"linkItem", L"selected", L"bg"));
             FillRect(D2D1::RectF(item.left, item.top, item.left + Metric(theme_, L"linkItem", L"selectedAccentWidth", 4.0f), item.bottom), theme_.color(L"linkItem", L"selected", L"accent"));
+            if (selectionByKeyboard_) {
+                DrawRoundedRect(
+                    Inset(item, 1.5f, 1.5f),
+                    theme_.color(L"linkItem", L"selected", L"accent"),
+                    Metric(theme_, L"list", L"radius", 7.0f),
+                    1.0f);
+            }
         } else if (IsHover(HitKind::Link, link->id)) {
             FillRect(item, theme_.color(L"linkItem", L"hover", L"bg"));
         }
@@ -5525,6 +5686,45 @@ void MainWindow::DrawLinks(D2D1_RECT_F rect) {
     DrawScrollBar(rect, linkScrollOffset_, MaxLinkScrollOffset(rect), false);
 }
 
+void MainWindow::DrawEmptyAddButton(const D2D1_RECT_F& contentRect, float topY, const std::wstring& label) {
+    const bool hovered = IsHover(HitKind::AddButton, 0);
+    const float radius = Metric(theme_, L"button", L"radius", 7.0f);
+    const float height = Metric(theme_, L"button", L"height", 30.0f);
+    const float paddingX = Metric(theme_, L"button", L"paddingX", 12.0f);
+    const float plusGap = 8.0f;
+    const float plusHalf = 5.0f;
+
+    const float textWidth = MeasureTextWidth(label, textFormat_);
+    const float buttonWidth = std::min(Width(contentRect) - 32.0f,
+                                       paddingX * 2.0f + plusHalf * 2.0f + plusGap + textWidth + 6.0f);
+    const float centerX = (contentRect.left + contentRect.right) * 0.5f;
+    const float top = topY + 14.0f;
+    D2D1_RECT_F button = D2D1::RectF(centerX - buttonWidth * 0.5f, top, centerX + buttonWidth * 0.5f, top + height);
+
+    const wchar_t* state = hovered ? L"hover" : L"normal";
+    FillRoundedRect(button, theme_.color(L"button", state, L"bg"), radius);
+    DrawRoundedRect(button, theme_.color(L"button", state, L"border"), radius, Metric(theme_, L"button", L"borderWidth", 1.0f));
+
+    const Color iconColor = theme_.color(L"button", state, L"text");
+    const float contentWidth = plusHalf * 2.0f + plusGap + textWidth;
+    const float contentLeft = button.left + (Width(button) - contentWidth) * 0.5f;
+    const float cy = (button.top + button.bottom) * 0.5f;
+    const float px = contentLeft + plusHalf;
+    ID2D1SolidColorBrush* brush = nullptr;
+    if (SUCCEEDED(renderTarget_->CreateSolidColorBrush(iconColor.d2d(), &brush)) && brush) {
+        renderTarget_->DrawLine(D2D1::Point2F(px - plusHalf, cy), D2D1::Point2F(px + plusHalf, cy), brush, 1.6f);
+        renderTarget_->DrawLine(D2D1::Point2F(px, cy - plusHalf), D2D1::Point2F(px, cy + plusHalf), brush, 1.6f);
+        brush->Release();
+    }
+
+    D2D1_RECT_F textRect = D2D1::RectF(px + plusHalf + plusGap, button.top, button.right - paddingX, button.bottom);
+    textFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+    DrawTextBlock(label, textFormat_, textRect, theme_.color(L"button", state, L"text"));
+    textFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+
+    hitAreas_.push_back(HitArea{HitKind::AddButton, 0, button});
+}
+
 void MainWindow::DrawNotePage(D2D1_RECT_F rect, const Group& tag) {
     const float insetX = Metric(theme_, L"linkItem", L"viewportPaddingX", 16.0f);
     const float insetY = Metric(theme_, L"list", L"paddingY", 6.0f);
@@ -5551,6 +5751,7 @@ void MainWindow::DrawTodoItems(D2D1_RECT_F rect, const Group&) {
         const float emptyHeight = Metric(theme_, L"content", L"emptyTextHeight", 30.0f);
         D2D1_RECT_F emptyText = D2D1::RectF(rect.left + emptyInsetX, rect.top + emptyTop, rect.right - emptyInsetX, rect.top + emptyTop + emptyHeight);
         DrawTextBlock(L"当前标签没有待办事项", textFormat_, emptyText, theme_.color(L"content", L"empty", L"text"));
+        DrawEmptyAddButton(rect, emptyText.bottom, L"添加待办事项");
         return;
     }
 
@@ -5583,24 +5784,29 @@ void MainWindow::DrawTodoItems(D2D1_RECT_F rect, const Group&) {
         const bool disabled = !item.enabled;
         const bool overdue = IsTodoOverdue(item);
         const bool recurring = IsRecurringTodoSchedule(item.scheduleKind);
+        const Color surface = theme_.color(L"panel", L"normal", L"bg");
+        const Color textColor = theme_.color(L"text", L"normal", L"text");
         TodoVisualStyle style{};
         if (disabled) {
-            style = {RgbColor(232, 235, 240), RgbColor(162, 171, 185), RgbColor(105, 113, 126), RgbColor(139, 146, 158), RgbColor(213, 218, 226), RgbColor(82, 91, 105)};
+            style = MakeTodoStyle(theme_.color(L"text", L"disabled", L"text"), surface, textColor);
         } else if (done) {
-            style = {RgbColor(230, 240, 232), RgbColor(142, 189, 153), RgbColor(78, 105, 84), RgbColor(92, 152, 108), RgbColor(207, 226, 211), RgbColor(63, 113, 75)};
+            style = MakeTodoStyle(theme_.color(L"global", L"success", L"text"), surface, textColor);
         } else if (overdue) {
-            style = {RgbColor(255, 233, 227), RgbColor(214, 104, 91), RgbColor(117, 38, 30), RgbColor(220, 61, 65), RgbColor(248, 205, 197), RgbColor(166, 31, 22)};
+            style = MakeTodoStyle(theme_.color(L"global", L"danger", L"text"), surface, textColor);
         } else if (recurring) {
-            style = {RgbColor(225, 244, 234), RgbColor(118, 196, 151), RgbColor(24, 84, 54), RgbColor(32, 157, 99), RgbColor(199, 234, 214), RgbColor(25, 115, 70)};
+            style = MakeTodoStyle(theme_.color(L"global", L"success", L"text"), surface, textColor);
         } else if (item.scheduleKind == TodoScheduleKind::Once || !item.nextDueAt.empty()) {
-            style = {RgbColor(229, 240, 255), RgbColor(111, 163, 235), RgbColor(29, 70, 126), RgbColor(48, 117, 225), RgbColor(204, 224, 252), RgbColor(31, 91, 158)};
+            style = MakeTodoStyle(theme_.color(L"global", L"info", L"text"), surface, textColor);
         } else {
-            style = {RgbColor(237, 241, 246), RgbColor(163, 175, 191), RgbColor(62, 73, 88), RgbColor(130, 142, 158), RgbColor(219, 225, 234), RgbColor(78, 90, 108)};
+            style = MakeTodoStyle(theme_.color(L"text", L"muted", L"text"), surface, textColor);
         }
 
         const float radius = Metric(theme_, L"list", L"radius", 7.0f);
         FillRoundedRect(row, style.bg, radius);
         DrawRoundedRect(row, selected ? theme_.color(L"linkItem", L"selected", L"accent") : style.border, radius, selected ? 1.4f : 1.0f);
+        if (selected && selectionByKeyboard_) {
+            DrawRoundedRect(Inset(row, 2.0f, 2.0f), theme_.color(L"linkItem", L"selected", L"accent"), std::max(0.0f, radius - 1.0f), 1.0f);
+        }
         if (hovered && !selected) {
             DrawRoundedRect(Inset(row, 1.0f, 1.0f), theme_.color(L"listItem", L"hover", L"bg"), std::max(0.0f, radius - 1.0f), 1.0f);
         }
@@ -5631,13 +5837,6 @@ void MainWindow::DrawTodoItems(D2D1_RECT_F rect, const Group&) {
             tags.push_back(L"一次性");
         } else {
             tags.push_back(L"无时间");
-        }
-        const std::wstring scheduleText = TodoScheduleText(item);
-        if (recurring) {
-            tags.push_back(scheduleText);
-            if (item.repeatLimit > 0) {
-                tags.push_back(std::to_wstring(item.repeatFinished) + L"/" + std::to_wstring(item.repeatLimit));
-            }
         }
         if (!item.nextDueAt.empty()) {
             tags.push_back(item.nextDueAt);
@@ -5959,17 +6158,25 @@ bool MainWindow::DrawThemedMenuItem(const DRAWITEMSTRUCT* draw) {
     const COLORREF iconColorRef = item->checkedIconAccent
         ? ToColorRef(theme_.color(L"menuItem", item->checked ? L"checked" : (item->disabled ? L"disabled" : L"normal"), L"icon"))
         : CLR_INVALID;
+    MenuIconPalette iconPalette;
+    iconPalette.accent = ToColorRef(theme_.color(L"menuItem", L"accent", L"icon"));
+    iconPalette.danger = ToColorRef(theme_.color(L"menuItem", L"danger", L"icon"));
+    iconPalette.warning = ToColorRef(theme_.color(L"menuItem", L"warning", L"icon"));
+    iconPalette.success = ToColorRef(theme_.color(L"menuItem", L"success", L"icon"));
+    iconPalette.muted = ToColorRef(theme_.color(L"menuItem", L"normal", L"icon"));
+    iconPalette.disabled = ToColorRef(theme_.color(L"menuItem", L"disabled", L"icon"));
+    iconPalette.neutral = ToColorRef(theme_.color(L"menu", L"normal", L"bg"));
     if (item->stockIcon >= 0) {
         if (!DrawStockMenuIcon(dc, iconRect, static_cast<SHSTOCKICONID>(item->stockIcon)) &&
             !DrawSystemImageListIcon(dc, iconRect, item->systemImageIndex, item->disabled)) {
-            DrawMenuIcon(dc, iconRect, item->icon, item->disabled, iconColorRef, appDirectory_);
+            DrawMenuIcon(dc, iconRect, item->icon, item->disabled, iconColorRef, iconPalette, appDirectory_);
         }
     } else if (item->systemImageIndex >= 0) {
         if (!DrawSystemImageListIcon(dc, iconRect, item->systemImageIndex, item->disabled)) {
-            DrawMenuIcon(dc, iconRect, item->icon, item->disabled, iconColorRef, appDirectory_);
+            DrawMenuIcon(dc, iconRect, item->icon, item->disabled, iconColorRef, iconPalette, appDirectory_);
         }
     } else {
-        DrawMenuIcon(dc, iconRect, item->icon, item->disabled, iconColorRef, appDirectory_);
+        DrawMenuIcon(dc, iconRect, item->icon, item->disabled, iconColorRef, iconPalette, appDirectory_);
     }
 
     if (item->checked) {
@@ -6010,11 +6217,9 @@ bool MainWindow::DrawThemedMenuItem(const DRAWITEMSTRUCT* draw) {
     SelectObject(dc, oldFont);
 
     if (item->submenu) {
-        const COLORREF arrowColor = ToColorRef(theme_.color(L"menuItem", item->disabled ? L"disabled" : L"normal", L"text"));
+        const COLORREF arrowColor = ToColorRef(theme_.color(L"menuItem", item->disabled ? L"disabled" : (selected ? L"hover" : L"normal"), L"text"));
         HPEN pen = CreatePen(PS_SOLID, 1, arrowColor);
-        HBRUSH brush = CreateSolidBrush(arrowColor);
         HGDIOBJ oldPen = SelectObject(dc, pen);
-        HGDIOBJ oldBrush = SelectObject(dc, brush);
         const int midY = (rc.top + rc.bottom) / 2;
         const int arrowRight = static_cast<int>(Metric(theme_, L"menuItem", L"arrowRight", 9.0f));
         const int arrowWidth = static_cast<int>(Metric(theme_, L"menuItem", L"arrowWidth", 5.0f));
@@ -6022,13 +6227,11 @@ bool MainWindow::DrawThemedMenuItem(const DRAWITEMSTRUCT* draw) {
         const int arrowTip = rc.right - arrowRight;
         POINT points[] = {
             {arrowTip - arrowWidth, midY - arrowHalfHeight},
-            {arrowTip - arrowWidth, midY + arrowHalfHeight},
             {arrowTip, midY},
+            {arrowTip - arrowWidth, midY + arrowHalfHeight},
         };
-        Polygon(dc, points, static_cast<int>(std::size(points)));
-        SelectObject(dc, oldBrush);
+        Polyline(dc, points, static_cast<int>(std::size(points)));
         SelectObject(dc, oldPen);
-        DeleteObject(brush);
         DeleteObject(pen);
     }
     return true;
@@ -6277,6 +6480,289 @@ void MainWindow::EnsureLinkVisible(int linkId) {
         linkScrollOffset_ = itemBottom - linksRect.bottom + visibilityPadding;
     }
     linkScrollOffset_ = ClampFloat(linkScrollOffset_, 0.0f, MaxLinkScrollOffset(linksRect));
+}
+
+void MainWindow::EnsureTodoVisible(int todoId) {
+    if (todoId <= 0 || !hwnd_) {
+        return;
+    }
+    RECT client{};
+    if (!GetClientRect(hwnd_, &client)) {
+        return;
+    }
+    D2D1_RECT_F title{}, groupsRect{}, tagsRect{}, linksRect{};
+    BuildLayout(static_cast<float>(client.right - client.left), static_cast<float>(client.bottom - client.top), title, groupsRect, tagsRect, linksRect);
+    auto items = TodosForCurrentTag();
+    auto it = std::find_if(items.begin(), items.end(), [todoId](const TodoItem* item) {
+        return item && item->id == todoId;
+    });
+    if (it == items.end()) {
+        return;
+    }
+
+    const int index = static_cast<int>(std::distance(items.begin(), it));
+    const float paddingY = Metric(theme_, L"list", L"paddingY", 6.0f);
+    const float rowHeight = std::max(64.0f, Metric(theme_, L"listItem", L"height", 28.0f) + 36.0f);
+    const float rowGap = std::max(4.0f, Metric(theme_, L"linkItem", L"listGapY", 2.0f));
+    const float itemTop = linksRect.top + paddingY + static_cast<float>(index) * (rowHeight + rowGap);
+    const float itemBottom = itemTop + rowHeight;
+
+    const float visibilityPadding = Metric(theme_, L"linkItem", L"visibilityPadding", 8.0f);
+    if (itemTop - linkScrollOffset_ < linksRect.top + visibilityPadding) {
+        linkScrollOffset_ = itemTop - linksRect.top - visibilityPadding;
+    } else if (itemBottom - linkScrollOffset_ > linksRect.bottom - visibilityPadding) {
+        linkScrollOffset_ = itemBottom - linksRect.bottom + visibilityPadding;
+    }
+    linkScrollOffset_ = ClampFloat(linkScrollOffset_, 0.0f, MaxLinkScrollOffset(linksRect));
+}
+
+MainWindow::HitArea MainWindow::CursorHitArea() const {
+    POINT point{};
+    if (!GetCursorPos(&point) || !ScreenToClient(hwnd_, &point)) {
+        return {};
+    }
+    return HitTest(static_cast<float>(point.x), static_cast<float>(point.y));
+}
+
+void MainWindow::OpenSearchWithPrefix(const std::wstring& prefix) {
+    int linkId = SearchDialog::Show(hwnd_, instance_, theme_, model_, config_, prefix);
+    configService_.SaveWindowState(config_);
+    if (linkId > 0) {
+        selectedLinkId_ = linkId;
+        RunLink(linkId);
+    }
+}
+
+void MainWindow::MoveLinkSelection(int dx, int dy) {
+    auto links = LinksForCurrentTag();
+    if (links.empty()) {
+        return;
+    }
+    RECT client{};
+    if (!GetClientRect(hwnd_, &client)) {
+        return;
+    }
+    D2D1_RECT_F title{}, groupsRect{}, tagsRect{}, linksRect{};
+    BuildLayout(static_cast<float>(client.right - client.left), static_cast<float>(client.bottom - client.top), title, groupsRect, tagsRect, linksRect);
+    const Group* tag = FindGroup(currentTagId_);
+    const LinkLayoutMetrics metrics = MakeLinkLayout(theme_, linksRect, tag);
+    const int columns = std::max(1, metrics.columns);
+    const int count = static_cast<int>(links.size());
+
+    int current = -1;
+    for (int i = 0; i < count; ++i) {
+        if (links[i]->id == selectedLinkId_) {
+            current = i;
+            break;
+        }
+    }
+    if (current < 0) {
+        selectedLinkId_ = links.front()->id;
+        selectionByKeyboard_ = true;
+        EnsureLinkVisible(selectedLinkId_);
+        InvalidateRect(hwnd_, nullptr, FALSE);
+        return;
+    }
+
+    int next = current;
+    if (dx != 0) {
+        next = std::max(0, std::min(count - 1, current + dx));
+    } else if (dy != 0) {
+        next = current + dy * columns;
+        if (next < 0 || next >= count) {
+            next = current;
+        }
+    }
+    if (next == current) {
+        return;
+    }
+    selectedLinkId_ = links[next]->id;
+    selectionByKeyboard_ = true;
+    EnsureLinkVisible(selectedLinkId_);
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void MainWindow::MoveTodoSelection(int delta) {
+    auto items = TodosForCurrentTag();
+    if (items.empty()) {
+        return;
+    }
+
+    int current = -1;
+    const int count = static_cast<int>(items.size());
+    for (int i = 0; i < count; ++i) {
+        if (items[i]->id == selectedTodoId_) {
+            current = i;
+            break;
+        }
+    }
+    if (current < 0) {
+        selectedTodoId_ = delta < 0 ? items.back()->id : items.front()->id;
+        selectionByKeyboard_ = true;
+        EnsureTodoVisible(selectedTodoId_);
+        InvalidateRect(hwnd_, nullptr, FALSE);
+        return;
+    }
+
+    const int next = std::max(0, std::min(count - 1, current + delta));
+    if (next == current) {
+        return;
+    }
+    selectedTodoId_ = items[next]->id;
+    selectionByKeyboard_ = true;
+    EnsureTodoVisible(selectedTodoId_);
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void MainWindow::SelectAdjacentTag(int direction) {
+    const auto tags = TagsForCurrentGroup();
+    if (tags.empty()) {
+        return;
+    }
+    int index = -1;
+    for (std::size_t i = 0; i < tags.size(); ++i) {
+        if (tags[i].id == currentTagId_) {
+            index = static_cast<int>(i);
+            break;
+        }
+    }
+    int next = index < 0 ? 0 : index + direction;
+    next = std::max(0, std::min(static_cast<int>(tags.size()) - 1, next));
+    if (next != index) {
+        SelectTag(tags[next].id);
+    }
+}
+
+void MainWindow::SelectAdjacentGroup(int direction) {
+    const auto groups = MajorGroups();
+    if (groups.empty()) {
+        return;
+    }
+    int index = -1;
+    for (std::size_t i = 0; i < groups.size(); ++i) {
+        if (groups[i].id == currentGroupId_) {
+            index = static_cast<int>(i);
+            break;
+        }
+    }
+    int next = index < 0 ? 0 : index + direction;
+    next = std::max(0, std::min(static_cast<int>(groups.size()) - 1, next));
+    if (next != index) {
+        SelectGroup(groups[next].id);
+    }
+}
+
+bool MainWindow::HandleKeyDown(WPARAM key) {
+    const Group* tag = FindGroup(currentTagId_);
+    // Note pages own their edit control; leave keyboard handling to it.
+    if (tag && IsNoteTag(*tag) && noteEdit_ && GetFocus() == noteEdit_) {
+        return false;
+    }
+
+    const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+    const bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+    const bool todoTag = tag && IsTodoItemsTag(*tag);
+
+    switch (key) {
+    case VK_ESCAPE:
+        HideMainWindow();
+        return true;
+    case VK_TAB:
+        if (config_.showTag) {
+            SelectAdjacentTag(shift ? -1 : 1);
+        } else if (config_.showGroup) {
+            SelectAdjacentGroup(shift ? -1 : 1);
+        }
+        return true;
+    case VK_LEFT:
+        if (ctrl && config_.showGroup) {
+            SelectAdjacentGroup(-1);
+        } else if (todoTag && config_.showTag) {
+            SelectAdjacentTag(-1);
+        } else if (!todoTag) {
+            MoveLinkSelection(-1, 0);
+        }
+        return true;
+    case VK_RIGHT:
+        if (ctrl && config_.showGroup) {
+            SelectAdjacentGroup(1);
+        } else if (todoTag && config_.showTag) {
+            SelectAdjacentTag(1);
+        } else if (!todoTag) {
+            MoveLinkSelection(1, 0);
+        }
+        return true;
+    case VK_UP:
+        if (ctrl && config_.showTag) {
+            SelectAdjacentTag(-1);
+        } else if (todoTag) {
+            MoveTodoSelection(-1);
+        } else if (!todoTag) {
+            MoveLinkSelection(0, -1);
+        }
+        return true;
+    case VK_DOWN:
+        if (ctrl && config_.showTag) {
+            SelectAdjacentTag(1);
+        } else if (todoTag) {
+            MoveTodoSelection(1);
+        } else if (!todoTag) {
+            MoveLinkSelection(0, 1);
+        }
+        return true;
+    case VK_INSERT:
+        if (todoTag) {
+            AddTodoItem();
+        } else {
+            AddLink();
+        }
+        return true;
+    case VK_RETURN:
+        if (todoTag) {
+            if (selectedTodoId_ > 0) {
+                EditTodoItem(selectedTodoId_);
+            }
+        } else if (selectedLinkId_ > 0) {
+            RunLink(selectedLinkId_);
+        }
+        return true;
+    case VK_DELETE:
+        if (todoTag) {
+            if (selectedTodoId_ > 0) {
+                DeleteTodoItem(selectedTodoId_);
+            }
+        } else if (selectedLinkId_ > 0) {
+            DeleteLink(selectedLinkId_);
+        }
+        return true;
+    case VK_F2:
+        if (todoTag) {
+            if (selectedTodoId_ > 0) {
+                EditTodoItem(selectedTodoId_);
+            }
+        } else if (selectedLinkId_ > 0) {
+            EditLink(selectedLinkId_);
+        }
+        return true;
+    case 'F':
+        if (ctrl) {
+            OpenSearch();
+            return true;
+        }
+        return false;
+    case 'N':
+        if (ctrl) {
+            if (todoTag) {
+                AddTodoItem();
+            } else {
+                AddLink();
+            }
+            return true;
+        }
+        return false;
+    default:
+        return false;
+    }
 }
 
 std::vector<Group> MainWindow::MajorGroups() const {
@@ -6602,7 +7088,9 @@ void MainWindow::BuildLayout(float width, float height, D2D1_RECT_F& title, D2D1
     }
 
     if (config_.showTag) {
-        const float configuredTagWidth = (config_.tagWidth > 0 ? static_cast<float>(config_.tagWidth) : Metric(theme_, L"minorNav", L"width", 72.0f)) * (2.0f / 3.0f);
+        // Configured tag width maps 1:1 to rendered pixels; the ratio-based
+        // maxTagWidth clamp keeps it from overwhelming narrow windows.
+        const float configuredTagWidth = config_.tagWidth > 0 ? static_cast<float>(config_.tagWidth) : Metric(theme_, L"minorNav", L"width", 72.0f);
         const float minTagWidth = Metric(theme_, L"minorNav", L"minWidth", 40.0f);
         const float maxTagRatio = Metric(theme_, L"minorNav", L"maxWidthRatio", 0.42f);
         const float maxTagWidth = std::max(minTagWidth, width * maxTagRatio);
@@ -6635,4 +7123,3 @@ bool MainWindow::IsHover(HitKind kind, int id) const {
 bool MainWindow::Contains(const D2D1_RECT_F& rect, float x, float y) {
     return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
 }
-

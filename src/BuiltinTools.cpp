@@ -438,25 +438,25 @@ private:
         ThemedControls::CreateButton(instance_, hwnd_, ID_CLICK_PICK, L"拾取(&P)", 228, 17, 86, bh, font());
 
         ThemedControls::CreateStaticText(instance_, hwnd_, L"点击次数", 18, 56, 76, 22, font());
-        count_ = CreateEdit(ID_CLICK_COUNT, 94, 52, 70, registry_.GetSetting(pluginId, L"count", L"10"), ES_NUMBER);
-        ThemedControls::CreateStaticText(instance_, hwnd_, L"间隔(ms)", 184, 56, 76, 22, font());
-        interval_ = CreateEdit(ID_CLICK_INTERVAL, 260, 52, 86, registry_.GetSetting(pluginId, L"interval", L"1000"), ES_NUMBER);
+        count_ = CreateEdit(ID_CLICK_COUNT, 112, 52, 70, registry_.GetSetting(pluginId, L"count", L"10"), ES_NUMBER);
+        ThemedControls::CreateStaticText(instance_, hwnd_, L"间隔(ms)", 198, 56, 76, 22, font());
+        interval_ = CreateEdit(ID_CLICK_INTERVAL, 276, 52, 70, registry_.GetSetting(pluginId, L"interval", L"1000"), ES_NUMBER);
 
         ThemedControls::CreateStaticText(instance_, hwnd_, L"鼠标按键", 18, 92, 76, 22, font());
         button_ = CreateWindowExW(0, WC_COMBOBOXW, nullptr,
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST, 94, 90, 88, 180, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_CLICK_BUTTON)), instance_, nullptr);
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST, 112, 90, 88, 180, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_CLICK_BUTTON)), instance_, nullptr);
         SendMessageW(button_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"左键"));
         SendMessageW(button_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"右键"));
         SendMessageW(button_, CB_SETCURSEL, registry_.GetSetting(pluginId, L"button", L"left") == L"right" ? 1 : 0, 0);
 
-        ThemedControls::CreateStaticText(instance_, hwnd_, L"倒计时(s)", 198, 92, 76, 22, font());
+        ThemedControls::CreateStaticText(instance_, hwnd_, L"倒计时(s)", 214, 92, 76, 22, font());
         countdownEdit_ = CreateEdit(ID_CLICK_COUNTDOWN, 276, 88, 70, registry_.GetSetting(pluginId, L"countdown", L"3"), ES_NUMBER);
 
         const wchar_t* hotKeys[] = {L"F6", L"F7", L"F8", L"F9", L"F10", L"F11", L"F12"};
 
         ThemedControls::CreateStaticText(instance_, hwnd_, L"启动停止热键", 18, 128, 96, 22, font());
         toggleHotKey_ = CreateWindowExW(0, WC_COMBOBOXW, nullptr,
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST, 116, 126, 68, 180, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_CLICK_HOTKEY)), instance_, nullptr);
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST, 112, 126, 68, 180, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_CLICK_HOTKEY)), instance_, nullptr);
         FillHotKeyCombo(toggleHotKey_, registry_.GetSetting(pluginId, L"toggleHotKey", registry_.GetSetting(pluginId, L"stopHotKey", L"F8")), hotKeys, 7);
 
         ThemedControls::CreateStaticText(instance_, hwnd_, L"拾取热键", 198, 128, 76, 22, font());
@@ -642,12 +642,16 @@ private:
         clickedCount_ = 0;
         intervalMs_ = ReadIntField(interval_, 1000, 100, 3600000);
         countdown_ = ReadIntField(countdownEdit_, 3, 0, 60);
+        SetText(count_, std::to_wstring(totalClicks_));
+        SetText(interval_, std::to_wstring(intervalMs_));
+        SetText(countdownEdit_, std::to_wstring(countdown_));
         const bool rightButton = SendMessageW(button_, CB_GETCURSEL, 0, 0) == 1;
         toggleHotKeyCode_ = HotKeyFromName(SelectedHotKeyName(toggleHotKey_, L"F8"));
         pickHotKeyCode_ = HotKeyFromName(SelectedHotKeyName(pickHotKey_, L"F9"));
 
         registry_.SetSetting(L"quattro.builtin.clicker", L"x", std::to_wstring(targetX_));
         registry_.SetSetting(L"quattro.builtin.clicker", L"y", std::to_wstring(targetY_));
+        SetText(status_, L"已拾取坐标。");
         registry_.SetSetting(L"quattro.builtin.clicker", L"count", std::to_wstring(totalClicks_));
         registry_.SetSetting(L"quattro.builtin.clicker", L"interval", std::to_wstring(intervalMs_));
         registry_.SetSetting(L"quattro.builtin.clicker", L"countdown", std::to_wstring(countdown_));
@@ -771,6 +775,7 @@ private:
         start_ = ThemedControls::CreateButton(instance_, hwnd_, ID_TIMER_START, L"开始(&S)", 52, 122, 76, bh, font(), true);
         pause_ = ThemedControls::CreateButton(instance_, hwnd_, ID_TIMER_PAUSE, L"暂停(&P)", 52, 122, 76, bh, font());
         reset_ = ThemedControls::CreateButton(instance_, hwnd_, ID_TIMER_RESET, L"重置(&R)", 146, 122, 76, bh, font());
+        status_ = ThemedControls::CreateStaticText(instance_, hwnd_, L"", 18, 158, 238, 22, font(), SS_CENTER);
         UpdateDisplay(ReadDurationMs());
         UpdateButtons();
     }
@@ -854,6 +859,7 @@ private:
         running_ = true;
         paused_ = false;
         finishAt_ = GetTickCount64() + remainingMs_;
+        SetText(status_, L"");
         SetTimer(hwnd_, ID_TIMER_TICK, kTimerDisplayIntervalMs, nullptr);
         UpdateDisplay(remainingMs_);
         UpdateButtons();
@@ -876,6 +882,7 @@ private:
         KillTimer(hwnd_, ID_TIMER_TICK);
         remainingMs_ = ReadDurationMs();
         finishAt_ = 0;
+        SetText(status_, L"");
         UpdateDisplay(remainingMs_);
         UpdateButtons();
     }
@@ -896,8 +903,11 @@ private:
         if (SendMessageW(sound_, BM_GETCHECK, 0, 0) == BST_CHECKED) {
             MessageBeep(MB_ICONEXCLAMATION);
         }
-        const UINT topFlag = SendMessageW(topMost_, BM_GETCHECK, 0, 0) == BST_CHECKED ? MB_TOPMOST : 0;
-        MessageBoxW(hwnd_, L"计时结束。", L"计时器", MB_OK | MB_ICONINFORMATION | topFlag);
+        SetText(status_, L"计时结束。");
+        if (SendMessageW(topMost_, BM_GETCHECK, 0, 0) == BST_CHECKED) {
+            SetWindowPos(hwnd_, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+            SetForegroundWindow(hwnd_);
+        }
     }
 
     ULONGLONG CurrentRemainingMs() const {
@@ -953,6 +963,7 @@ private:
     HWND minutes_ = nullptr;
     HWND seconds_ = nullptr;
     HWND display_ = nullptr;
+    HWND status_ = nullptr;
     HWND sound_ = nullptr;
     HWND topMost_ = nullptr;
     HWND start_ = nullptr;
@@ -980,7 +991,7 @@ private:
         ThemedControls::CreateButton(instance_, hwnd_, ID_SW_COPY, L"复制(&C)", 104, 92, 86, bh, font());
         ThemedControls::CreateButton(instance_, hwnd_, ID_SW_EXPORT, L"导出(&E)", 12, 126, 178, bh, font());
         laps_ = CreateWindowExW(WS_EX_CLIENTEDGE, L"LISTBOX", nullptr,
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL, 12, 164, 178, 88, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_SW_LAPS)), instance_, nullptr);
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL, 12, 164, 178, 110, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_SW_LAPS)), instance_, nullptr);
         SendMessageW(laps_, WM_SETFONT, reinterpret_cast<WPARAM>(font()), TRUE);
         LoadLapHistory();
         UpdateControls();
@@ -1015,6 +1026,10 @@ private:
     }
 
     bool OnShortcutKey(const MSG& message) override {
+        if (message.wParam == VK_DELETE && GetFocus() == laps_) {
+            DeleteSelectedLap();
+            return true;
+        }
         if (!CtrlOnly()) {
             return false;
         }
@@ -1087,6 +1102,7 @@ private:
         running_ = false;
         accumulatedMs_ = 0;
         startedAt_ = 0;
+        lastLapMs_ = 0;
         KillTimer(hwnd_, ID_SW_TICK);
         SendMessageW(laps_, LB_RESETCONTENT, 0, 0);
         SaveLapHistory();
@@ -1095,8 +1111,21 @@ private:
     }
 
     void AddLap() {
-        const std::wstring text = std::to_wstring(static_cast<int>(SendMessageW(laps_, LB_GETCOUNT, 0, 0)) + 1) + L". " + CurrentText();
+        const ULONGLONG current = ElapsedMs();
+        const ULONGLONG split = current >= lastLapMs_ ? current - lastLapMs_ : current;
+        lastLapMs_ = current;
+        const std::wstring text = std::to_wstring(static_cast<int>(SendMessageW(laps_, LB_GETCOUNT, 0, 0)) + 1) +
+            L". +" + FormatElapsed(split) + L" / " + FormatElapsed(current);
         SendMessageW(laps_, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(text.c_str()));
+        SaveLapHistory();
+    }
+
+    void DeleteSelectedLap() {
+        const int selected = static_cast<int>(SendMessageW(laps_, LB_GETCURSEL, 0, 0));
+        if (selected == LB_ERR) {
+            return;
+        }
+        SendMessageW(laps_, LB_DELETESTRING, static_cast<WPARAM>(selected), 0);
         SaveLapHistory();
     }
 
@@ -1193,6 +1222,7 @@ private:
     bool running_ = false;
     ULONGLONG startedAt_ = 0;
     ULONGLONG accumulatedMs_ = 0;
+    ULONGLONG lastLapMs_ = 0;
 };
 }
 

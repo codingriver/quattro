@@ -28,6 +28,7 @@
 constexpr UINT WM_QUATTRO_WAKEUP = WM_APP + 0x65;
 constexpr UINT WM_QUATTRO_TRAY = WM_APP + 0x66;
 constexpr UINT WM_QUATTRO_URL_ICON_DOWNLOADED = WM_APP + 0x67;
+constexpr UINT WM_QUATTRO_WEBDAV_DONE = WM_APP + 0x68;
 
 class OleDropTarget;
 
@@ -226,6 +227,7 @@ private:
     void DrawLinks(D2D1_RECT_F rect);
     void DrawNotePage(D2D1_RECT_F rect, const Group& tag);
     void DrawTodoItems(D2D1_RECT_F rect, const Group& tag);
+    void DrawEmptyAddButton(const D2D1_RECT_F& contentRect, float topY, const std::wstring& label);
     void DrawButtonIcon(HitKind kind, D2D1_RECT_F rect, const Color& color);
     ID2D1Bitmap* LoadAppIconBitmap();
     void ClearUiBitmaps();
@@ -251,6 +253,15 @@ private:
     void EnsureGroupVisible(int groupId);
     void EnsureTagVisible(int tagId);
     void EnsureLinkVisible(int linkId);
+    void EnsureTodoVisible(int todoId);
+
+    void MoveLinkSelection(int dx, int dy);
+    void MoveTodoSelection(int delta);
+    void SelectAdjacentTag(int direction);
+    void SelectAdjacentGroup(int direction);
+    bool HandleKeyDown(WPARAM key);
+    void OpenSearchWithPrefix(const std::wstring& prefix);
+    HitArea CursorHitArea() const;
 
     std::vector<Group> MajorGroups() const;
     std::vector<Group> TagsForCurrentGroup() const;
@@ -293,6 +304,7 @@ private:
     int currentTagId_ = 0;
     int selectedLinkId_ = 0;
     int selectedTodoId_ = 0;
+    bool selectionByKeyboard_ = false;
     HitKind menuContextKind_ = HitKind::None;
     int menuContextId_ = 0;
     HitArea hover_;
@@ -304,6 +316,7 @@ private:
     std::vector<int> menuCopyTargetIds_;
     std::vector<int> menuGroupTargetIds_;
     std::vector<std::wstring> menuToolEngines_;
+    std::vector<bool> menuToolEnabled_;
     std::vector<std::pair<int, int>> registeredLinkHotKeys_;
     Link clipboardLink_;
     bool hasClipboardLink_ = false;

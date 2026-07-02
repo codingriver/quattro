@@ -8,16 +8,24 @@
 #include <windowsx.h>
 
 namespace {
+COLORREF ToColorRef(Color color) {
+    const auto channel = [](float value) -> int {
+        const float clamped = value < 0.0f ? 0.0f : (value > 1.0f ? 1.0f : value);
+        return static_cast<int>(clamped * 255.0f + 0.5f);
+    };
+    return RGB(channel(color.r), channel(color.g), channel(color.b));
+}
+
 class HotKeyCapture {
 public:
-    static int Run(HWND owner, HINSTANCE instance, int currentKey) {
-        HotKeyCapture dialog(owner, instance, currentKey);
+    static int Run(HWND owner, HINSTANCE instance, const Theme& theme, int currentKey) {
+        HotKeyCapture dialog(owner, instance, theme, currentKey);
         return dialog.RunImpl();
     }
 
 private:
-    HotKeyCapture(HWND owner, HINSTANCE instance, int currentKey)
-        : owner_(owner), instance_(instance), currentKey_(currentKey) {}
+    HotKeyCapture(HWND owner, HINSTANCE instance, const Theme& theme, int currentKey)
+        : owner_(owner), instance_(instance), theme_(theme), currentKey_(currentKey) {}
 
     int RunImpl() {
         WNDCLASSEXW wc{};
@@ -27,7 +35,7 @@ private:
         wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
         wc.hIcon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_QUATTRO_APP_ICON));
         wc.hIconSm = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_QUATTRO_APP_ICON));
-        wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+        wc.hbrBackground = nullptr;
         wc.lpszClassName = L"QuattroHotKeyCaptureDialog";
         RegisterClassExW(&wc);
 
@@ -85,6 +93,7 @@ private:
             } else {
                 ownsFont_ = true;
             }
+            backgroundBrush_ = CreateSolidBrush(ToColorRef(theme_.color(L"dialog", L"normal", L"bg")));
             ThemedControls::CreateStaticText(
                 instance_,
                 hwnd_,
@@ -97,6 +106,23 @@ private:
             ThemedControls::CreateStaticText(instance_, hwnd_, FormatHotKeyText(currentKey_).c_str(), 20, 72, 220, 22, font_);
             SetFocus(hwnd_);
             return 0;
+        }
+        case WM_ERASEBKGND:
+            return 1;
+        case WM_PAINT: {
+            PAINTSTRUCT ps{};
+            HDC dc = BeginPaint(hwnd_, &ps);
+            RECT rect{};
+            GetClientRect(hwnd_, &rect);
+            FillRect(dc, &rect, backgroundBrush_ ? backgroundBrush_ : reinterpret_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
+            EndPaint(hwnd_, &ps);
+            return 0;
+        }
+        case WM_CTLCOLORSTATIC: {
+            HDC dc = reinterpret_cast<HDC>(wParam);
+            SetBkMode(dc, TRANSPARENT);
+            SetTextColor(dc, ToColorRef(theme_.color(L"label", L"normal", L"text")));
+            return reinterpret_cast<LRESULT>(backgroundBrush_ ? backgroundBrush_ : GetStockObject(WHITE_BRUSH));
         }
         case WM_KEYDOWN:
         case WM_SYSKEYDOWN:
@@ -130,6 +156,10 @@ private:
                 DeleteObject(font_);
                 font_ = nullptr;
             }
+            if (backgroundBrush_) {
+                DeleteObject(backgroundBrush_);
+                backgroundBrush_ = nullptr;
+            }
             done_ = true;
             return 0;
         default:
@@ -139,8 +169,10 @@ private:
 
     HWND owner_ = nullptr;
     HINSTANCE instance_ = nullptr;
+    const Theme& theme_;
     HWND hwnd_ = nullptr;
     HFONT font_ = nullptr;
+    HBRUSH backgroundBrush_ = nullptr;
     int currentKey_ = 0;
     int capturedKey_ = 0;
     bool ownerWasEnabled_ = false;
@@ -166,7 +198,7 @@ std::wstring FormatHotKeyText(int key) {
     return L"Ctrl+Alt+" + std::to_wstring(key);
 }
 
-int ShowHotKeyCaptureDialog(HWND owner, HINSTANCE instance, int currentKey) {
-    return HotKeyCapture::Run(owner, instance, currentKey);
+int ShowHotKeyCaptureDialog(HWND owner, HINSTANCE instance, const Theme& theme, int currentKey) {
+    return HotKeyCapture::Run(owner, instance, theme, currentKey);
 }
 
