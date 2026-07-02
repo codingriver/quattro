@@ -143,6 +143,7 @@ private:
     void ShowTodoReminderPanel(const TodoItem& item);
     void HideTodoReminderPanel();
     void ShowTodoSystemNotification(const TodoItem& item);
+    void ShowClipboardImportNotification(int count, const std::wstring& pathDetail = L"");
     bool EnsureNotificationIcon();
     void OpenSettings();
     void OpenBuiltinTool(std::size_t index);
@@ -258,6 +259,7 @@ private:
     void SelectAdjacentTag(int direction);
     void SelectAdjacentGroup(int direction);
     bool HandleKeyDown(WPARAM key);
+    void SetDragOver(bool active);
     HitArea CursorHitArea() const;
 
     std::vector<Group> MajorGroups() const;
@@ -325,6 +327,7 @@ private:
     HitKind tooltipItemKind_ = HitKind::None;
     int tooltipItemId_ = 0;
     bool trackingMouse_ = false;
+    bool dragOver_ = false;
     bool trayIconVisible_ = false;
     bool hotKeysRegistered_ = false;
     bool runningAsAdmin_ = false;

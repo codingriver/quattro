@@ -1306,6 +1306,9 @@ public:
     }
 
     HRESULT STDMETHODCALLTYPE DragEnter(IDataObject*, DWORD, POINTL, DWORD* effect) override {
+        if (window_) {
+            window_->SetDragOver(true);
+        }
         if (effect) {
             *effect = DROPEFFECT_COPY;
         }
@@ -1313,6 +1316,9 @@ public:
     }
 
     HRESULT STDMETHODCALLTYPE DragOver(DWORD, POINTL, DWORD* effect) override {
+        if (window_) {
+            window_->SetDragOver(true);
+        }
         if (effect) {
             *effect = DROPEFFECT_COPY;
         }
@@ -1320,10 +1326,16 @@ public:
     }
 
     HRESULT STDMETHODCALLTYPE DragLeave() override {
+        if (window_) {
+            window_->SetDragOver(false);
+        }
         return S_OK;
     }
 
     HRESULT STDMETHODCALLTYPE Drop(IDataObject* dataObject, DWORD, POINTL, DWORD* effect) override {
+        if (window_) {
+            window_->SetDragOver(false);
+        }
         const bool imported = window_ && window_->ImportDropData(dataObject);
         if (effect) {
             *effect = imported ? DROPEFFECT_COPY : DROPEFFECT_NONE;
@@ -1657,6 +1669,7 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         }
         return 0;
     case WM_DROPFILES: {
+        SetDragOver(false);
         HDROP drop = reinterpret_cast<HDROP>(wParam);
         const UINT count = DragQueryFileW(drop, 0xFFFFFFFF, nullptr, 0);
         for (UINT i = 0; i < count; ++i) {
@@ -3741,6 +3754,26 @@ void MainWindow::ShowTodoSystemNotification(const TodoItem& item) {
     Shell_NotifyIconW(NIM_MODIFY, &data);
 }
 
+void MainWindow::ShowClipboardImportNotification(int count, const std::wstring& pathDetail) {
+    if (!EnsureNotificationIcon() || count <= 0) {
+        return;
+    }
+
+    NOTIFYICONDATAW data{};
+    data.cbSize = sizeof(data);
+    data.hWnd = hwnd_;
+    data.uID = 1;
+    data.uFlags = NIF_INFO;
+    data.dwInfoFlags = NIIF_INFO;
+    const std::wstring title = count == 1 ? L"已添加启动项" : L"已添加启动项";
+    const std::wstring body = pathDetail.empty()
+        ? (count == 1 ? L"剪贴板内容已添加到当前标签。" : L"已从剪贴板导入多个启动项。")
+        : LimitNotificationText(pathDetail, 255);
+    wcscpy_s(data.szInfoTitle, LimitNotificationText(title, 63).c_str());
+    wcscpy_s(data.szInfo, body.c_str());
+    Shell_NotifyIconW(NIM_MODIFY, &data);
+}
+
 void MainWindow::CopyLinkPath(int linkId) {
     Link* link = FindLink(linkId);
     if (!link || !OpenClipboard(hwnd_)) {
@@ -4258,16 +4291,39 @@ void MainWindow::ImportClipboard() {
     if (!OpenClipboard(hwnd_)) {
         return;
     }
-    HANDLE handle = GetClipboardData(CF_UNICODETEXT);
+    bool imported = false;
+
+    HANDLE handle = GetClipboardData(CF_HDROP);
+    int importedCount = 0;
     if (handle) {
-        const wchar_t* text = static_cast<const wchar_t*>(GlobalLock(handle));
-        if (text) {
-            ImportPath(text);
-            GlobalUnlock(handle);
+        HDROP drop = static_cast<HDROP>(handle);
+        const UINT count = DragQueryFileW(drop, 0xFFFFFFFF, nullptr, 0);
+        for (UINT i = 0; i < count; ++i) {
+            const UINT length = DragQueryFileW(drop, i, nullptr, 0);
+            std::wstring path(length, L'\0');
+            DragQueryFileW(drop, i, path.data(), length + 1);
+            ImportPath(path);
+            importedCount += 1;
+        }
+    }
+
+    if (importedCount == 0) {
+        handle = GetClipboardData(CF_UNICODETEXT);
+        if (handle) {
+            const wchar_t* text = static_cast<const wchar_t*>(GlobalLock(handle));
+            if (text) {
+                ImportPath(text);
+                GlobalUnlock(handle);
+                importedCount = 1;
+            }
         }
     }
     CloseClipboard();
-    InvalidateRect(hwnd_, nullptr, FALSE);
+
+    if (importedCount > 0) {
+        ShowClipboardImportNotification(importedCount);
+        InvalidateRect(hwnd_, nullptr, FALSE);
+    }
 }
 
 void MainWindow::ExportConfigPackage() {
@@ -5715,6 +5771,14 @@ void MainWindow::DrawTabGroupSeparator(const D2D1_RECT_F& rect, bool horizontal)
 
 void MainWindow::DrawLinks(D2D1_RECT_F rect) {
     FillRect(rect, theme_.color(L"content", L"normal", L"bg"));
+    if (dragOver_) {
+        Color highlight = theme_.color(L"content", L"empty", L"text");
+        highlight.a = 0.14f;
+        FillRect(rect, highlight);
+        Color borderColor = theme_.color(L"content", L"empty", L"text");
+        borderColor.a = 0.38f;
+        DrawRect(D2D1::RectF(rect.left + 1.0f, rect.top + 1.0f, rect.right - 1.0f, rect.bottom - 1.0f), borderColor, 2.0f);
+    }
     const Group* currentTag = FindGroup(currentTagId_);
     if (currentTag && IsNoteTag(*currentTag)) {
         DrawNotePage(rect, *currentTag);
@@ -5734,7 +5798,9 @@ void MainWindow::DrawLinks(D2D1_RECT_F rect) {
         const float emptyHeight = Metric(theme_, L"content", L"emptyTextHeight", 30.0f);
         D2D1_RECT_F emptyText = D2D1::RectF(rect.left + emptyInsetX, rect.top + emptyTop, rect.right - emptyInsetX, rect.top + emptyTop + emptyHeight);
         DrawTextBlock(L"当前标签没有启动项", textFormat_, emptyText, theme_.color(L"content", L"empty", L"text"));
-        DrawEmptyAddButton(rect, emptyText.bottom, L"添加启动项");
+        D2D1_RECT_F hintText = D2D1::RectF(rect.left + emptyInsetX, emptyText.bottom + 6.0f, rect.right - emptyInsetX, emptyText.bottom + 6.0f + emptyHeight);
+        DrawTextBlock(L"拖入文件、文件夹或网址即可添加", textFormat_, hintText, theme_.color(L"content", L"empty", L"text"));
+        DrawEmptyAddButton(rect, hintText.bottom + 10.0f, L"添加启动项");
         return;
     }
 
@@ -6868,8 +6934,21 @@ bool MainWindow::HandleKeyDown(WPARAM key) {
             return true;
         }
         return false;
+    case 'V':
+        if (ctrl) {
+            ImportClipboard();
+            return true;
+        }
+        return false;
     default:
         return false;
+    }
+}
+
+void MainWindow::SetDragOver(bool active) {
+    if (dragOver_ != active) {
+        dragOver_ = active;
+        InvalidateRect(hwnd_, nullptr, FALSE);
     }
 }
 
