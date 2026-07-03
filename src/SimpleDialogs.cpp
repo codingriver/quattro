@@ -3,13 +3,17 @@
 #include "../resources/resource.h"
 
 #include "AppLog.h"
+#include "ConfigPackageService.h"
 #include "DialogLayout.h"
 #include "HotKeyEditor.h"
+#include "JsonValue.h"
+#include "Storage.h"
 #include "ThemedControls.h"
 #include "Utilities.h"
 #include "WebDavBackupService.h"
 #include "WebDavCredentialService.h"
 
+#include <commdlg.h>
 #include <commctrl.h>
 #include <richedit.h>
 #include <shellapi.h>
@@ -18,6 +22,9 @@
 #include <algorithm>
 #include <array>
 #include <cwchar>
+#include <fstream>
+#include <map>
+#include <sstream>
 #include <utility>
 #include <vector>
 
@@ -38,6 +45,10 @@ constexpr int ID_WEBDAV_CLEAR_PASSWORD = 411;
 constexpr int ID_WEBDAV_UPLOAD = 412;
 constexpr int ID_WEBDAV_DOWNLOAD = 413;
 constexpr int ID_WEBDAV_BACKUP_LIST = 414;
+constexpr int ID_CONFIG_EXPORT = 415;
+constexpr int ID_CONFIG_IMPORT = 416;
+constexpr int ID_TODO_EXPORT = 417;
+constexpr int ID_TODO_IMPORT = 418;
 constexpr int ID_MESSAGE_TEXT = 501;
 
 std::wstring GetText(HWND hwnd) {
@@ -75,13 +86,18 @@ void FillRoundRect(HDC dc, RECT rect, int radius, COLORREF fill, COLORREF border
 
 std::wstring FormatConfigPackageReportText(const ConfigPackageReport& report) {
     std::wstring text = report.message.empty() ? (report.ok ? L"操作完成。" : L"操作失败。") : report.message;
-    if (report.groupsAdded > 0 || report.tagsAdded > 0 || report.linksAdded > 0 ||
-        report.notesAdded > 0 || report.todosAdded > 0 || report.pluginSettingsAdded > 0 ||
-        report.urlIconsAdded > 0) {
+    if (report.groupsAdded > 0 || report.groupsMerged > 0 || report.tagsAdded > 0 ||
+        report.tagsMerged > 0 || report.linksAdded > 0 || report.linksSkippedDuplicate > 0 ||
+        report.notesAdded > 0 || report.notesMerged > 0 || report.todosAdded > 0 ||
+        report.pluginSettingsAdded > 0 || report.urlIconsAdded > 0) {
         text += L"\n\n新增分组: " + std::to_wstring(report.groupsAdded);
+        text += L"\n复用分组: " + std::to_wstring(report.groupsMerged);
         text += L"\n新增标签: " + std::to_wstring(report.tagsAdded);
+        text += L"\n复用标签: " + std::to_wstring(report.tagsMerged);
         text += L"\n新增启动项: " + std::to_wstring(report.linksAdded);
+        text += L"\n跳过重复启动项: " + std::to_wstring(report.linksSkippedDuplicate);
         text += L"\n新增便签: " + std::to_wstring(report.notesAdded);
+        text += L"\n合并便签: " + std::to_wstring(report.notesMerged);
         text += L"\n新增待办: " + std::to_wstring(report.todosAdded);
         text += L"\n新增工具设置: " + std::to_wstring(report.pluginSettingsAdded);
         text += L"\n新增 URL 图标: " + std::to_wstring(report.urlIconsAdded);
@@ -105,6 +121,334 @@ std::wstring FormatFileSize(std::uint64_t bytes) {
     return std::to_wstring(bytes) + L" B";
 }
 
+std::string WideToUtf8(const std::wstring& text) {
+    if (text.empty()) {
+        return {};
+    }
+    const int size = WideCharToMultiByte(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), nullptr, 0, nullptr, nullptr);
+    if (size <= 0) {
+        return {};
+    }
+    std::string bytes(static_cast<std::size_t>(size), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), bytes.data(), size, nullptr, nullptr);
+    return bytes;
+}
+
+bool SaveUtf8File(const std::filesystem::path& path, const std::wstring& text) {
+    std::ofstream file(path, std::ios::binary | std::ios::trunc);
+    if (!file) {
+        return false;
+    }
+    const std::string bytes = WideToUtf8(text);
+    file.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    return file.good();
+}
+
+std::wstring JsonEscape(const std::wstring& value) {
+    std::wstring escaped;
+    escaped.reserve(value.size() + 8);
+    for (wchar_t ch : value) {
+        switch (ch) {
+        case L'\\': escaped += L"\\\\"; break;
+        case L'"': escaped += L"\\\""; break;
+        case L'\b': escaped += L"\\b"; break;
+        case L'\f': escaped += L"\\f"; break;
+        case L'\n': escaped += L"\\n"; break;
+        case L'\r': escaped += L"\\r"; break;
+        case L'\t': escaped += L"\\t"; break;
+        default:
+            if (ch < 0x20) {
+                wchar_t buffer[7]{};
+                swprintf_s(buffer, L"\\u%04X", static_cast<unsigned int>(ch));
+                escaped += buffer;
+            } else {
+                escaped.push_back(ch);
+            }
+            break;
+        }
+    }
+    return escaped;
+}
+
+std::wstring BoolJson(bool value) {
+    return value ? L"true" : L"false";
+}
+
+std::wstring ConfigPackageFileName() {
+    SYSTEMTIME local{};
+    GetLocalTime(&local);
+    wchar_t buffer[64]{};
+    swprintf_s(buffer, L"quattro-%04u%02u%02u-%02u%02u.q4cfg",
+        static_cast<unsigned>(local.wYear),
+        static_cast<unsigned>(local.wMonth),
+        static_cast<unsigned>(local.wDay),
+        static_cast<unsigned>(local.wHour),
+        static_cast<unsigned>(local.wMinute));
+    return buffer;
+}
+
+std::wstring TodoJsonFileName() {
+    SYSTEMTIME local{};
+    GetLocalTime(&local);
+    wchar_t buffer[64]{};
+    swprintf_s(buffer, L"quattro-todos-%04u%02u%02u-%02u%02u.json",
+        static_cast<unsigned>(local.wYear),
+        static_cast<unsigned>(local.wMonth),
+        static_cast<unsigned>(local.wDay),
+        static_cast<unsigned>(local.wHour),
+        static_cast<unsigned>(local.wMinute));
+    return buffer;
+}
+
+bool SelectSavePath(HWND owner, const std::wstring& initialPath, const wchar_t* filter, const wchar_t* defExt, std::wstring& selectedPath) {
+    std::wstring buffer = initialPath;
+    buffer.resize(32768, L'\0');
+    OPENFILENAMEW ofn{};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = owner;
+    ofn.lpstrFile = buffer.data();
+    ofn.nMaxFile = static_cast<DWORD>(buffer.size());
+    ofn.lpstrFilter = filter;
+    ofn.lpstrDefExt = defExt;
+    ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+    if (!GetSaveFileNameW(&ofn)) {
+        return false;
+    }
+    selectedPath = buffer.c_str();
+    return true;
+}
+
+bool SelectOpenPath(HWND owner, const wchar_t* filter, const wchar_t* defExt, std::wstring& selectedPath) {
+    std::wstring buffer(32768, L'\0');
+    OPENFILENAMEW ofn{};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = owner;
+    ofn.lpstrFile = buffer.data();
+    ofn.nMaxFile = static_cast<DWORD>(buffer.size());
+    ofn.lpstrFilter = filter;
+    ofn.lpstrDefExt = defExt;
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+    if (!GetOpenFileNameW(&ofn)) {
+        return false;
+    }
+    selectedPath = buffer.c_str();
+    return true;
+}
+
+bool HasSiblingGroupName(const std::vector<Group>& groups, int parentGroup, const std::wstring& name) {
+    const std::wstring normalized = ToLower(Trim(name));
+    for (const auto& group : groups) {
+        if (group.parentGroup == parentGroup && ToLower(Trim(group.name)) == normalized) {
+            return true;
+        }
+    }
+    return false;
+}
+
+std::wstring UniqueSiblingGroupName(const std::vector<Group>& groups, int parentGroup, const std::wstring& baseName) {
+    if (!HasSiblingGroupName(groups, parentGroup, baseName)) {
+        return baseName;
+    }
+    for (int index = 2; index < 10000; ++index) {
+        const std::wstring candidate = baseName + L" " + std::to_wstring(index);
+        if (!HasSiblingGroupName(groups, parentGroup, candidate)) {
+            return candidate;
+        }
+    }
+    return baseName + L" " + std::to_wstring(static_cast<int>(groups.size()) + 1);
+}
+
+bool IsTodoItemsTag(const Group& tag) {
+    return tag.type == 4 || ToLower(tag.content) == L"todoitems";
+}
+
+const Group* FindGroupById(const std::vector<Group>& groups, int id) {
+    for (const auto& group : groups) {
+        if (group.id == id) {
+            return &group;
+        }
+    }
+    return nullptr;
+}
+
+const Group* FindRootGroupByName(const std::vector<Group>& groups, const std::wstring& groupName) {
+    const std::wstring normalized = ToLower(Trim(groupName));
+    for (const auto& group : groups) {
+        if (group.parentGroup == 0 && ToLower(Trim(group.name)) == normalized) {
+            return &group;
+        }
+    }
+    return nullptr;
+}
+
+const Group* FindTodoTagByName(const std::vector<Group>& groups, int parentGroupId, const std::wstring& tagName) {
+    const std::wstring normalized = ToLower(Trim(tagName));
+    for (const auto& group : groups) {
+        if (group.parentGroup == parentGroupId && IsTodoItemsTag(group) && ToLower(Trim(group.name)) == normalized) {
+            return &group;
+        }
+    }
+    return nullptr;
+}
+
+std::wstring BuildTodoExportJson(const AppModel& model) {
+    std::wstringstream out;
+    out << L"{\n";
+    out << L"  \"app\": \"Quattro\",\n";
+    out << L"  \"formatVersion\": 1,\n";
+    out << L"  \"todos\": [\n";
+    bool first = true;
+    for (const auto& todo : model.todos) {
+        const Group* tag = FindGroupById(model.groups, todo.tagId);
+        const Group* parent = tag ? FindGroupById(model.groups, tag->parentGroup) : nullptr;
+        if (!first) {
+            out << L",\n";
+        }
+        first = false;
+        out << L"    {\n";
+        out << L"      \"groupName\": \"" << JsonEscape(parent ? parent->name : L"默认分组") << L"\",\n";
+        out << L"      \"tagName\": \"" << JsonEscape(tag ? tag->name : L"待办事项") << L"\",\n";
+        out << L"      \"title\": \"" << JsonEscape(todo.title) << L"\",\n";
+        out << L"      \"content\": \"" << JsonEscape(todo.content) << L"\",\n";
+        out << L"      \"enabled\": " << BoolJson(todo.enabled) << L",\n";
+        out << L"      \"scheduleKind\": " << static_cast<int>(todo.scheduleKind) << L",\n";
+        out << L"      \"repeatMode\": " << static_cast<int>(todo.repeatMode) << L",\n";
+        out << L"      \"repeatInterval\": " << todo.repeatInterval << L",\n";
+        out << L"      \"repeatLimit\": " << todo.repeatLimit << L",\n";
+        out << L"      \"repeatFinished\": " << todo.repeatFinished << L",\n";
+        out << L"      \"cronExpression\": \"" << JsonEscape(todo.cronExpression) << L"\",\n";
+        out << L"      \"anchorAt\": \"" << JsonEscape(todo.anchorAt) << L"\",\n";
+        out << L"      \"nextDueAt\": \"" << JsonEscape(todo.nextDueAt) << L"\",\n";
+        out << L"      \"completedAt\": \"" << JsonEscape(todo.completedAt) << L"\",\n";
+        out << L"      \"createdAt\": \"" << JsonEscape(todo.createdAt) << L"\",\n";
+        out << L"      \"updatedAt\": \"" << JsonEscape(todo.updatedAt) << L"\"\n";
+        out << L"    }";
+    }
+    out << L"\n  ]\n";
+    out << L"}\n";
+    return out.str();
+}
+
+struct TodoJsonImportReport {
+    bool ok = false;
+    int importedCount = 0;
+    int createdGroups = 0;
+    int createdTags = 0;
+    std::wstring message;
+};
+
+TodoJsonImportReport ImportTodoJsonFile(const std::filesystem::path& appDirectory, const std::filesystem::path& jsonPath) {
+    TodoJsonImportReport report;
+    const std::wstring text = LoadUtf8File(jsonPath);
+    if (text.empty()) {
+        report.message = L"读取待办 JSON 失败，或文件内容为空。";
+        return report;
+    }
+
+    JsonValue root;
+    std::wstring error;
+    if (!ParseJson(text, root, error)) {
+        report.message = L"待办 JSON 解析失败: " + error;
+        return report;
+    }
+    const JsonValue* todos = root.get(L"todos");
+    if (!todos || !todos->isArray()) {
+        report.message = L"待办 JSON 缺少 todos 数组。";
+        return report;
+    }
+
+    StorageService storage(appDirectory);
+    AppModel model = storage.Load();
+    std::map<std::wstring, int> groupIdCache;
+    std::map<std::wstring, int> tagIdCache;
+
+    for (const auto& entry : todos->arrayValue) {
+        if (!entry.isObject()) {
+            continue;
+        }
+        const std::wstring groupName = Trim(entry.get(L"groupName") ? entry.get(L"groupName")->stringOr(L"默认分组") : L"默认分组");
+        const std::wstring tagName = Trim(entry.get(L"tagName") ? entry.get(L"tagName")->stringOr(L"待办事项") : L"待办事项");
+        const std::wstring groupKey = ToLower(groupName);
+        const std::wstring tagKey = groupKey + L"\n" + ToLower(tagName);
+
+        int parentGroupId = 0;
+        auto groupIt = groupIdCache.find(groupKey);
+        if (groupIt != groupIdCache.end()) {
+            parentGroupId = groupIt->second;
+        } else {
+            const Group* existing = FindRootGroupByName(model.groups, groupName);
+            if (existing) {
+                parentGroupId = existing->id;
+            } else {
+                Group group;
+                group.name = UniqueSiblingGroupName(model.groups, 0, groupName.empty() ? L"默认分组" : groupName);
+                if (!storage.InsertGroup(group)) {
+                    report.message = L"创建分组失败: " + storage.lastError();
+                    return report;
+                }
+                model.groups.push_back(group);
+                parentGroupId = group.id;
+                ++report.createdGroups;
+            }
+            groupIdCache[groupKey] = parentGroupId;
+        }
+
+        int tagId = 0;
+        auto tagIt = tagIdCache.find(tagKey);
+        if (tagIt != tagIdCache.end()) {
+            tagId = tagIt->second;
+        } else {
+            const Group* existingTag = FindTodoTagByName(model.groups, parentGroupId, tagName);
+            if (existingTag) {
+                tagId = existingTag->id;
+            } else {
+                Group tag;
+                tag.parentGroup = parentGroupId;
+                tag.name = UniqueSiblingGroupName(model.groups, parentGroupId, tagName.empty() ? L"待办事项" : tagName);
+                tag.type = 4;
+                tag.content = L"todoItems";
+                if (!storage.InsertGroup(tag)) {
+                    report.message = L"创建待办标签失败: " + storage.lastError();
+                    return report;
+                }
+                model.groups.push_back(tag);
+                tagId = tag.id;
+                ++report.createdTags;
+            }
+            tagIdCache[tagKey] = tagId;
+        }
+
+        TodoItem item;
+        item.tagId = tagId;
+        item.title = entry.get(L"title") ? entry.get(L"title")->stringOr() : L"";
+        item.content = entry.get(L"content") ? entry.get(L"content")->stringOr() : L"";
+        item.enabled = entry.get(L"enabled") ? entry.get(L"enabled")->boolOr(true) : true;
+        item.scheduleKind = static_cast<TodoScheduleKind>(entry.get(L"scheduleKind") ? entry.get(L"scheduleKind")->intOr(0) : 0);
+        item.repeatMode = static_cast<TodoRepeatMode>(entry.get(L"repeatMode") ? entry.get(L"repeatMode")->intOr(0) : 0);
+        item.repeatInterval = std::max(1, entry.get(L"repeatInterval") ? entry.get(L"repeatInterval")->intOr(1) : 1);
+        item.repeatLimit = std::max(0, entry.get(L"repeatLimit") ? entry.get(L"repeatLimit")->intOr(0) : 0);
+        item.repeatFinished = std::max(0, entry.get(L"repeatFinished") ? entry.get(L"repeatFinished")->intOr(0) : 0);
+        item.cronExpression = entry.get(L"cronExpression") ? entry.get(L"cronExpression")->stringOr() : L"";
+        item.anchorAt = entry.get(L"anchorAt") ? entry.get(L"anchorAt")->stringOr() : L"";
+        item.nextDueAt = entry.get(L"nextDueAt") ? entry.get(L"nextDueAt")->stringOr() : L"";
+        item.completedAt = entry.get(L"completedAt") ? entry.get(L"completedAt")->stringOr() : L"";
+        item.createdAt = entry.get(L"createdAt") ? entry.get(L"createdAt")->stringOr() : L"";
+        item.updatedAt = entry.get(L"updatedAt") ? entry.get(L"updatedAt")->stringOr() : L"";
+        if (!storage.InsertTodoItem(item)) {
+            report.message = L"导入待办失败: " + storage.lastError();
+            return report;
+        }
+        model.todos.push_back(item);
+        ++report.importedCount;
+    }
+
+    report.ok = true;
+    report.message = L"待办 JSON 导入完成。\n\n新增待办: " + std::to_wstring(report.importedCount) +
+        L"\n新增分组: " + std::to_wstring(report.createdGroups) +
+        L"\n新增待办标签: " + std::to_wstring(report.createdTags);
+    return report;
+}
+
 int EnglishMonthIndex(const std::wstring& month) {
     static constexpr const wchar_t* kMonths[] = {
         L"Jan", L"Feb", L"Mar", L"Apr", L"May", L"Jun",
@@ -126,6 +470,26 @@ std::wstring ChineseDateTimeText(int year, int month, int day, int hour, int min
     return buffer;
 }
 
+std::wstring LocalBackupDateTimeTextFromUtc(int year, int month, int day, int hour, int minute, int second) {
+    SYSTEMTIME utc{};
+    utc.wYear = static_cast<WORD>(year);
+    utc.wMonth = static_cast<WORD>(month);
+    utc.wDay = static_cast<WORD>(day);
+    utc.wHour = static_cast<WORD>(hour);
+    utc.wMinute = static_cast<WORD>(minute);
+    utc.wSecond = static_cast<WORD>(second);
+
+    FILETIME utcFile{};
+    FILETIME localFile{};
+    SYSTEMTIME local{};
+    if (!SystemTimeToFileTime(&utc, &utcFile) ||
+        !FileTimeToLocalFileTime(&utcFile, &localFile) ||
+        !FileTimeToSystemTime(&localFile, &local)) {
+        return {};
+    }
+    return ChineseDateTimeText(local.wYear, local.wMonth, local.wDay, local.wHour, local.wMinute);
+}
+
 std::wstring FormatBackupModifiedDate(const std::wstring& value) {
     if (value.empty()) {
         return {};
@@ -140,7 +504,7 @@ std::wstring FormatBackupModifiedDate(const std::wstring& value) {
     wchar_t monthText[8]{};
     if (swscanf_s(value.c_str(), L"%*3ls, %d %7ls %d %d:%d:%d", &day, monthText, static_cast<unsigned>(std::size(monthText)), &year, &hour, &minute, &second) == 6) {
         month = EnglishMonthIndex(monthText);
-        const std::wstring formatted = ChineseDateTimeText(year, month, day, hour, minute);
+        const std::wstring formatted = LocalBackupDateTimeTextFromUtc(year, month, day, hour, minute, second);
         if (!formatted.empty()) {
             return formatted;
         }
@@ -235,7 +599,8 @@ int MeasureMessageTextHeight(const std::wstring& message, int width) {
         DeleteObject(font);
     }
     const int editRowHeight = lineHeight + std::max(4, lineHeight / 4);
-    const int estimatedHeight = EstimateMessageRows(message, width, averageCharWidth) * editRowHeight + std::max(6, lineHeight / 3);
+    const int controlPadding = lineHeight + std::max(8, lineHeight / 2);
+    const int estimatedHeight = EstimateMessageRows(message, width, averageCharWidth) * editRowHeight + controlPadding;
     return std::max(lineHeight, std::max(static_cast<int>(rect.bottom - rect.top), estimatedHeight));
 }
 
@@ -1173,7 +1538,7 @@ public:
                 message.wParam == VK_TAB &&
                 (GetKeyState(VK_CONTROL) & 0x8000) != 0) {
                 const bool reverse = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
-                ShowTab((currentTab_ + (reverse ? 5 : 1)) % 6);
+                ShowTab((currentTab_ + (reverse ? 6 : 1)) % 7);
                 continue;
             }
             if (!IsDialogMessageW(hwnd_, &message)) {
@@ -1186,7 +1551,7 @@ public:
     }
 
     bool webDavDataImported() const {
-        return webDavDataImported_;
+        return importedData_;
     }
 
 private:
@@ -1197,6 +1562,7 @@ private:
         TabHotKeys = 3,
         TabLinks = 4,
         TabWebDav = 5,
+        TabBackup = 6,
     };
 
     struct TabChild {
@@ -1300,16 +1666,17 @@ private:
     }
 
     void CreateTabs() {
-        const wchar_t* titles[] = {L"显示", L"行为", L"交互", L"热键", L"链接", L"WebDAV"};
+        const wchar_t* titles[] = {L"显示", L"行为", L"交互", L"热键", L"链接", L"WebDAV", L"备份"};
         const int startX = 30;
         const int startY = 18;
         const int itemWidth = static_cast<int>(theme_.metric(L"tabButton", L"groupItemWidth", 58.0f));
-        const std::array<int, 6> itemWidths{
+        const std::array<int, 7> itemWidths{
             std::max(itemWidth, 58),
             std::max(itemWidth, 58),
             std::max(itemWidth, 58),
             std::max(itemWidth, 58),
             std::max(itemWidth, 58),
+            std::max(itemWidth, 76),
             std::max(itemWidth, 76),
         };
         const int itemGap = static_cast<int>(theme_.metric(L"tabButton", L"groupGap", 0.0f));
@@ -1321,7 +1688,7 @@ private:
         for (int width : itemWidths) {
             stripWidth += width;
         }
-        stripWidth += 5 * itemSpacing;
+        stripWidth += 6 * itemSpacing;
         tabStripRect_ = RECT{
             startX - stripPadding,
             startY - stripPadding,
@@ -1329,7 +1696,7 @@ private:
             startY + itemHeight + stripPadding};
         int x = startX;
         tabSeparatorXs_.clear();
-        for (int i = 0; i < 6; ++i) {
+        for (int i = 0; i < 7; ++i) {
             HWND button = ThemedControls::CreateTabButton(
                 instance_,
                 hwnd_,
@@ -1343,7 +1710,7 @@ private:
                 i == TabDisplay);
             tabButtons_.push_back(button);
             x += itemWidths[static_cast<std::size_t>(i)];
-            if (i < 5) {
+            if (i < 6) {
                 tabSeparatorXs_.push_back(x);
                 x += itemSpacing;
             }
@@ -1569,12 +1936,106 @@ private:
 
         const WebDavBackupReport report = service.DownloadAndImportMerge(fileName);
         if (report.ok) {
-            webDavDataImported_ = true;
+            importedData_ = true;
         }
         const std::wstring text = report.importReport.message.empty()
             ? report.message
             : FormatConfigPackageReportText(report.importReport);
         ShowThemedMessageBox(hwnd_, instance_, theme_, text, L"从云端下载", MB_OK | (report.ok ? MB_ICONINFORMATION : MB_ICONWARNING));
+    }
+
+    void ExportConfigPackage() {
+        std::wstring targetPath;
+        if (!SelectSavePath(hwnd_,
+                (appDirectory_ / ConfigPackageFileName()).wstring(),
+                L"Quattro快速启动器 配置包 (*.q4cfg)\0*.q4cfg\0所有文件\0*.*\0",
+                L"q4cfg",
+                targetPath)) {
+            return;
+        }
+        ConfigPackageOptions options;
+        options.includeConfig = true;
+        options.includeData = true;
+        options.includeUrlIcons = true;
+        options.includePluginSettings = true;
+        ConfigPackageService service(appDirectory_);
+        const ConfigPackageReport report = service.ExportPackage(targetPath, options);
+        ShowThemedMessageBox(hwnd_, instance_, theme_, FormatConfigPackageReportText(report), L"导出配置包", MB_OK | (report.ok ? MB_ICONINFORMATION : MB_ICONWARNING));
+    }
+
+    void ImportConfigPackage() {
+        std::wstring packagePath;
+        if (!SelectOpenPath(hwnd_,
+                L"Quattro快速启动器 配置包 (*.q4cfg)\0*.q4cfg\0所有文件\0*.*\0",
+                L"q4cfg",
+                packagePath)) {
+            return;
+        }
+        const int confirm = ShowThemedMessageBox(
+            hwnd_,
+            instance_,
+            theme_,
+            L"将把配置包中的分组、标签、启动项、便签、待办和工具设置合并到当前数据。\n\n当前数据不会被覆盖，导入前会自动备份。",
+            L"合并导入配置包",
+            MB_OKCANCEL | MB_ICONINFORMATION);
+        if (confirm != IDOK) {
+            return;
+        }
+        ConfigPackageOptions options;
+        options.includeConfig = false;
+        options.includeData = true;
+        options.includeUrlIcons = true;
+        options.includePluginSettings = true;
+        ConfigPackageService service(appDirectory_);
+        const ConfigPackageReport report = service.ImportPackageMerge(packagePath, options);
+        if (report.ok) {
+            importedData_ = true;
+        }
+        ShowThemedMessageBox(hwnd_, instance_, theme_, FormatConfigPackageReportText(report), L"合并导入配置包", MB_OK | (report.ok ? MB_ICONINFORMATION : MB_ICONWARNING));
+    }
+
+    void ExportTodosJson() {
+        StorageService storage(appDirectory_);
+        const AppModel model = storage.Load();
+        std::wstring targetPath;
+        if (!SelectSavePath(hwnd_,
+                (appDirectory_ / TodoJsonFileName()).wstring(),
+                L"JSON 文件 (*.json)\0*.json\0所有文件\0*.*\0",
+                L"json",
+                targetPath)) {
+            return;
+        }
+        if (!SaveUtf8File(targetPath, BuildTodoExportJson(model))) {
+            ShowThemedMessageBox(hwnd_, instance_, theme_, L"写入待办 JSON 文件失败。", L"导出待办 JSON", MB_OK | MB_ICONWARNING);
+            return;
+        }
+        ShowThemedMessageBox(hwnd_, instance_, theme_, L"待办 JSON 导出完成。", L"导出待办 JSON", MB_OK | MB_ICONINFORMATION);
+    }
+
+    void ImportTodosJson() {
+        std::wstring jsonPath;
+        if (!SelectOpenPath(hwnd_,
+                L"JSON 文件 (*.json)\0*.json\0所有文件\0*.*\0",
+                L"json",
+                jsonPath)) {
+            return;
+        }
+        const int confirm = ShowThemedMessageBox(
+            hwnd_,
+            instance_,
+            theme_,
+            L"将把 JSON 中的待办事项导入到当前数据；缺失的分组或待办标签会自动创建。",
+            L"导入待办 JSON",
+            MB_OKCANCEL | MB_ICONINFORMATION);
+        if (confirm != IDOK) {
+            return;
+        }
+        const TodoJsonImportReport report = ImportTodoJsonFile(appDirectory_, jsonPath);
+        if (report.ok) {
+            importedData_ = true;
+        }
+        ShowThemedMessageBox(hwnd_, instance_, theme_, report.message.empty() ? (report.ok ? L"导入完成。" : L"导入失败。") : report.message,
+            L"导入待办 JSON", MB_OK | (report.ok ? MB_ICONINFORMATION : MB_ICONWARNING));
     }
 
     LRESULT Handle(UINT message, WPARAM wParam, LPARAM lParam) {
@@ -1675,6 +2136,20 @@ private:
             Button(TabWebDav, ID_WEBDAV_TEST, L"测试连接", 286, 340, 92);
             Button(TabWebDav, ID_WEBDAV_CLEAR_PASSWORD, L"清除密码", 390, 340, 90);
 
+            const DialogLayoutMetrics backupLayout = GetDialogLayoutMetrics(theme_, DialogLayoutKind::Compact);
+            const int backupButtonWidth = 118;
+            const int backupRowWidth = backupButtonWidth * 2 + backupLayout.controlGapX;
+            const int backupGroupX = backupLayout.CenteredGroupX(560, backupRowWidth);
+            const int backupNoteWidth = 360;
+            const int backupNoteX = backupLayout.CenteredGroupX(560, backupNoteWidth);
+            Label(TabBackup, L"配置包", backupGroupX, 92, 120);
+            Button(TabBackup, ID_CONFIG_EXPORT, L"导出配置包", backupGroupX, 124, backupButtonWidth);
+            Button(TabBackup, ID_CONFIG_IMPORT, L"导入配置包", backupGroupX + backupButtonWidth + backupLayout.controlGapX, 124, backupButtonWidth);
+            Label(TabBackup, L"待办事项单独备份（JSON 格式）", backupNoteX, 210, backupNoteWidth);
+            Button(TabBackup, ID_TODO_EXPORT, L"导出", backupGroupX, 242, backupButtonWidth);
+            Button(TabBackup, ID_TODO_IMPORT, L"导入", backupGroupX + backupButtonWidth + backupLayout.controlGapX, 242, backupButtonWidth);
+            Label(TabBackup, L"导入配置包会合并现有数据；导入待办事项备份会自动补齐缺失分组和待办标签。", backupNoteX, 308, backupNoteWidth);
+
             const int buttonHeight = ThemedControls::ButtonHeight(theme_);
             ThemedControls::CreatePrimaryButton(instance_, hwnd_, IDOK, L"确定", 350, 428, 76, buttonHeight, font_, true);
             ThemedControls::CreateButton(instance_, hwnd_, IDCANCEL, L"取消", 442, 428, 76, buttonHeight, font_);
@@ -1723,7 +2198,7 @@ private:
             if (HIWORD(wParam) == EN_SETFOCUS || HIWORD(wParam) == EN_KILLFOCUS) {
                 InvalidateField(reinterpret_cast<HWND>(lParam));
             }
-            if (LOWORD(wParam) >= ID_SETTINGS_TAB_BASE && LOWORD(wParam) < ID_SETTINGS_TAB_BASE + 6) {
+            if (LOWORD(wParam) >= ID_SETTINGS_TAB_BASE && LOWORD(wParam) < ID_SETTINGS_TAB_BASE + 7) {
                 ShowTab(static_cast<int>(LOWORD(wParam) - ID_SETTINGS_TAB_BASE));
                 return 0;
             }
@@ -1756,6 +2231,22 @@ private:
             }
             if (LOWORD(wParam) == ID_WEBDAV_DOWNLOAD) {
                 DownloadWebDavBackup();
+                return 0;
+            }
+            if (LOWORD(wParam) == ID_CONFIG_EXPORT) {
+                ExportConfigPackage();
+                return 0;
+            }
+            if (LOWORD(wParam) == ID_CONFIG_IMPORT) {
+                ImportConfigPackage();
+                return 0;
+            }
+            if (LOWORD(wParam) == ID_TODO_EXPORT) {
+                ExportTodosJson();
+                return 0;
+            }
+            if (LOWORD(wParam) == ID_TODO_IMPORT) {
+                ImportTodosJson();
                 return 0;
             }
             if (LOWORD(wParam) == IDOK) {
@@ -1879,7 +2370,7 @@ private:
     HWND webDavKeepCountEdit_ = nullptr;
     HWND webDavUserNameEdit_ = nullptr;
     HWND webDavPasswordEdit_ = nullptr;
-    bool webDavDataImported_ = false;
+    bool importedData_ = false;
     bool accepted_ = false;
     bool done_ = false;
 };
@@ -1911,11 +2402,11 @@ bool ShowSettingsDialog(
     AppConfig& config,
     const Theme& theme,
     const std::filesystem::path& appDirectory,
-    bool* webDavDataImported) {
+    bool* importedData) {
     SettingsDialog dialog(owner, instance, config, theme, appDirectory);
     const bool accepted = dialog.Run();
-    if (webDavDataImported) {
-        *webDavDataImported = dialog.webDavDataImported();
+    if (importedData) {
+        *importedData = dialog.webDavDataImported();
     }
     return accepted;
 }

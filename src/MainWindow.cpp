@@ -24,6 +24,7 @@
 #include <chrono>
 #include <commctrl.h>
 #include <commdlg.h>
+#include <cstdint>
 #include <ctime>
 #include <cstring>
 #include <cwchar>
@@ -298,13 +299,18 @@ std::wstring ConfigPackageFileName() {
 
 std::wstring FormatConfigPackageReport(const ConfigPackageReport& report) {
     std::wstring text = report.message.empty() ? (report.ok ? L"操作完成。" : L"操作失败。") : report.message;
-    if (report.groupsAdded > 0 || report.tagsAdded > 0 || report.linksAdded > 0 ||
-        report.notesAdded > 0 || report.todosAdded > 0 || report.pluginSettingsAdded > 0 ||
-        report.urlIconsAdded > 0) {
+    if (report.groupsAdded > 0 || report.groupsMerged > 0 || report.tagsAdded > 0 ||
+        report.tagsMerged > 0 || report.linksAdded > 0 || report.linksSkippedDuplicate > 0 ||
+        report.notesAdded > 0 || report.notesMerged > 0 || report.todosAdded > 0 ||
+        report.pluginSettingsAdded > 0 || report.urlIconsAdded > 0) {
         text += L"\n\n新增分组: " + std::to_wstring(report.groupsAdded);
+        text += L"\n复用分组: " + std::to_wstring(report.groupsMerged);
         text += L"\n新增标签: " + std::to_wstring(report.tagsAdded);
+        text += L"\n复用标签: " + std::to_wstring(report.tagsMerged);
         text += L"\n新增启动项: " + std::to_wstring(report.linksAdded);
+        text += L"\n跳过重复启动项: " + std::to_wstring(report.linksSkippedDuplicate);
         text += L"\n新增便签: " + std::to_wstring(report.notesAdded);
+        text += L"\n合并便签: " + std::to_wstring(report.notesMerged);
         text += L"\n新增待办: " + std::to_wstring(report.todosAdded);
         text += L"\n新增工具设置: " + std::to_wstring(report.pluginSettingsAdded);
         text += L"\n新增 URL 图标: " + std::to_wstring(report.urlIconsAdded);
@@ -631,9 +637,129 @@ std::wstring TodoScheduleText(TodoScheduleKind kind) {
     }
 }
 
+std::vector<std::wstring> CronFields(const std::wstring& expression) {
+    std::vector<std::wstring> fields;
+    const std::wstring normalized = NormalizeTodoCronExpression(expression);
+    std::size_t start = 0;
+    while (start < normalized.size()) {
+        while (start < normalized.size() && std::iswspace(normalized[start]) != 0) {
+            ++start;
+        }
+        if (start >= normalized.size()) {
+            break;
+        }
+        const std::size_t end = normalized.find(L' ', start);
+        fields.push_back(normalized.substr(start, end == std::wstring::npos ? std::wstring::npos : end - start));
+        if (end == std::wstring::npos) {
+            break;
+        }
+        start = end + 1;
+    }
+    return fields;
+}
+
+std::optional<int> ParseCronNumberField(const std::vector<std::wstring>& fields, std::size_t index, int minValue, int maxValue) {
+    if (index >= fields.size()) {
+        return std::nullopt;
+    }
+    const auto value = ParseInt(fields[index]);
+    if (!value || *value < minValue || *value > maxValue) {
+        return std::nullopt;
+    }
+    return value;
+}
+
+bool CronFieldIsAny(const std::vector<std::wstring>& fields, std::size_t index) {
+    return index < fields.size() && fields[index] == L"*";
+}
+
+bool CronFieldIsWorkday(const std::vector<std::wstring>& fields, std::size_t index) {
+    return index < fields.size() && fields[index] == L"1-5";
+}
+
+std::wstring TwoDigit(int value) {
+    wchar_t buffer[8]{};
+    swprintf_s(buffer, L"%02d", value);
+    return buffer;
+}
+
+std::wstring CronTimeText(const std::vector<std::wstring>& fields) {
+    const auto hour = ParseCronNumberField(fields, 2, 0, 23);
+    const auto minute = ParseCronNumberField(fields, 1, 0, 59);
+    if (!hour || !minute) {
+        return {};
+    }
+    return TwoDigit(*hour) + L":" + TwoDigit(*minute);
+}
+
+std::wstring CronWeekdayText(const std::wstring& field) {
+    if (field == L"1-5") {
+        return L"工作日";
+    }
+    if (field == L"*") {
+        return L"每天";
+    }
+
+    static constexpr const wchar_t* kWeekdays[] = {L"周日", L"周一", L"周二", L"周三", L"周四", L"周五", L"周六"};
+    std::wstring result;
+    std::size_t start = 0;
+    while (start < field.size()) {
+        const std::size_t end = field.find(L',', start);
+        const std::wstring token = field.substr(start, end == std::wstring::npos ? std::wstring::npos : end - start);
+        const auto value = ParseInt(token);
+        if (value && *value >= 0 && *value <= 6) {
+            if (!result.empty()) {
+                result += L"、";
+            }
+            result += kWeekdays[*value];
+        }
+        if (end == std::wstring::npos) {
+            break;
+        }
+        start = end + 1;
+    }
+    return result;
+}
+
+std::wstring CronScheduleText(const TodoItem& item) {
+    const auto fields = CronFields(item.cronExpression);
+    if (fields.size() < 6) {
+        return item.cronExpression.empty() ? L"Cron" : L"Cron " + item.cronExpression;
+    }
+
+    const std::wstring time = CronTimeText(fields);
+    auto withTime = [&](std::wstring text) {
+        if (!time.empty()) {
+            text += L" " + time;
+        }
+        return text;
+    };
+
+    if (CronFieldIsAny(fields, 3) && CronFieldIsAny(fields, 4)) {
+        if (CronFieldIsWorkday(fields, 5)) {
+            return withTime(L"工作日");
+        }
+        if (CronFieldIsAny(fields, 5)) {
+            return withTime(L"每日");
+        }
+        const std::wstring weekdays = CronWeekdayText(fields[5]);
+        if (!weekdays.empty()) {
+            return withTime(L"每周 " + weekdays);
+        }
+    }
+
+    if (!CronFieldIsAny(fields, 3) && CronFieldIsAny(fields, 4) && CronFieldIsAny(fields, 5)) {
+        if (const auto day = ParseCronNumberField(fields, 3, 1, 31)) {
+            return withTime(L"每月 " + std::to_wstring(*day) + L" 号");
+        }
+    }
+
+    return item.cronExpression.empty() ? L"Cron" : L"Cron " + item.cronExpression;
+}
+
 std::wstring TodoScheduleText(const TodoItem& item) {
     if (item.scheduleKind == TodoScheduleKind::Cron) {
-        return item.cronExpression.empty() ? L"Cron" : L"Cron " + item.cronExpression;
+        return CronScheduleText(item);
     }
     if (!IsRecurringTodoSchedule(item.scheduleKind) || item.repeatInterval <= 1) {
         return TodoScheduleText(item.scheduleKind);
@@ -700,6 +826,70 @@ bool IsTodoDueForReminder(const TodoItem& item) {
     return SystemTimeToFileTime(&due, &dueFile) &&
            SystemTimeToFileTime(&now, &nowFile) &&
            CompareFileTime(&dueFile, &nowFile) <= 0;
+}
+
+std::optional<std::int64_t> TodoRemainingSeconds(const TodoItem& item) {
+    if (!item.enabled || !item.completedAt.empty() || item.nextDueAt.empty()) {
+        return std::nullopt;
+    }
+
+    SYSTEMTIME due{};
+    SYSTEMTIME now{};
+    if (!TryParseTodoTimestamp(item.nextDueAt, due)) {
+        return std::nullopt;
+    }
+    GetLocalTime(&now);
+
+    FILETIME dueFile{};
+    FILETIME nowFile{};
+    if (!SystemTimeToFileTime(&due, &dueFile) || !SystemTimeToFileTime(&now, &nowFile)) {
+        return std::nullopt;
+    }
+
+    ULARGE_INTEGER dueValue{};
+    dueValue.LowPart = dueFile.dwLowDateTime;
+    dueValue.HighPart = dueFile.dwHighDateTime;
+    ULARGE_INTEGER nowValue{};
+    nowValue.LowPart = nowFile.dwLowDateTime;
+    nowValue.HighPart = nowFile.dwHighDateTime;
+
+    if (dueValue.QuadPart <= nowValue.QuadPart) {
+        return 0;
+    }
+    constexpr std::uint64_t kFileTimeTicksPerSecond = 10000000ull;
+    const std::uint64_t diff = dueValue.QuadPart - nowValue.QuadPart;
+    return static_cast<std::int64_t>((diff + kFileTimeTicksPerSecond - 1) / kFileTimeTicksPerSecond);
+}
+
+std::wstring TodoRemainingText(const TodoItem& item) {
+    const auto seconds = TodoRemainingSeconds(item);
+    if (!seconds) {
+        return {};
+    }
+    if (*seconds <= 0) {
+        return L"已逾期";
+    }
+
+    constexpr std::int64_t minute = 60;
+    constexpr std::int64_t hour = 60 * minute;
+    constexpr std::int64_t day = 24 * hour;
+    if (*seconds >= day) {
+        const std::int64_t days = (*seconds + day - 1) / day;
+        return L"还有 " + std::to_wstring(days) + L" 天提醒";
+    }
+    if (*seconds >= 10 * minute) {
+        const std::int64_t totalMinutes = (*seconds + minute - 1) / minute;
+        const std::int64_t hours = totalMinutes / 60;
+        const std::int64_t minutes = totalMinutes % 60;
+        if (hours <= 0) {
+            return L"还有 " + std::to_wstring(minutes) + L" 分钟提醒";
+        }
+        if (minutes <= 0) {
+            return L"还有 " + std::to_wstring(hours) + L" 小时提醒";
+        }
+        return L"还有 " + std::to_wstring(hours) + L" 小时 " + std::to_wstring(minutes) + L" 分钟提醒";
+    }
+    return L"还有 " + std::to_wstring(*seconds) + L" 秒提醒";
 }
 
 std::wstring TodoReminderKey(const TodoItem& item) {
@@ -1689,6 +1879,9 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         }
         if (wParam == ID_TIMER_REMINDER_SCAN) {
             CheckTodoReminders();
+            if (const Group* tag = FindGroup(currentTagId_); tag && IsTodoItemsTag(*tag)) {
+                InvalidateRect(hwnd_, nullptr, FALSE);
+            }
             return 0;
         }
         if (wParam == ID_TIMER_REMINDER_PANEL) {
@@ -3826,9 +4019,9 @@ void MainWindow::CopyLinkPath(int linkId) {
 void MainWindow::OpenSettings() {
     AppConfig previous = config_;
     AppConfig next = config_;
-    bool webDavDataImported = false;
-    if (!ShowSettingsDialog(hwnd_, instance_, next, theme_, appDirectory_, &webDavDataImported)) {
-        if (webDavDataImported) {
+    bool importedData = false;
+    if (!ShowSettingsDialog(hwnd_, instance_, next, theme_, appDirectory_, &importedData)) {
+        if (importedData) {
             model_ = storageService_.Load();
             SelectInitialItems();
             pluginRegistry_.Initialize();
@@ -3847,7 +4040,7 @@ void MainWindow::OpenSettings() {
     }
     SyncAutoRun(previous);
     ApplyConfigRuntimeChanges(previous);
-    if (webDavDataImported) {
+    if (importedData) {
         model_ = storageService_.Load();
         SelectInitialItems();
         pluginRegistry_.Initialize();
@@ -4986,6 +5179,10 @@ std::wstring MainWindow::TodoTooltipText(const TodoItem& item) const {
     const bool recurring = IsRecurringTodoSchedule(item.scheduleKind);
     if (recurring) {
         appendLine(text, L"重复: " + TodoScheduleText(item));
+        const std::wstring remaining = TodoRemainingText(item);
+        if (!remaining.empty()) {
+            appendLine(text, L"剩余: " + remaining);
+        }
         if (!item.nextDueAt.empty()) {
             appendLine(text, L"下次: " + item.nextDueAt);
         }
@@ -4994,6 +5191,10 @@ std::wstring MainWindow::TodoTooltipText(const TodoItem& item) const {
             appendLine(text, L"进度: " + std::to_wstring(std::max(0, item.repeatFinished)) + L"/" + std::to_wstring(item.repeatLimit));
         }
     } else if (item.scheduleKind == TodoScheduleKind::Once && !item.nextDueAt.empty()) {
+        const std::wstring remaining = TodoRemainingText(item);
+        if (!remaining.empty()) {
+            appendLine(text, L"剩余: " + remaining);
+        }
         appendLine(text, L"时间: " + item.nextDueAt);
     }
 
@@ -5953,7 +6154,7 @@ void MainWindow::DrawLinks(D2D1_RECT_F rect) {
             FillRoundedRect(icon, theme_.color(L"iconFallback", L"normal", L"bg"), iconRadius);
             DrawRoundedRect(icon, theme_.color(L"iconFallback", L"normal", L"border"), iconRadius);
         }
-        DrawTextBlock(link->name, nameFormat, nameRect, theme_.color(L"linkItem", L"normal", L"text"));
+        DrawLinkName(link->name, nameFormat, nameRect, theme_.color(L"linkItem", L"normal", L"text"));
         hitAreas_.push_back(HitArea{HitKind::Link, link->id, IntersectRectF(item, content)});
     }
     renderTarget_->PopAxisAlignedClip();
@@ -6168,8 +6369,9 @@ void MainWindow::DrawTodoItems(D2D1_RECT_F rect, const Group&) {
         } else {
             tags.push_back(L"无时间");
         }
-        if (!item.nextDueAt.empty()) {
-            tags.push_back(item.nextDueAt);
+        const std::wstring remainingText = TodoRemainingText(item);
+        if (!remainingText.empty() && !overdue) {
+            tags.push_back(remainingText);
         }
 
         float tagX = row.left + contentInsetX;
@@ -6381,6 +6583,27 @@ void MainWindow::DrawTextBlock(const std::wstring& text, IDWriteTextFormat* form
     if (SUCCEEDED(renderTarget_->CreateSolidColorBrush(color.d2d(), &brush)) && brush) {
         renderTarget_->DrawTextW(text.c_str(), static_cast<UINT32>(text.size()), format, rect, brush, D2D1_DRAW_TEXT_OPTIONS_CLIP);
         brush->Release();
+    }
+}
+
+void MainWindow::DrawLinkName(const std::wstring& text, IDWriteTextFormat* format, const D2D1_RECT_F& rect, const Color& color) {
+    if (text.empty() || !format || !dwriteFactory_) {
+        return;
+    }
+
+    IDWriteInlineObject* ellipsis = nullptr;
+    DWRITE_TRIMMING trimming{};
+    trimming.granularity = DWRITE_TRIMMING_GRANULARITY_CHARACTER;
+    if (SUCCEEDED(dwriteFactory_->CreateEllipsisTrimmingSign(format, &ellipsis))) {
+        format->SetTrimming(&trimming, ellipsis);
+    }
+
+    DrawTextBlock(text, format, rect, color);
+
+    trimming.granularity = DWRITE_TRIMMING_GRANULARITY_NONE;
+    format->SetTrimming(&trimming, nullptr);
+    if (ellipsis) {
+        ellipsis->Release();
     }
 }
 

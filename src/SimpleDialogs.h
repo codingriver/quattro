@@ -24,4 +24,4 @@ bool ShowSettingsDialog(
     AppConfig& config,
     const Theme& theme,
     const std::filesystem::path& appDirectory,
-    bool* webDavDataImported = nullptr);
+    bool* importedData = nullptr);

@@ -240,6 +240,7 @@ private:
     void DrawScrollBar(const D2D1_RECT_F& rect, float offset, float maxOffset, bool horizontal);
     float MeasureTextWidth(const std::wstring& text, IDWriteTextFormat* format, float maxWidth = 1000.0f) const;
     void DrawTextBlock(const std::wstring& text, IDWriteTextFormat* format, const D2D1_RECT_F& rect, const Color& color);
+    void DrawLinkName(const std::wstring& text, IDWriteTextFormat* format, const D2D1_RECT_F& rect, const Color& color);
     void ResetMenuVisuals();
     void AppendThemedMenuItem(HMENU menu, UINT flags, UINT_PTR id, const std::wstring& text, bool submenu = false, int systemImageIndex = -1, int stockIcon = -1, int menuIcon = 0, bool checkedIconAccent = false);
     void AppendThemedSeparator(HMENU menu);

@@ -11,6 +11,8 @@
 #include <array>
 #include <ctime>
 #include <commctrl.h>
+#include <cwctype>
+#include <optional>
 #include <string>
 #include <vector>
 #include <windowsx.h>
@@ -241,6 +243,74 @@ bool TryParseHourMinute(const std::wstring& text, int& hour, int& minute) {
     hour = parsedHour;
     minute = parsedMinute;
     return true;
+}
+
+std::vector<std::wstring> CronFields(const std::wstring& expression) {
+    std::vector<std::wstring> fields;
+    const std::wstring normalized = NormalizeTodoCronExpression(expression);
+    std::size_t start = 0;
+    while (start < normalized.size()) {
+        while (start < normalized.size() && std::iswspace(normalized[start]) != 0) {
+            ++start;
+        }
+        if (start >= normalized.size()) {
+            break;
+        }
+        const std::size_t end = normalized.find(L' ', start);
+        fields.push_back(normalized.substr(start, end == std::wstring::npos ? std::wstring::npos : end - start));
+        if (end == std::wstring::npos) {
+            break;
+        }
+        start = end + 1;
+    }
+    return fields;
+}
+
+std::optional<int> ParseCronNumberField(const std::vector<std::wstring>& fields, std::size_t index, int minValue, int maxValue) {
+    if (index >= fields.size()) {
+        return std::nullopt;
+    }
+    const auto value = ParseInt(fields[index]);
+    if (!value || *value < minValue || *value > maxValue) {
+        return std::nullopt;
+    }
+    return value;
+}
+
+bool CronFieldIsAny(const std::vector<std::wstring>& fields, std::size_t index) {
+    return index < fields.size() && fields[index] == L"*";
+}
+
+bool CronFieldIsWorkday(const std::vector<std::wstring>& fields, std::size_t index) {
+    return index < fields.size() && fields[index] == L"1-5";
+}
+
+bool CronWeekdaySelected(const std::vector<std::wstring>& fields, int weekday) {
+    if (fields.size() < 6) {
+        return false;
+    }
+    const std::wstring dayOfWeek = fields[5];
+    if (dayOfWeek == L"*") {
+        return true;
+    }
+    if (dayOfWeek == L"1-5") {
+        return weekday >= 1 && weekday <= 5;
+    }
+
+    std::size_t start = 0;
+    while (start < dayOfWeek.size()) {
+        const std::size_t end = dayOfWeek.find(L',', start);
+        const std::wstring token = dayOfWeek.substr(start, end == std::wstring::npos ? std::wstring::npos : end - start);
+        const auto value = ParseInt(token);
+        if (value && *value == weekday) {
+            return true;
+        }
+        if (end == std::wstring::npos) {
+            break;
+        }
+        start = end + 1;
+    }
+    return false;
 }
 
 std::wstring DateSummaryText(const SYSTEMTIME& value) {
@@ -537,6 +607,9 @@ private:
         if (!draft_.anchorAt.empty() && TryParseTodoTimestamp(draft_.anchorAt, value)) {
             return value;
         }
+        if (!draft_.nextDueAt.empty() && TryParseTodoTimestamp(draft_.nextDueAt, value)) {
+            return value;
+        }
         GetLocalTime(&value);
         value.wSecond = 0;
         value.wMilliseconds = 0;
@@ -544,6 +617,12 @@ private:
     }
 
     RepeatRule InitialRepeatRule() const {
+        if (draft_.repeatMode == TodoRepeatMode::Interval && draft_.repeatInterval > 1 &&
+            (draft_.scheduleKind == TodoScheduleKind::Daily ||
+             draft_.scheduleKind == TodoScheduleKind::Weekly ||
+             draft_.scheduleKind == TodoScheduleKind::Monthly)) {
+            return RepeatRule::Custom;
+        }
         if (draft_.scheduleKind == TodoScheduleKind::Daily) {
             return RepeatRule::Daily;
         }
@@ -554,21 +633,69 @@ private:
             return RepeatRule::Monthly;
         }
         if (draft_.scheduleKind == TodoScheduleKind::Cron) {
-            const std::wstring cron = NormalizeTodoCronExpression(draft_.cronExpression);
-            if (cron.find(L"1-5") != std::wstring::npos) {
+            const auto fields = CronFields(draft_.cronExpression);
+            if (fields.size() >= 6 &&
+                CronFieldIsAny(fields, 3) &&
+                CronFieldIsAny(fields, 4) &&
+                CronFieldIsWorkday(fields, 5)) {
                 return RepeatRule::Workday;
             }
-            return RepeatRule::Weekly;
+            if (fields.size() >= 6 &&
+                !CronFieldIsAny(fields, 3) &&
+                CronFieldIsAny(fields, 4) &&
+                CronFieldIsAny(fields, 5)) {
+                return RepeatRule::Monthly;
+            }
+            if (fields.size() >= 6 &&
+                CronFieldIsAny(fields, 3) &&
+                CronFieldIsAny(fields, 4) &&
+                !CronFieldIsAny(fields, 5)) {
+                return RepeatRule::Weekly;
+            }
+            if (fields.size() >= 6 &&
+                CronFieldIsAny(fields, 3) &&
+                CronFieldIsAny(fields, 4) &&
+                CronFieldIsAny(fields, 5)) {
+                return RepeatRule::Daily;
+            }
         }
         return RepeatRule::None;
+    }
+
+    int InitialCustomUnitIndex() const {
+        if (draft_.scheduleKind == TodoScheduleKind::Weekly) {
+            return 1;
+        }
+        if (draft_.scheduleKind == TodoScheduleKind::Monthly) {
+            return 2;
+        }
+        return 0;
     }
 
     void LoadInitialState() {
         hasReminder_ = true;
         repeatRule_ = InitialRepeatRule();
         endMode_ = draft_.repeatLimit > 0 ? EndMode::Count : EndMode::Never;
+        advancedExpanded_ = draft_.repeatLimit > 0;
 
         SYSTEMTIME anchor = InitialAnchor();
+        const auto cronFields = draft_.scheduleKind == TodoScheduleKind::Cron ? CronFields(draft_.cronExpression) : std::vector<std::wstring>{};
+        if (cronFields.size() >= 6) {
+            if (auto second = ParseCronNumberField(cronFields, 0, 0, 59)) {
+                anchor.wSecond = static_cast<WORD>(*second);
+            }
+            if (auto minute = ParseCronNumberField(cronFields, 1, 0, 59)) {
+                anchor.wMinute = static_cast<WORD>(*minute);
+            }
+            if (auto hour = ParseCronNumberField(cronFields, 2, 0, 23)) {
+                anchor.wHour = static_cast<WORD>(*hour);
+            }
+            if (repeatRule_ == RepeatRule::Monthly) {
+                if (auto monthDay = ParseCronNumberField(cronFields, 3, 1, 31)) {
+                    anchor.wDay = static_cast<WORD>(std::min(*monthDay, DaysInMonth(anchor.wYear, anchor.wMonth)));
+                }
+            }
+        }
         selectedDate_ = DateOnly(anchor);
         calendarYear_ = selectedDate_.wYear;
         calendarMonth_ = selectedDate_.wMonth;
@@ -576,12 +703,12 @@ private:
         SetWindowTextW(monthlyDayEdit_, std::to_wstring(std::max<int>(1, anchor.wDay)).c_str());
         SetWindowTextW(customIntervalEdit_, std::to_wstring(std::max(1, draft_.repeatInterval)).c_str());
         SetWindowTextW(endCountEdit_, std::to_wstring(std::max(1, draft_.repeatLimit)).c_str());
+        SendMessageW(customUnitCombo_, CB_SETCURSEL, InitialCustomUnitIndex(), 0);
 
         weekdaySelected_.fill(false);
         if (draft_.scheduleKind == TodoScheduleKind::Cron) {
-            const std::wstring cron = NormalizeTodoCronExpression(draft_.cronExpression);
             for (int i = 0; i < 7; ++i) {
-                if (cron.find(std::to_wstring(i)) != std::wstring::npos || (i >= 1 && i <= 5 && cron.find(L"1-5") != std::wstring::npos)) {
+                if (CronWeekdaySelected(cronFields, i)) {
                     weekdaySelected_[i] = true;
                 }
             }

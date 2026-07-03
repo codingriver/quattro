@@ -17,9 +17,13 @@ struct ConfigPackageReport {
     bool ok = false;
     std::wstring message;
     int groupsAdded = 0;
+    int groupsMerged = 0;
     int tagsAdded = 0;
+    int tagsMerged = 0;
     int linksAdded = 0;
+    int linksSkippedDuplicate = 0;
     int notesAdded = 0;
+    int notesMerged = 0;
     int todosAdded = 0;
     int pluginSettingsAdded = 0;
     int urlIconsAdded = 0;

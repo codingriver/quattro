@@ -349,31 +349,76 @@ bool ExtractPackageFile(sqlite3* packageDb, const std::wstring& packagePath, con
     return true;
 }
 
-std::wstring UniqueGroupNameForParent(const AppModel& model, const std::wstring& sourceName, int parentGroup, const std::unordered_map<int, int>& pendingParents) {
-    auto exists = [&](const std::wstring& name) {
-        for (const auto& group : model.groups) {
-            if (group.parentGroup == parentGroup && group.name == name) {
-                return true;
-            }
-        }
-        for (const auto& item : pendingParents) {
-            (void)item;
-        }
-        return false;
-    };
+std::wstring NormalizedNameKey(const std::wstring& value) {
+    return ToLower(Trim(value));
+}
 
-    std::wstring name = Trim(sourceName).empty() ? L"导入项目" : Trim(sourceName);
-    if (!exists(name)) {
-        return name;
+std::wstring NormalizedPathKey(const std::wstring& value) {
+    return ToLower(Trim(value));
+}
+
+int FindMatchingGroup(const AppModel& model, const Group& sourceGroup, int targetParentGroup) {
+    const std::wstring name = NormalizedNameKey(sourceGroup.name);
+    if (name.empty()) {
+        return 0;
     }
-    std::wstring base = name + L" (导入";
-    for (int index = 1; index < 1000; ++index) {
-        std::wstring candidate = index == 1 ? name + L" (导入)" : base + std::to_wstring(index) + L")";
-        if (!exists(candidate)) {
-            return candidate;
+    for (const auto& group : model.groups) {
+        if (group.parentGroup == targetParentGroup &&
+            group.type == sourceGroup.type &&
+            NormalizedNameKey(group.name) == name) {
+            return group.id;
         }
     }
-    return name + L" (导入)";
+    return 0;
+}
+
+bool IsDuplicateLinkInTag(const AppModel& model, const Link& sourceLink, int targetTagId) {
+    const std::wstring path = NormalizedPathKey(sourceLink.path);
+    const std::wstring parameter = Trim(sourceLink.parameter);
+    const std::wstring workDir = NormalizedPathKey(sourceLink.workDir);
+    for (const auto& link : model.links) {
+        if (link.parentGroup == targetTagId &&
+            link.type == sourceLink.type &&
+            NormalizedPathKey(link.path) == path &&
+            Trim(link.parameter) == parameter &&
+            NormalizedPathKey(link.workDir) == workDir &&
+            link.pidl == sourceLink.pidl) {
+            return true;
+        }
+    }
+    return false;
+}
+
+std::wstring NoteContentForTag(const AppModel& model, int tagId) {
+    for (const auto& note : model.notes) {
+        if (note.tagId == tagId) {
+            return note.content;
+        }
+    }
+    return {};
+}
+
+void UpsertNoteContent(AppModel& model, int tagId, const std::wstring& content) {
+    for (auto& note : model.notes) {
+        if (note.tagId == tagId) {
+            note.content = content;
+            return;
+        }
+    }
+    NotePage note;
+    note.tagId = tagId;
+    note.content = content;
+    model.notes.push_back(std::move(note));
+}
+
+std::wstring MergeNoteContent(const std::wstring& existing, const std::wstring& imported) {
+    if (Trim(existing).empty() || existing == imported) {
+        return imported;
+    }
+    if (Trim(imported).empty()) {
+        return existing;
+    }
+    return existing + L"\n\n--- 导入便签 ---\n" + imported;
 }
 
 std::filesystem::path UniqueImportedIconPath(const std::filesystem::path& targetPath) {
@@ -492,7 +537,6 @@ ConfigPackageReport MergeImportedData(const std::filesystem::path& appDirectory,
     }
 
     std::unordered_map<int, int> groupIdMap;
-    std::vector<Group> addedGroups;
     std::vector<Group> sourceMajorGroups;
     std::vector<Group> sourceTags;
     for (const auto& group : sourceModel.groups) {
@@ -513,20 +557,24 @@ ConfigPackageReport MergeImportedData(const std::filesystem::path& appDirectory,
         return left.pos == right.pos ? left.id < right.id : left.pos < right.pos;
     });
 
-    std::unordered_map<int, int> emptyParents;
     for (const auto& sourceGroup : sourceMajorGroups) {
+        const int existingGroupId = FindMatchingGroup(targetModel, sourceGroup, 0);
+        if (existingGroupId > 0) {
+            groupIdMap[sourceGroup.id] = existingGroupId;
+            ++report.groupsMerged;
+            continue;
+        }
+
         Group group = sourceGroup;
         group.id = 0;
         group.parentGroup = 0;
         group.pos = -1;
-        group.name = UniqueGroupNameForParent(targetModel, group.name, 0, emptyParents);
         if (!targetStorage.InsertGroup(group)) {
             report.message = L"导入分组失败: " + targetStorage.lastError();
             return report;
         }
         groupIdMap[sourceGroup.id] = group.id;
         targetModel.groups.push_back(group);
-        addedGroups.push_back(group);
         ++report.groupsAdded;
     }
 
@@ -536,18 +584,23 @@ ConfigPackageReport MergeImportedData(const std::filesystem::path& appDirectory,
             report.warnings.push_back(L"跳过缺少父分组的标签: " + sourceTag.name);
             continue;
         }
+        const int existingTagId = FindMatchingGroup(targetModel, sourceTag, parent->second);
+        if (existingTagId > 0) {
+            groupIdMap[sourceTag.id] = existingTagId;
+            ++report.tagsMerged;
+            continue;
+        }
+
         Group tag = sourceTag;
         tag.id = 0;
         tag.parentGroup = parent->second;
         tag.pos = -1;
-        tag.name = UniqueGroupNameForParent(targetModel, tag.name, tag.parentGroup, emptyParents);
         if (!targetStorage.InsertGroup(tag)) {
             report.message = L"导入标签失败: " + targetStorage.lastError();
             return report;
         }
         groupIdMap[sourceTag.id] = tag.id;
         targetModel.groups.push_back(tag);
-        addedGroups.push_back(tag);
         ++report.tagsAdded;
     }
 
@@ -557,6 +610,10 @@ ConfigPackageReport MergeImportedData(const std::filesystem::path& appDirectory,
             report.warnings.push_back(L"跳过缺少父标签的启动项: " + sourceLink.name);
             continue;
         }
+        if (IsDuplicateLinkInTag(targetModel, sourceLink, parent->second)) {
+            ++report.linksSkippedDuplicate;
+            continue;
+        }
         sourceLink.id = 0;
         sourceLink.parentGroup = parent->second;
         sourceLink.pos = -1;
@@ -564,6 +621,7 @@ ConfigPackageReport MergeImportedData(const std::filesystem::path& appDirectory,
             report.message = L"导入启动项失败: " + targetStorage.lastError();
             return report;
         }
+        targetModel.links.push_back(sourceLink);
         ++report.linksAdded;
     }
 
@@ -572,11 +630,21 @@ ConfigPackageReport MergeImportedData(const std::filesystem::path& appDirectory,
         if (tag == groupIdMap.end()) {
             continue;
         }
-        if (!targetStorage.SaveNotePage(tag->second, sourceNote.content)) {
+        const std::wstring existingContent = NoteContentForTag(targetModel, tag->second);
+        const std::wstring mergedContent = MergeNoteContent(existingContent, sourceNote.content);
+        if (mergedContent == existingContent) {
+            continue;
+        }
+        if (!targetStorage.SaveNotePage(tag->second, mergedContent)) {
             report.message = L"导入便签失败: " + targetStorage.lastError();
             return report;
         }
-        ++report.notesAdded;
+        UpsertNoteContent(targetModel, tag->second, mergedContent);
+        if (Trim(existingContent).empty()) {
+            ++report.notesAdded;
+        } else {
+            ++report.notesMerged;
+        }
     }
 
     for (auto sourceTodo : sourceModel.todos) {
