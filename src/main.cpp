@@ -242,12 +242,18 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
             if (wait == WAIT_OBJECT_0 || wait == WAIT_ABANDONED) {
                 WriteAppLog(L"权限切换重启已接管单实例。");
             } else {
-                ActivateExistingInstance(sharedMemoryName);
-                return 0;
+                if (ActivateExistingInstance(sharedMemoryName)) {
+                    WriteAppLog(L"已有实例已唤醒。");
+                    return 0;
+                }
+                WriteAppLog(L"已有实例不可唤醒，继续启动新实例。");
             }
         } else {
-            ActivateExistingInstance(sharedMemoryName);
-            return 0;
+            if (ActivateExistingInstance(sharedMemoryName)) {
+                WriteAppLog(L"已有实例已唤醒。");
+                return 0;
+            }
+            WriteAppLog(L"已有实例不可唤醒，继续启动新实例。");
         }
     }
 

@@ -90,6 +90,27 @@ COLORREF ToColorRef(Color color) {
     return RGB(byte(color.r), byte(color.g), byte(color.b));
 }
 
+DWORD MainWindowExStyle(int alpha) {
+    DWORD style = WS_EX_APPWINDOW;
+    if (alpha < 255) {
+        style |= WS_EX_LAYERED;
+    }
+    return style;
+}
+
+void ApplyMainWindowAlpha(HWND hwnd, int alpha) {
+    LONG_PTR exStyle = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+    if (alpha < 255) {
+        if ((exStyle & WS_EX_LAYERED) == 0) {
+            SetWindowLongPtrW(hwnd, GWL_EXSTYLE, exStyle | WS_EX_LAYERED);
+        }
+        SetLayeredWindowAttributes(hwnd, 0, static_cast<BYTE>(alpha), LWA_ALPHA);
+    } else if ((exStyle & WS_EX_LAYERED) != 0) {
+        SetWindowLongPtrW(hwnd, GWL_EXSTYLE, exStyle & ~WS_EX_LAYERED);
+        RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_FRAME);
+    }
+}
+
 Color RgbColor(int r, int g, int b, float a = 1.0f) {
     return Color{
         ClampFloat(static_cast<float>(r) / 255.0f, 0.0f, 1.0f),
@@ -1468,7 +1489,7 @@ bool MainWindow::Create() {
     const DWORD style = WS_POPUP | WS_THICKFRAME | WS_MINIMIZEBOX | WS_CLIPCHILDREN;
     const POINT position = ClampWindowPosition(config_.posX, config_.posY, config_.width, config_.height);
     hwnd_ = CreateWindowExW(
-        WS_EX_APPWINDOW | WS_EX_LAYERED,
+        MainWindowExStyle(config_.alpha),
         wc.lpszClassName,
         kAppDisplayName,
         style,
@@ -1484,7 +1505,7 @@ bool MainWindow::Create() {
         return false;
     }
 
-    SetLayeredWindowAttributes(hwnd_, 0, static_cast<BYTE>(config_.alpha), LWA_ALPHA);
+    ApplyMainWindowAlpha(hwnd_, config_.alpha);
     if (config_.topMost) {
         SetWindowPos(hwnd_, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
     }
@@ -4585,7 +4606,7 @@ bool MainWindow::ImportDropData(IDataObject* dataObject) {
 }
 
 void MainWindow::ApplyConfigRuntimeChanges(const AppConfig& previous) {
-    SetLayeredWindowAttributes(hwnd_, 0, static_cast<BYTE>(config_.alpha), LWA_ALPHA);
+    ApplyMainWindowAlpha(hwnd_, config_.alpha);
     SetWindowPos(hwnd_, config_.topMost ? HWND_TOPMOST : HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
     if (previous.showTooltip != config_.showTooltip && !config_.showTooltip) {
         HideItemTooltip();

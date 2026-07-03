@@ -194,9 +194,10 @@ std::wstring FormatBackupConfirmationText(const WebDavRemoteFile& backup) {
     return text;
 }
 
-int EstimateMessageRows(const std::wstring& message) {
+int EstimateMessageRows(const std::wstring& message, int width, int averageCharWidth) {
     int rows = 1;
     int lineLength = 0;
+    const int charsPerRow = std::max(12, width / std::max(1, averageCharWidth));
     for (wchar_t ch : message) {
         if (ch == L'\r') {
             continue;
@@ -207,7 +208,7 @@ int EstimateMessageRows(const std::wstring& message) {
             continue;
         }
         ++lineLength;
-        if (lineLength >= 34) {
+        if (lineLength >= charsPerRow) {
             ++rows;
             lineLength = 0;
         }
@@ -222,14 +223,20 @@ int MeasureMessageTextHeight(const std::wstring& message, int width) {
     }
     HDC dc = GetDC(nullptr);
     HFONT oldFont = reinterpret_cast<HFONT>(SelectObject(dc, font));
+    TEXTMETRICW textMetric{};
+    GetTextMetricsW(dc, &textMetric);
+    const int lineHeight = std::max(20, static_cast<int>(textMetric.tmHeight + textMetric.tmExternalLeading));
+    const int averageCharWidth = std::max(1, static_cast<int>(textMetric.tmAveCharWidth));
     RECT rect{0, 0, std::max(1, width), 0};
-    DrawTextW(dc, message.c_str(), static_cast<int>(message.size()), &rect, DT_LEFT | DT_WORDBREAK | DT_CALCRECT);
+    DrawTextW(dc, message.c_str(), static_cast<int>(message.size()), &rect, DT_LEFT | DT_WORDBREAK | DT_EDITCONTROL | DT_NOPREFIX | DT_CALCRECT);
     SelectObject(dc, oldFont);
     ReleaseDC(nullptr, dc);
     if (font && font != GetStockObject(DEFAULT_GUI_FONT)) {
         DeleteObject(font);
     }
-    return std::max(20, static_cast<int>(rect.bottom - rect.top));
+    const int editRowHeight = lineHeight + std::max(4, lineHeight / 4);
+    const int estimatedHeight = EstimateMessageRows(message, width, averageCharWidth) * editRowHeight + std::max(6, lineHeight / 3);
+    return std::max(lineHeight, std::max(static_cast<int>(rect.bottom - rect.top), estimatedHeight));
 }
 
 HMODULE RichEditLibrary() {
