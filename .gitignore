@@ -69,7 +69,8 @@
 *.temp
 
 # Local/manual test scripts
-/tests/
+/tests/*
+!/tests/AboutTrayExitAcceptance.cpp
 /tools/run-tests.ps1
 /tools/run-*-tests.ps1
 /tools/run-ui-smoke.ps1

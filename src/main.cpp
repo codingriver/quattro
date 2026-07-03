@@ -3,6 +3,7 @@
 #include "EmbeddedAssetInstaller.h"
 #include "Elevation.h"
 #include "MainWindow.h"
+#include "SimpleDialogs.h"
 #include "Storage.h"
 #include "Theme.h"
 #include "Utilities.h"
@@ -281,7 +282,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     PublishMainWindow(runtime, window.hwnd());
     WriteAppLog(L"主窗口已创建。");
     if (!storageService.sqliteAvailable() && !storageService.lastError().empty()) {
-        MessageBoxW(window.hwnd(), storageService.lastError().c_str(), L"数据存储", MB_ICONINFORMATION | MB_OK);
+        ShowThemedMessageBox(window.hwnd(), instance, theme, storageService.lastError(), L"数据存储", MB_ICONINFORMATION | MB_OK);
     }
 
     int result = window.RunMessageLoop();

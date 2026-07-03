@@ -240,6 +240,10 @@ add_executable(QuattroUiScreenshotAcceptance
     src/WebDavRecoveryService.cpp
 )
 
+add_executable(QuattroAboutTrayExitAcceptance
+    tests/AboutTrayExitAcceptance.cpp
+)
+
 add_executable(QuattroWebDavAcceptance
     tests/WebDavAcceptance.cpp
     src/Config.cpp
@@ -302,6 +306,14 @@ target_compile_definitions(QuattroUiScreenshotAcceptance PRIVATE
     NOMINMAX
 )
 
+target_compile_definitions(QuattroAboutTrayExitAcceptance PRIVATE
+    UNICODE
+    _UNICODE
+    WINVER=0x0A00
+    _WIN32_WINNT=0x0A00
+    NOMINMAX
+)
+
 target_compile_definitions(QuattroWebDavAcceptance PRIVATE
     UNICODE
     _UNICODE
@@ -337,6 +349,10 @@ target_compile_options(QuattroThemeStateProbe PRIVATE
 )
 
 target_compile_options(QuattroUiScreenshotAcceptance PRIVATE
+    $<$<CXX_COMPILER_ID:MSVC>:/W4 /permissive- /EHsc /utf-8>
+)
+
+target_compile_options(QuattroAboutTrayExitAcceptance PRIVATE
     $<$<CXX_COMPILER_ID:MSVC>:/W4 /permissive- /EHsc /utf-8>
 )
 
@@ -409,6 +425,10 @@ target_link_libraries(QuattroUiScreenshotAcceptance PRIVATE
     shlwapi
     user32
     wininet
+)
+
+target_link_libraries(QuattroAboutTrayExitAcceptance PRIVATE
+    user32
 )
 
 if(QUATTRO_WITH_WEBDAV_LIBS)

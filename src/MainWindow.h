@@ -157,7 +157,6 @@ private:
     void OpenHelp();
     void OpenFaq();
     void OpenReward();
-    void ShowUpdateInfo();
     bool OpenConfiguredUrl(const std::wstring& url, const wchar_t* title);
     void RestartWithOppositePrivilege();
     bool TryRepairLinkTarget(Link& link);

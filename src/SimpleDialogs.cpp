@@ -11,10 +11,13 @@
 #include "WebDavCredentialService.h"
 
 #include <commctrl.h>
+#include <richedit.h>
+#include <shellapi.h>
 #include <windowsx.h>
 
 #include <algorithm>
 #include <array>
+#include <cwchar>
 #include <utility>
 #include <vector>
 
@@ -35,6 +38,7 @@ constexpr int ID_WEBDAV_CLEAR_PASSWORD = 411;
 constexpr int ID_WEBDAV_UPLOAD = 412;
 constexpr int ID_WEBDAV_DOWNLOAD = 413;
 constexpr int ID_WEBDAV_BACKUP_LIST = 414;
+constexpr int ID_MESSAGE_TEXT = 501;
 
 std::wstring GetText(HWND hwnd) {
     const int length = GetWindowTextLengthW(hwnd);
@@ -228,6 +232,11 @@ int MeasureMessageTextHeight(const std::wstring& message, int width) {
     return std::max(20, static_cast<int>(rect.bottom - rect.top));
 }
 
+HMODULE RichEditLibrary() {
+    static HMODULE module = LoadLibraryW(L"Msftedit.dll");
+    return module;
+}
+
 class ThemedMessageDialog {
 public:
     ThemedMessageDialog(HWND owner, HINSTANCE instance, const Theme& theme, std::wstring message, std::wstring title, UINT flags)
@@ -245,12 +254,25 @@ public:
         wc.lpszClassName = L"QuattroThemedMessageDialog";
         RegisterClassExW(&wc);
 
+        RECT ownerRect{};
+        if (owner_) {
+            GetWindowRect(owner_, &ownerRect);
+        } else {
+            SystemParametersInfoW(SPI_GETWORKAREA, 0, &ownerRect, 0);
+        }
+        RECT workArea{};
+        SystemParametersInfoW(SPI_GETWORKAREA, 0, &workArea, 0);
+
         width_ = 430;
         const DialogLayoutMetrics layout = GetDialogLayoutMetrics(theme_, DialogLayoutKind::Mini);
         const int buttonHeight = ThemedControls::ButtonHeight(theme_);
         const int textWidth = width_ - layout.contentInsetX * 2;
         const int textHeight = MeasureMessageTextHeight(message_, textWidth);
-        const int clientHeight = std::max(150, layout.contentInsetY + textHeight + layout.footerGap + buttonHeight + layout.footerInsetY);
+        const int availableHeight = std::max(260, static_cast<int>(workArea.bottom - workArea.top) * 3 / 4);
+        const int maxTextHeight = std::max(80, availableHeight - layout.contentInsetY - layout.footerGap - buttonHeight - layout.footerInsetY);
+        textNeedsScroll_ = textHeight + 4 > maxTextHeight;
+        textHeight_ = std::min(std::max(32, textHeight + 4), maxTextHeight);
+        const int clientHeight = std::max(150, layout.contentInsetY + textHeight_ + layout.footerGap + buttonHeight + layout.footerInsetY);
         const DWORD exStyle = WS_EX_DLGMODALFRAME | WS_EX_WINDOWEDGE;
         const DWORD style = WS_CAPTION | WS_SYSMENU | WS_POPUP;
         RECT windowRect{0, 0, width_, clientHeight};
@@ -258,12 +280,6 @@ public:
         const int windowWidth = windowRect.right - windowRect.left;
         const int windowHeight = windowRect.bottom - windowRect.top;
 
-        RECT ownerRect{};
-        if (owner_) {
-            GetWindowRect(owner_, &ownerRect);
-        } else {
-            SystemParametersInfoW(SPI_GETWORKAREA, 0, &ownerRect, 0);
-        }
         const int ownerWidth = ownerRect.right - ownerRect.left;
         const int ownerHeight = ownerRect.bottom - ownerRect.top;
         const int x = ownerRect.left + std::max(0, (ownerWidth - windowWidth) / 2);
@@ -328,6 +344,171 @@ private:
         DestroyWindow(hwnd_);
     }
 
+    static LRESULT CALLBACK TextControlProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR subclassId, DWORD_PTR) {
+        switch (message) {
+        case WM_KEYDOWN:
+            if ((wParam == L'A' || wParam == L'a') && (GetKeyState(VK_CONTROL) & 0x8000) != 0) {
+                SendMessageW(hwnd, EM_SETSEL, 0, -1);
+                return 0;
+            }
+            break;
+        case WM_NCDESTROY:
+            RemoveWindowSubclass(hwnd, TextControlProc, subclassId);
+            break;
+        default:
+            break;
+        }
+        return DefSubclassProc(hwnd, message, wParam, lParam);
+    }
+
+    RECT MessageTextRect(const DialogLayoutMetrics& layout, int clientWidth) const {
+        return RECT{
+            layout.contentInsetX,
+            layout.contentInsetY,
+            clientWidth - layout.contentInsetX,
+            layout.contentInsetY + textHeight_};
+    }
+
+    DWORD MessageTextStyle() const {
+        DWORD style = WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | ES_NOHIDESEL;
+        if (textNeedsScroll_) {
+            style |= WS_VSCROLL;
+        }
+        return style;
+    }
+
+    std::wstring MessageControlText() const {
+        std::wstring text;
+        text.reserve(message_.size() + 8);
+        for (std::size_t i = 0; i < message_.size(); ++i) {
+            const wchar_t ch = message_[i];
+            if (ch == L'\r') {
+                text += L"\r\n";
+                if (i + 1 < message_.size() && message_[i + 1] == L'\n') {
+                    ++i;
+                }
+            } else if (ch == L'\n') {
+                text += L"\r\n";
+            } else {
+                text += ch;
+            }
+        }
+        return text;
+    }
+
+    void ConfigureMessageText(HWND hwnd, bool richEdit) {
+        SendMessageW(hwnd, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
+        SendMessageW(hwnd, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, MAKELPARAM(0, 0));
+        SetWindowSubclass(hwnd, TextControlProc, 1, 0);
+
+        if (richEdit) {
+            const COLORREF background = ToColorRef(theme_.color(L"dialog", L"normal", L"bg"));
+            SendMessageW(hwnd, EM_SETBKGNDCOLOR, 0, static_cast<LPARAM>(background));
+
+            CHARFORMAT2W format{};
+            format.cbSize = sizeof(format);
+            format.dwMask = CFM_COLOR;
+            format.crTextColor = ToColorRef(theme_.color(L"label", L"normal", L"text"));
+            SendMessageW(hwnd, EM_SETCHARFORMAT, SCF_DEFAULT, reinterpret_cast<LPARAM>(&format));
+
+            SendMessageW(hwnd, EM_AUTOURLDETECT, TRUE, 0);
+            const LRESULT mask = SendMessageW(hwnd, EM_GETEVENTMASK, 0, 0);
+            SendMessageW(hwnd, EM_SETEVENTMASK, 0, static_cast<LPARAM>(mask | ENM_LINK));
+            const std::wstring text = MessageControlText();
+            SetWindowTextW(hwnd, text.c_str());
+        }
+    }
+
+    bool CreateRichMessageText(const RECT& rect) {
+        if (!RichEditLibrary()) {
+            return false;
+        }
+        messageEdit_ = CreateWindowExW(
+            0,
+            MSFTEDIT_CLASS,
+            nullptr,
+            MessageTextStyle(),
+            rect.left,
+            rect.top,
+            rect.right - rect.left,
+            rect.bottom - rect.top,
+            hwnd_,
+            reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_MESSAGE_TEXT)),
+            instance_,
+            nullptr);
+        if (!messageEdit_) {
+            return false;
+        }
+        messageTextIsRichEdit_ = true;
+        ConfigureMessageText(messageEdit_, true);
+        return true;
+    }
+
+    void CreateFallbackMessageText(const RECT& rect) {
+        const std::wstring text = MessageControlText();
+        messageEdit_ = CreateWindowExW(
+            0,
+            L"EDIT",
+            text.c_str(),
+            MessageTextStyle(),
+            rect.left,
+            rect.top,
+            rect.right - rect.left,
+            rect.bottom - rect.top,
+            hwnd_,
+            reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_MESSAGE_TEXT)),
+            instance_,
+            nullptr);
+        if (messageEdit_) {
+            ConfigureMessageText(messageEdit_, false);
+        }
+    }
+
+    void CreateMessageTextControl(const DialogLayoutMetrics& layout, int clientWidth) {
+        const RECT rect = MessageTextRect(layout, clientWidth);
+        if (!CreateRichMessageText(rect)) {
+            CreateFallbackMessageText(rect);
+        }
+    }
+
+    std::wstring LinkText(const CHARRANGE& range) const {
+        if (!messageEdit_ || range.cpMax <= range.cpMin) {
+            return {};
+        }
+        std::wstring text(static_cast<std::size_t>(range.cpMax - range.cpMin) + 1, L'\0');
+        TEXTRANGEW textRange{};
+        textRange.chrg = range;
+        textRange.lpstrText = text.data();
+        SendMessageW(messageEdit_, EM_GETTEXTRANGE, 0, reinterpret_cast<LPARAM>(&textRange));
+        text.resize(std::wcslen(text.c_str()));
+        while (!text.empty() && (text.back() == L'.' || text.back() == L',' || text.back() == L';' ||
+                                 text.back() == L':' || text.back() == L')' || text.back() == L'）' ||
+                                 text.back() == L'。' || text.back() == L'，')) {
+            text.pop_back();
+        }
+        return Trim(text);
+    }
+
+    bool HandleMessageTextNotify(LPARAM lParam) {
+        if (!messageTextIsRichEdit_ || !messageEdit_) {
+            return false;
+        }
+        auto* header = reinterpret_cast<NMHDR*>(lParam);
+        if (!header || header->hwndFrom != messageEdit_ || header->code != EN_LINK) {
+            return false;
+        }
+        auto* link = reinterpret_cast<ENLINK*>(lParam);
+        if (link->msg != WM_LBUTTONUP) {
+            return false;
+        }
+        const std::wstring url = LinkText(link->chrg);
+        if (url.empty()) {
+            return false;
+        }
+        ShellExecuteW(hwnd_, L"open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        return true;
+    }
+
     LRESULT Handle(UINT message, WPARAM wParam, LPARAM lParam) {
         switch (message) {
         case WM_CREATE: {
@@ -344,6 +525,7 @@ private:
             GetClientRect(hwnd_, &client);
             const int clientWidth = client.right - client.left;
             const int clientHeight = client.bottom - client.top;
+            CreateMessageTextControl(layout, clientWidth);
             const int y = layout.FooterButtonY(clientHeight, buttonHeight);
             if (YesNo()) {
                 ThemedControls::CreatePrimaryButton(instance_, hwnd_, IDYES, L"是", layout.FooterButtonX(clientWidth, 0, 2), y, layout.footerButtonWidth, buttonHeight, font_, true);
@@ -362,19 +544,25 @@ private:
             RECT rect{};
             GetClientRect(hwnd_, &rect);
             FillRect(dc, &rect, backgroundBrush_ ? backgroundBrush_ : reinterpret_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
-            const DialogLayoutMetrics layout = GetDialogLayoutMetrics(theme_, DialogLayoutKind::Mini);
-            const int buttonTop = layout.FooterButtonY(rect.bottom - rect.top, ThemedControls::ButtonHeight(theme_));
-            RECT textRect{layout.contentInsetX, layout.contentInsetY, rect.right - layout.contentInsetX, buttonTop - layout.footerGap};
-            SetBkMode(dc, TRANSPARENT);
-            SetTextColor(dc, ToColorRef(theme_.color(L"label", L"normal", L"text")));
-            HFONT oldFont = reinterpret_cast<HFONT>(SelectObject(dc, font_));
-            DrawTextW(dc, message_.c_str(), static_cast<int>(message_.size()), &textRect, DT_LEFT | DT_WORDBREAK);
-            SelectObject(dc, oldFont);
             EndPaint(hwnd_, &ps);
             return 0;
         }
         case WM_ERASEBKGND:
             return 1;
+        case WM_NOTIFY:
+            if (HandleMessageTextNotify(lParam)) {
+                return TRUE;
+            }
+            return 0;
+        case WM_CTLCOLOREDIT:
+        case WM_CTLCOLORSTATIC:
+            if (reinterpret_cast<HWND>(lParam) == messageEdit_) {
+                HDC dc = reinterpret_cast<HDC>(wParam);
+                SetBkMode(dc, TRANSPARENT);
+                SetTextColor(dc, ToColorRef(theme_.color(L"label", L"normal", L"text")));
+                return reinterpret_cast<LRESULT>(backgroundBrush_ ? backgroundBrush_ : GetStockObject(WHITE_BRUSH));
+            }
+            return DefWindowProcW(hwnd_, message, wParam, lParam);
         case WM_DRAWITEM:
             if (ThemedControls::Draw(theme_, reinterpret_cast<const DRAWITEMSTRUCT*>(lParam))) {
                 return TRUE;
@@ -420,15 +608,19 @@ private:
     HWND owner_ = nullptr;
     HINSTANCE instance_ = nullptr;
     HWND hwnd_ = nullptr;
+    HWND messageEdit_ = nullptr;
     const Theme& theme_;
     std::wstring message_;
     std::wstring title_;
     UINT flags_ = MB_OK;
     int width_ = 430;
     int height_ = 150;
+    int textHeight_ = 32;
     int result_ = IDOK;
     HFONT font_ = nullptr;
     HBRUSH backgroundBrush_ = nullptr;
+    bool messageTextIsRichEdit_ = false;
+    bool textNeedsScroll_ = false;
     bool ownsFont_ = false;
     bool ownerWasEnabled_ = false;
     bool ownerRestored_ = false;

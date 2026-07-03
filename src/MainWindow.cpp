@@ -2200,9 +2200,6 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         case ID_MENU_REWARD:
             OpenReward();
             return 0;
-        case ID_MENU_UPDATE:
-            ShowUpdateInfo();
-            return 0;
         case ID_MENU_RESTART_PRIVILEGE:
             RestartWithOppositePrivilege();
             return 0;
@@ -3999,17 +3996,6 @@ void MainWindow::OpenReward() {
     }
 }
 
-void MainWindow::ShowUpdateInfo() {
-    if (OpenConfiguredUrl(config_.updateUrl, L"检查更新")) {
-        return;
-    }
-    MessageBoxW(
-        hwnd_,
-        L"当前版本为本地构建版本。\n\n在线更新服务暂未接入，请以后续发布包或项目交付说明为准。",
-        L"检查更新",
-        MB_OK | MB_ICONINFORMATION);
-}
-
 void MainWindow::RestartWithOppositePrivilege() {
     config_.preferAdminRun = !runningAsAdmin_;
     configService_.Save(config_);
@@ -4727,8 +4713,12 @@ void MainWindow::ShowTrayMenu(POINT screenPoint) {
     AppendThemedSeparator(menu);
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_EXIT, L"退出");
     ActivateWindow(hwnd_);
-    TrackPopupMenu(menu, TPM_RIGHTBUTTON, screenPoint.x, screenPoint.y, 0, hwnd_, nullptr);
+    const UINT command = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, screenPoint.x, screenPoint.y, 0, hwnd_, nullptr);
+    PostMessageW(hwnd_, WM_NULL, 0, 0);
     DestroyMenu(menu);
+    if (command != 0) {
+        SendMessageW(hwnd_, WM_COMMAND, MAKEWPARAM(command, 0), 0);
+    }
 }
 
 void MainWindow::ShowMainMenu(POINT screenPoint) {
@@ -4758,7 +4748,6 @@ void MainWindow::ShowMainMenu(POINT screenPoint) {
     AppendThemedSeparator(menu);
     AppendUnifiedViewOptionItems(menu);
     AppendThemedSeparator(menu);
-    AppendThemedMenuItem(menu, MF_STRING, ID_MENU_UPDATE, L"更新");
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_EXIT, L"关闭退出");
     ActivateWindow(hwnd_);
     TrackPopupMenu(menu, TPM_RIGHTBUTTON, screenPoint.x, screenPoint.y, 0, hwnd_, nullptr);
