@@ -1,6 +1,9 @@
 {
   "dependencies": [
     {
+      "name": "cpp-httplib"
+    },
+    {
       "name": "curl",
       "default-features": false,
       "features": [

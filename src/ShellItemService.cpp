@@ -3,12 +3,14 @@
 #include "Utilities.h"
 
 #include <shlobj.h>
+#include <shobjidl.h>
 #include <shlwapi.h>
 #include <shellapi.h>
 
 #include <algorithm>
 #include <cstring>
 #include <filesystem>
+#include <utility>
 
 namespace {
 constexpr std::size_t kMaxPidlBytes = 256 * 1024;
@@ -239,6 +241,7 @@ bool ExecutePidlVerb(HWND owner, PCIDLIST_ABSOLUTE pidl, const wchar_t* verb, in
     info.nShow = NormalizeShowCmd(showCmd);
     return ShellExecuteExW(&info) != FALSE;
 }
+
 }
 
 bool ShellItemService::IsShellParseName(const std::wstring& value) {

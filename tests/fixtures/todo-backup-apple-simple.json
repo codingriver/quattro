@@ -1,0 +1,17 @@
+{
+  "app": "Quattro",
+  "exportType": "todo-backup",
+  "formatVersion": 2,
+  "todos": [
+    {
+      "title": "Apple 简化待办",
+      "notes": "快捷指令只需要这些字段",
+      "enabled": true,
+      "completed": false,
+      "dueAt": "2026-07-10T09:00:00+08:00",
+      "groupName": "Apple",
+      "tagName": "提醒事项"
+    }
+  ]
+}
+

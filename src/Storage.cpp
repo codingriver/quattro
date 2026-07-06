@@ -1,5 +1,6 @@
 #include "Storage.h"
 
+#include "AppLog.h"
 #include "TodoSchedule.h"
 #include "Utilities.h"
 
@@ -396,31 +397,68 @@ StorageService::StorageService(std::filesystem::path appDirectory)
 
 AppModel StorageService::Load() {
     lastError_.clear();
+    WriteStartupTiming(L"storage load begin");
 
     const std::filesystem::path dbDirectory = appDirectory_ / L"db";
     std::error_code ec;
     std::filesystem::create_directories(dbDirectory, ec);
+    WriteStartupTiming(
+        L"storage db directory ready",
+        L"path=" + dbDirectory.wstring() + L", error=" + (ec ? Utf8ToWide(ec.message().c_str()) : L""));
 
-    SQLiteDatabase db(dbDirectory / L"link.db");
+    const std::filesystem::path dbPath = dbDirectory / L"link.db";
+    const bool newDatabase = !std::filesystem::exists(dbPath);
+    SQLiteDatabase db(dbPath);
     if (!db.ok()) {
         lastError_ = db.Error();
         sqliteAvailable_ = false;
+        WriteStartupTiming(L"storage sqlite open failed", lastError_);
         return LoadFallback();
     }
     sqliteAvailable_ = true;
+    WriteStartupTiming(
+        L"storage sqlite opened",
+        L"path=" + dbPath.wstring() + L", new=" + std::wstring(newDatabase ? L"1" : L"0"));
 
-    CreateSchema(db.get(), lastError_);
-    MigrateSchema(db.get(), lastError_);
-
-    if (CountRows(db.get(), L"SELECT COUNT(*) FROM Version;") == 0) {
-        Exec(db.get(), ("INSERT INTO Version(ID,Ver) VALUES(1," + std::to_string(kSchemaVersion) + ");").c_str(), lastError_);
+    bool startupSchemaTransaction = false;
+    if (newDatabase) {
+        startupSchemaTransaction = Exec(db.get(), "BEGIN IMMEDIATE;", lastError_);
+        WriteStartupTiming(
+            L"storage schema transaction begin",
+            L"ok=" + std::wstring(startupSchemaTransaction ? L"1" : L"0") +
+                L", error=" + lastError_);
     }
 
-    if (CountRows(db.get(), L"SELECT COUNT(*) FROM Groups;") == 0) {
+    CreateSchema(db.get(), lastError_);
+    WriteStartupTiming(L"storage schema ensured", lastError_);
+    MigrateSchema(db.get(), lastError_);
+    WriteStartupTiming(L"storage schema migrated", lastError_);
+
+    const int versionRows = CountRows(db.get(), L"SELECT COUNT(*) FROM Version;");
+    WriteStartupTiming(L"storage version rows counted", L"rows=" + std::to_wstring(versionRows));
+    if (versionRows == 0) {
+        Exec(db.get(), ("INSERT INTO Version(ID,Ver) VALUES(1," + std::to_string(kSchemaVersion) + ");").c_str(), lastError_);
+        WriteStartupTiming(L"storage version row inserted", lastError_);
+    }
+
+    const int groupRows = CountRows(db.get(), L"SELECT COUNT(*) FROM Groups;");
+    WriteStartupTiming(L"storage group rows counted", L"rows=" + std::to_wstring(groupRows));
+    if (groupRows == 0) {
         Exec(db.get(),
              "INSERT INTO Groups(ID,NAME,POS,ParentGroup,ICONSIZE,LAYOUT,SORT,TYPE) VALUES(1,'新的分组',0,0,0,0,0,0);"
              "INSERT INTO Groups(ID,NAME,POS,ParentGroup,ICONSIZE,LAYOUT,SORT,TYPE) VALUES(2,'新的标签',0,1,32,1,0,0);",
              lastError_);
+        WriteStartupTiming(L"storage default groups inserted", lastError_);
+    }
+
+    if (startupSchemaTransaction) {
+        if (lastError_.empty()) {
+            Exec(db.get(), "COMMIT;", lastError_);
+            WriteStartupTiming(L"storage schema transaction committed", lastError_);
+        } else {
+            Exec(db.get(), "ROLLBACK;", lastError_);
+            WriteStartupTiming(L"storage schema transaction rolled back", lastError_);
+        }
     }
 
     AppModel model;
@@ -446,6 +484,7 @@ AppModel StorageService::Load() {
             }
         }
     }
+    WriteStartupTiming(L"storage groups loaded", L"count=" + std::to_wstring(model.groups.size()));
 
     {
         SQLiteStatement statement(db.get(),
@@ -476,6 +515,7 @@ AppModel StorageService::Load() {
             }
         }
     }
+    WriteStartupTiming(L"storage links loaded", L"count=" + std::to_wstring(model.links.size()));
 
     {
         SQLiteStatement statement(db.get(), L"SELECT TagId,Content,UpdatedAt FROM NotePages;");
@@ -489,6 +529,7 @@ AppModel StorageService::Load() {
             }
         }
     }
+    WriteStartupTiming(L"storage notes loaded", L"count=" + std::to_wstring(model.notes.size()));
 
     {
         SQLiteStatement statement(db.get(),
@@ -518,8 +559,15 @@ AppModel StorageService::Load() {
             }
         }
     }
+    WriteStartupTiming(L"storage todos loaded", L"count=" + std::to_wstring(model.todos.size()));
 
     EnsureDefaultData(model);
+    WriteStartupTiming(
+        L"storage default data normalized",
+        L"groups=" + std::to_wstring(model.groups.size()) +
+            L", links=" + std::to_wstring(model.links.size()) +
+            L", notes=" + std::to_wstring(model.notes.size()) +
+            L", todos=" + std::to_wstring(model.todos.size()));
     return model;
 }
 

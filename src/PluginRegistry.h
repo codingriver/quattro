@@ -32,7 +32,6 @@ class PluginRegistry {
 public:
     explicit PluginRegistry(std::filesystem::path appDirectory);
 
-    bool Initialize();
     std::vector<PluginRecord> LoadPlugins();
     bool SetEnabled(const std::wstring& pluginId, bool enabled);
     bool IsEnabled(const std::wstring& pluginId);
@@ -43,9 +42,7 @@ public:
     static std::vector<PluginRecord> BuiltinPlugins();
 
 private:
-    bool EnsureSchema(void* db);
-    bool UpsertBuiltinPlugins(void* db);
-
     std::filesystem::path appDirectory_;
+    std::wstring stateKey_;
     std::wstring lastError_;
 };

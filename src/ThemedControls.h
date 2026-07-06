@@ -66,6 +66,9 @@ HWND CreateTabButton(
     HFONT font,
     bool selected);
 
+void SetTabButtonSelected(HWND hwnd, bool selected);
+bool IsTabButtonSelected(HWND hwnd);
+
 HWND CreateComboBox(
     HINSTANCE instance,
     HWND parent,
@@ -134,6 +137,7 @@ int ComboBoxContentWidth(const Theme& theme, int textWidth);
 RECT ComboBoxItemTextRect(const Theme& theme, RECT frame);
 int ListBoxItemHeight(const Theme& theme);
 RECT ListItemTextRect(const Theme& theme, RECT frame);
+RECT ListFrameInnerRect(const Theme& theme, RECT frame);
 int LabelHeight(const Theme& theme);
 RECT LabelTextRect(const Theme& theme, RECT frame);
 int FieldFrameHeight(const Theme& theme);
@@ -196,6 +200,13 @@ void DrawListFrame(
     HWND child,
     bool readOnly = false);
 
+void DrawPanelFrame(
+    const Theme& theme,
+    HDC dc,
+    RECT rect,
+    bool raised = false);
+
+void ApplyListViewTheme(HWND list, const Theme& theme);
 bool Draw(const Theme& theme, const DRAWITEMSTRUCT* draw);
 bool HandleListViewCustomDraw(const Theme& theme, LPARAM lParam, LRESULT& result);
 

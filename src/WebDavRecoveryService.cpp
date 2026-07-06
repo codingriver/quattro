@@ -3,22 +3,10 @@
 #include "Utilities.h"
 #include "WebDavCredentialService.h"
 
-#include <windows.h>
-
 #include <algorithm>
 
 namespace {
 constexpr const wchar_t* kSection = L"WebDavRecovery";
-
-std::filesystem::path LocalAppDataPath() {
-    std::wstring buffer(MAX_PATH, L'\0');
-    DWORD copied = GetEnvironmentVariableW(L"LOCALAPPDATA", buffer.data(), static_cast<DWORD>(buffer.size()));
-    if (copied == 0 || copied >= buffer.size()) {
-        return std::filesystem::temp_directory_path();
-    }
-    buffer.resize(copied);
-    return buffer;
-}
 }
 
 WebDavRecoveryService::WebDavRecoveryService(std::filesystem::path recoveryPath)
@@ -26,7 +14,7 @@ WebDavRecoveryService::WebDavRecoveryService(std::filesystem::path recoveryPath)
 }
 
 std::filesystem::path WebDavRecoveryService::DefaultRecoveryPath() {
-    return LocalAppDataPath() / L"Quattro" / L"recovery" / L"webdav.ini";
+    return QuattroUserConfigDirectory() / L"webdav-recovery.ini";
 }
 
 bool WebDavRecoveryService::HasWebDavSettings(const AppConfig& config) {

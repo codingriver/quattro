@@ -6,6 +6,7 @@
 #include "HotKeyEditor.h"
 #include "LinkEditDialog.h"
 #include "MenuCatalog.h"
+#include "QuickImportDialog.h"
 #include "ShellItemService.h"
 #include "SimpleDialogs.h"
 #include "StartupService.h"
@@ -15,7 +16,6 @@
 #include "TodoSchedule.h"
 #include "UrlEditDialog.h"
 #include "Utilities.h"
-#include "WebDavBackupService.h"
 #include "WebDavRecoveryService.h"
 #include "../resources/resource.h"
 
@@ -37,7 +37,7 @@
 #include <shellapi.h>
 #include <sstream>
 #include <system_error>
-#include <thread>
+#include <tlhelp32.h>
 #include <uxtheme.h>
 #include <windowsx.h>
 
@@ -52,7 +52,10 @@ constexpr UINT_PTR ID_TIMER_NOTE_AUTOSAVE = 12;
 constexpr UINT_PTR ID_TIMER_REMINDER_SCAN = 13;
 constexpr UINT_PTR ID_TIMER_REMINDER_PANEL = 14;
 constexpr int kDockVisiblePixels = 3;
+constexpr int kDockPeekVisiblePixels = 6;
 constexpr int kDockRestoreGraceMs = 1500;
+constexpr int kDockSnapThreshold = 12;
+constexpr const wchar_t* kDockPeekWindowClass = L"QuattroDockPeekWindow";
 constexpr const wchar_t* kTooltipWindowClass = L"QuattroTooltipWindow";
 constexpr const wchar_t* kTooltipBgProp = L"QuattroTooltipBg";
 constexpr const wchar_t* kTooltipTextProp = L"QuattroTooltipText";
@@ -64,12 +67,221 @@ constexpr const wchar_t* kTooltipRadiusProp = L"QuattroTooltipRadius";
 constexpr const wchar_t* kTooltipBorderWidthProp = L"QuattroTooltipBorderWidth";
 constexpr const wchar_t* kAppDisplayName = L"Quattro快速启动器";
 
+enum class DockEdge {
+    None,
+    Left,
+    Right,
+    Top,
+    Bottom,
+};
+
+struct DockTarget {
+    DockEdge edge = DockEdge::None;
+    HMONITOR monitor = nullptr;
+    RECT work{};
+};
+
 template <typename T>
 void SafeRelease(T*& value) {
     if (value) {
         value->Release();
         value = nullptr;
     }
+}
+
+struct SiblingQuattroProcess {
+    DWORD processId = 0;
+    HWND mainWindow = nullptr;
+    HANDLE process = nullptr;
+};
+
+std::wstring NormalizeProcessPath(std::wstring path) {
+    if (path.empty()) {
+        return {};
+    }
+
+    std::wstring buffer(MAX_PATH, L'\0');
+    DWORD length = GetFullPathNameW(path.c_str(), static_cast<DWORD>(buffer.size()), buffer.data(), nullptr);
+    if (length == 0) {
+        return ToLower(path);
+    }
+    if (length >= buffer.size()) {
+        buffer.assign(length + 1, L'\0');
+        length = GetFullPathNameW(path.c_str(), static_cast<DWORD>(buffer.size()), buffer.data(), nullptr);
+        if (length == 0 || length >= buffer.size()) {
+            return ToLower(path);
+        }
+    }
+    buffer.resize(length);
+    return ToLower(buffer);
+}
+
+std::wstring CurrentExecutablePath() {
+    std::wstring buffer(MAX_PATH, L'\0');
+    for (;;) {
+        DWORD copied = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
+        if (copied == 0) {
+            return {};
+        }
+        if (copied < buffer.size() - 1) {
+            buffer.resize(copied);
+            return buffer;
+        }
+        buffer.resize(buffer.size() * 2);
+    }
+}
+
+std::wstring ProcessImagePath(HANDLE process) {
+    std::wstring buffer(32768, L'\0');
+    DWORD length = static_cast<DWORD>(buffer.size());
+    if (!QueryFullProcessImageNameW(process, 0, buffer.data(), &length) || length == 0) {
+        return {};
+    }
+    buffer.resize(length);
+    return buffer;
+}
+
+struct MainWindowEnumerationContext {
+    std::vector<std::pair<DWORD, HWND>> windows;
+};
+
+BOOL CALLBACK EnumQuattroMainWindows(HWND hwnd, LPARAM param) {
+    auto* context = reinterpret_cast<MainWindowEnumerationContext*>(param);
+    if (!context) {
+        return TRUE;
+    }
+
+    wchar_t className[128]{};
+    if (GetClassNameW(hwnd, className, 128) == 0 || wcscmp(className, L"QuattroMainWindow") != 0) {
+        return TRUE;
+    }
+
+    DWORD processId = 0;
+    GetWindowThreadProcessId(hwnd, &processId);
+    if (processId != 0) {
+        context->windows.emplace_back(processId, hwnd);
+    }
+    return TRUE;
+}
+
+HWND FindMainWindowForProcess(DWORD processId, const std::vector<std::pair<DWORD, HWND>>& windows) {
+    for (const auto& [windowProcessId, hwnd] : windows) {
+        if (windowProcessId == processId && IsWindow(hwnd)) {
+            return hwnd;
+        }
+    }
+    return nullptr;
+}
+
+std::vector<SiblingQuattroProcess> CollectSiblingQuattroProcesses() {
+    std::vector<SiblingQuattroProcess> siblings;
+    const std::wstring currentPath = NormalizeProcessPath(CurrentExecutablePath());
+    if (currentPath.empty()) {
+        WriteAppLog(L"退出清理：无法获取当前可执行文件路径。");
+        return siblings;
+    }
+
+    MainWindowEnumerationContext windowContext;
+    EnumWindows(EnumQuattroMainWindows, reinterpret_cast<LPARAM>(&windowContext));
+
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snapshot == INVALID_HANDLE_VALUE) {
+        WriteAppLog(L"退出清理：进程快照创建失败: " + FormatLastError(GetLastError()));
+        return siblings;
+    }
+
+    PROCESSENTRY32W entry{};
+    entry.dwSize = sizeof(entry);
+    const DWORD currentProcessId = GetCurrentProcessId();
+    if (Process32FirstW(snapshot, &entry)) {
+        do {
+            if (entry.th32ProcessID == currentProcessId) {
+                continue;
+            }
+
+            HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE | SYNCHRONIZE,
+                                         FALSE,
+                                         entry.th32ProcessID);
+            if (!process) {
+                continue;
+            }
+
+            const std::wstring imagePath = NormalizeProcessPath(ProcessImagePath(process));
+            if (imagePath == currentPath) {
+                SiblingQuattroProcess sibling;
+                sibling.processId = entry.th32ProcessID;
+                sibling.mainWindow = FindMainWindowForProcess(entry.th32ProcessID, windowContext.windows);
+                sibling.process = process;
+                siblings.push_back(sibling);
+            } else {
+                CloseHandle(process);
+            }
+        } while (Process32NextW(snapshot, &entry));
+    } else {
+        WriteAppLog(L"退出清理：进程快照读取失败: " + FormatLastError(GetLastError()));
+    }
+    CloseHandle(snapshot);
+    return siblings;
+}
+
+void CloseSiblingHandles(std::vector<SiblingQuattroProcess>& siblings) {
+    for (auto& sibling : siblings) {
+        if (sibling.process) {
+            CloseHandle(sibling.process);
+            sibling.process = nullptr;
+        }
+    }
+}
+
+void TerminateSiblingQuattroProcesses() {
+    std::vector<SiblingQuattroProcess> siblings = CollectSiblingQuattroProcesses();
+    if (siblings.empty()) {
+        WriteAppLog(L"退出清理：未发现同路径后台实例。");
+        return;
+    }
+
+    WriteAppLog(L"退出清理：发现同路径后台实例 " + std::to_wstring(siblings.size()) + L" 个。");
+    for (const auto& sibling : siblings) {
+        if (sibling.mainWindow && IsWindow(sibling.mainWindow)) {
+            if (PostMessageW(sibling.mainWindow, WM_QUATTRO_EXIT_INSTANCE, 0, 0)) {
+                WriteAppLog(L"退出清理：已通知实例退出 pid=" + std::to_wstring(sibling.processId));
+            } else {
+                WriteAppLog(L"退出清理：通知实例退出失败 pid=" + std::to_wstring(sibling.processId) +
+                            L"，错误=" + FormatLastError(GetLastError()));
+            }
+        } else {
+            WriteAppLog(L"退出清理：实例无可用主窗口，将等待后强制结束 pid=" + std::to_wstring(sibling.processId));
+        }
+    }
+
+    const ULONGLONG deadline = GetTickCount64() + 2000;
+    for (;;) {
+        bool allExited = true;
+        for (const auto& sibling : siblings) {
+            if (sibling.process && WaitForSingleObject(sibling.process, 0) == WAIT_TIMEOUT) {
+                allExited = false;
+                break;
+            }
+        }
+        if (allExited || GetTickCount64() >= deadline) {
+            break;
+        }
+        Sleep(50);
+    }
+
+    for (const auto& sibling : siblings) {
+        if (!sibling.process || WaitForSingleObject(sibling.process, 0) != WAIT_TIMEOUT) {
+            continue;
+        }
+        if (TerminateProcess(sibling.process, 0)) {
+            WriteAppLog(L"退出清理：已强制结束失控实例 pid=" + std::to_wstring(sibling.processId));
+        } else {
+            WriteAppLog(L"退出清理：强制结束失控实例失败 pid=" + std::to_wstring(sibling.processId) +
+                        L"，错误=" + FormatLastError(GetLastError()));
+        }
+    }
+
+    CloseSiblingHandles(siblings);
 }
 
 float Width(const D2D1_RECT_F& rect) {
@@ -82,6 +294,13 @@ float Height(const D2D1_RECT_F& rect) {
 
 float ClampFloat(float value, float minValue, float maxValue) {
     return std::max(minValue, std::min(maxValue, value));
+}
+
+int ClampSpanStart(int value, int span, int minValue, int maxValue) {
+    if (span >= maxValue - minValue) {
+        return minValue;
+    }
+    return std::max(minValue, std::min(value, maxValue - span));
 }
 
 COLORREF ToColorRef(Color color) {
@@ -112,6 +331,21 @@ void ApplyMainWindowAlpha(HWND hwnd, int alpha) {
     }
 }
 
+HWND MainWindowTopMostInsertAfter(bool topMost) {
+    return topMost ? HWND_TOPMOST : HWND_NOTOPMOST;
+}
+
+HWND MainWindowMoveInsertAfter(bool topMost) {
+    return topMost ? HWND_TOPMOST : nullptr;
+}
+
+UINT MainWindowMoveFlags(bool topMost, UINT flags) {
+    if (topMost) {
+        return flags & ~SWP_NOZORDER;
+    }
+    return flags | SWP_NOZORDER;
+}
+
 Color RgbColor(int r, int g, int b, float a = 1.0f) {
     return Color{
         ClampFloat(static_cast<float>(r) / 255.0f, 0.0f, 1.0f),
@@ -128,6 +362,171 @@ Color LerpColor(const Color& a, const Color& b, float t) {
         a.g + (b.g - a.g) * t,
         a.b + (b.b - a.b) * t,
         a.a + (b.a - a.a) * t};
+}
+
+bool OpenClipboardWithRetry(HWND owner, DWORD timeoutMs = 250) {
+    const ULONGLONG deadline = GetTickCount64() + timeoutMs;
+    do {
+        if (OpenClipboard(owner)) {
+            return true;
+        }
+        Sleep(15);
+    } while (GetTickCount64() < deadline);
+    return OpenClipboard(owner) != FALSE;
+}
+
+std::optional<DockTarget> FindDockTarget(const RECT& window, int threshold) {
+    HMONITOR monitor = MonitorFromRect(&window, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO info{};
+    info.cbSize = sizeof(info);
+    if (!GetMonitorInfoW(monitor, &info)) {
+        return std::nullopt;
+    }
+
+    const RECT work = info.rcWork;
+    const int leftDistance = std::abs(window.left - work.left);
+    const int rightDistance = std::abs(window.right - work.right);
+    const int topDistance = std::abs(window.top - work.top);
+    const int bottomDistance = std::abs(window.bottom - work.bottom);
+    const int nearest = std::min(std::min(leftDistance, rightDistance), std::min(topDistance, bottomDistance));
+    if (nearest > threshold) {
+        return std::nullopt;
+    }
+
+    DockEdge edge = DockEdge::Left;
+    if (nearest == topDistance) {
+        edge = DockEdge::Top;
+    } else if (nearest == bottomDistance) {
+        edge = DockEdge::Bottom;
+    } else if (nearest == rightDistance) {
+        edge = DockEdge::Right;
+    }
+
+    return DockTarget{edge, monitor, work};
+}
+
+RECT SnapRectToDockTarget(RECT window, const DockTarget& target) {
+    const int width = window.right - window.left;
+    const int height = window.bottom - window.top;
+    RECT snapped = window;
+    switch (target.edge) {
+    case DockEdge::Left:
+        snapped.left = target.work.left;
+        snapped.right = snapped.left + width;
+        snapped.top = ClampSpanStart(window.top, height, target.work.top, target.work.bottom);
+        snapped.bottom = snapped.top + height;
+        break;
+    case DockEdge::Right:
+        snapped.right = target.work.right;
+        snapped.left = snapped.right - width;
+        snapped.top = ClampSpanStart(window.top, height, target.work.top, target.work.bottom);
+        snapped.bottom = snapped.top + height;
+        break;
+    case DockEdge::Top:
+        snapped.top = target.work.top;
+        snapped.bottom = snapped.top + height;
+        snapped.left = ClampSpanStart(window.left, width, target.work.left, target.work.right);
+        snapped.right = snapped.left + width;
+        break;
+    case DockEdge::Bottom:
+        snapped.bottom = target.work.bottom;
+        snapped.top = snapped.bottom - height;
+        snapped.left = ClampSpanStart(window.left, width, target.work.left, target.work.right);
+        snapped.right = snapped.left + width;
+        break;
+    case DockEdge::None:
+        break;
+    }
+    return snapped;
+}
+
+RECT HiddenRectForDockTarget(const RECT& restore, const DockTarget& target) {
+    const int width = restore.right - restore.left;
+    const int height = restore.bottom - restore.top;
+    RECT hidden = restore;
+    switch (target.edge) {
+    case DockEdge::Left:
+        hidden.left = target.work.left - width + kDockVisiblePixels;
+        hidden.right = hidden.left + width;
+        break;
+    case DockEdge::Right:
+        hidden.left = target.work.right - kDockVisiblePixels;
+        hidden.right = hidden.left + width;
+        break;
+    case DockEdge::Top:
+        hidden.top = target.work.top - height + kDockVisiblePixels;
+        hidden.bottom = hidden.top + height;
+        break;
+    case DockEdge::Bottom:
+        hidden.top = target.work.bottom - kDockVisiblePixels;
+        hidden.bottom = hidden.top + height;
+        break;
+    case DockEdge::None:
+        break;
+    }
+    return hidden;
+}
+
+RECT DockPeekRectForDockTarget(const RECT& restore, const DockTarget& target) {
+    RECT peek = restore;
+    switch (target.edge) {
+    case DockEdge::Left:
+        peek.left = target.work.left;
+        peek.right = target.work.left + kDockPeekVisiblePixels;
+        break;
+    case DockEdge::Right:
+        peek.left = target.work.right - kDockPeekVisiblePixels;
+        peek.right = target.work.right;
+        break;
+    case DockEdge::Top:
+        peek.top = target.work.top;
+        peek.bottom = target.work.top + kDockPeekVisiblePixels;
+        break;
+    case DockEdge::Bottom:
+        peek.top = target.work.bottom - kDockPeekVisiblePixels;
+        peek.bottom = target.work.bottom;
+        break;
+    case DockEdge::None:
+        break;
+    }
+    return peek;
+}
+
+long long IntersectionArea(const RECT& a, const RECT& b) {
+    const int left = std::max(a.left, b.left);
+    const int top = std::max(a.top, b.top);
+    const int right = std::min(a.right, b.right);
+    const int bottom = std::min(a.bottom, b.bottom);
+    if (left >= right || top >= bottom) {
+        return 0;
+    }
+    return static_cast<long long>(right - left) * static_cast<long long>(bottom - top);
+}
+
+struct OtherMonitorIntersectionContext {
+    HMONITOR dockMonitor = nullptr;
+    RECT hidden{};
+    bool intersects = false;
+};
+
+BOOL CALLBACK CheckOtherMonitorIntersection(HMONITOR monitor, HDC, LPRECT, LPARAM data) {
+    auto* context = reinterpret_cast<OtherMonitorIntersectionContext*>(data);
+    if (!context || monitor == context->dockMonitor) {
+        return TRUE;
+    }
+    MONITORINFO info{};
+    info.cbSize = sizeof(info);
+    if (GetMonitorInfoW(monitor, &info) && IntersectionArea(context->hidden, info.rcMonitor) > 0) {
+        context->intersects = true;
+        return FALSE;
+    }
+    return TRUE;
+}
+
+bool HiddenRectIntersectsOtherMonitor(const RECT& hidden, HMONITOR dockMonitor) {
+    OtherMonitorIntersectionContext context{dockMonitor, hidden, false};
+    EnumDisplayMonitors(nullptr, nullptr, CheckOtherMonitorIntersection, reinterpret_cast<LPARAM>(&context));
+    return context.intersects;
 }
 
 COLORREF WindowPropColor(HWND hwnd, const wchar_t* name, COLORREF fallback) {
@@ -175,6 +574,40 @@ SIZE MeasureTooltipText(HDC dc, const std::wstring& text, int lineGap) {
     const int lineCount = static_cast<int>(SplitTooltipLines(text).size());
     result.cy = lineCount * lineHeight + std::max(0, lineCount - 1) * lineGap;
     return result;
+}
+
+LRESULT CALLBACK DockPeekWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
+    switch (message) {
+    case WM_NCCREATE: {
+        auto* create = reinterpret_cast<CREATESTRUCTW*>(lParam);
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(create->lpCreateParams));
+        return TRUE;
+    }
+    case WM_ERASEBKGND:
+        return 1;
+    case WM_MOUSEMOVE:
+    case WM_LBUTTONDOWN:
+    case WM_LBUTTONUP: {
+        HWND owner = reinterpret_cast<HWND>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+        if (owner) {
+            PostMessageW(owner, WM_QUATTRO_DOCK_PEEK_ACTIVATE, 0, 0);
+        }
+        return 0;
+    }
+    case WM_PAINT: {
+        PAINTSTRUCT ps{};
+        HDC dc = BeginPaint(hwnd, &ps);
+        RECT rect{};
+        GetClientRect(hwnd, &rect);
+        HBRUSH brush = CreateSolidBrush(RGB(255, 255, 255));
+        FillRect(dc, &rect, brush);
+        DeleteObject(brush);
+        EndPaint(hwnd, &ps);
+        return 0;
+    }
+    default:
+        return DefWindowProcW(hwnd, message, wParam, lParam);
+    }
 }
 
 LRESULT CALLBACK TooltipWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
@@ -302,7 +735,7 @@ std::wstring FormatConfigPackageReport(const ConfigPackageReport& report) {
     if (report.groupsAdded > 0 || report.groupsMerged > 0 || report.tagsAdded > 0 ||
         report.tagsMerged > 0 || report.linksAdded > 0 || report.linksSkippedDuplicate > 0 ||
         report.notesAdded > 0 || report.notesMerged > 0 || report.todosAdded > 0 ||
-        report.pluginSettingsAdded > 0 || report.urlIconsAdded > 0) {
+        report.urlIconsAdded > 0) {
         text += L"\n\n新增分组: " + std::to_wstring(report.groupsAdded);
         text += L"\n复用分组: " + std::to_wstring(report.groupsMerged);
         text += L"\n新增标签: " + std::to_wstring(report.tagsAdded);
@@ -312,7 +745,6 @@ std::wstring FormatConfigPackageReport(const ConfigPackageReport& report) {
         text += L"\n新增便签: " + std::to_wstring(report.notesAdded);
         text += L"\n合并便签: " + std::to_wstring(report.notesMerged);
         text += L"\n新增待办: " + std::to_wstring(report.todosAdded);
-        text += L"\n新增工具设置: " + std::to_wstring(report.pluginSettingsAdded);
         text += L"\n新增 URL 图标: " + std::to_wstring(report.urlIconsAdded);
     }
     if (!report.warnings.empty()) {
@@ -462,11 +894,6 @@ struct TodoVisualStyle {
     Color dot;
     Color tagBg;
     Color tagText;
-};
-
-struct WebDavAsyncResult {
-    bool download = false;
-    WebDavBackupReport report;
 };
 
 // Derive a full todo card style from a single semantic accent color, blending
@@ -1589,7 +2016,12 @@ MainWindow::MainWindow(
 }
 
 MainWindow::~MainWindow() {
+    httpServerService_.Stop();
     SaveCurrentNotePage();
+    if (dockPeek_) {
+        DestroyWindow(dockPeek_);
+        dockPeek_ = nullptr;
+    }
     if (tooltip_) {
         DestroyWindow(tooltip_);
         tooltip_ = nullptr;
@@ -1642,17 +2074,21 @@ bool MainWindow::Create() {
     if (!RegisterClassExW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
         return false;
     }
-    pluginRegistry_.Initialize();
+    WriteStartupTiming(L"main window class registered");
+    WriteStartupTiming(L"builtin tool catalog ready", L"mode=memory_only");
 
     if (FAILED(D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, &d2dFactory_))) {
         return false;
     }
+    WriteStartupTiming(L"d2d factory created");
     if (FAILED(DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory), reinterpret_cast<IUnknown**>(&dwriteFactory_)))) {
         return false;
     }
+    WriteStartupTiming(L"dwrite factory created");
     if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&uiWicFactory_)))) {
         return false;
     }
+    WriteStartupTiming(L"wic factory created");
 
     dwriteFactory_->CreateTextFormat(L"Microsoft YaHei UI", nullptr, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_FONT_STYLE_NORMAL,
                                      DWRITE_FONT_STRETCH_NORMAL, 16.0f, L"zh-cn", &titleFormat_);
@@ -1675,9 +2111,11 @@ bool MainWindow::Create() {
         navSelectedFormat_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
         navSelectedFormat_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
     }
+    WriteStartupTiming(L"text formats created");
 
     const DWORD style = WS_POPUP | WS_THICKFRAME | WS_MINIMIZEBOX | WS_CLIPCHILDREN;
     const POINT position = ClampWindowPosition(config_.posX, config_.posY, config_.width, config_.height);
+    WriteStartupTiming(L"native main window create begin");
     hwnd_ = CreateWindowExW(
         MainWindowExStyle(config_.alpha),
         wc.lpszClassName,
@@ -1694,30 +2132,76 @@ bool MainWindow::Create() {
     if (!hwnd_) {
         return false;
     }
+    WriteStartupTiming(
+        L"native main window created",
+        L"size=" + std::to_wstring(config_.width) + L"x" + std::to_wstring(config_.height));
 
+    WriteStartupTiming(L"main window alpha apply begin", L"alpha=" + std::to_wstring(config_.alpha));
     ApplyMainWindowAlpha(hwnd_, config_.alpha);
+    WriteStartupTiming(L"main window alpha apply end");
     if (config_.topMost) {
-        SetWindowPos(hwnd_, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+        if (!config_.hideOnStart) {
+            startupTopMostPending_ = true;
+            WriteStartupTiming(L"main window topmost deferred");
+        } else {
+            SetWindowPos(hwnd_,
+                         MainWindowTopMostInsertAfter(config_.topMost),
+                         0,
+                         0,
+                         0,
+                         0,
+                         SWP_NOMOVE | SWP_NOSIZE);
+            WriteStartupTiming(L"main window topmost applied", L"hide_on_start=1");
+        }
+    } else {
+        WriteStartupTiming(L"main window topmost skipped", L"enabled=0");
     }
-    CreateTooltip();
+    WriteStartupTiming(L"tooltip window deferred");
 
     if (!config_.hideOnStart) {
-        ShowWindowRespectFocusPolicy(hwnd_, SW_SHOWNORMAL);
+        ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
+        WriteStartupTiming(L"main window shown");
         UpdateWindow(hwnd_);
+        WriteStartupTiming(L"main window update requested");
+    } else {
+        WriteStartupTiming(L"main window show skipped", L"hide_on_start=1");
     }
-    oleDropTarget_ = new OleDropTarget(this);
-    if (FAILED(RegisterDragDrop(hwnd_, oleDropTarget_))) {
-        oleDropTarget_->Release();
-        oleDropTarget_ = nullptr;
+    if (config_.hideOnStart) {
+        oleDropTarget_ = new OleDropTarget(this);
+        if (FAILED(RegisterDragDrop(hwnd_, oleDropTarget_))) {
+            oleDropTarget_->Release();
+            oleDropTarget_ = nullptr;
+        }
+        DragAcceptFiles(hwnd_, TRUE);
+        WriteStartupTiming(L"drag drop initialized", L"ole_drop=" + std::wstring(oleDropTarget_ ? L"1" : L"0"));
+    } else {
+        WriteStartupTiming(L"drag drop deferred");
     }
-    DragAcceptFiles(hwnd_, TRUE);
     RegisterConfiguredHotKeys();
+    WriteStartupTiming(L"hotkeys registered", L"main_hotkey=" + std::wstring(mainHotKeyRegistered_ ? L"1" : L"0"));
     if (config_.autoDock || config_.hideWhenInactive) {
         dockTimerId_ = SetTimer(hwnd_, ID_TIMER_DOCK, 250, nullptr);
     }
-    InitializeTrayIcon();
-    reminderScanTimerId_ = SetTimer(hwnd_, ID_TIMER_REMINDER_SCAN, 1000, nullptr);
-    CheckTodoReminders();
+    WriteStartupTiming(L"dock timer configured", L"enabled=" + std::wstring(dockTimerId_ != 0 ? L"1" : L"0"));
+
+    if (!config_.hideOnStart) {
+        PostMessageW(hwnd_, WM_QUATTRO_STARTUP_DEFERRED, 0, 0);
+        startupDeferredPosted_ = true;
+        WriteStartupTiming(L"startup deferred services posted");
+    } else {
+        InitializeTrayIcon();
+        WriteStartupTiming(L"tray icon initialized", L"visible=" + std::wstring(trayIconVisible_ ? L"1" : L"0"));
+        if (config_.httpServerAutoStart || config_.httpServerEnabled) {
+            StartHttpServer(false);
+            WriteStartupTiming(L"http server startup checked", L"enabled=1");
+        } else {
+            WriteStartupTiming(L"http server startup skipped", L"enabled=0");
+        }
+        reminderScanTimerId_ = SetTimer(hwnd_, ID_TIMER_REMINDER_SCAN, 1000, nullptr);
+        CheckTodoReminders();
+        WriteStartupTiming(L"todo reminder scan completed");
+    }
+    windowStateSaveEnabled_ = true;
     return true;
 }
 
@@ -1752,6 +2236,48 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
     case WM_QUATTRO_WAKEUP:
         WakeUp();
         return 0;
+    case WM_QUATTRO_DOCK_PEEK_ACTIVATE:
+        if (dockHidden_) {
+            DockRestore();
+        }
+        return 0;
+    case WM_QUATTRO_EXIT_INSTANCE:
+        WriteAppLog(L"收到同路径实例退出通知，销毁主窗口。");
+        DestroyWindow(hwnd_);
+        return 0;
+    case WM_QUATTRO_STARTUP_ACTIVATE:
+        ActivateWindow(hwnd_);
+        return 0;
+    case WM_QUATTRO_STARTUP_DEFERRED:
+        if (startupDeferredPosted_) {
+            startupDeferredPosted_ = false;
+            if (startupTopMostPending_) {
+                startupTopMostPending_ = false;
+                SetWindowPos(hwnd_,
+                             MainWindowTopMostInsertAfter(true),
+                             0,
+                             0,
+                             0,
+                             0,
+                             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS);
+                WriteAppLog(L"启动延迟置顶已应用。");
+            }
+            if (!oleDropTarget_) {
+                oleDropTarget_ = new OleDropTarget(this);
+                if (FAILED(RegisterDragDrop(hwnd_, oleDropTarget_))) {
+                    oleDropTarget_->Release();
+                    oleDropTarget_ = nullptr;
+                }
+                DragAcceptFiles(hwnd_, TRUE);
+            }
+            InitializeTrayIcon();
+            if (config_.httpServerAutoStart || config_.httpServerEnabled) {
+                StartHttpServer(false);
+            }
+            reminderScanTimerId_ = SetTimer(hwnd_, ID_TIMER_REMINDER_SCAN, 1000, nullptr);
+            CheckTodoReminders();
+        }
+        return 0;
     case WM_NCCALCSIZE:
         return 0;
     case WM_NCPAINT:
@@ -1773,26 +2299,6 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
     case WM_QUATTRO_URL_ICON_DOWNLOADED:
         OnUrlIconDownloaded(static_cast<int>(wParam), lParam != 0);
         return 0;
-    case WM_QUATTRO_WEBDAV_DONE: {
-        std::unique_ptr<WebDavAsyncResult> result(reinterpret_cast<WebDavAsyncResult*>(lParam));
-        if (!result) {
-            return 0;
-        }
-        if (result->download && result->report.ok) {
-            model_ = storageService_.Load();
-            SelectInitialItems();
-            pluginRegistry_.Initialize();
-            RegisterConfiguredHotKeys();
-            ClearUiBitmaps();
-            InvalidateRect(hwnd_, nullptr, FALSE);
-        }
-        const std::wstring text = result->report.importReport.message.empty()
-            ? result->report.message
-            : FormatConfigPackageReport(result->report.importReport);
-        MessageBoxW(hwnd_, text.c_str(), result->download ? L"下载 WebDAV 备份" : L"上传 WebDAV 备份",
-                    MB_OK | (result->report.ok ? MB_ICONINFORMATION : MB_ICONWARNING));
-        return 0;
-    }
     case WM_NCHITTEST: {
         POINT screenPoint{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
         POINT clientPoint = screenPoint;
@@ -1818,7 +2324,7 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         const int titleHeight = config_.showTitle
             ? static_cast<int>(Metric(theme_, L"title", L"height", 34.0f))
             : 0;
-        const int titleButtonsWidth = 116;
+        const int titleButtonsWidth = static_cast<int>(TitleButtonsReserveWidth() + 0.999f);
         if (clientPoint.y >= 0 && clientPoint.y < titleHeight && clientPoint.x < width - titleButtonsWidth) {
             return HTCAPTION;
         }
@@ -1848,7 +2354,7 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         InvalidateRect(hwnd_, nullptr, FALSE);
         return 0;
     case WM_ACTIVATEAPP:
-        if (!wParam && config_.hideWhenInactive && IsWindowVisible(hwnd_)) {
+        if (!wParam && config_.hideWhenInactive && IsWindowVisible(hwnd_) && !DockAutoHidePaused()) {
             HideMainWindow();
         } else if (wParam && dockHidden_) {
             WakeUp();
@@ -1901,6 +2407,31 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         }
         DragFinish(drop);
         InvalidateRect(hwnd_, nullptr, FALSE);
+        return 0;
+    }
+    case WM_MOVING: {
+        auto* moving = reinterpret_cast<RECT*>(lParam);
+        if (moving && SnapDockWindowRect(*moving)) {
+            dockHideDueTick_ = 0;
+            return TRUE;
+        }
+        return 0;
+    }
+    case WM_EXITSIZEMOVE: {
+        RECT window{};
+        if (GetWindowRect(hwnd_, &window) && SnapDockWindowRect(window)) {
+            const int width = window.right - window.left;
+            const int height = window.bottom - window.top;
+            SetWindowPos(hwnd_,
+                         MainWindowMoveInsertAfter(config_.topMost),
+                         window.left,
+                         window.top,
+                         width,
+                         height,
+                         MainWindowMoveFlags(config_.topMost, SWP_NOZORDER | SWP_NOACTIVATE));
+        }
+        dockHideDueTick_ = GetTickCount64() + kDockRestoreGraceMs;
+        SaveWindowState();
         return 0;
     }
     case WM_SIZE:
@@ -1990,6 +2521,13 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
                 POINT point{};
                 GetCursorPos(&point);
                 ShowMainMenu(point);
+            }
+            return 0;
+        case HitKind::ToolButton:
+            {
+                POINT point{};
+                GetCursorPos(&point);
+                ShowToolMenu(point);
             }
             return 0;
         case HitKind::SkinButton:
@@ -2171,6 +2709,9 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             return 0;
         }
         switch (command) {
+        case ID_MENU_QUICK_IMPORT:
+            QuickImport();
+            return 0;
         case ID_MENU_ADD_LINK:
             AddLink();
             return 0;
@@ -2390,12 +2931,6 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         case ID_MENU_EXPORT_CONFIG:
             ExportConfigPackage();
             return 0;
-        case ID_MENU_UPLOAD_WEBDAV_BACKUP:
-            UploadWebDavBackup();
-            return 0;
-        case ID_MENU_DOWNLOAD_WEBDAV_BACKUP:
-            DownloadWebDavBackupMerge();
-            return 0;
         case ID_MENU_CLEAR_ICON_CACHE:
             ClearIconCache();
             return 0;
@@ -2425,6 +2960,9 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             }
             return 0;
         case ID_MENU_EXIT:
+            WriteAppLog(L"收到退出命令，准备清理同路径后台实例。");
+            TerminateSiblingQuattroProcesses();
+            WriteAppLog(L"退出清理完成，销毁当前主窗口。");
             DestroyWindow(hwnd_);
             return 0;
         default:
@@ -2437,6 +2975,7 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             switch (hit.kind) {
             case HitKind::CloseButton:
             case HitKind::MenuButton:
+            case HitKind::ToolButton:
             case HitKind::SkinButton:
             case HitKind::AddButton:
             case HitKind::Group:
@@ -2479,6 +3018,7 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         }
         return DefWindowProcW(hwnd_, message, wParam, lParam);
     case WM_DESTROY:
+        WriteAppLog(L"主窗口销毁，准备退出消息循环。");
         SaveCurrentNotePage();
         urlIconDownloadService_.Shutdown();
         HideItemTooltip();
@@ -3135,6 +3675,103 @@ void MainWindow::AddUrl() {
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
+int MainWindow::EnsureQuickImportTargetTag() {
+    Group* currentTag = FindGroup(currentTagId_);
+    if (currentTag && currentTag->parentGroup != 0 && !IsNoteTag(*currentTag) && !IsTodoItemsTag(*currentTag) && !IsAllTag(*currentTag) && !IsTodoTag(*currentTag)) {
+        return currentTag->id;
+    }
+
+    int parentGroupId = currentGroupId_;
+    if (currentTag && currentTag->parentGroup != 0) {
+        parentGroupId = currentTag->parentGroup;
+    }
+
+    Group* parentGroup = FindGroup(parentGroupId);
+    if (!parentGroup || parentGroup->parentGroup != 0) {
+        Group createdGroup;
+        createdGroup.name = UniqueSiblingGroupName(model_.groups, 0, L"默认分组");
+        createdGroup.parentGroup = 0;
+        createdGroup.pos = -1;
+        if (!storageService_.InsertGroup(createdGroup)) {
+            MessageBoxW(hwnd_, storageService_.lastError().c_str(), L"快速导入", MB_OK | MB_ICONWARNING);
+            return 0;
+        }
+        model_.groups.push_back(createdGroup);
+        parentGroupId = createdGroup.id;
+        currentGroupId_ = parentGroupId;
+    }
+
+    for (const auto& group : model_.groups) {
+        if (group.parentGroup == parentGroupId && !IsNoteTag(group) && !IsTodoItemsTag(group) && !IsAllTag(group) && !IsTodoTag(group)) {
+            return group.id;
+        }
+    }
+
+    Group createdTag;
+    createdTag.name = UniqueSiblingGroupName(model_.groups, parentGroupId, L"默认标签");
+    createdTag.parentGroup = parentGroupId;
+    createdTag.pos = -1;
+    createdTag.layout = 1;
+    createdTag.iconSize = 32;
+    if (!storageService_.InsertGroup(createdTag)) {
+        MessageBoxW(hwnd_, storageService_.lastError().c_str(), L"快速导入", MB_OK | MB_ICONWARNING);
+        return 0;
+    }
+    model_.groups.push_back(createdTag);
+    return createdTag.id;
+}
+
+void MainWindow::QuickImport() {
+    std::vector<Link> links;
+    if (!QuickImportDialog::Show(hwnd_, instance_, theme_, model_.links, links)) {
+        return;
+    }
+
+    const int targetTagId = EnsureQuickImportTargetTag();
+    if (targetTagId <= 0) {
+        return;
+    }
+
+    int imported = 0;
+    std::wstring error;
+    for (auto& link : links) {
+        link.parentGroup = targetTagId;
+        link.pos = -1;
+        if (link.showCmd == 0) {
+            link.showCmd = SW_SHOWNORMAL;
+        }
+        if (!storageService_.InsertLink(link)) {
+            error = storageService_.lastError();
+            continue;
+        }
+        model_.links.push_back(link);
+        selectedLinkId_ = link.id;
+        ++imported;
+        RequestInitialUrlIconDownload(link);
+    }
+
+    currentTagId_ = targetTagId;
+    if (Group* tag = FindGroup(currentTagId_); tag && tag->parentGroup != 0) {
+        currentGroupId_ = tag->parentGroup;
+    }
+    config_.currentGroupId = currentGroupId_;
+    config_.currentTagId = currentTagId_;
+    configService_.SaveWindowState(config_);
+    RegisterConfiguredHotKeys();
+    EnsureGroupVisible(currentGroupId_);
+    EnsureTagVisible(currentTagId_);
+    if (selectedLinkId_ > 0) {
+        EnsureLinkVisible(selectedLinkId_);
+    }
+    InvalidateRect(hwnd_, nullptr, FALSE);
+
+    if (!error.empty()) {
+        MessageBoxW(hwnd_, (L"已导入 " + std::to_wstring(imported) + L" 项，部分项目失败：\n" + error).c_str(), L"快速导入", MB_OK | MB_ICONWARNING);
+    } else {
+        MessageBoxW(hwnd_, (L"已导入 " + std::to_wstring(imported) + L" 项到当前标签页。").c_str(), L"快速导入", MB_OK | MB_ICONINFORMATION);
+    }
+}
+
 void MainWindow::AddSystemFunction(std::size_t index) {
     if (EnsureCurrentTag() <= 0) {
         return;
@@ -3604,6 +4241,7 @@ void MainWindow::ShowWindowsContextMenu(int linkId, POINT screenPoint) {
     if (!link) {
         return;
     }
+    DockAutoHidePause dockPause(*this);
     ShellItemService::ShowNativeContextMenu(hwnd_, *link, screenPoint);
 }
 
@@ -4017,20 +4655,28 @@ void MainWindow::CopyLinkPath(int linkId) {
 }
 
 void MainWindow::OpenSettings() {
-    AppConfig previous = config_;
     AppConfig next = config_;
     bool importedData = false;
-    if (!ShowSettingsDialog(hwnd_, instance_, next, theme_, appDirectory_, &importedData)) {
+    auto applySettings = [this, &next](const AppConfig& applied, bool appliedImportedData) -> bool {
+        CommitSettingsConfig(applied, appliedImportedData);
+        next = config_;
+        return mainHotKeyRegistered_;
+    };
+    if (!ShowSettingsDialog(hwnd_, instance_, next, theme_, appDirectory_, &importedData, &httpServerService_, mainHotKeyRegistered_, applySettings)) {
         if (importedData) {
             model_ = storageService_.Load();
             SelectInitialItems();
-            pluginRegistry_.Initialize();
             RegisterConfiguredHotKeys();
             ClearUiBitmaps();
             InvalidateRect(hwnd_, nullptr, FALSE);
         }
         return;
     }
+    CommitSettingsConfig(next, importedData);
+}
+
+void MainWindow::CommitSettingsConfig(const AppConfig& next, bool importedData) {
+    AppConfig previous = config_;
     config_ = next;
     configService_.Save(config_);
     std::wstring webDavRecoveryError;
@@ -4043,7 +4689,6 @@ void MainWindow::OpenSettings() {
     if (importedData) {
         model_ = storageService_.Load();
         SelectInitialItems();
-        pluginRegistry_.Initialize();
         RegisterConfiguredHotKeys();
         ClearUiBitmaps();
     }
@@ -4080,7 +4725,7 @@ void MainWindow::ResetLayoutToDefaults() {
     config_.showTitle = defaults.showTitle;
     config_.showGroup = defaults.showGroup;
     config_.showTag = defaults.showTag;
-    config_.showMenuButton = defaults.showMenuButton;
+    config_.showToolboxButton = defaults.showToolboxButton;
     config_.showSkinButton = defaults.showSkinButton;
     config_.topMost = defaults.topMost;
     config_.groupRight = defaults.groupRight;
@@ -4245,6 +4890,14 @@ bool MainWindow::OpenConfiguredUrl(const std::wstring& url, const wchar_t* title
     return true;
 }
 
+MainWindow::DockAutoHidePause::DockAutoHidePause(MainWindow& window, bool restoreHidden) : window_(window) {
+    window_.BeginDockAutoHidePause(restoreHidden);
+}
+
+MainWindow::DockAutoHidePause::~DockAutoHidePause() {
+    window_.EndDockAutoHidePause();
+}
+
 bool MainWindow::TryRepairLinkTarget(Link& link) {
     Link edited = link;
     if (!LinkEditDialog::Show(hwnd_, instance_, theme_, edited, model_.groups, false)) {
@@ -4263,6 +4916,7 @@ bool MainWindow::TryRepairLinkTarget(Link& link) {
 }
 
 void MainWindow::ShowThemeMenu(POINT screenPoint) {
+    DockAutoHidePause dockPause(*this);
     ResetMenuVisuals();
     HMENU menu = CreatePopupMenu();
     AppendThemeItemsToMenu(menu);
@@ -4312,9 +4966,38 @@ void MainWindow::ApplyTheme(const std::wstring& themeName) {
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
+void MainWindow::BeginDockAutoHidePause(bool restoreHidden) {
+    ++dockAutoHidePauseDepth_;
+    dockHideDueTick_ = 0;
+    HideDockPeek();
+    if (restoreHidden && dockHidden_) {
+        DockRestore();
+        ActivateWindow(hwnd_);
+    }
+}
+
+void MainWindow::EndDockAutoHidePause() {
+    if (dockAutoHidePauseDepth_ > 0) {
+        --dockAutoHidePauseDepth_;
+    }
+    if (dockAutoHidePauseDepth_ == 0) {
+        dockHideDueTick_ = GetTickCount64() + kDockRestoreGraceMs;
+    }
+}
+
+bool MainWindow::DockAutoHidePaused() const {
+    return dockAutoHidePauseDepth_ > 0 || (hwnd_ && !IsWindowEnabled(hwnd_));
+}
+
 void MainWindow::UpdateDockState() {
     if (!config_.autoDock || !IsWindowVisible(hwnd_) || IsIconic(hwnd_)) {
         dockHideDueTick_ = 0;
+        HideDockPeek();
+        return;
+    }
+    if (DockAutoHidePaused()) {
+        dockHideDueTick_ = 0;
+        HideDockPeek();
         return;
     }
     if (IsFullScreenForegroundWindow()) {
@@ -4327,6 +5010,14 @@ void MainWindow::UpdateDockState() {
     if (dockHidden_) {
         if (IsNearDockEdge(cursor)) {
             DockRestore();
+        } else if (dockPeek_) {
+            SetWindowPos(dockPeek_,
+                         HWND_TOPMOST,
+                         0,
+                         0,
+                         0,
+                         0,
+                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
         }
         dockHideDueTick_ = 0;
         return;
@@ -4341,19 +5032,8 @@ void MainWindow::UpdateDockState() {
         return;
     }
 
-    HMONITOR monitor = MonitorFromWindow(hwnd_, MONITOR_DEFAULTTONEAREST);
-    MONITORINFO info{};
-    info.cbSize = sizeof(info);
-    if (!GetMonitorInfoW(monitor, &info)) {
-        return;
-    }
-    const RECT work = info.rcWork;
-    const int threshold = 8;
-    const bool nearEdge = std::abs(window.left - work.left) <= threshold ||
-                          std::abs(window.top - work.top) <= threshold ||
-                          std::abs(window.right - work.right) <= threshold ||
-                          std::abs(window.bottom - work.bottom) <= threshold;
-    if (!nearEdge) {
+    auto target = FindDockTarget(window, kDockSnapThreshold);
+    if (!target) {
         dockHideDueTick_ = 0;
         return;
     }
@@ -4377,6 +5057,60 @@ void MainWindow::UpdateDockState() {
     }
 }
 
+void MainWindow::ShowDockPeek(const RECT& peekRect) {
+    const int width = peekRect.right - peekRect.left;
+    const int height = peekRect.bottom - peekRect.top;
+    if (width <= 0 || height <= 0) {
+        HideDockPeek();
+        return;
+    }
+
+    if (!dockPeek_) {
+        WNDCLASSEXW wc{};
+        wc.cbSize = sizeof(wc);
+        wc.lpfnWndProc = DockPeekWindowProc;
+        wc.hInstance = instance_;
+        wc.hCursor = LoadCursorW(nullptr, IDC_HAND);
+        wc.lpszClassName = kDockPeekWindowClass;
+        wc.hbrBackground = reinterpret_cast<HBRUSH>(GetStockObject(WHITE_BRUSH));
+        if (!RegisterClassExW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
+            return;
+        }
+
+        dockPeek_ = CreateWindowExW(
+            WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+            kDockPeekWindowClass,
+            L"",
+            WS_POPUP,
+            peekRect.left,
+            peekRect.top,
+            width,
+            height,
+            hwnd_,
+            nullptr,
+            instance_,
+            hwnd_);
+        if (!dockPeek_) {
+            return;
+        }
+    }
+
+    SetWindowPos(dockPeek_,
+                 HWND_TOPMOST,
+                 peekRect.left,
+                 peekRect.top,
+                 width,
+                 height,
+                 SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    InvalidateRect(dockPeek_, nullptr, TRUE);
+}
+
+void MainWindow::HideDockPeek() {
+    if (dockPeek_) {
+        ShowWindow(dockPeek_, SW_HIDE);
+    }
+}
+
 void MainWindow::DockHide() {
     HideItemTooltip();
     if (dockHidden_) {
@@ -4387,39 +5121,37 @@ void MainWindow::DockHide() {
     if (!GetWindowRect(hwnd_, &window)) {
         return;
     }
-    dockRestoreRect_ = window;
 
-    HMONITOR monitor = MonitorFromWindow(hwnd_, MONITOR_DEFAULTTONEAREST);
-    MONITORINFO info{};
-    info.cbSize = sizeof(info);
-    if (!GetMonitorInfoW(monitor, &info)) {
+    auto target = FindDockTarget(window, kDockSnapThreshold);
+    if (!target) {
         return;
     }
-    const RECT work = info.rcWork;
-    const int width = window.right - window.left;
-    const int height = window.bottom - window.top;
 
-    int x = window.left;
-    int y = window.top;
-    const int leftDistance = std::abs(window.left - work.left);
-    const int rightDistance = std::abs(window.right - work.right);
-    const int topDistance = std::abs(window.top - work.top);
-    const int bottomDistance = std::abs(window.bottom - work.bottom);
-    const int nearest = std::min(std::min(leftDistance, rightDistance), std::min(topDistance, bottomDistance));
-
-    if (nearest == leftDistance) {
-        x = work.left - width + kDockVisiblePixels;
-    } else if (nearest == rightDistance) {
-        x = work.right - kDockVisiblePixels;
-    } else if (nearest == topDistance) {
-        y = work.top - height + kDockVisiblePixels;
-    } else {
-        y = work.bottom - kDockVisiblePixels;
+    dockRestoreRect_ = SnapRectToDockTarget(window, *target);
+    RECT hidden = HiddenRectForDockTarget(dockRestoreRect_, *target);
+    RECT peek = DockPeekRectForDockTarget(dockRestoreRect_, *target);
+    if (HiddenRectIntersectsOtherMonitor(hidden, target->monitor)) {
+        return;
     }
 
+    const int width = hidden.right - hidden.left;
+    const int height = hidden.bottom - hidden.top;
+    config_.posX = dockRestoreRect_.left;
+    config_.posY = dockRestoreRect_.top;
+    configService_.SaveWindowState(config_);
+
     dockHidden_ = true;
-    if (!SetWindowPos(hwnd_, nullptr, x, y, width, height, SWP_NOZORDER | SWP_NOACTIVATE)) {
+    if (!SetWindowPos(hwnd_,
+                      MainWindowMoveInsertAfter(config_.topMost),
+                      hidden.left,
+                      hidden.top,
+                      width,
+                      height,
+                      MainWindowMoveFlags(config_.topMost, SWP_NOZORDER | SWP_NOACTIVATE))) {
         dockHidden_ = false;
+        HideDockPeek();
+    } else {
+        ShowDockPeek(peek);
     }
 }
 
@@ -4427,13 +5159,47 @@ void MainWindow::DockRestore() {
     if (!dockHidden_) {
         return;
     }
+    HideDockPeek();
     const int width = dockRestoreRect_.right - dockRestoreRect_.left;
     const int height = dockRestoreRect_.bottom - dockRestoreRect_.top;
-    SetWindowPos(hwnd_, nullptr, dockRestoreRect_.left, dockRestoreRect_.top, width, height, SWP_NOZORDER | SWP_NOACTIVATE);
+    SetWindowPos(hwnd_,
+                 MainWindowMoveInsertAfter(config_.topMost),
+                 dockRestoreRect_.left,
+                 dockRestoreRect_.top,
+                 width,
+                 height,
+                 MainWindowMoveFlags(config_.topMost, SWP_NOZORDER | SWP_NOACTIVATE));
     dockHidden_ = false;
+    dockHideDueTick_ = GetTickCount64() + kDockRestoreGraceMs;
+}
+
+bool MainWindow::SnapDockWindowRect(RECT& window) const {
+    if (!config_.autoDock || dockHidden_) {
+        return false;
+    }
+    auto target = FindDockTarget(window, kDockSnapThreshold);
+    if (!target) {
+        return false;
+    }
+    RECT snapped = SnapRectToDockTarget(window, *target);
+    if (EqualRect(&snapped, &window)) {
+        return false;
+    }
+    window = snapped;
+    return true;
 }
 
 bool MainWindow::IsNearDockEdge(POINT screenPoint) const {
+    if (dockPeek_) {
+        RECT peek{};
+        if (IsWindowVisible(dockPeek_) && GetWindowRect(dockPeek_, &peek)) {
+            InflateRect(&peek, 8, 8);
+            if (PtInRect(&peek, screenPoint)) {
+                return true;
+            }
+        }
+    }
+
     RECT window{};
     if (!GetWindowRect(hwnd_, &window)) {
         return false;
@@ -4495,11 +5261,9 @@ void MainWindow::ImportPath(const std::wstring& path) {
 }
 
 void MainWindow::ImportClipboard() {
-    if (!OpenClipboard(hwnd_)) {
+    if (!OpenClipboardWithRetry(hwnd_)) {
         return;
     }
-    bool imported = false;
-
     HANDLE handle = GetClipboardData(CF_HDROP);
     int importedCount = 0;
     if (handle) {
@@ -4555,7 +5319,6 @@ void MainWindow::ExportConfigPackage() {
     options.includeConfig = true;
     options.includeData = true;
     options.includeUrlIcons = true;
-    options.includePluginSettings = true;
 
     ConfigPackageService service(appDirectory_);
     const ConfigPackageReport report = service.ExportPackage(buffer.c_str(), options);
@@ -4580,7 +5343,7 @@ void MainWindow::ImportConfigPackageMerge() {
 
     const int confirm = MessageBoxW(
         hwnd_,
-        L"将把配置包中的分组、标签、启动项、便签、待办和工具设置合并到当前数据。\n\n当前数据不会被覆盖，导入前会自动备份。",
+        L"将把配置包中的分组、标签、启动项、便签和待办合并到当前数据。\n\n当前数据不会被覆盖，导入前会自动备份。",
         L"合并导入配置包",
         MB_OKCANCEL | MB_ICONINFORMATION);
     if (confirm != IDOK) {
@@ -4591,80 +5354,17 @@ void MainWindow::ImportConfigPackageMerge() {
     options.includeConfig = false;
     options.includeData = true;
     options.includeUrlIcons = true;
-    options.includePluginSettings = true;
 
     ConfigPackageService service(appDirectory_);
     const ConfigPackageReport report = service.ImportPackageMerge(buffer.c_str(), options);
     if (report.ok) {
         model_ = storageService_.Load();
         SelectInitialItems();
-        pluginRegistry_.Initialize();
         RegisterConfiguredHotKeys();
         ClearUiBitmaps();
         InvalidateRect(hwnd_, nullptr, FALSE);
     }
     MessageBoxW(hwnd_, FormatConfigPackageReport(report).c_str(), L"合并导入配置包", MB_OK | (report.ok ? MB_ICONINFORMATION : MB_ICONWARNING));
-}
-
-void MainWindow::UploadWebDavBackup() {
-    SaveCurrentNotePage();
-    SaveWindowState();
-
-    const HWND target = hwnd_;
-    const std::filesystem::path appDirectory = appDirectory_;
-    const AppConfig config = config_;
-    std::thread([target, appDirectory, config]() {
-        WebDavBackupService service(appDirectory, config);
-        auto* result = new WebDavAsyncResult();
-        result->download = false;
-        result->report = service.UploadBackup();
-        if (!PostMessageW(target, WM_QUATTRO_WEBDAV_DONE, 0, reinterpret_cast<LPARAM>(result))) {
-            delete result;
-        }
-    }).detach();
-}
-
-void MainWindow::DownloadWebDavBackupMerge() {
-    SaveCurrentNotePage();
-
-    WebDavBackupService service(appDirectory_, config_);
-    std::vector<WebDavRemoteFile> backups;
-    std::wstring error;
-    if (!service.ListBackups(backups, error)) {
-        MessageBoxW(hwnd_, error.c_str(), L"下载 WebDAV 备份", MB_OK | MB_ICONWARNING);
-        return;
-    }
-    if (backups.empty()) {
-        MessageBoxW(hwnd_, L"远端目录中没有可用的 .q4cfg 备份。", L"下载 WebDAV 备份", MB_OK | MB_ICONINFORMATION);
-        return;
-    }
-
-    std::wstring fileName = backups.front().name;
-    if (!ShowWebDavBackupSelectionDialog(hwnd_, instance_, theme_, backups, fileName)) {
-        return;
-    }
-
-    const int confirm = MessageBoxW(
-        hwnd_,
-        L"将下载该 WebDAV 备份，并把其中的分组、标签、启动项、便签、待办和工具设置合并到当前数据。\n\n当前数据不会被覆盖，导入前会自动备份。",
-        L"下载 WebDAV 备份",
-        MB_OKCANCEL | MB_ICONINFORMATION);
-    if (confirm != IDOK) {
-        return;
-    }
-
-    const HWND target = hwnd_;
-    const std::filesystem::path appDirectory = appDirectory_;
-    const AppConfig config = config_;
-    std::thread([target, appDirectory, config, fileName]() {
-        WebDavBackupService worker(appDirectory, config);
-        auto* result = new WebDavAsyncResult();
-        result->download = true;
-        result->report = worker.DownloadAndImportMerge(fileName);
-        if (!PostMessageW(target, WM_QUATTRO_WEBDAV_DONE, 0, reinterpret_cast<LPARAM>(result))) {
-            delete result;
-        }
-    }).detach();
 }
 
 bool MainWindow::ImportDropData(IDataObject* dataObject) {
@@ -4798,9 +5498,84 @@ bool MainWindow::ImportDropData(IDataObject* dataObject) {
     return imported;
 }
 
+bool MainWindow::StartHttpServer(bool showMessage) {
+    std::wstring error;
+    const auto options = LocalHttpServerService::OptionsFromConfig(config_, appDirectory_);
+    const bool ok = httpServerService_.Start(options, error);
+    if (!ok) {
+        WriteAppLog(error.empty() ? L"HTTP 服务启动失败。" : (L"HTTP 服务启动失败: " + error));
+        if (showMessage) {
+            MessageBoxW(hwnd_, error.empty() ? L"HTTP 服务启动失败。" : error.c_str(), L"HTTP 服务", MB_OK | MB_ICONWARNING);
+        }
+        return false;
+    }
+    WriteAppLog(L"HTTP 服务已启动: " + httpServerService_.BaseUrl(true));
+    if (showMessage) {
+        MessageBoxW(hwnd_, (L"HTTP 服务已启动：\n" + httpServerService_.BaseUrl(true)).c_str(), L"HTTP 服务", MB_OK | MB_ICONINFORMATION);
+    }
+    return true;
+}
+
+void MainWindow::StopHttpServer(bool showMessage) {
+    const bool wasRunning = httpServerService_.IsRunning();
+    httpServerService_.Stop();
+    if (wasRunning) {
+        WriteAppLog(L"HTTP 服务已停止。");
+    }
+    if (showMessage) {
+        MessageBoxW(hwnd_, L"HTTP 服务已停止。", L"HTTP 服务", MB_OK | MB_ICONINFORMATION);
+    }
+}
+
+bool MainWindow::RestartHttpServer(bool showMessage) {
+    std::wstring error;
+    const auto options = LocalHttpServerService::OptionsFromConfig(config_, appDirectory_);
+    const bool ok = httpServerService_.Restart(options, error);
+    if (!ok) {
+        WriteAppLog(error.empty() ? L"HTTP 服务重启失败。" : (L"HTTP 服务重启失败: " + error));
+        if (showMessage) {
+            MessageBoxW(hwnd_, error.empty() ? L"HTTP 服务重启失败。" : error.c_str(), L"HTTP 服务", MB_OK | MB_ICONWARNING);
+        }
+        return false;
+    }
+    WriteAppLog(L"HTTP 服务已重启: " + httpServerService_.BaseUrl(true));
+    if (showMessage) {
+        MessageBoxW(hwnd_, (L"HTTP 服务已重启：\n" + httpServerService_.BaseUrl(true)).c_str(), L"HTTP 服务", MB_OK | MB_ICONINFORMATION);
+    }
+    return true;
+}
+
+void MainWindow::SyncHttpServerRuntime(const AppConfig& previous) {
+    const bool shouldRun = config_.httpServerEnabled || config_.httpServerAutoStart;
+    if (!shouldRun) {
+        StopHttpServer(false);
+        return;
+    }
+
+    const bool wasConfiguredToRun = previous.httpServerEnabled || previous.httpServerAutoStart;
+    const bool settingsChanged =
+        previous.httpServerPort != config_.httpServerPort ||
+        previous.httpServerLanAccess != config_.httpServerLanAccess ||
+        Trim(previous.httpServerRootPath) != Trim(config_.httpServerRootPath);
+
+    if (!httpServerService_.IsRunning()) {
+        StartHttpServer(false);
+        return;
+    }
+    if (!wasConfiguredToRun || settingsChanged) {
+        RestartHttpServer(false);
+    }
+}
+
 void MainWindow::ApplyConfigRuntimeChanges(const AppConfig& previous) {
     ApplyMainWindowAlpha(hwnd_, config_.alpha);
-    SetWindowPos(hwnd_, config_.topMost ? HWND_TOPMOST : HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+    SetWindowPos(hwnd_,
+                 MainWindowTopMostInsertAfter(config_.topMost),
+                 0,
+                 0,
+                 0,
+                 0,
+                 SWP_NOMOVE | SWP_NOSIZE);
     if (previous.showTooltip != config_.showTooltip && !config_.showTooltip) {
         HideItemTooltip();
     }
@@ -4818,6 +5593,7 @@ void MainWindow::ApplyConfigRuntimeChanges(const AppConfig& previous) {
         KillTimer(hwnd_, dockTimerId_);
         dockTimerId_ = 0;
     }
+    SyncHttpServerRuntime(previous);
 }
 
 void MainWindow::SyncAutoRun(const AppConfig& previous) {
@@ -4837,19 +5613,21 @@ void MainWindow::SyncAutoRun(const AppConfig& previous) {
 void MainWindow::RegisterConfiguredHotKeys() {
     UnregisterConfiguredHotKeys();
     std::wstring failures;
-    auto registerHotKey = [&](int id, int key, const std::wstring& name) {
+    auto registerHotKey = [&](int id, int key, const std::wstring& name) -> bool {
         if (key == 0) {
-            return;
+            return false;
         }
-        if (!RegisterHotKey(hwnd_, id, MOD_CONTROL | MOD_ALT, static_cast<UINT>(key))) {
-            const std::wstring line = name + L"（" + FormatHotKeyText(key) + L"）";
-            failures += failures.empty() ? line : (L"\n" + line);
-            WriteAppLog(L"热键注册失败: " + line + L" - " + FormatLastError(GetLastError()));
+        if (RegisterHotKey(hwnd_, id, MOD_CONTROL | MOD_ALT, static_cast<UINT>(key))) {
+            return true;
         }
+        const std::wstring line = name + L"（" + FormatHotKeyText(key) + L"）";
+        failures += failures.empty() ? line : (L"\n" + line);
+        WriteAppLog(L"热键注册失败: " + line + L" - " + FormatLastError(GetLastError()));
+        return false;
     };
 
     if (config_.mainHotKey != 0) {
-        registerHotKey(ID_HOTKEY_MAIN, config_.mainHotKey, L"主窗口");
+        mainHotKeyRegistered_ = registerHotKey(ID_HOTKEY_MAIN, config_.mainHotKey, L"主窗口");
     }
     int nextHotKeyId = ID_HOTKEY_LINK_BASE;
     for (const auto& link : model_.links) {
@@ -4867,7 +5645,11 @@ void MainWindow::RegisterConfiguredHotKeys() {
     }
 
     if (!failures.empty()) {
-        MessageBoxW(hwnd_, (L"以下热键注册失败，可能已被占用：\n" + failures).c_str(), L"热键", MB_OK | MB_ICONWARNING);
+        MessageBoxW(
+            hwnd_,
+            (L"以下热键注册失败，可能已被系统保留，或已被其它软件/工具占用：\n" + failures).c_str(),
+            L"热键冲突",
+            MB_OK | MB_ICONWARNING);
     }
     hotKeysRegistered_ = true;
 }
@@ -4877,6 +5659,7 @@ void MainWindow::UnregisterConfiguredHotKeys() {
         return;
     }
     UnregisterHotKey(hwnd_, ID_HOTKEY_MAIN);
+    mainHotKeyRegistered_ = false;
     for (const auto& [hotKeyId, _] : registeredLinkHotKeys_) {
         UnregisterHotKey(hwnd_, hotKeyId);
     }
@@ -4915,6 +5698,7 @@ void MainWindow::RemoveTrayIcon() {
 }
 
 void MainWindow::ShowTrayMenu(POINT screenPoint) {
+    DockAutoHidePause dockPause(*this, false);
     ResetMenuVisuals();
     menuContextKind_ = HitKind::None;
     menuContextId_ = 0;
@@ -4936,6 +5720,7 @@ void MainWindow::ShowTrayMenu(POINT screenPoint) {
 }
 
 void MainWindow::ShowMainMenu(POINT screenPoint) {
+    DockAutoHidePause dockPause(*this);
     ResetMenuVisuals();
     menuContextKind_ = HitKind::None;
     menuContextId_ = 0;
@@ -4947,10 +5732,12 @@ void MainWindow::ShowMainMenu(POINT screenPoint) {
     AppendSystemFunctionItems(systemMenu);
     AppendToolItems(toolMenu);
 
+    AppendThemedMenuItem(menu, MF_STRING, ID_MENU_QUICK_IMPORT, L"快速导入");
+    AppendThemedSeparator(menu);
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_TOGGLE_TITLE, config_.showTitle ? L"隐藏标题栏" : L"显示标题栏", false, -1, -1, config_.showTitle ? MenuIconEyeOff : MenuIconEye);
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_TOGGLE_GROUP, config_.showGroup ? L"隐藏分组" : L"显示分组", false, -1, -1, config_.showGroup ? MenuIconEyeOff : MenuIconEye);
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_TOGGLE_TAG, config_.showTag ? L"隐藏标签" : L"显示标签", false, -1, -1, config_.showTag ? MenuIconEyeOff : MenuIconEye);
-    AppendThemedMenuItem(menu, MF_STRING, ID_MENU_TOGGLE_TOPMOST, config_.topMost ? L"取消钉住" : L"钉住", false, -1, -1, config_.topMost ? MenuIconPinOff : MenuIconPin);
+    AppendThemedMenuItem(menu, MF_STRING, ID_MENU_TOGGLE_TOPMOST, config_.topMost ? L"取消置顶" : L"置顶", false, -1, -1, config_.topMost ? MenuIconPinOff : MenuIconPin);
     AppendThemedSeparator(menu);
     AppendThemedMenuItem(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(themeMenu), L"皮肤", true);
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_SETTINGS, L"设置");
@@ -4968,15 +5755,42 @@ void MainWindow::ShowMainMenu(POINT screenPoint) {
     DestroyMenu(menu);
 }
 
+void MainWindow::ShowToolMenu(POINT screenPoint) {
+    DockAutoHidePause dockPause(*this);
+    ResetMenuVisuals();
+    HMENU menu = CreatePopupMenu();
+    AppendToolItems(menu);
+    ActivateWindow(hwnd_);
+    TrackPopupMenu(menu, TPM_RIGHTBUTTON, screenPoint.x, screenPoint.y, 0, hwnd_, nullptr);
+    DestroyMenu(menu);
+}
+
 void MainWindow::ShowLinkMenu(int linkId, POINT screenPoint) {
+    DockAutoHidePause dockPause(*this);
     HideItemTooltip();
     ResetMenuVisuals();
     HMENU menu = CreatePopupMenu();
     Link* link = FindLink(linkId);
+    AppendLinkActionItems(menu, link, true);
+    selectedLinkId_ = linkId;
+    menuContextKind_ = HitKind::Link;
+    menuContextId_ = linkId;
+    ActivateWindow(hwnd_);
+    const UINT command = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, screenPoint.x, screenPoint.y, 0, hwnd_, nullptr);
+    PostMessageW(hwnd_, WM_NULL, 0, 0);
+    DestroyMenu(menu);
+    if (command != 0) {
+        SendMessageW(hwnd_, WM_COMMAND, MAKEWPARAM(command, 0), 0);
+    }
+}
+
+void MainWindow::AppendLinkActionItems(HMENU menu, Link* link, bool includeNativeMenuItem) {
     const bool isUrl = link && IsUrlLink(*link);
     AppendThemedMenuItem(menu, MF_STRING, isUrl ? ID_MENU_RUN_PRIVATE : ID_MENU_RUN_ADMIN, isUrl ? L"以隐私模式运行" : L"以管理员身份运行");
     AppendThemedMenuItem(menu, MF_STRING, isUrl ? ID_MENU_COPY_URL : ID_MENU_OPEN_LOCATION, isUrl ? L"复制网址(URL)" : L"打开文件位置");
-    AppendThemedMenuItem(menu, MF_STRING, ID_MENU_WINDOWS_CONTEXT, L"Windows 原生菜单");
+    if (includeNativeMenuItem && link && !isUrl) {
+        AppendThemedMenuItem(menu, MF_STRING, ID_MENU_WINDOWS_CONTEXT, L"Windows 原生菜单", false, -1, -1, MenuIconWindows);
+    }
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_CREATE_DESKTOP_SHORTCUT, L"创建桌面快捷方式");
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_REFRESH_LINK_ICON, L"刷新图标缓存");
     HMENU moveMenu = CreatePopupMenu();
@@ -4990,15 +5804,10 @@ void MainWindow::ShowLinkMenu(int linkId, POINT screenPoint) {
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_EDIT_LINK, L"编辑");
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_PROPERTIES, L"属性");
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_DELETE_LINK, L"删除");
-    selectedLinkId_ = linkId;
-    menuContextKind_ = HitKind::Link;
-    menuContextId_ = linkId;
-    ActivateWindow(hwnd_);
-    TrackPopupMenu(menu, TPM_RIGHTBUTTON, screenPoint.x, screenPoint.y, 0, hwnd_, nullptr);
-    DestroyMenu(menu);
 }
 
 void MainWindow::ShowTodoMenu(int todoId, POINT screenPoint) {
+    DockAutoHidePause dockPause(*this);
     ResetMenuVisuals();
     HMENU menu = CreatePopupMenu();
     const TodoItem* item = FindTodoItem(todoId);
@@ -5301,6 +6110,7 @@ void MainWindow::UpdateItemTooltip(const HitArea& hit, POINT screenPoint) {
 }
 
 void MainWindow::ShowGroupMenu(int groupId, POINT screenPoint) {
+    DockAutoHidePause dockPause(*this);
     ResetMenuVisuals();
     HMENU menu = CreatePopupMenu();
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_ADD_GROUP, L"新建分组");
@@ -5317,6 +6127,7 @@ void MainWindow::ShowGroupMenu(int groupId, POINT screenPoint) {
 }
 
 void MainWindow::ShowGroupBlankMenu(POINT screenPoint) {
+    DockAutoHidePause dockPause(*this);
     ResetMenuVisuals();
     HMENU menu = CreatePopupMenu();
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_ADD_GROUP, L"新建分组");
@@ -5328,6 +6139,7 @@ void MainWindow::ShowGroupBlankMenu(POINT screenPoint) {
 }
 
 void MainWindow::ShowTagMenu(int tagId, POINT screenPoint) {
+    DockAutoHidePause dockPause(*this);
     ResetMenuVisuals();
     HMENU menu = CreatePopupMenu();
     Group* tag = FindGroup(tagId);
@@ -5363,6 +6175,7 @@ void MainWindow::ShowTagMenu(int tagId, POINT screenPoint) {
 }
 
 void MainWindow::ShowTagBlankMenu(POINT screenPoint) {
+    DockAutoHidePause dockPause(*this);
     ResetMenuVisuals();
     HMENU menu = CreatePopupMenu();
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_ADD_TAG, L"新建普通标签");
@@ -5376,6 +6189,7 @@ void MainWindow::ShowTagBlankMenu(POINT screenPoint) {
 }
 
 void MainWindow::ShowBackgroundMenu(POINT screenPoint) {
+    DockAutoHidePause dockPause(*this);
     ResetMenuVisuals();
     menuContextKind_ = HitKind::None;
     menuContextId_ = 0;
@@ -5640,7 +6454,7 @@ void MainWindow::AppendGroupedTagTargetMenu(HMENU menu, UINT commandBase, std::v
 }
 
 void MainWindow::SaveWindowState() {
-    if (!hwnd_ || IsIconic(hwnd_)) {
+    if (!windowStateSaveEnabled_ || !hwnd_ || IsIconic(hwnd_)) {
         return;
     }
 
@@ -5667,8 +6481,13 @@ void MainWindow::WakeUp() {
     if (!IsWindowVisible(hwnd_)) {
         ShowWindowRespectFocusPolicy(hwnd_, SW_SHOWNORMAL);
     }
-    SetWindowPos(hwnd_, nullptr, 0, 0, 0, 0,
-                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
+    SetWindowPos(hwnd_,
+                 MainWindowMoveInsertAfter(config_.topMost),
+                 0,
+                 0,
+                 0,
+                 0,
+                 MainWindowMoveFlags(config_.topMost, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED));
     ShowWindowRespectFocusPolicy(hwnd_, SW_RESTORE);
     ActivateWindow(hwnd_);
 }
@@ -5680,11 +6499,17 @@ bool MainWindow::IsEffectivelyVisible() const {
 void MainWindow::HideMainWindow() {
     HideItemTooltip();
     if (dockHidden_) {
+        HideDockPeek();
         const int width = dockRestoreRect_.right - dockRestoreRect_.left;
         const int height = dockRestoreRect_.bottom - dockRestoreRect_.top;
         ShowWindow(hwnd_, SW_HIDE);
-        SetWindowPos(hwnd_, nullptr, dockRestoreRect_.left, dockRestoreRect_.top, width, height,
-                     SWP_NOZORDER | SWP_NOACTIVATE);
+        SetWindowPos(hwnd_,
+                     MainWindowMoveInsertAfter(config_.topMost),
+                     dockRestoreRect_.left,
+                     dockRestoreRect_.top,
+                     width,
+                     height,
+                     MainWindowMoveFlags(config_.topMost, SWP_NOZORDER | SWP_NOACTIVATE));
         dockHidden_ = false;
         SaveWindowState();
         return;
@@ -5704,13 +6529,20 @@ HRESULT MainWindow::CreateDeviceResources() {
         return S_OK;
     }
 
+    if (!startupFirstPaintLogged_) {
+        WriteStartupTiming(L"d2d render target create begin");
+    }
     RECT rect{};
     GetClientRect(hwnd_, &rect);
     const D2D1_SIZE_U size = D2D1::SizeU(rect.right - rect.left, rect.bottom - rect.top);
-    return d2dFactory_->CreateHwndRenderTarget(
-        D2D1::RenderTargetProperties(),
+    const HRESULT hr = d2dFactory_->CreateHwndRenderTarget(
+        D2D1::RenderTargetProperties(D2D1_RENDER_TARGET_TYPE_SOFTWARE),
         D2D1::HwndRenderTargetProperties(hwnd_, size),
         &renderTarget_);
+    if (!startupFirstPaintLogged_) {
+        WriteStartupTiming(L"d2d render target create end", L"hr=" + std::to_wstring(static_cast<long>(hr)));
+    }
+    return hr;
 }
 
 void MainWindow::OnPaint() {
@@ -5718,6 +6550,18 @@ void MainWindow::OnPaint() {
     BeginPaint(hwnd_, &paint);
     if (SUCCEEDED(CreateDeviceResources())) {
         Draw();
+        if (!startupFirstPaintLogged_) {
+            startupFirstPaintLogged_ = true;
+            WriteStartupTiming(
+                L"first paint completed",
+                L"groups=" + std::to_wstring(model_.groups.size()) +
+                    L", links=" + std::to_wstring(model_.links.size()) +
+                    L", todos=" + std::to_wstring(model_.todos.size()));
+            if (!config_.hideOnStart && !startupActivationPosted_) {
+                startupActivationPosted_ = true;
+                PostMessageW(hwnd_, WM_QUATTRO_STARTUP_ACTIVATE, 0, 0);
+            }
+        }
     }
     EndPaint(hwnd_, &paint);
 }
@@ -5731,6 +6575,11 @@ void MainWindow::OnResize(UINT width, UINT height) {
 }
 
 void MainWindow::Draw() {
+    const bool traceStartupPaint = !startupFirstPaintLogged_;
+    if (traceStartupPaint) {
+        WriteStartupTiming(L"first paint begin");
+    }
+
     renderTarget_->BeginDraw();
     const D2D1_SIZE_F size = renderTarget_->GetSize();
 
@@ -5741,13 +6590,25 @@ void MainWindow::Draw() {
     hitAreas_.clear();
 
     DrawTitle(title);
+    if (traceStartupPaint) {
+        WriteStartupTiming(L"first paint title drawn");
+    }
     if (config_.showGroup) {
         DrawGroups(groups);
+        if (traceStartupPaint) {
+            WriteStartupTiming(L"first paint groups drawn");
+        }
     }
     if (config_.showTag) {
         DrawTags(tags);
+        if (traceStartupPaint) {
+            WriteStartupTiming(L"first paint tags drawn");
+        }
     }
     DrawLinks(links);
+    if (traceStartupPaint) {
+        WriteStartupTiming(L"first paint links drawn");
+    }
     DrawRect(D2D1::RectF(0, 0, size.width, size.height), theme_.color(L"window", L"normal", L"border"));
 
     HRESULT hr = renderTarget_->EndDraw();
@@ -5776,25 +6637,8 @@ void MainWindow::DrawTitle(D2D1_RECT_F rect) {
     const float buttonGap = ClampFloat(theme_.metric(L"titleButton", L"gap", 2.0f), 0.0f, 12.0f);
     const float buttonRightInset = Metric(theme_, L"titleButton", L"rightInset", 4.0f);
     const float buttonTopInset = Metric(theme_, L"titleButton", L"topInset", 4.0f);
-    const float buttonReserveInset = Metric(theme_, L"titleButton", L"reserveInset", 16.0f);
-    const std::array<HitKind, 3> buttons = {
-        HitKind::CloseButton,
-        HitKind::SkinButton,
-        HitKind::MenuButton,
-    };
-    auto isTitleButtonVisible = [&](HitKind kind) {
-        return !((kind == HitKind::MenuButton && !config_.showMenuButton) ||
-                 (kind == HitKind::SkinButton && !config_.showSkinButton));
-    };
-    int visibleButtonCount = 0;
-    for (HitKind kind : buttons) {
-        if (isTitleButtonVisible(kind)) {
-            ++visibleButtonCount;
-        }
-    }
-    const float buttonReserve = visibleButtonCount > 0
-        ? buttonReserveInset + static_cast<float>(visibleButtonCount) * buttonSize + static_cast<float>(visibleButtonCount - 1) * buttonGap
-        : buttonReserveInset;
+    const std::array<HitKind, 4> buttons = TitleButtonsRightToLeft();
+    const float buttonReserve = TitleButtonsReserveWidth();
     const float titleTextLeft = appIcon.right + Metric(theme_, L"title", L"textGap", 7.0f);
     const float titleTextMaxEnd = rect.right - buttonReserve - Metric(theme_, L"title", L"textGap", 7.0f);
     // Let the title use all the space up to the buttons so it is never clipped.
@@ -5805,7 +6649,7 @@ void MainWindow::DrawTitle(D2D1_RECT_F rect) {
 
     float buttonRight = rect.right - buttonRightInset;
     for (HitKind kind : buttons) {
-        if (!isTitleButtonVisible(kind)) {
+        if (!IsTitleButtonVisible(kind)) {
             continue;
         }
         D2D1_RECT_F button = D2D1::RectF(buttonRight - buttonSize, rect.top + buttonTopInset, buttonRight, rect.top + buttonTopInset + buttonSize);
@@ -5816,6 +6660,38 @@ void MainWindow::DrawTitle(D2D1_RECT_F rect) {
         hitAreas_.push_back(HitArea{kind, 0, button});
         buttonRight -= buttonSize + buttonGap;
     }
+}
+
+std::array<MainWindow::HitKind, 4> MainWindow::TitleButtonsRightToLeft() {
+    return {
+        HitKind::CloseButton,
+        HitKind::MenuButton,
+        HitKind::ToolButton,
+        HitKind::SkinButton,
+    };
+}
+
+bool MainWindow::IsTitleButtonVisible(HitKind kind) const {
+    return !((kind == HitKind::ToolButton && !config_.showToolboxButton) ||
+             (kind == HitKind::SkinButton && !config_.showSkinButton));
+}
+
+float MainWindow::TitleButtonsReserveWidth() const {
+    const float buttonSize = ClampFloat(theme_.metric(L"titleButton", L"size", 26.0f), 18.0f, 40.0f);
+    const float buttonGap = ClampFloat(theme_.metric(L"titleButton", L"gap", 2.0f), 0.0f, 12.0f);
+    const float buttonReserveInset = Metric(theme_, L"titleButton", L"reserveInset", 16.0f);
+    int visibleButtonCount = 0;
+    for (HitKind kind : TitleButtonsRightToLeft()) {
+        if (IsTitleButtonVisible(kind)) {
+            ++visibleButtonCount;
+        }
+    }
+    if (visibleButtonCount <= 0) {
+        return buttonReserveInset;
+    }
+    return buttonReserveInset +
+        static_cast<float>(visibleButtonCount) * buttonSize +
+        static_cast<float>(visibleButtonCount - 1) * buttonGap;
 }
 
 void MainWindow::DrawGroups(D2D1_RECT_F rect) {
@@ -6415,6 +7291,13 @@ void MainWindow::DrawButtonIcon(HitKind kind, D2D1_RECT_F rect, const Color& col
         renderTarget_->DrawLine(D2D1::Point2F(cx - menuHalfWidth, cy - menuLineGap), D2D1::Point2F(cx + menuHalfWidth, cy - menuLineGap), brush, stroke);
         renderTarget_->DrawLine(D2D1::Point2F(cx - menuHalfWidth, cy), D2D1::Point2F(cx + menuHalfWidth, cy), brush, stroke);
         renderTarget_->DrawLine(D2D1::Point2F(cx - menuHalfWidth, cy + menuLineGap), D2D1::Point2F(cx + menuHalfWidth, cy + menuLineGap), brush, stroke);
+    } else if (kind == HitKind::ToolButton) {
+        const float handleHalf = menuHalfWidth * 0.45f;
+        const float handleTop = cy - menuHalfWidth;
+        const float handleBottom = cy - menuHalfWidth * 0.45f;
+        renderTarget_->DrawRectangle(D2D1::RectF(cx - handleHalf, handleTop, cx + handleHalf, handleBottom), brush, stroke);
+        renderTarget_->DrawRectangle(D2D1::RectF(cx - menuHalfWidth, cy - menuHalfWidth * 0.35f, cx + menuHalfWidth, cy + menuHalfWidth), brush, stroke);
+        renderTarget_->DrawLine(D2D1::Point2F(cx - menuHalfWidth, cy), D2D1::Point2F(cx + menuHalfWidth, cy), brush, stroke);
     } else if (kind == HitKind::AddButton) {
         renderTarget_->DrawLine(D2D1::Point2F(cx - menuHalfWidth, cy), D2D1::Point2F(cx + menuHalfWidth, cy), brush, stroke);
         renderTarget_->DrawLine(D2D1::Point2F(cx, cy - menuHalfWidth), D2D1::Point2F(cx, cy + menuHalfWidth), brush, stroke);
@@ -6612,6 +7495,10 @@ void MainWindow::ResetMenuVisuals() {
 }
 
 void MainWindow::AppendThemedMenuItem(HMENU menu, UINT flags, UINT_PTR id, const std::wstring& text, bool submenu, int systemImageIndex, int stockIcon, int menuIcon, bool checkedIconAccent) {
+    InsertThemedMenuItem(menu, static_cast<UINT>(-1), flags, id, text, submenu, systemImageIndex, stockIcon, menuIcon, checkedIconAccent);
+}
+
+void MainWindow::InsertThemedMenuItem(HMENU menu, UINT position, UINT flags, UINT_PTR id, const std::wstring& text, bool submenu, int systemImageIndex, int stockIcon, int menuIcon, bool checkedIconAccent) {
     auto item = std::make_unique<MenuItemData>();
     item->text = MenuTextFromRaw(text);
     item->icon = menuIcon != MenuIconNone ? menuIcon : MenuIconFor(id, item->text);
@@ -6623,7 +7510,12 @@ void MainWindow::AppendThemedMenuItem(HMENU menu, UINT flags, UINT_PTR id, const
     item->checkedIconAccent = checkedIconAccent;
     MenuItemData* raw = item.get();
     activeMenuItems_.push_back(std::move(item));
-    AppendMenuW(menu, (flags | MF_OWNERDRAW) & ~MF_STRING, id, reinterpret_cast<LPCWSTR>(raw));
+    const UINT menuFlags = (flags | MF_OWNERDRAW) & ~MF_STRING;
+    if (position == static_cast<UINT>(-1)) {
+        AppendMenuW(menu, menuFlags, id, reinterpret_cast<LPCWSTR>(raw));
+    } else {
+        InsertMenuW(menu, position, menuFlags, id, reinterpret_cast<LPCWSTR>(raw));
+    }
 }
 
 void MainWindow::AppendThemedSeparator(HMENU menu) {
@@ -6634,11 +7526,27 @@ void MainWindow::AppendThemedSeparator(HMENU menu) {
     AppendMenuW(menu, MF_SEPARATOR | MF_OWNERDRAW, 0, reinterpret_cast<LPCWSTR>(raw));
 }
 
+const MainWindow::MenuItemData* MainWindow::ThemedMenuItemFromData(ULONG_PTR itemData) const {
+    if (itemData == 0) {
+        return nullptr;
+    }
+    const auto* raw = reinterpret_cast<const MenuItemData*>(itemData);
+    for (const auto& item : activeMenuItems_) {
+        if (item.get() == raw) {
+            return raw;
+        }
+    }
+    return nullptr;
+}
+
 bool MainWindow::MeasureThemedMenuItem(MEASUREITEMSTRUCT* measure) {
-    if (!measure || measure->CtlType != ODT_MENU || measure->itemData == 0) {
+    if (!measure || measure->CtlType != ODT_MENU) {
         return false;
     }
-    const auto* item = reinterpret_cast<const MenuItemData*>(measure->itemData);
+    const auto* item = ThemedMenuItemFromData(measure->itemData);
+    if (!item) {
+        return false;
+    }
     if (item->separator) {
         const int thickness = static_cast<int>(std::max(1.0f, Metric(theme_, L"separator", L"thickness", 1.0f)));
         measure->itemHeight = static_cast<UINT>(std::max(5, thickness + 8));
@@ -6656,11 +7564,14 @@ bool MainWindow::MeasureThemedMenuItem(MEASUREITEMSTRUCT* measure) {
 }
 
 bool MainWindow::DrawThemedMenuItem(const DRAWITEMSTRUCT* draw) {
-    if (!draw || draw->CtlType != ODT_MENU || draw->itemData == 0) {
+    if (!draw || draw->CtlType != ODT_MENU) {
         return false;
     }
 
-    const auto* item = reinterpret_cast<const MenuItemData*>(draw->itemData);
+    const auto* item = ThemedMenuItemFromData(draw->itemData);
+    if (!item) {
+        return false;
+    }
     RECT rc = draw->rcItem;
     HDC dc = draw->hDC;
     const Color background = theme_.color(L"menu", L"normal", L"bg");

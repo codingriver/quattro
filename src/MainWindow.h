@@ -4,6 +4,7 @@
 #include "ConfigPackageService.h"
 #include "IconService.h"
 #include "Launcher.h"
+#include "LocalHttpServerService.h"
 #include "MenuCatalog.h"
 #include "Models.h"
 #include "PluginRegistry.h"
@@ -17,6 +18,7 @@
 #include <commctrl.h>
 #include <wincodec.h>
 
+#include <array>
 #include <filesystem>
 #include <memory>
 #include <string>
@@ -28,7 +30,10 @@
 constexpr UINT WM_QUATTRO_WAKEUP = WM_APP + 0x65;
 constexpr UINT WM_QUATTRO_TRAY = WM_APP + 0x66;
 constexpr UINT WM_QUATTRO_URL_ICON_DOWNLOADED = WM_APP + 0x67;
-constexpr UINT WM_QUATTRO_WEBDAV_DONE = WM_APP + 0x68;
+constexpr UINT WM_QUATTRO_DOCK_PEEK_ACTIVATE = WM_APP + 0x68;
+constexpr UINT WM_QUATTRO_EXIT_INSTANCE = WM_APP + 0x69;
+constexpr UINT WM_QUATTRO_STARTUP_ACTIVATE = WM_APP + 0x6A;
+constexpr UINT WM_QUATTRO_STARTUP_DEFERRED = WM_APP + 0x6B;
 
 class OleDropTarget;
 
@@ -50,12 +55,24 @@ public:
     const AppConfig& config() const { return config_; }
 
 private:
+    class DockAutoHidePause {
+    public:
+        DockAutoHidePause(MainWindow& window, bool restoreHidden = true);
+        ~DockAutoHidePause();
+        DockAutoHidePause(const DockAutoHidePause&) = delete;
+        DockAutoHidePause& operator=(const DockAutoHidePause&) = delete;
+
+    private:
+        MainWindow& window_;
+    };
+
     friend class OleDropTarget;
 
     enum class HitKind {
         None,
         CloseButton,
         MenuButton,
+        ToolButton,
         SkinButton,
         AddButton,
         Group,
@@ -111,6 +128,8 @@ private:
     void AddFile();
     void AddFolder();
     void AddUrl();
+    void QuickImport();
+    int EnsureQuickImportTargetTag();
     void AddSystemFunction(std::size_t index);
     void OpenSystemFunction(std::size_t index);
     void EditLink(int linkId);
@@ -146,6 +165,7 @@ private:
     void ShowClipboardImportNotification(int count, const std::wstring& pathDetail = L"");
     bool EnsureNotificationIcon();
     void OpenSettings();
+    void CommitSettingsConfig(const AppConfig& next, bool importedData);
     void OpenBuiltinTool(std::size_t index);
     void ResetLayoutToDefaults();
     void ClearIconCache();
@@ -162,9 +182,15 @@ private:
     bool TryRepairLinkTarget(Link& link);
     void ShowThemeMenu(POINT screenPoint);
     void ApplyTheme(const std::wstring& themeName);
+    void BeginDockAutoHidePause(bool restoreHidden);
+    void EndDockAutoHidePause();
+    bool DockAutoHidePaused() const;
     void UpdateDockState();
     void DockHide();
     void DockRestore();
+    void ShowDockPeek(const RECT& peekRect);
+    void HideDockPeek();
+    bool SnapDockWindowRect(RECT& window) const;
     bool IsNearDockEdge(POINT screenPoint) const;
     bool IsEffectivelyVisible() const;
     void HideMainWindow();
@@ -172,9 +198,11 @@ private:
     void ImportClipboard();
     void ExportConfigPackage();
     void ImportConfigPackageMerge();
-    void UploadWebDavBackup();
-    void DownloadWebDavBackupMerge();
     bool ImportDropData(IDataObject* dataObject);
+    bool StartHttpServer(bool showMessage);
+    void StopHttpServer(bool showMessage);
+    bool RestartHttpServer(bool showMessage);
+    void SyncHttpServerRuntime(const AppConfig& previous);
     void ApplyConfigRuntimeChanges(const AppConfig& previous);
     void SyncAutoRun(const AppConfig& previous);
     void RegisterConfiguredHotKeys();
@@ -183,7 +211,9 @@ private:
     void RemoveTrayIcon();
     void ShowTrayMenu(POINT screenPoint);
     void ShowMainMenu(POINT screenPoint);
+    void ShowToolMenu(POINT screenPoint);
     void ShowLinkMenu(int linkId, POINT screenPoint);
+    void AppendLinkActionItems(HMENU menu, Link* link, bool includeNativeMenuItem);
     void CreateTooltip();
     void ApplyTooltipTheme();
     void HideItemTooltip();
@@ -229,6 +259,9 @@ private:
     void DrawTodoItems(D2D1_RECT_F rect, const Group& tag);
     void DrawEmptyState(const D2D1_RECT_F& contentRect, const std::wstring& title, const std::wstring& hint, const std::wstring& buttonLabel);
     void DrawEmptyAddButton(const D2D1_RECT_F& contentRect, float topY, const std::wstring& label);
+    static std::array<HitKind, 4> TitleButtonsRightToLeft();
+    bool IsTitleButtonVisible(HitKind kind) const;
+    float TitleButtonsReserveWidth() const;
     void DrawButtonIcon(HitKind kind, D2D1_RECT_F rect, const Color& color);
     ID2D1Bitmap* LoadAppIconBitmap();
     void ClearUiBitmaps();
@@ -243,7 +276,9 @@ private:
     void DrawLinkName(const std::wstring& text, IDWriteTextFormat* format, const D2D1_RECT_F& rect, const Color& color);
     void ResetMenuVisuals();
     void AppendThemedMenuItem(HMENU menu, UINT flags, UINT_PTR id, const std::wstring& text, bool submenu = false, int systemImageIndex = -1, int stockIcon = -1, int menuIcon = 0, bool checkedIconAccent = false);
+    void InsertThemedMenuItem(HMENU menu, UINT position, UINT flags, UINT_PTR id, const std::wstring& text, bool submenu = false, int systemImageIndex = -1, int stockIcon = -1, int menuIcon = 0, bool checkedIconAccent = false);
     void AppendThemedSeparator(HMENU menu);
+    const MenuItemData* ThemedMenuItemFromData(ULONG_PTR itemData) const;
     bool MeasureThemedMenuItem(MEASUREITEMSTRUCT* measure);
     bool DrawThemedMenuItem(const DRAWITEMSTRUCT* draw);
     void ClampScrollOffsets();
@@ -301,6 +336,7 @@ private:
     Launcher launcher_;
     IconService iconService_;
     UrlIconDownloadService urlIconDownloadService_;
+    LocalHttpServerService httpServerService_;
 
     int currentGroupId_ = 0;
     int currentTagId_ = 0;
@@ -333,12 +369,20 @@ private:
     bool dragOver_ = false;
     bool trayIconVisible_ = false;
     bool hotKeysRegistered_ = false;
+    bool mainHotKeyRegistered_ = false;
     bool runningAsAdmin_ = false;
     bool exitingForPrivilegeRestart_ = false;
+    bool startupFirstPaintLogged_ = false;
+    bool startupActivationPosted_ = false;
+    bool startupDeferredPosted_ = false;
+    bool startupTopMostPending_ = false;
+    bool windowStateSaveEnabled_ = false;
     bool dockHidden_ = false;
     RECT dockRestoreRect_{};
+    HWND dockPeek_ = nullptr;
     UINT_PTR dockTimerId_ = 0;
     ULONGLONG dockHideDueTick_ = 0;
+    int dockAutoHidePauseDepth_ = 0;
     HitKind pendingHoverActivationKind_ = HitKind::None;
     int pendingHoverActivationId_ = 0;
     UINT_PTR hoverActivationTimerId_ = 0;

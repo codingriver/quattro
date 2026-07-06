@@ -30,12 +30,12 @@ struct AppConfig {
     bool linkNameSingleLine = false;
     bool showTooltip = true;
 
-    bool autoDock = false;
+    bool autoDock = true;
     int dockCorner = 0;
-    int dockDelay = 0;
+    int dockDelay = 1500;
     bool hideOnStart = false;
-    bool topMost = false;
-    bool hideAfterLink = false;
+    bool topMost = true;
+    bool hideAfterLink = true;
     bool hideWhenInactive = false;
 
     bool doubleClickToRun = false;
@@ -44,8 +44,7 @@ struct AppConfig {
     bool showRunCount = true;
     bool hideNotifyIcon = false;
     bool preferAdminRun = false;
-    bool showDate = true;
-    bool showMenuButton = true;
+    bool showToolboxButton = true;
     bool showSkinButton = false;
 
     bool mouseEnterActiveGroup = false;
@@ -55,9 +54,9 @@ struct AppConfig {
 
     int currentGroupId = 0;
     int currentTagId = 0;
-    int mainHotKey = 0;
+    int mainHotKey = L'Q';
 
-    int width = 388;
+    int width = 400;
     int height = 560;
     int posX = 2;
     int posY = 0;
@@ -86,6 +85,12 @@ struct AppConfig {
     std::wstring webDavRemotePath = L"/Quattro/backups/";
     std::wstring webDavUserName;
     int webDavKeepCount = 10;
+
+    bool httpServerEnabled = false;
+    bool httpServerAutoStart = false;
+    bool httpServerLanAccess = true;
+    int httpServerPort = 43127;
+    std::wstring httpServerRootPath;
 };
 
 struct Group {

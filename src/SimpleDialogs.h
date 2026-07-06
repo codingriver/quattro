@@ -2,13 +2,17 @@
 
 #include "Models.h"
 #include "Theme.h"
-#include "WebDavClient.h"
 
 #include <windows.h>
 
 #include <filesystem>
+#include <functional>
 #include <string>
 #include <vector>
+
+class LocalHttpServerService;
+struct WebDavRemoteFile;
+using SettingsApplyCallback = std::function<bool(const AppConfig&, bool)>;
 
 bool ShowTextInputDialog(HWND owner, HINSTANCE instance, const Theme& theme, const std::wstring& title, const std::wstring& label, std::wstring& value);
 int ShowThemedMessageBox(HWND owner, HINSTANCE instance, const Theme& theme, const std::wstring& message, const std::wstring& title, UINT flags);
@@ -24,4 +28,7 @@ bool ShowSettingsDialog(
     AppConfig& config,
     const Theme& theme,
     const std::filesystem::path& appDirectory,
-    bool* importedData = nullptr);
+    bool* importedData = nullptr,
+    LocalHttpServerService* httpServer = nullptr,
+    bool mainHotKeyRegistered = false,
+    SettingsApplyCallback applyCallback = {});

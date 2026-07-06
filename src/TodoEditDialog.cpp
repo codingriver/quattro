@@ -336,17 +336,14 @@ public:
             return false;
         }
 
-        RECT ownerRect{};
-        GetWindowRect(owner_, &ownerRect);
-        const int x = ownerRect.left + ((ownerRect.right - ownerRect.left) - kDialogWidth) / 2;
-        const int y = ownerRect.top + ((ownerRect.bottom - ownerRect.top) - kDialogHeight) / 2;
+        const POINT position = CenterWindowOnOwnerMonitor(owner_, kDialogWidth, kDialogHeight);
         hwnd_ = CreateWindowExW(
             WS_EX_DLGMODALFRAME | WS_EX_WINDOWEDGE,
             wc.lpszClassName,
             isNew_ ? L"新建待办" : L"编辑待办",
             WS_CAPTION | WS_SYSMENU | WS_POPUP | WS_CLIPCHILDREN | WS_VSCROLL,
-            x,
-            y,
+            position.x,
+            position.y,
             kDialogWidth,
             kDialogHeight,
             owner_,
@@ -572,13 +569,11 @@ private:
     }
 
     void SetTabChecked(HWND hwnd, bool checked) {
-        if (hwnd) {
-            SendMessageW(hwnd, BM_SETCHECK, checked ? BST_CHECKED : BST_UNCHECKED, 0);
-        }
+        ThemedControls::SetTabButtonSelected(hwnd, checked);
     }
 
     bool IsTabChecked(HWND hwnd) const {
-        return hwnd && SendMessageW(hwnd, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        return ThemedControls::IsTabButtonSelected(hwnd);
     }
 
     void SetTimeText(int hour, int minute) {

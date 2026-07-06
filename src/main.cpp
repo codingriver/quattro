@@ -13,6 +13,7 @@
 #include <objbase.h>
 #include <shellapi.h>
 
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -40,10 +41,27 @@ std::wstring BuildName(const wchar_t* prefix, const std::filesystem::path& appDi
     return std::wstring(prefix) + Hex8(StablePathHash(appDirectory.wstring()));
 }
 
-bool ActivateExistingInstance(const std::wstring& sharedMemoryName) {
+std::wstring CurrentPidText() {
+    return std::to_wstring(GetCurrentProcessId());
+}
+
+std::wstring BoolText(bool value) {
+    return value ? L"1" : L"0";
+}
+
+struct ActivateExistingInstanceResult {
+    bool activated = false;
+    std::wstring detail;
+};
+
+std::wstring HwndText(HWND hwnd) {
+    return std::to_wstring(reinterpret_cast<std::uintptr_t>(hwnd));
+}
+
+ActivateExistingInstanceResult TryActivateExistingInstance(const std::wstring& sharedMemoryName) {
     HANDLE mapping = OpenFileMappingW(FILE_MAP_READ, FALSE, sharedMemoryName.c_str());
     if (!mapping) {
-        return false;
+        return {false, L"OpenFileMapping failed: " + FormatLastError(GetLastError())};
     }
 
     void* view = MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, sizeof(HWND));
@@ -51,14 +69,43 @@ bool ActivateExistingInstance(const std::wstring& sharedMemoryName) {
     if (view) {
         hwnd = *static_cast<HWND*>(view);
         UnmapViewOfFile(view);
+    } else {
+        const DWORD error = GetLastError();
+        CloseHandle(mapping);
+        return {false, L"MapViewOfFile failed: " + FormatLastError(error)};
     }
     CloseHandle(mapping);
 
-    if (hwnd && IsWindow(hwnd)) {
-        PostMessageW(hwnd, WM_QUATTRO_WAKEUP, 0, 0);
-        return true;
+    if (!hwnd) {
+        return {false, L"shared HWND is empty"};
     }
-    return false;
+    if (!IsWindow(hwnd)) {
+        return {false, L"shared HWND is stale: " + HwndText(hwnd)};
+    }
+    if (!PostMessageW(hwnd, WM_QUATTRO_WAKEUP, 0, 0)) {
+        return {false, L"PostMessage failed for HWND " + HwndText(hwnd) + L": " + FormatLastError(GetLastError())};
+    }
+    return {true, L"posted wakeup to HWND " + HwndText(hwnd)};
+}
+
+ActivateExistingInstanceResult WaitForExistingInstance(const std::wstring& sharedMemoryName, DWORD timeoutMs) {
+    const DWORD start = GetTickCount();
+    ActivateExistingInstanceResult last;
+    for (;;) {
+        last = TryActivateExistingInstance(sharedMemoryName);
+        if (last.activated) {
+            const DWORD elapsed = GetTickCount() - start;
+            last.detail += L" after " + std::to_wstring(elapsed) + L"ms";
+            return last;
+        }
+
+        const DWORD elapsed = GetTickCount() - start;
+        if (elapsed >= timeoutMs) {
+            last.detail += L" after waiting " + std::to_wstring(elapsed) + L"ms";
+            return last;
+        }
+        Sleep(100);
+    }
 }
 
 bool PublishMainWindow(Runtime& runtime, HWND hwnd) {
@@ -148,8 +195,7 @@ void WriteStartupReport(
     file << "show_group=" << (config.showGroup ? 1 : 0) << "\n";
     file << "show_tag=" << (config.showTag ? 1 : 0) << "\n";
     file << "show_run_count=" << (config.showRunCount ? 1 : 0) << "\n";
-    file << "show_date=" << (config.showDate ? 1 : 0) << "\n";
-    file << "show_menu_button=" << (config.showMenuButton ? 1 : 0) << "\n";
+    file << "show_toolbox_button=" << (config.showToolboxButton ? 1 : 0) << "\n";
     file << "show_skin_button=" << (config.showSkinButton ? 1 : 0) << "\n";
     file << "link_name_single_line=" << (config.linkNameSingleLine ? 1 : 0) << "\n";
     file << "show_tooltip=" << (config.showTooltip ? 1 : 0) << "\n";
@@ -203,6 +249,7 @@ bool HasPrivilegeRestartArgument() {
 }
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
+    ResetStartupTiming();
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 
     const std::filesystem::path moduleDirectory = GetModuleDirectory();
@@ -211,7 +258,14 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     SetCurrentDirectoryW(appDirectory.c_str());
     std::filesystem::create_directories(appDirectory / L"db");
     InitializeAppLog(appDirectory);
-    WriteAppLog(L"应用启动。");
+    WriteAppLog(L"应用启动。pid=" + CurrentPidText());
+    WriteStartupTiming(
+        L"app directory ready",
+        L"module=" + moduleDirectory.wstring() +
+            L", app=" + appDirectory.wstring() +
+            L", embedded_written=" + std::to_wstring(assetInstall.filesWritten) +
+            L", embedded_failures=" + std::to_wstring(assetInstall.failures) +
+            L", fallback_dir=" + BoolText(assetInstall.usedFallbackDirectory));
     if (assetInstall.filesWritten > 0) {
         WriteAppLog(L"已释放内置资源: " + std::to_wstring(assetInstall.filesWritten));
     }
@@ -222,6 +276,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     const bool privilegeRestart = HasPrivilegeRestartArgument();
     ConfigService configService(appDirectory / L"conf.ini");
     AppConfig config = configService.Load();
+    WriteStartupTiming(
+        L"config loaded",
+        L"theme=" + config.theme +
+            L", prefer_admin=" + BoolText(config.preferAdminRun) +
+            L", hide_on_start=" + BoolText(config.hideOnStart) +
+            L", http_auto=" + BoolText(config.httpServerAutoStart));
     if (config.preferAdminRun && !IsRunningAsAdmin() && !privilegeRestart) {
         std::wstring error;
         if (!RestartCurrentProcessElevated(nullptr, error)) {
@@ -236,30 +296,59 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     const std::wstring mutexName = BuildName(L"QuattroMutex_", appDirectory);
     const std::wstring sharedMemoryName = BuildName(L"QuattroShareMemory_", appDirectory);
     runtime.mutex = CreateMutexW(nullptr, TRUE, mutexName.c_str());
-    if (runtime.mutex && GetLastError() == ERROR_ALREADY_EXISTS) {
+    const DWORD mutexError = GetLastError();
+    WriteStartupTiming(
+        L"single instance mutex checked",
+        L"error=" + std::to_wstring(mutexError) + L", privilege_restart=" + BoolText(privilegeRestart));
+    if (!runtime.mutex) {
+        WriteAppLog(L"单实例 mutex 创建失败，取消启动以避免多实例。pid=" + CurrentPidText() + L"，错误=" + FormatLastError(mutexError));
+        const ActivateExistingInstanceResult activation = WaitForExistingInstance(sharedMemoryName, 5000);
+        if (activation.activated) {
+            WriteAppLog(L"已有实例已唤醒。pid=" + CurrentPidText() + L"，" + activation.detail);
+            return 0;
+        }
+        WriteAppLog(L"无法确认已有实例状态。pid=" + CurrentPidText() + L"，最后状态=" + activation.detail);
+        return 1;
+    }
+    if (mutexError == ERROR_ALREADY_EXISTS) {
         if (privilegeRestart) {
             DWORD wait = WaitForSingleObject(runtime.mutex, 5000);
             if (wait == WAIT_OBJECT_0 || wait == WAIT_ABANDONED) {
-                WriteAppLog(L"权限切换重启已接管单实例。");
+                WriteAppLog(L"权限切换重启已接管单实例。pid=" + CurrentPidText());
             } else {
-                if (ActivateExistingInstance(sharedMemoryName)) {
-                    WriteAppLog(L"已有实例已唤醒。");
+                WriteAppLog(L"权限切换重启等待旧实例退出超时。pid=" + CurrentPidText() + L"，wait=" + std::to_wstring(wait));
+                const ActivateExistingInstanceResult activation = WaitForExistingInstance(sharedMemoryName, 5000);
+                if (activation.activated) {
+                    WriteAppLog(L"已有实例已唤醒。pid=" + CurrentPidText() + L"，" + activation.detail);
                     return 0;
                 }
-                WriteAppLog(L"已有实例不可唤醒，继续启动新实例。");
+                WriteAppLog(L"已有实例不可唤醒，取消启动以避免多实例。pid=" + CurrentPidText() + L"，最后状态=" + activation.detail);
+                return 1;
             }
         } else {
-            if (ActivateExistingInstance(sharedMemoryName)) {
-                WriteAppLog(L"已有实例已唤醒。");
+            const ActivateExistingInstanceResult activation = WaitForExistingInstance(sharedMemoryName, 10000);
+            if (activation.activated) {
+                WriteAppLog(L"已有实例已唤醒。pid=" + CurrentPidText() + L"，" + activation.detail);
                 return 0;
             }
-            WriteAppLog(L"已有实例不可唤醒，继续启动新实例。");
+            WriteAppLog(L"已有实例不可唤醒，取消启动以避免多实例。pid=" + CurrentPidText() + L"，最后状态=" + activation.detail);
+            return 0;
         }
     }
 
     runtime.sharedMemory = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, sizeof(HWND), sharedMemoryName.c_str());
+    const DWORD sharedMemoryError = GetLastError();
+    if (!runtime.sharedMemory) {
+        WriteAppLog(L"单实例 shared memory 创建失败。pid=" + CurrentPidText() + L"，错误=" + FormatLastError(sharedMemoryError));
+    } else if (sharedMemoryError == ERROR_ALREADY_EXISTS) {
+        WriteAppLog(L"单实例 shared memory 已存在，将发布当前主窗口。pid=" + CurrentPidText());
+    }
+    WriteStartupTiming(
+        L"single instance shared memory ready",
+        L"created=" + BoolText(runtime.sharedMemory != nullptr) + L", error=" + std::to_wstring(sharedMemoryError));
 
     HRESULT ole = OleInitialize(nullptr);
+    WriteStartupTiming(L"ole initialized", L"hr=" + std::to_wstring(static_cast<long>(ole)));
     if (!WebDavRecoveryService::HasWebDavSettings(config)) {
         WebDavRecoveryService recoveryService;
         AppConfig recoveredConfig = config;
@@ -269,13 +358,24 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
             WriteAppLog(L"已从本机恢复 WebDAV 设置: " + recoveryService.path().wstring());
         }
     }
+    WriteStartupTiming(L"webdav recovery checked", L"enabled=" + BoolText(config.webDavEnabled));
     StorageService storageService(appDirectory);
     AppModel model = storageService.Load();
+    WriteStartupTiming(
+        L"storage loaded",
+        L"backend=" + std::wstring(storageService.sqliteAvailable() ? L"sqlite" : L"fallback") +
+            L", groups=" + std::to_wstring(model.groups.size()) +
+            L", links=" + std::to_wstring(model.links.size()) +
+            L", notes=" + std::to_wstring(model.notes.size()) +
+            L", todos=" + std::to_wstring(model.todos.size()));
     Theme theme = Theme::Load(appDirectory / L"theme", config.theme);
+    WriteStartupTiming(L"theme loaded", L"name=" + config.theme);
     WriteAppLog(storageService.sqliteAvailable() ? L"数据存储可用: db/link.db" : (L"数据存储降级: " + storageService.lastError()));
     WriteStartupReport(appDirectory, storageService, config, model);
+    WriteStartupTiming(L"startup report written");
 
     MainWindow window(instance, appDirectory, configService, storageService, config, model, theme);
+    WriteStartupTiming(L"main window constructed");
     if (!window.Create()) {
         WriteAppLog(L"主窗口初始化失败。");
         MessageBoxW(nullptr, L"主窗口初始化失败。", L"Quattro快速启动器", MB_ICONERROR | MB_OK);
@@ -284,15 +384,22 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
         }
         return 1;
     }
+    WriteStartupTiming(L"main window create completed");
 
-    PublishMainWindow(runtime, window.hwnd());
-    WriteAppLog(L"主窗口已创建。");
+    if (PublishMainWindow(runtime, window.hwnd())) {
+        WriteAppLog(L"主窗口已创建并发布单实例句柄。pid=" + CurrentPidText());
+        WriteStartupTiming(L"main window handle published", L"ok=1");
+    } else {
+        WriteAppLog(L"主窗口已创建，但单实例句柄发布失败。pid=" + CurrentPidText());
+        WriteStartupTiming(L"main window handle published", L"ok=0");
+    }
+    FinishStartupTiming();
     if (!storageService.sqliteAvailable() && !storageService.lastError().empty()) {
         ShowThemedMessageBox(window.hwnd(), instance, theme, storageService.lastError(), L"数据存储", MB_ICONINFORMATION | MB_OK);
     }
 
     int result = window.RunMessageLoop();
-    WriteAppLog(L"应用退出。");
+    WriteAppLog(L"应用退出。pid=" + CurrentPidText());
     if (SUCCEEDED(ole)) {
         OleUninitialize();
     }

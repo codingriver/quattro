@@ -39,15 +39,14 @@ private:
         wc.lpszClassName = L"QuattroHotKeyCaptureDialog";
         RegisterClassExW(&wc);
 
-        RECT ownerRect{};
-        GetWindowRect(owner_, &ownerRect);
+        const POINT position = OffsetWindowFromOwnerOnMonitor(owner_, 360, 150, 110, 120);
         hwnd_ = CreateWindowExW(
             WS_EX_DLGMODALFRAME | WS_EX_WINDOWEDGE,
             wc.lpszClassName,
             L"录入热键",
-            WS_CAPTION | WS_SYSMENU | WS_POPUP,
-            ownerRect.left + 110,
-            ownerRect.top + 120,
+            WS_CAPTION | WS_SYSMENU | WS_POPUP | WS_CLIPCHILDREN,
+            position.x,
+            position.y,
             360,
             150,
             owner_,

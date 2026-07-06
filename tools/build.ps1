@@ -139,7 +139,7 @@ function Remove-LegacyBuildOutputs {
     )
     foreach ($file in Get-ChildItem -LiteralPath $OutputDir -File) {
         if ($legacyNames -ccontains $file.Name) {
-            Remove-Item -LiteralPath $file.FullName -Force
+            Remove-FileRobust -Path $file.FullName -Purpose "legacy build output"
         }
     }
 }
@@ -157,6 +157,62 @@ function Remove-DirectoryRobust {
         }
     }
     Remove-Item -LiteralPath $Path -Recurse -Force
+}
+
+function Get-ProcessesByExecutablePath {
+    param([string]$Path)
+
+    $fullPath = [System.IO.Path]::GetFullPath($Path)
+    Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+        Where-Object {
+            ![string]::IsNullOrWhiteSpace($_.ExecutablePath) -and
+            ([System.IO.Path]::GetFullPath($_.ExecutablePath) -ieq $fullPath)
+        }
+}
+
+function Format-ProcessList {
+    param($Processes)
+
+    $items = @($Processes)
+    if ($items.Count -eq 0) {
+        return ""
+    }
+
+    return ($items | ForEach-Object { "$($_.Name) pid=$($_.ProcessId)" }) -join ", "
+}
+
+function Remove-FileRobust {
+    param(
+        [string]$Path,
+        [string]$Purpose = "file"
+    )
+
+    if (!(Test-Path $Path)) {
+        return
+    }
+
+    try {
+        (Get-Item -LiteralPath $Path -Force).Attributes = [System.IO.FileAttributes]::Normal
+    } catch {
+    }
+
+    $lastError = $null
+    for ($attempt = 1; $attempt -le 5; $attempt++) {
+        try {
+            Remove-Item -LiteralPath $Path -Force
+            return
+        } catch {
+            $lastError = $_
+            Start-Sleep -Milliseconds (200 * $attempt)
+        }
+    }
+
+    $processList = Format-ProcessList -Processes (Get-ProcessesByExecutablePath -Path $Path)
+    if (![string]::IsNullOrWhiteSpace($processList)) {
+        throw "Cannot replace $Purpose because it is running: $Path ($processList). Close Quattro from the tray or stop these processes, then run the package command again."
+    }
+
+    throw "Cannot remove $Purpose`: $Path. $($lastError.Exception.Message)"
 }
 
 function Invoke-PackageBuild {
@@ -225,7 +281,7 @@ function Publish-Package {
         New-Item -ItemType Directory -Force -Path $singleExeDirectoryPath | Out-Null
         $singleExePath = Join-Path $singleExeDirectoryPath $SingleExeFileName
         if (Test-Path $singleExePath) {
-            Remove-Item -LiteralPath $singleExePath -Force
+            Remove-FileRobust -Path $singleExePath -Purpose "single-exe package"
         }
         Copy-Item -LiteralPath (Join-Path $source "Quattro.exe") -Destination $singleExePath -Force
         Invoke-UpxCompress -ExePath $singleExePath
@@ -248,7 +304,7 @@ function Publish-Package {
     if ($Zip) {
         $zipPath = Join-Path $distRoot "$DistName.zip"
         if (Test-Path $zipPath) {
-            Remove-Item -LiteralPath $zipPath -Force
+            Remove-FileRobust -Path $zipPath -Purpose "zip package"
         }
         if ($SingleExe) {
             Compress-Archive -LiteralPath $singleExePath -DestinationPath $zipPath -Force

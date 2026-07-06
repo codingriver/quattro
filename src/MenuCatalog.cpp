@@ -7,10 +7,11 @@ namespace {
 constexpr const wchar_t* kMenuIconLinkPrefix = L"#menu:";
 
 constexpr std::array<MenuVisualRequirement, 26> kTopRightMenuVisuals{{
+    {ID_MENU_QUICK_IMPORT, L"快速导入", MenuIconPaste},
     {ID_MENU_TOGGLE_TITLE, L"隐藏标题栏", MenuIconEyeOff},
     {ID_MENU_TOGGLE_GROUP, L"隐藏分组", MenuIconEyeOff},
     {ID_MENU_TOGGLE_TAG, L"隐藏标签", MenuIconEyeOff},
-    {ID_MENU_TOGGLE_TOPMOST, L"钉住", MenuIconPin},
+    {ID_MENU_TOGGLE_TOPMOST, L"置顶", MenuIconPin},
     {ID_MENU_THEME_BASE, L"皮肤", MenuIconTheme},
     {ID_MENU_SETTINGS, L"设置", MenuIconSettings},
     {ID_MENU_REFRESH_ALL_ICONS, L"重置所有图标", MenuIconRefresh},
@@ -89,13 +90,12 @@ int MenuIconFor(UINT_PTR id, const std::wstring& text) {
     case ID_MENU_MOVE_DOWN: return MenuIconMove;
     case ID_MENU_COPY_LINK:
     case ID_MENU_COPY_PATH:
-    case ID_MENU_EXPORT_CONFIG:
-    case ID_MENU_UPLOAD_WEBDAV_BACKUP: return MenuIconCopy;
+    case ID_MENU_EXPORT_CONFIG: return MenuIconCopy;
     case ID_MENU_CUT_LINK: return MenuIconCut;
     case ID_MENU_PASTE_LINK:
     case ID_MENU_IMPORT_CLIPBOARD:
-    case ID_MENU_IMPORT_CONFIG_MERGE:
-    case ID_MENU_DOWNLOAD_WEBDAV_BACKUP: return MenuIconPaste;
+    case ID_MENU_QUICK_IMPORT:
+    case ID_MENU_IMPORT_CONFIG_MERGE: return MenuIconPaste;
     case ID_MENU_EDIT_LINK:
     case ID_MENU_EDIT_GROUP:
     case ID_MENU_EDIT_TAG: return MenuIconEdit;

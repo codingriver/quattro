@@ -13,7 +13,6 @@ ConfigPackageOptions BackupPackageOptions() {
     options.includeConfig = true;
     options.includeData = true;
     options.includeUrlIcons = true;
-    options.includePluginSettings = true;
     return options;
 }
 
@@ -147,7 +146,6 @@ WebDavBackupReport WebDavBackupService::DownloadAndImportMerge(const std::wstrin
     options.includeConfig = false;
     options.includeData = true;
     options.includeUrlIcons = true;
-    options.includePluginSettings = true;
     ConfigPackageService packageService(appDirectory_);
     report.importReport = packageService.ImportPackageMerge(packagePath, options);
     std::error_code ec;

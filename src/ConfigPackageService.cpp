@@ -1,7 +1,6 @@
 #include "ConfigPackageService.h"
 
 #include "Config.h"
-#include "PluginRegistry.h"
 #include "Storage.h"
 #include "Utilities.h"
 
@@ -437,54 +436,6 @@ std::filesystem::path UniqueImportedIconPath(const std::filesystem::path& target
     return directory / (stem + L".imported" + extension);
 }
 
-bool TableExists(sqlite3* db, const wchar_t* table) {
-    SQLiteStatement statement(db, L"SELECT name FROM sqlite_master WHERE type='table' AND name=?;");
-    if (!statement.ok()) {
-        return false;
-    }
-    statement.bindText(1, table);
-    return statement.step() == SQLITE_ROW;
-}
-
-void MergePluginSettings(sqlite3* sourceDb, sqlite3* targetDb, ConfigPackageReport& report) {
-    if (!TableExists(sourceDb, L"PluginSettings") || !TableExists(targetDb, L"PluginSettings")) {
-        return;
-    }
-    SQLiteStatement query(sourceDb, L"SELECT PluginID,Key,Value FROM PluginSettings ORDER BY PluginID,Key;");
-    if (!query.ok()) {
-        report.warnings.push_back(L"读取导入包工具设置失败。");
-        return;
-    }
-    while (query.step() == SQLITE_ROW) {
-        const std::wstring pluginId = query.columnText(0);
-        const std::wstring key = query.columnText(1);
-        const std::wstring value = query.columnText(2);
-
-        SQLiteStatement exists(targetDb, L"SELECT Value FROM PluginSettings WHERE PluginID=? AND Key=?;");
-        if (!exists.ok()) {
-            report.warnings.push_back(L"检查工具设置冲突失败。");
-            return;
-        }
-        exists.bindText(1, pluginId);
-        exists.bindText(2, key);
-        if (exists.step() == SQLITE_ROW) {
-            continue;
-        }
-
-        SQLiteStatement insert(targetDb, L"INSERT INTO PluginSettings(PluginID,Key,Value) VALUES(?,?,?);");
-        if (!insert.ok()) {
-            report.warnings.push_back(L"写入工具设置失败。");
-            return;
-        }
-        insert.bindText(1, pluginId);
-        insert.bindText(2, key);
-        insert.bindText(3, value);
-        if (insert.step() == SQLITE_DONE) {
-            ++report.pluginSettingsAdded;
-        }
-    }
-}
-
 void MergeUrlIcons(sqlite3* packageDb, const std::filesystem::path& appDirectory, ConfigPackageReport& report) {
     SQLiteStatement query(packageDb, L"SELECT Path,Size,Hash,Data FROM PackageFiles WHERE Kind='urlIcon' ORDER BY Path;");
     if (!query.ok()) {
@@ -519,7 +470,7 @@ void MergeUrlIcons(sqlite3* packageDb, const std::filesystem::path& appDirectory
     }
 }
 
-ConfigPackageReport MergeImportedData(const std::filesystem::path& appDirectory, const std::filesystem::path& importRoot, const ConfigPackageOptions& options) {
+ConfigPackageReport MergeImportedData(const std::filesystem::path& appDirectory, const std::filesystem::path& importRoot) {
     ConfigPackageReport report;
 
     StorageService targetStorage(appDirectory);
@@ -662,16 +613,6 @@ ConfigPackageReport MergeImportedData(const std::filesystem::path& appDirectory,
         ++report.todosAdded;
     }
 
-    if (options.includePluginSettings) {
-        PluginRegistry targetPlugins(appDirectory);
-        targetPlugins.Initialize();
-        SQLiteDatabase sourceDb(importRoot / L"db" / L"link.db");
-        SQLiteDatabase targetDb(appDirectory / L"db" / L"link.db");
-        if (sourceDb.ok() && targetDb.ok()) {
-            MergePluginSettings(sourceDb.get(), targetDb.get(), report);
-        }
-    }
-
     report.ok = true;
     report.message = L"合并导入完成。";
     return report;
@@ -780,7 +721,7 @@ ConfigPackageReport ConfigPackageService::ImportPackageMerge(const std::filesyst
             return report;
         }
         std::vector<std::wstring> backupWarnings = report.warnings;
-        report = MergeImportedData(appDirectory_, tempDirectory, options);
+        report = MergeImportedData(appDirectory_, tempDirectory);
         report.warnings.insert(report.warnings.begin(), backupWarnings.begin(), backupWarnings.end());
         if (!report.ok) {
             RestoreSafetyBackup(appDirectory_, backupDirectory, report);

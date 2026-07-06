@@ -23,6 +23,37 @@ std::filesystem::path GetModuleDirectory() {
     return std::filesystem::path(buffer).parent_path();
 }
 
+std::filesystem::path UserHomeDirectory() {
+    std::wstring buffer(MAX_PATH, L'\0');
+    DWORD copied = GetEnvironmentVariableW(L"USERPROFILE", buffer.data(), static_cast<DWORD>(buffer.size()));
+    if (copied > 0 && copied < buffer.size()) {
+        buffer.resize(copied);
+        return buffer;
+    }
+
+    std::wstring drive(MAX_PATH, L'\0');
+    std::wstring path(MAX_PATH, L'\0');
+    DWORD driveLength = GetEnvironmentVariableW(L"HOMEDRIVE", drive.data(), static_cast<DWORD>(drive.size()));
+    DWORD pathLength = GetEnvironmentVariableW(L"HOMEPATH", path.data(), static_cast<DWORD>(path.size()));
+    if (driveLength > 0 && driveLength < drive.size() && pathLength > 0 && pathLength < path.size()) {
+        drive.resize(driveLength);
+        path.resize(pathLength);
+        return std::filesystem::path(drive + path);
+    }
+
+    return std::filesystem::current_path();
+}
+
+std::filesystem::path QuattroUserConfigDirectory() {
+    std::wstring overridePath(MAX_PATH, L'\0');
+    DWORD copied = GetEnvironmentVariableW(L"QUATTRO_USER_CONFIG_DIR", overridePath.data(), static_cast<DWORD>(overridePath.size()));
+    if (copied > 0 && copied < overridePath.size()) {
+        overridePath.resize(copied);
+        return overridePath;
+    }
+    return UserHomeDirectory() / L".quatrro";
+}
+
 std::wstring Trim(const std::wstring& value) {
     auto begin = std::find_if_not(value.begin(), value.end(), [](wchar_t ch) {
         return std::iswspace(ch) != 0;
@@ -220,6 +251,52 @@ void ShowWindowRespectFocusPolicy(HWND hwnd, int showCommand) {
         return;
     }
     ShowWindow(hwnd, showCommand);
+}
+
+POINT ClampWindowToOwnerMonitor(HWND owner, int x, int y, int width, int height) {
+    RECT proposed{x, y, x + width, y + height};
+    HMONITOR monitor = owner ? MonitorFromWindow(owner, MONITOR_DEFAULTTONEAREST)
+                             : MonitorFromRect(&proposed, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO info{};
+    info.cbSize = sizeof(info);
+    if (!GetMonitorInfoW(monitor, &info)) {
+        return POINT{x, y};
+    }
+
+    const RECT work = info.rcWork;
+    const int workLeft = static_cast<int>(work.left);
+    const int workTop = static_cast<int>(work.top);
+    const int workRight = static_cast<int>(work.right);
+    const int workBottom = static_cast<int>(work.bottom);
+    if (width >= work.right - work.left) {
+        x = workLeft;
+    } else {
+        x = std::max(workLeft, std::min(x, workRight - width));
+    }
+    if (height >= work.bottom - work.top) {
+        y = workTop;
+    } else {
+        y = std::max(workTop, std::min(y, workBottom - height));
+    }
+    return POINT{x, y};
+}
+
+POINT CenterWindowOnOwnerMonitor(HWND owner, int width, int height) {
+    RECT ownerRect{};
+    if (!owner || !GetWindowRect(owner, &ownerRect)) {
+        SystemParametersInfoW(SPI_GETWORKAREA, 0, &ownerRect, 0);
+    }
+    const int x = ownerRect.left + ((ownerRect.right - ownerRect.left) - width) / 2;
+    const int y = ownerRect.top + ((ownerRect.bottom - ownerRect.top) - height) / 2;
+    return ClampWindowToOwnerMonitor(owner, x, y, width, height);
+}
+
+POINT OffsetWindowFromOwnerOnMonitor(HWND owner, int width, int height, int offsetX, int offsetY) {
+    RECT ownerRect{};
+    if (!owner || !GetWindowRect(owner, &ownerRect)) {
+        SystemParametersInfoW(SPI_GETWORKAREA, 0, &ownerRect, 0);
+    }
+    return ClampWindowToOwnerMonitor(owner, ownerRect.left + offsetX, ownerRect.top + offsetY, width, height);
 }
 
 bool ShowModalWindow(HWND owner, HWND hwnd) {

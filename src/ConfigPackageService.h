@@ -10,7 +10,6 @@ struct ConfigPackageOptions {
     bool includeConfig = true;
     bool includeData = true;
     bool includeUrlIcons = true;
-    bool includePluginSettings = true;
 };
 
 struct ConfigPackageReport {
@@ -25,7 +24,6 @@ struct ConfigPackageReport {
     int notesAdded = 0;
     int notesMerged = 0;
     int todosAdded = 0;
-    int pluginSettingsAdded = 0;
     int urlIconsAdded = 0;
     std::vector<std::wstring> warnings;
 };

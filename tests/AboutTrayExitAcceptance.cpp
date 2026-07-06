@@ -9,6 +9,7 @@
 
 namespace {
 constexpr UINT WM_QUATTRO_TRAY = WM_APP + 0x66;
+constexpr UINT kGetMenuHandleMessage = 0x01E1;
 
 std::wstring WindowText(HWND hwnd) {
     const int length = GetWindowTextLengthW(hwnd);
@@ -107,6 +108,16 @@ void ClickAt(int x, int y) {
     SendInput(2, inputs, sizeof(INPUT));
 }
 
+void PressKey(WORD key) {
+    INPUT inputs[2]{};
+    inputs[0].type = INPUT_KEYBOARD;
+    inputs[0].ki.wVk = key;
+    inputs[1].type = INPUT_KEYBOARD;
+    inputs[1].ki.wVk = key;
+    inputs[1].ki.dwFlags = KEYEVENTF_KEYUP;
+    SendInput(2, inputs, sizeof(INPUT));
+}
+
 std::filesystem::path ModuleDirectory() {
     wchar_t path[MAX_PATH]{};
     GetModuleFileNameW(nullptr, path, MAX_PATH);
@@ -143,9 +154,16 @@ bool ExitThroughTrayMenu(HWND mainWindow, HANDLE processHandle) {
         std::cerr << "tray popup menu did not appear\n";
         return false;
     }
-    RECT menuRect{};
-    GetWindowRect(menu, &menuRect);
-    ClickAt(menuRect.left + 42, menuRect.bottom - 16);
+    HMENU menuHandle = reinterpret_cast<HMENU>(SendMessageW(menu, kGetMenuHandleMessage, 0, 0));
+    const int itemCount = menuHandle ? GetMenuItemCount(menuHandle) : 0;
+    RECT exitRect{};
+    if (itemCount > 0 && GetMenuItemRect(mainWindow, menuHandle, static_cast<UINT>(itemCount - 1), &exitRect)) {
+        ClickAt((exitRect.left + exitRect.right) / 2, (exitRect.top + exitRect.bottom) / 2);
+    } else {
+        PressKey(VK_END);
+        Sleep(100);
+        PressKey(VK_RETURN);
+    }
     return WaitForSingleObject(processHandle, 5000) != WAIT_TIMEOUT;
 }
 }

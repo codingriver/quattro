@@ -141,18 +141,15 @@ public:
         wc.lpszClassName = L"QuattroLinkEditDialog";
         RegisterClassExW(&wc);
 
-        RECT ownerRect{};
-        GetWindowRect(owner_, &ownerRect);
-        const int x = ownerRect.left + ((ownerRect.right - ownerRect.left) - kDialogWidth) / 2;
-        const int y = ownerRect.top + ((ownerRect.bottom - ownerRect.top) - kDialogHeight) / 2;
+        const POINT position = CenterWindowOnOwnerMonitor(owner_, kDialogWidth, kDialogHeight);
 
         hwnd_ = CreateWindowExW(
             WS_EX_DLGMODALFRAME | WS_EX_WINDOWEDGE,
             wc.lpszClassName,
             DialogTitleForLink(link_, isNew_).c_str(),
             WS_CAPTION | WS_SYSMENU | WS_POPUP | WS_CLIPCHILDREN,
-            x,
-            y,
+            position.x,
+            position.y,
             kDialogWidth,
             kDialogHeight,
             owner_,

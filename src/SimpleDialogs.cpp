@@ -7,8 +7,10 @@
 #include "DialogLayout.h"
 #include "HotKeyEditor.h"
 #include "JsonValue.h"
+#include "LocalHttpServerService.h"
 #include "Storage.h"
 #include "ThemedControls.h"
+#include "TodoSchedule.h"
 #include "Utilities.h"
 #include "WebDavBackupService.h"
 #include "WebDavCredentialService.h"
@@ -17,14 +19,18 @@
 #include <commctrl.h>
 #include <richedit.h>
 #include <shellapi.h>
+#include <shobjidl.h>
 #include <windowsx.h>
 
 #include <algorithm>
 #include <array>
+#include <cstring>
 #include <cwchar>
 #include <fstream>
+#include <memory>
 #include <map>
 #include <sstream>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -49,7 +55,92 @@ constexpr int ID_CONFIG_EXPORT = 415;
 constexpr int ID_CONFIG_IMPORT = 416;
 constexpr int ID_TODO_EXPORT = 417;
 constexpr int ID_TODO_IMPORT = 418;
+constexpr int ID_TODO_INCLUDE_COMPLETED = 419;
+constexpr int ID_TODO_INCLUDE_DISABLED = 420;
+constexpr int ID_TODO_ONLY_FUTURE = 421;
+constexpr int ID_HTTP_START = 422;
+constexpr int ID_HTTP_STOP = 423;
+constexpr int ID_HTTP_RESTART = 424;
+constexpr int ID_HTTP_OPEN_HOME = 425;
+constexpr int ID_HTTP_OPEN_CONFIG_DIR = 426;
+constexpr int ID_HTTP_BROWSE_ROOT = 427;
+constexpr int ID_HTTP_COPY_URL = 428;
+constexpr int ID_HTTP_OPEN_ROOT = 429;
+constexpr int ID_SETTINGS_APPLY = 430;
 constexpr int ID_MESSAGE_TEXT = 501;
+constexpr int ID_MAIN_HOTKEY_PROBE = 0x5148;
+constexpr UINT WM_SETTINGS_WEBDAV_DONE = WM_APP + 0x81;
+
+enum class SettingsWebDavOperation {
+    Test,
+    Upload,
+    List,
+    Download,
+};
+
+struct SettingsWebDavResult {
+    SettingsWebDavOperation operation = SettingsWebDavOperation::Test;
+    bool ok = false;
+    std::wstring message;
+    WebDavBackupReport report;
+    std::vector<WebDavRemoteFile> backups;
+    AppConfig config;
+};
+
+struct HotKeyAvailability {
+    bool available = false;
+    DWORD error = ERROR_SUCCESS;
+    std::wstring reason;
+};
+
+std::wstring ReservedMainHotKeyReason(int key) {
+    switch (key) {
+    case VK_DELETE:
+        return L"Ctrl+Alt+Delete 是 Windows 安全按键，不能作为普通全局热键。";
+    case VK_TAB:
+        return L"Ctrl+Alt+Tab 是 Windows 窗口切换相关按键，建议换一个。";
+    default:
+        return {};
+    }
+}
+
+HotKeyAvailability CheckMainHotKeyAvailability(HWND hwnd, int key, int currentRegisteredKey) {
+    if (key <= 0 || key == currentRegisteredKey) {
+        return HotKeyAvailability{true, ERROR_SUCCESS, {}};
+    }
+
+    std::wstring reservedReason = ReservedMainHotKeyReason(key);
+    if (!reservedReason.empty()) {
+        return HotKeyAvailability{false, ERROR_SUCCESS, std::move(reservedReason)};
+    }
+
+    SetLastError(ERROR_SUCCESS);
+    if (RegisterHotKey(hwnd, ID_MAIN_HOTKEY_PROBE, MOD_CONTROL | MOD_ALT, static_cast<UINT>(key))) {
+        UnregisterHotKey(hwnd, ID_MAIN_HOTKEY_PROBE);
+        return HotKeyAvailability{true, ERROR_SUCCESS, {}};
+    }
+
+    const DWORD error = GetLastError();
+    std::wstring reason = L"该热键无法注册，可能已被系统、输入法或其它软件占用。";
+    if (error != ERROR_SUCCESS) {
+        reason += L"\n\n系统返回: " + FormatLastError(error);
+    }
+    return HotKeyAvailability{false, error, std::move(reason)};
+}
+
+std::wstring MainHotKeyConflictMessage(int key, const HotKeyAvailability& availability) {
+    return FormatHotKeyText(key) + L" 不可用。\n\n" + availability.reason;
+}
+
+std::wstring MainHotKeyStatusText(int key, const HotKeyAvailability& availability) {
+    if (key <= 0) {
+        return L"未设置主窗口热键。";
+    }
+    if (availability.available) {
+        return L"当前热键可用。";
+    }
+    return L"热键冲突：" + FormatHotKeyText(key) + L" 可能已被系统、输入法或其它软件占用。";
+}
 
 std::wstring GetText(HWND hwnd) {
     const int length = GetWindowTextLengthW(hwnd);
@@ -89,7 +180,7 @@ std::wstring FormatConfigPackageReportText(const ConfigPackageReport& report) {
     if (report.groupsAdded > 0 || report.groupsMerged > 0 || report.tagsAdded > 0 ||
         report.tagsMerged > 0 || report.linksAdded > 0 || report.linksSkippedDuplicate > 0 ||
         report.notesAdded > 0 || report.notesMerged > 0 || report.todosAdded > 0 ||
-        report.pluginSettingsAdded > 0 || report.urlIconsAdded > 0) {
+        report.urlIconsAdded > 0) {
         text += L"\n\n新增分组: " + std::to_wstring(report.groupsAdded);
         text += L"\n复用分组: " + std::to_wstring(report.groupsMerged);
         text += L"\n新增标签: " + std::to_wstring(report.tagsAdded);
@@ -99,7 +190,6 @@ std::wstring FormatConfigPackageReportText(const ConfigPackageReport& report) {
         text += L"\n新增便签: " + std::to_wstring(report.notesAdded);
         text += L"\n合并便签: " + std::to_wstring(report.notesMerged);
         text += L"\n新增待办: " + std::to_wstring(report.todosAdded);
-        text += L"\n新增工具设置: " + std::to_wstring(report.pluginSettingsAdded);
         text += L"\n新增 URL 图标: " + std::to_wstring(report.urlIconsAdded);
     }
     if (!report.warnings.empty()) {
@@ -172,6 +262,96 @@ std::wstring JsonEscape(const std::wstring& value) {
 
 std::wstring BoolJson(bool value) {
     return value ? L"true" : L"false";
+}
+
+std::wstring LocalIsoOffsetText() {
+    TIME_ZONE_INFORMATION info{};
+    const DWORD state = GetTimeZoneInformation(&info);
+    LONG bias = info.Bias;
+    if (state == TIME_ZONE_ID_DAYLIGHT) {
+        bias += info.DaylightBias;
+    } else if (state == TIME_ZONE_ID_STANDARD) {
+        bias += info.StandardBias;
+    }
+    const int offsetMinutes = static_cast<int>(-bias);
+    const wchar_t sign = offsetMinutes >= 0 ? L'+' : L'-';
+    const int absolute = std::abs(offsetMinutes);
+    wchar_t buffer[8]{};
+    swprintf_s(buffer, L"%c%02d:%02d", sign, absolute / 60, absolute % 60);
+    return buffer;
+}
+
+std::wstring TodoTimestampToIso8601(const std::wstring& value) {
+    SYSTEMTIME time{};
+    if (!TryParseTodoTimestamp(value, time)) {
+        return {};
+    }
+    wchar_t buffer[32]{};
+    swprintf_s(
+        buffer,
+        L"%04u-%02u-%02uT%02u:%02u:%02u",
+        time.wYear,
+        time.wMonth,
+        time.wDay,
+        time.wHour,
+        time.wMinute,
+        time.wSecond);
+    return std::wstring(buffer) + LocalIsoOffsetText();
+}
+
+std::wstring ImportableTodoTimestamp(const std::wstring& value) {
+    std::wstring normalized = NormalizeTodoTimestamp(value);
+    if (!normalized.empty()) {
+        return normalized;
+    }
+
+    std::wstring text = ReplaceAll(Trim(value), L"T", L" ");
+    if (text.size() >= 19) {
+        normalized = NormalizeTodoTimestamp(text.substr(0, 19));
+        if (!normalized.empty()) {
+            return normalized;
+        }
+    }
+    if (text.size() >= 16) {
+        return NormalizeTodoTimestamp(text.substr(0, 16));
+    }
+    return {};
+}
+
+std::wstring CurrentIso8601Timestamp() {
+    return TodoTimestampToIso8601(CurrentTodoTimestamp());
+}
+
+const JsonValue* ObjectField(const JsonValue& object, const std::wstring& key) {
+    const JsonValue* value = object.get(key);
+    return value && value->isObject() ? value : nullptr;
+}
+
+std::wstring JsonStringField(const JsonValue& object, const std::wstring& key, const std::wstring& fallback = L"") {
+    const JsonValue* value = object.get(key);
+    return value ? value->stringOr(fallback) : fallback;
+}
+
+bool JsonBoolField(const JsonValue& object, const std::wstring& key, bool fallback = false) {
+    const JsonValue* value = object.get(key);
+    return value ? value->boolOr(fallback) : fallback;
+}
+
+int JsonIntField(const JsonValue& object, const std::wstring& key, int fallback = 0) {
+    const JsonValue* value = object.get(key);
+    return value ? value->intOr(fallback) : fallback;
+}
+
+std::wstring JsonStringField(const JsonValue* object, const std::wstring& key, const std::wstring& fallback = L"") {
+    return object ? JsonStringField(*object, key, fallback) : fallback;
+}
+
+int JsonIntField(const JsonValue* object, const std::wstring& key, int fallback = 0) {
+    return object ? JsonIntField(*object, key, fallback) : fallback;
+}
+
+bool JsonBoolField(const JsonValue* object, const std::wstring& key, bool fallback = false) {
+    return object ? JsonBoolField(*object, key, fallback) : fallback;
 }
 
 std::wstring ConfigPackageFileName() {
@@ -291,37 +471,95 @@ const Group* FindTodoTagByName(const std::vector<Group>& groups, int parentGroup
     return nullptr;
 }
 
-std::wstring BuildTodoExportJson(const AppModel& model) {
+struct TodoExportOptions {
+    bool includeCompleted = true;
+    bool includeDisabled = true;
+    bool onlyFuture = false;
+};
+
+bool ShouldExportTodo(const TodoItem& todo, const TodoExportOptions& options) {
+    if (!options.includeCompleted && !todo.completedAt.empty()) {
+        return false;
+    }
+    if (!options.includeDisabled && !todo.enabled) {
+        return false;
+    }
+    if (!options.onlyFuture) {
+        return true;
+    }
+
+    const std::wstring dueAt = todo.nextDueAt.empty() ? todo.anchorAt : todo.nextDueAt;
+    SYSTEMTIME due{};
+    SYSTEMTIME now{};
+    if (!TryParseTodoTimestamp(dueAt, due)) {
+        return true;
+    }
+    if (!TryParseTodoTimestamp(CurrentTodoTimestamp(), now)) {
+        return true;
+    }
+    FILETIME dueFile{};
+    FILETIME nowFile{};
+    if (!SystemTimeToFileTime(&due, &dueFile) || !SystemTimeToFileTime(&now, &nowFile)) {
+        return true;
+    }
+    return CompareFileTime(&dueFile, &nowFile) >= 0;
+}
+
+std::wstring BuildTodoExportJson(const AppModel& model, const TodoExportOptions& options) {
     std::wstringstream out;
     out << L"{\n";
     out << L"  \"app\": \"Quattro\",\n";
-    out << L"  \"formatVersion\": 1,\n";
+    out << L"  \"exportType\": \"todo-backup\",\n";
+    out << L"  \"formatVersion\": 2,\n";
+    out << L"  \"exportedAt\": \"" << JsonEscape(CurrentIso8601Timestamp()) << L"\",\n";
+    out << L"  \"exportOptions\": {\n";
+    out << L"    \"includeCompleted\": " << BoolJson(options.includeCompleted) << L",\n";
+    out << L"    \"includeDisabled\": " << BoolJson(options.includeDisabled) << L",\n";
+    out << L"    \"onlyFuture\": " << BoolJson(options.onlyFuture) << L"\n";
+    out << L"  },\n";
     out << L"  \"todos\": [\n";
     bool first = true;
     for (const auto& todo : model.todos) {
+        if (!ShouldExportTodo(todo, options)) {
+            continue;
+        }
         const Group* tag = FindGroupById(model.groups, todo.tagId);
         const Group* parent = tag ? FindGroupById(model.groups, tag->parentGroup) : nullptr;
+        const std::wstring dueAt = todo.nextDueAt.empty() ? todo.anchorAt : todo.nextDueAt;
         if (!first) {
             out << L",\n";
         }
         first = false;
         out << L"    {\n";
+        out << L"      \"id\": " << todo.id << L",\n";
+        out << L"      \"title\": \"" << JsonEscape(todo.title) << L"\",\n";
+        out << L"      \"notes\": \"" << JsonEscape(todo.content) << L"\",\n";
+        out << L"      \"enabled\": " << BoolJson(todo.enabled) << L",\n";
+        out << L"      \"completed\": " << BoolJson(!todo.completedAt.empty()) << L",\n";
+        out << L"      \"dueAt\": \"" << JsonEscape(TodoTimestampToIso8601(dueAt)) << L"\",\n";
         out << L"      \"groupName\": \"" << JsonEscape(parent ? parent->name : L"默认分组") << L"\",\n";
         out << L"      \"tagName\": \"" << JsonEscape(tag ? tag->name : L"待办事项") << L"\",\n";
-        out << L"      \"title\": \"" << JsonEscape(todo.title) << L"\",\n";
-        out << L"      \"content\": \"" << JsonEscape(todo.content) << L"\",\n";
-        out << L"      \"enabled\": " << BoolJson(todo.enabled) << L",\n";
-        out << L"      \"scheduleKind\": " << static_cast<int>(todo.scheduleKind) << L",\n";
-        out << L"      \"repeatMode\": " << static_cast<int>(todo.repeatMode) << L",\n";
-        out << L"      \"repeatInterval\": " << todo.repeatInterval << L",\n";
-        out << L"      \"repeatLimit\": " << todo.repeatLimit << L",\n";
-        out << L"      \"repeatFinished\": " << todo.repeatFinished << L",\n";
-        out << L"      \"cronExpression\": \"" << JsonEscape(todo.cronExpression) << L"\",\n";
-        out << L"      \"anchorAt\": \"" << JsonEscape(todo.anchorAt) << L"\",\n";
-        out << L"      \"nextDueAt\": \"" << JsonEscape(todo.nextDueAt) << L"\",\n";
-        out << L"      \"completedAt\": \"" << JsonEscape(todo.completedAt) << L"\",\n";
-        out << L"      \"createdAt\": \"" << JsonEscape(todo.createdAt) << L"\",\n";
-        out << L"      \"updatedAt\": \"" << JsonEscape(todo.updatedAt) << L"\"\n";
+        out << L"      \"source\": \"Quattro\",\n";
+        out << L"      \"quattro\": {\n";
+        out << L"        \"originalId\": " << todo.id << L",\n";
+        out << L"        \"content\": \"" << JsonEscape(todo.content) << L"\",\n";
+        out << L"        \"scheduleKind\": " << static_cast<int>(todo.scheduleKind) << L",\n";
+        out << L"        \"repeatMode\": " << static_cast<int>(todo.repeatMode) << L",\n";
+        out << L"        \"repeatInterval\": " << todo.repeatInterval << L",\n";
+        out << L"        \"repeatLimit\": " << todo.repeatLimit << L",\n";
+        out << L"        \"repeatFinished\": " << todo.repeatFinished << L",\n";
+        out << L"        \"cronExpression\": \"" << JsonEscape(todo.cronExpression) << L"\",\n";
+        out << L"        \"anchorAt\": \"" << JsonEscape(todo.anchorAt) << L"\",\n";
+        out << L"        \"nextDueAt\": \"" << JsonEscape(todo.nextDueAt) << L"\",\n";
+        out << L"        \"completedAt\": \"" << JsonEscape(todo.completedAt) << L"\",\n";
+        out << L"        \"createdAt\": \"" << JsonEscape(todo.createdAt) << L"\",\n";
+        out << L"        \"updatedAt\": \"" << JsonEscape(todo.updatedAt) << L"\"\n";
+        out << L"      },\n";
+        out << L"      \"apple\": {\n";
+        out << L"        \"list\": \"提醒事项\",\n";
+        out << L"        \"priority\": \"normal\",\n";
+        out << L"        \"skipIfCompleted\": true\n";
+        out << L"      }\n";
         out << L"    }";
     }
     out << L"\n  ]\n";
@@ -366,8 +604,9 @@ TodoJsonImportReport ImportTodoJsonFile(const std::filesystem::path& appDirector
         if (!entry.isObject()) {
             continue;
         }
-        const std::wstring groupName = Trim(entry.get(L"groupName") ? entry.get(L"groupName")->stringOr(L"默认分组") : L"默认分组");
-        const std::wstring tagName = Trim(entry.get(L"tagName") ? entry.get(L"tagName")->stringOr(L"待办事项") : L"待办事项");
+        const JsonValue* quattro = ObjectField(entry, L"quattro");
+        const std::wstring groupName = Trim(JsonStringField(entry, L"groupName", L"默认分组"));
+        const std::wstring tagName = Trim(JsonStringField(entry, L"tagName", L"待办事项"));
         const std::wstring groupKey = ToLower(groupName);
         const std::wstring tagKey = groupKey + L"\n" + ToLower(tagName);
 
@@ -420,20 +659,31 @@ TodoJsonImportReport ImportTodoJsonFile(const std::filesystem::path& appDirector
 
         TodoItem item;
         item.tagId = tagId;
-        item.title = entry.get(L"title") ? entry.get(L"title")->stringOr() : L"";
-        item.content = entry.get(L"content") ? entry.get(L"content")->stringOr() : L"";
-        item.enabled = entry.get(L"enabled") ? entry.get(L"enabled")->boolOr(true) : true;
-        item.scheduleKind = static_cast<TodoScheduleKind>(entry.get(L"scheduleKind") ? entry.get(L"scheduleKind")->intOr(0) : 0);
-        item.repeatMode = static_cast<TodoRepeatMode>(entry.get(L"repeatMode") ? entry.get(L"repeatMode")->intOr(0) : 0);
-        item.repeatInterval = std::max(1, entry.get(L"repeatInterval") ? entry.get(L"repeatInterval")->intOr(1) : 1);
-        item.repeatLimit = std::max(0, entry.get(L"repeatLimit") ? entry.get(L"repeatLimit")->intOr(0) : 0);
-        item.repeatFinished = std::max(0, entry.get(L"repeatFinished") ? entry.get(L"repeatFinished")->intOr(0) : 0);
-        item.cronExpression = entry.get(L"cronExpression") ? entry.get(L"cronExpression")->stringOr() : L"";
-        item.anchorAt = entry.get(L"anchorAt") ? entry.get(L"anchorAt")->stringOr() : L"";
-        item.nextDueAt = entry.get(L"nextDueAt") ? entry.get(L"nextDueAt")->stringOr() : L"";
-        item.completedAt = entry.get(L"completedAt") ? entry.get(L"completedAt")->stringOr() : L"";
-        item.createdAt = entry.get(L"createdAt") ? entry.get(L"createdAt")->stringOr() : L"";
-        item.updatedAt = entry.get(L"updatedAt") ? entry.get(L"updatedAt")->stringOr() : L"";
+        item.title = JsonStringField(entry, L"title");
+        item.content = JsonStringField(quattro, L"content", JsonStringField(entry, L"notes", JsonStringField(entry, L"content")));
+        item.enabled = JsonBoolField(entry, L"enabled", true);
+        item.scheduleKind = static_cast<TodoScheduleKind>(JsonIntField(quattro, L"scheduleKind", JsonIntField(entry, L"scheduleKind", 0)));
+        item.repeatMode = static_cast<TodoRepeatMode>(JsonIntField(quattro, L"repeatMode", JsonIntField(entry, L"repeatMode", 0)));
+        item.repeatInterval = std::max(1, JsonIntField(quattro, L"repeatInterval", JsonIntField(entry, L"repeatInterval", 1)));
+        item.repeatLimit = std::max(0, JsonIntField(quattro, L"repeatLimit", JsonIntField(entry, L"repeatLimit", 0)));
+        item.repeatFinished = std::max(0, JsonIntField(quattro, L"repeatFinished", JsonIntField(entry, L"repeatFinished", 0)));
+        item.cronExpression = JsonStringField(quattro, L"cronExpression", JsonStringField(entry, L"cronExpression"));
+        item.anchorAt = JsonStringField(quattro, L"anchorAt", JsonStringField(entry, L"anchorAt"));
+        item.nextDueAt = JsonStringField(quattro, L"nextDueAt", JsonStringField(entry, L"nextDueAt"));
+        item.completedAt = JsonStringField(quattro, L"completedAt", JsonStringField(entry, L"completedAt"));
+        item.createdAt = JsonStringField(quattro, L"createdAt", JsonStringField(entry, L"createdAt"));
+        item.updatedAt = JsonStringField(quattro, L"updatedAt", JsonStringField(entry, L"updatedAt"));
+        if (!quattro && item.scheduleKind == TodoScheduleKind::None && !JsonStringField(entry, L"dueAt").empty()) {
+            const std::wstring dueAt = ImportableTodoTimestamp(JsonStringField(entry, L"dueAt"));
+            if (!dueAt.empty()) {
+                item.scheduleKind = TodoScheduleKind::Once;
+                item.anchorAt = dueAt;
+                item.nextDueAt = item.anchorAt;
+            }
+        }
+        if (!quattro && item.completedAt.empty() && JsonBoolField(entry, L"completed", false)) {
+            item.completedAt = CurrentTodoTimestamp();
+        }
         if (!storage.InsertTodoItem(item)) {
             report.message = L"导入待办失败: " + storage.lastError();
             return report;
@@ -553,7 +803,7 @@ std::wstring FormatBackupConfirmationText(const WebDavRemoteFile& backup) {
         text += L"\n备份时间: " + modified;
     }
     text +=
-        L"\n\n将把该备份中的分组、标签、启动项、便签、待办和工具设置合并到当前数据。"
+        L"\n\n将把该备份中的分组、标签、启动项、便签和待办合并到当前数据。"
         L"\n当前数据不会被覆盖，导入前会自动备份。";
     return text;
 }
@@ -626,12 +876,6 @@ public:
         wc.lpszClassName = L"QuattroThemedMessageDialog";
         RegisterClassExW(&wc);
 
-        RECT ownerRect{};
-        if (owner_) {
-            GetWindowRect(owner_, &ownerRect);
-        } else {
-            SystemParametersInfoW(SPI_GETWORKAREA, 0, &ownerRect, 0);
-        }
         RECT workArea{};
         SystemParametersInfoW(SPI_GETWORKAREA, 0, &workArea, 0);
 
@@ -646,24 +890,21 @@ public:
         textHeight_ = std::min(std::max(32, textHeight + 4), maxTextHeight);
         const int clientHeight = std::max(150, layout.contentInsetY + textHeight_ + layout.footerGap + buttonHeight + layout.footerInsetY);
         const DWORD exStyle = WS_EX_DLGMODALFRAME | WS_EX_WINDOWEDGE;
-        const DWORD style = WS_CAPTION | WS_SYSMENU | WS_POPUP;
+        const DWORD style = WS_CAPTION | WS_SYSMENU | WS_POPUP | WS_CLIPCHILDREN;
         RECT windowRect{0, 0, width_, clientHeight};
         AdjustWindowRectEx(&windowRect, style, FALSE, exStyle);
         const int windowWidth = windowRect.right - windowRect.left;
         const int windowHeight = windowRect.bottom - windowRect.top;
 
-        const int ownerWidth = ownerRect.right - ownerRect.left;
-        const int ownerHeight = ownerRect.bottom - ownerRect.top;
-        const int x = ownerRect.left + std::max(0, (ownerWidth - windowWidth) / 2);
-        const int y = ownerRect.top + std::max(0, (ownerHeight - windowHeight) / 2);
+        const POINT position = CenterWindowOnOwnerMonitor(owner_, windowWidth, windowHeight);
 
         hwnd_ = CreateWindowExW(
             exStyle,
             wc.lpszClassName,
             title_.empty() ? L"提示" : title_.c_str(),
             style,
-            x,
-            y,
+            position.x,
+            position.y,
             windowWidth,
             windowHeight,
             owner_,
@@ -1026,23 +1267,24 @@ public:
 
         SetLastError(ERROR_SUCCESS);
         hwnd_ = nullptr;
-        RECT ownerRect{};
-        GetWindowRect(owner_, &ownerRect);
         constexpr int kClientWidth = 390;
         constexpr int kClientHeight = 162;
         const DWORD exStyle = WS_EX_DLGMODALFRAME | WS_EX_WINDOWEDGE;
-        const DWORD style = WS_CAPTION | WS_SYSMENU | WS_POPUP;
+        const DWORD style = WS_CAPTION | WS_SYSMENU | WS_POPUP | WS_CLIPCHILDREN;
         RECT windowRect{0, 0, kClientWidth, kClientHeight};
         AdjustWindowRectEx(&windowRect, style, FALSE, exStyle);
+        const int windowWidth = windowRect.right - windowRect.left;
+        const int windowHeight = windowRect.bottom - windowRect.top;
+        const POINT position = OffsetWindowFromOwnerOnMonitor(owner_, windowWidth, windowHeight, 80, 100);
         hwnd_ = CreateWindowExW(
             exStyle,
             className.c_str(),
             title_.c_str(),
             style,
-            ownerRect.left + 80,
-            ownerRect.top + 100,
-            windowRect.right - windowRect.left,
-            windowRect.bottom - windowRect.top,
+            position.x,
+            position.y,
+            windowWidth,
+            windowHeight,
             owner_,
             nullptr,
             instance_,
@@ -1242,15 +1484,14 @@ public:
             }
         }
 
-        RECT ownerRect{};
-        GetWindowRect(owner_, &ownerRect);
+        const POINT position = OffsetWindowFromOwnerOnMonitor(owner_, 560, 390, 60, 80);
         hwnd_ = CreateWindowExW(
             WS_EX_DLGMODALFRAME | WS_EX_WINDOWEDGE,
             className.c_str(),
             L"选择 WebDAV 备份",
-            WS_CAPTION | WS_SYSMENU | WS_POPUP,
-            ownerRect.left + 60,
-            ownerRect.top + 80,
+            WS_CAPTION | WS_SYSMENU | WS_POPUP | WS_CLIPCHILDREN,
+            position.x,
+            position.y,
             560,
             390,
             owner_,
@@ -1490,8 +1731,24 @@ private:
 
 class SettingsDialog {
 public:
-    SettingsDialog(HWND owner, HINSTANCE instance, AppConfig& config, const Theme& theme, std::filesystem::path appDirectory)
-        : owner_(owner), instance_(instance), config_(config), draft_(config), theme_(theme), appDirectory_(std::move(appDirectory)) {}
+    SettingsDialog(
+        HWND owner,
+        HINSTANCE instance,
+        AppConfig& config,
+        const Theme& theme,
+        std::filesystem::path appDirectory,
+        LocalHttpServerService* httpServer,
+        bool mainHotKeyRegistered,
+        SettingsApplyCallback applyCallback)
+        : owner_(owner),
+          instance_(instance),
+          config_(config),
+          draft_(config),
+          theme_(theme),
+          appDirectory_(std::move(appDirectory)),
+          httpServer_(httpServer),
+          mainHotKeyRegistered_(mainHotKeyRegistered),
+          applyCallback_(std::move(applyCallback)) {}
 
     bool Run() {
         WNDCLASSEXW wc{};
@@ -1511,17 +1768,18 @@ public:
             }
         }
 
-        RECT ownerRect{};
-        GetWindowRect(owner_, &ownerRect);
+        const int settingsWidth = 560;
+        const int settingsHeight = 480;
+        const POINT position = OffsetWindowFromOwnerOnMonitor(owner_, settingsWidth, settingsHeight, 60, 70);
         hwnd_ = CreateWindowExW(
             WS_EX_DLGMODALFRAME | WS_EX_WINDOWEDGE,
             wc.lpszClassName,
             L"设置",
-            WS_CAPTION | WS_SYSMENU | WS_POPUP,
-            ownerRect.left + 60,
-            ownerRect.top + 70,
-            560,
-            520,
+            WS_CAPTION | WS_SYSMENU | WS_POPUP | WS_CLIPCHILDREN,
+            position.x,
+            position.y,
+            settingsWidth,
+            settingsHeight,
             owner_,
             nullptr,
             instance_,
@@ -1538,7 +1796,7 @@ public:
                 message.wParam == VK_TAB &&
                 (GetKeyState(VK_CONTROL) & 0x8000) != 0) {
                 const bool reverse = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
-                ShowTab((currentTab_ + (reverse ? 6 : 1)) % 7);
+                ShowTab((currentTab_ + (reverse ? TabCount - 1 : 1)) % TabCount);
                 continue;
             }
             if (!IsDialogMessageW(hwnd_, &message)) {
@@ -1562,7 +1820,9 @@ private:
         TabHotKeys = 3,
         TabLinks = 4,
         TabWebDav = 5,
-        TabBackup = 6,
+        TabHttp = 6,
+        TabBackup = 7,
+        TabCount = 8,
     };
 
     struct TabChild {
@@ -1575,6 +1835,15 @@ private:
         HWND child = nullptr;
         int tab = 0;
         bool readOnly = false;
+    };
+
+    struct SectionFrame {
+        RECT rect{};
+        int tab = 0;
+    };
+
+    struct TabSeparator {
+        RECT rect{};
     };
 
     static LRESULT CALLBACK Proc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
@@ -1597,26 +1866,31 @@ private:
         tabChildren_.push_back(TabChild{hwnd, tab});
     }
 
+    int ContentY(int y) const {
+        return y + tabContentOffsetY_;
+    }
+
     HWND Label(int tab, const wchar_t* text, int x, int y, int width = 110) {
-        HWND hwnd = ThemedControls::CreateLabelText(instance_, hwnd_, text, x, y, width, theme_, font_);
+        HWND hwnd = ThemedControls::CreateLabelText(instance_, hwnd_, text, x, ContentY(y), width, theme_, font_);
         AddTabChild(hwnd, tab);
         return hwnd;
     }
 
     HWND CheckBox(int tab, int id, const wchar_t* text, int x, int y, bool checked, int width = 210) {
-        HWND hwnd = ThemedControls::CreateCheckBox(instance_, hwnd_, id, text, x, y, width, ThemedControls::CheckBoxHeight(theme_), font_, checked);
+        HWND hwnd = ThemedControls::CreateCheckBox(instance_, hwnd_, id, text, x, ContentY(y), width, ThemedControls::CheckBoxHeight(theme_), font_, checked);
         AddTabChild(hwnd, tab);
         return hwnd;
     }
 
     HWND Button(int tab, int id, const wchar_t* text, int x, int y, int width) {
-        HWND hwnd = ThemedControls::CreateButton(instance_, hwnd_, id, text, x, y, width, ThemedControls::CompactButtonHeight(theme_), font_);
+        HWND hwnd = ThemedControls::CreateButton(instance_, hwnd_, id, text, x, ContentY(y), width, ThemedControls::CompactButtonHeight(theme_), font_);
         AddTabChild(hwnd, tab);
         return hwnd;
     }
 
     HWND FramedEdit(int tab, int id, int x, int y, int width, const std::wstring& text, DWORD extraStyle = ES_AUTOHSCROLL) {
         const int fieldHeight = ThemedControls::EditFrameHeight(theme_);
+        y = ContentY(y);
         const RECT frame{x, y, x + width, y + fieldHeight};
         HWND hwnd = ThemedControls::CreateSingleLineEdit(instance_, hwnd_, id, theme_, frame, text, editFont_ ? editFont_ : font_, extraStyle);
         AddTabChild(hwnd, tab);
@@ -1626,6 +1900,7 @@ private:
 
     HWND FramedStatic(int tab, int x, int y, int width, const std::wstring& text) {
         const int fieldHeight = ThemedControls::EditFrameHeight(theme_);
+        y = ContentY(y);
         const RECT frame{x, y, x + width, y + fieldHeight};
         HWND hwnd = ThemedControls::CreateFramedStatic(instance_, hwnd_, theme_, frame, text, font_);
         AddTabChild(hwnd, tab);
@@ -1665,54 +1940,95 @@ private:
         }
     }
 
+    int TextWidth(const wchar_t* text) const {
+        HDC dc = hwnd_ ? GetDC(hwnd_) : nullptr;
+        if (!dc) {
+            return static_cast<int>(std::wcslen(text)) * 14;
+        }
+        HFONT oldFont = reinterpret_cast<HFONT>(SelectObject(dc, font_ ? font_ : GetStockObject(DEFAULT_GUI_FONT)));
+        SIZE size{};
+        GetTextExtentPoint32W(dc, text, static_cast<int>(std::wcslen(text)), &size);
+        if (oldFont) {
+            SelectObject(dc, oldFont);
+        }
+        ReleaseDC(hwnd_, dc);
+        return size.cx;
+    }
+
+    int SettingsTabWidth(const wchar_t* title) const {
+        const int minWidth = static_cast<int>(theme_.metric(L"tabButton", L"groupItemWidth", 58.0f));
+        const int paddingX = static_cast<int>(theme_.metric(L"tabButton", L"paddingX", 12.0f));
+        return std::max(minWidth, TextWidth(title) + paddingX * 2 + 4);
+    }
+
     void CreateTabs() {
-        const wchar_t* titles[] = {L"显示", L"行为", L"交互", L"热键", L"链接", L"WebDAV", L"备份"};
-        const int startX = 30;
+        const wchar_t* titles[] = {L"显示", L"行为", L"交互", L"热键", L"链接", L"WebDAV", L"HTTP", L"备份"};
+        RECT client{};
+        GetClientRect(hwnd_, &client);
+        const int clientWidth = std::max(1, static_cast<int>(client.right - client.left));
+        const DialogLayoutMetrics layout = GetDialogLayoutMetrics(theme_, DialogLayoutKind::Compact);
         const int startY = 18;
-        const int itemWidth = static_cast<int>(theme_.metric(L"tabButton", L"groupItemWidth", 58.0f));
-        const std::array<int, 7> itemWidths{
-            std::max(itemWidth, 58),
-            std::max(itemWidth, 58),
-            std::max(itemWidth, 58),
-            std::max(itemWidth, 58),
-            std::max(itemWidth, 58),
-            std::max(itemWidth, 76),
-            std::max(itemWidth, 76),
-        };
+        std::array<int, TabCount> itemWidths{};
+        for (int i = 0; i < TabCount; ++i) {
+            itemWidths[static_cast<std::size_t>(i)] = SettingsTabWidth(titles[i]);
+        }
         const int itemGap = static_cast<int>(theme_.metric(L"tabButton", L"groupGap", 0.0f));
         const int separatorWidth = static_cast<int>(theme_.metric(L"tabButton", L"groupBorderWidth", 1.0f));
         const int itemSpacing = std::max(itemGap, separatorWidth > 0 ? separatorWidth : 0);
         const int itemHeight = ThemedControls::TabButtonHeight(theme_);
         const int stripPadding = static_cast<int>(theme_.metric(L"tabButton", L"groupPadding", 3.0f));
-        int stripWidth = 0;
+        const int rowGap = std::max(2, stripPadding * 2 + 2);
+        int totalWidth = 0;
         for (int width : itemWidths) {
-            stripWidth += width;
+            totalWidth += width;
         }
-        stripWidth += 6 * itemSpacing;
-        tabStripRect_ = RECT{
-            startX - stripPadding,
-            startY - stripPadding,
-            startX + stripWidth + stripPadding,
-            startY + itemHeight + stripPadding};
-        int x = startX;
-        tabSeparatorXs_.clear();
-        for (int i = 0; i < 7; ++i) {
-            HWND button = ThemedControls::CreateTabButton(
-                instance_,
-                hwnd_,
-                ID_SETTINGS_TAB_BASE + i,
-                titles[i],
-                x,
-                startY,
-                itemWidths[static_cast<std::size_t>(i)],
-                itemHeight,
-                font_,
-                i == TabDisplay);
-            tabButtons_.push_back(button);
-            x += itemWidths[static_cast<std::size_t>(i)];
-            if (i < 6) {
-                tabSeparatorXs_.push_back(x);
-                x += itemSpacing;
+        totalWidth += (TabCount - 1) * itemSpacing;
+
+        const int availableWidth = std::max(1, clientWidth - layout.contentInsetX * 2);
+        const bool wrapTabs = totalWidth > availableWidth;
+        const int rows = wrapTabs ? 2 : 1;
+        const int firstRowCount = wrapTabs ? ((TabCount + 1) / 2) : TabCount;
+        const int rowStarts[] = {0, firstRowCount};
+        const int rowEnds[] = {firstRowCount, TabCount};
+        const int rowStep = itemHeight + rowGap;
+        tabContentOffsetY_ = wrapTabs ? rowStep : 0;
+        tabSeparators_.clear();
+
+        tabStripRect_ = RECT{clientWidth, startY - stripPadding, 0, startY - stripPadding};
+        for (int row = 0; row < rows; ++row) {
+            const int begin = rowStarts[row];
+            const int end = rowEnds[row];
+            if (begin >= end) {
+                continue;
+            }
+            int rowWidth = 0;
+            for (int i = begin; i < end; ++i) {
+                rowWidth += itemWidths[static_cast<std::size_t>(i)];
+            }
+            rowWidth += (end - begin - 1) * itemSpacing;
+            const int y = startY + row * rowStep;
+            int x = layout.CenteredGroupX(clientWidth, rowWidth);
+            tabStripRect_.left = std::min(static_cast<int>(tabStripRect_.left), x - stripPadding);
+            tabStripRect_.right = std::max(static_cast<int>(tabStripRect_.right), x + rowWidth + stripPadding);
+            tabStripRect_.bottom = std::max(static_cast<int>(tabStripRect_.bottom), y + itemHeight + stripPadding);
+            for (int i = begin; i < end; ++i) {
+                HWND button = ThemedControls::CreateTabButton(
+                    instance_,
+                    hwnd_,
+                    ID_SETTINGS_TAB_BASE + i,
+                    titles[i],
+                    x,
+                    y,
+                    itemWidths[static_cast<std::size_t>(i)],
+                    itemHeight,
+                    font_,
+                    i == TabDisplay);
+                tabButtons_.push_back(button);
+                x += itemWidths[static_cast<std::size_t>(i)];
+                if (i < end - 1) {
+                    tabSeparators_.push_back(TabSeparator{RECT{x, y, x + separatorWidth, y + itemHeight}});
+                    x += itemSpacing;
+                }
             }
         }
     }
@@ -1727,29 +2043,46 @@ private:
             return;
         }
         HBRUSH separator = CreateSolidBrush(ToColorRef(theme_.color(L"tabButton", L"normal", L"groupBorder")));
-        for (int x : tabSeparatorXs_) {
-            RECT line{
-                x,
-                tabStripRect_.top,
-                x + separatorWidth,
-                tabStripRect_.bottom};
-            FillRect(dc, &line, separator);
+        for (const auto& separatorRect : tabSeparators_) {
+            FillRect(dc, &separatorRect.rect, separator);
         }
         DeleteObject(separator);
     }
 
     void ShowTab(int tab) {
+        if (tab < 0 || tab >= TabCount || tab == currentTab_) {
+            return;
+        }
         currentTab_ = tab;
         for (int i = 0; i < static_cast<int>(tabButtons_.size()); ++i) {
             SendMessageW(tabButtons_[i], BM_SETCHECK, i == currentTab_ ? BST_CHECKED : BST_UNCHECKED, 0);
-            InvalidateRect(tabButtons_[i], nullptr, TRUE);
         }
         for (const auto& child : tabChildren_) {
             const bool visible = child.tab == currentTab_;
-            ShowWindow(child.hwnd, visible ? SW_SHOW : SW_HIDE);
+            SetWindowPos(
+                child.hwnd,
+                nullptr,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOREDRAW |
+                    (visible ? SWP_SHOWWINDOW : SWP_HIDEWINDOW));
             EnableWindow(child.hwnd, visible ? TRUE : FALSE);
         }
-        InvalidateRect(hwnd_, nullptr, TRUE);
+
+        RECT contentRect{};
+        GetClientRect(hwnd_, &contentRect);
+        contentRect.top = std::max(contentRect.top, tabStripRect_.bottom);
+        if (okButton_) {
+            RECT footerRect{};
+            GetWindowRect(okButton_, &footerRect);
+            MapWindowPoints(HWND_DESKTOP, hwnd_, reinterpret_cast<POINT*>(&footerRect), 2);
+            contentRect.bottom = std::min(contentRect.bottom, footerRect.top);
+        }
+        if (contentRect.bottom > contentRect.top) {
+            RedrawWindow(hwnd_, &contentRect, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+        }
     }
 
     bool IsFieldChild(HWND hwnd) const {
@@ -1770,6 +2103,21 @@ private:
         }
     }
 
+    void AddSectionFrame(int tab, RECT rect) {
+        rect.top = ContentY(rect.top);
+        rect.bottom = ContentY(rect.bottom);
+        sectionFrames_.push_back(SectionFrame{rect, tab});
+    }
+
+    void PaintSectionFrames(HDC dc) {
+        for (const auto& frame : sectionFrames_) {
+            if (frame.tab != currentTab_) {
+                continue;
+            }
+            ThemedControls::DrawPanelFrame(theme_, dc, frame.rect);
+        }
+    }
+
     void PaintFields(HDC dc) {
         for (const auto& frame : fieldFrames_) {
             if (frame.tab != currentTab_) {
@@ -1783,17 +2131,15 @@ private:
         draft_.showTitle = SendMessageW(showTitle_, BM_GETCHECK, 0, 0) == BST_CHECKED;
         draft_.showGroup = SendMessageW(showGroup_, BM_GETCHECK, 0, 0) == BST_CHECKED;
         draft_.showTag = SendMessageW(showTag_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-        draft_.topMost = SendMessageW(topMost_, BM_GETCHECK, 0, 0) == BST_CHECKED;
         draft_.autoDock = SendMessageW(autoDock_, BM_GETCHECK, 0, 0) == BST_CHECKED;
         draft_.hideWhenInactive = SendMessageW(hideInactive_, BM_GETCHECK, 0, 0) == BST_CHECKED;
         draft_.hideAfterLink = SendMessageW(hideAfterLink_, BM_GETCHECK, 0, 0) == BST_CHECKED;
         draft_.hideOnStart = SendMessageW(hideOnStart_, BM_GETCHECK, 0, 0) == BST_CHECKED;
         draft_.doubleClickToRun = SendMessageW(doubleClick_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-        draft_.hideNotifyIcon = SendMessageW(hideNotify_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        draft_.hideNotifyIcon = false;
         draft_.deleteConfirm = SendMessageW(deleteConfirm_, BM_GETCHECK, 0, 0) == BST_CHECKED;
         draft_.saveRunCount = SendMessageW(saveRunCount_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-        draft_.showDate = SendMessageW(showDate_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-        draft_.showMenuButton = SendMessageW(showMenuButton_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        draft_.showToolboxButton = SendMessageW(showToolboxButton_, BM_GETCHECK, 0, 0) == BST_CHECKED;
         draft_.showSkinButton = SendMessageW(showSkinButton_, BM_GETCHECK, 0, 0) == BST_CHECKED;
         draft_.autoRun = SendMessageW(autoRun_, BM_GETCHECK, 0, 0) == BST_CHECKED;
         draft_.linkNameSingleLine = SendMessageW(linkNameSingleLine_, BM_GETCHECK, 0, 0) == BST_CHECKED;
@@ -1823,6 +2169,49 @@ private:
         if (Trim(draft_.webDavRemotePath).empty()) {
             draft_.webDavRemotePath = L"/Quattro/backups/";
         }
+        draft_.httpServerEnabled = httpServerEnabled_ && SendMessageW(httpServerEnabled_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        draft_.httpServerAutoStart = httpServerAutoStart_ && SendMessageW(httpServerAutoStart_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        draft_.httpServerLanAccess = !httpServerLanAccess_ || SendMessageW(httpServerLanAccess_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        draft_.httpServerPort = ClampNumber(httpServerPortEdit_, 1, 65535, draft_.httpServerPort);
+        draft_.httpServerRootPath = GetText(httpServerRootEdit_);
+        if (Trim(draft_.httpServerRootPath).empty()) {
+            draft_.httpServerRootPath = LocalHttpServerService::DefaultRootPath(appDirectory_).wstring();
+        }
+    }
+
+    bool TrySetMainHotKey(int key) {
+        if (key == 0) {
+            draft_.mainHotKey = 0;
+            UpdateHotKeyLabels();
+            return true;
+        }
+
+        const HotKeyAvailability availability = CheckMainHotKeyAvailability(hwnd_, key, CurrentRegisteredMainHotKey());
+        if (!availability.available) {
+            draft_.mainHotKey = key;
+            UpdateHotKeyLabels();
+            ShowThemedMessageBox(hwnd_, instance_, theme_, MainHotKeyConflictMessage(key, availability), L"热键冲突", MB_OK | MB_ICONWARNING);
+            return false;
+        }
+
+        draft_.mainHotKey = key;
+        UpdateHotKeyLabels();
+        return true;
+    }
+
+    int CurrentRegisteredMainHotKey() const {
+        return mainHotKeyRegistered_ ? config_.mainHotKey : 0;
+    }
+
+    bool ValidateMainHotKeyBeforeSave() {
+        const HotKeyAvailability availability = CheckMainHotKeyAvailability(hwnd_, draft_.mainHotKey, CurrentRegisteredMainHotKey());
+        UpdateHotKeyLabels();
+        if (availability.available) {
+            return true;
+        }
+
+        ShowThemedMessageBox(hwnd_, instance_, theme_, MainHotKeyConflictMessage(draft_.mainHotKey, availability), L"热键冲突", MB_OK | MB_ICONWARNING);
+        return false;
     }
 
     AppConfig ReadWebDavDraftFromControls() {
@@ -1851,24 +2240,10 @@ private:
         return true;
     }
 
-    void TestWebDavConnection() {
-        AppConfig value = ReadWebDavDraftFromControls();
-        value.webDavEnabled = true;
-        std::wstring password = GetText(webDavPasswordEdit_);
-        std::wstring error;
-        if (password.empty() && !WebDavCredentialService::LoadPassword(value, password, error)) {
-            ShowThemedMessageBox(hwnd_, instance_, theme_, error, L"WebDAV 备份", MB_OK | MB_ICONWARNING);
+    void ClearWebDavPassword() {
+        if (!EnsureWebDavIdle()) {
             return;
         }
-        WebDavClient client(value, password);
-        if (client.TestConnection()) {
-            ShowThemedMessageBox(hwnd_, instance_, theme_, L"WebDAV 连接成功。", L"WebDAV 备份", MB_OK | MB_ICONINFORMATION);
-        } else {
-            ShowThemedMessageBox(hwnd_, instance_, theme_, client.lastError(), L"WebDAV 备份", MB_OK | MB_ICONWARNING);
-        }
-    }
-
-    void ClearWebDavPassword() {
         AppConfig value = ReadWebDavDraftFromControls();
         std::wstring error;
         if (WebDavCredentialService::DeletePassword(value, error)) {
@@ -1887,38 +2262,132 @@ private:
         return true;
     }
 
+    void SetWebDavBusy(bool busy, SettingsWebDavOperation operation = SettingsWebDavOperation::Test) {
+        webDavBusy_ = busy;
+        if (webDavUploadButton_) {
+            EnableWindow(webDavUploadButton_, !busy);
+            SetWindowTextW(webDavUploadButton_, busy && operation == SettingsWebDavOperation::Upload ? L"上传中..." : L"上传到云端");
+        }
+        if (webDavDownloadButton_) {
+            EnableWindow(webDavDownloadButton_, !busy);
+            const bool downloadBusy = operation == SettingsWebDavOperation::List || operation == SettingsWebDavOperation::Download;
+            SetWindowTextW(webDavDownloadButton_, busy && downloadBusy ? L"处理中..." : L"从云端下载");
+        }
+        if (webDavTestButton_) {
+            EnableWindow(webDavTestButton_, !busy);
+            SetWindowTextW(webDavTestButton_, busy && operation == SettingsWebDavOperation::Test ? L"测试中..." : L"测试连接");
+        }
+        if (webDavClearPasswordButton_) {
+            EnableWindow(webDavClearPasswordButton_, !busy);
+        }
+        if (okButton_) {
+            EnableWindow(okButton_, !busy);
+        }
+        if (cancelButton_) {
+            EnableWindow(cancelButton_, !busy);
+        }
+        if (applyButton_) {
+            EnableWindow(applyButton_, !busy);
+        }
+    }
+
+    bool EnsureWebDavIdle() const {
+        if (webDavBusy_) {
+            MessageBeep(MB_ICONINFORMATION);
+            return false;
+        }
+        return true;
+    }
+
     void UploadWebDavBackup() {
+        if (!EnsureWebDavIdle()) {
+            return;
+        }
         if (!PrepareWebDavOperation()) {
             return;
         }
-        WebDavBackupService service(appDirectory_, draft_);
-        const WebDavBackupReport report = service.UploadBackup();
-        ShowThemedMessageBox(hwnd_, instance_, theme_, report.message, L"上传到云端", MB_OK | (report.ok ? MB_ICONINFORMATION : MB_ICONWARNING));
+        SetWebDavBusy(true, SettingsWebDavOperation::Upload);
+        const HWND target = hwnd_;
+        const std::filesystem::path appDirectory = appDirectory_;
+        const AppConfig config = draft_;
+        std::thread([target, appDirectory, config]() {
+            auto result = std::make_unique<SettingsWebDavResult>();
+            result->operation = SettingsWebDavOperation::Upload;
+            WebDavBackupService service(appDirectory, config);
+            result->report = service.UploadBackup();
+            result->ok = result->report.ok;
+            result->message = result->report.message;
+            SettingsWebDavResult* raw = result.release();
+            if (!PostMessageW(target, WM_SETTINGS_WEBDAV_DONE, 0, reinterpret_cast<LPARAM>(raw))) {
+                delete raw;
+            }
+        }).detach();
     }
 
     void DownloadWebDavBackup() {
+        if (!EnsureWebDavIdle()) {
+            return;
+        }
         if (!PrepareWebDavOperation()) {
             return;
         }
-        WebDavBackupService service(appDirectory_, draft_);
-        std::vector<WebDavRemoteFile> backups;
-        std::wstring error;
-        if (!service.ListBackups(backups, error)) {
-            ShowThemedMessageBox(hwnd_, instance_, theme_, error, L"从云端下载", MB_OK | MB_ICONWARNING);
+        SetWebDavBusy(true, SettingsWebDavOperation::List);
+        const HWND target = hwnd_;
+        const std::filesystem::path appDirectory = appDirectory_;
+        const AppConfig config = draft_;
+        std::thread([target, appDirectory, config]() {
+            auto result = std::make_unique<SettingsWebDavResult>();
+            result->operation = SettingsWebDavOperation::List;
+            result->config = config;
+            WebDavBackupService service(appDirectory, config);
+            std::wstring error;
+            result->ok = service.ListBackups(result->backups, error);
+            result->message = result->ok ? std::wstring{} : error;
+            SettingsWebDavResult* raw = result.release();
+            if (!PostMessageW(target, WM_SETTINGS_WEBDAV_DONE, 0, reinterpret_cast<LPARAM>(raw))) {
+                delete raw;
+            }
+        }).detach();
+    }
+
+    void DownloadSelectedWebDavBackup(const AppConfig& config, const std::wstring& fileName) {
+        SetWebDavBusy(true, SettingsWebDavOperation::Download);
+        const HWND target = hwnd_;
+        const std::filesystem::path appDirectory = appDirectory_;
+        std::thread([target, appDirectory, config, fileName]() {
+            auto result = std::make_unique<SettingsWebDavResult>();
+            result->operation = SettingsWebDavOperation::Download;
+            WebDavBackupService service(appDirectory, config);
+            result->report = service.DownloadAndImportMerge(fileName);
+            result->ok = result->report.ok;
+            result->message = result->report.importReport.message.empty()
+                ? result->report.message
+                : FormatConfigPackageReportText(result->report.importReport);
+            SettingsWebDavResult* raw = result.release();
+            if (!PostMessageW(target, WM_SETTINGS_WEBDAV_DONE, 0, reinterpret_cast<LPARAM>(raw))) {
+                delete raw;
+            }
+        }).detach();
+    }
+
+    void ContinueWebDavDownloadSelection(const SettingsWebDavResult& result) {
+        if (!result.ok) {
+            ShowThemedMessageBox(hwnd_, instance_, theme_, result.message, L"从云端下载", MB_OK | MB_ICONWARNING);
             return;
         }
-        if (backups.empty()) {
+        if (result.backups.empty()) {
             ShowThemedMessageBox(hwnd_, instance_, theme_, L"远端目录中没有可用的 .q4cfg 备份。", L"从云端下载", MB_OK | MB_ICONINFORMATION);
             return;
         }
-        std::wstring fileName = backups.front().name;
-        if (!ShowWebDavBackupSelectionDialog(hwnd_, instance_, theme_, backups, fileName)) {
+        std::wstring fileName = result.backups.front().name;
+        WebDavBackupSelectionDialog selectionDialog(hwnd_, instance_, theme_, result.backups, fileName);
+        if (!selectionDialog.Run()) {
             return;
         }
-        auto selectedBackup = std::find_if(backups.begin(), backups.end(), [&](const WebDavRemoteFile& backup) {
+        auto selectedBackup = std::find_if(result.backups.begin(), result.backups.end(), [&](const WebDavRemoteFile& backup) {
             return backup.name == fileName;
         });
-        if (selectedBackup == backups.end()) {
+        if (selectedBackup == result.backups.end()) {
             ShowThemedMessageBox(hwnd_, instance_, theme_, L"未找到所选 WebDAV 备份，请重新选择。", L"从云端下载", MB_OK | MB_ICONWARNING);
             return;
         }
@@ -1934,14 +2403,58 @@ private:
             return;
         }
 
-        const WebDavBackupReport report = service.DownloadAndImportMerge(fileName);
-        if (report.ok) {
-            importedData_ = true;
+        DownloadSelectedWebDavBackup(result.config, fileName);
+    }
+
+    void TestWebDavConnection() {
+        if (!EnsureWebDavIdle()) {
+            return;
         }
-        const std::wstring text = report.importReport.message.empty()
-            ? report.message
-            : FormatConfigPackageReportText(report.importReport);
-        ShowThemedMessageBox(hwnd_, instance_, theme_, text, L"从云端下载", MB_OK | (report.ok ? MB_ICONINFORMATION : MB_ICONWARNING));
+        AppConfig value = ReadWebDavDraftFromControls();
+        value.webDavEnabled = true;
+        std::wstring password = GetText(webDavPasswordEdit_);
+        SetWebDavBusy(true, SettingsWebDavOperation::Test);
+        const HWND target = hwnd_;
+        std::thread([target, value, password]() mutable {
+            auto result = std::make_unique<SettingsWebDavResult>();
+            result->operation = SettingsWebDavOperation::Test;
+            std::wstring error;
+            if (password.empty() && !WebDavCredentialService::LoadPassword(value, password, error)) {
+                result->message = error;
+            } else {
+                WebDavClient client(value, password);
+                result->ok = client.TestConnection();
+                result->message = result->ok ? L"WebDAV 连接成功。" : client.lastError();
+            }
+            SettingsWebDavResult* raw = result.release();
+            if (!PostMessageW(target, WM_SETTINGS_WEBDAV_DONE, 0, reinterpret_cast<LPARAM>(raw))) {
+                delete raw;
+            }
+        }).detach();
+    }
+
+    void HandleWebDavResult(std::unique_ptr<SettingsWebDavResult> result) {
+        if (!result) {
+            return;
+        }
+        SetWebDavBusy(false);
+        switch (result->operation) {
+        case SettingsWebDavOperation::Test:
+            ShowThemedMessageBox(hwnd_, instance_, theme_, result->message, L"WebDAV 备份", MB_OK | (result->ok ? MB_ICONINFORMATION : MB_ICONWARNING));
+            return;
+        case SettingsWebDavOperation::Upload:
+            ShowThemedMessageBox(hwnd_, instance_, theme_, result->message, L"上传到云端", MB_OK | (result->ok ? MB_ICONINFORMATION : MB_ICONWARNING));
+            return;
+        case SettingsWebDavOperation::List:
+            ContinueWebDavDownloadSelection(*result);
+            return;
+        case SettingsWebDavOperation::Download:
+            if (result->ok) {
+                importedData_ = true;
+            }
+            ShowThemedMessageBox(hwnd_, instance_, theme_, result->message, L"从云端下载", MB_OK | (result->ok ? MB_ICONINFORMATION : MB_ICONWARNING));
+            return;
+        }
     }
 
     void ExportConfigPackage() {
@@ -1957,7 +2470,6 @@ private:
         options.includeConfig = true;
         options.includeData = true;
         options.includeUrlIcons = true;
-        options.includePluginSettings = true;
         ConfigPackageService service(appDirectory_);
         const ConfigPackageReport report = service.ExportPackage(targetPath, options);
         ShowThemedMessageBox(hwnd_, instance_, theme_, FormatConfigPackageReportText(report), L"导出配置包", MB_OK | (report.ok ? MB_ICONINFORMATION : MB_ICONWARNING));
@@ -1975,7 +2487,7 @@ private:
             hwnd_,
             instance_,
             theme_,
-            L"将把配置包中的分组、标签、启动项、便签、待办和工具设置合并到当前数据。\n\n当前数据不会被覆盖，导入前会自动备份。",
+            L"将把配置包中的分组、标签、启动项、便签和待办合并到当前数据。\n\n当前数据不会被覆盖，导入前会自动备份。",
             L"合并导入配置包",
             MB_OKCANCEL | MB_ICONINFORMATION);
         if (confirm != IDOK) {
@@ -1985,7 +2497,6 @@ private:
         options.includeConfig = false;
         options.includeData = true;
         options.includeUrlIcons = true;
-        options.includePluginSettings = true;
         ConfigPackageService service(appDirectory_);
         const ConfigPackageReport report = service.ImportPackageMerge(packagePath, options);
         if (report.ok) {
@@ -1997,6 +2508,10 @@ private:
     void ExportTodosJson() {
         StorageService storage(appDirectory_);
         const AppModel model = storage.Load();
+        TodoExportOptions options;
+        options.includeCompleted = !todoIncludeCompleted_ || SendMessageW(todoIncludeCompleted_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        options.includeDisabled = !todoIncludeDisabled_ || SendMessageW(todoIncludeDisabled_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        options.onlyFuture = todoOnlyFuture_ && SendMessageW(todoOnlyFuture_, BM_GETCHECK, 0, 0) == BST_CHECKED;
         std::wstring targetPath;
         if (!SelectSavePath(hwnd_,
                 (appDirectory_ / TodoJsonFileName()).wstring(),
@@ -2005,7 +2520,7 @@ private:
                 targetPath)) {
             return;
         }
-        if (!SaveUtf8File(targetPath, BuildTodoExportJson(model))) {
+        if (!SaveUtf8File(targetPath, BuildTodoExportJson(model, options))) {
             ShowThemedMessageBox(hwnd_, instance_, theme_, L"写入待办 JSON 文件失败。", L"导出待办 JSON", MB_OK | MB_ICONWARNING);
             return;
         }
@@ -2038,6 +2553,171 @@ private:
             L"导入待办 JSON", MB_OK | (report.ok ? MB_ICONINFORMATION : MB_ICONWARNING));
     }
 
+    AppConfig ReadHttpDraftFromControls() {
+        AppConfig value = draft_;
+        value.httpServerEnabled = httpServerEnabled_ && SendMessageW(httpServerEnabled_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        value.httpServerAutoStart = httpServerAutoStart_ && SendMessageW(httpServerAutoStart_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        value.httpServerLanAccess = !httpServerLanAccess_ || SendMessageW(httpServerLanAccess_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        value.httpServerPort = ClampNumber(httpServerPortEdit_, 1, 65535, value.httpServerPort);
+        value.httpServerRootPath = GetText(httpServerRootEdit_);
+        if (Trim(value.httpServerRootPath).empty()) {
+            value.httpServerRootPath = LocalHttpServerService::DefaultRootPath(appDirectory_).wstring();
+        }
+        return value;
+    }
+
+    void UpdateHttpStatusLabel() {
+        if (!httpServerStatus_) {
+            return;
+        }
+        std::wstring status = L"状态：";
+        if (httpServer_ && httpServer_->IsRunning()) {
+            status += L"运行中  " + httpServer_->BaseUrl(true);
+        } else {
+            status += L"未启动";
+        }
+        SetWindowTextW(httpServerStatus_, status.c_str());
+    }
+
+    void BrowseHttpRoot() {
+        IFileDialog* dialog = nullptr;
+        if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog)))) {
+            return;
+        }
+        DWORD options = 0;
+        dialog->GetOptions(&options);
+        dialog->SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM);
+        if (SUCCEEDED(dialog->Show(hwnd_))) {
+            IShellItem* item = nullptr;
+            if (SUCCEEDED(dialog->GetResult(&item))) {
+                PWSTR path = nullptr;
+                if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path))) {
+                    SetWindowTextW(httpServerRootEdit_, path);
+                    CoTaskMemFree(path);
+                }
+                item->Release();
+            }
+        }
+        dialog->Release();
+    }
+
+    void OpenHttpRootDirectory() {
+        const AppConfig value = ReadHttpDraftFromControls();
+        const auto options = LocalHttpServerService::OptionsFromConfig(value, appDirectory_);
+        std::error_code ec;
+        std::filesystem::create_directories(options.rootPath, ec);
+        if (ec) {
+            ShowThemedMessageBox(hwnd_, instance_, theme_, L"创建 Web Root 失败。", L"HTTP 服务", MB_OK | MB_ICONWARNING);
+            return;
+        }
+        ShellExecuteW(hwnd_, L"open", options.rootPath.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    }
+
+    void OpenHttpConfigDirectory() {
+        const AppConfig value = ReadHttpDraftFromControls();
+        const auto options = LocalHttpServerService::OptionsFromConfig(value, appDirectory_);
+        std::wstring error;
+        if (!LocalHttpServerService::EnsureDetailConfig(options.rootPath, error)) {
+            ShowThemedMessageBox(hwnd_, instance_, theme_, error, L"HTTP 服务", MB_OK | MB_ICONWARNING);
+            return;
+        }
+        const std::filesystem::path configDirectory = LocalHttpServerService::DetailConfigDirectory();
+        ShellExecuteW(hwnd_, L"open", configDirectory.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    }
+
+    void OpenHttpHome() {
+        const AppConfig value = ReadHttpDraftFromControls();
+        LocalHttpServerOptions options = LocalHttpServerService::OptionsFromConfig(value, appDirectory_);
+        std::wstring url = httpServer_ && httpServer_->IsRunning()
+            ? httpServer_->BaseUrl(true)
+            : (L"http://127.0.0.1:" + std::to_wstring(options.port) + L"/");
+        ShellExecuteW(hwnd_, L"open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    }
+
+    void CopyHttpUrl() {
+        const AppConfig value = ReadHttpDraftFromControls();
+        LocalHttpServerOptions options = LocalHttpServerService::OptionsFromConfig(value, appDirectory_);
+        const std::wstring url = httpServer_ && httpServer_->IsRunning()
+            ? httpServer_->BaseUrl(true)
+            : (L"http://127.0.0.1:" + std::to_wstring(options.port) + L"/");
+        if (!OpenClipboard(hwnd_)) {
+            return;
+        }
+        EmptyClipboard();
+        const SIZE_T bytes = (url.size() + 1) * sizeof(wchar_t);
+        HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, bytes);
+        if (memory) {
+            void* target = GlobalLock(memory);
+            if (target) {
+                memcpy(target, url.c_str(), bytes);
+                GlobalUnlock(memory);
+                SetClipboardData(CF_UNICODETEXT, memory);
+                memory = nullptr;
+            }
+        }
+        if (memory) {
+            GlobalFree(memory);
+        }
+        CloseClipboard();
+    }
+
+    void StartHttpServerFromDialog(bool restart) {
+        if (!httpServer_) {
+            ShowThemedMessageBox(hwnd_, instance_, theme_, L"HTTP 服务对象不可用。", L"HTTP 服务", MB_OK | MB_ICONWARNING);
+            return;
+        }
+        AppConfig value = ReadHttpDraftFromControls();
+        value.httpServerEnabled = true;
+        draft_ = value;
+        if (httpServerEnabled_) {
+            SendMessageW(httpServerEnabled_, BM_SETCHECK, BST_CHECKED, 0);
+        }
+        std::wstring error;
+        const auto options = LocalHttpServerService::OptionsFromConfig(value, appDirectory_);
+        const bool ok = restart ? httpServer_->Restart(options, error) : httpServer_->Start(options, error);
+        UpdateHttpStatusLabel();
+        ShowThemedMessageBox(hwnd_, instance_, theme_, ok ? L"HTTP 服务已启动。" : error, L"HTTP 服务", MB_OK | (ok ? MB_ICONINFORMATION : MB_ICONWARNING));
+    }
+
+    void StopHttpServerFromDialog() {
+        if (!httpServer_) {
+            return;
+        }
+        httpServer_->Stop();
+        draft_ = ReadHttpDraftFromControls();
+        draft_.httpServerEnabled = false;
+        if (httpServerEnabled_) {
+            SendMessageW(httpServerEnabled_, BM_SETCHECK, BST_UNCHECKED, 0);
+        }
+        UpdateHttpStatusLabel();
+        ShowThemedMessageBox(hwnd_, instance_, theme_, L"HTTP 服务已停止。", L"HTTP 服务", MB_OK | MB_ICONINFORMATION);
+    }
+
+    bool CommitSettings(bool closeAfterCommit) {
+        if (webDavBusy_) {
+            ShowThemedMessageBox(hwnd_, instance_, theme_, L"WebDAV 操作正在进行，请稍候完成。", L"WebDAV 备份", MB_OK | MB_ICONINFORMATION);
+            return false;
+        }
+        ReadDraft();
+        if (!ValidateMainHotKeyBeforeSave()) {
+            return false;
+        }
+        if (!SaveWebDavPasswordIfNeeded()) {
+            return false;
+        }
+
+        config_ = draft_;
+        if (!closeAfterCommit && applyCallback_) {
+            mainHotKeyRegistered_ = applyCallback_(config_, importedData_);
+            importedData_ = false;
+            draft_ = config_;
+            UpdateHotKeyLabels();
+            UpdateHttpStatusLabel();
+        }
+        accepted_ = true;
+        return true;
+    }
+
     LRESULT Handle(UINT message, WPARAM wParam, LPARAM lParam) {
         switch (message) {
         case WM_CREATE: {
@@ -2056,8 +2736,7 @@ private:
             showTitle_ = CheckBox(TabDisplay, 101, L"显示标题栏", 34, 64, draft_.showTitle);
             showGroup_ = CheckBox(TabDisplay, 102, L"显示分组栏", 282, 64, draft_.showGroup);
             showTag_ = CheckBox(TabDisplay, 103, L"显示标签栏", 34, 94, draft_.showTag);
-            showDate_ = CheckBox(TabDisplay, 113, L"显示日期", 282, 94, draft_.showDate);
-            showMenuButton_ = CheckBox(TabDisplay, 115, L"显示菜单按钮", 282, 124, draft_.showMenuButton);
+            showToolboxButton_ = CheckBox(TabDisplay, 115, L"显示工具箱按钮", 282, 124, draft_.showToolboxButton);
             showSkinButton_ = CheckBox(TabDisplay, 121, L"显示主题按钮", 34, 124, draft_.showSkinButton);
             linkNameSingleLine_ = CheckBox(TabDisplay, 118, L"启动项名称单行", 282, 154, draft_.linkNameSingleLine);
             showTooltip_ = CheckBox(TabDisplay, 119, L"显示提示", 34, 154, draft_.showTooltip);
@@ -2068,9 +2747,9 @@ private:
             alphaEdit_ = NumberEdit(TabDisplay, 201, 118, 254, 78, draft_.alpha);
             Label(TabDisplay, L"标签文字", 282, 260, 72);
             const int tabButtonHeight = ThemedControls::TabButtonHeight(theme_);
-            tagAlignLeft_ = ThemedControls::CreateTabButton(instance_, hwnd_, ID_TAG_ALIGN_LEFT, L"左", 364, 255, 36, tabButtonHeight, font_, false);
-            tagAlignCenter_ = ThemedControls::CreateTabButton(instance_, hwnd_, ID_TAG_ALIGN_CENTER, L"中", 404, 255, 36, tabButtonHeight, font_, true);
-            tagAlignRight_ = ThemedControls::CreateTabButton(instance_, hwnd_, ID_TAG_ALIGN_RIGHT, L"右", 444, 255, 36, tabButtonHeight, font_, false);
+            tagAlignLeft_ = ThemedControls::CreateTabButton(instance_, hwnd_, ID_TAG_ALIGN_LEFT, L"左", 364, ContentY(255), 36, tabButtonHeight, font_, false);
+            tagAlignCenter_ = ThemedControls::CreateTabButton(instance_, hwnd_, ID_TAG_ALIGN_CENTER, L"中", 404, ContentY(255), 36, tabButtonHeight, font_, true);
+            tagAlignRight_ = ThemedControls::CreateTabButton(instance_, hwnd_, ID_TAG_ALIGN_RIGHT, L"右", 444, ContentY(255), 36, tabButtonHeight, font_, false);
             AddTabChild(tagAlignLeft_, TabDisplay);
             AddTabChild(tagAlignCenter_, TabDisplay);
             AddTabChild(tagAlignRight_, TabDisplay);
@@ -2081,18 +2760,69 @@ private:
             Label(TabDisplay, L"标签宽度", 282, 314, 72);
             tagWidthEdit_ = NumberEdit(TabDisplay, ID_TAG_WIDTH, 364, 308, 78, draft_.tagWidth);
 
-            topMost_ = CheckBox(TabBehavior, 104, L"窗口置顶", 34, 64, draft_.topMost);
-            autoDock_ = CheckBox(TabBehavior, 105, L"自动停靠", 282, 64, draft_.autoDock);
-            hideInactive_ = CheckBox(TabBehavior, 106, L"失焦隐藏", 34, 94, draft_.hideWhenInactive);
-            hideAfterLink_ = CheckBox(TabBehavior, 107, L"运行后隐藏", 282, 94, draft_.hideAfterLink);
-            hideOnStart_ = CheckBox(TabBehavior, 116, L"启动后隐藏", 34, 124, draft_.hideOnStart);
-            autoRun_ = CheckBox(TabBehavior, 117, L"开机自启动", 282, 124, draft_.autoRun);
-            hideNotify_ = CheckBox(TabBehavior, 110, L"隐藏托盘图标", 34, 154, draft_.hideNotifyIcon);
-            deleteConfirm_ = CheckBox(TabBehavior, 111, L"删除确认", 282, 154, draft_.deleteConfirm);
-            saveRunCount_ = CheckBox(TabBehavior, 112, L"保存运行次数", 34, 184, draft_.saveRunCount);
-            Label(TabBehavior, L"停靠延迟", 34, 238, 76);
-            dockDelayEdit_ = NumberEdit(TabBehavior, ID_DOCK_DELAY, 118, 232, 88, draft_.dockDelay);
-            Label(TabBehavior, L"ms", 214, 238, 32);
+            const DialogLayoutMetrics behaviorLayout = GetDialogLayoutMetrics(theme_, DialogLayoutKind::Compact);
+            RECT settingsClient{};
+            GetClientRect(hwnd_, &settingsClient);
+            const int settingsClientWidth = static_cast<int>(settingsClient.right - settingsClient.left);
+            const int behaviorCheckWidth = 148;
+            const int behaviorFieldWidth = 88;
+            const int behaviorDelayLabelWidth = 76;
+            const int behaviorUnitWidth = 32;
+            const int behaviorColumnGap = std::max(behaviorLayout.controlGapX * 3, 30);
+            const int behaviorColumnWidth = std::max(
+                behaviorCheckWidth,
+                behaviorDelayLabelWidth + behaviorLayout.labelGap + behaviorFieldWidth + behaviorLayout.controlGapX + behaviorUnitWidth);
+            const int behaviorLeft = behaviorLayout.CenteredGroupX(settingsClientWidth, behaviorColumnWidth * 2 + behaviorColumnGap);
+            const int behaviorRight = behaviorLeft + behaviorColumnWidth + behaviorColumnGap;
+            const int behaviorRowStep = std::max(28, ThemedControls::CheckBoxHeight(theme_) + std::max(4, behaviorLayout.rowGap - 2));
+            const int behaviorPanelPaddingX = static_cast<int>(theme_.metric(L"panel", L"paddingX", 10.0f));
+            const int behaviorPanelPaddingY = static_cast<int>(theme_.metric(L"panel", L"paddingY", 8.0f));
+            const int behaviorTitleGap = ThemedControls::LabelHeight(theme_) + std::max(3, behaviorLayout.rowGap - 3);
+            const int behaviorFrameGap = std::max(10, behaviorLayout.sectionGap - 2);
+            const int behaviorHeadingWidth = 128;
+            const int behaviorFrameLeft = behaviorLeft - behaviorPanelPaddingX;
+            const int behaviorFrameRight = behaviorRight + behaviorColumnWidth + behaviorPanelPaddingX;
+            const int behaviorWindowFrameTop = 44;
+            const int behaviorWindowHeadingY = behaviorWindowFrameTop + behaviorPanelPaddingY;
+            const int behaviorWindowRowY = behaviorWindowHeadingY + behaviorTitleGap;
+            const int behaviorWindowFrameBottom = behaviorWindowRowY + behaviorRowStep * 2 + behaviorPanelPaddingY;
+            AddSectionFrame(TabBehavior, RECT{behaviorFrameLeft, behaviorWindowFrameTop, behaviorFrameRight, behaviorWindowFrameBottom});
+            Label(TabBehavior, L"窗口行为", behaviorLeft, behaviorWindowHeadingY, behaviorHeadingWidth);
+            autoDock_ = CheckBox(TabBehavior, 105, L"贴边自动隐藏", behaviorLeft, behaviorWindowRowY, draft_.autoDock, behaviorCheckWidth);
+            Label(TabBehavior, L"停靠延迟", behaviorRight, behaviorWindowRowY + 6, behaviorDelayLabelWidth);
+            dockDelayEdit_ = NumberEdit(
+                TabBehavior,
+                ID_DOCK_DELAY,
+                behaviorRight + behaviorDelayLabelWidth + behaviorLayout.labelGap,
+                behaviorWindowRowY,
+                behaviorFieldWidth,
+                draft_.dockDelay);
+            Label(
+                TabBehavior,
+                L"ms",
+                behaviorRight + behaviorDelayLabelWidth + behaviorLayout.labelGap + behaviorFieldWidth + behaviorLayout.controlGapX,
+                behaviorWindowRowY + 6,
+                behaviorUnitWidth);
+            hideInactive_ = CheckBox(TabBehavior, 106, L"失焦隐藏", behaviorLeft, behaviorWindowRowY + behaviorRowStep, draft_.hideWhenInactive, behaviorCheckWidth);
+
+            const int behaviorRunFrameTop = behaviorWindowFrameBottom + behaviorFrameGap;
+            const int behaviorRunHeadingY = behaviorRunFrameTop + behaviorPanelPaddingY;
+            const int behaviorRunRowY = behaviorRunHeadingY + behaviorTitleGap;
+            const int behaviorRunFrameBottom = behaviorRunRowY + behaviorRowStep * 2 + behaviorPanelPaddingY;
+            AddSectionFrame(TabBehavior, RECT{behaviorFrameLeft, behaviorRunFrameTop, behaviorFrameRight, behaviorRunFrameBottom});
+            Label(TabBehavior, L"运行与数据", behaviorLeft, behaviorRunHeadingY, behaviorHeadingWidth);
+            hideAfterLink_ = CheckBox(TabBehavior, 107, L"运行后隐藏", behaviorLeft, behaviorRunRowY, draft_.hideAfterLink, behaviorCheckWidth);
+            saveRunCount_ = CheckBox(TabBehavior, 112, L"记录运行次数", behaviorRight, behaviorRunRowY, draft_.saveRunCount, behaviorCheckWidth);
+            deleteConfirm_ = CheckBox(TabBehavior, 111, L"删除前确认", behaviorLeft, behaviorRunRowY + behaviorRowStep, draft_.deleteConfirm, behaviorCheckWidth);
+
+            const int behaviorSystemFrameTop = behaviorRunFrameBottom + behaviorFrameGap;
+            const int behaviorSystemHeadingY = behaviorSystemFrameTop + behaviorPanelPaddingY;
+            const int behaviorSystemRowY = behaviorSystemHeadingY + behaviorTitleGap;
+            const int behaviorSystemFrameBottom = behaviorSystemRowY + behaviorRowStep + behaviorPanelPaddingY;
+            AddSectionFrame(TabBehavior, RECT{behaviorFrameLeft, behaviorSystemFrameTop, behaviorFrameRight, behaviorSystemFrameBottom});
+            Label(TabBehavior, L"系统集成", behaviorLeft, behaviorSystemHeadingY, behaviorHeadingWidth);
+            hideOnStart_ = CheckBox(TabBehavior, 116, L"启动后隐藏", behaviorLeft, behaviorSystemRowY, draft_.hideOnStart, behaviorCheckWidth);
+            autoRun_ = CheckBox(TabBehavior, 117, L"开机启动", behaviorRight, behaviorSystemRowY, draft_.autoRun, behaviorCheckWidth);
 
             doubleClick_ = CheckBox(TabInteraction, 109, L"双击运行", 34, 64, draft_.doubleClickToRun);
             enterActiveGroup_ = CheckBox(TabInteraction, 124, L"鼠标进入激活分组", 34, 94, draft_.mouseEnterActiveGroup);
@@ -2104,10 +2834,22 @@ private:
             tagDelayEdit_ = NumberEdit(TabInteraction, ID_TAG_DELAY, 392, 148, 88, draft_.activeTagDelay);
             Label(TabInteraction, L"ms", 488, 154, 32);
 
-            Label(TabHotKeys, L"主窗口热键", 34, 74, 84);
-            mainHotKeyText_ = FramedStatic(TabHotKeys, 128, 66, 210, FormatHotKeyText(draft_.mainHotKey));
-            Button(TabHotKeys, ID_MAIN_HOTKEY_CAPTURE, L"录入", 354, 68, 56);
-            Button(TabHotKeys, ID_MAIN_HOTKEY_CLEAR, L"清除", 424, 68, 56);
+            const DialogLayoutMetrics hotKeyLayout = GetDialogLayoutMetrics(theme_, DialogLayoutKind::Compact);
+            const int hotKeyLabelWidth = 84;
+            const int hotKeyFieldWidth = 210;
+            const int hotKeyButtonWidth = 56;
+            const int hotKeyRowWidth = hotKeyLabelWidth + hotKeyLayout.labelGap + hotKeyFieldWidth +
+                hotKeyLayout.controlGapX + hotKeyButtonWidth + hotKeyLayout.controlGapX + hotKeyButtonWidth;
+            const int hotKeyX = hotKeyLayout.CenteredGroupX(560, hotKeyRowWidth);
+            const int hotKeyFieldX = hotKeyX + hotKeyLabelWidth + hotKeyLayout.labelGap;
+            const int hotKeyCaptureX = hotKeyFieldX + hotKeyFieldWidth + hotKeyLayout.controlGapX;
+            const int hotKeyClearX = hotKeyCaptureX + hotKeyButtonWidth + hotKeyLayout.controlGapX;
+            Label(TabHotKeys, L"主窗口热键", hotKeyX, 74, hotKeyLabelWidth);
+            mainHotKeyText_ = FramedStatic(TabHotKeys, hotKeyFieldX, 66, hotKeyFieldWidth, FormatHotKeyText(draft_.mainHotKey));
+            Button(TabHotKeys, ID_MAIN_HOTKEY_CAPTURE, L"录入", hotKeyCaptureX, 68, hotKeyButtonWidth);
+            Button(TabHotKeys, ID_MAIN_HOTKEY_CLEAR, L"清除", hotKeyClearX, 68, hotKeyButtonWidth);
+            mainHotKeyStatus_ = Label(TabHotKeys, L"", hotKeyX, 112, hotKeyRowWidth);
+            UpdateHotKeyLabels();
 
             Label(TabLinks, L"打开目录命令", 34, 68, 110);
             openDirEdit_ = FramedEdit(TabLinks, 202, 34, 92, 446, draft_.openDirCommand);
@@ -2131,10 +2873,35 @@ private:
             webDavUserNameEdit_ = FramedEdit(TabWebDav, 212, 34, 280, 206, draft_.webDavUserName);
             Label(TabWebDav, L"密码/应用密码", 282, 256, 130);
             webDavPasswordEdit_ = FramedEdit(TabWebDav, 213, 282, 280, 198, L"", ES_AUTOHSCROLL | ES_PASSWORD);
-            Button(TabWebDav, ID_WEBDAV_UPLOAD, L"上传到云端", 34, 340, 104);
-            Button(TabWebDav, ID_WEBDAV_DOWNLOAD, L"从云端下载", 150, 340, 104);
-            Button(TabWebDav, ID_WEBDAV_TEST, L"测试连接", 286, 340, 92);
-            Button(TabWebDav, ID_WEBDAV_CLEAR_PASSWORD, L"清除密码", 390, 340, 90);
+            webDavUploadButton_ = Button(TabWebDav, ID_WEBDAV_UPLOAD, L"上传到云端", 34, 340, 104);
+            webDavDownloadButton_ = Button(TabWebDav, ID_WEBDAV_DOWNLOAD, L"从云端下载", 150, 340, 104);
+            webDavTestButton_ = Button(TabWebDav, ID_WEBDAV_TEST, L"测试连接", 286, 340, 92);
+            webDavClearPasswordButton_ = Button(TabWebDav, ID_WEBDAV_CLEAR_PASSWORD, L"清除密码", 390, 340, 90);
+
+            httpServerEnabled_ = CheckBox(TabHttp, 214, L"启用 HTTP 服务", 34, 64, draft_.httpServerEnabled, 160);
+            httpServerAutoStart_ = CheckBox(TabHttp, 215, L"启动应用时自动开启", 214, 64, draft_.httpServerAutoStart, 180);
+            httpServerLanAccess_ = CheckBox(TabHttp, 216, L"允许局域网访问", 414, 64, draft_.httpServerLanAccess, 130);
+            Label(TabHttp, L"端口", 34, 112, 44);
+            httpServerPortEdit_ = NumberEdit(TabHttp, 217, 92, 106, 90, draft_.httpServerPort);
+            Label(TabHttp, L"Web Root", 34, 168, 90);
+            httpServerRootEdit_ = FramedEdit(
+                TabHttp,
+                218,
+                34,
+                192,
+                314,
+                Trim(draft_.httpServerRootPath).empty() ? LocalHttpServerService::DefaultRootPath(appDirectory_).wstring() : draft_.httpServerRootPath);
+            Button(TabHttp, ID_HTTP_BROWSE_ROOT, L"选择", 360, 193, 54);
+            Button(TabHttp, ID_HTTP_OPEN_ROOT, L"打开目录", 424, 193, 72);
+            httpServerStatus_ = Label(TabHttp, L"", 34, 238, 462);
+            Button(TabHttp, ID_HTTP_START, L"启动", 34, 276, 72);
+            Button(TabHttp, ID_HTTP_STOP, L"停止", 116, 276, 72);
+            Button(TabHttp, ID_HTTP_RESTART, L"重启", 198, 276, 72);
+            Button(TabHttp, ID_HTTP_OPEN_HOME, L"打开网站", 290, 276, 84);
+            Button(TabHttp, ID_HTTP_COPY_URL, L"复制地址", 384, 276, 84);
+            Button(TabHttp, ID_HTTP_OPEN_CONFIG_DIR, L"配置目录", 34, 324, 92);
+            Label(TabHttp, L"详细权限、账号密码、上传、MIME 与下载策略请在配置目录的 http-server.ini 中修改；重启 HTTP 服务后生效。", 142, 328, 354);
+            UpdateHttpStatusLabel();
 
             const DialogLayoutMetrics backupLayout = GetDialogLayoutMetrics(theme_, DialogLayoutKind::Compact);
             const int backupButtonWidth = 118;
@@ -2148,11 +2915,49 @@ private:
             Label(TabBackup, L"待办事项单独备份（JSON 格式）", backupNoteX, 210, backupNoteWidth);
             Button(TabBackup, ID_TODO_EXPORT, L"导出", backupGroupX, 242, backupButtonWidth);
             Button(TabBackup, ID_TODO_IMPORT, L"导入", backupGroupX + backupButtonWidth + backupLayout.controlGapX, 242, backupButtonWidth);
-            Label(TabBackup, L"导入配置包会合并现有数据；导入待办事项备份会自动补齐缺失分组和待办标签。", backupNoteX, 308, backupNoteWidth);
+            todoIncludeCompleted_ = CheckBox(TabBackup, ID_TODO_INCLUDE_COMPLETED, L"含已完成", backupNoteX, 280, true, 112);
+            todoIncludeDisabled_ = CheckBox(TabBackup, ID_TODO_INCLUDE_DISABLED, L"含已禁用", backupNoteX + 120, 280, true, 112);
+            todoOnlyFuture_ = CheckBox(TabBackup, ID_TODO_ONLY_FUTURE, L"仅未来", backupNoteX + 240, 280, false, 104);
+            Label(TabBackup, L"待办事项备份可用于 Quattro 恢复，也可通过 Apple 快捷指令导入提醒事项。", backupNoteX, 326, backupNoteWidth);
 
+            RECT client{};
+            GetClientRect(hwnd_, &client);
+            const int clientWidth = static_cast<int>(client.right - client.left);
+            const int clientHeight = static_cast<int>(client.bottom - client.top);
             const int buttonHeight = ThemedControls::ButtonHeight(theme_);
-            ThemedControls::CreatePrimaryButton(instance_, hwnd_, IDOK, L"确定", 350, 428, 76, buttonHeight, font_, true);
-            ThemedControls::CreateButton(instance_, hwnd_, IDCANCEL, L"取消", 442, 428, 76, buttonHeight, font_);
+            const DialogLayoutMetrics footerLayout = GetDialogLayoutMetrics(theme_, DialogLayoutKind::Compact);
+            const int footerY = footerLayout.FooterButtonY(clientHeight, buttonHeight);
+            okButton_ = ThemedControls::CreatePrimaryButton(
+                instance_,
+                hwnd_,
+                IDOK,
+                L"确定",
+                footerLayout.FooterButtonX(clientWidth, 0, 3),
+                footerY,
+                footerLayout.footerButtonWidth,
+                buttonHeight,
+                font_,
+                true);
+            applyButton_ = ThemedControls::CreateButton(
+                instance_,
+                hwnd_,
+                ID_SETTINGS_APPLY,
+                L"应用",
+                footerLayout.FooterButtonX(clientWidth, 1, 3),
+                footerY,
+                footerLayout.footerButtonWidth,
+                buttonHeight,
+                font_);
+            cancelButton_ = ThemedControls::CreateButton(
+                instance_,
+                hwnd_,
+                IDCANCEL,
+                L"取消",
+                footerLayout.FooterButtonX(clientWidth, 2, 3),
+                footerY,
+                footerLayout.footerButtonWidth,
+                buttonHeight,
+                font_);
             ShowTab(TabDisplay);
             return 0;
         }
@@ -2163,6 +2968,7 @@ private:
             GetClientRect(hwnd_, &rect);
             FillRect(dc, &rect, backgroundBrush_ ? backgroundBrush_ : reinterpret_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
             PaintTabs(dc);
+            PaintSectionFrames(dc);
             PaintFields(dc);
             EndPaint(hwnd_, &ps);
             return 0;
@@ -2194,11 +3000,14 @@ private:
                 return TRUE;
             }
             return 0;
+        case WM_SETTINGS_WEBDAV_DONE:
+            HandleWebDavResult(std::unique_ptr<SettingsWebDavResult>(reinterpret_cast<SettingsWebDavResult*>(lParam)));
+            return 0;
         case WM_COMMAND:
             if (HIWORD(wParam) == EN_SETFOCUS || HIWORD(wParam) == EN_KILLFOCUS) {
                 InvalidateField(reinterpret_cast<HWND>(lParam));
             }
-            if (LOWORD(wParam) >= ID_SETTINGS_TAB_BASE && LOWORD(wParam) < ID_SETTINGS_TAB_BASE + 7) {
+            if (LOWORD(wParam) >= ID_SETTINGS_TAB_BASE && LOWORD(wParam) < ID_SETTINGS_TAB_BASE + TabCount) {
                 ShowTab(static_cast<int>(LOWORD(wParam) - ID_SETTINGS_TAB_BASE));
                 return 0;
             }
@@ -2208,8 +3017,7 @@ private:
                 return 0;
             }
             if (LOWORD(wParam) == ID_MAIN_HOTKEY_CAPTURE) {
-                draft_.mainHotKey = ShowHotKeyCaptureDialog(hwnd_, instance_, theme_, draft_.mainHotKey);
-                UpdateHotKeyLabels();
+                TrySetMainHotKey(ShowHotKeyCaptureDialog(hwnd_, instance_, theme_, draft_.mainHotKey));
                 return 0;
             }
             if (LOWORD(wParam) == ID_MAIN_HOTKEY_CLEAR) {
@@ -2249,24 +3057,65 @@ private:
                 ImportTodosJson();
                 return 0;
             }
+            if (LOWORD(wParam) == ID_HTTP_BROWSE_ROOT) {
+                BrowseHttpRoot();
+                return 0;
+            }
+            if (LOWORD(wParam) == ID_HTTP_OPEN_ROOT) {
+                OpenHttpRootDirectory();
+                return 0;
+            }
+            if (LOWORD(wParam) == ID_HTTP_OPEN_CONFIG_DIR) {
+                OpenHttpConfigDirectory();
+                return 0;
+            }
+            if (LOWORD(wParam) == ID_HTTP_OPEN_HOME) {
+                OpenHttpHome();
+                return 0;
+            }
+            if (LOWORD(wParam) == ID_HTTP_COPY_URL) {
+                CopyHttpUrl();
+                return 0;
+            }
+            if (LOWORD(wParam) == ID_HTTP_START) {
+                StartHttpServerFromDialog(false);
+                return 0;
+            }
+            if (LOWORD(wParam) == ID_HTTP_STOP) {
+                StopHttpServerFromDialog();
+                return 0;
+            }
+            if (LOWORD(wParam) == ID_HTTP_RESTART) {
+                StartHttpServerFromDialog(true);
+                return 0;
+            }
+            if (LOWORD(wParam) == ID_SETTINGS_APPLY) {
+                CommitSettings(false);
+                return 0;
+            }
             if (LOWORD(wParam) == IDOK) {
-                ReadDraft();
-                if (!SaveWebDavPasswordIfNeeded()) {
+                if (!CommitSettings(true)) {
                     return 0;
                 }
-                config_ = draft_;
-                accepted_ = true;
                 done_ = true;
                 DestroyWindow(hwnd_);
                 return 0;
             }
             if (LOWORD(wParam) == IDCANCEL) {
+                if (webDavBusy_) {
+                    ShowThemedMessageBox(hwnd_, instance_, theme_, L"WebDAV 操作正在进行，请稍候完成。", L"WebDAV 备份", MB_OK | MB_ICONINFORMATION);
+                    return 0;
+                }
                 done_ = true;
                 DestroyWindow(hwnd_);
                 return 0;
             }
             return 0;
         case WM_CLOSE:
+            if (webDavBusy_) {
+                ShowThemedMessageBox(hwnd_, instance_, theme_, L"WebDAV 操作正在进行，请稍候完成。", L"WebDAV 备份", MB_OK | MB_ICONINFORMATION);
+                return 0;
+            }
             done_ = true;
             DestroyWindow(hwnd_);
             return 0;
@@ -2303,6 +3152,10 @@ private:
         if (mainHotKeyText_) {
             SetWindowTextW(mainHotKeyText_, FormatHotKeyText(draft_.mainHotKey).c_str());
         }
+        if (mainHotKeyStatus_) {
+            const HotKeyAvailability availability = CheckMainHotKeyAvailability(hwnd_, draft_.mainHotKey, CurrentRegisteredMainHotKey());
+            SetWindowTextW(mainHotKeyStatus_, MainHotKeyStatusText(draft_.mainHotKey, availability).c_str());
+        }
     }
 
     HWND owner_ = nullptr;
@@ -2314,32 +3167,33 @@ private:
     AppConfig draft_;
     const Theme& theme_;
     std::filesystem::path appDirectory_;
+    LocalHttpServerService* httpServer_ = nullptr;
+    bool mainHotKeyRegistered_ = false;
     HBRUSH backgroundBrush_ = nullptr;
     HBRUSH fieldBrush_ = nullptr;
     HBRUSH readOnlyFieldBrush_ = nullptr;
     bool ownsFont_ = false;
     bool ownerWasEnabled_ = false;
     bool ownerRestored_ = false;
-    int currentTab_ = TabDisplay;
+    int currentTab_ = -1;
     RECT tabStripRect_{};
+    int tabContentOffsetY_ = 0;
     std::vector<HWND> tabButtons_;
-    std::vector<int> tabSeparatorXs_;
+    std::vector<TabSeparator> tabSeparators_;
     std::vector<TabChild> tabChildren_;
+    std::vector<SectionFrame> sectionFrames_;
     std::vector<FieldFrame> fieldFrames_;
     HWND showTitle_ = nullptr;
     HWND showGroup_ = nullptr;
     HWND showTag_ = nullptr;
-    HWND topMost_ = nullptr;
     HWND autoDock_ = nullptr;
     HWND hideInactive_ = nullptr;
     HWND hideAfterLink_ = nullptr;
     HWND hideOnStart_ = nullptr;
     HWND doubleClick_ = nullptr;
-    HWND hideNotify_ = nullptr;
     HWND deleteConfirm_ = nullptr;
     HWND saveRunCount_ = nullptr;
-    HWND showDate_ = nullptr;
-    HWND showMenuButton_ = nullptr;
+    HWND showToolboxButton_ = nullptr;
     HWND showSkinButton_ = nullptr;
     HWND autoRun_ = nullptr;
     HWND linkNameSingleLine_ = nullptr;
@@ -2359,6 +3213,7 @@ private:
     HWND tagAlignCenter_ = nullptr;
     HWND tagAlignRight_ = nullptr;
     HWND mainHotKeyText_ = nullptr;
+    HWND mainHotKeyStatus_ = nullptr;
     HWND openDirEdit_ = nullptr;
     HWND helpUrlEdit_ = nullptr;
     HWND updateUrlEdit_ = nullptr;
@@ -2370,9 +3225,27 @@ private:
     HWND webDavKeepCountEdit_ = nullptr;
     HWND webDavUserNameEdit_ = nullptr;
     HWND webDavPasswordEdit_ = nullptr;
+    HWND webDavUploadButton_ = nullptr;
+    HWND webDavDownloadButton_ = nullptr;
+    HWND webDavTestButton_ = nullptr;
+    HWND webDavClearPasswordButton_ = nullptr;
+    HWND httpServerEnabled_ = nullptr;
+    HWND httpServerAutoStart_ = nullptr;
+    HWND httpServerLanAccess_ = nullptr;
+    HWND httpServerPortEdit_ = nullptr;
+    HWND httpServerRootEdit_ = nullptr;
+    HWND httpServerStatus_ = nullptr;
+    HWND okButton_ = nullptr;
+    HWND applyButton_ = nullptr;
+    HWND cancelButton_ = nullptr;
+    HWND todoIncludeCompleted_ = nullptr;
+    HWND todoIncludeDisabled_ = nullptr;
+    HWND todoOnlyFuture_ = nullptr;
     bool importedData_ = false;
+    bool webDavBusy_ = false;
     bool accepted_ = false;
     bool done_ = false;
+    SettingsApplyCallback applyCallback_;
 };
 }
 
@@ -2402,8 +3275,11 @@ bool ShowSettingsDialog(
     AppConfig& config,
     const Theme& theme,
     const std::filesystem::path& appDirectory,
-    bool* importedData) {
-    SettingsDialog dialog(owner, instance, config, theme, appDirectory);
+    bool* importedData,
+    LocalHttpServerService* httpServer,
+    bool mainHotKeyRegistered,
+    SettingsApplyCallback applyCallback) {
+    SettingsDialog dialog(owner, instance, config, theme, appDirectory, httpServer, mainHotKeyRegistered, std::move(applyCallback));
     const bool accepted = dialog.Run();
     if (importedData) {
         *importedData = dialog.webDavDataImported();

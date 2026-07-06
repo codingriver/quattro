@@ -9,6 +9,8 @@
 #include <vector>
 
 std::filesystem::path GetModuleDirectory();
+std::filesystem::path UserHomeDirectory();
+std::filesystem::path QuattroUserConfigDirectory();
 std::wstring Trim(const std::wstring& value);
 std::wstring ToLower(std::wstring value);
 std::wstring FormatLastError(DWORD error);
@@ -26,5 +28,8 @@ std::optional<int> ParseInt(const std::wstring& value);
 bool SuppressForegroundActivation();
 void ActivateWindow(HWND hwnd);
 void ShowWindowRespectFocusPolicy(HWND hwnd, int showCommand);
+POINT ClampWindowToOwnerMonitor(HWND owner, int x, int y, int width, int height);
+POINT CenterWindowOnOwnerMonitor(HWND owner, int width, int height);
+POINT OffsetWindowFromOwnerOnMonitor(HWND owner, int width, int height, int offsetX, int offsetY);
 bool ShowModalWindow(HWND owner, HWND hwnd);
 void RestoreModalOwner(HWND owner, bool ownerWasEnabled, bool& ownerRestored);

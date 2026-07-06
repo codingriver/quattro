@@ -4,6 +4,7 @@
 #include <windowsx.h>
 
 #include <algorithm>
+#include <cstring>
 #include <string>
 
 namespace {
@@ -12,6 +13,7 @@ const wchar_t kControlHoverProp[] = L"QuattroThemedControlHover";
 const wchar_t kControlThemeProp[] = L"QuattroThemedControlTheme";
 const wchar_t kControlSelectedProp[] = L"QuattroThemedControlSelected";
 const wchar_t kControlCheckedProp[] = L"QuattroThemedControlChecked";
+const wchar_t kControlTextProp[] = L"QuattroThemedControlText";
 HANDLE ButtonKind() {
     return reinterpret_cast<HANDLE>(static_cast<INT_PTR>(1));
 }
@@ -58,6 +60,48 @@ std::wstring WindowText(HWND hwnd) {
         GetWindowTextW(hwnd, text.data(), length + 1);
     }
     text.resize(static_cast<std::size_t>(length));
+    return text;
+}
+
+void SetControlTextProp(HWND hwnd, const wchar_t* text) {
+    HGLOBAL oldMemory = static_cast<HGLOBAL>(RemovePropW(hwnd, kControlTextProp));
+    if (oldMemory) {
+        GlobalFree(oldMemory);
+    }
+
+    const std::wstring value = text ? text : L"";
+    const auto bytes = (value.size() + 1) * sizeof(wchar_t);
+    HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, bytes);
+    if (!memory) {
+        return;
+    }
+    void* data = GlobalLock(memory);
+    if (!data) {
+        GlobalFree(memory);
+        return;
+    }
+    memcpy(data, value.c_str(), bytes);
+    GlobalUnlock(memory);
+    if (!SetPropW(hwnd, kControlTextProp, memory)) {
+        GlobalFree(memory);
+    }
+}
+
+std::wstring ControlText(HWND hwnd) {
+    std::wstring text = WindowText(hwnd);
+    if (!text.empty()) {
+        return text;
+    }
+    HGLOBAL memory = static_cast<HGLOBAL>(GetPropW(hwnd, kControlTextProp));
+    if (!memory) {
+        return {};
+    }
+    const wchar_t* data = static_cast<const wchar_t*>(GlobalLock(memory));
+    if (!data) {
+        return {};
+    }
+    text = data;
+    GlobalUnlock(memory);
     return text;
 }
 
@@ -126,6 +170,37 @@ RECT ComboTextRect(const Theme& theme, RECT frame) {
     return rect;
 }
 
+std::wstring ComboBoxItemText(HWND hwnd, WPARAM index) {
+    const LRESULT length = SendMessageW(hwnd, CB_GETLBTEXTLEN, index, 0);
+    if (length == CB_ERR || length < 0) {
+        return {};
+    }
+
+    std::wstring text(static_cast<std::size_t>(length) + 1, L'\0');
+    const LRESULT copied = SendMessageW(hwnd, CB_GETLBTEXT, index, reinterpret_cast<LPARAM>(text.data()));
+    if (copied == CB_ERR) {
+        return {};
+    }
+    text.resize(static_cast<std::size_t>(copied));
+    return text;
+}
+
+std::wstring ComboBoxSelectedText(HWND hwnd) {
+    const LRESULT selected = SendMessageW(hwnd, CB_GETCURSEL, 0, 0);
+    if (selected >= 0) {
+        std::wstring text = ComboBoxItemText(hwnd, static_cast<WPARAM>(selected));
+        if (!text.empty()) {
+            return text;
+        }
+    }
+    return WindowText(hwnd);
+}
+
+void InvalidateComboBox(HWND hwnd) {
+    InvalidateRect(hwnd, nullptr, TRUE);
+    UpdateWindow(hwnd);
+}
+
 void DrawComboOverlay(HWND hwnd, HDC targetDc = nullptr) {
     const auto* theme = reinterpret_cast<const Theme*>(GetPropW(hwnd, kControlThemeProp));
     if (!theme) {
@@ -156,11 +231,7 @@ void DrawComboOverlay(HWND hwnd, HDC targetDc = nullptr) {
         ToColorRef(theme->color(L"comboBox", state, L"border")),
         borderWidth);
 
-    wchar_t buffer[512]{};
-    const LRESULT selected = SendMessageW(hwnd, CB_GETCURSEL, 0, 0);
-    if (selected >= 0) {
-        SendMessageW(hwnd, CB_GETLBTEXT, static_cast<WPARAM>(selected), reinterpret_cast<LPARAM>(buffer));
-    }
+    const std::wstring text = ComboBoxSelectedText(hwnd);
 
     HFONT font = reinterpret_cast<HFONT>(SendMessageW(hwnd, WM_GETFONT, 0, 0));
     HGDIOBJ oldFont = nullptr;
@@ -170,7 +241,7 @@ void DrawComboOverlay(HWND hwnd, HDC targetDc = nullptr) {
     RECT textRect = ComboTextRect(*theme, rect);
     SetBkMode(dc, TRANSPARENT);
     SetTextColor(dc, ToColorRef(theme->color(L"comboBox", state, L"text")));
-    DrawTextW(dc, buffer, -1, &textRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    DrawTextW(dc, text.c_str(), static_cast<int>(text.size()), &textRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
     if (oldFont) {
         SelectObject(dc, oldFont);
     }
@@ -195,6 +266,23 @@ void DrawComboOverlay(HWND hwnd, HDC targetDc = nullptr) {
 
 LRESULT CALLBACK ThemedControlProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR subclassId, DWORD_PTR) {
     switch (message) {
+    case CB_SETCURSEL: {
+        LRESULT result = DefSubclassProc(hwnd, message, wParam, lParam);
+        if (GetPropW(hwnd, kControlKindProp) == ComboBoxKind()) {
+            InvalidateComboBox(hwnd);
+        }
+        return result;
+    }
+    case CB_ADDSTRING:
+    case CB_INSERTSTRING:
+    case CB_DELETESTRING:
+    case CB_RESETCONTENT: {
+        LRESULT result = DefSubclassProc(hwnd, message, wParam, lParam);
+        if (GetPropW(hwnd, kControlKindProp) == ComboBoxKind()) {
+            InvalidateComboBox(hwnd);
+        }
+        return result;
+    }
     case BM_SETCHECK:
         if (GetPropW(hwnd, kControlKindProp) == CheckBoxKind()) {
             SetChecked(hwnd, wParam == BST_CHECKED);
@@ -206,13 +294,16 @@ LRESULT CALLBACK ThemedControlProc(HWND hwnd, UINT message, WPARAM wParam, LPARA
             } else {
                 RemovePropW(hwnd, kControlSelectedProp);
             }
-            InvalidateRect(hwnd, nullptr, TRUE);
+            InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
         }
         break;
     case BM_GETCHECK:
         if (GetPropW(hwnd, kControlKindProp) == TabButtonKind()) {
-            return GetPropW(hwnd, kControlSelectedProp) != nullptr ? BST_CHECKED : BST_UNCHECKED;
+            if (GetPropW(hwnd, kControlSelectedProp) != nullptr) {
+                return BST_CHECKED;
+            }
+            return DefSubclassProc(hwnd, message, wParam, lParam);
         }
         if (GetPropW(hwnd, kControlKindProp) == CheckBoxKind()) {
             return IsChecked(hwnd) ? BST_CHECKED : BST_UNCHECKED;
@@ -267,14 +358,27 @@ LRESULT CALLBACK ThemedControlProc(HWND hwnd, UINT message, WPARAM wParam, LPARA
         RemovePropW(hwnd, kControlHoverProp);
         InvalidateRect(hwnd, nullptr, TRUE);
         break;
-    case WM_DESTROY:
+    case WM_SETFOCUS:
+    case WM_KILLFOCUS:
+        if (GetPropW(hwnd, kControlKindProp) == ComboBoxKind()) {
+            LRESULT result = DefSubclassProc(hwnd, message, wParam, lParam);
+            InvalidateComboBox(hwnd);
+            return result;
+        }
+        break;
+    case WM_DESTROY: {
         RemovePropW(hwnd, kControlHoverProp);
         RemovePropW(hwnd, kControlKindProp);
         RemovePropW(hwnd, kControlThemeProp);
         RemovePropW(hwnd, kControlSelectedProp);
         RemovePropW(hwnd, kControlCheckedProp);
+        HGLOBAL textMemory = static_cast<HGLOBAL>(RemovePropW(hwnd, kControlTextProp));
+        if (textMemory) {
+            GlobalFree(textMemory);
+        }
         RemoveWindowSubclass(hwnd, ThemedControlProc, subclassId);
         break;
+    }
     default:
         break;
     }
@@ -305,9 +409,14 @@ void DrawButton(const Theme& theme, const DRAWITEMSTRUCT* draw) {
 
     SetBkMode(draw->hDC, TRANSPARENT);
     SetTextColor(draw->hDC, ToColorRef(theme.color(L"button", state, L"text")));
-    std::wstring text = WindowText(draw->hwndItem);
+    HFONT font = reinterpret_cast<HFONT>(SendMessageW(draw->hwndItem, WM_GETFONT, 0, 0));
+    HGDIOBJ oldFont = font ? SelectObject(draw->hDC, font) : nullptr;
+    std::wstring text = ControlText(draw->hwndItem);
     RECT textRect = ThemedControls::ButtonTextRect(theme, rect, pressed);
     DrawTextW(draw->hDC, text.c_str(), static_cast<int>(text.size()), &textRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    if (oldFont) {
+        SelectObject(draw->hDC, oldFont);
+    }
 }
 
 void DrawPrimaryButton(const Theme& theme, const DRAWITEMSTRUCT* draw) {
@@ -330,9 +439,14 @@ void DrawPrimaryButton(const Theme& theme, const DRAWITEMSTRUCT* draw) {
 
     SetBkMode(draw->hDC, TRANSPARENT);
     SetTextColor(draw->hDC, ToColorRef(theme.color(L"primaryButton", state, L"text")));
-    std::wstring text = WindowText(draw->hwndItem);
+    HFONT font = reinterpret_cast<HFONT>(SendMessageW(draw->hwndItem, WM_GETFONT, 0, 0));
+    HGDIOBJ oldFont = font ? SelectObject(draw->hDC, font) : nullptr;
+    std::wstring text = ControlText(draw->hwndItem);
     RECT textRect = ThemedControls::ButtonTextRect(theme, rect, pressed);
     DrawTextW(draw->hDC, text.c_str(), static_cast<int>(text.size()), &textRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    if (oldFont) {
+        SelectObject(draw->hDC, oldFont);
+    }
 }
 
 void DrawMiniButton(const Theme& theme, const DRAWITEMSTRUCT* draw) {
@@ -351,7 +465,7 @@ void DrawMiniButton(const Theme& theme, const DRAWITEMSTRUCT* draw) {
         ToColorRef(theme.color(L"miniButton", focused ? L"focused" : state, L"border")),
         static_cast<int>(theme.metric(L"miniButton", L"borderWidth", 1.0f)));
 
-    const std::wstring text = WindowText(draw->hwndItem);
+    const std::wstring text = ControlText(draw->hwndItem);
     const bool down = text == L"down" || text == L"next" || text == L"v";
     const int size = static_cast<int>(theme.metric(L"miniButton", L"arrowSize", 5.0f));
     const int stroke = static_cast<int>(theme.metric(L"miniButton", L"arrowStrokeWidth", 2.0f));
@@ -412,8 +526,13 @@ void DrawCheckBox(const Theme& theme, const DRAWITEMSTRUCT* draw) {
     RECT textRect = ThemedControls::CheckBoxTextRect(theme, rect);
     SetBkMode(draw->hDC, TRANSPARENT);
     SetTextColor(draw->hDC, ToColorRef(theme.color(L"checkbox", state, L"text")));
-    std::wstring text = WindowText(draw->hwndItem);
+    HFONT font = reinterpret_cast<HFONT>(SendMessageW(draw->hwndItem, WM_GETFONT, 0, 0));
+    HGDIOBJ oldFont = font ? SelectObject(draw->hDC, font) : nullptr;
+    std::wstring text = ControlText(draw->hwndItem);
     DrawTextW(draw->hDC, text.c_str(), static_cast<int>(text.size()), &textRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    if (oldFont) {
+        SelectObject(draw->hDC, oldFont);
+    }
 }
 
 void DrawTabButton(const Theme& theme, const DRAWITEMSTRUCT* draw) {
@@ -452,9 +571,14 @@ void DrawTabButton(const Theme& theme, const DRAWITEMSTRUCT* draw) {
 
     SetBkMode(draw->hDC, TRANSPARENT);
     SetTextColor(draw->hDC, ToColorRef(theme.color(L"tabButton", state, L"text")));
-    std::wstring text = WindowText(draw->hwndItem);
+    HFONT font = reinterpret_cast<HFONT>(SendMessageW(draw->hwndItem, WM_GETFONT, 0, 0));
+    HGDIOBJ oldFont = font ? SelectObject(draw->hDC, font) : nullptr;
+    std::wstring text = ControlText(draw->hwndItem);
     RECT textRect = ThemedControls::TabButtonTextRect(theme, rect);
     DrawTextW(draw->hDC, text.c_str(), static_cast<int>(text.size()), &textRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    if (oldFont) {
+        SelectObject(draw->hDC, oldFont);
+    }
 }
 
 void DrawComboBox(const Theme& theme, const DRAWITEMSTRUCT* draw) {
@@ -470,12 +594,16 @@ void DrawComboBox(const Theme& theme, const DRAWITEMSTRUCT* draw) {
     if (draw->itemID == static_cast<UINT>(-1)) {
         return;
     }
-    wchar_t buffer[512]{};
-    SendMessageW(draw->hwndItem, CB_GETLBTEXT, draw->itemID, reinterpret_cast<LPARAM>(buffer));
+    const std::wstring text = ComboBoxItemText(draw->hwndItem, draw->itemID);
     RECT textRect = ThemedControls::ComboBoxItemTextRect(theme, rect);
     SetBkMode(draw->hDC, TRANSPARENT);
     SetTextColor(draw->hDC, ToColorRef(theme.color(L"comboBox", state, L"text")));
-    DrawTextW(draw->hDC, buffer, -1, &textRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    HFONT font = reinterpret_cast<HFONT>(SendMessageW(draw->hwndItem, WM_GETFONT, 0, 0));
+    HGDIOBJ oldFont = font ? SelectObject(draw->hDC, font) : nullptr;
+    DrawTextW(draw->hDC, text.c_str(), static_cast<int>(text.size()), &textRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    if (oldFont) {
+        SelectObject(draw->hDC, oldFont);
+    }
 }
 
 void DrawListBox(const Theme& theme, const DRAWITEMSTRUCT* draw) {
@@ -499,6 +627,57 @@ void DrawListBox(const Theme& theme, const DRAWITEMSTRUCT* draw) {
     SetBkMode(draw->hDC, TRANSPARENT);
     SetTextColor(draw->hDC, ToColorRef(theme.color(L"listItem", state, L"text")));
     DrawTextW(draw->hDC, buffer, -1, &textRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+}
+
+std::wstring ClassName(HWND hwnd) {
+    wchar_t buffer[128]{};
+    GetClassNameW(hwnd, buffer, static_cast<int>(sizeof(buffer) / sizeof(buffer[0])));
+    return buffer;
+}
+
+void DrawHeaderItem(const Theme& theme, HWND header, const NMCUSTOMDRAW* draw) {
+    RECT rect = draw->rc;
+    HBRUSH brush = CreateSolidBrush(ToColorRef(theme.color(L"list", L"normal", L"bg")));
+    FillRect(draw->hdc, &rect, brush);
+    DeleteObject(brush);
+
+    const int index = static_cast<int>(draw->dwItemSpec);
+    wchar_t text[256]{};
+    HDITEMW item{};
+    item.mask = HDI_TEXT | HDI_FORMAT;
+    item.pszText = text;
+    item.cchTextMax = static_cast<int>(sizeof(text) / sizeof(text[0]));
+    Header_GetItem(header, index, &item);
+
+    const COLORREF line = ToColorRef(theme.color(L"list", L"normal", L"border"));
+    HPEN pen = CreatePen(PS_SOLID, 1, line);
+    HGDIOBJ oldPen = SelectObject(draw->hdc, pen);
+    MoveToEx(draw->hdc, rect.left, rect.bottom - 1, nullptr);
+    LineTo(draw->hdc, rect.right, rect.bottom - 1);
+    MoveToEx(draw->hdc, rect.right - 1, rect.top, nullptr);
+    LineTo(draw->hdc, rect.right - 1, rect.bottom);
+    SelectObject(draw->hdc, oldPen);
+    DeleteObject(pen);
+
+    const int paddingX = static_cast<int>(theme.metric(L"listItem", L"paddingX", 8.0f));
+    RECT textRect = rect;
+    textRect.left += paddingX;
+    textRect.right -= paddingX;
+    UINT format = DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS;
+    if ((item.fmt & HDF_CENTER) == HDF_CENTER) {
+        format = (format & ~DT_LEFT) | DT_CENTER;
+    } else if ((item.fmt & HDF_RIGHT) == HDF_RIGHT) {
+        format = (format & ~DT_LEFT) | DT_RIGHT;
+    }
+
+    SetBkMode(draw->hdc, TRANSPARENT);
+    SetTextColor(draw->hdc, ToColorRef(theme.color(L"label", L"normal", L"text")));
+    HFONT font = reinterpret_cast<HFONT>(SendMessageW(header, WM_GETFONT, 0, 0));
+    HGDIOBJ oldFont = font ? SelectObject(draw->hdc, font) : nullptr;
+    DrawTextW(draw->hdc, text, -1, &textRect, format);
+    if (oldFont) {
+        SelectObject(draw->hdc, oldFont);
+    }
 }
 }
 
@@ -634,6 +813,18 @@ RECT ListItemTextRect(const Theme& theme, RECT frame) {
     return TextRectFromMetrics(theme, L"listItem", frame, 20.0f, true);
 }
 
+RECT ListFrameInnerRect(const Theme& theme, RECT frame) {
+    const int inset = std::max(1, static_cast<int>(theme.metric(L"list", L"borderWidth", 1.0f)));
+    InflateRect(&frame, -inset, -inset);
+    if (frame.right <= frame.left) {
+        frame.right = frame.left + 1;
+    }
+    if (frame.bottom <= frame.top) {
+        frame.bottom = frame.top + 1;
+    }
+    return frame;
+}
+
 int LabelHeight(const Theme& theme) {
     return static_cast<int>(theme.metric(L"label", L"height", 20.0f));
 }
@@ -683,10 +874,11 @@ HWND CreateLabelText(HINSTANCE instance, HWND parent, const wchar_t* text, int x
 }
 
 HWND CreateButton(HINSTANCE instance, HWND parent, int id, const wchar_t* text, int x, int y, int width, int height, HFONT font, bool defaultButton) {
-    const DWORD style = WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW | (defaultButton ? BS_DEFPUSHBUTTON : BS_PUSHBUTTON);
+    const DWORD style = WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_CLIPSIBLINGS | BS_OWNERDRAW | (defaultButton ? BS_DEFPUSHBUTTON : BS_PUSHBUTTON);
     HWND hwnd = CreateWindowExW(0, L"BUTTON", text, style, x, y, width, height, parent, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), instance, nullptr);
     if (hwnd) {
         SendMessageW(hwnd, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+        SetControlTextProp(hwnd, text);
         SetPropW(hwnd, kControlKindProp, ButtonKind());
         AttachThemedBehavior(hwnd);
     }
@@ -694,10 +886,11 @@ HWND CreateButton(HINSTANCE instance, HWND parent, int id, const wchar_t* text, 
 }
 
 HWND CreatePrimaryButton(HINSTANCE instance, HWND parent, int id, const wchar_t* text, int x, int y, int width, int height, HFONT font, bool defaultButton) {
-    const DWORD style = WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW | (defaultButton ? BS_DEFPUSHBUTTON : BS_PUSHBUTTON);
+    const DWORD style = WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_CLIPSIBLINGS | BS_OWNERDRAW | (defaultButton ? BS_DEFPUSHBUTTON : BS_PUSHBUTTON);
     HWND hwnd = CreateWindowExW(0, L"BUTTON", text, style, x, y, width, height, parent, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), instance, nullptr);
     if (hwnd) {
         SendMessageW(hwnd, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+        SetControlTextProp(hwnd, text);
         SetPropW(hwnd, kControlKindProp, PrimaryButtonKind());
         AttachThemedBehavior(hwnd);
     }
@@ -705,10 +898,11 @@ HWND CreatePrimaryButton(HINSTANCE instance, HWND parent, int id, const wchar_t*
 }
 
 HWND CreateMiniButton(HINSTANCE instance, HWND parent, int id, const wchar_t* text, int x, int y, int width, int height, HFONT font) {
-    HWND hwnd = CreateWindowExW(0, L"BUTTON", text, WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON | BS_OWNERDRAW,
+    HWND hwnd = CreateWindowExW(0, L"BUTTON", text, WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_CLIPSIBLINGS | BS_PUSHBUTTON | BS_OWNERDRAW,
                                 x, y, width, height, parent, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), instance, nullptr);
     if (hwnd) {
         SendMessageW(hwnd, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+        SetControlTextProp(hwnd, text);
         SetPropW(hwnd, kControlKindProp, MiniButtonKind());
         AttachThemedBehavior(hwnd);
     }
@@ -716,10 +910,11 @@ HWND CreateMiniButton(HINSTANCE instance, HWND parent, int id, const wchar_t* te
 }
 
 HWND CreateCheckBox(HINSTANCE instance, HWND parent, int id, const wchar_t* text, int x, int y, int width, int height, HFONT font, bool checked) {
-    HWND hwnd = CreateWindowExW(0, L"BUTTON", text, WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
+    HWND hwnd = CreateWindowExW(0, L"BUTTON", text, WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_CLIPSIBLINGS | BS_OWNERDRAW,
                                 x, y, width, height, parent, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), instance, nullptr);
     if (hwnd) {
         SendMessageW(hwnd, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+        SetControlTextProp(hwnd, text);
         SetPropW(hwnd, kControlKindProp, CheckBoxKind());
         AttachThemedBehavior(hwnd);
         SendMessageW(hwnd, BM_SETCHECK, checked ? BST_CHECKED : BST_UNCHECKED, 0);
@@ -728,10 +923,11 @@ HWND CreateCheckBox(HINSTANCE instance, HWND parent, int id, const wchar_t* text
 }
 
 HWND CreateTabButton(HINSTANCE instance, HWND parent, int id, const wchar_t* text, int x, int y, int width, int height, HFONT font, bool selected) {
-    HWND hwnd = CreateWindowExW(0, L"BUTTON", text, WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON | BS_OWNERDRAW,
+    HWND hwnd = CreateWindowExW(0, L"BUTTON", text, WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_CLIPSIBLINGS | BS_PUSHBUTTON | BS_OWNERDRAW,
                                 x, y, width, height, parent, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), instance, nullptr);
     if (hwnd) {
         SendMessageW(hwnd, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+        SetControlTextProp(hwnd, text);
         SetPropW(hwnd, kControlKindProp, TabButtonKind());
         if (selected) {
             SetPropW(hwnd, kControlSelectedProp, reinterpret_cast<HANDLE>(static_cast<INT_PTR>(1)));
@@ -739,6 +935,22 @@ HWND CreateTabButton(HINSTANCE instance, HWND parent, int id, const wchar_t* tex
         AttachThemedBehavior(hwnd);
     }
     return hwnd;
+}
+
+void SetTabButtonSelected(HWND hwnd, bool selected) {
+    if (!hwnd) {
+        return;
+    }
+    if (selected) {
+        SetPropW(hwnd, kControlSelectedProp, reinterpret_cast<HANDLE>(static_cast<INT_PTR>(1)));
+    } else {
+        RemovePropW(hwnd, kControlSelectedProp);
+    }
+    InvalidateRect(hwnd, nullptr, FALSE);
+}
+
+bool IsTabButtonSelected(HWND hwnd) {
+    return hwnd && GetPropW(hwnd, kControlSelectedProp) != nullptr;
 }
 
 HWND CreateComboBox(HINSTANCE instance, HWND parent, int id, int x, int y, int width, int height, HFONT font, const Theme& theme) {
@@ -839,7 +1051,7 @@ HWND CreateSingleLineEdit(HINSTANCE instance, HWND parent, int id, const Theme& 
         0,
         L"EDIT",
         value.c_str(),
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP | extraStyle,
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_CLIPSIBLINGS | extraStyle,
         editRect.left,
         editRect.top,
         editRect.right - editRect.left,
@@ -861,7 +1073,7 @@ HWND CreateMultiLineEdit(HINSTANCE instance, HWND parent, int id, const Theme& t
         0,
         L"EDIT",
         value.c_str(),
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP | extraStyle,
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_CLIPSIBLINGS | extraStyle,
         editRect.left,
         editRect.top,
         editRect.right - editRect.left,
@@ -933,6 +1145,31 @@ void DrawListFrame(const Theme& theme, HDC dc, RECT rect, HWND child, bool readO
         static_cast<int>(theme.metric(L"list", L"borderWidth", 1.0f)));
 }
 
+void DrawPanelFrame(const Theme& theme, HDC dc, RECT rect, bool raised) {
+    const wchar_t* state = raised ? L"raised" : L"normal";
+    FillRoundRect(
+        dc,
+        rect,
+        static_cast<int>(theme.metric(L"panel", L"radius", 7.0f)),
+        ToColorRef(theme.color(L"panel", state, L"bg")),
+        ToColorRef(theme.color(L"panel", state, L"border")),
+        static_cast<int>(theme.metric(L"panel", L"borderWidth", 1.0f)));
+}
+
+void ApplyListViewTheme(HWND list, const Theme& theme) {
+    if (!list) {
+        return;
+    }
+    const COLORREF bg = ToColorRef(theme.color(L"list", L"normal", L"bg"));
+    ListView_SetBkColor(list, bg);
+    ListView_SetTextBkColor(list, bg);
+    ListView_SetTextColor(list, ToColorRef(theme.color(L"list", L"normal", L"text")));
+    if (HWND header = ListView_GetHeader(list)) {
+        InvalidateRect(header, nullptr, TRUE);
+    }
+    InvalidateRect(list, nullptr, TRUE);
+}
+
 void DrawTabGroupFrame(const Theme& theme, HDC dc, RECT rect) {
     FillRoundRect(
         dc,
@@ -983,10 +1220,33 @@ bool Draw(const Theme& theme, const DRAWITEMSTRUCT* draw) {
 }
 
 bool HandleListViewCustomDraw(const Theme& theme, LPARAM lParam, LRESULT& result) {
-    auto* draw = reinterpret_cast<NMLVCUSTOMDRAW*>(lParam);
-    if (!draw) {
+    auto* header = reinterpret_cast<NMHDR*>(lParam);
+    if (!header || header->code != NM_CUSTOMDRAW) {
         return false;
     }
+
+    const std::wstring className = ClassName(header->hwndFrom);
+    if (className == L"SysHeader32") {
+        auto* draw = reinterpret_cast<NMCUSTOMDRAW*>(lParam);
+        switch (draw->dwDrawStage) {
+        case CDDS_PREPAINT:
+            result = CDRF_NOTIFYITEMDRAW;
+            return true;
+        case CDDS_ITEMPREPAINT:
+            DrawHeaderItem(theme, header->hwndFrom, draw);
+            result = CDRF_SKIPDEFAULT;
+            return true;
+        default:
+            break;
+        }
+        return false;
+    }
+
+    if (className != L"SysListView32") {
+        return false;
+    }
+
+    auto* draw = reinterpret_cast<NMLVCUSTOMDRAW*>(lParam);
 
     switch (draw->nmcd.dwDrawStage) {
     case CDDS_PREPAINT:

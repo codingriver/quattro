@@ -10,10 +10,17 @@
 
 #include <commdlg.h>
 #include <commctrl.h>
+#include <iphlpapi.h>
+#include <tcpmib.h>
+#include <tlhelp32.h>
+#include <udpmib.h>
 #include <windowsx.h>
 
 #include <algorithm>
 #include <fstream>
+#include <map>
+#include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -53,9 +60,18 @@ constexpr int ID_SW_DISPLAY = 7206;
 constexpr int ID_SW_LAPS = 7207;
 constexpr UINT_PTR ID_SW_TICK = 7208;
 constexpr int ID_SW_EXPORT = 7209;
+constexpr int ID_PORT_VALUE = 7301;
+constexpr int ID_PORT_SCAN = 7302;
+constexpr int ID_PORT_KILL_BASE = 7310;
+constexpr int ID_PROCESS_VALUE = 7401;
+constexpr int ID_PROCESS_QUERY = 7402;
+constexpr int ID_PROCESS_KILL_BASE = 7410;
 constexpr UINT WM_QUATTRO_TOOL_AUTOMATION = WM_APP + 0x80;
 constexpr UINT WM_QUATTRO_TOOL_TIMER_AUTOMATION = WM_APP + 0x81;
 constexpr UINT kTimerDisplayIntervalMs = 33;
+#ifndef AF_INET6
+constexpr ULONG AF_INET6 = 23;
+#endif
 
 float ClampFloat(float value, float minValue, float maxValue) {
     return std::max(minValue, std::min(maxValue, value));
@@ -164,6 +180,315 @@ std::wstring FormatElapsed(ULONGLONG milliseconds) {
     return buffer;
 }
 
+std::wstring FileNameFromPath(const std::wstring& path) {
+    const std::size_t slash = path.find_last_of(L"\\/");
+    if (slash == std::wstring::npos || slash + 1 >= path.size()) {
+        return path;
+    }
+    return path.substr(slash + 1);
+}
+
+std::wstring QuerySnapshotProcessName(DWORD pid) {
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snapshot == INVALID_HANDLE_VALUE) {
+        return {};
+    }
+    PROCESSENTRY32W entry{};
+    entry.dwSize = sizeof(entry);
+    std::wstring name;
+    if (Process32FirstW(snapshot, &entry)) {
+        do {
+            if (entry.th32ProcessID == pid) {
+                name = entry.szExeFile;
+                break;
+            }
+        } while (Process32NextW(snapshot, &entry));
+    }
+    CloseHandle(snapshot);
+    return name;
+}
+
+struct ProcessInfo {
+    DWORD pid = 0;
+    std::wstring name;
+    std::wstring path;
+    DWORD error = ERROR_SUCCESS;
+};
+
+ProcessInfo QueryProcessInfo(DWORD pid) {
+    ProcessInfo info{};
+    info.pid = pid;
+    if (pid == 0) {
+        info.name = L"System Idle Process";
+        return info;
+    }
+
+    HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (process) {
+        std::wstring path(32768, L'\0');
+        DWORD length = static_cast<DWORD>(path.size());
+        if (QueryFullProcessImageNameW(process, 0, path.data(), &length)) {
+            path.resize(length);
+            info.path = path;
+            info.name = FileNameFromPath(path);
+        } else {
+            info.error = GetLastError();
+        }
+        CloseHandle(process);
+    } else {
+        info.error = GetLastError();
+    }
+
+    if (info.name.empty()) {
+        info.name = QuerySnapshotProcessName(pid);
+    }
+    if (info.name.empty()) {
+        info.name = L"未知进程";
+    }
+    return info;
+}
+
+unsigned short NetworkOrderPort(DWORD value) {
+    return static_cast<unsigned short>(((value & 0x00ff) << 8) | ((value & 0xff00) >> 8));
+}
+
+std::wstring TcpStateText(DWORD state) {
+    switch (state) {
+    case MIB_TCP_STATE_CLOSED: return L"CLOSED";
+    case MIB_TCP_STATE_LISTEN: return L"LISTENING";
+    case MIB_TCP_STATE_SYN_SENT: return L"SYN_SENT";
+    case MIB_TCP_STATE_SYN_RCVD: return L"SYN_RCVD";
+    case MIB_TCP_STATE_ESTAB: return L"ESTABLISHED";
+    case MIB_TCP_STATE_FIN_WAIT1: return L"FIN_WAIT1";
+    case MIB_TCP_STATE_FIN_WAIT2: return L"FIN_WAIT2";
+    case MIB_TCP_STATE_CLOSE_WAIT: return L"CLOSE_WAIT";
+    case MIB_TCP_STATE_CLOSING: return L"CLOSING";
+    case MIB_TCP_STATE_LAST_ACK: return L"LAST_ACK";
+    case MIB_TCP_STATE_TIME_WAIT: return L"TIME_WAIT";
+    case MIB_TCP_STATE_DELETE_TCB: return L"DELETE_TCB";
+    default: return L"UNKNOWN";
+    }
+}
+
+std::wstring JoinStrings(const std::set<std::wstring>& values, const wchar_t* separator) {
+    std::wstring joined;
+    for (const auto& value : values) {
+        if (!joined.empty()) {
+            joined += separator;
+        }
+        joined += value;
+    }
+    return joined;
+}
+
+struct ProcessDisplayRow {
+    DWORD pid = 0;
+    std::wstring title;
+    std::wstring detail;
+};
+
+struct PortProcessBucket {
+    DWORD pid = 0;
+    std::set<std::wstring> endpoints;
+};
+
+struct Tcp6RowOwnerPidCompat {
+    UCHAR localAddr[16]{};
+    DWORD localScopeId = 0;
+    DWORD localPort = 0;
+    UCHAR remoteAddr[16]{};
+    DWORD remoteScopeId = 0;
+    DWORD remotePort = 0;
+    DWORD state = 0;
+    DWORD owningPid = 0;
+};
+
+struct Tcp6TableOwnerPidCompat {
+    DWORD entryCount = 0;
+    Tcp6RowOwnerPidCompat table[1]{};
+};
+
+struct Udp6RowOwnerPidCompat {
+    UCHAR localAddr[16]{};
+    DWORD localScopeId = 0;
+    DWORD localPort = 0;
+    DWORD owningPid = 0;
+};
+
+struct Udp6TableOwnerPidCompat {
+    DWORD entryCount = 0;
+    Udp6RowOwnerPidCompat table[1]{};
+};
+
+void AddPortBucket(std::map<DWORD, PortProcessBucket>& buckets, DWORD pid, const std::wstring& endpoint) {
+    auto& bucket = buckets[pid];
+    bucket.pid = pid;
+    bucket.endpoints.insert(endpoint);
+}
+
+void CollectTcp4Port(unsigned short port, std::map<DWORD, PortProcessBucket>& buckets) {
+    DWORD size = 0;
+    DWORD result = GetExtendedTcpTable(nullptr, &size, FALSE, AF_INET, TCP_TABLE_OWNER_PID_ALL, 0);
+    if (result != ERROR_INSUFFICIENT_BUFFER || size == 0) {
+        return;
+    }
+    std::vector<BYTE> buffer(size);
+    result = GetExtendedTcpTable(buffer.data(), &size, FALSE, AF_INET, TCP_TABLE_OWNER_PID_ALL, 0);
+    if (result != NO_ERROR) {
+        return;
+    }
+    auto* table = reinterpret_cast<MIB_TCPTABLE_OWNER_PID*>(buffer.data());
+    for (DWORD i = 0; i < table->dwNumEntries; ++i) {
+        const auto& row = table->table[i];
+        if (NetworkOrderPort(row.dwLocalPort) == port) {
+            AddPortBucket(buckets, row.dwOwningPid, L"TCP " + TcpStateText(row.dwState));
+        }
+    }
+}
+
+void CollectTcp6Port(unsigned short port, std::map<DWORD, PortProcessBucket>& buckets) {
+    DWORD size = 0;
+    DWORD result = GetExtendedTcpTable(nullptr, &size, FALSE, AF_INET6, TCP_TABLE_OWNER_PID_ALL, 0);
+    if (result != ERROR_INSUFFICIENT_BUFFER || size == 0) {
+        return;
+    }
+    std::vector<BYTE> buffer(size);
+    result = GetExtendedTcpTable(buffer.data(), &size, FALSE, AF_INET6, TCP_TABLE_OWNER_PID_ALL, 0);
+    if (result != NO_ERROR) {
+        return;
+    }
+    auto* table = reinterpret_cast<Tcp6TableOwnerPidCompat*>(buffer.data());
+    for (DWORD i = 0; i < table->entryCount; ++i) {
+        const auto& row = table->table[i];
+        if (NetworkOrderPort(row.localPort) == port) {
+            AddPortBucket(buckets, row.owningPid, L"TCP6 " + TcpStateText(row.state));
+        }
+    }
+}
+
+void CollectUdp4Port(unsigned short port, std::map<DWORD, PortProcessBucket>& buckets) {
+    DWORD size = 0;
+    DWORD result = GetExtendedUdpTable(nullptr, &size, FALSE, AF_INET, UDP_TABLE_OWNER_PID, 0);
+    if (result != ERROR_INSUFFICIENT_BUFFER || size == 0) {
+        return;
+    }
+    std::vector<BYTE> buffer(size);
+    result = GetExtendedUdpTable(buffer.data(), &size, FALSE, AF_INET, UDP_TABLE_OWNER_PID, 0);
+    if (result != NO_ERROR) {
+        return;
+    }
+    auto* table = reinterpret_cast<MIB_UDPTABLE_OWNER_PID*>(buffer.data());
+    for (DWORD i = 0; i < table->dwNumEntries; ++i) {
+        const auto& row = table->table[i];
+        if (NetworkOrderPort(row.dwLocalPort) == port) {
+            AddPortBucket(buckets, row.dwOwningPid, L"UDP");
+        }
+    }
+}
+
+void CollectUdp6Port(unsigned short port, std::map<DWORD, PortProcessBucket>& buckets) {
+    DWORD size = 0;
+    DWORD result = GetExtendedUdpTable(nullptr, &size, FALSE, AF_INET6, UDP_TABLE_OWNER_PID, 0);
+    if (result != ERROR_INSUFFICIENT_BUFFER || size == 0) {
+        return;
+    }
+    std::vector<BYTE> buffer(size);
+    result = GetExtendedUdpTable(buffer.data(), &size, FALSE, AF_INET6, UDP_TABLE_OWNER_PID, 0);
+    if (result != NO_ERROR) {
+        return;
+    }
+    auto* table = reinterpret_cast<Udp6TableOwnerPidCompat*>(buffer.data());
+    for (DWORD i = 0; i < table->entryCount; ++i) {
+        const auto& row = table->table[i];
+        if (NetworkOrderPort(row.localPort) == port) {
+            AddPortBucket(buckets, row.owningPid, L"UDP6");
+        }
+    }
+}
+
+std::vector<ProcessDisplayRow> QueryPortRows(unsigned short port) {
+    std::map<DWORD, PortProcessBucket> buckets;
+    CollectTcp4Port(port, buckets);
+    CollectTcp6Port(port, buckets);
+    CollectUdp4Port(port, buckets);
+    CollectUdp6Port(port, buckets);
+
+    std::vector<ProcessDisplayRow> rows;
+    for (const auto& [pid, bucket] : buckets) {
+        const ProcessInfo info = QueryProcessInfo(pid);
+        ProcessDisplayRow row{};
+        row.pid = pid;
+        row.title = JoinStrings(bucket.endpoints, L" / ") + L"  PID " + std::to_wstring(pid) + L"  " + info.name;
+        row.detail = info.path.empty() ? L"进程路径不可读，仍可尝试结束进程" : info.path;
+        rows.push_back(std::move(row));
+    }
+    return rows;
+}
+
+std::wstring KillProcessById(DWORD pid) {
+    if (pid == 0 || pid == 4) {
+        return L"系统进程不能结束。";
+    }
+    if (pid == GetCurrentProcessId()) {
+        return L"不能结束当前 Quattro 进程。";
+    }
+    HANDLE process = OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, FALSE, pid);
+    if (!process) {
+        return L"打开进程失败：" + FormatLastError(GetLastError());
+    }
+    if (!TerminateProcess(process, 1)) {
+        const std::wstring error = L"结束进程失败：" + FormatLastError(GetLastError());
+        CloseHandle(process);
+        return error;
+    }
+    WaitForSingleObject(process, 1500);
+    CloseHandle(process);
+    return {};
+}
+
+int VisibleProcessRowCount(const Theme& theme, RECT frame) {
+    const int padding = 8;
+    const int rowHeight = std::max(40, ThemedControls::ListBoxItemHeight(theme) + 14);
+    const int availableHeight = static_cast<int>(frame.bottom - frame.top) - padding * 2;
+    return std::max(1, availableHeight / rowHeight);
+}
+
+void DrawProcessRows(
+    const Theme& theme,
+    HDC dc,
+    RECT frame,
+    const std::vector<ProcessDisplayRow>& rows,
+    const std::wstring& emptyText,
+    HFONT font) {
+    ThemedControls::DrawListFrame(theme, dc, frame, nullptr);
+    const int padding = 8;
+    RECT content = frame;
+    InflateRect(&content, -padding, -padding);
+    if (rows.empty()) {
+        HFONT oldFont = reinterpret_cast<HFONT>(SelectObject(dc, font));
+        SetBkMode(dc, TRANSPARENT);
+        SetTextColor(dc, ToColorRef(theme.color(L"text", L"muted", L"text")));
+        DrawTextW(dc, emptyText.c_str(), -1, &content, DT_SINGLELINE | DT_VCENTER | DT_CENTER | DT_END_ELLIPSIS);
+        SelectObject(dc, oldFont);
+        return;
+    }
+
+    const int rowHeight = std::max(40, ThemedControls::ListBoxItemHeight(theme) + 14);
+    const int visibleCount = std::min<int>(static_cast<int>(rows.size()), VisibleProcessRowCount(theme, frame));
+    HFONT oldFont = reinterpret_cast<HFONT>(SelectObject(dc, font));
+    SetBkMode(dc, TRANSPARENT);
+    for (int i = 0; i < visibleCount; ++i) {
+        RECT rowRect{content.left, content.top + i * rowHeight, content.right, content.top + (i + 1) * rowHeight - 2};
+        RECT titleRect{rowRect.left + 2, rowRect.top + 2, rowRect.right - 76, rowRect.top + 22};
+        RECT detailRect{rowRect.left + 2, rowRect.top + 22, rowRect.right - 76, rowRect.bottom};
+        SetTextColor(dc, ToColorRef(theme.color(L"listItem", L"normal", L"text")));
+        DrawTextW(dc, rows[static_cast<std::size_t>(i)].title.c_str(), -1, &titleRect, DT_SINGLELINE | DT_VCENTER | DT_LEFT | DT_END_ELLIPSIS);
+        SetTextColor(dc, ToColorRef(theme.color(L"text", L"muted", L"text")));
+        DrawTextW(dc, rows[static_cast<std::size_t>(i)].detail.c_str(), -1, &detailRect, DT_SINGLELINE | DT_VCENTER | DT_LEFT | DT_END_ELLIPSIS);
+    }
+    SelectObject(dc, oldFont);
+}
+
 class ToolDialogBase {
 public:
     ToolDialogBase(HWND owner, HINSTANCE instance, const Theme& theme, PluginRegistry& registry, std::wstring title, int width, int height)
@@ -189,21 +514,20 @@ public:
             }
         }
 
-        RECT ownerRect{};
-        GetWindowRect(owner_, &ownerRect);
         const DWORD exStyle = WS_EX_DLGMODALFRAME | WS_EX_WINDOWEDGE;
-        const DWORD style = WS_CAPTION | WS_SYSMENU | WS_POPUP;
+        const DWORD style = WS_CAPTION | WS_SYSMENU | WS_POPUP | WS_CLIPCHILDREN;
         RECT windowRect{0, 0, width_, height_};
         AdjustWindowRectEx(&windowRect, style, FALSE, exStyle);
         const int windowWidth = windowRect.right - windowRect.left;
         const int windowHeight = windowRect.bottom - windowRect.top;
+        const POINT position = OffsetWindowFromOwnerOnMonitor(owner_, windowWidth, windowHeight, 70, 70);
         hwnd_ = CreateWindowExW(
             exStyle,
             className.c_str(),
             title_.c_str(),
             style,
-            ownerRect.left + 70,
-            ownerRect.top + 70,
+            position.x,
+            position.y,
             windowWidth,
             windowHeight,
             owner_,
@@ -216,7 +540,7 @@ public:
         }
 
         ownerWasEnabled_ = ShowModalWindow(owner_, hwnd_);
-        UpdateWindow(hwnd_);
+        RedrawWindow(hwnd_, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
         MSG message{};
         while (!done_ && GetMessageW(&message, nullptr, 0, 0) > 0) {
             if (IsToolKeyMessage(message) && OnShortcutKey(message)) {
@@ -465,7 +789,7 @@ private:
         const int fieldX = layout.fieldX;
         const int fieldW = 70;
         const int rightLabelX = fieldX + fieldW + layout.controlGapX + layout.labelGap;
-        const int rightFieldX = rightLabelX + layout.labelWidth - layout.labelGap;
+        const int rightFieldX = rightLabelX + layout.labelWidth + layout.labelGap;
         const int row0 = layout.contentInsetY;
         const int row1 = row0 + rowStep;
         const int row2 = row1 + rowStep;
@@ -789,6 +1113,245 @@ private:
     bool running_ = false;
     bool toggleHotKeyRegistered_ = false;
     bool pickHotKeyRegistered_ = false;
+};
+
+class ProcessRowsDialogBase : public ToolDialogBase {
+public:
+    ProcessRowsDialogBase(HWND owner, HINSTANCE instance, const Theme& theme, PluginRegistry& registry, std::wstring title, int width, int height)
+        : ToolDialogBase(owner, instance, theme, registry, std::move(title), width, height) {}
+
+protected:
+    void ClearRowButtons() {
+        for (HWND button : rowButtons_) {
+            if (button) {
+                DestroyWindow(button);
+            }
+        }
+        rowButtons_.clear();
+    }
+
+    void RebuildRowButtons(int baseId) {
+        ClearRowButtons();
+        const int visibleCount = std::min<int>(static_cast<int>(rows_.size()), VisibleProcessRowCount(theme_, resultsFrame_));
+        const int padding = 8;
+        const int rowHeight = std::max(40, ThemedControls::ListBoxItemHeight(theme_) + 14);
+        const int buttonWidth = 62;
+        const int buttonHeight = ThemedControls::CompactButtonHeight(theme_);
+        for (int i = 0; i < visibleCount; ++i) {
+            const int rowTop = resultsFrame_.top + padding + i * rowHeight;
+            HWND button = ThemedControls::CreateButton(
+                instance_,
+                hwnd_,
+                baseId + i,
+                L"结束",
+                resultsFrame_.right - padding - buttonWidth,
+                rowTop + std::max(0, (rowHeight - buttonHeight) / 2) - 1,
+                buttonWidth,
+                buttonHeight,
+                font());
+            if (button) {
+                RedrawWindow(button, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW);
+            }
+            rowButtons_.push_back(button);
+        }
+        InvalidateRect(hwnd_, &resultsFrame_, TRUE);
+    }
+
+    bool ConfirmAndKillRow(std::size_t index, const wchar_t* title) {
+        if (index >= rows_.size()) {
+            return false;
+        }
+        const ProcessDisplayRow& row = rows_[index];
+        const ProcessInfo info = QueryProcessInfo(row.pid);
+        const std::wstring name = info.name.empty() ? L"未知进程" : info.name;
+        const std::wstring message = L"确认结束进程 " + name + L" (PID " + std::to_wstring(row.pid) + L")？";
+        if (ShowThemedMessageBox(hwnd_, instance_, theme_, message, title, MB_OKCANCEL | MB_ICONWARNING) != IDOK) {
+            return true;
+        }
+        const std::wstring error = KillProcessById(row.pid);
+        if (!error.empty()) {
+            ShowThemedMessageBox(hwnd_, instance_, theme_, error, title, MB_OK | MB_ICONWARNING);
+        }
+        RefreshAfterKill();
+        return true;
+    }
+
+    void OnPaint(HDC dc) override {
+        DrawProcessRows(theme_, dc, resultsFrame_, rows_, emptyText_, font());
+    }
+
+    void OnDestroy() override {
+        ClearRowButtons();
+    }
+
+    virtual void RefreshAfterKill() = 0;
+
+    RECT resultsFrame_{};
+    HWND status_ = nullptr;
+    std::wstring emptyText_;
+    std::vector<ProcessDisplayRow> rows_;
+    std::vector<HWND> rowButtons_;
+};
+
+class PortInspectorDialog final : public ProcessRowsDialogBase {
+public:
+    PortInspectorDialog(HWND owner, HINSTANCE instance, const Theme& theme, PluginRegistry& registry)
+        : ProcessRowsDialogBase(owner, instance, theme, registry, L"端口占用检查", 620, 380) {}
+
+private:
+    void OnCreate() override {
+        const DialogLayoutMetrics layout = CompactLayout();
+        const int editHeight = ThemedControls::EditFrameHeight(theme_);
+        const int labelHeight = ThemedControls::LabelHeight(theme_);
+        const int bh = ThemedControls::ButtonHeight(theme_);
+        const int labelOffsetY = std::max(0, (editHeight - labelHeight) / 2);
+        const int left = layout.contentInsetX;
+        const int row0 = layout.contentInsetY;
+        const int fieldX = layout.fieldX;
+        const int scanW = layout.footerButtonWidth;
+        const int fieldW = width_ - fieldX - scanW - layout.controlGapX - left;
+
+        ThemedControls::CreateStaticText(instance_, hwnd_, L"端口号", left, row0 + labelOffsetY, layout.labelWidth, labelHeight, font());
+        port_ = CreateEdit(ID_PORT_VALUE, fieldX, row0, fieldW, registry_.GetSetting(L"quattro.builtin.port-inspector", L"port", L""), ES_NUMBER);
+        ThemedControls::CreateButton(instance_, hwnd_, ID_PORT_SCAN, L"扫描(&S)", fieldX + fieldW + layout.controlGapX, row0 + 1, scanW, bh, font(), true);
+
+        const int frameTop = row0 + layout.RowStep(bh) + layout.rowGap;
+        const int statusY = height_ - layout.contentInsetY - labelHeight;
+        resultsFrame_ = RECT{left, frameTop, width_ - left, statusY - layout.rowGap};
+        status_ = ThemedControls::CreateStaticText(instance_, hwnd_, L"输入端口号后点击扫描。", left, statusY, width_ - left * 2, labelHeight, font());
+        emptyText_ = L"暂无占用进程";
+    }
+
+    bool OnCommand(int id, int) override {
+        if (id == ID_PORT_SCAN) {
+            Scan();
+            return true;
+        }
+        if (id >= ID_PORT_KILL_BASE && id < ID_PORT_KILL_BASE + 100) {
+            return ConfirmAndKillRow(static_cast<std::size_t>(id - ID_PORT_KILL_BASE), L"端口占用检查");
+        }
+        return false;
+    }
+
+    bool OnShortcutKey(const MSG& message) override {
+        if (CtrlOnly() && message.wParam == 'S') {
+            Scan();
+            return true;
+        }
+        return false;
+    }
+
+    void RefreshAfterKill() override {
+        Scan();
+    }
+
+    void Scan() {
+        const std::optional<int> parsedPort = ParseInt(Trim(GetText(port_)));
+        if (!parsedPort || *parsedPort <= 0 || *parsedPort > 65535) {
+            rows_.clear();
+            ClearRowButtons();
+            SetText(status_, L"请输入 1-65535 之间的端口号。");
+            InvalidateRect(hwnd_, &resultsFrame_, TRUE);
+            return;
+        }
+
+        const int portValue = *parsedPort;
+        registry_.SetSetting(L"quattro.builtin.port-inspector", L"port", std::to_wstring(portValue));
+        rows_ = QueryPortRows(static_cast<unsigned short>(portValue));
+        RebuildRowButtons(ID_PORT_KILL_BASE);
+        if (rows_.empty()) {
+            SetText(status_, L"未发现占用进程。");
+            return;
+        }
+        const int visibleCount = VisibleProcessRowCount(theme_, resultsFrame_);
+        std::wstring status = L"发现 " + std::to_wstring(rows_.size()) + L" 个占用进程。";
+        if (static_cast<int>(rows_.size()) > visibleCount) {
+            status += L" 当前显示前 " + std::to_wstring(visibleCount) + L" 个。";
+        }
+        SetText(status_, status);
+    }
+
+    HWND port_ = nullptr;
+};
+
+class ProcessInspectorDialog final : public ProcessRowsDialogBase {
+public:
+    ProcessInspectorDialog(HWND owner, HINSTANCE instance, const Theme& theme, PluginRegistry& registry)
+        : ProcessRowsDialogBase(owner, instance, theme, registry, L"进程ID查询", 560, 230) {}
+
+private:
+    void OnCreate() override {
+        const DialogLayoutMetrics layout = CompactLayout();
+        const int editHeight = ThemedControls::EditFrameHeight(theme_);
+        const int labelHeight = ThemedControls::LabelHeight(theme_);
+        const int bh = ThemedControls::ButtonHeight(theme_);
+        const int labelOffsetY = std::max(0, (editHeight - labelHeight) / 2);
+        const int left = layout.contentInsetX;
+        const int row0 = layout.contentInsetY;
+        const int fieldX = layout.fieldX;
+        const int queryW = layout.footerButtonWidth;
+        const int fieldW = width_ - fieldX - queryW - layout.controlGapX - left;
+
+        ThemedControls::CreateStaticText(instance_, hwnd_, L"进程ID", left, row0 + labelOffsetY, layout.labelWidth, labelHeight, font());
+        pid_ = CreateEdit(ID_PROCESS_VALUE, fieldX, row0, fieldW, registry_.GetSetting(L"quattro.builtin.process-inspector", L"pid", L""), ES_NUMBER);
+        ThemedControls::CreateButton(instance_, hwnd_, ID_PROCESS_QUERY, L"查询(&Q)", fieldX + fieldW + layout.controlGapX, row0 + 1, queryW, bh, font(), true);
+
+        const int frameTop = row0 + layout.RowStep(bh) + layout.rowGap;
+        const int statusY = height_ - layout.contentInsetY - labelHeight;
+        resultsFrame_ = RECT{left, frameTop, width_ - left, statusY - layout.rowGap};
+        status_ = ThemedControls::CreateStaticText(instance_, hwnd_, L"输入进程ID后点击查询。", left, statusY, width_ - left * 2, labelHeight, font());
+        emptyText_ = L"暂无进程条目";
+    }
+
+    bool OnCommand(int id, int) override {
+        if (id == ID_PROCESS_QUERY) {
+            Query();
+            return true;
+        }
+        if (id >= ID_PROCESS_KILL_BASE && id < ID_PROCESS_KILL_BASE + 100) {
+            return ConfirmAndKillRow(static_cast<std::size_t>(id - ID_PROCESS_KILL_BASE), L"进程ID查询");
+        }
+        return false;
+    }
+
+    bool OnShortcutKey(const MSG& message) override {
+        if (CtrlOnly() && message.wParam == 'Q') {
+            Query();
+            return true;
+        }
+        return false;
+    }
+
+    void RefreshAfterKill() override {
+        Query();
+    }
+
+    void Query() {
+        const std::optional<int> parsedPid = ParseInt(Trim(GetText(pid_)));
+        if (!parsedPid || *parsedPid <= 0) {
+            rows_.clear();
+            ClearRowButtons();
+            SetText(status_, L"请输入有效的进程ID。");
+            InvalidateRect(hwnd_, &resultsFrame_, TRUE);
+            return;
+        }
+
+        const int pidValue = *parsedPid;
+        registry_.SetSetting(L"quattro.builtin.process-inspector", L"pid", std::to_wstring(pidValue));
+        const ProcessInfo info = QueryProcessInfo(static_cast<DWORD>(pidValue));
+        rows_.clear();
+        if (!info.name.empty() && info.name != L"未知进程") {
+            ProcessDisplayRow row{};
+            row.pid = static_cast<DWORD>(pidValue);
+            row.title = L"PID " + std::to_wstring(pidValue) + L"  " + info.name;
+            row.detail = info.path.empty() ? L"进程路径不可读，仍可尝试结束进程" : info.path;
+            rows_.push_back(std::move(row));
+        }
+        RebuildRowButtons(ID_PROCESS_KILL_BASE);
+        SetText(status_, rows_.empty() ? L"未找到该进程，或进程已经退出。" : L"找到 1 个进程。");
+    }
+
+    HWND pid_ = nullptr;
 };
 
 class TimerDialog final : public ToolDialogBase {
@@ -1321,6 +1884,14 @@ bool ShowBuiltinTool(HWND owner, HINSTANCE instance, const Theme& theme, PluginR
     }
     if (engine == L"stopwatch") {
         StopwatchDialog dialog(owner, instance, theme, registry);
+        return dialog.Run();
+    }
+    if (engine == L"port-inspector") {
+        PortInspectorDialog dialog(owner, instance, theme, registry);
+        return dialog.Run();
+    }
+    if (engine == L"process-inspector") {
+        ProcessInspectorDialog dialog(owner, instance, theme, registry);
         return dialog.Run();
     }
     ShowThemedMessageBox(owner, instance, theme, L"这个内置工具暂不可用。", L"工具箱", MB_OK | MB_ICONINFORMATION);

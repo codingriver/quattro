@@ -9,10 +9,18 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 option(QUATTRO_BUILD_TESTS "Build local Quattro test tools" OFF)
 
 find_package(CURL QUIET)
+find_package(httplib CONFIG QUIET)
 
 set(QUATTRO_WITH_CURL OFF)
 if(CURL_FOUND)
     set(QUATTRO_WITH_CURL ON)
+endif()
+
+set(QUATTRO_WITH_HTTPLIB OFF)
+if(httplib_FOUND)
+    set(QUATTRO_WITH_HTTPLIB ON)
+else()
+    message(WARNING "cpp-httplib was not found. Local HTTP server UI will build, but the server backend will report that the dependency is unavailable.")
 endif()
 
 set(QUATTRO_WITH_WEBDAV_LIBS OFF)
@@ -109,10 +117,13 @@ add_executable(Quattro WIN32
     src/IconService.cpp
     src/JsonValue.cpp
     src/Launcher.cpp
+    src/LocalHttpServerService.cpp
     src/LinkEditDialog.cpp
     src/MainWindow.cpp
     src/MenuCatalog.cpp
     src/PluginRegistry.cpp
+    src/QuickImportDialog.cpp
+    src/QuickImportService.cpp
     src/ShellItemService.cpp
     src/SimpleDialogs.cpp
     src/StartupService.cpp
@@ -149,6 +160,9 @@ endif()
 if(QUATTRO_WITH_CURL)
     target_compile_definitions(Quattro PRIVATE QUATTRO_WITH_CURL)
 endif()
+if(QUATTRO_WITH_HTTPLIB)
+    target_compile_definitions(Quattro PRIVATE QUATTRO_WITH_HTTPLIB)
+endif()
 
 target_compile_options(Quattro PRIVATE
     $<$<CXX_COMPILER_ID:MSVC>:/W4 /permissive- /EHsc /utf-8>
@@ -161,6 +175,7 @@ target_include_directories(Quattro PRIVATE
 if(QUATTRO_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/UnitTests.cpp")
 add_executable(QuattroTests
     tests/UnitTests.cpp
+    src/AppLog.cpp
     src/Config.cpp
     src/ConfigPackageService.cpp
     src/Launcher.cpp
@@ -182,11 +197,11 @@ add_executable(QuattroTests
 
 add_executable(QuattroNoteTodoAcceptance
     tests/NoteTodoAcceptance.cpp
+    src/AppLog.cpp
     src/Config.cpp
     src/ConfigPackageService.cpp
     src/JsonValue.cpp
     src/MenuCatalog.cpp
-    src/PluginRegistry.cpp
     src/Storage.cpp
     src/TodoSchedule.cpp
     src/Utilities.cpp
@@ -194,6 +209,7 @@ add_executable(QuattroNoteTodoAcceptance
 
 add_executable(QuattroDbProbe
     tests/DbProbe.cpp
+    src/AppLog.cpp
     src/Storage.cpp
     src/TodoSchedule.cpp
     src/Utilities.cpp
@@ -201,6 +217,7 @@ add_executable(QuattroDbProbe
 
 add_executable(QuattroDbSeed
     tests/DbSeed.cpp
+    src/AppLog.cpp
     src/Storage.cpp
     src/TodoSchedule.cpp
     src/Utilities.cpp
@@ -221,9 +238,12 @@ add_executable(QuattroUiScreenshotAcceptance
     src/HotKeyEditor.cpp
     src/JsonValue.cpp
     src/Launcher.cpp
+    src/LocalHttpServerService.cpp
     src/LinkEditDialog.cpp
     src/MenuCatalog.cpp
     src/PluginRegistry.cpp
+    src/QuickImportDialog.cpp
+    src/QuickImportService.cpp
     src/ShellItemService.cpp
     src/SimpleDialogs.cpp
     src/Storage.cpp
@@ -246,9 +266,9 @@ add_executable(QuattroAboutTrayExitAcceptance
 
 add_executable(QuattroWebDavAcceptance
     tests/WebDavAcceptance.cpp
+    src/AppLog.cpp
     src/Config.cpp
     src/ConfigPackageService.cpp
-    src/PluginRegistry.cpp
     src/Storage.cpp
     src/TodoSchedule.cpp
     src/Utilities.cpp
@@ -420,6 +440,7 @@ target_link_libraries(QuattroUiScreenshotAcceptance PRIVATE
     comctl32
     gdiplus
     gdi32
+    iphlpapi
     ole32
     shell32
     shlwapi
@@ -449,6 +470,175 @@ elseif(QUATTRO_BUILD_TESTS)
     message(WARNING "QUATTRO_BUILD_TESTS is ON, but local tests/ sources were not found. Test targets will be skipped.")
 endif()
 
+if(QUATTRO_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/TodoBackupJsonCompatibility.cpp")
+add_executable(QuattroTodoBackupJsonCompatibility
+    tests/TodoBackupJsonCompatibility.cpp
+    src/JsonValue.cpp
+    src/Utilities.cpp
+)
+
+target_compile_definitions(QuattroTodoBackupJsonCompatibility PRIVATE
+    UNICODE
+    _UNICODE
+    WINVER=0x0A00
+    _WIN32_WINNT=0x0A00
+    NOMINMAX
+)
+
+target_compile_options(QuattroTodoBackupJsonCompatibility PRIVATE
+    $<$<CXX_COMPILER_ID:MSVC>:/W4 /permissive- /EHsc /utf-8>
+)
+
+target_include_directories(QuattroTodoBackupJsonCompatibility PRIVATE
+    src
+)
+endif()
+
+if(QUATTRO_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/HttpServerConfigAcceptance.cpp")
+add_executable(QuattroHttpServerConfigAcceptance
+    tests/HttpServerConfigAcceptance.cpp
+    src/LocalHttpServerService.cpp
+    src/Utilities.cpp
+)
+
+target_compile_definitions(QuattroHttpServerConfigAcceptance PRIVATE
+    UNICODE
+    _UNICODE
+    WINVER=0x0A00
+    _WIN32_WINNT=0x0A00
+    NOMINMAX
+)
+
+target_compile_options(QuattroHttpServerConfigAcceptance PRIVATE
+    $<$<CXX_COMPILER_ID:MSVC>:/W4 /permissive- /EHsc /utf-8>
+)
+
+target_include_directories(QuattroHttpServerConfigAcceptance PRIVATE
+    src
+)
+
+target_link_libraries(QuattroHttpServerConfigAcceptance PRIVATE
+    shell32
+    user32
+)
+endif()
+
+if(QUATTRO_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/HttpServerRuntimeAcceptance.cpp")
+add_executable(QuattroHttpServerRuntimeAcceptance
+    tests/HttpServerRuntimeAcceptance.cpp
+    src/AppLog.cpp
+    src/LocalHttpServerService.cpp
+    src/Utilities.cpp
+)
+
+target_compile_definitions(QuattroHttpServerRuntimeAcceptance PRIVATE
+    UNICODE
+    _UNICODE
+    WINVER=0x0A00
+    _WIN32_WINNT=0x0A00
+    NOMINMAX
+)
+
+if(QUATTRO_WITH_HTTPLIB)
+    target_compile_definitions(QuattroHttpServerRuntimeAcceptance PRIVATE QUATTRO_WITH_HTTPLIB)
+endif()
+
+target_compile_options(QuattroHttpServerRuntimeAcceptance PRIVATE
+    $<$<CXX_COMPILER_ID:MSVC>:/W4 /permissive- /EHsc /utf-8>
+)
+
+target_include_directories(QuattroHttpServerRuntimeAcceptance PRIVATE
+    src
+)
+
+target_link_libraries(QuattroHttpServerRuntimeAcceptance PRIVATE
+    shell32
+    user32
+)
+
+if(QUATTRO_WITH_HTTPLIB)
+    target_link_libraries(QuattroHttpServerRuntimeAcceptance PRIVATE httplib::httplib)
+endif()
+endif()
+
+if(QUATTRO_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/SettingsHttpButtonsAcceptance.cpp")
+add_executable(QuattroSettingsHttpButtonsAcceptance
+    tests/SettingsHttpButtonsAcceptance.cpp
+    src/AppLog.cpp
+    src/BuiltinTools.cpp
+    src/ConfigPackageService.cpp
+    src/HotKeyEditor.cpp
+    src/JsonValue.cpp
+    src/Launcher.cpp
+    src/LocalHttpServerService.cpp
+    src/LinkEditDialog.cpp
+    src/MenuCatalog.cpp
+    src/PluginRegistry.cpp
+    src/QuickImportDialog.cpp
+    src/QuickImportService.cpp
+    src/ShellItemService.cpp
+    src/SimpleDialogs.cpp
+    src/Storage.cpp
+    src/SystemFunctions.cpp
+    src/Theme.cpp
+    src/ThemedControls.cpp
+    src/TodoEditDialog.cpp
+    src/TodoSchedule.cpp
+    src/UrlEditDialog.cpp
+    src/Utilities.cpp
+    src/WebDavBackupService.cpp
+    src/WebDavClient.cpp
+    src/WebDavCredentialService.cpp
+    src/WebDavRecoveryService.cpp
+)
+
+target_compile_definitions(QuattroSettingsHttpButtonsAcceptance PRIVATE
+    UNICODE
+    _UNICODE
+    WINVER=0x0A00
+    _WIN32_WINNT=0x0A00
+    NOMINMAX
+)
+
+if(QUATTRO_WITH_WEBDAV_LIBS)
+    target_compile_definitions(QuattroSettingsHttpButtonsAcceptance PRIVATE QUATTRO_WITH_WEBDAV_LIBS)
+endif()
+if(QUATTRO_WITH_HTTPLIB)
+    target_compile_definitions(QuattroSettingsHttpButtonsAcceptance PRIVATE QUATTRO_WITH_HTTPLIB)
+endif()
+
+target_compile_options(QuattroSettingsHttpButtonsAcceptance PRIVATE
+    $<$<CXX_COMPILER_ID:MSVC>:/W4 /permissive- /EHsc /utf-8>
+)
+
+target_include_directories(QuattroSettingsHttpButtonsAcceptance PRIVATE
+    src
+)
+
+target_link_libraries(QuattroSettingsHttpButtonsAcceptance PRIVATE
+    sqlite3
+    ccronexpr
+    advapi32
+    bcrypt
+    comctl32
+    gdiplus
+    gdi32
+    iphlpapi
+    ole32
+    shell32
+    shlwapi
+    user32
+    wininet
+)
+
+if(QUATTRO_WITH_WEBDAV_LIBS)
+    target_link_libraries(QuattroSettingsHttpButtonsAcceptance PRIVATE CURL::libcurl pugixml)
+endif()
+if(QUATTRO_WITH_HTTPLIB)
+    target_link_libraries(QuattroSettingsHttpButtonsAcceptance PRIVATE httplib::httplib)
+endif()
+endif()
+
 target_link_libraries(Quattro PRIVATE
     sqlite3
     ccronexpr
@@ -456,6 +646,7 @@ target_link_libraries(Quattro PRIVATE
     bcrypt
     d2d1
     dwrite
+    iphlpapi
     ole32
     oleaut32
     shell32
@@ -470,6 +661,9 @@ target_link_libraries(Quattro PRIVATE
 
 if(QUATTRO_WITH_WEBDAV_LIBS)
     target_link_libraries(Quattro PRIVATE CURL::libcurl pugixml)
+endif()
+if(QUATTRO_WITH_HTTPLIB)
+    target_link_libraries(Quattro PRIVATE httplib::httplib)
 endif()
 
 target_link_options(Quattro PRIVATE

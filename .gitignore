@@ -18,6 +18,9 @@
 !/icons/menu/tabler/
 !/icons/menu/tabler/**
 /docs/
+!/docs/
+!/docs/Quattro/
+!/docs/Quattro/**
 
 /screenshots/acceptance
 
@@ -25,6 +28,8 @@
 /resources/icons/quattro-app-icon-transparent.png
 /resources/icons/quattro-app-icon-size-preview.png
 
+
+/docs/
 # CMake local/generated files
 /CMakeCache.txt
 /CMakeUserPresets.json
@@ -71,6 +76,14 @@
 # Local/manual test scripts
 /tests/*
 !/tests/AboutTrayExitAcceptance.cpp
+!/tests/HttpServerConfigAcceptance.cpp
+!/tests/HttpServerRuntimeAcceptance.cpp
+!/tests/SettingsHttpButtonsAcceptance.cpp
+!/tests/TodoBackupJsonCompatibility.cpp
+!/tests/fixtures/
+!/tests/fixtures/todo-backup-v1.json
+!/tests/fixtures/todo-backup-v2.json
+!/tests/fixtures/todo-backup-apple-simple.json
 /tools/run-tests.ps1
 /tools/run-*-tests.ps1
 /tools/run-ui-smoke.ps1

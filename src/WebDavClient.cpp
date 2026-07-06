@@ -1,5 +1,6 @@
 #include "WebDavClient.h"
 
+#include "AppLog.h"
 #include "Utilities.h"
 
 #ifdef QUATTRO_WITH_WEBDAV_LIBS
@@ -32,6 +33,7 @@ WebDavClient::WebDavClient(AppConfig config, std::wstring password)
 
 bool WebDavClient::TestConnection() {
     lastError_ = L"当前构建未启用 libcurl WebDAV 后端。请通过 vcpkg 安装 curl 依赖后重新配置构建。";
+    WriteAppLog(L"WebDAV 请求失败: " + lastError_);
     return false;
 }
 
@@ -135,6 +137,23 @@ std::wstring Utf8ToWide(const std::string& value) {
     std::wstring text(length, L'\0');
     MultiByteToWideChar(CP_UTF8, 0, value.data(), static_cast<int>(value.size()), text.data(), length);
     return text;
+}
+
+std::wstring UrlForLog(std::wstring url) {
+    const std::size_t scheme = url.find(L"://");
+    if (scheme != std::wstring::npos) {
+        const std::size_t authorityStart = scheme + 3;
+        const std::size_t pathStart = url.find(L'/', authorityStart);
+        const std::size_t userInfoEnd = url.find(L'@', authorityStart);
+        if (userInfoEnd != std::wstring::npos && (pathStart == std::wstring::npos || userInfoEnd < pathStart)) {
+            url.replace(authorityStart, userInfoEnd - authorityStart, L"***");
+        }
+    }
+    const std::size_t queryStart = url.find(L'?');
+    if (queryStart != std::wstring::npos) {
+        url.erase(queryStart);
+    }
+    return url;
 }
 
 std::vector<std::uint8_t> ReadBinaryFile(const std::filesystem::path& path) {
@@ -448,6 +467,7 @@ bool WebDavClient::Request(
     std::vector<std::uint8_t>* response,
     long* statusCode) {
     if (!ValidateSettings()) {
+        WriteAppLog(L"WebDAV 请求失败: " + lastError_ + L"；方法 " + method);
         return false;
     }
     if (statusCode) {
@@ -457,16 +477,21 @@ bool WebDavClient::Request(
     CURL* curl = curl_easy_init();
     if (!curl) {
         lastError_ = L"初始化 libcurl 失败。";
+        WriteAppLog(L"WebDAV 请求失败: " + lastError_ + L"；方法 " + method);
         return false;
     }
 
     std::vector<std::uint8_t> sink;
     std::vector<std::uint8_t>* target = response ? response : &sink;
     char errorBuffer[CURL_ERROR_SIZE]{};
-    const std::string url = WideToUtf8(UrlForRemotePath(remotePath));
+    const std::wstring requestUrl = UrlForRemotePath(remotePath);
+    const std::wstring logUrl = UrlForLog(requestUrl);
+    const std::string url = WideToUtf8(requestUrl);
     const std::string user = WideToUtf8(config_.webDavUserName);
     const std::string password = WideToUtf8(password_);
     const std::string methodUtf8 = WideToUtf8(method);
+
+    WriteAppLog(L"WebDAV 请求开始: " + method + L" " + logUrl);
 
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "Quattro WebDAV Backup/1.0");
@@ -522,8 +547,14 @@ bool WebDavClient::Request(
             detail = curl_easy_strerror(code);
         }
         SetCurlError(L"WebDAV 请求失败", static_cast<int>(code), status, detail);
+        WriteAppLog(lastError_ + L"；请求 " + method + L" " + logUrl);
         return false;
     }
+    std::wstring message = L"WebDAV 请求完成: " + method + L" " + logUrl + L"，HTTP " + std::to_wstring(status);
+    if (response) {
+        message += L"，响应 " + std::to_wstring(response->size()) + L" 字节";
+    }
+    WriteAppLog(message);
     return true;
 }
 

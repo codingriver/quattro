@@ -1,0 +1,25 @@
+{
+  "app": "Quattro",
+  "formatVersion": 1,
+  "todos": [
+    {
+      "groupName": "工作",
+      "tagName": "待办事项",
+      "title": "旧版待办",
+      "content": "旧版扁平结构",
+      "enabled": true,
+      "scheduleKind": 1,
+      "repeatMode": 0,
+      "repeatInterval": 1,
+      "repeatLimit": 0,
+      "repeatFinished": 0,
+      "cronExpression": "",
+      "anchorAt": "2026-07-10 09:00:00",
+      "nextDueAt": "2026-07-10 09:00:00",
+      "completedAt": "",
+      "createdAt": "2026-07-03 10:00:00",
+      "updatedAt": "2026-07-03 10:00:00"
+    }
+  ]
+}
+
