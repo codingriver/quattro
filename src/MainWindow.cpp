@@ -51,6 +51,7 @@ constexpr UINT_PTR ID_TIMER_HOVER_ACTIVATE = 11;
 constexpr UINT_PTR ID_TIMER_NOTE_AUTOSAVE = 12;
 constexpr UINT_PTR ID_TIMER_REMINDER_SCAN = 13;
 constexpr UINT_PTR ID_TIMER_REMINDER_PANEL = 14;
+constexpr UINT kTrayIconId = 1;
 constexpr int kDockVisiblePixels = 3;
 constexpr int kDockPeekVisiblePixels = 6;
 constexpr int kDockRestoreGraceMs = 1500;
@@ -233,6 +234,22 @@ void CloseSiblingHandles(std::vector<SiblingQuattroProcess>& siblings) {
     }
 }
 
+void DeleteTrayIconForWindow(HWND hwnd, const wchar_t* context) {
+    if (!hwnd) {
+        return;
+    }
+
+    NOTIFYICONDATAW data{};
+    data.cbSize = sizeof(data);
+    data.hWnd = hwnd;
+    data.uID = kTrayIconId;
+    if (!Shell_NotifyIconW(NIM_DELETE, &data)) {
+        WriteAppLog(std::wstring(context) + L"：托盘图标删除请求失败 hwnd=" +
+                    std::to_wstring(reinterpret_cast<std::uintptr_t>(hwnd)) +
+                    L"，错误=" + FormatLastError(GetLastError()));
+    }
+}
+
 void TerminateSiblingQuattroProcesses() {
     std::vector<SiblingQuattroProcess> siblings = CollectSiblingQuattroProcesses();
     if (siblings.empty()) {
@@ -272,6 +289,9 @@ void TerminateSiblingQuattroProcesses() {
     for (const auto& sibling : siblings) {
         if (!sibling.process || WaitForSingleObject(sibling.process, 0) != WAIT_TIMEOUT) {
             continue;
+        }
+        if (sibling.mainWindow && IsWindow(sibling.mainWindow)) {
+            DeleteTrayIconForWindow(sibling.mainWindow, L"退出清理");
         }
         if (TerminateProcess(sibling.process, 0)) {
             WriteAppLog(L"退出清理：已强制结束失控实例 pid=" + std::to_wstring(sibling.processId));
@@ -1613,6 +1633,44 @@ bool DrawLocalMenuIcon(HDC dc, const RECT& rc, int icon, bool disabled, COLORREF
     HGDIOBJ oldFont = SelectObject(dc, font);
     RECT textRect = rc;
     DrawTextW(dc, &glyph, 1, &textRect, DT_SINGLELINE | DT_CENTER | DT_VCENTER | DT_NOCLIP);
+    SelectObject(dc, oldFont);
+    SetTextColor(dc, oldTextColor);
+    SetBkMode(dc, oldBkMode);
+    DeleteObject(font);
+    return true;
+}
+
+bool DrawMenuChevronRight(HDC dc, const RECT& rc, COLORREF color, const std::filesystem::path& appDirectory) {
+    if (!EnsureMenuIconFontLoaded(appDirectory)) {
+        return false;
+    }
+
+    constexpr wchar_t chevronRight = static_cast<wchar_t>(0xEA61); // tabler chevron-right
+    const int size = std::min(rc.right - rc.left, rc.bottom - rc.top);
+    HFONT font = CreateFontW(
+        -std::max(12, size + 1),
+        0,
+        0,
+        0,
+        FW_NORMAL,
+        FALSE,
+        FALSE,
+        FALSE,
+        DEFAULT_CHARSET,
+        OUT_DEFAULT_PRECIS,
+        CLIP_DEFAULT_PRECIS,
+        CLEARTYPE_QUALITY,
+        DEFAULT_PITCH | FF_DONTCARE,
+        L"tabler-icons");
+    if (!font) {
+        return false;
+    }
+
+    const int oldBkMode = SetBkMode(dc, TRANSPARENT);
+    const COLORREF oldTextColor = SetTextColor(dc, color);
+    HGDIOBJ oldFont = SelectObject(dc, font);
+    RECT textRect = rc;
+    DrawTextW(dc, &chevronRight, 1, &textRect, DT_SINGLELINE | DT_CENTER | DT_VCENTER | DT_NOCLIP);
     SelectObject(dc, oldFont);
     SetTextColor(dc, oldTextColor);
     SetBkMode(dc, oldBkMode);
@@ -3019,6 +3077,7 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         return DefWindowProcW(hwnd_, message, wParam, lParam);
     case WM_DESTROY:
         WriteAppLog(L"主窗口销毁，准备退出消息循环。");
+        RemoveTrayIcon();
         SaveCurrentNotePage();
         urlIconDownloadService_.Shutdown();
         HideItemTooltip();
@@ -3054,7 +3113,6 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             oleDropTarget_ = nullptr;
         }
         UnregisterConfiguredHotKeys();
-        RemoveTrayIcon();
         SaveWindowState();
         PostQuitMessage(0);
         return 0;
@@ -4581,7 +4639,7 @@ bool MainWindow::EnsureNotificationIcon() {
     NOTIFYICONDATAW data{};
     data.cbSize = sizeof(data);
     data.hWnd = hwnd_;
-    data.uID = 1;
+    data.uID = kTrayIconId;
     data.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
     data.uCallbackMessage = WM_QUATTRO_TRAY;
     data.hIcon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_QUATTRO_APP_ICON));
@@ -4600,7 +4658,7 @@ void MainWindow::ShowTodoSystemNotification(const TodoItem& item) {
     NOTIFYICONDATAW data{};
     data.cbSize = sizeof(data);
     data.hWnd = hwnd_;
-    data.uID = 1;
+    data.uID = kTrayIconId;
     data.uFlags = NIF_INFO;
     data.dwInfoFlags = NIIF_INFO;
     const std::wstring title = LimitNotificationText(item.title, 63);
@@ -4618,7 +4676,7 @@ void MainWindow::ShowClipboardImportNotification(int count, const std::wstring& 
     NOTIFYICONDATAW data{};
     data.cbSize = sizeof(data);
     data.hWnd = hwnd_;
-    data.uID = 1;
+    data.uID = kTrayIconId;
     data.uFlags = NIF_INFO;
     data.dwInfoFlags = NIIF_INFO;
     const std::wstring title = count == 1 ? L"已添加启动项" : L"已添加启动项";
@@ -5675,7 +5733,7 @@ void MainWindow::InitializeTrayIcon() {
     NOTIFYICONDATAW data{};
     data.cbSize = sizeof(data);
     data.hWnd = hwnd_;
-    data.uID = 1;
+    data.uID = kTrayIconId;
     data.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
     data.uCallbackMessage = WM_QUATTRO_TRAY;
     data.hIcon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_QUATTRO_APP_ICON));
@@ -5689,11 +5747,7 @@ void MainWindow::RemoveTrayIcon() {
     if (!trayIconVisible_) {
         return;
     }
-    NOTIFYICONDATAW data{};
-    data.cbSize = sizeof(data);
-    data.hWnd = hwnd_;
-    data.uID = 1;
-    Shell_NotifyIconW(NIM_DELETE, &data);
+    DeleteTrayIconForWindow(hwnd_, L"托盘图标移除");
     trayIconVisible_ = false;
 }
 
@@ -7676,21 +7730,30 @@ bool MainWindow::DrawThemedMenuItem(const DRAWITEMSTRUCT* draw) {
 
     if (item->submenu) {
         const COLORREF arrowColor = ToColorRef(theme_.color(L"menuItem", item->disabled ? L"disabled" : (selected ? L"hover" : L"normal"), L"text"));
-        HPEN pen = CreatePen(PS_SOLID, 1, arrowColor);
-        HGDIOBJ oldPen = SelectObject(dc, pen);
         const int midY = (rc.top + rc.bottom) / 2;
         const int arrowRight = static_cast<int>(Metric(theme_, L"menuItem", L"arrowRight", 9.0f));
-        const int arrowWidth = static_cast<int>(Metric(theme_, L"menuItem", L"arrowWidth", 5.0f));
-        const int arrowHalfHeight = static_cast<int>(Metric(theme_, L"menuItem", L"arrowHalfHeight", 4.0f));
-        const int arrowTip = rc.right - arrowRight;
-        POINT points[] = {
-            {arrowTip - arrowWidth, midY - arrowHalfHeight},
-            {arrowTip, midY},
-            {arrowTip - arrowWidth, midY + arrowHalfHeight},
-        };
-        Polyline(dc, points, static_cast<int>(std::size(points)));
-        SelectObject(dc, oldPen);
-        DeleteObject(pen);
+        const int arrowIconSize = static_cast<int>(Metric(theme_, L"menuItem", L"iconSize", 16.0f));
+        const RECT arrowRect{
+            rc.right - arrowRight - arrowIconSize,
+            midY - arrowIconSize / 2,
+            rc.right - arrowRight,
+            midY - arrowIconSize / 2 + arrowIconSize};
+        if (!DrawMenuChevronRight(dc, arrowRect, arrowColor, appDirectory_)) {
+            HPEN pen = CreatePen(PS_SOLID, 1, arrowColor);
+            HGDIOBJ oldPen = SelectObject(dc, pen);
+            const int arrowWidth = static_cast<int>(Metric(theme_, L"menuItem", L"arrowWidth", 5.0f));
+            const int arrowHalfHeight = static_cast<int>(Metric(theme_, L"menuItem", L"arrowHalfHeight", 4.0f));
+            const int arrowTip = rc.right - arrowRight;
+            POINT points[] = {
+                {arrowTip - arrowWidth, midY - arrowHalfHeight},
+                {arrowTip, midY},
+                {arrowTip - arrowWidth, midY + arrowHalfHeight},
+            };
+            Polyline(dc, points, static_cast<int>(std::size(points)));
+            SelectObject(dc, oldPen);
+            DeleteObject(pen);
+        }
+        ExcludeClipRect(dc, rc.left, rc.top, rc.right, rc.bottom);
     }
     return true;
 }
