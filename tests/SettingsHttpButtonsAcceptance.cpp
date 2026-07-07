@@ -254,8 +254,9 @@ int wmain() {
 
         localOk = Require(ClickButton(settings, L"复制地址"), L"Copy URL button should be clickable") && localOk;
         const std::wstring copied = ClipboardText(settings);
-        localOk = Require(copied.find(L"http://127.0.0.1:" + std::to_wstring(config.httpServerPort) + L"/") != std::wstring::npos,
-            L"Copy URL button should write local HTTP URL to clipboard") && localOk;
+        localOk = Require(copied.rfind(L"http://", 0) == 0 &&
+                copied.find(L":" + std::to_wstring(config.httpServerPort) + L"/") != std::wstring::npos,
+            L"Copy URL button should write HTTP URL with configured port to clipboard") && localOk;
 
         localOk = Require(ClickButton(settings, L"重启"), L"Restart button should be clickable") && localOk;
         CloseHttpMessageBox();

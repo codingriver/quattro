@@ -89,7 +89,7 @@ struct AppConfig {
     bool httpServerEnabled = false;
     bool httpServerAutoStart = false;
     bool httpServerLanAccess = true;
-    int httpServerPort = 43127;
+    int httpServerPort = 18080;
     std::wstring httpServerRootPath;
 };
 

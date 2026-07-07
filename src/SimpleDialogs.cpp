@@ -17,6 +17,7 @@
 
 #include <commdlg.h>
 #include <commctrl.h>
+#include <iphlpapi.h>
 #include <richedit.h>
 #include <shellapi.h>
 #include <shobjidl.h>
@@ -67,6 +68,7 @@ constexpr int ID_HTTP_BROWSE_ROOT = 427;
 constexpr int ID_HTTP_COPY_URL = 428;
 constexpr int ID_HTTP_OPEN_ROOT = 429;
 constexpr int ID_SETTINGS_APPLY = 430;
+constexpr int ID_HTTP_ADDRESS = 431;
 constexpr int ID_MESSAGE_TEXT = 501;
 constexpr int ID_MAIN_HOTKEY_PROBE = 0x5148;
 constexpr UINT WM_SETTINGS_WEBDAV_DONE = WM_APP + 0x81;
@@ -86,6 +88,88 @@ struct SettingsWebDavResult {
     std::vector<WebDavRemoteFile> backups;
     AppConfig config;
 };
+
+std::wstring CurrentLanIpv4Address() {
+    ULONG size = 0;
+    if (GetAdaptersInfo(nullptr, &size) != ERROR_BUFFER_OVERFLOW || size == 0) {
+        return L"127.0.0.1";
+    }
+    std::vector<BYTE> buffer(size);
+    auto* adapters = reinterpret_cast<IP_ADAPTER_INFO*>(buffer.data());
+    if (GetAdaptersInfo(adapters, &size) != NO_ERROR) {
+        return L"127.0.0.1";
+    }
+    for (auto* adapter = adapters; adapter; adapter = adapter->Next) {
+        if (adapter->Type == MIB_IF_TYPE_LOOPBACK) {
+            continue;
+        }
+        for (IP_ADDR_STRING* address = &adapter->IpAddressList; address; address = address->Next) {
+            const std::string value = address->IpAddress.String ? address->IpAddress.String : "";
+            if (value.empty() || value == "0.0.0.0" || value.rfind("127.", 0) == 0) {
+                continue;
+            }
+            std::wstring result;
+            result.reserve(value.size());
+            for (char ch : value) {
+                result.push_back(static_cast<unsigned char>(ch));
+            }
+            return result;
+        }
+    }
+    return L"127.0.0.1";
+}
+
+std::wstring HttpHostForLan(bool lanAccess) {
+    return lanAccess ? CurrentLanIpv4Address() : L"127.0.0.1";
+}
+
+int ParseHttpPortText(const std::wstring& text, int fallback) {
+    std::wstring value = Trim(text);
+    if (value.empty()) {
+        return fallback;
+    }
+    const std::size_t scheme = value.find(L"://");
+    if (scheme != std::wstring::npos) {
+        value = value.substr(scheme + 3);
+    }
+    const std::size_t slash = value.find_first_of(L"/\\?#");
+    if (slash != std::wstring::npos) {
+        value = value.substr(0, slash);
+    }
+    const std::size_t at = value.rfind(L'@');
+    if (at != std::wstring::npos) {
+        value = value.substr(at + 1);
+    }
+    const std::size_t colon = value.rfind(L':');
+    if (colon != std::wstring::npos) {
+        value = value.substr(colon + 1);
+    }
+    value = Trim(value);
+    if (!value.empty() && value.back() == L'/') {
+        value.pop_back();
+    }
+    auto port = ParseInt(value);
+    if (!port) {
+        return fallback;
+    }
+    return std::max(1, std::min(65535, *port));
+}
+
+std::wstring HttpAddressText(bool lanAccess, int port, bool trailingSlash) {
+    std::wstring value = L"http://" + HttpHostForLan(lanAccess) + L":" + std::to_wstring(std::max(1, std::min(65535, port)));
+    if (trailingSlash) {
+        value += L"/";
+    }
+    return value;
+}
+
+ThemedControls::ButtonPalette ActionButtonPalette(Color normal, Color hover, Color pressed) {
+    const Color white{1.0f, 1.0f, 1.0f, 1.0f};
+    return ThemedControls::ButtonPalette{
+        normal, white, normal,
+        hover, white, hover,
+        pressed, white, pressed};
+}
 
 struct HotKeyAvailability {
     bool available = false;
@@ -1866,6 +1950,17 @@ private:
         tabChildren_.push_back(TabChild{hwnd, tab});
     }
 
+    void UsePanelBackground(HWND hwnd) {
+        if (!hwnd) {
+            return;
+        }
+        panelBackgroundChildren_.push_back(hwnd);
+        wchar_t className[32]{};
+        if (GetClassNameW(hwnd, className, static_cast<int>(std::size(className))) && std::wcscmp(className, L"Button") == 0) {
+            ThemedControls::SetControlBackgroundComponent(hwnd, L"panel");
+        }
+    }
+
     int ContentY(int y) const {
         return y + tabContentOffsetY_;
     }
@@ -1878,6 +1973,13 @@ private:
 
     HWND CheckBox(int tab, int id, const wchar_t* text, int x, int y, bool checked, int width = 210) {
         HWND hwnd = ThemedControls::CreateCheckBox(instance_, hwnd_, id, text, x, ContentY(y), width, ThemedControls::CheckBoxHeight(theme_), font_, checked);
+        AddTabChild(hwnd, tab);
+        return hwnd;
+    }
+
+    HWND MultiLineCheckBox(int tab, int id, const wchar_t* text, int x, int y, bool checked, int width, int height) {
+        HWND hwnd = ThemedControls::CreateCheckBox(instance_, hwnd_, id, text, x, ContentY(y), width, height, font_, checked);
+        ThemedControls::SetControlMultiline(hwnd, true);
         AddTabChild(hwnd, tab);
         return hwnd;
     }
@@ -2053,23 +2155,6 @@ private:
         if (tab < 0 || tab >= TabCount || tab == currentTab_) {
             return;
         }
-        currentTab_ = tab;
-        for (int i = 0; i < static_cast<int>(tabButtons_.size()); ++i) {
-            SendMessageW(tabButtons_[i], BM_SETCHECK, i == currentTab_ ? BST_CHECKED : BST_UNCHECKED, 0);
-        }
-        for (const auto& child : tabChildren_) {
-            const bool visible = child.tab == currentTab_;
-            SetWindowPos(
-                child.hwnd,
-                nullptr,
-                0,
-                0,
-                0,
-                0,
-                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOREDRAW |
-                    (visible ? SWP_SHOWWINDOW : SWP_HIDEWINDOW));
-            EnableWindow(child.hwnd, visible ? TRUE : FALSE);
-        }
 
         RECT contentRect{};
         GetClientRect(hwnd_, &contentRect);
@@ -2080,9 +2165,45 @@ private:
             MapWindowPoints(HWND_DESKTOP, hwnd_, reinterpret_cast<POINT*>(&footerRect), 2);
             contentRect.bottom = std::min(contentRect.bottom, footerRect.top);
         }
+
+        const HWND focus = GetFocus();
+        bool focusMovesToTab = false;
+        for (const auto& child : tabChildren_) {
+            if (child.hwnd && child.tab != tab && child.hwnd == focus) {
+                focusMovesToTab = true;
+            }
+        }
+
+        for (const auto& child : tabChildren_) {
+            if (!child.hwnd || child.tab == tab) {
+                continue;
+            }
+            EnableWindow(child.hwnd, FALSE);
+            ShowWindow(child.hwnd, SW_HIDE);
+        }
+
+        currentTab_ = tab;
+        for (int i = 0; i < static_cast<int>(tabButtons_.size()); ++i) {
+            SendMessageW(tabButtons_[i], BM_SETCHECK, i == currentTab_ ? BST_CHECKED : BST_UNCHECKED, 0);
+        }
+        for (const auto& child : tabChildren_) {
+            if (!child.hwnd || child.tab != currentTab_) {
+                continue;
+            }
+            ShowWindow(child.hwnd, SW_SHOWNA);
+            EnableWindow(child.hwnd, TRUE);
+        }
+
+        if (focusMovesToTab && tab < static_cast<int>(tabButtons_.size())) {
+            SetFocus(tabButtons_[tab]);
+        }
         if (contentRect.bottom > contentRect.top) {
             RedrawWindow(hwnd_, &contentRect, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
         }
+        if (currentTab_ == TabHttp) {
+            UpdateHttpButtons();
+        }
+        InvalidateRect(hwnd_, &tabStripRect_, FALSE);
     }
 
     bool IsFieldChild(HWND hwnd) const {
@@ -2092,6 +2213,10 @@ private:
             }
         }
         return false;
+    }
+
+    bool IsPanelBackgroundChild(HWND hwnd) const {
+        return std::find(panelBackgroundChildren_.begin(), panelBackgroundChildren_.end(), hwnd) != panelBackgroundChildren_.end();
     }
 
     void InvalidateField(HWND hwnd) {
@@ -2169,10 +2294,10 @@ private:
         if (Trim(draft_.webDavRemotePath).empty()) {
             draft_.webDavRemotePath = L"/Quattro/backups/";
         }
-        draft_.httpServerEnabled = httpServerEnabled_ && SendMessageW(httpServerEnabled_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        draft_.httpServerEnabled = true;
         draft_.httpServerAutoStart = httpServerAutoStart_ && SendMessageW(httpServerAutoStart_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-        draft_.httpServerLanAccess = !httpServerLanAccess_ || SendMessageW(httpServerLanAccess_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-        draft_.httpServerPort = ClampNumber(httpServerPortEdit_, 1, 65535, draft_.httpServerPort);
+        draft_.httpServerLanAccess = true;
+        draft_.httpServerPort = ParseHttpPortText(GetText(httpServerAddressEdit_), draft_.httpServerPort);
         draft_.httpServerRootPath = GetText(httpServerRootEdit_);
         if (Trim(draft_.httpServerRootPath).empty()) {
             draft_.httpServerRootPath = LocalHttpServerService::DefaultRootPath(appDirectory_).wstring();
@@ -2555,15 +2680,54 @@ private:
 
     AppConfig ReadHttpDraftFromControls() {
         AppConfig value = draft_;
-        value.httpServerEnabled = httpServerEnabled_ && SendMessageW(httpServerEnabled_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        value.httpServerEnabled = true;
         value.httpServerAutoStart = httpServerAutoStart_ && SendMessageW(httpServerAutoStart_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-        value.httpServerLanAccess = !httpServerLanAccess_ || SendMessageW(httpServerLanAccess_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-        value.httpServerPort = ClampNumber(httpServerPortEdit_, 1, 65535, value.httpServerPort);
+        value.httpServerLanAccess = true;
+        value.httpServerPort = ParseHttpPortText(GetText(httpServerAddressEdit_), value.httpServerPort);
         value.httpServerRootPath = GetText(httpServerRootEdit_);
         if (Trim(value.httpServerRootPath).empty()) {
             value.httpServerRootPath = LocalHttpServerService::DefaultRootPath(appDirectory_).wstring();
         }
         return value;
+    }
+
+    std::wstring CurrentHttpAddress(bool trailingSlash) {
+        const AppConfig value = ReadHttpDraftFromControls();
+        return HttpAddressText(value.httpServerLanAccess, value.httpServerPort, trailingSlash);
+    }
+
+    void UpdateHttpAddressField(bool trailingSlash = false) {
+        if (!httpServerAddressEdit_) {
+            return;
+        }
+        SetWindowTextW(httpServerAddressEdit_, CurrentHttpAddress(trailingSlash).c_str());
+    }
+
+    void UpdateHttpButtons() {
+        const bool running = httpServer_ && httpServer_->IsRunning();
+        if (httpStartButton_) {
+            EnableWindow(httpStartButton_, running ? FALSE : TRUE);
+            InvalidateRect(httpStartButton_, nullptr, TRUE);
+        }
+        if (httpStopButton_) {
+            EnableWindow(httpStopButton_, running ? TRUE : FALSE);
+            InvalidateRect(httpStopButton_, nullptr, TRUE);
+        }
+        if (httpRestartButton_) {
+            InvalidateRect(httpRestartButton_, nullptr, TRUE);
+        }
+        if (httpServerAddressEdit_) {
+            EnableWindow(httpServerAddressEdit_, running ? FALSE : TRUE);
+            InvalidateField(httpServerAddressEdit_);
+        }
+        if (httpServerRootEdit_) {
+            EnableWindow(httpServerRootEdit_, running ? FALSE : TRUE);
+            InvalidateField(httpServerRootEdit_);
+        }
+        if (httpBrowseRootButton_) {
+            EnableWindow(httpBrowseRootButton_, running ? FALSE : TRUE);
+            InvalidateRect(httpBrowseRootButton_, nullptr, TRUE);
+        }
     }
 
     void UpdateHttpStatusLabel() {
@@ -2572,14 +2736,19 @@ private:
         }
         std::wstring status = L"状态：";
         if (httpServer_ && httpServer_->IsRunning()) {
-            status += L"运行中  " + httpServer_->BaseUrl(true);
+            const auto& options = httpServer_->options();
+            status += L"运行中  " + HttpAddressText(options.lanAccess, options.port, true);
         } else {
             status += L"未启动";
         }
         SetWindowTextW(httpServerStatus_, status.c_str());
+        UpdateHttpButtons();
     }
 
     void BrowseHttpRoot() {
+        if (httpServer_ && httpServer_->IsRunning()) {
+            return;
+        }
         IFileDialog* dialog = nullptr;
         if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog)))) {
             return;
@@ -2626,20 +2795,16 @@ private:
     }
 
     void OpenHttpHome() {
-        const AppConfig value = ReadHttpDraftFromControls();
-        LocalHttpServerOptions options = LocalHttpServerService::OptionsFromConfig(value, appDirectory_);
-        std::wstring url = httpServer_ && httpServer_->IsRunning()
-            ? httpServer_->BaseUrl(true)
-            : (L"http://127.0.0.1:" + std::to_wstring(options.port) + L"/");
+        const std::wstring url = httpServer_ && httpServer_->IsRunning()
+            ? HttpAddressText(httpServer_->options().lanAccess, httpServer_->options().port, true)
+            : CurrentHttpAddress(true);
         ShellExecuteW(hwnd_, L"open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
     }
 
     void CopyHttpUrl() {
-        const AppConfig value = ReadHttpDraftFromControls();
-        LocalHttpServerOptions options = LocalHttpServerService::OptionsFromConfig(value, appDirectory_);
         const std::wstring url = httpServer_ && httpServer_->IsRunning()
-            ? httpServer_->BaseUrl(true)
-            : (L"http://127.0.0.1:" + std::to_wstring(options.port) + L"/");
+            ? HttpAddressText(httpServer_->options().lanAccess, httpServer_->options().port, true)
+            : CurrentHttpAddress(true);
         if (!OpenClipboard(hwnd_)) {
             return;
         }
@@ -2669,9 +2834,6 @@ private:
         AppConfig value = ReadHttpDraftFromControls();
         value.httpServerEnabled = true;
         draft_ = value;
-        if (httpServerEnabled_) {
-            SendMessageW(httpServerEnabled_, BM_SETCHECK, BST_CHECKED, 0);
-        }
         std::wstring error;
         const auto options = LocalHttpServerService::OptionsFromConfig(value, appDirectory_);
         const bool ok = restart ? httpServer_->Restart(options, error) : httpServer_->Start(options, error);
@@ -2686,9 +2848,6 @@ private:
         httpServer_->Stop();
         draft_ = ReadHttpDraftFromControls();
         draft_.httpServerEnabled = false;
-        if (httpServerEnabled_) {
-            SendMessageW(httpServerEnabled_, BM_SETCHECK, BST_UNCHECKED, 0);
-        }
         UpdateHttpStatusLabel();
         ShowThemedMessageBox(hwnd_, instance_, theme_, L"HTTP 服务已停止。", L"HTTP 服务", MB_OK | MB_ICONINFORMATION);
     }
@@ -2731,6 +2890,7 @@ private:
             backgroundBrush_ = CreateSolidBrush(ToColorRef(theme_.color(L"dialog", L"normal", L"bg")));
             fieldBrush_ = CreateSolidBrush(ToColorRef(theme_.color(L"edit", L"normal", L"bg")));
             readOnlyFieldBrush_ = CreateSolidBrush(ToColorRef(theme_.color(L"field", L"readonly", L"bg")));
+            panelBrush_ = CreateSolidBrush(ToColorRef(theme_.color(L"panel", L"normal", L"bg")));
             CreateTabs();
 
             showTitle_ = CheckBox(TabDisplay, 101, L"显示标题栏", 34, 64, draft_.showTitle);
@@ -2782,14 +2942,15 @@ private:
             const int behaviorHeadingWidth = 128;
             const int behaviorFrameLeft = behaviorLeft - behaviorPanelPaddingX;
             const int behaviorFrameRight = behaviorRight + behaviorColumnWidth + behaviorPanelPaddingX;
-            const int behaviorWindowFrameTop = 44;
+            const int behaviorWindowFrameTop = 44 + behaviorLayout.sectionGap;
             const int behaviorWindowHeadingY = behaviorWindowFrameTop + behaviorPanelPaddingY;
             const int behaviorWindowRowY = behaviorWindowHeadingY + behaviorTitleGap;
             const int behaviorWindowFrameBottom = behaviorWindowRowY + behaviorRowStep * 2 + behaviorPanelPaddingY;
             AddSectionFrame(TabBehavior, RECT{behaviorFrameLeft, behaviorWindowFrameTop, behaviorFrameRight, behaviorWindowFrameBottom});
-            Label(TabBehavior, L"窗口行为", behaviorLeft, behaviorWindowHeadingY, behaviorHeadingWidth);
+            UsePanelBackground(Label(TabBehavior, L"窗口行为", behaviorLeft, behaviorWindowHeadingY, behaviorHeadingWidth));
             autoDock_ = CheckBox(TabBehavior, 105, L"贴边自动隐藏", behaviorLeft, behaviorWindowRowY, draft_.autoDock, behaviorCheckWidth);
-            Label(TabBehavior, L"停靠延迟", behaviorRight, behaviorWindowRowY + 6, behaviorDelayLabelWidth);
+            UsePanelBackground(autoDock_);
+            UsePanelBackground(Label(TabBehavior, L"停靠延迟", behaviorRight, behaviorWindowRowY + 6, behaviorDelayLabelWidth));
             dockDelayEdit_ = NumberEdit(
                 TabBehavior,
                 ID_DOCK_DELAY,
@@ -2797,32 +2958,38 @@ private:
                 behaviorWindowRowY,
                 behaviorFieldWidth,
                 draft_.dockDelay);
-            Label(
+            UsePanelBackground(Label(
                 TabBehavior,
                 L"ms",
                 behaviorRight + behaviorDelayLabelWidth + behaviorLayout.labelGap + behaviorFieldWidth + behaviorLayout.controlGapX,
                 behaviorWindowRowY + 6,
-                behaviorUnitWidth);
+                behaviorUnitWidth));
             hideInactive_ = CheckBox(TabBehavior, 106, L"失焦隐藏", behaviorLeft, behaviorWindowRowY + behaviorRowStep, draft_.hideWhenInactive, behaviorCheckWidth);
+            UsePanelBackground(hideInactive_);
 
             const int behaviorRunFrameTop = behaviorWindowFrameBottom + behaviorFrameGap;
             const int behaviorRunHeadingY = behaviorRunFrameTop + behaviorPanelPaddingY;
             const int behaviorRunRowY = behaviorRunHeadingY + behaviorTitleGap;
             const int behaviorRunFrameBottom = behaviorRunRowY + behaviorRowStep * 2 + behaviorPanelPaddingY;
             AddSectionFrame(TabBehavior, RECT{behaviorFrameLeft, behaviorRunFrameTop, behaviorFrameRight, behaviorRunFrameBottom});
-            Label(TabBehavior, L"运行与数据", behaviorLeft, behaviorRunHeadingY, behaviorHeadingWidth);
+            UsePanelBackground(Label(TabBehavior, L"运行与数据", behaviorLeft, behaviorRunHeadingY, behaviorHeadingWidth));
             hideAfterLink_ = CheckBox(TabBehavior, 107, L"运行后隐藏", behaviorLeft, behaviorRunRowY, draft_.hideAfterLink, behaviorCheckWidth);
             saveRunCount_ = CheckBox(TabBehavior, 112, L"记录运行次数", behaviorRight, behaviorRunRowY, draft_.saveRunCount, behaviorCheckWidth);
             deleteConfirm_ = CheckBox(TabBehavior, 111, L"删除前确认", behaviorLeft, behaviorRunRowY + behaviorRowStep, draft_.deleteConfirm, behaviorCheckWidth);
+            UsePanelBackground(hideAfterLink_);
+            UsePanelBackground(saveRunCount_);
+            UsePanelBackground(deleteConfirm_);
 
             const int behaviorSystemFrameTop = behaviorRunFrameBottom + behaviorFrameGap;
             const int behaviorSystemHeadingY = behaviorSystemFrameTop + behaviorPanelPaddingY;
             const int behaviorSystemRowY = behaviorSystemHeadingY + behaviorTitleGap;
             const int behaviorSystemFrameBottom = behaviorSystemRowY + behaviorRowStep + behaviorPanelPaddingY;
             AddSectionFrame(TabBehavior, RECT{behaviorFrameLeft, behaviorSystemFrameTop, behaviorFrameRight, behaviorSystemFrameBottom});
-            Label(TabBehavior, L"系统集成", behaviorLeft, behaviorSystemHeadingY, behaviorHeadingWidth);
+            UsePanelBackground(Label(TabBehavior, L"系统集成", behaviorLeft, behaviorSystemHeadingY, behaviorHeadingWidth));
             hideOnStart_ = CheckBox(TabBehavior, 116, L"启动后隐藏", behaviorLeft, behaviorSystemRowY, draft_.hideOnStart, behaviorCheckWidth);
             autoRun_ = CheckBox(TabBehavior, 117, L"开机启动", behaviorRight, behaviorSystemRowY, draft_.autoRun, behaviorCheckWidth);
+            UsePanelBackground(hideOnStart_);
+            UsePanelBackground(autoRun_);
 
             doubleClick_ = CheckBox(TabInteraction, 109, L"双击运行", 34, 64, draft_.doubleClickToRun);
             enterActiveGroup_ = CheckBox(TabInteraction, 124, L"鼠标进入激活分组", 34, 94, draft_.mouseEnterActiveGroup);
@@ -2878,29 +3045,79 @@ private:
             webDavTestButton_ = Button(TabWebDav, ID_WEBDAV_TEST, L"测试连接", 286, 340, 92);
             webDavClearPasswordButton_ = Button(TabWebDav, ID_WEBDAV_CLEAR_PASSWORD, L"清除密码", 390, 340, 90);
 
-            httpServerEnabled_ = CheckBox(TabHttp, 214, L"启用 HTTP 服务", 34, 64, draft_.httpServerEnabled, 160);
-            httpServerAutoStart_ = CheckBox(TabHttp, 215, L"启动应用时自动开启", 214, 64, draft_.httpServerAutoStart, 180);
-            httpServerLanAccess_ = CheckBox(TabHttp, 216, L"允许局域网访问", 414, 64, draft_.httpServerLanAccess, 130);
-            Label(TabHttp, L"端口", 34, 112, 44);
-            httpServerPortEdit_ = NumberEdit(TabHttp, 217, 92, 106, 90, draft_.httpServerPort);
-            Label(TabHttp, L"Web Root", 34, 168, 90);
+            const DialogLayoutMetrics httpLayout = GetDialogLayoutMetrics(theme_, DialogLayoutKind::Compact);
+            const int httpPanelPaddingX = static_cast<int>(theme_.metric(L"panel", L"paddingX", 10.0f));
+            const int httpPanelPaddingY = static_cast<int>(theme_.metric(L"panel", L"paddingY", 8.0f));
+            const int httpFrameWidth = 482;
+            const int httpFrameLeft = httpLayout.CenteredGroupX(settingsClientWidth, httpFrameWidth);
+            const int httpFrameRight = httpFrameLeft + httpFrameWidth;
+            const int httpContentLeft = httpFrameLeft + httpPanelPaddingX;
+            const int httpContentRight = httpFrameRight - httpPanelPaddingX;
+            const int httpHeadingWidth = 128;
+            const int httpLabelWidth = 92;
+            const int httpFieldX = httpContentLeft + httpLabelWidth + httpLayout.labelGap;
+            const int httpRowStep = httpLayout.RowStep(ThemedControls::CheckBoxHeight(theme_));
+            const int httpFieldRowStep = httpLayout.RowStep(ThemedControls::EditFrameHeight(theme_));
+            const int httpLabelRowStep = httpLayout.RowStep(ThemedControls::LabelHeight(theme_));
+            const int httpButtonRowStep = httpLayout.RowStep(ThemedControls::CompactButtonHeight(theme_));
+            const int httpTitleGap = ThemedControls::LabelHeight(theme_) + std::max(3, httpLayout.rowGap - 3);
+            const int httpFrameGap = httpLayout.sectionGap;
+
+            const int httpOptionsFrameTop = 44 + httpLayout.sectionGap;
+            const int httpOptionsHeadingY = httpOptionsFrameTop + httpPanelPaddingY;
+            const int httpOptionsRowY = httpOptionsHeadingY + httpTitleGap;
+            const int httpOptionsFrameBottom = httpOptionsRowY + httpRowStep + httpPanelPaddingY;
+            AddSectionFrame(TabHttp, RECT{httpFrameLeft, httpOptionsFrameTop, httpFrameRight, httpOptionsFrameBottom});
+            UsePanelBackground(Label(TabHttp, L"服务选项", httpContentLeft, httpOptionsHeadingY, httpHeadingWidth));
+            httpServerAutoStart_ = CheckBox(TabHttp, 215, L"随应用启动", httpContentLeft, httpOptionsRowY, draft_.httpServerAutoStart, 220);
+            UsePanelBackground(httpServerAutoStart_);
+
+            const int httpBindingFrameTop = httpOptionsFrameBottom + httpFrameGap;
+            const int httpBindingHeadingY = httpBindingFrameTop + httpPanelPaddingY;
+            const int httpBindingRowY = httpBindingHeadingY + httpTitleGap;
+            const int httpBindingFrameBottom = httpBindingRowY + httpFieldRowStep + ThemedControls::EditFrameHeight(theme_) + httpPanelPaddingY;
+            AddSectionFrame(TabHttp, RECT{httpFrameLeft, httpBindingFrameTop, httpFrameRight, httpBindingFrameBottom});
+            UsePanelBackground(Label(TabHttp, L"站点绑定", httpContentLeft, httpBindingHeadingY, httpHeadingWidth));
+            UsePanelBackground(Label(TabHttp, L"站点网址", httpContentLeft, httpBindingRowY + 6, httpLabelWidth));
+            httpServerAddressEdit_ = FramedEdit(
+                TabHttp,
+                ID_HTTP_ADDRESS,
+                httpFieldX,
+                httpBindingRowY,
+                206,
+                HttpAddressText(true, draft_.httpServerPort, false));
+            UsePanelBackground(Label(TabHttp, L"绑定磁盘路径", httpContentLeft, httpBindingRowY + httpFieldRowStep + 6, httpLabelWidth));
             httpServerRootEdit_ = FramedEdit(
                 TabHttp,
                 218,
-                34,
-                192,
-                314,
+                httpFieldX,
+                httpBindingRowY + httpFieldRowStep,
+                206,
                 Trim(draft_.httpServerRootPath).empty() ? LocalHttpServerService::DefaultRootPath(appDirectory_).wstring() : draft_.httpServerRootPath);
-            Button(TabHttp, ID_HTTP_BROWSE_ROOT, L"选择", 360, 193, 54);
-            Button(TabHttp, ID_HTTP_OPEN_ROOT, L"打开目录", 424, 193, 72);
-            httpServerStatus_ = Label(TabHttp, L"", 34, 238, 462);
-            Button(TabHttp, ID_HTTP_START, L"启动", 34, 276, 72);
-            Button(TabHttp, ID_HTTP_STOP, L"停止", 116, 276, 72);
-            Button(TabHttp, ID_HTTP_RESTART, L"重启", 198, 276, 72);
-            Button(TabHttp, ID_HTTP_OPEN_HOME, L"打开网站", 290, 276, 84);
-            Button(TabHttp, ID_HTTP_COPY_URL, L"复制地址", 384, 276, 84);
-            Button(TabHttp, ID_HTTP_OPEN_CONFIG_DIR, L"配置目录", 34, 324, 92);
-            Label(TabHttp, L"详细权限、账号密码、上传、MIME 与下载策略请在配置目录的 http-server.ini 中修改；重启 HTTP 服务后生效。", 142, 328, 354);
+            const int httpBrowseX = httpFieldX + 206 + httpLayout.controlGapX;
+            httpBrowseRootButton_ = Button(TabHttp, ID_HTTP_BROWSE_ROOT, L"选择", httpBrowseX, httpBindingRowY + httpFieldRowStep + 1, 54);
+            Button(TabHttp, ID_HTTP_OPEN_ROOT, L"打开目录", httpBrowseX + 54 + httpLayout.controlGapX, httpBindingRowY + httpFieldRowStep + 1, 84);
+
+            const int httpControlFrameTop = httpBindingFrameBottom + httpFrameGap;
+            const int httpControlHeadingY = httpControlFrameTop + httpPanelPaddingY;
+            const int httpStatusY = httpControlHeadingY + httpTitleGap;
+            const int httpButtonY = httpStatusY + httpLabelRowStep;
+            const int httpConfigY = httpButtonY + httpButtonRowStep;
+            const int httpControlFrameBottom = httpConfigY + ThemedControls::CompactButtonHeight(theme_) + httpPanelPaddingY;
+            AddSectionFrame(TabHttp, RECT{httpFrameLeft, httpControlFrameTop, httpFrameRight, httpControlFrameBottom});
+            UsePanelBackground(Label(TabHttp, L"运行控制", httpContentLeft, httpControlHeadingY, httpHeadingWidth));
+            httpServerStatus_ = Label(TabHttp, L"", httpContentLeft, httpStatusY + 4, httpContentRight - httpContentLeft);
+            UsePanelBackground(httpServerStatus_);
+            httpStartButton_ = Button(TabHttp, ID_HTTP_START, L"启动", httpContentLeft, httpButtonY, 72);
+            httpStopButton_ = Button(TabHttp, ID_HTTP_STOP, L"停止", httpContentLeft + 82, httpButtonY, 72);
+            httpRestartButton_ = Button(TabHttp, ID_HTTP_RESTART, L"重启", httpContentLeft + 164, httpButtonY, 72);
+            ThemedControls::SetButtonPalette(httpStartButton_, ActionButtonPalette(Color{0.09f, 0.64f, 0.29f, 1.0f}, Color{0.08f, 0.50f, 0.24f, 1.0f}, Color{0.07f, 0.40f, 0.20f, 1.0f}));
+            ThemedControls::SetButtonPalette(httpStopButton_, ActionButtonPalette(Color{0.86f, 0.15f, 0.15f, 1.0f}, Color{0.73f, 0.11f, 0.11f, 1.0f}, Color{0.60f, 0.09f, 0.09f, 1.0f}));
+            ThemedControls::SetButtonPalette(httpRestartButton_, ActionButtonPalette(Color{0.85f, 0.47f, 0.02f, 1.0f}, Color{0.71f, 0.36f, 0.01f, 1.0f}, Color{0.57f, 0.28f, 0.01f, 1.0f}));
+            Button(TabHttp, ID_HTTP_OPEN_HOME, L"打开网站", httpContentLeft + 248, httpButtonY, 84);
+            Button(TabHttp, ID_HTTP_COPY_URL, L"复制地址", httpContentLeft + 342, httpButtonY, 84);
+            Button(TabHttp, ID_HTTP_OPEN_CONFIG_DIR, L"配置目录", httpContentLeft, httpConfigY, 92);
+            UsePanelBackground(Label(TabHttp, L"详细权限、账号密码、上传、MIME 与下载策略请在配置目录的 http-server.ini 中修改；重启 HTTP 服务后生效。", httpContentLeft + 108, httpConfigY + 4, httpContentRight - httpContentLeft - 108));
             UpdateHttpStatusLabel();
 
             const DialogLayoutMetrics backupLayout = GetDialogLayoutMetrics(theme_, DialogLayoutKind::Compact);
@@ -2983,7 +3200,6 @@ private:
             return reinterpret_cast<LRESULT>(fieldBrush_ ? fieldBrush_ : GetStockObject(WHITE_BRUSH));
         }
         case WM_CTLCOLORSTATIC:
-        case WM_CTLCOLORLISTBOX:
         case WM_CTLCOLORBTN: {
             HDC dc = reinterpret_cast<HDC>(wParam);
             SetBkMode(dc, TRANSPARENT);
@@ -2993,6 +3209,15 @@ private:
             if (fieldChild && readOnlyFieldBrush_) {
                 return reinterpret_cast<LRESULT>(readOnlyFieldBrush_);
             }
+            if (IsPanelBackgroundChild(child) && panelBrush_) {
+                return reinterpret_cast<LRESULT>(panelBrush_);
+            }
+            return reinterpret_cast<LRESULT>(backgroundBrush_ ? backgroundBrush_ : GetStockObject(WHITE_BRUSH));
+        }
+        case WM_CTLCOLORLISTBOX: {
+            HDC dc = reinterpret_cast<HDC>(wParam);
+            SetBkMode(dc, TRANSPARENT);
+            SetTextColor(dc, ToColorRef(theme_.color(L"label", L"normal", L"text")));
             return reinterpret_cast<LRESULT>(backgroundBrush_ ? backgroundBrush_ : GetStockObject(WHITE_BRUSH));
         }
         case WM_DRAWITEM:
@@ -3011,11 +3236,17 @@ private:
                 ShowTab(static_cast<int>(LOWORD(wParam) - ID_SETTINGS_TAB_BASE));
                 return 0;
             }
-            if (LOWORD(wParam) >= ID_TAG_ALIGN_LEFT && LOWORD(wParam) <= ID_TAG_ALIGN_RIGHT) {
-                tagAlignIndex_ = static_cast<int>(LOWORD(wParam) - ID_TAG_ALIGN_LEFT);
-                UpdateTagAlignButtons();
-                return 0;
+        if (LOWORD(wParam) >= ID_TAG_ALIGN_LEFT && LOWORD(wParam) <= ID_TAG_ALIGN_RIGHT) {
+            tagAlignIndex_ = static_cast<int>(LOWORD(wParam) - ID_TAG_ALIGN_LEFT);
+            UpdateTagAlignButtons();
+            return 0;
+        }
+        if (LOWORD(wParam) == ID_HTTP_ADDRESS && (HIWORD(wParam) == EN_KILLFOCUS || HIWORD(wParam) == EN_CHANGE)) {
+            UpdateHttpStatusLabel();
+            if (HIWORD(wParam) == EN_KILLFOCUS) {
+                UpdateHttpAddressField(false);
             }
+        }
             if (LOWORD(wParam) == ID_MAIN_HOTKEY_CAPTURE) {
                 TrySetMainHotKey(ShowHotKeyCaptureDialog(hwnd_, instance_, theme_, draft_.mainHotKey));
                 return 0;
@@ -3138,6 +3369,10 @@ private:
                 DeleteObject(readOnlyFieldBrush_);
                 readOnlyFieldBrush_ = nullptr;
             }
+            if (panelBrush_) {
+                DeleteObject(panelBrush_);
+                panelBrush_ = nullptr;
+            }
             if (ownsFont_ && font_) {
                 DeleteObject(font_);
                 font_ = nullptr;
@@ -3172,6 +3407,7 @@ private:
     HBRUSH backgroundBrush_ = nullptr;
     HBRUSH fieldBrush_ = nullptr;
     HBRUSH readOnlyFieldBrush_ = nullptr;
+    HBRUSH panelBrush_ = nullptr;
     bool ownsFont_ = false;
     bool ownerWasEnabled_ = false;
     bool ownerRestored_ = false;
@@ -3183,6 +3419,7 @@ private:
     std::vector<TabChild> tabChildren_;
     std::vector<SectionFrame> sectionFrames_;
     std::vector<FieldFrame> fieldFrames_;
+    std::vector<HWND> panelBackgroundChildren_;
     HWND showTitle_ = nullptr;
     HWND showGroup_ = nullptr;
     HWND showTag_ = nullptr;
@@ -3229,12 +3466,14 @@ private:
     HWND webDavDownloadButton_ = nullptr;
     HWND webDavTestButton_ = nullptr;
     HWND webDavClearPasswordButton_ = nullptr;
-    HWND httpServerEnabled_ = nullptr;
     HWND httpServerAutoStart_ = nullptr;
-    HWND httpServerLanAccess_ = nullptr;
-    HWND httpServerPortEdit_ = nullptr;
+    HWND httpServerAddressEdit_ = nullptr;
     HWND httpServerRootEdit_ = nullptr;
     HWND httpServerStatus_ = nullptr;
+    HWND httpBrowseRootButton_ = nullptr;
+    HWND httpStartButton_ = nullptr;
+    HWND httpStopButton_ = nullptr;
+    HWND httpRestartButton_ = nullptr;
     HWND okButton_ = nullptr;
     HWND applyButton_ = nullptr;
     HWND cancelButton_ = nullptr;

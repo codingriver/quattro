@@ -96,7 +96,7 @@ bool WaitForHealth(int port) {
 }
 
 bool StartOnAvailablePort(LocalHttpServerService& service, LocalHttpServerOptions& options, std::wstring& error) {
-    const int basePort = 43127 + static_cast<int>(GetCurrentProcessId() % 1000);
+    const int basePort = 18080 + static_cast<int>(GetCurrentProcessId() % 1000);
     for (int offset = 0; offset < 80; ++offset) {
         options.port = basePort + offset;
         if (service.Start(options, error)) {

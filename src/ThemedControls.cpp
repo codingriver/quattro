@@ -14,6 +14,9 @@ const wchar_t kControlThemeProp[] = L"QuattroThemedControlTheme";
 const wchar_t kControlSelectedProp[] = L"QuattroThemedControlSelected";
 const wchar_t kControlCheckedProp[] = L"QuattroThemedControlChecked";
 const wchar_t kControlTextProp[] = L"QuattroThemedControlText";
+const wchar_t kControlBackgroundComponentProp[] = L"QuattroThemedControlBackgroundComponent";
+const wchar_t kControlMultilineProp[] = L"QuattroThemedControlMultiline";
+const wchar_t kControlButtonPaletteProp[] = L"QuattroThemedControlButtonPalette";
 HANDLE ButtonKind() {
     return reinterpret_cast<HANDLE>(static_cast<INT_PTR>(1));
 }
@@ -63,8 +66,8 @@ std::wstring WindowText(HWND hwnd) {
     return text;
 }
 
-void SetControlTextProp(HWND hwnd, const wchar_t* text) {
-    HGLOBAL oldMemory = static_cast<HGLOBAL>(RemovePropW(hwnd, kControlTextProp));
+void SetStringProp(HWND hwnd, const wchar_t* propName, const wchar_t* text) {
+    HGLOBAL oldMemory = static_cast<HGLOBAL>(RemovePropW(hwnd, propName));
     if (oldMemory) {
         GlobalFree(oldMemory);
     }
@@ -82,17 +85,13 @@ void SetControlTextProp(HWND hwnd, const wchar_t* text) {
     }
     memcpy(data, value.c_str(), bytes);
     GlobalUnlock(memory);
-    if (!SetPropW(hwnd, kControlTextProp, memory)) {
+    if (!SetPropW(hwnd, propName, memory)) {
         GlobalFree(memory);
     }
 }
 
-std::wstring ControlText(HWND hwnd) {
-    std::wstring text = WindowText(hwnd);
-    if (!text.empty()) {
-        return text;
-    }
-    HGLOBAL memory = static_cast<HGLOBAL>(GetPropW(hwnd, kControlTextProp));
+std::wstring StringProp(HWND hwnd, const wchar_t* propName) {
+    HGLOBAL memory = static_cast<HGLOBAL>(GetPropW(hwnd, propName));
     if (!memory) {
         return {};
     }
@@ -100,9 +99,53 @@ std::wstring ControlText(HWND hwnd) {
     if (!data) {
         return {};
     }
-    text = data;
+    std::wstring text = data;
     GlobalUnlock(memory);
     return text;
+}
+
+void SetControlTextProp(HWND hwnd, const wchar_t* text) {
+    SetStringProp(hwnd, kControlTextProp, text);
+}
+
+std::wstring ControlText(HWND hwnd) {
+    std::wstring text = WindowText(hwnd);
+    if (!text.empty()) {
+        return text;
+    }
+    return StringProp(hwnd, kControlTextProp);
+}
+
+std::wstring BackgroundComponent(HWND hwnd) {
+    std::wstring component = StringProp(hwnd, kControlBackgroundComponentProp);
+    return component.empty() ? L"dialog" : component;
+}
+
+const ThemedControls::ButtonPalette* CustomButtonPalette(HWND hwnd) {
+    return static_cast<const ThemedControls::ButtonPalette*>(GetPropW(hwnd, kControlButtonPaletteProp));
+}
+
+void SetButtonDrawColors(const Theme& theme, HWND hwnd, const wchar_t* component, const wchar_t* state, bool disabled, COLORREF& fill, COLORREF& border, COLORREF& text) {
+    const auto* palette = disabled ? nullptr : CustomButtonPalette(hwnd);
+    if (palette) {
+        if (std::wcscmp(state, L"pressed") == 0) {
+            fill = ToColorRef(palette->pressedBg);
+            border = ToColorRef(palette->pressedBorder);
+            text = ToColorRef(palette->pressedText);
+        } else if (std::wcscmp(state, L"hover") == 0) {
+            fill = ToColorRef(palette->hoverBg);
+            border = ToColorRef(palette->hoverBorder);
+            text = ToColorRef(palette->hoverText);
+        } else {
+            fill = ToColorRef(palette->normalBg);
+            border = ToColorRef(palette->normalBorder);
+            text = ToColorRef(palette->normalText);
+        }
+        return;
+    }
+    fill = ToColorRef(theme.color(component, state, L"bg"));
+    border = ToColorRef(theme.color(component, state, L"border"));
+    text = ToColorRef(theme.color(component, state, L"text"));
 }
 
 void FillRoundRect(HDC dc, RECT rect, int radius, COLORREF fill, COLORREF border, int borderWidth) {
@@ -312,6 +355,10 @@ LRESULT CALLBACK ThemedControlProc(HWND hwnd, UINT message, WPARAM wParam, LPARA
     case BM_CLICK:
         if (GetPropW(hwnd, kControlKindProp) == CheckBoxKind() && IsWindowEnabled(hwnd)) {
             ToggleChecked(hwnd);
+            if (HWND parent = GetParent(hwnd)) {
+                SendMessageW(parent, WM_COMMAND, MAKEWPARAM(GetDlgCtrlID(hwnd), BN_CLICKED), reinterpret_cast<LPARAM>(hwnd));
+            }
+            return 0;
         }
         break;
     case WM_LBUTTONUP:
@@ -376,6 +423,13 @@ LRESULT CALLBACK ThemedControlProc(HWND hwnd, UINT message, WPARAM wParam, LPARA
         if (textMemory) {
             GlobalFree(textMemory);
         }
+        HGLOBAL backgroundComponentMemory = static_cast<HGLOBAL>(RemovePropW(hwnd, kControlBackgroundComponentProp));
+        if (backgroundComponentMemory) {
+            GlobalFree(backgroundComponentMemory);
+        }
+        RemovePropW(hwnd, kControlMultilineProp);
+        auto* palette = static_cast<ThemedControls::ButtonPalette*>(RemovePropW(hwnd, kControlButtonPaletteProp));
+        delete palette;
         RemoveWindowSubclass(hwnd, ThemedControlProc, subclassId);
         break;
     }
@@ -397,18 +451,22 @@ void DrawButton(const Theme& theme, const DRAWITEMSTRUCT* draw) {
     const wchar_t* state = disabled ? L"disabled" : (pressed ? L"pressed" : (hover ? L"hover" : L"normal"));
 
     RECT rect = draw->rcItem;
+    COLORREF fill{};
+    COLORREF border{};
+    COLORREF textColor{};
+    SetButtonDrawColors(theme, draw->hwndItem, L"button", state, disabled, fill, border, textColor);
     const int radius = static_cast<int>(theme.metric(L"button", L"radius", 6.0f));
     const int borderWidth = static_cast<int>(theme.metric(L"button", L"borderWidth", 1.0f));
     FillRoundRect(
         draw->hDC,
         rect,
         radius,
-        ToColorRef(theme.color(L"button", state, L"bg")),
-        ToColorRef(theme.color(L"button", focused ? L"focused" : state, L"border")),
+        fill,
+        focused ? ToColorRef(theme.color(L"button", L"focused", L"border")) : border,
         borderWidth);
 
     SetBkMode(draw->hDC, TRANSPARENT);
-    SetTextColor(draw->hDC, ToColorRef(theme.color(L"button", state, L"text")));
+    SetTextColor(draw->hDC, textColor);
     HFONT font = reinterpret_cast<HFONT>(SendMessageW(draw->hwndItem, WM_GETFONT, 0, 0));
     HGDIOBJ oldFont = font ? SelectObject(draw->hDC, font) : nullptr;
     std::wstring text = ControlText(draw->hwndItem);
@@ -427,18 +485,22 @@ void DrawPrimaryButton(const Theme& theme, const DRAWITEMSTRUCT* draw) {
     const wchar_t* state = disabled ? L"disabled" : (pressed ? L"pressed" : (hover ? L"hover" : L"normal"));
 
     RECT rect = draw->rcItem;
+    COLORREF fill{};
+    COLORREF border{};
+    COLORREF textColor{};
+    SetButtonDrawColors(theme, draw->hwndItem, L"primaryButton", state, disabled, fill, border, textColor);
     const int radius = static_cast<int>(theme.metric(L"button", L"radius", 6.0f));
     const int borderWidth = static_cast<int>(theme.metric(L"button", L"borderWidth", 1.0f));
     FillRoundRect(
         draw->hDC,
         rect,
         radius,
-        ToColorRef(theme.color(L"primaryButton", state, L"bg")),
-        ToColorRef(theme.color(L"primaryButton", focused ? L"focused" : state, L"border")),
+        fill,
+        focused ? ToColorRef(theme.color(L"primaryButton", L"focused", L"border")) : border,
         borderWidth);
 
     SetBkMode(draw->hDC, TRANSPARENT);
-    SetTextColor(draw->hDC, ToColorRef(theme.color(L"primaryButton", state, L"text")));
+    SetTextColor(draw->hDC, textColor);
     HFONT font = reinterpret_cast<HFONT>(SendMessageW(draw->hwndItem, WM_GETFONT, 0, 0));
     HGDIOBJ oldFont = font ? SelectObject(draw->hDC, font) : nullptr;
     std::wstring text = ControlText(draw->hwndItem);
@@ -496,7 +558,8 @@ void DrawCheckBox(const Theme& theme, const DRAWITEMSTRUCT* draw) {
     const wchar_t* state = disabled ? L"disabled" : (checked ? (hover ? L"checkedHover" : L"checked") : (hover ? L"hover" : L"normal"));
 
     RECT rect = draw->rcItem;
-    HBRUSH bg = CreateSolidBrush(ToColorRef(theme.color(L"dialog", L"normal", L"bg")));
+    const std::wstring backgroundComponent = BackgroundComponent(draw->hwndItem);
+    HBRUSH bg = CreateSolidBrush(ToColorRef(theme.color(backgroundComponent, L"normal", L"bg")));
     FillRect(draw->hDC, &rect, bg);
     DeleteObject(bg);
 
@@ -523,13 +586,21 @@ void DrawCheckBox(const Theme& theme, const DRAWITEMSTRUCT* draw) {
         DeleteObject(pen);
     }
 
+    const bool multiline = GetPropW(draw->hwndItem, kControlMultilineProp) != nullptr;
     RECT textRect = ThemedControls::CheckBoxTextRect(theme, rect);
+    if (multiline) {
+        textRect.top = rect.top + static_cast<int>(theme.metric(L"checkbox", L"textOffsetY", 1.0f));
+        textRect.bottom = rect.bottom;
+    }
     SetBkMode(draw->hDC, TRANSPARENT);
     SetTextColor(draw->hDC, ToColorRef(theme.color(L"checkbox", state, L"text")));
     HFONT font = reinterpret_cast<HFONT>(SendMessageW(draw->hwndItem, WM_GETFONT, 0, 0));
     HGDIOBJ oldFont = font ? SelectObject(draw->hDC, font) : nullptr;
     std::wstring text = ControlText(draw->hwndItem);
-    DrawTextW(draw->hDC, text.c_str(), static_cast<int>(text.size()), &textRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    const UINT format = multiline
+        ? (DT_LEFT | DT_WORDBREAK)
+        : (DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    DrawTextW(draw->hDC, text.c_str(), static_cast<int>(text.size()), &textRect, format);
     if (oldFont) {
         SelectObject(draw->hDC, oldFont);
     }
@@ -920,6 +991,39 @@ HWND CreateCheckBox(HINSTANCE instance, HWND parent, int id, const wchar_t* text
         SendMessageW(hwnd, BM_SETCHECK, checked ? BST_CHECKED : BST_UNCHECKED, 0);
     }
     return hwnd;
+}
+
+void SetControlBackgroundComponent(HWND hwnd, const wchar_t* component) {
+    if (!hwnd) {
+        return;
+    }
+    SetStringProp(hwnd, kControlBackgroundComponentProp, component);
+    InvalidateRect(hwnd, nullptr, TRUE);
+}
+
+void SetControlMultiline(HWND hwnd, bool multiline) {
+    if (!hwnd) {
+        return;
+    }
+    if (multiline) {
+        SetPropW(hwnd, kControlMultilineProp, reinterpret_cast<HANDLE>(static_cast<INT_PTR>(1)));
+    } else {
+        RemovePropW(hwnd, kControlMultilineProp);
+    }
+    InvalidateRect(hwnd, nullptr, TRUE);
+}
+
+void SetButtonPalette(HWND hwnd, const ButtonPalette& palette) {
+    if (!hwnd) {
+        return;
+    }
+    auto* oldPalette = static_cast<ButtonPalette*>(RemovePropW(hwnd, kControlButtonPaletteProp));
+    delete oldPalette;
+    auto* copy = new ButtonPalette(palette);
+    if (!SetPropW(hwnd, kControlButtonPaletteProp, copy)) {
+        delete copy;
+    }
+    InvalidateRect(hwnd, nullptr, TRUE);
 }
 
 HWND CreateTabButton(HINSTANCE instance, HWND parent, int id, const wchar_t* text, int x, int y, int width, int height, HFONT font, bool selected) {

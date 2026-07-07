@@ -54,6 +54,23 @@ HWND CreateCheckBox(
     HFONT font,
     bool checked);
 
+void SetControlBackgroundComponent(HWND hwnd, const wchar_t* component);
+void SetControlMultiline(HWND hwnd, bool multiline);
+
+struct ButtonPalette {
+    Color normalBg;
+    Color normalText;
+    Color normalBorder;
+    Color hoverBg;
+    Color hoverText;
+    Color hoverBorder;
+    Color pressedBg;
+    Color pressedText;
+    Color pressedBorder;
+};
+
+void SetButtonPalette(HWND hwnd, const ButtonPalette& palette);
+
 HWND CreateTabButton(
     HINSTANCE instance,
     HWND parent,

@@ -7,7 +7,7 @@
 #include <string>
 
 struct LocalHttpServerOptions {
-    int port = 43127;
+    int port = 18080;
     std::filesystem::path rootPath;
     bool lanAccess = true;
 };
