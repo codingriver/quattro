@@ -238,6 +238,7 @@ int wmain() {
     if (occupiedSocket != INVALID_SOCKET) {
         std::wstring conflictError;
         ok = Require(!service.Start(options, conflictError), L"server should fail when port is already occupied") && ok;
+        ok = Require(!service.lastError().empty(), L"failed start should keep last error for status UI") && ok;
         closesocket(occupiedSocket);
     }
     ok = Require(service.Start(options, error), L"server should restart after occupied port is released") && ok;

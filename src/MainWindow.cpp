@@ -14,8 +14,11 @@
 #include "ThemedControls.h"
 #include "TodoEditDialog.h"
 #include "TodoSchedule.h"
+#include "UpdateCheckService.h"
+#include "UpdateInstaller.h"
 #include "UrlEditDialog.h"
 #include "Utilities.h"
+#include "Version.h"
 #include "WebDavRecoveryService.h"
 #include "../resources/resource.h"
 
@@ -2998,6 +3001,9 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         case ID_MENU_ABOUT:
             ShowAbout();
             return 0;
+        case ID_MENU_CHECK_UPDATE:
+            CheckForUpdates();
+            return 0;
         case ID_MENU_HELP:
             OpenHelp();
             return 0;
@@ -4878,12 +4884,75 @@ void MainWindow::OnUrlIconDownloaded(int linkId, bool success) {
 void MainWindow::ShowAbout() {
     const std::wstring privilegeText = runningAsAdmin_ ? L"管理员" : L"普通用户";
     const std::wstring message =
-        std::wstring(kAppDisplayName) + L"\n\n轻量级 Windows 快速启动工具\nC++ / Win32 / Direct2D / DirectWrite\n\n开源仓库：https://github.com/codingriver/quattro\n当前权限：" + privilegeText;
+        std::wstring(kAppDisplayName) + L"\n版本：" + QuattroVersionText() +
+        L"\n\n轻量级 Windows 快速启动工具\nC++ / Win32 / Direct2D / DirectWrite\n\n开源仓库：https://github.com/codingriver/quattro\n当前权限：" + privilegeText;
     MessageBoxW(
         hwnd_,
         message.c_str(),
         L"关于",
         MB_OK | MB_ICONINFORMATION);
+}
+
+void MainWindow::CheckForUpdates() {
+    UpdateCheckService service(appDirectory_, config_.updateUrl);
+    UpdateReleaseInfo info;
+    std::wstring error;
+    if (!service.CheckLatest(info, error)) {
+        MessageBoxW(hwnd_, error.empty() ? L"检查更新失败。" : error.c_str(), L"检查更新", MB_OK | MB_ICONWARNING);
+        return;
+    }
+
+    if (!info.updateAvailable) {
+        const std::wstring message = L"当前已是最新版本。\n\n当前版本：" + info.currentVersion + L"\n最新版本：" + info.latestVersion;
+        MessageBoxW(hwnd_, message.c_str(), L"检查更新", MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+
+    std::wstring notes = info.releaseNotes;
+    if (notes.size() > 360) {
+        notes = notes.substr(0, 360) + L"...";
+    }
+    const std::wstring prompt =
+        L"发现新版本。\n\n当前版本：" + info.currentVersion +
+        L"\n最新版本：" + info.latestVersion +
+        L"\n更新包：" + info.assetName +
+        (notes.empty() ? L"" : L"\n\n发布说明：\n" + notes) +
+        L"\n\n选择“是”下载并自动覆盖更新；选择“否”打开发布页。";
+    const int choice = MessageBoxW(hwnd_, prompt.c_str(), L"检查更新", MB_YESNOCANCEL | MB_ICONINFORMATION);
+    if (choice == IDNO) {
+        OpenConfiguredUrl(info.releaseUrl, L"检查更新");
+        return;
+    }
+    if (choice != IDYES) {
+        return;
+    }
+
+    UpdateDownloadResult download;
+    if (!service.DownloadUpdate(info, download, error)) {
+        MessageBoxW(hwnd_, error.empty() ? L"下载更新失败。" : error.c_str(), L"检查更新", MB_OK | MB_ICONWARNING);
+        return;
+    }
+
+    if (!download.checksumVerified) {
+        const std::wstring warning =
+            (download.checksumMessage.empty() ? L"更新包未完成 SHA256 校验。" : download.checksumMessage) +
+            L"\n\n仍要继续自动覆盖更新吗？";
+        if (MessageBoxW(hwnd_, warning.c_str(), L"检查更新", MB_YESNO | MB_ICONWARNING) != IDYES) {
+            return;
+        }
+    }
+
+    UpdateInstallPlan plan;
+    plan.downloadedExe = download.filePath;
+    plan.currentExe = CurrentExecutablePath();
+    plan.logPath = appDirectory_ / L"logs" / L"update.log";
+    if (!LaunchEmbeddedUpdater(plan, error)) {
+        MessageBoxW(hwnd_, error.empty() ? L"启动更新器失败。" : error.c_str(), L"检查更新", MB_OK | MB_ICONWARNING);
+        return;
+    }
+
+    WriteAppLog(L"更新器已启动，准备退出当前进程。");
+    DestroyWindow(hwnd_);
 }
 
 void MainWindow::OpenHelp() {
@@ -5762,6 +5831,7 @@ void MainWindow::ShowTrayMenu(POINT screenPoint) {
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_RESET_LAYOUT, L"重置布局");
     AppendThemedSeparator(menu);
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_ABOUT, L"关于");
+    AppendThemedMenuItem(menu, MF_STRING, ID_MENU_CHECK_UPDATE, L"检查更新");
     AppendThemedSeparator(menu);
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_EXIT, L"退出");
     ActivateWindow(hwnd_);
@@ -5803,6 +5873,7 @@ void MainWindow::ShowMainMenu(POINT screenPoint) {
     AppendThemedSeparator(menu);
     AppendUnifiedViewOptionItems(menu);
     AppendThemedSeparator(menu);
+    AppendThemedMenuItem(menu, MF_STRING, ID_MENU_CHECK_UPDATE, L"检查更新");
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_EXIT, L"关闭退出");
     ActivateWindow(hwnd_);
     TrackPopupMenu(menu, TPM_RIGHTBUTTON, screenPoint.x, screenPoint.y, 0, hwnd_, nullptr);

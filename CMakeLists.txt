@@ -1,6 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(Quattro LANGUAGES C CXX)
+set(QUATTRO_VERSION "0.1.0" CACHE STRING "Quattro package version")
+project(Quattro VERSION ${QUATTRO_VERSION} LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -43,6 +44,46 @@ file(GLOB_RECURSE EMBEDDED_ASSET_DIR_INPUTS CONFIGURE_DEPENDS
 list(APPEND EMBEDDED_ASSET_INPUTS ${EMBEDDED_ASSET_DIR_INPUTS})
 
 set(EMBEDDED_ASSETS_CPP "${CMAKE_CURRENT_BINARY_DIR}/generated/EmbeddedAssets.cpp")
+set(EMBEDDED_UPDATER_CPP "${CMAKE_CURRENT_BINARY_DIR}/generated/EmbeddedUpdater.cpp")
+configure_file("${CMAKE_CURRENT_SOURCE_DIR}/src/Version.h.in" "${CMAKE_CURRENT_BINARY_DIR}/generated/Version.h" @ONLY)
+configure_file("${CMAKE_CURRENT_SOURCE_DIR}/resources/VersionResource.h.in" "${CMAKE_CURRENT_BINARY_DIR}/generated/VersionResource.h" @ONLY)
+
+add_executable(QuattroUpdater WIN32
+    src/updater/UpdaterMain.cpp
+)
+
+target_compile_definitions(QuattroUpdater PRIVATE
+    UNICODE
+    _UNICODE
+    WINVER=0x0A00
+    _WIN32_WINNT=0x0A00
+    NOMINMAX
+)
+
+target_compile_options(QuattroUpdater PRIVATE
+    $<$<CXX_COMPILER_ID:MSVC>:/W4 /permissive- /EHsc /utf-8>
+)
+
+target_link_libraries(QuattroUpdater PRIVATE
+    user32
+)
+
+target_link_options(QuattroUpdater PRIVATE
+    $<$<CXX_COMPILER_ID:MSVC>:/MANIFEST:EMBED>
+)
+
+add_custom_command(
+    OUTPUT "${EMBEDDED_UPDATER_CPP}"
+    COMMAND powershell -ExecutionPolicy Bypass -File "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate-embedded-updater.ps1"
+            -Updater "$<TARGET_FILE:QuattroUpdater>"
+            -Output "${EMBEDDED_UPDATER_CPP}"
+    DEPENDS
+        QuattroUpdater
+        "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate-embedded-updater.ps1"
+    COMMENT "Embedding updater executable"
+    VERBATIM
+)
+
 add_custom_command(
     OUTPUT "${EMBEDDED_ASSETS_CPP}"
     COMMAND powershell -ExecutionPolicy Bypass -File "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate-embedded-assets.ps1"
@@ -104,6 +145,7 @@ target_compile_options(pugixml PRIVATE
 
 add_executable(Quattro WIN32
     ${EMBEDDED_ASSETS_CPP}
+    ${EMBEDDED_UPDATER_CPP}
     resources/Quattro.rc
     src/main.cpp
     src/AppLog.cpp
@@ -133,6 +175,8 @@ add_executable(Quattro WIN32
     src/ThemedControls.cpp
     src/TodoEditDialog.cpp
     src/TodoSchedule.cpp
+    src/UpdateCheckService.cpp
+    src/UpdateInstaller.cpp
     src/UrlEditDialog.cpp
     src/UrlIconDownloadService.cpp
     src/Utilities.cpp
@@ -170,6 +214,7 @@ target_compile_options(Quattro PRIVATE
 
 target_include_directories(Quattro PRIVATE
     src
+    "${CMAKE_CURRENT_BINARY_DIR}/generated"
 )
 
 if(QUATTRO_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/UnitTests.cpp")

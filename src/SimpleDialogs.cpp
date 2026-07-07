@@ -2731,17 +2731,31 @@ private:
     }
 
     void UpdateHttpStatusLabel() {
-        if (!httpServerStatus_) {
+        if (!httpServerStatusTag_ || !httpServerStatusDetail_) {
             return;
         }
-        std::wstring status = L"状态：";
+        std::wstring tag;
+        std::wstring detail;
+        httpServerStatusOk_ = false;
         if (httpServer_ && httpServer_->IsRunning()) {
             const auto& options = httpServer_->options();
-            status += L"运行中  " + HttpAddressText(options.lanAccess, options.port, true);
+            tag = L"运行中";
+            detail = HttpAddressText(options.lanAccess, options.port, true);
+            httpServerStatusOk_ = true;
+        } else if (httpServer_ && !Trim(httpServer_->lastError()).empty()) {
+            tag = L"启动异常";
+            detail = httpServer_->lastError();
+        } else if (!httpServer_) {
+            tag = L"异常";
+            detail = L"HTTP 服务对象不可用。";
         } else {
-            status += L"未启动";
+            tag = L"未启动";
+            detail = L"服务未启动。";
         }
-        SetWindowTextW(httpServerStatus_, status.c_str());
+        SetWindowTextW(httpServerStatusTag_, tag.c_str());
+        SetWindowTextW(httpServerStatusDetail_, detail.c_str());
+        InvalidateRect(httpServerStatusTag_, nullptr, TRUE);
+        InvalidateRect(httpServerStatusDetail_, nullptr, TRUE);
         UpdateHttpButtons();
     }
 
@@ -3106,8 +3120,11 @@ private:
             const int httpControlFrameBottom = httpConfigY + ThemedControls::CompactButtonHeight(theme_) + httpPanelPaddingY;
             AddSectionFrame(TabHttp, RECT{httpFrameLeft, httpControlFrameTop, httpFrameRight, httpControlFrameBottom});
             UsePanelBackground(Label(TabHttp, L"运行控制", httpContentLeft, httpControlHeadingY, httpHeadingWidth));
-            httpServerStatus_ = Label(TabHttp, L"", httpContentLeft, httpStatusY + 4, httpContentRight - httpContentLeft);
-            UsePanelBackground(httpServerStatus_);
+            UsePanelBackground(Label(TabHttp, L"状态", httpContentLeft, httpStatusY + 4, 34));
+            httpServerStatusTag_ = Label(TabHttp, L"", httpContentLeft + 42, httpStatusY + 4, 64);
+            httpServerStatusDetail_ = Label(TabHttp, L"", httpContentLeft + 112, httpStatusY + 4, httpContentRight - httpContentLeft - 112);
+            UsePanelBackground(httpServerStatusTag_);
+            UsePanelBackground(httpServerStatusDetail_);
             httpStartButton_ = Button(TabHttp, ID_HTTP_START, L"启动", httpContentLeft, httpButtonY, 72);
             httpStopButton_ = Button(TabHttp, ID_HTTP_STOP, L"停止", httpContentLeft + 82, httpButtonY, 72);
             httpRestartButton_ = Button(TabHttp, ID_HTTP_RESTART, L"重启", httpContentLeft + 164, httpButtonY, 72);
@@ -3205,7 +3222,11 @@ private:
             SetBkMode(dc, TRANSPARENT);
             HWND child = reinterpret_cast<HWND>(lParam);
             const bool fieldChild = IsFieldChild(child);
-            SetTextColor(dc, ToColorRef(fieldChild ? theme_.color(L"field", L"readonly", L"text") : theme_.color(L"label", L"normal", L"text")));
+            if (child == httpServerStatusTag_) {
+                SetTextColor(dc, ToColorRef(theme_.color(L"global", httpServerStatusOk_ ? L"success" : L"danger", L"text")));
+            } else {
+                SetTextColor(dc, ToColorRef(fieldChild ? theme_.color(L"field", L"readonly", L"text") : theme_.color(L"label", L"normal", L"text")));
+            }
             if (fieldChild && readOnlyFieldBrush_) {
                 return reinterpret_cast<LRESULT>(readOnlyFieldBrush_);
             }
@@ -3469,7 +3490,8 @@ private:
     HWND httpServerAutoStart_ = nullptr;
     HWND httpServerAddressEdit_ = nullptr;
     HWND httpServerRootEdit_ = nullptr;
-    HWND httpServerStatus_ = nullptr;
+    HWND httpServerStatusTag_ = nullptr;
+    HWND httpServerStatusDetail_ = nullptr;
     HWND httpBrowseRootButton_ = nullptr;
     HWND httpStartButton_ = nullptr;
     HWND httpStopButton_ = nullptr;
@@ -3482,6 +3504,7 @@ private:
     HWND todoOnlyFuture_ = nullptr;
     bool importedData_ = false;
     bool webDavBusy_ = false;
+    bool httpServerStatusOk_ = false;
     bool accepted_ = false;
     bool done_ = false;
     SettingsApplyCallback applyCallback_;

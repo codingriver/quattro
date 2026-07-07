@@ -6,7 +6,7 @@
 namespace {
 constexpr const wchar_t* kMenuIconLinkPrefix = L"#menu:";
 
-constexpr std::array<MenuVisualRequirement, 26> kTopRightMenuVisuals{{
+constexpr std::array<MenuVisualRequirement, 27> kTopRightMenuVisuals{{
     {ID_MENU_QUICK_IMPORT, L"快速导入", MenuIconPaste},
     {ID_MENU_TOGGLE_TITLE, L"隐藏标题栏", MenuIconEyeOff},
     {ID_MENU_TOGGLE_GROUP, L"隐藏分组", MenuIconEyeOff},
@@ -30,6 +30,7 @@ constexpr std::array<MenuVisualRequirement, 26> kTopRightMenuVisuals{{
     {0, L"统一查看方式", MenuIconView},
     {0, L"统一排序方式", MenuIconSort},
     {ID_MENU_HELP, L"帮助说明", MenuIconHelp},
+    {ID_MENU_CHECK_UPDATE, L"检查更新", MenuIconDownload},
     {ID_MENU_EXIT, L"关闭退出", MenuIconExit},
     {ID_MENU_FAQ, L"常见问题", MenuIconHelp},
     {ID_MENU_REWARD, L"赞赏支持", MenuIconReward},
@@ -40,7 +41,7 @@ const wchar_t* MenuIconStorageName(MenuIcon icon) {
 }
 
 MenuIcon MenuIconFromStorageName(const std::wstring& name) {
-    for (int value = MenuIconNone + 1; value <= MenuIconComputer; ++value) {
+    for (int value = MenuIconNone + 1; value <= MenuIconDownload; ++value) {
         const auto icon = static_cast<MenuIcon>(value);
         if (name == MenuIconStorageName(icon)) {
             return icon;
@@ -122,6 +123,7 @@ int MenuIconFor(UINT_PTR id, const std::wstring& text) {
     case ID_MENU_SETTINGS: return MenuIconSettings;
     case ID_MENU_HELP:
     case ID_MENU_FAQ: return MenuIconHelp;
+    case ID_MENU_CHECK_UPDATE: return MenuIconDownload;
     case ID_MENU_REWARD: return MenuIconReward;
     case ID_MENU_RESET_LAYOUT: return MenuIconView;
     case ID_MENU_LAYOUT_LIST:
@@ -222,6 +224,7 @@ const wchar_t* MenuIconName(MenuIcon icon) {
     case MenuIconHistory: return L"history";
     case MenuIconCertificate: return L"certificate";
     case MenuIconComputer: return L"computer";
+    case MenuIconDownload: return L"download";
     default: return L"unknown";
     }
 }
@@ -285,6 +288,7 @@ wchar_t MenuIconGlyph(MenuIcon icon) {
     case MenuIconHistory: return static_cast<wchar_t>(0xEBEA); // history
     case MenuIconCertificate: return static_cast<wchar_t>(0xED76); // certificate
     case MenuIconComputer: return static_cast<wchar_t>(0xEA89); // device-desktop
+    case MenuIconDownload: return static_cast<wchar_t>(0xEA96); // download
     default: return L'\0';
     }
 }

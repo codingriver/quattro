@@ -248,9 +248,11 @@ int wmain() {
 
         localOk = Require(ClickButton(settings, L"HTTP"), L"HTTP tab should be clickable") && localOk;
         localOk = Require(FindChildByText(settings, L"打开目录") != nullptr, L"Open Web Root button should exist") && localOk;
+        localOk = Require(FindChildByText(settings, L"未启动") != nullptr, L"Stopped HTTP status tag should be visible") && localOk;
         localOk = Require(ClickButton(settings, L"启动"), L"Start button should be clickable") && localOk;
         CloseHttpMessageBox();
         localOk = Require(service.IsRunning(), L"Start button should start HTTP service") && localOk;
+        localOk = Require(FindChildByText(settings, L"运行中") != nullptr, L"Running HTTP status tag should be visible") && localOk;
 
         localOk = Require(ClickButton(settings, L"复制地址"), L"Copy URL button should be clickable") && localOk;
         const std::wstring copied = ClipboardText(settings);
@@ -265,6 +267,7 @@ int wmain() {
         localOk = Require(ClickButton(settings, L"停止"), L"Stop button should be clickable") && localOk;
         CloseHttpMessageBox();
         localOk = Require(!service.IsRunning(), L"Stop button should stop HTTP service") && localOk;
+        localOk = Require(FindChildByText(settings, L"未启动") != nullptr, L"Stopped HTTP status tag should return after stop") && localOk;
 
         PostMessageW(settings, WM_CLOSE, 0, 0);
         interactionOk = localOk;

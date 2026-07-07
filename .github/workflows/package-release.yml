@@ -71,9 +71,19 @@ jobs:
           $releaseTag = if ($isTagBuild) { "${{ github.ref_name }}" } else { "${{ inputs.release_tag }}" }
           $useUpx = $useUpx.ToLowerInvariant()
           $publishRelease = $publishRelease.ToLowerInvariant()
+          $version = $releaseTag.Trim()
+          if ($version.StartsWith("v", [System.StringComparison]::OrdinalIgnoreCase)) {
+            $version = $version.Substring(1)
+          }
 
           if ($publishRelease -eq "true" -and [string]::IsNullOrWhiteSpace($releaseTag)) {
             throw "release_tag is required when publish_release is enabled for a manual run."
+          }
+          if ([string]::IsNullOrWhiteSpace($version)) {
+            $version = "0.1.0"
+          }
+          if ($version -notmatch '^\d+\.\d+\.\d+(\.\d+)?$') {
+            throw "Release tag must resolve to a numeric semantic version, for example v1.2.3. Actual: $releaseTag"
           }
 
           "platform=$platform" >> $env:GITHUB_OUTPUT
@@ -81,6 +91,7 @@ jobs:
           "use_upx=$useUpx" >> $env:GITHUB_OUTPUT
           "publish_release=$publishRelease" >> $env:GITHUB_OUTPUT
           "release_tag=$releaseTag" >> $env:GITHUB_OUTPUT
+          "version=$version" >> $env:GITHUB_OUTPUT
 
       - name: Cache vcpkg sources and packages
         uses: actions/cache@v4
@@ -124,7 +135,8 @@ jobs:
             "-File", ".\tools\build.ps1",
             "-Configuration", "${{ steps.options.outputs.configuration }}",
             "-Backend", "vcpkg",
-            "-NoZip"
+            "-NoZip",
+            "-Version", "${{ steps.options.outputs.version }}"
           )
 
           if ("${{ steps.options.outputs.platform }}" -eq "all") {
@@ -139,6 +151,19 @@ jobs:
 
           & powershell @args
 
+      - name: Generate checksums
+        run: |
+          $files = @(Get-ChildItem -LiteralPath dist -Filter "Quattro-*.exe" -File | Sort-Object Name)
+          $files += @(Get-ChildItem -LiteralPath dist -Filter "Quattro.exe" -File | Sort-Object Name)
+          if ($files.Count -eq 0) {
+            throw "No package executables were found under dist."
+          }
+          $lines = foreach ($file in $files) {
+            $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $file.FullName).Hash.ToLowerInvariant()
+            "$hash  $($file.Name)"
+          }
+          $lines | Set-Content -LiteralPath "dist\SHA256SUMS.txt" -Encoding ascii
+
       - name: Upload package artifact
         uses: actions/upload-artifact@v4
         with:
@@ -146,6 +171,7 @@ jobs:
           path: |
             dist/Quattro-*.exe
             dist/Quattro.exe
+            dist/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 30
 
@@ -157,6 +183,7 @@ jobs:
           $tag = "${{ steps.options.outputs.release_tag }}"
           $files = @(Get-ChildItem -LiteralPath dist -Filter "Quattro-*.exe" -File | ForEach-Object { $_.FullName })
           $files += @(Get-ChildItem -LiteralPath dist -Filter "Quattro.exe" -File | ForEach-Object { $_.FullName })
+          $files += @(Get-ChildItem -LiteralPath dist -Filter "SHA256SUMS.txt" -File | ForEach-Object { $_.FullName })
           if ($files.Count -eq 0) {
             throw "No release assets were found under dist."
           }

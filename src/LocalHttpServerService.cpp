@@ -15,6 +15,7 @@
 #include <cctype>
 #include <cstdlib>
 #include <ctime>
+#include <exception>
 #include <fstream>
 #include <memory>
 #include <mutex>
@@ -526,6 +527,7 @@ LocalHttpServerOptions LocalHttpServerService::OptionsFromConfig(const AppConfig
 }
 
 bool LocalHttpServerService::Start(const LocalHttpServerOptions& options, std::wstring& error) {
+    try {
     Stop();
     options_ = options;
     std::wstring detailError;
@@ -687,6 +689,14 @@ bool LocalHttpServerService::Start(const LocalHttpServerOptions& options, std::w
     lastError_.clear();
     return true;
 #endif
+    } catch (const std::exception& ex) {
+        error = L"HTTP 服务启动异常: " + Utf8ToWideLocal(ex.what());
+    } catch (...) {
+        error = L"HTTP 服务启动异常: 未知错误。";
+    }
+    Stop();
+    lastError_ = error;
+    return false;
 }
 
 bool LocalHttpServerService::Restart(const LocalHttpServerOptions& options, std::wstring& error) {
@@ -707,6 +717,7 @@ void LocalHttpServerService::Stop() {
     impl_->server.reset();
 #endif
     impl_->running = false;
+    lastError_.clear();
 }
 
 bool LocalHttpServerService::IsRunning() const {

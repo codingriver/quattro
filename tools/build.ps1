@@ -11,6 +11,7 @@ param(
     [switch]$FlatPackage,
     [switch]$Upx,
     [string]$UpxPath = "upx",
+    [string]$Version = "",
     [ValidateSet("vcpkg", "classic")]
     [string]$Backend = "vcpkg",
     [switch]$Help
@@ -19,6 +20,7 @@ param(
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
+$effectiveVersion = if ([string]::IsNullOrWhiteSpace($Version)) { "0.1.0" } else { $Version }
 
 function Show-PackageHelp {
     $scriptName = Split-Path -Leaf $PSCommandPath
@@ -44,6 +46,7 @@ Options:
   -FlatPackage             Run the previous default flat x64 single-exe package flow.
   -Upx                     Compress packaged Quattro.exe with UPX before zipping.
   -UpxPath <path>          UPX executable path. Default: upx.
+  -Version <semver>        Override the compiled app version, for example 1.2.3. Default: 0.1.0.
   -Backend vcpkg|classic   Build backend. Default: vcpkg. Use classic for the legacy non-vcpkg build.
 
 Examples:
@@ -97,8 +100,10 @@ function Ensure-Configured {
         $expectedToolchain = "CMAKE_TOOLCHAIN_FILE:FILEPATH=$($root.Replace('\', '/'))/.vcpkg-root/scripts/buildsystems/vcpkg.cmake"
         $expectedTriplet = "VCPKG_TARGET_TRIPLET:STRING=$VcpkgTriplet"
         $expectedTestOption = "QUATTRO_BUILD_TESTS:BOOL=ON"
+        $expectedVersion = "QUATTRO_VERSION:STRING=$effectiveVersion"
         if ($cacheText -notmatch [regex]::Escape($expected) -or
             $cacheText -notmatch [regex]::Escape($expectedSource) -or
+            $cacheText -notmatch [regex]::Escape($expectedVersion) -or
             ($BuildTests -and $cacheText -notmatch [regex]::Escape($expectedTestOption)) -or
             ($UseVcpkg -and ($cacheText -notmatch [regex]::Escape($expectedToolchain) -or
                              $cacheText -notmatch [regex]::Escape($expectedTriplet)))) {
@@ -121,6 +126,7 @@ function Ensure-Configured {
         if ($BuildTests) {
             $configureArgs += "-DQUATTRO_BUILD_TESTS=ON"
         }
+        $configureArgs += "-DQUATTRO_VERSION=$effectiveVersion"
         & cmake @configureArgs
     }
 }

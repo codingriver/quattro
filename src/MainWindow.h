@@ -174,6 +174,7 @@ private:
     void RequestInitialUrlIconDownload(const Link& link);
     void OnUrlIconDownloaded(int linkId, bool success);
     void ShowAbout();
+    void CheckForUpdates();
     void OpenHelp();
     void OpenFaq();
     void OpenReward();

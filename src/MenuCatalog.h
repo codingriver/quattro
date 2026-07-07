@@ -67,6 +67,7 @@ constexpr UINT ID_MENU_TODO_SORT_STATUS = 40063;
 constexpr UINT ID_MENU_TOGGLE_TODO_ENABLED = 40064;
 constexpr UINT ID_MENU_EXPORT_CONFIG = 40065;
 constexpr UINT ID_MENU_IMPORT_CONFIG_MERGE = 40066;
+constexpr UINT ID_MENU_CHECK_UPDATE = 40067;
 constexpr UINT ID_MENU_RESTART_PRIVILEGE = 40069;
 constexpr UINT ID_MENU_THEME_BASE = 43000;
 constexpr UINT ID_MENU_LAYOUT_LIST = 44000;
@@ -148,6 +149,7 @@ enum MenuIcon {
     MenuIconHistory,
     MenuIconCertificate,
     MenuIconComputer,
+    MenuIconDownload,
 };
 
 struct MenuVisualRequirement {
