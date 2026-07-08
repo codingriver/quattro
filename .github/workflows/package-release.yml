@@ -8,16 +8,16 @@ on:
   workflow_dispatch:
     inputs:
       platform:
-        description: "Package platform"
+        description: "打包平台"
         required: true
-        default: "x64"
+        default: "all"
         type: choice
         options:
           - x64
           - x86
           - all
       configuration:
-        description: "Build configuration"
+        description: "构建配置"
         required: true
         default: "Release"
         type: choice
@@ -25,27 +25,27 @@ on:
           - Release
           - Debug
       use_upx:
-        description: "Compress packaged exe with UPX"
+        description: "使用 UPX 压缩 exe"
         required: true
         default: true
         type: boolean
       publish_release:
-        description: "Create/update a GitHub Release"
+        description: "创建或更新 GitHub Release"
         required: true
-        default: false
+        default: true
         type: boolean
       version:
-        description: "Release version for manual runs, for example 1.2.3"
+        description: "发布版本号，例如 1.2.3"
         required: true
         default: "0.1.0"
         type: string
       make_latest:
-        description: "Mark the published release as Latest"
+        description: "将本次发布设为 Latest"
         required: true
         default: true
         type: boolean
       move_existing_tag:
-        description: "Move an existing tag to this workflow commit"
+        description: "移动已存在的 tag 到本次提交"
         required: true
         default: false
         type: boolean
