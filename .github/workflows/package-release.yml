@@ -147,7 +147,12 @@ jobs:
           }
           if ("${{ steps.options.outputs.use_upx }}" -eq "true") {
             choco install upx -y --no-progress
-            $args += "-Upx"
+            $upx = Get-Command upx -ErrorAction SilentlyContinue
+            if ($upx) {
+              $args += @("-Upx", "-UpxPath", $upx.Source)
+            } else {
+              Write-Warning "UPX was requested but is unavailable; continuing without compression."
+            }
           }
 
           & powershell @args
