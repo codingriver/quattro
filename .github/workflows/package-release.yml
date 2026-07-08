@@ -69,6 +69,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Set package options
         id: options
@@ -212,11 +214,28 @@ jobs:
       - name: Publish GitHub Release
         if: steps.options.outputs.publish_release == 'true'
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
+          USING_RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN != '' }}
         run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $false
+
+          function Invoke-Native {
+            param(
+              [string]$Description,
+              [string]$Command,
+              [string[]]$Arguments
+            )
+            & $Command @Arguments
+            if ($LASTEXITCODE -ne 0) {
+              throw "$Description failed with exit code $LASTEXITCODE."
+            }
+          }
+
           $tag = "${{ steps.options.outputs.release_tag }}"
           $makeLatest = "${{ steps.options.outputs.make_latest }}" -eq "true"
           $moveExistingTag = "${{ steps.options.outputs.move_existing_tag }}" -eq "true"
+          $usingReleaseToken = "$env:USING_RELEASE_TOKEN" -eq "true"
           $files = @(Get-ChildItem -LiteralPath dist -Filter "Quattro-*.exe" -File | ForEach-Object { $_.FullName })
           $files += @(Get-ChildItem -LiteralPath dist -Filter "Quattro.exe" -File | ForEach-Object { $_.FullName })
           $files += @(Get-ChildItem -LiteralPath dist -Filter "SHA256SUMS.txt" -File | ForEach-Object { $_.FullName })
@@ -225,24 +244,35 @@ jobs:
             throw "No release assets were found under dist."
           }
 
-          $tagExists = $false
-          git ls-remote --exit-code --tags origin $tag | Out-Null
-          if ($LASTEXITCODE -eq 0) {
-            $tagExists = $true
+          if ([string]::IsNullOrWhiteSpace($env:GH_TOKEN)) {
+            throw "GH_TOKEN is empty. Configure RELEASE_TOKEN or allow github.token."
           }
-          if ($tagExists -and $moveExistingTag) {
-            git tag -f $tag "${{ github.sha }}"
-            git push --force origin "refs/tags/$tag"
-          } elseif (!$tagExists) {
-            git tag $tag "${{ github.sha }}"
-            git push origin "refs/tags/$tag"
+          git remote set-url origin "https://x-access-token:$env:GH_TOKEN@github.com/${{ github.repository }}.git"
+
+          $tagProbe = git ls-remote --tags origin "refs/tags/$tag" 2>&1
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to query remote tag $tag. $tagProbe"
+          }
+          $tagExists = -not [string]::IsNullOrWhiteSpace(($tagProbe -join "`n"))
+
+          if ((-not $tagExists -or $moveExistingTag) -and -not $usingReleaseToken) {
+            Write-Warning "Using the default GITHUB_TOKEN to create or move a tag. If the target commit changes workflow files, GitHub may reject it. Configure repository secret RELEASE_TOKEN with contents and workflows permissions to publish from such commits."
           }
 
-          $existing = gh release view $tag 2>$null
-          if ($LASTEXITCODE -eq 0) {
-            gh release upload $tag @files --clobber
+          if ($tagExists -and $moveExistingTag) {
+            Invoke-Native "Move local tag $tag" "git" @("tag", "-f", $tag, "${{ github.sha }}")
+            Invoke-Native "Push moved tag $tag" "git" @("push", "--force", "origin", "refs/tags/$tag")
+          } elseif (!$tagExists) {
+            Invoke-Native "Create local tag $tag" "git" @("tag", $tag, "${{ github.sha }}")
+            Invoke-Native "Push new tag $tag" "git" @("push", "origin", "refs/tags/$tag")
+          }
+
+          gh release view $tag 2>$null | Out-Null
+          $releaseExists = $LASTEXITCODE -eq 0
+          if ($releaseExists) {
+            Invoke-Native "Upload release assets for $tag" "gh" (@("release", "upload", $tag) + $files + @("--clobber"))
             if ($makeLatest) {
-              gh release edit $tag --latest
+              Invoke-Native "Mark release $tag as latest" "gh" @("release", "edit", $tag, "--latest")
             }
           } else {
             $createArgs = @("release", "create", $tag) + $files + @(
@@ -255,5 +285,5 @@ jobs:
             } else {
               $createArgs += "--latest=false"
             }
-            gh @createArgs
+            Invoke-Native "Create GitHub Release $tag" "gh" $createArgs
           }

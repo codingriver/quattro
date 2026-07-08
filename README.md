@@ -110,6 +110,8 @@ Quattro 是便携应用，但需要保存你的配置、启动项数据库、图
 
 发布时使用 `tools/build.ps1 -Version <版本号>` 会在 `dist/` 生成 `latest.json` 和 `SHA256SUMS.txt`。把它们和对应的 `Quattro-x64.exe` / `Quattro-x86.exe` 一起上传到同一个 GitHub Release 即可。
 
+GitHub Actions 的手动发布会优先使用仓库 Secret `RELEASE_TOKEN`，未配置时回退到默认 `GITHUB_TOKEN`。如果发布目标提交修改过 `.github/workflows/`，GitHub 会拒绝默认 token 创建或移动 tag；此时需要创建 fine-grained token 或 classic PAT，并授予仓库 `Contents` 写权限和 `Workflows` 权限，然后保存为仓库 Secret `RELEASE_TOKEN`。
+
 ### 可以只带一个 exe 使用吗？
 
 可以。默认发布包就是单 exe。缺失的默认资源会在首次运行时释放，配置和数据库按需创建。
