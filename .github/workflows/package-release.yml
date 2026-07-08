@@ -45,7 +45,7 @@ on:
         default: true
         type: boolean
       move_existing_tag:
-        description: "移动已存在的 tag 到本次提交"
+        description: "强制移动已存在的版本 tag（危险）"
         required: true
         default: false
         type: boolean
