@@ -13,6 +13,7 @@ struct UpdateReleaseInfo {
     std::wstring assetName;
     std::wstring assetDownloadUrl;
     std::wstring checksumDownloadUrl;
+    std::wstring expectedSha256;
     std::uint64_t assetSizeBytes = 0;
     bool updateAvailable = false;
 };
@@ -45,6 +46,9 @@ public:
         const UpdateCancelCallback& cancel) const;
 
     static int CompareVersions(const std::wstring& left, const std::wstring& right);
+    static std::wstring UpdateInfoUrlForConfig(const std::wstring& configuredUrl);
+    static std::wstring ReleaseApiUrlForConfig(const std::wstring& configuredUrl);
+    static bool ParseReleaseInfoJson(const std::wstring& json, UpdateReleaseInfo& info, std::wstring& error);
 
 private:
     std::filesystem::path appDirectory_;

@@ -136,7 +136,8 @@ jobs:
             "-Configuration", "${{ steps.options.outputs.configuration }}",
             "-Backend", "vcpkg",
             "-NoZip",
-            "-Version", "${{ steps.options.outputs.version }}"
+            "-Version", "${{ steps.options.outputs.version }}",
+            "-ReleaseTag", "${{ steps.options.outputs.release_tag }}"
           )
 
           if ("${{ steps.options.outputs.platform }}" -eq "all") {
@@ -163,6 +164,9 @@ jobs:
             "$hash  $($file.Name)"
           }
           $lines | Set-Content -LiteralPath "dist\SHA256SUMS.txt" -Encoding ascii
+          if (!(Test-Path -LiteralPath "dist\latest.json")) {
+            throw "latest.json was not generated under dist."
+          }
 
       - name: Upload package artifact
         uses: actions/upload-artifact@v4
@@ -172,6 +176,7 @@ jobs:
             dist/Quattro-*.exe
             dist/Quattro.exe
             dist/SHA256SUMS.txt
+            dist/latest.json
           if-no-files-found: error
           retention-days: 30
 
@@ -184,6 +189,7 @@ jobs:
           $files = @(Get-ChildItem -LiteralPath dist -Filter "Quattro-*.exe" -File | ForEach-Object { $_.FullName })
           $files += @(Get-ChildItem -LiteralPath dist -Filter "Quattro.exe" -File | ForEach-Object { $_.FullName })
           $files += @(Get-ChildItem -LiteralPath dist -Filter "SHA256SUMS.txt" -File | ForEach-Object { $_.FullName })
+          $files += @(Get-ChildItem -LiteralPath dist -Filter "latest.json" -File | ForEach-Object { $_.FullName })
           if ($files.Count -eq 0) {
             throw "No release assets were found under dist."
           }

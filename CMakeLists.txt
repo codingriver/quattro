@@ -252,6 +252,7 @@ add_executable(QuattroTests
     src/theme/Theme.cpp
     src/theme/ThemedControls.cpp
     src/domain/TodoSchedule.cpp
+    src/services/UpdateCheckService.cpp
     src/common/Utilities.cpp
     src/services/WebDavBackupService.cpp
     src/services/WebDavClient.cpp
@@ -356,6 +357,10 @@ target_compile_definitions(QuattroTests PRIVATE
     NOMINMAX
 )
 
+if(QUATTRO_WITH_CURL)
+    target_compile_definitions(QuattroTests PRIVATE QUATTRO_WITH_CURL)
+endif()
+
 target_compile_definitions(QuattroNoteTodoAcceptance PRIVATE
     UNICODE
     _UNICODE
@@ -448,6 +453,11 @@ target_compile_options(QuattroAboutTrayExitAcceptance PRIVATE
 
 target_compile_options(QuattroWebDavAcceptance PRIVATE
     $<$<CXX_COMPILER_ID:MSVC>:/W4 /permissive- /EHsc /utf-8>
+)
+
+target_include_directories(QuattroTests PRIVATE
+    src
+    "${CMAKE_CURRENT_BINARY_DIR}/generated"
 )
 
 target_include_directories(QuattroThemeStateProbe PRIVATE

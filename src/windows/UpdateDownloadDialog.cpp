@@ -86,7 +86,25 @@ public:
         UpdateWindow(hwnd_);
 
         MSG message{};
-        while (!done_ && GetMessageW(&message, nullptr, 0, 0) > 0) {
+        bool quitRequested = false;
+        int quitCode = 0;
+        while (!done_) {
+            const BOOL messageResult = GetMessageW(&message, nullptr, 0, 0);
+            if (messageResult <= 0) {
+                if (messageResult == 0) {
+                    quitRequested = true;
+                    quitCode = static_cast<int>(message.wParam);
+                    cancelRequested_.store(true);
+                    if (error_.empty()) {
+                        error_ = L"下载已取消。";
+                    }
+                }
+                KillTimer(hwnd_, ID_REFRESH_TIMER);
+                if (hwnd_ && IsWindow(hwnd_)) {
+                    DestroyWindow(hwnd_);
+                }
+                break;
+            }
             if (!IsDialogMessageW(hwnd_, &message)) {
                 TranslateMessage(&message);
                 DispatchMessageW(&message);
@@ -96,6 +114,10 @@ public:
             windowUi_->RestoreModalOwner();
         }
         JoinWorker();
+        if (quitRequested) {
+            PostQuitMessage(quitCode);
+            return false;
+        }
         return succeeded_;
     }
 

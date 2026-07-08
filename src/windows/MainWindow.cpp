@@ -68,6 +68,16 @@ constexpr const wchar_t* kDockPeekWindowClass = L"QuattroDockPeekWindow";
 constexpr const wchar_t* kTooltipWindowClass = L"QuattroTooltipWindow";
 constexpr const wchar_t* kAppDisplayName = L"Quattro快速启动器";
 
+std::wstring VersionCompareText(int comparison) {
+    if (comparison < 0) {
+        return L"local_older";
+    }
+    if (comparison > 0) {
+        return L"local_newer";
+    }
+    return L"equal";
+}
+
 // 提示/提醒面板的绘制样式。以进程内 HWND 映射存储，避免使用桌面堆（SetPropW），
 // 因为某些桌面的桌面堆不可用会导致 SetPropW 以 ERROR_NOT_ENOUGH_MEMORY 失败。
 struct TooltipStyle {
@@ -4919,13 +4929,36 @@ void MainWindow::CheckForUpdates() {
         return;
     }
 
+    const std::wstring localVersion = QuattroVersionText();
+    const std::wstring updateInfoUrl = UpdateCheckService::UpdateInfoUrlForConfig(config_.updateUrl);
+    WriteAppLog(
+        L"检查更新开始。local_version=" + localVersion +
+        L"，update_info_url=" + updateInfoUrl +
+        L"，configured_update_url=" + (Trim(config_.updateUrl).empty() ? L"(default)" : config_.updateUrl));
+
     UpdateCheckService service(appDirectory_, config_.updateUrl);
     UpdateReleaseInfo info;
     std::wstring error;
     if (!service.CheckLatest(info, error)) {
+        WriteAppLog(
+            L"检查更新失败。local_version=" + (info.currentVersion.empty() ? localVersion : info.currentVersion) +
+            L"，update_info_url=" + updateInfoUrl +
+            L"，error=" + (error.empty() ? L"未知错误" : error));
         MessageBoxW(hwnd_, error.empty() ? L"检查更新失败。" : error.c_str(), L"检查更新", MB_OK | MB_ICONWARNING);
         return;
     }
+
+    const int versionComparison = UpdateCheckService::CompareVersions(info.currentVersion, info.latestVersion);
+    WriteAppLog(
+        L"检查更新完成。local_version=" + info.currentVersion +
+        L"，remote_version=" + info.latestVersion +
+        L"，compare=" + VersionCompareText(versionComparison) +
+        L"，update_available=" + std::wstring(info.updateAvailable ? L"1" : L"0") +
+        L"，asset=" + (info.assetName.empty() ? L"(none)" : info.assetName) +
+        L"，asset_size=" + std::to_wstring(info.assetSizeBytes) +
+        L"，asset_sha256=" + (info.expectedSha256.empty() ? L"(none)" : info.expectedSha256) +
+        L"，checksum_url=" + (info.checksumDownloadUrl.empty() ? L"(none)" : info.checksumDownloadUrl) +
+        L"，release_url=" + (info.releaseUrl.empty() ? L"(none)" : info.releaseUrl));
 
     if (!info.updateAvailable) {
         const std::wstring message = L"当前已是最新版本。\n\n当前版本：" + info.currentVersion + L"\n最新版本：" + info.latestVersion;
@@ -4946,6 +4979,9 @@ void MainWindow::CheckForUpdates() {
     updateDownloadActive_ = true;
     const bool downloaded = ShowUpdateDownloadDialog(hwnd_, instance_, theme_, appDirectory_, info, download, error);
     updateDownloadActive_ = false;
+    if (!IsWindow(hwnd_)) {
+        return;
+    }
     if (!downloaded) {
         if (error == L"下载已取消。") {
             return;

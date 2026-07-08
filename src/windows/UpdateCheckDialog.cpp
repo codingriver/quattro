@@ -48,7 +48,20 @@ public:
         UpdateWindow(hwnd_);
 
         MSG message{};
-        while (!done_ && GetMessageW(&message, nullptr, 0, 0) > 0) {
+        bool quitRequested = false;
+        int quitCode = 0;
+        while (!done_) {
+            const BOOL messageResult = GetMessageW(&message, nullptr, 0, 0);
+            if (messageResult <= 0) {
+                if (messageResult == 0) {
+                    quitRequested = true;
+                    quitCode = static_cast<int>(message.wParam);
+                }
+                if (hwnd_ && IsWindow(hwnd_)) {
+                    DestroyWindow(hwnd_);
+                }
+                break;
+            }
             if (!IsDialogMessageW(hwnd_, &message)) {
                 TranslateMessage(&message);
                 DispatchMessageW(&message);
@@ -56,6 +69,9 @@ public:
         }
         if (windowUi_) {
             windowUi_->RestoreModalOwner();
+        }
+        if (quitRequested) {
+            PostQuitMessage(quitCode);
         }
         return choice_;
     }

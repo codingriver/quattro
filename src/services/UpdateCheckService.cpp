@@ -20,7 +20,7 @@
 #endif
 
 namespace {
-constexpr const wchar_t* kLatestReleaseApi = L"https://api.github.com/repos/codingriver/quattro/releases/latest";
+constexpr const wchar_t* kDefaultLatestManifestUrl = L"https://github.com/codingriver/quattro/releases/latest/download/latest.json";
 
 std::string WideToUtf8(const std::wstring& value) {
     if (value.empty()) {
@@ -108,10 +108,10 @@ std::filesystem::path UpdateDownloadDirectory() {
     return QuattroUserConfigDirectory() / L"updates";
 }
 
-std::wstring NormalizeReleaseApiUrl(const std::wstring& configuredUrl) {
+std::wstring NormalizeUpdateInfoUrl(const std::wstring& configuredUrl) {
     const std::wstring trimmed = Trim(configuredUrl);
     if (trimmed.empty()) {
-        return kLatestReleaseApi;
+        return kDefaultLatestManifestUrl;
     }
 
     const std::wstring lower = ToLower(trimmed);
@@ -130,7 +130,7 @@ std::wstring NormalizeReleaseApiUrl(const std::wstring& configuredUrl) {
                 const std::wstring repo = rest.substr(firstSlash + 1, secondSlash - firstSlash - 1);
                 const std::wstring suffix = ToLower(rest.substr(secondSlash));
                 if (!owner.empty() && !repo.empty() && suffix.rfind(L"/releases", 0) == 0) {
-                    return L"https://api.github.com/repos/" + owner + L"/" + repo + L"/releases/latest";
+                    return L"https://github.com/" + owner + L"/" + repo + L"/releases/latest/download/latest.json";
                 }
             }
         }
@@ -363,6 +363,109 @@ std::wstring ExpectedSha256For(const std::wstring& checksumText, const std::wstr
     }
     return {};
 }
+
+std::wstring JsonStringField(const JsonValue& value, const std::wstring& key) {
+    const JsonValue* field = value.get(key);
+    return field ? field->stringOr() : L"";
+}
+
+std::uint64_t JsonSizeField(const JsonValue& value, const std::wstring& key) {
+    const JsonValue* field = value.get(key);
+    if (!field || !field->isNumber()) {
+        return 0;
+    }
+    return static_cast<std::uint64_t>(std::max(0.0, field->numberValue));
+}
+
+bool LooksLikeSha256(const std::wstring& value) {
+    if (value.size() != 64) {
+        return false;
+    }
+    for (wchar_t ch : value) {
+        if (!((ch >= L'0' && ch <= L'9') ||
+              (ch >= L'a' && ch <= L'f') ||
+              (ch >= L'A' && ch <= L'F'))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool FillFromStaticManifest(const JsonValue& root, UpdateReleaseInfo& info, std::wstring& error) {
+    info.latestVersion = JsonStringField(root, L"version");
+    if (info.latestVersion.empty()) {
+        info.latestVersion = JsonStringField(root, L"latestVersion");
+    }
+    info.releaseUrl = JsonStringField(root, L"releaseUrl");
+    info.releaseNotes = JsonStringField(root, L"notes");
+    if (info.releaseNotes.empty()) {
+        info.releaseNotes = JsonStringField(root, L"releaseNotes");
+    }
+    info.checksumDownloadUrl = JsonStringField(root, L"checksumUrl");
+    if (info.checksumDownloadUrl.empty()) {
+        info.checksumDownloadUrl = JsonStringField(root, L"checksumDownloadUrl");
+    }
+    if (info.latestVersion.empty()) {
+        error = L"静态更新清单缺少版本号。";
+        return false;
+    }
+
+    const JsonValue* assets = root.get(L"assets");
+    if (assets && assets->isArray()) {
+        for (const JsonValue& asset : assets->arrayValue) {
+            if (!asset.isObject()) {
+                continue;
+            }
+            const std::wstring name = JsonStringField(asset, L"name");
+            const std::wstring url = JsonStringField(asset, L"url");
+            const std::uint64_t size = JsonSizeField(asset, L"size");
+            if (ToLower(name) == L"sha256sums.txt" && info.checksumDownloadUrl.empty()) {
+                info.checksumDownloadUrl = url;
+            }
+            if (info.assetDownloadUrl.empty() && IsExpectedAssetName(name)) {
+                info.assetName = name;
+                info.assetDownloadUrl = url;
+                info.assetSizeBytes = size;
+                const std::wstring sha256 = JsonStringField(asset, L"sha256");
+                if (LooksLikeSha256(sha256)) {
+                    info.expectedSha256 = ToLower(sha256);
+                }
+            }
+        }
+    }
+    return true;
+}
+
+bool FillFromGitHubApiRelease(const JsonValue& root, UpdateReleaseInfo& info, std::wstring& error) {
+    info.latestVersion = JsonStringField(root, L"tag_name");
+    info.releaseUrl = JsonStringField(root, L"html_url");
+    info.releaseNotes = JsonStringField(root, L"body");
+    if (info.latestVersion.empty()) {
+        error = L"更新信息缺少版本号。";
+        return false;
+    }
+
+    const JsonValue* assets = root.get(L"assets");
+    if (assets && assets->isArray()) {
+        for (const JsonValue& asset : assets->arrayValue) {
+            if (!asset.isObject()) {
+                continue;
+            }
+            const std::wstring name = JsonStringField(asset, L"name");
+            const std::wstring url = JsonStringField(asset, L"browser_download_url");
+            const std::uint64_t size = JsonSizeField(asset, L"size");
+            if (ToLower(name) == L"sha256sums.txt") {
+                info.checksumDownloadUrl = url;
+            }
+            if (info.assetDownloadUrl.empty() && IsExpectedAssetName(name)) {
+                info.assetName = name;
+                info.assetDownloadUrl = url;
+                info.assetSizeBytes = size;
+            }
+        }
+    }
+    return true;
+}
 }
 
 UpdateCheckService::UpdateCheckService(std::filesystem::path appDirectory, std::wstring releaseApiUrl)
@@ -383,48 +486,31 @@ int UpdateCheckService::CompareVersions(const std::wstring& left, const std::wst
     return 0;
 }
 
-bool UpdateCheckService::CheckLatest(UpdateReleaseInfo& info, std::wstring& error) const {
+std::wstring UpdateCheckService::UpdateInfoUrlForConfig(const std::wstring& configuredUrl) {
+    return NormalizeUpdateInfoUrl(configuredUrl);
+}
+
+std::wstring UpdateCheckService::ReleaseApiUrlForConfig(const std::wstring& configuredUrl) {
+    return UpdateInfoUrlForConfig(configuredUrl);
+}
+
+bool UpdateCheckService::ParseReleaseInfoJson(const std::wstring& json, UpdateReleaseInfo& info, std::wstring& error) {
     info = {};
     info.currentVersion = QuattroVersionText();
 
-    std::string body;
-    if (!DownloadText(NormalizeReleaseApiUrl(releaseApiUrl_), body, error)) {
-        return false;
-    }
-
     JsonValue root;
-    if (!ParseJson(Utf8ToWide(body), root, error) || !root.isObject()) {
+    if (!ParseJson(json, root, error) || !root.isObject()) {
         if (error.empty()) {
             error = L"更新信息格式无效。";
         }
         return false;
     }
 
-    info.latestVersion = root.get(L"tag_name") ? root.get(L"tag_name")->stringOr() : L"";
-    info.releaseUrl = root.get(L"html_url") ? root.get(L"html_url")->stringOr() : L"";
-    info.releaseNotes = root.get(L"body") ? root.get(L"body")->stringOr() : L"";
-    if (info.latestVersion.empty()) {
-        error = L"更新信息缺少版本号。";
+    const bool parsed = root.get(L"tag_name")
+        ? FillFromGitHubApiRelease(root, info, error)
+        : FillFromStaticManifest(root, info, error);
+    if (!parsed) {
         return false;
-    }
-
-    const JsonValue* assets = root.get(L"assets");
-    if (assets && assets->isArray()) {
-        for (const JsonValue& asset : assets->arrayValue) {
-            const std::wstring name = asset.get(L"name") ? asset.get(L"name")->stringOr() : L"";
-            const std::wstring url = asset.get(L"browser_download_url") ? asset.get(L"browser_download_url")->stringOr() : L"";
-            const std::uint64_t size = asset.get(L"size") && asset.get(L"size")->isNumber()
-                ? static_cast<std::uint64_t>(std::max(0.0, asset.get(L"size")->numberValue))
-                : 0;
-            if (ToLower(name) == L"sha256sums.txt") {
-                info.checksumDownloadUrl = url;
-            }
-            if (info.assetDownloadUrl.empty() && IsExpectedAssetName(name)) {
-                info.assetName = name;
-                info.assetDownloadUrl = url;
-                info.assetSizeBytes = size;
-            }
-        }
     }
 
     info.updateAvailable = CompareVersions(info.currentVersion, info.latestVersion) < 0;
@@ -433,6 +519,17 @@ bool UpdateCheckService::CheckLatest(UpdateReleaseInfo& info, std::wstring& erro
         return false;
     }
     return true;
+}
+
+bool UpdateCheckService::CheckLatest(UpdateReleaseInfo& info, std::wstring& error) const {
+    std::string body;
+    if (!DownloadText(NormalizeUpdateInfoUrl(releaseApiUrl_), body, error)) {
+        info = {};
+        info.currentVersion = QuattroVersionText();
+        return false;
+    }
+
+    return ParseReleaseInfoJson(Utf8ToWide(body), info, error);
 }
 
 bool UpdateCheckService::DownloadUpdate(const UpdateReleaseInfo& info, UpdateDownloadResult& result, std::wstring& error) const {
@@ -481,7 +578,20 @@ bool UpdateCheckService::DownloadUpdate(
         return false;
     }
 
-    if (!info.checksumDownloadUrl.empty()) {
+    if (!info.expectedSha256.empty()) {
+        std::wstring actual;
+        if (!Sha256File(temp, actual, error)) {
+            removeTemp();
+            return false;
+        }
+        if (ToLower(actual) != ToLower(info.expectedSha256)) {
+            error = L"更新包 SHA256 校验失败。";
+            removeTemp();
+            return false;
+        }
+        result.checksumVerified = true;
+        result.checksumMessage = L"SHA256 校验通过。";
+    } else if (!info.checksumDownloadUrl.empty()) {
         std::string checksumBody;
         std::wstring checksumError;
         if (DownloadText(info.checksumDownloadUrl, checksumBody, checksumError)) {

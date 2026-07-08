@@ -12,6 +12,8 @@ param(
     [switch]$Upx,
     [string]$UpxPath = "upx",
     [string]$Version = "",
+    [string]$ReleaseRepoUrl = "https://github.com/codingriver/quattro",
+    [string]$ReleaseTag = "",
     [ValidateSet("vcpkg", "classic")]
     [string]$Backend = "vcpkg",
     [switch]$Help
@@ -47,6 +49,8 @@ Options:
   -Upx                     Compress packaged Quattro.exe with UPX before zipping.
   -UpxPath <path>          UPX executable path. Default: upx.
   -Version <semver>        Override the compiled app version, for example 1.2.3. Default: 0.1.0.
+  -ReleaseRepoUrl <url>    GitHub repository URL used in latest.json. Default: https://github.com/codingriver/quattro.
+  -ReleaseTag <tag>        Release tag used in latest.json. Default: v<Version>.
   -Backend vcpkg|classic   Build backend. Default: vcpkg. Use classic for the legacy non-vcpkg build.
 
 Examples:
@@ -257,6 +261,72 @@ function Invoke-UpxCompress {
     "upx: $ExePath ($before -> $after bytes, saved $percent%)"
 }
 
+function ConvertTo-JsonStringLiteral {
+    param([string]$Value)
+
+    return ($Value | ConvertTo-Json -Compress)
+}
+
+function Write-ReleaseMetadata {
+    param(
+        [System.Collections.Generic.List[string]]$ReleaseFiles,
+        [string]$OutputDir,
+        [string]$Version,
+        [string]$RepoUrl,
+        [string]$Tag
+    )
+
+    if ($ReleaseFiles.Count -eq 0) {
+        return @()
+    }
+
+    $normalizedRepoUrl = $RepoUrl.TrimEnd("/")
+    $effectiveTag = if ([string]::IsNullOrWhiteSpace($Tag)) { "v$Version" } else { $Tag }
+    $releaseUrl = "$normalizedRepoUrl/releases/tag/$effectiveTag"
+    $downloadBaseUrl = "$normalizedRepoUrl/releases/download/$effectiveTag"
+    $checksumPath = Join-Path $OutputDir "SHA256SUMS.txt"
+    $manifestPath = Join-Path $OutputDir "latest.json"
+    $checksumLines = New-Object System.Collections.Generic.List[string]
+    $assetJsonItems = New-Object System.Collections.Generic.List[string]
+
+    foreach ($file in $ReleaseFiles) {
+        if (!(Test-Path -LiteralPath $file)) {
+            continue
+        }
+        $item = Get-Item -LiteralPath $file
+        $hash = (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant()
+        $checksumLines.Add("$hash  $($item.Name)") | Out-Null
+        $assetJsonItems.Add(
+            "    {" +
+            "`"name`": $(ConvertTo-JsonStringLiteral $item.Name), " +
+            "`"url`": $(ConvertTo-JsonStringLiteral "$downloadBaseUrl/$($item.Name)"), " +
+            "`"size`": $($item.Length), " +
+            "`"sha256`": $(ConvertTo-JsonStringLiteral $hash)" +
+            "}") | Out-Null
+    }
+
+    if ($assetJsonItems.Count -eq 0) {
+        return @()
+    }
+
+    [System.IO.File]::WriteAllText($checksumPath, (($checksumLines -join "`r`n") + "`r`n"), [System.Text.UTF8Encoding]::new($false))
+
+    $manifest = @(
+        "{",
+        "  `"version`": $(ConvertTo-JsonStringLiteral $Version),",
+        "  `"releaseUrl`": $(ConvertTo-JsonStringLiteral $releaseUrl),",
+        "  `"notes`": `"`",",
+        "  `"checksumUrl`": $(ConvertTo-JsonStringLiteral "$downloadBaseUrl/SHA256SUMS.txt"),",
+        "  `"assets`": [",
+        ($assetJsonItems -join ",`r`n"),
+        "  ]",
+        "}"
+    ) -join "`r`n"
+    [System.IO.File]::WriteAllText($manifestPath, ($manifest + "`r`n"), [System.Text.UTF8Encoding]::new($false))
+
+    return @($checksumPath, $manifestPath)
+}
+
 function Publish-Package {
     param(
         [string]$BuildDir,
@@ -355,6 +425,7 @@ $packageStartTime = Get-Date
 "package start: $(Format-PackageTimestamp -Time $packageStartTime)"
 
 $outputs = New-Object System.Collections.Generic.List[string]
+$releaseFiles = New-Object System.Collections.Generic.List[string]
 foreach ($arch in $architectures) {
     $useVcpkg = $Backend -eq "vcpkg"
     $buildDirName = if ($useVcpkg) { "build-vcpkg-$($arch.Name)" } else { $arch.BuildDir }
@@ -401,12 +472,20 @@ foreach ($arch in $architectures) {
             Join-Path $distRoot "$distName.exe"
         }
         $outputs.Add($singleExeOutput) | Out-Null
+        if (Test-Path $singleExeOutput) {
+            $releaseFiles.Add($singleExeOutput) | Out-Null
+        }
     } else {
         $outputs.Add((Join-Path $distRoot $distName)) | Out-Null
     }
     if (!$NoZip) {
         $outputs.Add((Join-Path $distRoot "$distName.zip")) | Out-Null
     }
+}
+
+$metadataOutputs = Write-ReleaseMetadata -ReleaseFiles $releaseFiles -OutputDir $distRoot -Version $effectiveVersion -RepoUrl $ReleaseRepoUrl -Tag $ReleaseTag
+foreach ($metadataOutput in $metadataOutputs) {
+    $outputs.Add($metadataOutput) | Out-Null
 }
 
 $packageEndTime = Get-Date
