@@ -118,6 +118,7 @@ AppConfig ConfigService::Load() const {
 }
 
 void ConfigService::SaveWindowState(const AppConfig& config) const {
+    WriteInt(L"nVersion", config.version);
     WriteInt(L"bShowTitle", config.showTitle ? 1 : 0);
     WriteInt(L"bShowGroup", config.showGroup ? 1 : 0);
     WriteInt(L"bShowTag", config.showTag ? 1 : 0);

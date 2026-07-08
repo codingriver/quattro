@@ -4,11 +4,11 @@
 #include <httplib.h>
 #endif
 
-#include "../src/AppLog.h"
-#include "../src/LocalHttpServerService.h"
-#include "../src/SimpleDialogs.h"
-#include "../src/Theme.h"
-#include "../src/Utilities.h"
+#include "../src/common/AppLog.h"
+#include "../src/services/LocalHttpServerService.h"
+#include "../src/windows/SimpleDialogs.h"
+#include "../src/theme/Theme.h"
+#include "../src/common/Utilities.h"
 
 #include <windows.h>
 

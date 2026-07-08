@@ -15,6 +15,7 @@ enum class DialogLayoutKind {
 struct DialogLayoutMetrics {
     int contentInsetX = 24;
     int contentInsetY = 24;
+    int labelMinWidth = 20;
     int labelWidth = 74;
     int labelGap = 6;
     int rowGap = 8;
@@ -115,6 +116,7 @@ inline DialogLayoutMetrics GetDialogLayoutMetrics(const Theme& theme, DialogLayo
         metrics.footerButtonGap = DialogLayoutMetric(theme, L"footerButtonGap", 16.0f);
         break;
     }
+    metrics.labelMinWidth = DialogLayoutMetric(theme, L"labelMinWidth", 20.0f);
     metrics.fieldX = metrics.contentInsetX + metrics.labelWidth + metrics.labelGap;
     return metrics;
 }

@@ -1,6 +1,6 @@
 #include "LinkEditDialog.h"
 
-#include "../resources/resource.h"
+#include "../../resources/resource.h"
 
 #include "AppLog.h"
 #include "DialogLayout.h"
@@ -8,6 +8,7 @@
 #include "ShellItemService.h"
 #include "SimpleDialogs.h"
 #include "ThemedControls.h"
+#include "ThemedUi.h"
 #include "Utilities.h"
 
 #include <commctrl.h>
@@ -316,14 +317,13 @@ private:
         return hwnd;
     }
 
-    HWND Button(int id, const wchar_t* text, int x, int y, int width, int height = 0) {
-        if (height <= 0) {
-            height = ButtonHeight();
-        }
-        if (id == IdOk) {
-            return ThemedControls::CreatePrimaryButton(instance_, hwnd_, id, text, x, y, width, height, font_, true);
-        }
-        return ThemedControls::CreateButton(instance_, hwnd_, id, text, x, y, width, height, font_, false);
+    ThemedUi MakeUi() const {
+        return ThemedUi(instance_, hwnd_, theme_, font_, DialogLayoutKind::Standard, kDialogWidth, kDialogHeight);
+    }
+
+    HWND Button(int id, const wchar_t* text, int x, int y, int width) {
+        const ThemedButtonRole role = (id == IdOk) ? ThemedButtonRole::Primary : ThemedButtonRole::Normal;
+        return MakeUi().Button(id, text, x, y, role, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, width, id == IdOk);
     }
 
     void PaintBackground(HDC hdc) {
@@ -360,7 +360,6 @@ private:
         const bool isUrl = LooksLikeUrl(link_);
         const DialogLayoutMetrics layout = GetDialogLayoutMetrics(theme_, DialogLayoutKind::Standard);
         const int rowStep = layout.RowStep(FieldHeight());
-        const int buttonHeight = ButtonHeight();
         const int fieldWidth = kDialogWidth - layout.fieldX - layout.contentInsetX;
         const int browseButtonWidth = 32;
         const int browseFieldWidth = fieldWidth - browseButtonWidth - layout.controlGapX;
@@ -372,12 +371,12 @@ private:
         y += rowStep;
         Label(isUrl ? L"网址 *" : L"路径 *", layout.contentInsetX, y, layout.labelWidth);
         pathEdit_ = Edit(IdPath, layout.fieldX, y, browseFieldWidth, link_.path);
-        Button(IdBrowseFile, L"...", browseButtonX, y + 1, browseButtonWidth, buttonHeight);
+        Button(IdBrowseFile, L"...", browseButtonX, y + 1, browseButtonWidth);
 
         y += rowStep;
         Label(L"图标", layout.contentInsetX, y, layout.labelWidth);
         iconEdit_ = Edit(IdIcon, layout.fieldX, y, browseFieldWidth, link_.icon.empty() ? (isUrl ? L"#url" : L"默认系统缓存图标") : link_.icon);
-        Button(IdBrowseFolder, L"...", browseButtonX, y + 1, browseButtonWidth, buttonHeight);
+        Button(IdBrowseFolder, L"...", browseButtonX, y + 1, browseButtonWidth);
 
         y += rowStep;
         Label(L"参数", layout.contentInsetX, y, layout.labelWidth);
@@ -397,15 +396,15 @@ private:
         Label(L"颜色", layout.contentInsetX, y, layout.labelWidth);
         std::wstring colorText = link_.isCustomColor && !link_.customColor.empty() ? link_.customColor : L"#ff000000";
         customColorEdit_ = Edit(IdCustomColorEdit, layout.fieldX, y, browseFieldWidth, colorText);
-        Button(IdPickColor, L"...", browseButtonX, y + 1, browseButtonWidth, buttonHeight);
+        Button(IdPickColor, L"...", browseButtonX, y + 1, browseButtonWidth);
 
         y += rowStep;
         Label(L"快捷键", layout.contentInsetX, y, layout.labelWidth);
         const int hotKeyClearWidth = layout.footerButtonWidth;
         const int hotKeyWidth = fieldWidth - hotKeyClearWidth - layout.controlGapX;
-        hotKeyText_ = ThemedControls::CreateButton(instance_, hwnd_, IdHotKeyCapture, LinkHotKeyText(capturedHotKey_).c_str(),
-                                                   layout.fieldX, y + 1, hotKeyWidth, buttonHeight, font_);
-        Button(IdHotKeyClear, L"清除", layout.fieldX + hotKeyWidth + layout.controlGapX, y + 1, hotKeyClearWidth, buttonHeight);
+        hotKeyText_ = MakeUi().Button(IdHotKeyCapture, LinkHotKeyText(capturedHotKey_).c_str(),
+                                      layout.fieldX, y + 1, ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, hotKeyWidth);
+        Button(IdHotKeyClear, L"清除", layout.fieldX + hotKeyWidth + layout.controlGapX, y + 1, hotKeyClearWidth);
 
         y += rowStep;
         Label(L"备注", layout.contentInsetX, y, layout.labelWidth);
@@ -415,8 +414,8 @@ private:
         fieldFrames_.push_back(FieldFrame{remarkFrame, remarkEdit_, false});
 
         const int footerY = layout.FooterY(remarkFrame.bottom);
-        Button(IdOk, L"确定", layout.FooterButtonX(kDialogWidth, 0, 2), footerY, layout.footerButtonWidth, buttonHeight);
-        Button(IdCancel, L"取消", layout.FooterButtonX(kDialogWidth, 1, 2), footerY, layout.footerButtonWidth, buttonHeight);
+        Button(IdOk, L"确定", layout.FooterButtonX(kDialogWidth, 0, 2), footerY, layout.footerButtonWidth);
+        Button(IdCancel, L"取消", layout.FooterButtonX(kDialogWidth, 1, 2), footerY, layout.footerButtonWidth);
     }
 
     int FieldHeight() const {

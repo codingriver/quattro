@@ -147,6 +147,44 @@ std::size_t WriteStringCallback(char* ptr, std::size_t size, std::size_t nmemb, 
     return total;
 }
 
+struct CurlProgressContext {
+    UpdateProgressCallback progress;
+    UpdateCancelCallback cancel;
+    std::uint64_t lastDownloadedBytes = 0;
+    ULONGLONG lastProgressTick = GetTickCount64();
+    std::wstring* error = nullptr;
+};
+
+int CurlProgressCallback(void* clientp, curl_off_t dltotal, curl_off_t dlnow, curl_off_t, curl_off_t) {
+    auto* context = static_cast<CurlProgressContext*>(clientp);
+    if (!context) {
+        return 0;
+    }
+    if (context->cancel && context->cancel()) {
+        if (context->error) {
+            *context->error = L"下载已取消。";
+        }
+        return 1;
+    }
+
+    const std::uint64_t downloaded = dlnow > 0 ? static_cast<std::uint64_t>(dlnow) : 0;
+    const std::uint64_t total = dltotal > 0 ? static_cast<std::uint64_t>(dltotal) : 0;
+    if (downloaded > context->lastDownloadedBytes) {
+        context->lastDownloadedBytes = downloaded;
+        context->lastProgressTick = GetTickCount64();
+    } else if (GetTickCount64() - context->lastProgressTick > 30000) {
+        if (context->error) {
+            *context->error = L"下载 30 秒没有进展，已超时。";
+        }
+        return 1;
+    }
+
+    if (context->progress) {
+        context->progress(UpdateDownloadProgress{downloaded, total});
+    }
+    return 0;
+}
+
 std::size_t WriteFileCallback(char* ptr, std::size_t size, std::size_t nmemb, void* userdata) {
     auto* file = reinterpret_cast<std::ofstream*>(userdata);
     const std::size_t total = size * nmemb;
@@ -182,7 +220,12 @@ bool DownloadText(const std::wstring& url, std::string& body, std::wstring& erro
     return true;
 }
 
-bool DownloadFile(const std::wstring& url, const std::filesystem::path& path, std::wstring& error) {
+bool DownloadFile(
+    const std::wstring& url,
+    const std::filesystem::path& path,
+    std::wstring& error,
+    const UpdateProgressCallback& progress,
+    const UpdateCancelCallback& cancel) {
     std::error_code ec;
     std::filesystem::create_directories(path.parent_path(), ec);
     std::ofstream file(path, std::ios::binary | std::ios::trunc);
@@ -198,14 +241,23 @@ bool DownloadFile(const std::wstring& url, const std::filesystem::path& path, st
     }
     const std::string urlUtf8 = WideToUtf8(url);
     char errorBuffer[CURL_ERROR_SIZE]{};
+    CurlProgressContext progressContext;
+    progressContext.progress = progress;
+    progressContext.cancel = cancel;
+    progressContext.error = &error;
     curl_easy_setopt(curl, CURLOPT_URL, urlUtf8.c_str());
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "Quattro Update Downloader/1.0");
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 300L);
+    curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 1L);
+    curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 30L);
     curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, errorBuffer);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteFileCallback);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &file);
+    curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+    curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, CurlProgressCallback);
+    curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &progressContext);
     const CURLcode code = curl_easy_perform(curl);
     long status = 0;
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
@@ -213,7 +265,9 @@ bool DownloadFile(const std::wstring& url, const std::filesystem::path& path, st
     file.close();
     if (code != CURLE_OK || status < 200 || status >= 300) {
         const std::string detail = errorBuffer[0] ? errorBuffer : curl_easy_strerror(code);
-        error = L"下载更新失败: HTTP " + std::to_wstring(status) + L"，" + Utf8ToWide(detail);
+        if (error.empty()) {
+            error = L"下载更新失败: HTTP " + std::to_wstring(status) + L"，" + Utf8ToWide(detail);
+        }
         return false;
     }
     if (!FileExists(path)) {
@@ -228,7 +282,7 @@ bool DownloadText(const std::wstring&, std::string&, std::wstring& error) {
     return false;
 }
 
-bool DownloadFile(const std::wstring&, const std::filesystem::path&, std::wstring& error) {
+bool DownloadFile(const std::wstring&, const std::filesystem::path&, std::wstring& error, const UpdateProgressCallback&, const UpdateCancelCallback&) {
     error = L"当前构建未启用 curl，无法下载更新。";
     return false;
 }
@@ -359,12 +413,16 @@ bool UpdateCheckService::CheckLatest(UpdateReleaseInfo& info, std::wstring& erro
         for (const JsonValue& asset : assets->arrayValue) {
             const std::wstring name = asset.get(L"name") ? asset.get(L"name")->stringOr() : L"";
             const std::wstring url = asset.get(L"browser_download_url") ? asset.get(L"browser_download_url")->stringOr() : L"";
+            const std::uint64_t size = asset.get(L"size") && asset.get(L"size")->isNumber()
+                ? static_cast<std::uint64_t>(std::max(0.0, asset.get(L"size")->numberValue))
+                : 0;
             if (ToLower(name) == L"sha256sums.txt") {
                 info.checksumDownloadUrl = url;
             }
             if (info.assetDownloadUrl.empty() && IsExpectedAssetName(name)) {
                 info.assetName = name;
                 info.assetDownloadUrl = url;
+                info.assetSizeBytes = size;
             }
         }
     }
@@ -378,6 +436,15 @@ bool UpdateCheckService::CheckLatest(UpdateReleaseInfo& info, std::wstring& erro
 }
 
 bool UpdateCheckService::DownloadUpdate(const UpdateReleaseInfo& info, UpdateDownloadResult& result, std::wstring& error) const {
+    return DownloadUpdate(info, result, error, {}, {});
+}
+
+bool UpdateCheckService::DownloadUpdate(
+    const UpdateReleaseInfo& info,
+    UpdateDownloadResult& result,
+    std::wstring& error,
+    const UpdateProgressCallback& progress,
+    const UpdateCancelCallback& cancel) const {
     result = {};
     if (info.assetDownloadUrl.empty() || info.assetName.empty()) {
         error = L"更新包下载地址为空。";
@@ -389,13 +456,28 @@ bool UpdateCheckService::DownloadUpdate(const UpdateReleaseInfo& info, UpdateDow
     const std::filesystem::path temp = target.wstring() + L".tmp";
     std::error_code ec;
     std::filesystem::remove(temp, ec);
+    const auto removeTemp = [&]() {
+        std::error_code removeError;
+        std::filesystem::remove(temp, removeError);
+    };
 
-    if (!DownloadFile(info.assetDownloadUrl, temp, error)) {
+    if (progress) {
+        progress(UpdateDownloadProgress{0, info.assetSizeBytes});
+    }
+    if (!DownloadFile(info.assetDownloadUrl, temp, error, [&](const UpdateDownloadProgress& current) {
+            if (progress) {
+                progress(UpdateDownloadProgress{
+                    current.downloadedBytes,
+                    current.totalBytes != 0 ? current.totalBytes : info.assetSizeBytes});
+            }
+        }, cancel)) {
+        removeTemp();
         return false;
     }
     const auto size = std::filesystem::file_size(temp, ec);
     if (ec || size == 0) {
         error = L"下载文件为空。";
+        removeTemp();
         return false;
     }
 
@@ -408,6 +490,7 @@ bool UpdateCheckService::DownloadUpdate(const UpdateReleaseInfo& info, UpdateDow
             if (!expected.empty() && Sha256File(temp, actual, error)) {
                 if (ToLower(actual) != expected) {
                     error = L"更新包 SHA256 校验失败。";
+                    removeTemp();
                     return false;
                 }
                 result.checksumVerified = true;
@@ -426,6 +509,7 @@ bool UpdateCheckService::DownloadUpdate(const UpdateReleaseInfo& info, UpdateDow
     std::filesystem::rename(temp, target, ec);
     if (ec) {
         error = L"保存更新包失败: " + Utf8ToWide(ec.message());
+        removeTemp();
         return false;
     }
     result.filePath = target;

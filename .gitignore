@@ -90,6 +90,7 @@
 /tools/run-note-todo-acceptance.ps1
 
 # Local tool caches
+/.claude/settings.local.json
 /.wrangler/
 /.vcpkg-root/
 /vcpkg_installed/

@@ -201,6 +201,76 @@ bool HasColumn(sqlite3* db, const wchar_t* table, const wchar_t* column) {
     return false;
 }
 
+bool HasTable(sqlite3* db, const wchar_t* table) {
+    SQLiteStatement statement(db, L"SELECT name FROM sqlite_master WHERE type='table' AND name=?;");
+    if (!statement.ok()) {
+        return false;
+    }
+    statement.bindText(1, table);
+    return statement.step() == SQLITE_ROW;
+}
+
+int SchemaVersion(sqlite3* db) {
+    if (!HasTable(db, L"Version")) {
+        return 0;
+    }
+    SQLiteStatement statement(db, L"SELECT Ver FROM Version WHERE ID=1;");
+    if (!statement.ok() || statement.step() != SQLITE_ROW) {
+        return 0;
+    }
+    return statement.columnInt(0);
+}
+
+bool NeedsSchemaMigration(sqlite3* db) {
+    if (SchemaVersion(db) < kSchemaVersion) {
+        return true;
+    }
+    return !HasTable(db, L"Groups") ||
+           !HasTable(db, L"Links") ||
+           !HasTable(db, L"NotePages") ||
+           !HasTable(db, L"TodoItems") ||
+           !HasColumn(db, L"Links", L"Pidl") ||
+           !HasColumn(db, L"TodoItems", L"Enabled") ||
+           !HasColumn(db, L"TodoItems", L"RepeatInterval") ||
+           !HasColumn(db, L"TodoItems", L"RepeatMode") ||
+           !HasColumn(db, L"TodoItems", L"RepeatLimit") ||
+           !HasColumn(db, L"TodoItems", L"RepeatFinished") ||
+           !HasColumn(db, L"TodoItems", L"CronExpression");
+}
+
+std::wstring MigrationTimestamp() {
+    SYSTEMTIME time{};
+    GetLocalTime(&time);
+    wchar_t buffer[32]{};
+    swprintf_s(
+        buffer,
+        L"%04u%02u%02u-%02u%02u%02u",
+        time.wYear,
+        time.wMonth,
+        time.wDay,
+        time.wHour,
+        time.wMinute,
+        time.wSecond);
+    return buffer;
+}
+
+bool BackupDatabaseBeforeMigration(const std::filesystem::path& appDirectory, const std::filesystem::path& dbPath, std::wstring& error) {
+    const std::filesystem::path backupPath = appDirectory / L"backups" / L"db" / MigrationTimestamp() / L"link.db";
+    std::error_code ec;
+    std::filesystem::create_directories(backupPath.parent_path(), ec);
+    if (ec) {
+        error = L"创建数据库迁移备份目录失败: " + Utf8ToWide(ec.message().c_str());
+        return false;
+    }
+    std::filesystem::copy_file(dbPath, backupPath, std::filesystem::copy_options::overwrite_existing, ec);
+    if (ec) {
+        error = L"备份数据库失败: " + Utf8ToWide(ec.message().c_str());
+        return false;
+    }
+    WriteAppLog(L"数据库迁移前已备份: " + backupPath.wstring());
+    return true;
+}
+
 void MigrateSchema(sqlite3* db, std::wstring& error) {
     if (!HasColumn(db, L"Links", L"Pidl")) {
         Exec(db, "ALTER TABLE Links ADD COLUMN Pidl BLOB;", error);
@@ -420,8 +490,16 @@ AppModel StorageService::Load() {
         L"storage sqlite opened",
         L"path=" + dbPath.wstring() + L", new=" + std::wstring(newDatabase ? L"1" : L"0"));
 
+    const bool needsSchemaMigration = !newDatabase && NeedsSchemaMigration(db.get());
+    WriteStartupTiming(L"storage schema migration checked", L"needed=" + std::wstring(needsSchemaMigration ? L"1" : L"0"));
+    if (needsSchemaMigration && !BackupDatabaseBeforeMigration(appDirectory_, dbPath, lastError_)) {
+        sqliteAvailable_ = false;
+        WriteStartupTiming(L"storage schema migration backup failed", lastError_);
+        return LoadFallback();
+    }
+
     bool startupSchemaTransaction = false;
-    if (newDatabase) {
+    if (newDatabase || needsSchemaMigration) {
         startupSchemaTransaction = Exec(db.get(), "BEGIN IMMEDIATE;", lastError_);
         WriteStartupTiming(
             L"storage schema transaction begin",
@@ -435,10 +513,17 @@ AppModel StorageService::Load() {
     WriteStartupTiming(L"storage schema migrated", lastError_);
 
     const int versionRows = CountRows(db.get(), L"SELECT COUNT(*) FROM Version;");
-    WriteStartupTiming(L"storage version rows counted", L"rows=" + std::to_wstring(versionRows));
+    const int currentSchemaVersion = SchemaVersion(db.get());
+    WriteStartupTiming(
+        L"storage version rows counted",
+        L"rows=" + std::to_wstring(versionRows) +
+            L", version=" + std::to_wstring(currentSchemaVersion));
     if (versionRows == 0) {
         Exec(db.get(), ("INSERT INTO Version(ID,Ver) VALUES(1," + std::to_string(kSchemaVersion) + ");").c_str(), lastError_);
         WriteStartupTiming(L"storage version row inserted", lastError_);
+    } else if (currentSchemaVersion != kSchemaVersion) {
+        Exec(db.get(), ("UPDATE Version SET Ver=" + std::to_string(kSchemaVersion) + " WHERE ID=1;").c_str(), lastError_);
+        WriteStartupTiming(L"storage version row updated", lastError_);
     }
 
     const int groupRows = CountRows(db.get(), L"SELECT COUNT(*) FROM Groups;");

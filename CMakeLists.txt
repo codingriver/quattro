@@ -48,6 +48,18 @@ set(EMBEDDED_UPDATER_CPP "${CMAKE_CURRENT_BINARY_DIR}/generated/EmbeddedUpdater.
 configure_file("${CMAKE_CURRENT_SOURCE_DIR}/src/Version.h.in" "${CMAKE_CURRENT_BINARY_DIR}/generated/Version.h" @ONLY)
 configure_file("${CMAKE_CURRENT_SOURCE_DIR}/resources/VersionResource.h.in" "${CMAKE_CURRENT_BINARY_DIR}/generated/VersionResource.h" @ONLY)
 
+set(QUATTRO_SOURCE_INCLUDE_DIRS
+    "${CMAKE_CURRENT_SOURCE_DIR}/src"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/common"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/domain"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/services"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/theme"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/windows"
+    "${CMAKE_CURRENT_BINARY_DIR}/generated"
+)
+
+include_directories(${QUATTRO_SOURCE_INCLUDE_DIRS})
+
 add_executable(QuattroUpdater WIN32
     src/updater/UpdaterMain.cpp
 )
@@ -148,42 +160,49 @@ add_executable(Quattro WIN32
     ${EMBEDDED_UPDATER_CPP}
     resources/Quattro.rc
     src/main.cpp
-    src/AppLog.cpp
-    src/BuiltinTools.cpp
-    src/CatalogDialogLayout.cpp
-    src/Config.cpp
-    src/ConfigPackageService.cpp
-    src/EmbeddedAssetInstaller.cpp
-    src/Elevation.cpp
-    src/HotKeyEditor.cpp
-    src/IconService.cpp
-    src/JsonValue.cpp
-    src/Launcher.cpp
-    src/LocalHttpServerService.cpp
-    src/LinkEditDialog.cpp
-    src/MainWindow.cpp
-    src/MenuCatalog.cpp
-    src/PluginRegistry.cpp
-    src/QuickImportDialog.cpp
-    src/QuickImportService.cpp
-    src/ShellItemService.cpp
-    src/SimpleDialogs.cpp
-    src/StartupService.cpp
-    src/Storage.cpp
-    src/SystemFunctions.cpp
-    src/Theme.cpp
-    src/ThemedControls.cpp
-    src/TodoEditDialog.cpp
-    src/TodoSchedule.cpp
-    src/UpdateCheckService.cpp
-    src/UpdateInstaller.cpp
-    src/UrlEditDialog.cpp
-    src/UrlIconDownloadService.cpp
-    src/Utilities.cpp
-    src/WebDavBackupService.cpp
-    src/WebDavClient.cpp
-    src/WebDavCredentialService.cpp
-    src/WebDavRecoveryService.cpp
+    src/windows/AboutDialog.cpp
+    src/common/AppLog.cpp
+    src/windows/BuiltinTools.cpp
+    src/theme/CatalogDialogLayout.cpp
+    src/windows/ConfirmDialog.cpp
+    src/domain/Config.cpp
+    src/services/ConfigPackageService.cpp
+    src/common/EmbeddedAssetInstaller.cpp
+    src/common/Elevation.cpp
+    src/windows/HotKeyEditor.cpp
+    src/services/IconService.cpp
+    src/common/JsonValue.cpp
+    src/services/Launcher.cpp
+    src/services/LocalHttpServerService.cpp
+    src/windows/LinkEditDialog.cpp
+    src/windows/MainWindow.cpp
+    src/domain/MenuCatalog.cpp
+    src/domain/PluginRegistry.cpp
+    src/windows/QuickImportDialog.cpp
+    src/services/QuickImportService.cpp
+    src/services/ShellItemService.cpp
+    src/windows/SimpleDialogs.cpp
+    src/services/StartupService.cpp
+    src/services/Storage.cpp
+    src/services/SystemFunctions.cpp
+    src/theme/Theme.cpp
+    src/theme/ThemedFormLayout.cpp
+    src/theme/ThemedControls.cpp
+    src/theme/ThemedUi.cpp
+    src/theme/ThemedWindowUi.cpp
+    src/windows/TodoEditDialog.cpp
+    src/domain/TodoSchedule.cpp
+    src/services/UpdateCheckService.cpp
+    src/windows/UpdateCheckDialog.cpp
+    src/windows/UpdateDownloadDialog.cpp
+    src/services/UpdateInstaller.cpp
+    src/windows/UrlEditDialog.cpp
+    src/services/UrlIconDownloadService.cpp
+    src/common/Utilities.cpp
+    src/services/WebDavBackupService.cpp
+    src/services/WebDavClient.cpp
+    src/services/WebDavCredentialService.cpp
+    src/services/WebDavRecoveryService.cpp
 )
 
 set_target_properties(Quattro PROPERTIES
@@ -220,89 +239,95 @@ target_include_directories(Quattro PRIVATE
 if(QUATTRO_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/UnitTests.cpp")
 add_executable(QuattroTests
     tests/UnitTests.cpp
-    src/AppLog.cpp
-    src/Config.cpp
-    src/ConfigPackageService.cpp
-    src/Launcher.cpp
-    src/JsonValue.cpp
-    src/MenuCatalog.cpp
-    src/PluginRegistry.cpp
-    src/ShellItemService.cpp
-    src/Storage.cpp
-    src/SystemFunctions.cpp
-    src/Theme.cpp
-    src/ThemedControls.cpp
-    src/TodoSchedule.cpp
-    src/Utilities.cpp
-    src/WebDavBackupService.cpp
-    src/WebDavClient.cpp
-    src/WebDavCredentialService.cpp
-    src/WebDavRecoveryService.cpp
+    src/common/AppLog.cpp
+    src/domain/Config.cpp
+    src/services/ConfigPackageService.cpp
+    src/services/Launcher.cpp
+    src/common/JsonValue.cpp
+    src/domain/MenuCatalog.cpp
+    src/domain/PluginRegistry.cpp
+    src/services/ShellItemService.cpp
+    src/services/Storage.cpp
+    src/services/SystemFunctions.cpp
+    src/theme/Theme.cpp
+    src/theme/ThemedControls.cpp
+    src/domain/TodoSchedule.cpp
+    src/common/Utilities.cpp
+    src/services/WebDavBackupService.cpp
+    src/services/WebDavClient.cpp
+    src/services/WebDavCredentialService.cpp
+    src/services/WebDavRecoveryService.cpp
 )
 
 add_executable(QuattroNoteTodoAcceptance
     tests/NoteTodoAcceptance.cpp
-    src/AppLog.cpp
-    src/Config.cpp
-    src/ConfigPackageService.cpp
-    src/JsonValue.cpp
-    src/MenuCatalog.cpp
-    src/Storage.cpp
-    src/TodoSchedule.cpp
-    src/Utilities.cpp
+    src/common/AppLog.cpp
+    src/domain/Config.cpp
+    src/services/ConfigPackageService.cpp
+    src/common/JsonValue.cpp
+    src/domain/MenuCatalog.cpp
+    src/services/Storage.cpp
+    src/domain/TodoSchedule.cpp
+    src/common/Utilities.cpp
 )
 
 add_executable(QuattroDbProbe
     tests/DbProbe.cpp
-    src/AppLog.cpp
-    src/Storage.cpp
-    src/TodoSchedule.cpp
-    src/Utilities.cpp
+    src/common/AppLog.cpp
+    src/services/Storage.cpp
+    src/domain/TodoSchedule.cpp
+    src/common/Utilities.cpp
 )
 
 add_executable(QuattroDbSeed
     tests/DbSeed.cpp
-    src/AppLog.cpp
-    src/Storage.cpp
-    src/TodoSchedule.cpp
-    src/Utilities.cpp
+    src/common/AppLog.cpp
+    src/services/Storage.cpp
+    src/domain/TodoSchedule.cpp
+    src/common/Utilities.cpp
 )
 
 add_executable(QuattroThemeStateProbe
     tests/ThemeStateProbe.cpp
-    src/Theme.cpp
-    src/ThemedControls.cpp
-    src/Utilities.cpp
+    src/theme/Theme.cpp
+    src/theme/ThemedControls.cpp
+    src/common/Utilities.cpp
 )
 
 add_executable(QuattroUiScreenshotAcceptance
     tests/UiScreenshotAcceptance.cpp
-    src/AppLog.cpp
-    src/BuiltinTools.cpp
-    src/ConfigPackageService.cpp
-    src/HotKeyEditor.cpp
-    src/JsonValue.cpp
-    src/Launcher.cpp
-    src/LocalHttpServerService.cpp
-    src/LinkEditDialog.cpp
-    src/MenuCatalog.cpp
-    src/PluginRegistry.cpp
-    src/QuickImportDialog.cpp
-    src/QuickImportService.cpp
-    src/ShellItemService.cpp
-    src/SimpleDialogs.cpp
-    src/Storage.cpp
-    src/SystemFunctions.cpp
-    src/Theme.cpp
-    src/ThemedControls.cpp
-    src/TodoEditDialog.cpp
-    src/TodoSchedule.cpp
-    src/UrlEditDialog.cpp
-    src/Utilities.cpp
-    src/WebDavBackupService.cpp
-    src/WebDavClient.cpp
-    src/WebDavCredentialService.cpp
-    src/WebDavRecoveryService.cpp
+    src/common/AppLog.cpp
+    src/windows/AboutDialog.cpp
+    src/windows/BuiltinTools.cpp
+    src/windows/ConfirmDialog.cpp
+    src/services/ConfigPackageService.cpp
+    src/windows/HotKeyEditor.cpp
+    src/common/JsonValue.cpp
+    src/services/Launcher.cpp
+    src/services/LocalHttpServerService.cpp
+    src/windows/LinkEditDialog.cpp
+    src/domain/MenuCatalog.cpp
+    src/domain/PluginRegistry.cpp
+    src/windows/QuickImportDialog.cpp
+    src/services/QuickImportService.cpp
+    src/services/ShellItemService.cpp
+    src/windows/SimpleDialogs.cpp
+    src/services/Storage.cpp
+    src/services/SystemFunctions.cpp
+    src/theme/Theme.cpp
+    src/theme/ThemedControls.cpp
+    src/theme/ThemedFormLayout.cpp
+    src/theme/ThemedUi.cpp
+    src/theme/ThemedWindowUi.cpp
+    src/windows/TodoEditDialog.cpp
+    src/domain/TodoSchedule.cpp
+    src/windows/UpdateCheckDialog.cpp
+    src/windows/UrlEditDialog.cpp
+    src/common/Utilities.cpp
+    src/services/WebDavBackupService.cpp
+    src/services/WebDavClient.cpp
+    src/services/WebDavCredentialService.cpp
+    src/services/WebDavRecoveryService.cpp
 )
 
 add_executable(QuattroAboutTrayExitAcceptance
@@ -311,16 +336,16 @@ add_executable(QuattroAboutTrayExitAcceptance
 
 add_executable(QuattroWebDavAcceptance
     tests/WebDavAcceptance.cpp
-    src/AppLog.cpp
-    src/Config.cpp
-    src/ConfigPackageService.cpp
-    src/Storage.cpp
-    src/TodoSchedule.cpp
-    src/Utilities.cpp
-    src/WebDavBackupService.cpp
-    src/WebDavClient.cpp
-    src/WebDavCredentialService.cpp
-    src/WebDavRecoveryService.cpp
+    src/common/AppLog.cpp
+    src/domain/Config.cpp
+    src/services/ConfigPackageService.cpp
+    src/services/Storage.cpp
+    src/domain/TodoSchedule.cpp
+    src/common/Utilities.cpp
+    src/services/WebDavBackupService.cpp
+    src/services/WebDavClient.cpp
+    src/services/WebDavCredentialService.cpp
+    src/services/WebDavRecoveryService.cpp
 )
 
 target_compile_definitions(QuattroTests PRIVATE
@@ -518,8 +543,8 @@ endif()
 if(QUATTRO_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/TodoBackupJsonCompatibility.cpp")
 add_executable(QuattroTodoBackupJsonCompatibility
     tests/TodoBackupJsonCompatibility.cpp
-    src/JsonValue.cpp
-    src/Utilities.cpp
+    src/common/JsonValue.cpp
+    src/common/Utilities.cpp
 )
 
 target_compile_definitions(QuattroTodoBackupJsonCompatibility PRIVATE
@@ -542,8 +567,8 @@ endif()
 if(QUATTRO_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/HttpServerConfigAcceptance.cpp")
 add_executable(QuattroHttpServerConfigAcceptance
     tests/HttpServerConfigAcceptance.cpp
-    src/LocalHttpServerService.cpp
-    src/Utilities.cpp
+    src/services/LocalHttpServerService.cpp
+    src/common/Utilities.cpp
 )
 
 target_compile_definitions(QuattroHttpServerConfigAcceptance PRIVATE
@@ -571,9 +596,9 @@ endif()
 if(QUATTRO_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/HttpServerRuntimeAcceptance.cpp")
 add_executable(QuattroHttpServerRuntimeAcceptance
     tests/HttpServerRuntimeAcceptance.cpp
-    src/AppLog.cpp
-    src/LocalHttpServerService.cpp
-    src/Utilities.cpp
+    src/common/AppLog.cpp
+    src/services/LocalHttpServerService.cpp
+    src/common/Utilities.cpp
 )
 
 target_compile_definitions(QuattroHttpServerRuntimeAcceptance PRIVATE
@@ -609,32 +634,38 @@ endif()
 if(QUATTRO_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/SettingsHttpButtonsAcceptance.cpp")
 add_executable(QuattroSettingsHttpButtonsAcceptance
     tests/SettingsHttpButtonsAcceptance.cpp
-    src/AppLog.cpp
-    src/BuiltinTools.cpp
-    src/ConfigPackageService.cpp
-    src/HotKeyEditor.cpp
-    src/JsonValue.cpp
-    src/Launcher.cpp
-    src/LocalHttpServerService.cpp
-    src/LinkEditDialog.cpp
-    src/MenuCatalog.cpp
-    src/PluginRegistry.cpp
-    src/QuickImportDialog.cpp
-    src/QuickImportService.cpp
-    src/ShellItemService.cpp
-    src/SimpleDialogs.cpp
-    src/Storage.cpp
-    src/SystemFunctions.cpp
-    src/Theme.cpp
-    src/ThemedControls.cpp
-    src/TodoEditDialog.cpp
-    src/TodoSchedule.cpp
-    src/UrlEditDialog.cpp
-    src/Utilities.cpp
-    src/WebDavBackupService.cpp
-    src/WebDavClient.cpp
-    src/WebDavCredentialService.cpp
-    src/WebDavRecoveryService.cpp
+    src/common/AppLog.cpp
+    src/windows/AboutDialog.cpp
+    src/windows/BuiltinTools.cpp
+    src/windows/ConfirmDialog.cpp
+    src/services/ConfigPackageService.cpp
+    src/windows/HotKeyEditor.cpp
+    src/common/JsonValue.cpp
+    src/services/Launcher.cpp
+    src/services/LocalHttpServerService.cpp
+    src/windows/LinkEditDialog.cpp
+    src/domain/MenuCatalog.cpp
+    src/domain/PluginRegistry.cpp
+    src/windows/QuickImportDialog.cpp
+    src/services/QuickImportService.cpp
+    src/services/ShellItemService.cpp
+    src/windows/SimpleDialogs.cpp
+    src/services/Storage.cpp
+    src/services/SystemFunctions.cpp
+    src/theme/Theme.cpp
+    src/theme/ThemedControls.cpp
+    src/theme/ThemedFormLayout.cpp
+    src/theme/ThemedUi.cpp
+    src/theme/ThemedWindowUi.cpp
+    src/windows/TodoEditDialog.cpp
+    src/domain/TodoSchedule.cpp
+    src/windows/UpdateCheckDialog.cpp
+    src/windows/UrlEditDialog.cpp
+    src/common/Utilities.cpp
+    src/services/WebDavBackupService.cpp
+    src/services/WebDavClient.cpp
+    src/services/WebDavCredentialService.cpp
+    src/services/WebDavRecoveryService.cpp
 )
 
 target_compile_definitions(QuattroSettingsHttpButtonsAcceptance PRIVATE

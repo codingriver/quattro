@@ -1,11 +1,12 @@
 #include "BuiltinTools.h"
 
-#include "../resources/resource.h"
+#include "../../resources/resource.h"
 
 #include "AppLog.h"
 #include "DialogLayout.h"
 #include "SimpleDialogs.h"
 #include "ThemedControls.h"
+#include "ThemedUi.h"
 #include "Utilities.h"
 
 #include <commdlg.h>
@@ -706,6 +707,10 @@ protected:
         return GetDialogLayoutMetrics(theme_, DialogLayoutKind::Compact);
     }
 
+    ThemedUi MakeUi() const {
+        return ThemedUi(instance_, hwnd_, theme_, font(), DialogLayoutKind::Compact, width_, height_);
+    }
+
     HWND CreateEdit(int id, int x, int y, int width, const std::wstring& value, DWORD extraStyle = ES_AUTOHSCROLL) {
         const int height = ThemedControls::EditFrameHeight(theme_);
         const RECT frame{x, y, x + width, y + height};
@@ -797,7 +802,7 @@ private:
 
         ThemedControls::CreateStaticText(instance_, hwnd_, L"坐标（x，y）", left, row0 + labelOffsetY, layout.labelWidth, labelHeight, font());
         coord_ = CreateEdit(ID_CLICK_COORD, fieldX, row0, 100, savedX + L", " + savedY);
-        ThemedControls::CreateButton(instance_, hwnd_, ID_CLICK_PICK, L"拾取(&P)", fieldX + 100 + layout.controlGapX, row0 + 1, layout.footerButtonWidth, bh, font());
+        MakeUi().Button(ID_CLICK_PICK, L"拾取(&P)", fieldX + 100 + layout.controlGapX, row0 + 1, ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, layout.footerButtonWidth);
 
         ThemedControls::CreateStaticText(instance_, hwnd_, L"点击次数", left, row1 + labelOffsetY, layout.labelWidth, labelHeight, font());
         count_ = CreateEdit(ID_CLICK_COUNT, fieldX, row1, fieldW, registry_.GetSetting(pluginId, L"count", L"10"), ES_NUMBER);
@@ -824,16 +829,15 @@ private:
         FillHotKeyCombo(pickHotKey_, registry_.GetSetting(pluginId, L"pickHotKey", L"F9"), hotKeys, 7);
 
         const int toggleY = row3 + rowStep + layout.footerGap;
-        toggle_ = ThemedControls::CreateButton(
-            instance_,
-            hwnd_,
+        toggle_ = MakeUi().Button(
             ID_CLICK_TOGGLE,
             L"启动(&S)",
             layout.FooterButtonX(width_, 0, 1),
             toggleY,
+            ThemedButtonRole::Normal,
+            ThemedButtonSize::Normal,
+            ThemedButtonWidthMode::Fixed,
             layout.footerButtonWidth,
-            bh,
-            font(),
             true);
         const int statusY = toggleY + bh + layout.rowGap;
         status_ = ThemedControls::CreateStaticText(instance_, hwnd_, L"就绪。", left, statusY, width_ - left * 2 - 120, labelHeight, font());
@@ -1139,16 +1143,15 @@ protected:
         const int buttonHeight = ThemedControls::CompactButtonHeight(theme_);
         for (int i = 0; i < visibleCount; ++i) {
             const int rowTop = resultsFrame_.top + padding + i * rowHeight;
-            HWND button = ThemedControls::CreateButton(
-                instance_,
-                hwnd_,
+            HWND button = MakeUi().Button(
                 baseId + i,
                 L"结束",
                 resultsFrame_.right - padding - buttonWidth,
                 rowTop + std::max(0, (rowHeight - buttonHeight) / 2) - 1,
-                buttonWidth,
-                buttonHeight,
-                font());
+                ThemedButtonRole::Normal,
+                ThemedButtonSize::Compact,
+                ThemedButtonWidthMode::Fixed,
+                buttonWidth);
             if (button) {
                 RedrawWindow(button, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW);
             }
@@ -1213,7 +1216,7 @@ private:
 
         ThemedControls::CreateStaticText(instance_, hwnd_, L"端口号", left, row0 + labelOffsetY, layout.labelWidth, labelHeight, font());
         port_ = CreateEdit(ID_PORT_VALUE, fieldX, row0, fieldW, registry_.GetSetting(L"quattro.builtin.port-inspector", L"port", L""), ES_NUMBER);
-        ThemedControls::CreateButton(instance_, hwnd_, ID_PORT_SCAN, L"扫描(&S)", fieldX + fieldW + layout.controlGapX, row0 + 1, scanW, bh, font(), true);
+        MakeUi().Button(ID_PORT_SCAN, L"扫描(&S)", fieldX + fieldW + layout.controlGapX, row0 + 1, ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, scanW, true);
 
         const int frameTop = row0 + layout.RowStep(bh) + layout.rowGap;
         const int statusY = height_ - layout.contentInsetY - labelHeight;
@@ -1294,7 +1297,7 @@ private:
 
         ThemedControls::CreateStaticText(instance_, hwnd_, L"进程ID", left, row0 + labelOffsetY, layout.labelWidth, labelHeight, font());
         pid_ = CreateEdit(ID_PROCESS_VALUE, fieldX, row0, fieldW, registry_.GetSetting(L"quattro.builtin.process-inspector", L"pid", L""), ES_NUMBER);
-        ThemedControls::CreateButton(instance_, hwnd_, ID_PROCESS_QUERY, L"查询(&Q)", fieldX + fieldW + layout.controlGapX, row0 + 1, queryW, bh, font(), true);
+        MakeUi().Button(ID_PROCESS_QUERY, L"查询(&Q)", fieldX + fieldW + layout.controlGapX, row0 + 1, ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, queryW, true);
 
         const int frameTop = row0 + layout.RowStep(bh) + layout.rowGap;
         const int statusY = height_ - layout.contentInsetY - labelHeight;
@@ -1394,9 +1397,10 @@ private:
         const int buttonWidth = layout.footerButtonWidth;
         const int buttonY = row2 + 26 + layout.sectionGap;
         const int buttonsX = layout.CenteredGroupX(width_, buttonWidth * 2 + layout.footerButtonGap);
-        start_ = ThemedControls::CreateButton(instance_, hwnd_, ID_TIMER_START, L"开始(&S)", buttonsX, buttonY, buttonWidth, bh, font(), true);
-        pause_ = ThemedControls::CreateButton(instance_, hwnd_, ID_TIMER_PAUSE, L"暂停(&P)", buttonsX, buttonY, buttonWidth, bh, font());
-        reset_ = ThemedControls::CreateButton(instance_, hwnd_, ID_TIMER_RESET, L"重置(&R)", buttonsX + buttonWidth + layout.footerButtonGap, buttonY, buttonWidth, bh, font());
+        const ThemedUi timerUi = MakeUi();
+        start_ = timerUi.Button(ID_TIMER_START, L"开始(&S)", buttonsX, buttonY, ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, buttonWidth, true);
+        pause_ = timerUi.Button(ID_TIMER_PAUSE, L"暂停(&P)", buttonsX, buttonY, ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, buttonWidth);
+        reset_ = timerUi.Button(ID_TIMER_RESET, L"重置(&R)", buttonsX + buttonWidth + layout.footerButtonGap, buttonY, ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, buttonWidth);
         status_ = ThemedControls::CreateStaticText(instance_, hwnd_, L"", layout.contentInsetX, buttonY + bh + layout.rowGap, width_ - layout.contentInsetX * 2, labelHeight, font(), SS_CENTER);
         UpdateDisplay(ReadDurationMs());
         UpdateButtons();
@@ -1616,12 +1620,13 @@ private:
         const int buttonRow1 = buttonRow0 + bh + layout.rowGap;
         const int buttonRow2 = buttonRow1 + bh + layout.rowGap;
         const int rightButtonX = left + buttonWidth + layout.controlGapX;
-        start_ = ThemedControls::CreateButton(instance_, hwnd_, ID_SW_START, L"开始(&S)", left, buttonRow0, buttonWidth, bh, font(), true);
-        pause_ = ThemedControls::CreateButton(instance_, hwnd_, ID_SW_PAUSE, L"暂停(&P)", left, buttonRow0, buttonWidth, bh, font());
-        ThemedControls::CreateButton(instance_, hwnd_, ID_SW_LAP, L"计次(&L)", rightButtonX, buttonRow0, buttonWidth, bh, font());
-        ThemedControls::CreateButton(instance_, hwnd_, ID_SW_RESET, L"重置(&R)", left, buttonRow1, buttonWidth, bh, font());
-        ThemedControls::CreateButton(instance_, hwnd_, ID_SW_COPY, L"复制(&C)", rightButtonX, buttonRow1, buttonWidth, bh, font());
-        ThemedControls::CreateButton(instance_, hwnd_, ID_SW_EXPORT, L"导出(&E)", left, buttonRow2, contentWidth, bh, font());
+        const ThemedUi swUi = MakeUi();
+        start_ = swUi.Button(ID_SW_START, L"开始(&S)", left, buttonRow0, ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, buttonWidth, true);
+        pause_ = swUi.Button(ID_SW_PAUSE, L"暂停(&P)", left, buttonRow0, ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, buttonWidth);
+        swUi.Button(ID_SW_LAP, L"计次(&L)", rightButtonX, buttonRow0, ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, buttonWidth);
+        swUi.Button(ID_SW_RESET, L"重置(&R)", left, buttonRow1, ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, buttonWidth);
+        swUi.Button(ID_SW_COPY, L"复制(&C)", rightButtonX, buttonRow1, ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, buttonWidth);
+        swUi.Button(ID_SW_EXPORT, L"导出(&E)", left, buttonRow2, ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, contentWidth);
         const int lapsTop = buttonRow2 + bh + layout.sectionGap;
         lapsFrame_ = RECT{left, lapsTop, width_ - left, height_ - layout.contentInsetY - layout.sectionGap - layout.rowGap};
         laps_ = ThemedControls::CreateListBox(

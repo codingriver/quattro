@@ -1,5 +1,5 @@
-#include "../src/LocalHttpServerService.h"
-#include "../src/Utilities.h"
+#include "../src/services/LocalHttpServerService.h"
+#include "../src/common/Utilities.h"
 
 #include <filesystem>
 #include <iostream>

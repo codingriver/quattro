@@ -5,7 +5,10 @@
 
 #include <windows.h>
 
+#include <algorithm>
 #include <fstream>
+#include <iterator>
+#include <string>
 #include <vector>
 
 namespace {
@@ -58,11 +61,57 @@ std::filesystem::path SelectAppDirectory(const std::filesystem::path& moduleDire
     return moduleDirectory;
 }
 
-bool WriteAssetIfMissing(const std::filesystem::path& target, const EmbeddedAsset& asset) {
-    if (FileExists(target)) {
-        return true;
-    }
+std::wstring AssetTimestamp() {
+    SYSTEMTIME time{};
+    GetLocalTime(&time);
+    wchar_t buffer[32]{};
+    swprintf_s(
+        buffer,
+        L"%04u%02u%02u-%02u%02u%02u",
+        time.wYear,
+        time.wMonth,
+        time.wDay,
+        time.wHour,
+        time.wMinute,
+        time.wSecond);
+    return buffer;
+}
 
+std::wstring NormalizeRelativePath(const wchar_t* path) {
+    std::wstring value = ToLower(path ? path : L"");
+    for (wchar_t& ch : value) {
+        if (ch == L'/') {
+            ch = L'\\';
+        }
+    }
+    return value;
+}
+
+bool IsManagedAsset(const wchar_t* relativePath) {
+    const std::wstring path = NormalizeRelativePath(relativePath);
+    return path == L"readme.md" ||
+           path.rfind(L"docs\\", 0) == 0 ||
+           path.rfind(L"theme\\", 0) == 0 ||
+           path.rfind(L"icons\\menu\\", 0) == 0;
+}
+
+std::vector<unsigned char> ReadBinaryFile(const std::filesystem::path& path) {
+    std::ifstream file(path, std::ios::binary);
+    if (!file) {
+        return {};
+    }
+    return std::vector<unsigned char>(
+        std::istreambuf_iterator<char>(file),
+        std::istreambuf_iterator<char>());
+}
+
+bool SameContent(const std::filesystem::path& target, const EmbeddedAsset& asset) {
+    const std::vector<unsigned char> bytes = ReadBinaryFile(target);
+    return bytes.size() == asset.size &&
+           (bytes.empty() || std::equal(bytes.begin(), bytes.end(), asset.data));
+}
+
+bool WriteAsset(const std::filesystem::path& target, const EmbeddedAsset& asset) {
     std::error_code ec;
     std::filesystem::create_directories(target.parent_path(), ec);
     if (ec) {
@@ -75,6 +124,32 @@ bool WriteAssetIfMissing(const std::filesystem::path& target, const EmbeddedAsse
     }
     file.write(reinterpret_cast<const char*>(asset.data), static_cast<std::streamsize>(asset.size));
     return file.good();
+}
+
+bool BackupAsset(
+    const std::filesystem::path& appDirectory,
+    const std::filesystem::path& target,
+    const EmbeddedAsset& asset,
+    EmbeddedAssetInstallResult& result) {
+    if (!FileExists(target)) {
+        return true;
+    }
+    if (result.backupDirectory.empty()) {
+        result.backupDirectory = appDirectory / L"backups" / L"assets" / AssetTimestamp();
+    }
+
+    std::error_code ec;
+    const std::filesystem::path backup = result.backupDirectory / asset.relativePath;
+    std::filesystem::create_directories(backup.parent_path(), ec);
+    if (ec) {
+        return false;
+    }
+    std::filesystem::copy_file(target, backup, std::filesystem::copy_options::overwrite_existing, ec);
+    if (ec) {
+        return false;
+    }
+    ++result.filesBackedUp;
+    return true;
 }
 }
 
@@ -89,12 +164,24 @@ EmbeddedAssetInstallResult PrepareEmbeddedAssets(const std::filesystem::path& mo
         }
 
         const std::filesystem::path target = result.appDirectory / asset.relativePath;
-        if (FileExists(target)) {
+        const bool exists = FileExists(target);
+        const bool managed = IsManagedAsset(asset.relativePath);
+        if (exists && (!managed || SameContent(target, asset))) {
+            ++result.filesSkipped;
             continue;
         }
 
-        if (WriteAssetIfMissing(target, asset)) {
-            ++result.filesWritten;
+        if (exists && !BackupAsset(result.appDirectory, target, asset, result)) {
+            ++result.failures;
+            continue;
+        }
+
+        if (WriteAsset(target, asset)) {
+            if (exists) {
+                ++result.filesUpdated;
+            } else {
+                ++result.filesWritten;
+            }
         } else {
             ++result.failures;
         }

@@ -17,6 +17,9 @@ struct UpdatePlan {
     std::filesystem::path restart;
     std::wstring restartArgs;
     std::filesystem::path logPath;
+    std::wstring version;
+    std::wstring assetName;
+    std::wstring assetSize;
     DWORD waitTimeoutMs = 60000;
 };
 
@@ -25,6 +28,20 @@ std::wstring TrimDash(std::wstring value) {
         value.erase(value.begin());
     }
     return value;
+}
+
+bool ArgumentRequiresValue(const std::wstring& key) {
+    return key == L"pid" ||
+           key == L"source" ||
+           key == L"target" ||
+           key == L"backup" ||
+           key == L"restart" ||
+           key == L"restart-args" ||
+           key == L"log" ||
+           key == L"timeout-ms" ||
+           key == L"version" ||
+           key == L"asset" ||
+           key == L"asset-size";
 }
 
 std::map<std::wstring, std::wstring> ParseArguments() {
@@ -36,7 +53,7 @@ std::map<std::wstring, std::wstring> ParseArguments() {
             continue;
         }
         std::wstring value = L"1";
-        if (i + 1 < count && __wargv[i + 1][0] != L'-') {
+        if (i + 1 < count && (ArgumentRequiresValue(key) || __wargv[i + 1][0] != L'-')) {
             value = __wargv[++i];
         }
         args[key] = value;
@@ -100,6 +117,18 @@ void WriteLog(const UpdatePlan& plan, const std::wstring& message) {
     file << WideToUtf8(Timestamp() + L" " + message + L"\n");
 }
 
+std::filesystem::path AbsolutePath(const std::filesystem::path& path) {
+    std::error_code ec;
+    std::filesystem::path absolute = std::filesystem::absolute(path, ec);
+    return ec ? path : absolute;
+}
+
+std::wstring FileSizeText(const std::filesystem::path& path) {
+    std::error_code ec;
+    const auto size = std::filesystem::file_size(path, ec);
+    return ec ? L"unknown" : std::to_wstring(size);
+}
+
 bool ParsePlan(UpdatePlan& plan, std::wstring& error) {
     const auto args = ParseArguments();
     auto find = [&](const wchar_t* key) -> std::wstring {
@@ -133,6 +162,9 @@ bool ParsePlan(UpdatePlan& plan, std::wstring& error) {
     plan.restart = find(L"restart");
     plan.restartArgs = find(L"restart-args");
     plan.logPath = find(L"log");
+    plan.version = find(L"version");
+    plan.assetName = find(L"asset");
+    plan.assetSize = find(L"asset-size");
 
     if (plan.source.empty() || plan.target.empty()) {
         error = L"source 和 target 参数不能为空。";
@@ -147,8 +179,10 @@ bool ParsePlan(UpdatePlan& plan, std::wstring& error) {
 
 bool WaitForProcessExit(const UpdatePlan& plan, std::wstring& error) {
     if (plan.pid == 0) {
+        WriteLog(plan, L"未提供目标进程 pid，跳过等待。");
         return true;
     }
+    WriteLog(plan, L"等待目标进程退出。pid=" + std::to_wstring(plan.pid) + L"，timeout_ms=" + std::to_wstring(plan.waitTimeoutMs));
     HANDLE process = OpenProcess(SYNCHRONIZE, FALSE, plan.pid);
     if (!process) {
         WriteLog(plan, L"目标进程已不存在或无法打开，继续更新。");
@@ -157,6 +191,7 @@ bool WaitForProcessExit(const UpdatePlan& plan, std::wstring& error) {
     const DWORD result = WaitForSingleObject(process, plan.waitTimeoutMs);
     CloseHandle(process);
     if (result == WAIT_OBJECT_0) {
+        WriteLog(plan, L"目标进程已退出。pid=" + std::to_wstring(plan.pid));
         return true;
     }
     error = result == WAIT_TIMEOUT ? L"等待目标进程退出超时。" : L"等待目标进程失败: " + FormatLastErrorMessage();
@@ -213,6 +248,12 @@ bool ReplaceTarget(const UpdatePlan& plan, std::wstring& error) {
         return false;
     }
 
+    WriteLog(
+        plan,
+        L"准备替换目标文件。source=" + AbsolutePath(plan.source).wstring() +
+            L"，source_size=" + FileSizeText(plan.source) +
+            L"，target=" + AbsolutePath(plan.target).wstring() +
+            L"，backup=" + AbsolutePath(plan.backup).wstring());
     const bool hadTarget = std::filesystem::exists(plan.target, ec);
     if (hadTarget) {
         RetryDelete(plan.backup);
@@ -231,7 +272,10 @@ bool ReplaceTarget(const UpdatePlan& plan, std::wstring& error) {
         return false;
     }
 
-    WriteLog(plan, L"已替换目标文件: " + plan.target.wstring());
+    WriteLog(
+        plan,
+        L"已替换目标文件: " + AbsolutePath(plan.target).wstring() +
+            L"，target_size=" + FileSizeText(plan.target));
     return true;
 }
 
@@ -268,9 +312,13 @@ bool RestartTarget(const UpdatePlan& plan, std::wstring& error) {
         error = L"重启新版失败: " + FormatLastErrorMessage();
         return false;
     }
+    WriteLog(
+        plan,
+        L"已启动新版。pid=" + std::to_wstring(process.dwProcessId) +
+            L"，path=" + AbsolutePath(plan.restart).wstring() +
+            L"，args=" + plan.restartArgs);
     CloseHandle(process.hThread);
     CloseHandle(process.hProcess);
-    WriteLog(plan, L"已启动新版。");
     return true;
 }
 }
@@ -283,7 +331,15 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         return 2;
     }
 
-    WriteLog(plan, L"更新器启动。");
+    WriteLog(
+        plan,
+        L"更新器启动。version=" + plan.version +
+            L"，asset=" + plan.assetName +
+            L"，asset_size=" + plan.assetSize +
+            L"，source=" + AbsolutePath(plan.source).wstring() +
+            L"，source_size=" + FileSizeText(plan.source) +
+            L"，target=" + AbsolutePath(plan.target).wstring() +
+            L"，restart=" + AbsolutePath(plan.restart).wstring());
     if (!WaitForProcessExit(plan, error) ||
         !ReplaceTarget(plan, error) ||
         !RestartTarget(plan, error)) {
@@ -293,6 +349,6 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     }
 
     RetryDelete(plan.source);
-    WriteLog(plan, L"更新完成。");
+    WriteLog(plan, L"更新完成。version=" + plan.version + L"，source_deleted=" + AbsolutePath(plan.source).wstring());
     return 0;
 }

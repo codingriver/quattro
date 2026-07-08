@@ -12,7 +12,7 @@
         3. Customize common controls through the shared categories below:
            text, label, panel, field, edit, button, primaryButton, iconButton, miniButton, checkbox,
            toggle, radio, comboBox, tabButton, list, listItem, scrollbar,
-           slider, dialog, menuItem, linkItem, majorNavItem, minorNavItem,
+           slider, progressBar, dialog, menuItem, linkItem, majorNavItem, minorNavItem,
            titleButton, tooltip, separator, etc.
         4. New themeable UI must first be mapped to an existing shared category.
            Add a new category only when it represents a reusable component type
@@ -310,6 +310,7 @@
     <Component name="dialog">
         <Metric name="contentInsetX" value="28"/>
         <Metric name="contentInsetY" value="24"/>
+        <Metric name="labelMinWidth" value="20"/>
         <Metric name="labelWidth" value="74"/>
         <Metric name="labelGap" value="6"/>
         <Metric name="rowGap" value="8"/>
@@ -525,6 +526,13 @@
         <State name="normal" track="@line" fill="@accent" thumb="@surface" border="@border"/>
         <State name="hover" track="@line" fill="@focus" thumb="@surface" border="@accent"/>
         <State name="disabled" track="@line" fill="@border" thumb="@surfaceRaised" border="@line"/>
+    </Component>
+    <Component name="progressBar">
+        <Metric name="height" value="16"/>
+        <Metric name="radius" value="7"/>
+        <Metric name="borderWidth" value="1"/>
+        <State name="normal" track="@line" fill="@accent" border="@border"/>
+        <State name="disabled" track="@line" fill="@border" border="@line"/>
     </Component>
     <Component name="tooltip">
         <Metric name="radius" value="6"/>

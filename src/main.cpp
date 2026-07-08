@@ -12,17 +12,22 @@
 #include <windows.h>
 #include <objbase.h>
 #include <shellapi.h>
+#include <tlhelp32.h>
 
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <vector>
 
 namespace {
+constexpr int kCurrentConfigVersion = 1;
+
 struct Runtime {
     HANDLE mutex = nullptr;
     HANDLE sharedMemory = nullptr;
     void* sharedView = nullptr;
+    bool ownsMutex = false;
 
     ~Runtime() {
         if (sharedView) {
@@ -31,10 +36,19 @@ struct Runtime {
         if (sharedMemory) {
             CloseHandle(sharedMemory);
         }
+        if (mutex && ownsMutex) {
+            ReleaseMutex(mutex);
+        }
         if (mutex) {
             CloseHandle(mutex);
         }
     }
+};
+
+struct SiblingQuattroProcess {
+    DWORD processId = 0;
+    HWND mainWindow = nullptr;
+    HANDLE process = nullptr;
 };
 
 std::wstring BuildName(const wchar_t* prefix, const std::filesystem::path& appDirectory) {
@@ -43,6 +57,145 @@ std::wstring BuildName(const wchar_t* prefix, const std::filesystem::path& appDi
 
 std::wstring CurrentPidText() {
     return std::to_wstring(GetCurrentProcessId());
+}
+
+std::wstring CurrentExecutablePath() {
+    std::wstring buffer(MAX_PATH, L'\0');
+    for (;;) {
+        DWORD copied = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
+        if (copied == 0) {
+            return {};
+        }
+        if (copied < buffer.size() - 1) {
+            buffer.resize(copied);
+            return buffer;
+        }
+        buffer.resize(buffer.size() * 2);
+    }
+}
+
+std::wstring NormalizeProcessPath(std::wstring path) {
+    if (path.empty()) {
+        return {};
+    }
+
+    std::wstring buffer(MAX_PATH, L'\0');
+    DWORD length = GetFullPathNameW(path.c_str(), static_cast<DWORD>(buffer.size()), buffer.data(), nullptr);
+    if (length == 0) {
+        return ToLower(path);
+    }
+    if (length >= buffer.size()) {
+        buffer.assign(length + 1, L'\0');
+        length = GetFullPathNameW(path.c_str(), static_cast<DWORD>(buffer.size()), buffer.data(), nullptr);
+        if (length == 0 || length >= buffer.size()) {
+            return ToLower(path);
+        }
+    }
+    buffer.resize(length);
+    return ToLower(buffer);
+}
+
+std::wstring ProcessImagePath(HANDLE process) {
+    std::wstring buffer(32768, L'\0');
+    DWORD length = static_cast<DWORD>(buffer.size());
+    if (!QueryFullProcessImageNameW(process, 0, buffer.data(), &length) || length == 0) {
+        return {};
+    }
+    buffer.resize(length);
+    return buffer;
+}
+
+struct MainWindowEnumerationContext {
+    std::vector<std::pair<DWORD, HWND>> windows;
+};
+
+BOOL CALLBACK EnumQuattroMainWindows(HWND hwnd, LPARAM param) {
+    auto* context = reinterpret_cast<MainWindowEnumerationContext*>(param);
+    if (!context) {
+        return TRUE;
+    }
+
+    wchar_t className[128]{};
+    if (GetClassNameW(hwnd, className, 128) == 0 || wcscmp(className, L"QuattroMainWindow") != 0) {
+        return TRUE;
+    }
+
+    DWORD processId = 0;
+    GetWindowThreadProcessId(hwnd, &processId);
+    if (processId != 0) {
+        context->windows.emplace_back(processId, hwnd);
+    }
+    return TRUE;
+}
+
+HWND FindMainWindowForProcess(DWORD processId, const std::vector<std::pair<DWORD, HWND>>& windows) {
+    for (const auto& [windowProcessId, hwnd] : windows) {
+        if (windowProcessId == processId && IsWindow(hwnd)) {
+            return hwnd;
+        }
+    }
+    return nullptr;
+}
+
+void CloseSiblingHandles(std::vector<SiblingQuattroProcess>& siblings) {
+    for (auto& sibling : siblings) {
+        if (sibling.process) {
+            CloseHandle(sibling.process);
+            sibling.process = nullptr;
+        }
+    }
+}
+
+std::filesystem::path AbsolutePathForLog(const std::filesystem::path& path) {
+    std::error_code ec;
+    std::filesystem::path absolute = std::filesystem::absolute(path, ec);
+    return ec ? path : absolute;
+}
+
+std::filesystem::path ResolvedThemeFileForLog(const std::filesystem::path& themeDirectory, const std::wstring& themeName) {
+    if (!themeName.empty()) {
+        const std::filesystem::path requested = themeDirectory / (themeName + L".xml");
+        if (FileExists(requested)) {
+            return requested;
+        }
+    }
+    return themeDirectory / L"default.xml";
+}
+
+std::wstring MigrationTimestamp() {
+    SYSTEMTIME time{};
+    GetLocalTime(&time);
+    wchar_t buffer[32]{};
+    swprintf_s(
+        buffer,
+        L"%04u%02u%02u-%02u%02u%02u",
+        time.wYear,
+        time.wMonth,
+        time.wDay,
+        time.wHour,
+        time.wMinute,
+        time.wSecond);
+    return buffer;
+}
+
+bool BackupConfigForMigration(const std::filesystem::path& appDirectory, const std::filesystem::path& configPath) {
+    if (!FileExists(configPath)) {
+        return true;
+    }
+    const std::filesystem::path backupPath = appDirectory / L"backups" / L"config" / MigrationTimestamp() / L"conf.ini";
+    std::error_code ec;
+    std::filesystem::create_directories(backupPath.parent_path(), ec);
+    if (ec) {
+        WriteAppLog(L"配置迁移备份目录创建失败: " + configPath.wstring());
+        return false;
+    }
+    std::filesystem::copy_file(configPath, backupPath, std::filesystem::copy_options::overwrite_existing, ec);
+    if (ec) {
+        WriteAppLog(L"配置迁移备份失败: " + configPath.wstring());
+        return false;
+    }
+    WriteAppLog(L"配置迁移前已备份: " + backupPath.wstring());
+    return true;
 }
 
 std::wstring BoolText(bool value) {
@@ -106,6 +259,144 @@ ActivateExistingInstanceResult WaitForExistingInstance(const std::wstring& share
         }
         Sleep(100);
     }
+}
+
+std::vector<SiblingQuattroProcess> CollectSiblingQuattroProcesses() {
+    std::vector<SiblingQuattroProcess> siblings;
+    const std::wstring currentPath = NormalizeProcessPath(CurrentExecutablePath());
+    if (currentPath.empty()) {
+        WriteAppLog(L"单实例恢复：无法获取当前可执行文件路径。");
+        return siblings;
+    }
+
+    MainWindowEnumerationContext windowContext;
+    EnumWindows(EnumQuattroMainWindows, reinterpret_cast<LPARAM>(&windowContext));
+
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snapshot == INVALID_HANDLE_VALUE) {
+        WriteAppLog(L"单实例恢复：进程快照创建失败: " + FormatLastError(GetLastError()));
+        return siblings;
+    }
+
+    PROCESSENTRY32W entry{};
+    entry.dwSize = sizeof(entry);
+    const DWORD currentProcessId = GetCurrentProcessId();
+    if (Process32FirstW(snapshot, &entry)) {
+        do {
+            if (entry.th32ProcessID == currentProcessId) {
+                continue;
+            }
+
+            HANDLE process = OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE | SYNCHRONIZE,
+                FALSE,
+                entry.th32ProcessID);
+            if (!process) {
+                continue;
+            }
+
+            const std::wstring imagePath = NormalizeProcessPath(ProcessImagePath(process));
+            if (imagePath == currentPath) {
+                SiblingQuattroProcess sibling;
+                sibling.processId = entry.th32ProcessID;
+                sibling.mainWindow = FindMainWindowForProcess(entry.th32ProcessID, windowContext.windows);
+                sibling.process = process;
+                siblings.push_back(sibling);
+            } else {
+                CloseHandle(process);
+            }
+        } while (Process32NextW(snapshot, &entry));
+    } else {
+        WriteAppLog(L"单实例恢复：进程快照读取失败: " + FormatLastError(GetLastError()));
+    }
+    CloseHandle(snapshot);
+    return siblings;
+}
+
+bool WaitForSiblingExit(const std::vector<SiblingQuattroProcess>& siblings, DWORD timeoutMs) {
+    const DWORD start = GetTickCount();
+    for (;;) {
+        bool allExited = true;
+        for (const auto& sibling : siblings) {
+            if (sibling.process && WaitForSingleObject(sibling.process, 0) == WAIT_TIMEOUT) {
+                allExited = false;
+                break;
+            }
+        }
+        if (allExited) {
+            return true;
+        }
+
+        const DWORD elapsed = GetTickCount() - start;
+        if (elapsed >= timeoutMs) {
+            return false;
+        }
+        Sleep(50);
+    }
+}
+
+enum class StaleInstanceRecoveryResult {
+    NotRecovered,
+    ActivatedWindow,
+    TookOwnership,
+};
+
+StaleInstanceRecoveryResult RecoverStaleExistingInstance(Runtime& runtime, const ActivateExistingInstanceResult& activation) {
+    WriteAppLog(L"单实例恢复：已有实例不可唤醒，尝试处理失效实例。最后状态=" + activation.detail);
+    std::vector<SiblingQuattroProcess> siblings = CollectSiblingQuattroProcesses();
+    if (siblings.empty()) {
+        WriteAppLog(L"单实例恢复：未发现同路径后台实例。");
+        return StaleInstanceRecoveryResult::NotRecovered;
+    }
+
+    for (const auto& sibling : siblings) {
+        if (sibling.mainWindow && IsWindow(sibling.mainWindow)) {
+            if (PostMessageW(sibling.mainWindow, WM_QUATTRO_WAKEUP, 0, 0)) {
+                WriteAppLog(
+                    L"单实例恢复：已通过枚举窗口唤醒已有实例。pid=" + std::to_wstring(sibling.processId) +
+                    L"，hwnd=" + HwndText(sibling.mainWindow));
+                CloseSiblingHandles(siblings);
+                return StaleInstanceRecoveryResult::ActivatedWindow;
+            }
+            WriteAppLog(
+                L"单实例恢复：枚举窗口唤醒失败。pid=" + std::to_wstring(sibling.processId) +
+                L"，hwnd=" + HwndText(sibling.mainWindow) +
+                L"，错误=" + FormatLastError(GetLastError()));
+        }
+    }
+
+    bool requestedTermination = false;
+    for (const auto& sibling : siblings) {
+        if (sibling.mainWindow && IsWindow(sibling.mainWindow)) {
+            continue;
+        }
+        if (sibling.process && TerminateProcess(sibling.process, 0)) {
+            requestedTermination = true;
+            WriteAppLog(L"单实例恢复：已结束无主窗口残留实例。pid=" + std::to_wstring(sibling.processId));
+        } else {
+            WriteAppLog(
+                L"单实例恢复：结束无主窗口残留实例失败。pid=" + std::to_wstring(sibling.processId) +
+                L"，错误=" + FormatLastError(GetLastError()));
+        }
+    }
+
+    if (!requestedTermination) {
+        CloseSiblingHandles(siblings);
+        return StaleInstanceRecoveryResult::NotRecovered;
+    }
+
+    WaitForSiblingExit(siblings, 3000);
+    CloseSiblingHandles(siblings);
+
+    const DWORD wait = WaitForSingleObject(runtime.mutex, 5000);
+    if (wait == WAIT_OBJECT_0 || wait == WAIT_ABANDONED) {
+        runtime.ownsMutex = true;
+        WriteAppLog(L"单实例恢复：已接管 mutex。wait=" + std::to_wstring(wait));
+        return StaleInstanceRecoveryResult::TookOwnership;
+    }
+
+    WriteAppLog(L"单实例恢复：等待 mutex 接管失败。wait=" + std::to_wstring(wait));
+    return StaleInstanceRecoveryResult::NotRecovered;
 }
 
 bool PublishMainWindow(Runtime& runtime, HWND hwnd) {
@@ -230,7 +521,7 @@ void WriteStartupReport(
     file << "external_file_index=deferred\n";
 }
 
-bool HasPrivilegeRestartArgument() {
+bool HasCommandLineArgument(const wchar_t* expected) {
     int argc = 0;
     LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
     if (!argv) {
@@ -238,13 +529,21 @@ bool HasPrivilegeRestartArgument() {
     }
     bool found = false;
     for (int i = 1; i < argc; ++i) {
-        if (std::wstring(argv[i]) == L"--quattro-privilege-restart") {
+        if (std::wstring(argv[i]) == expected) {
             found = true;
             break;
         }
     }
     LocalFree(argv);
     return found;
+}
+
+bool HasPrivilegeRestartArgument() {
+    return HasCommandLineArgument(L"--quattro-privilege-restart");
+}
+
+bool HasUpdateRestartArgument() {
+    return HasCommandLineArgument(L"--quattro-update-restart");
 }
 }
 
@@ -264,18 +563,43 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
         L"module=" + moduleDirectory.wstring() +
             L", app=" + appDirectory.wstring() +
             L", embedded_written=" + std::to_wstring(assetInstall.filesWritten) +
+            L", embedded_updated=" + std::to_wstring(assetInstall.filesUpdated) +
+            L", embedded_backed_up=" + std::to_wstring(assetInstall.filesBackedUp) +
+            L", embedded_skipped=" + std::to_wstring(assetInstall.filesSkipped) +
             L", embedded_failures=" + std::to_wstring(assetInstall.failures) +
             L", fallback_dir=" + BoolText(assetInstall.usedFallbackDirectory));
     if (assetInstall.filesWritten > 0) {
         WriteAppLog(L"已释放内置资源: " + std::to_wstring(assetInstall.filesWritten));
+    }
+    if (assetInstall.filesUpdated > 0) {
+        WriteAppLog(
+            L"已同步内置托管资源: " + std::to_wstring(assetInstall.filesUpdated) +
+            (assetInstall.backupDirectory.empty() ? L"" : (L"，备份目录: " + assetInstall.backupDirectory.wstring())));
     }
     if (!assetInstall.message.empty()) {
         WriteAppLog(assetInstall.message);
     }
 
     const bool privilegeRestart = HasPrivilegeRestartArgument();
+    const bool updateRestart = HasUpdateRestartArgument();
+    const bool takeoverRestart = privilegeRestart || updateRestart;
+    if (updateRestart) {
+        WriteAppLog(L"检测到更新后重启参数。pid=" + CurrentPidText());
+    }
     ConfigService configService(appDirectory / L"conf.ini");
     AppConfig config = configService.Load();
+    if (config.version < kCurrentConfigVersion) {
+        const int previousVersion = config.version;
+        if (BackupConfigForMigration(appDirectory, configService.path())) {
+            config.version = kCurrentConfigVersion;
+            configService.Save(config);
+            WriteAppLog(
+                L"配置已迁移: " + std::to_wstring(previousVersion) +
+                L" -> " + std::to_wstring(kCurrentConfigVersion));
+        } else {
+            WriteAppLog(L"配置迁移已跳过：备份失败。");
+        }
+    }
     WriteStartupTiming(
         L"config loaded",
         L"theme=" + config.theme +
@@ -299,7 +623,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     const DWORD mutexError = GetLastError();
     WriteStartupTiming(
         L"single instance mutex checked",
-        L"error=" + std::to_wstring(mutexError) + L", privilege_restart=" + BoolText(privilegeRestart));
+        L"error=" + std::to_wstring(mutexError) +
+            L", privilege_restart=" + BoolText(privilegeRestart) +
+            L", update_restart=" + BoolText(updateRestart));
     if (!runtime.mutex) {
         WriteAppLog(L"单实例 mutex 创建失败，取消启动以避免多实例。pid=" + CurrentPidText() + L"，错误=" + FormatLastError(mutexError));
         const ActivateExistingInstanceResult activation = WaitForExistingInstance(sharedMemoryName, 5000);
@@ -310,20 +636,33 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
         WriteAppLog(L"无法确认已有实例状态。pid=" + CurrentPidText() + L"，最后状态=" + activation.detail);
         return 1;
     }
+    runtime.ownsMutex = mutexError != ERROR_ALREADY_EXISTS;
     if (mutexError == ERROR_ALREADY_EXISTS) {
-        if (privilegeRestart) {
+        if (takeoverRestart) {
             DWORD wait = WaitForSingleObject(runtime.mutex, 5000);
             if (wait == WAIT_OBJECT_0 || wait == WAIT_ABANDONED) {
-                WriteAppLog(L"权限切换重启已接管单实例。pid=" + CurrentPidText());
+                runtime.ownsMutex = true;
+                WriteAppLog(
+                    std::wstring(updateRestart ? L"更新后重启" : L"权限切换重启") +
+                    L"已接管单实例。pid=" + CurrentPidText());
             } else {
-                WriteAppLog(L"权限切换重启等待旧实例退出超时。pid=" + CurrentPidText() + L"，wait=" + std::to_wstring(wait));
+                WriteAppLog(
+                    std::wstring(updateRestart ? L"更新后重启" : L"权限切换重启") +
+                    L"等待旧实例退出超时。pid=" + CurrentPidText() + L"，wait=" + std::to_wstring(wait));
                 const ActivateExistingInstanceResult activation = WaitForExistingInstance(sharedMemoryName, 5000);
                 if (activation.activated) {
                     WriteAppLog(L"已有实例已唤醒。pid=" + CurrentPidText() + L"，" + activation.detail);
                     return 0;
                 }
-                WriteAppLog(L"已有实例不可唤醒，取消启动以避免多实例。pid=" + CurrentPidText() + L"，最后状态=" + activation.detail);
-                return 1;
+                const StaleInstanceRecoveryResult recovery = RecoverStaleExistingInstance(runtime, activation);
+                if (recovery == StaleInstanceRecoveryResult::ActivatedWindow) {
+                    WriteAppLog(L"已有实例已唤醒。pid=" + CurrentPidText() + L"，recovered by enumerated window");
+                    return 0;
+                }
+                if (recovery != StaleInstanceRecoveryResult::TookOwnership) {
+                    WriteAppLog(L"已有实例不可唤醒，取消启动以避免多实例。pid=" + CurrentPidText() + L"，最后状态=" + activation.detail);
+                    return 1;
+                }
             }
         } else {
             const ActivateExistingInstanceResult activation = WaitForExistingInstance(sharedMemoryName, 10000);
@@ -331,8 +670,15 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
                 WriteAppLog(L"已有实例已唤醒。pid=" + CurrentPidText() + L"，" + activation.detail);
                 return 0;
             }
-            WriteAppLog(L"已有实例不可唤醒，取消启动以避免多实例。pid=" + CurrentPidText() + L"，最后状态=" + activation.detail);
-            return 0;
+            const StaleInstanceRecoveryResult recovery = RecoverStaleExistingInstance(runtime, activation);
+            if (recovery == StaleInstanceRecoveryResult::ActivatedWindow) {
+                WriteAppLog(L"已有实例已唤醒。pid=" + CurrentPidText() + L"，recovered by enumerated window");
+                return 0;
+            }
+            if (recovery != StaleInstanceRecoveryResult::TookOwnership) {
+                WriteAppLog(L"已有实例不可唤醒，取消启动以避免多实例。pid=" + CurrentPidText() + L"，最后状态=" + activation.detail);
+                return 0;
+            }
         }
     }
 
@@ -368,8 +714,15 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
             L", links=" + std::to_wstring(model.links.size()) +
             L", notes=" + std::to_wstring(model.notes.size()) +
             L", todos=" + std::to_wstring(model.todos.size()));
-    Theme theme = Theme::Load(appDirectory / L"theme", config.theme);
-    WriteStartupTiming(L"theme loaded", L"name=" + config.theme);
+    const std::filesystem::path themeDirectory = appDirectory / L"theme";
+    const std::filesystem::path themeFile = ResolvedThemeFileForLog(themeDirectory, config.theme);
+    Theme theme = Theme::Load(themeDirectory, config.theme);
+    WriteStartupTiming(
+        L"theme loaded",
+        L"name=" + config.theme +
+            L", directory=" + AbsolutePathForLog(themeDirectory).wstring() +
+            L", file=" + AbsolutePathForLog(themeFile).wstring() +
+            L", exists=" + BoolText(FileExists(themeFile)));
     WriteAppLog(storageService.sqliteAvailable() ? L"数据存储可用: db/link.db" : (L"数据存储降级: " + storageService.lastError()));
     WriteStartupReport(appDirectory, storageService, config, model);
     WriteStartupTiming(L"startup report written");

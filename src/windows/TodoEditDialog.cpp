@@ -1,9 +1,10 @@
 #include "TodoEditDialog.h"
 
-#include "../resources/resource.h"
+#include "../../resources/resource.h"
 
 #include "SimpleDialogs.h"
 #include "ThemedControls.h"
+#include "ThemedUi.h"
 #include "TodoSchedule.h"
 #include "Utilities.h"
 
@@ -1047,20 +1048,20 @@ private:
         timeLabel_ = Text(L"时间", 0, 0, TextControlWidth(L"时间"), StaticTextHeight());
         timeEdit_ = SingleEdit(IdTime, 260, 0, 78, L"00:00");
 
-        const int tabHeight = ThemedControls::TabButtonHeight(theme_);
-        repeatNone_ = ThemedControls::CreateTabButton(instance_, hwnd_, IdRepeatNone, L"不重复", 0, 0, TabWidth(L"不重复"), tabHeight, font_, false);
-        repeatDaily_ = ThemedControls::CreateTabButton(instance_, hwnd_, IdRepeatDaily, L"每天", 0, 0, TabWidth(L"每天"), tabHeight, font_, false);
-        repeatWorkday_ = ThemedControls::CreateTabButton(instance_, hwnd_, IdRepeatWorkday, L"工作日", 0, 0, TabWidth(L"工作日"), tabHeight, font_, false);
-        repeatWeekly_ = ThemedControls::CreateTabButton(instance_, hwnd_, IdRepeatWeekly, L"每周", 0, 0, TabWidth(L"每周"), tabHeight, font_, false);
-        repeatMonthly_ = ThemedControls::CreateTabButton(instance_, hwnd_, IdRepeatMonthly, L"每月", 0, 0, TabWidth(L"每月"), tabHeight, font_, false);
-        repeatCustom_ = ThemedControls::CreateTabButton(instance_, hwnd_, IdRepeatCustom, L"自定义", 0, 0, TabWidth(L"自定义"), tabHeight, font_, false);
+        const ThemedUi ui(instance_, hwnd_, theme_, font_, DialogLayoutKind::Standard, kDialogWidth, kDialogHeight);
+        repeatNone_ = ui.TabButton(IdRepeatNone, L"不重复", 0, 0, TabWidth(L"不重复"), false);
+        repeatDaily_ = ui.TabButton(IdRepeatDaily, L"每天", 0, 0, TabWidth(L"每天"), false);
+        repeatWorkday_ = ui.TabButton(IdRepeatWorkday, L"工作日", 0, 0, TabWidth(L"工作日"), false);
+        repeatWeekly_ = ui.TabButton(IdRepeatWeekly, L"每周", 0, 0, TabWidth(L"每周"), false);
+        repeatMonthly_ = ui.TabButton(IdRepeatMonthly, L"每月", 0, 0, TabWidth(L"每月"), false);
+        repeatCustom_ = ui.TabButton(IdRepeatCustom, L"自定义", 0, 0, TabWidth(L"自定义"), false);
 
         for (int i = 0; i < 7; ++i) {
-            weekdayButtons_[i] = ThemedControls::CreateTabButton(instance_, hwnd_, IdWeekdayBase + i, ShortWeekdayText(i), 0, 0, TabWidth(ShortWeekdayText(i)), tabHeight, font_, false);
+            weekdayButtons_[i] = ui.TabButton(IdWeekdayBase + i, ShortWeekdayText(i), 0, 0, TabWidth(ShortWeekdayText(i)), false);
         }
 
         workdayHint_ = Text(L"默认周一至周五执行", 0, 0, TextControlWidth(L"默认周一至周五执行"), StaticTextHeight());
-        monthlyFixedButton_ = ThemedControls::CreateTabButton(instance_, hwnd_, IdMonthlyFixed, L"每月固定", 0, 0, TabWidth(L"每月固定"), tabHeight, font_, false);
+        monthlyFixedButton_ = ui.TabButton(IdMonthlyFixed, L"每月固定", 0, 0, TabWidth(L"每月固定"), false);
         monthlyDayEdit_ = SingleEdit(IdMonthlyDay, 0, 0, ThemedControls::EditFrameHeight(theme_) + ThemedControls::EditPaddingX(theme_) * 2, L"1", ES_NUMBER);
         monthlyDayLabel_ = Text(L"号", 0, 0, TextControlWidth(L"号"), StaticTextHeight());
         customPrefix_ = Text(L"每", 0, 0, TextControlWidth(L"每"), StaticTextHeight());
@@ -1069,13 +1070,13 @@ private:
         customSuffix_ = Text(L"重复", 0, 0, TextControlWidth(L"重复"), StaticTextHeight());
         repeatErrorText_ = Text(L"", 0, 0, 1, StaticTextHeight());
 
-        advancedButton_ = ThemedControls::CreateButton(instance_, hwnd_, IdAdvancedToggle, L"高级设置 ▼", 0, 0, ButtonWidth(L"高级设置 ▼"), ThemedControls::CompactButtonHeight(theme_), font_);
-        endNeverButton_ = ThemedControls::CreateTabButton(instance_, hwnd_, IdEndNever, L"永不结束", 0, 0, TabWidth(L"永不结束"), tabHeight, font_, false);
-        endCountButton_ = ThemedControls::CreateTabButton(instance_, hwnd_, IdEndCount, L"完成 N 次", 0, 0, TabWidth(L"完成 N 次"), tabHeight, font_, false);
+        advancedButton_ = ui.Button(IdAdvancedToggle, L"高级设置 ▼", 0, 0, ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Fixed, ButtonWidth(L"高级设置 ▼"));
+        endNeverButton_ = ui.TabButton(IdEndNever, L"永不结束", 0, 0, TabWidth(L"永不结束"), false);
+        endCountButton_ = ui.TabButton(IdEndCount, L"完成 N 次", 0, 0, TabWidth(L"完成 N 次"), false);
         endCountEdit_ = SingleEdit(IdEndCountValue, 0, 0, ThemedControls::EditFrameHeight(theme_) + ThemedControls::EditPaddingX(theme_) * 2, L"1", ES_NUMBER);
 
-        okButton_ = ThemedControls::CreatePrimaryButton(instance_, hwnd_, IDOK, isNew_ ? L"保存待办" : L"保存", 0, 0, ButtonWidth(isNew_ ? L"保存待办" : L"保存"), ThemedControls::ButtonHeight(theme_), font_, true);
-        cancelButton_ = ThemedControls::CreateButton(instance_, hwnd_, IDCANCEL, L"取消", 0, 0, ButtonWidth(L"取消"), ThemedControls::ButtonHeight(theme_), font_);
+        okButton_ = ui.Button(IDOK, isNew_ ? L"保存待办" : L"保存", 0, 0, ThemedButtonRole::Primary, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, ButtonWidth(isNew_ ? L"保存待办" : L"保存"), true);
+        cancelButton_ = ui.Button(IDCANCEL, L"取消", 0, 0, ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, ButtonWidth(L"取消"));
 
         FillCombos();
         LoadInitialState();

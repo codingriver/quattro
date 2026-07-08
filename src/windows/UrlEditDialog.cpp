@@ -1,10 +1,11 @@
 #include "UrlEditDialog.h"
 
-#include "../resources/resource.h"
+#include "../../resources/resource.h"
 
 #include "DialogLayout.h"
 #include "SimpleDialogs.h"
 #include "ThemedControls.h"
+#include "ThemedUi.h"
 #include "Utilities.h"
 
 #include <commctrl.h>
@@ -257,12 +258,11 @@ private:
         remarkEdit_ = Edit(IdRemark, layout.fieldX, y, fieldWidth, link_.remark, ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL);
 
         const int footerY = layout.FooterY(y + FieldHeight() * 2 + 14);
-        ThemedControls::CreatePrimaryButton(instance_, hwnd_, IdOk, L"确定",
-                                            layout.FooterButtonX(kDialogWidth, 0, 2), footerY,
-                                            layout.footerButtonWidth, ButtonHeight(), font_, true);
-        ThemedControls::CreateButton(instance_, hwnd_, IdCancel, L"取消",
-                                     layout.FooterButtonX(kDialogWidth, 1, 2), footerY,
-                                     layout.footerButtonWidth, ButtonHeight(), font_);
+        const ThemedUi ui(instance_, hwnd_, theme_, font_, DialogLayoutKind::Standard, kDialogWidth, kDialogHeight);
+        ui.Button(IdOk, L"确定", layout.FooterButtonX(kDialogWidth, 0, 2), footerY,
+                  ThemedButtonRole::Primary, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, layout.footerButtonWidth, true);
+        ui.Button(IdCancel, L"取消", layout.FooterButtonX(kDialogWidth, 1, 2), footerY,
+                  ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, layout.footerButtonWidth);
     }
 
     int FieldHeight() const {

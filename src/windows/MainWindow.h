@@ -378,6 +378,7 @@ private:
     bool startupDeferredPosted_ = false;
     bool startupTopMostPending_ = false;
     bool windowStateSaveEnabled_ = false;
+    bool updateDownloadActive_ = false;
     bool dockHidden_ = false;
     RECT dockRestoreRect_{};
     HWND dockPeek_ = nullptr;

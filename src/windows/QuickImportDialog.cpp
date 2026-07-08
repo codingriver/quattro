@@ -2,8 +2,9 @@
 
 #include "DialogLayout.h"
 #include "ThemedControls.h"
+#include "ThemedUi.h"
 #include "Utilities.h"
-#include "../resources/resource.h"
+#include "../../resources/resource.h"
 
 #include <algorithm>
 #include <commctrl.h>
@@ -330,6 +331,7 @@ private:
         GetClientRect(hwnd_, &client);
         const int clientWidth = client.right - client.left;
         const int clientHeight = client.bottom - client.top;
+        const ThemedUi ui(instance_, hwnd_, theme_, font_, DialogLayoutKind::Compact, clientWidth, clientHeight);
         const int labelHeight = ThemedControls::LabelHeight(theme_);
         const int fieldHeight = ThemedControls::ComboBoxHeight(theme_);
         const int buttonHeight = ThemedControls::ButtonHeight(theme_);
@@ -365,8 +367,8 @@ private:
 
         directoryFrame_ = RECT{sourceX + sourceWidth + layout_.controlGapX, topY, sourceX + sourceWidth + layout_.controlGapX + directoryWidth, topY + fieldHeight};
         directoryText_ = ThemedControls::CreateFramedStatic(instance_, hwnd_, theme_, directoryFrame_, L"未选择目录", font_);
-        pickDirectoryButton_ = ThemedControls::CreateButton(instance_, hwnd_, IdPickDirectory, L"选择目录", directoryFrame_.right + layout_.controlGapX, topY, pickDirectoryWidth, buttonHeight, font_);
-        scanButton_ = ThemedControls::CreateButton(instance_, hwnd_, IdScan, L"扫描", directoryFrame_.right + layout_.controlGapX + pickDirectoryWidth + layout_.controlGapX, topY, scanWidth, buttonHeight, font_);
+        pickDirectoryButton_ = ui.Button(IdPickDirectory, L"选择目录", directoryFrame_.right + layout_.controlGapX, topY, ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, pickDirectoryWidth);
+        scanButton_ = ui.Button(IdScan, L"扫描", directoryFrame_.right + layout_.controlGapX + pickDirectoryWidth + layout_.controlGapX, topY, ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, scanWidth);
 
         const int statusRowY = topY + fieldHeight + layout_.rowGap;
         const int statusRowHeight = std::max({buttonHeight, tabHeight, labelHeight});
@@ -381,12 +383,12 @@ private:
         status_ = ThemedControls::CreateStaticText(instance_, hwnd_, L"请选择目录后扫描。", layout_.contentInsetX, statusY, actionX - layout_.contentInsetX - layout_.controlGapX, labelHeight, font_);
 
         const int viewY = statusRowY + std::max(0, (statusRowHeight - tabHeight) / 2);
-        viewListButton_ = ThemedControls::CreateTabButton(instance_, hwnd_, IdViewList, L"列表", actionX, viewY, viewButtonWidth, tabHeight, font_, true);
-        viewIconButton_ = ThemedControls::CreateTabButton(instance_, hwnd_, IdViewIcon, L"图标", actionX + viewButtonWidth, viewY, viewButtonWidth, tabHeight, font_, false);
+        viewListButton_ = ui.TabButton(IdViewList, L"列表", actionX, viewY, viewButtonWidth, true);
+        viewIconButton_ = ui.TabButton(IdViewIcon, L"图标", actionX + viewButtonWidth, viewY, viewButtonWidth, false);
 
         const int actionButtonY = statusRowY + std::max(0, (statusRowHeight - buttonHeight) / 2);
-        selectAllButton_ = ThemedControls::CreateButton(instance_, hwnd_, IdSelectAll, L"全选", actionX + viewButtonWidth * 2 + layout_.controlGapX, actionButtonY, selectAllWidth, buttonHeight, font_);
-        selectNoneButton_ = ThemedControls::CreateButton(instance_, hwnd_, IdSelectNone, L"清空", actionX + viewButtonWidth * 2 + layout_.controlGapX + selectAllWidth + layout_.controlGapX, actionButtonY, selectNoneWidth, buttonHeight, font_);
+        selectAllButton_ = ui.Button(IdSelectAll, L"全选", actionX + viewButtonWidth * 2 + layout_.controlGapX, actionButtonY, ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, selectAllWidth);
+        selectNoneButton_ = ui.Button(IdSelectNone, L"清空", actionX + viewButtonWidth * 2 + layout_.controlGapX + selectAllWidth + layout_.controlGapX, actionButtonY, ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, selectNoneWidth);
 
         listFrame_ = RECT{layout_.contentInsetX, statusRowY + statusRowHeight + layout_.rowGap, clientWidth - layout_.contentInsetX, clientHeight - layout_.footerInsetY - buttonHeight - layout_.footerGap};
         const RECT listRect = ThemedControls::ListFrameInnerRect(theme_, listFrame_);
@@ -415,8 +417,8 @@ private:
         const int footerY = layout_.FooterButtonY(clientHeight, buttonHeight);
         const int buttonGroupWidth = layout_.footerButtonWidth * 2 + layout_.footerButtonGap;
         const int buttonX = layout_.CenteredGroupX(clientWidth, buttonGroupWidth);
-        ThemedControls::CreatePrimaryButton(instance_, hwnd_, IdImport, L"导入选中", buttonX, footerY, layout_.footerButtonWidth, buttonHeight, font_, true);
-        ThemedControls::CreateButton(instance_, hwnd_, IdCancel, L"取消", buttonX + layout_.footerButtonWidth + layout_.footerButtonGap, footerY, layout_.footerButtonWidth, buttonHeight, font_);
+        ui.Button(IdImport, L"导入选中", buttonX, footerY, ThemedButtonRole::Primary, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, layout_.footerButtonWidth, true);
+        ui.Button(IdCancel, L"取消", buttonX + layout_.footerButtonWidth + layout_.footerButtonGap, footerY, ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, layout_.footerButtonWidth);
 
         UpdateSourceControls();
         ApplyViewMode();

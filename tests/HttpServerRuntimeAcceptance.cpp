@@ -4,9 +4,9 @@
 #include <httplib.h>
 #endif
 
-#include "../src/AppLog.h"
-#include "../src/LocalHttpServerService.h"
-#include "../src/Utilities.h"
+#include "../src/common/AppLog.h"
+#include "../src/services/LocalHttpServerService.h"
+#include "../src/common/Utilities.h"
 
 #include <chrono>
 #include <filesystem>

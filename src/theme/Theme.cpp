@@ -49,6 +49,7 @@ bool IsAllowedComponent(const std::wstring& component) {
         L"list",
         L"listItem",
         L"slider",
+        L"progressBar",
         L"tooltip",
         L"separator",
     };
@@ -296,9 +297,13 @@ void Theme::SetDefaults() {
     PutState(L"global", L"normal", L"text", palette_[L"text"]);
     PutState(L"global", L"normal", L"bg", palette_[L"surface"]);
     PutState(L"global", L"success", L"text", palette_[L"success"]);
+    PutState(L"global", L"success", L"bg", palette_[L"successSoft"]);
     PutState(L"global", L"warning", L"text", palette_[L"warning"]);
+    PutState(L"global", L"warning", L"bg", palette_[L"warningSoft"]);
     PutState(L"global", L"danger", L"text", palette_[L"danger"]);
+    PutState(L"global", L"danger", L"bg", palette_[L"dangerSoft"]);
     PutState(L"global", L"info", L"text", palette_[L"info"]);
+    PutState(L"global", L"info", L"bg", palette_[L"infoSoft"]);
     PutState(L"window", L"normal", L"bg", palette_[L"background"]);
     PutState(L"window", L"normal", L"border", palette_[L"border"]);
     PutState(L"title", L"normal", L"bg", palette_[L"surface"]);
@@ -519,6 +524,12 @@ void Theme::SetDefaults() {
     PutState(L"slider", L"normal", L"fill", palette_[L"accent"]);
     PutState(L"slider", L"normal", L"thumb", palette_[L"surface"]);
     PutState(L"slider", L"normal", L"border", palette_[L"border"]);
+    PutState(L"progressBar", L"normal", L"track", palette_[L"line"]);
+    PutState(L"progressBar", L"normal", L"fill", palette_[L"accent"]);
+    PutState(L"progressBar", L"normal", L"border", palette_[L"border"]);
+    PutState(L"progressBar", L"disabled", L"track", palette_[L"line"]);
+    PutState(L"progressBar", L"disabled", L"fill", palette_[L"border"]);
+    PutState(L"progressBar", L"disabled", L"border", palette_[L"line"]);
     PutState(L"tooltip", L"normal", L"bg", Color{229.0f / 255.0f, 231.0f / 255.0f, 235.0f / 255.0f, 1.0f});
     PutState(L"tooltip", L"normal", L"text", Color{17.0f / 255.0f, 24.0f / 255.0f, 39.0f / 255.0f, 1.0f});
     PutState(L"tooltip", L"normal", L"border", Color{156.0f / 255.0f, 163.0f / 255.0f, 175.0f / 255.0f, 1.0f});
@@ -638,6 +649,7 @@ void Theme::SetDefaults() {
     PutMetric(L"global", L"sectionGap", 16.0f);
     PutMetric(L"dialog", L"contentInsetX", 28.0f);
     PutMetric(L"dialog", L"contentInsetY", 24.0f);
+    PutMetric(L"dialog", L"labelMinWidth", 20.0f);
     PutMetric(L"dialog", L"labelWidth", 74.0f);
     PutMetric(L"dialog", L"labelGap", 6.0f);
     PutMetric(L"dialog", L"rowGap", 8.0f);
@@ -789,6 +801,9 @@ void Theme::SetDefaults() {
     PutMetric(L"slider", L"height", 24.0f);
     PutMetric(L"slider", L"trackHeight", 4.0f);
     PutMetric(L"slider", L"thumbSize", 14.0f);
+    PutMetric(L"progressBar", L"height", 16.0f);
+    PutMetric(L"progressBar", L"radius", 7.0f);
+    PutMetric(L"progressBar", L"borderWidth", 1.0f);
     PutMetric(L"tooltip", L"radius", 6.0f);
     PutMetric(L"tooltip", L"borderWidth", 1.0f);
     PutMetric(L"tooltip", L"paddingX", 8.0f);

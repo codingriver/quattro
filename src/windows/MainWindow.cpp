@@ -1,5 +1,6 @@
 #include "MainWindow.h"
 
+#include "AboutDialog.h"
 #include "AppLog.h"
 #include "BuiltinTools.h"
 #include "Elevation.h"
@@ -15,12 +16,14 @@
 #include "TodoEditDialog.h"
 #include "TodoSchedule.h"
 #include "UpdateCheckService.h"
+#include "UpdateCheckDialog.h"
+#include "UpdateDownloadDialog.h"
 #include "UpdateInstaller.h"
 #include "UrlEditDialog.h"
 #include "Utilities.h"
 #include "Version.h"
 #include "WebDavRecoveryService.h"
-#include "../resources/resource.h"
+#include "../../resources/resource.h"
 
 #include <algorithm>
 #include <array>
@@ -34,6 +37,7 @@
 #include <cwctype>
 #include <endpointvolume.h>
 #include <mmdeviceapi.h>
+#include <mutex>
 #include <optional>
 #include <shlobj.h>
 #include <shobjidl.h>
@@ -41,6 +45,7 @@
 #include <sstream>
 #include <system_error>
 #include <tlhelp32.h>
+#include <unordered_map>
 #include <uxtheme.h>
 #include <windowsx.h>
 
@@ -61,15 +66,48 @@ constexpr int kDockRestoreGraceMs = 1500;
 constexpr int kDockSnapThreshold = 12;
 constexpr const wchar_t* kDockPeekWindowClass = L"QuattroDockPeekWindow";
 constexpr const wchar_t* kTooltipWindowClass = L"QuattroTooltipWindow";
-constexpr const wchar_t* kTooltipBgProp = L"QuattroTooltipBg";
-constexpr const wchar_t* kTooltipTextProp = L"QuattroTooltipText";
-constexpr const wchar_t* kTooltipBorderProp = L"QuattroTooltipBorder";
-constexpr const wchar_t* kTooltipPaddingXProp = L"QuattroTooltipPaddingX";
-constexpr const wchar_t* kTooltipPaddingYProp = L"QuattroTooltipPaddingY";
-constexpr const wchar_t* kTooltipLineGapProp = L"QuattroTooltipLineGap";
-constexpr const wchar_t* kTooltipRadiusProp = L"QuattroTooltipRadius";
-constexpr const wchar_t* kTooltipBorderWidthProp = L"QuattroTooltipBorderWidth";
 constexpr const wchar_t* kAppDisplayName = L"Quattro快速启动器";
+
+// 提示/提醒面板的绘制样式。以进程内 HWND 映射存储，避免使用桌面堆（SetPropW），
+// 因为某些桌面的桌面堆不可用会导致 SetPropW 以 ERROR_NOT_ENOUGH_MEMORY 失败。
+struct TooltipStyle {
+    COLORREF bg = RGB(32, 32, 32);
+    COLORREF text = RGB(255, 255, 255);
+    COLORREF border = RGB(32, 32, 32);
+    int paddingX = 8;
+    int paddingY = 7;
+    int lineGap = 4;
+    int radius = 0;
+    int borderWidth = 1;
+};
+
+std::mutex& TooltipStyleMutex() {
+    static std::mutex mutex;
+    return mutex;
+}
+
+std::unordered_map<HWND, TooltipStyle>& TooltipStyleMap() {
+    static std::unordered_map<HWND, TooltipStyle> map;
+    return map;
+}
+
+void SetTooltipStyle(HWND hwnd, const TooltipStyle& style) {
+    std::lock_guard<std::mutex> lock(TooltipStyleMutex());
+    TooltipStyleMap()[hwnd] = style;
+}
+
+// 读取样式，未设置时返回带默认值的样式副本。
+TooltipStyle TooltipStyleFor(HWND hwnd) {
+    std::lock_guard<std::mutex> lock(TooltipStyleMutex());
+    auto& map = TooltipStyleMap();
+    auto it = map.find(hwnd);
+    return it == map.end() ? TooltipStyle{} : it->second;
+}
+
+void EraseTooltipStyle(HWND hwnd) {
+    std::lock_guard<std::mutex> lock(TooltipStyleMutex());
+    TooltipStyleMap().erase(hwnd);
+}
 
 enum class DockEdge {
     None,
@@ -133,6 +171,18 @@ std::wstring CurrentExecutablePath() {
         }
         buffer.resize(buffer.size() * 2);
     }
+}
+
+std::filesystem::path AbsolutePathForLog(const std::filesystem::path& path) {
+    std::error_code ec;
+    std::filesystem::path absolute = std::filesystem::absolute(path, ec);
+    return ec ? path : absolute;
+}
+
+std::wstring FileSizeForLog(const std::filesystem::path& path) {
+    std::error_code ec;
+    const auto size = std::filesystem::file_size(path, ec);
+    return ec ? L"unknown" : std::to_wstring(size);
 }
 
 std::wstring ProcessImagePath(HANDLE process) {
@@ -552,22 +602,6 @@ bool HiddenRectIntersectsOtherMonitor(const RECT& hidden, HMONITOR dockMonitor) 
     return context.intersects;
 }
 
-COLORREF WindowPropColor(HWND hwnd, const wchar_t* name, COLORREF fallback) {
-    HANDLE value = GetPropW(hwnd, name);
-    if (!value) {
-        return fallback;
-    }
-    return static_cast<COLORREF>(reinterpret_cast<UINT_PTR>(value));
-}
-
-int WindowPropInt(HWND hwnd, const wchar_t* name, int fallback) {
-    HANDLE value = GetPropW(hwnd, name);
-    if (!value) {
-        return fallback;
-    }
-    return static_cast<int>(reinterpret_cast<UINT_PTR>(value));
-}
-
 std::vector<std::wstring> SplitTooltipLines(const std::wstring& text) {
     std::vector<std::wstring> lines;
     std::wstringstream stream(text);
@@ -651,11 +685,12 @@ LRESULT CALLBACK TooltipWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARA
         HDC dc = BeginPaint(hwnd, &ps);
         RECT rect{};
         GetClientRect(hwnd, &rect);
-        const COLORREF bg = WindowPropColor(hwnd, kTooltipBgProp, RGB(32, 32, 32));
-        const COLORREF text = WindowPropColor(hwnd, kTooltipTextProp, RGB(255, 255, 255));
-        const COLORREF border = WindowPropColor(hwnd, kTooltipBorderProp, bg);
-        const int radius = WindowPropInt(hwnd, kTooltipRadiusProp, 0);
-        const int borderWidth = WindowPropInt(hwnd, kTooltipBorderWidthProp, 1);
+        const TooltipStyle style = TooltipStyleFor(hwnd);
+        const COLORREF bg = style.bg;
+        const COLORREF text = style.text;
+        const COLORREF border = style.border;
+        const int radius = style.radius;
+        const int borderWidth = style.borderWidth;
         HBRUSH brush = CreateSolidBrush(bg);
         HPEN customPen = borderWidth > 0 ? CreatePen(PS_SOLID, borderWidth, border) : nullptr;
         HPEN pen = customPen ? customPen : reinterpret_cast<HPEN>(GetStockObject(NULL_PEN));
@@ -683,9 +718,9 @@ LRESULT CALLBACK TooltipWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARA
             font = reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
         }
         HFONT previousFont = reinterpret_cast<HFONT>(SelectObject(dc, font));
-        const int paddingX = WindowPropInt(hwnd, kTooltipPaddingXProp, 8);
-        const int paddingY = WindowPropInt(hwnd, kTooltipPaddingYProp, 7);
-        const int lineGap = WindowPropInt(hwnd, kTooltipLineGapProp, 4);
+        const int paddingX = style.paddingX;
+        const int paddingY = style.paddingY;
+        const int lineGap = style.lineGap;
         TEXTMETRICW metrics{};
         GetTextMetricsW(dc, &metrics);
         int y = rect.top + paddingY;
@@ -698,14 +733,7 @@ LRESULT CALLBACK TooltipWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARA
         return 0;
     }
     case WM_NCDESTROY:
-        RemovePropW(hwnd, kTooltipBgProp);
-        RemovePropW(hwnd, kTooltipTextProp);
-        RemovePropW(hwnd, kTooltipBorderProp);
-        RemovePropW(hwnd, kTooltipPaddingXProp);
-        RemovePropW(hwnd, kTooltipPaddingYProp);
-        RemovePropW(hwnd, kTooltipLineGapProp);
-        RemovePropW(hwnd, kTooltipRadiusProp);
-        RemovePropW(hwnd, kTooltipBorderWidthProp);
+        EraseTooltipStyle(hwnd);
         return 0;
     default:
         return DefWindowProcW(hwnd, message, wParam, lParam);
@@ -3066,6 +3094,9 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         }
         return DefWindowProcW(hwnd_, message, wParam, lParam);
     case WM_DRAWITEM:
+        if (ThemedControls::Draw(theme_, reinterpret_cast<const DRAWITEMSTRUCT*>(lParam))) {
+            return TRUE;
+        }
         if (DrawThemedMenuItem(reinterpret_cast<const DRAWITEMSTRUCT*>(lParam))) {
             return TRUE;
         }
@@ -4605,14 +4636,11 @@ void MainWindow::ShowTodoReminderPanel(const TodoItem& item) {
     const int lineGap = static_cast<int>(std::max(0.0f, Metric(theme_, L"tooltip", L"lineGap", 4.0f)));
     const int radius = static_cast<int>(std::max(0.0f, Metric(theme_, L"tooltip", L"radius", 6.0f)));
     const int borderWidth = static_cast<int>(std::max(0.0f, Metric(theme_, L"tooltip", L"borderWidth", 1.0f)));
-    SetPropW(reminderPanel_, kTooltipBgProp, reinterpret_cast<HANDLE>(static_cast<UINT_PTR>(ToColorRef(theme_.color(L"tooltip", L"normal", L"bg")))));
-    SetPropW(reminderPanel_, kTooltipTextProp, reinterpret_cast<HANDLE>(static_cast<UINT_PTR>(ToColorRef(theme_.color(L"tooltip", L"normal", L"text")))));
-    SetPropW(reminderPanel_, kTooltipBorderProp, reinterpret_cast<HANDLE>(static_cast<UINT_PTR>(ToColorRef(theme_.color(L"tooltip", L"normal", L"border")))));
-    SetPropW(reminderPanel_, kTooltipPaddingXProp, reinterpret_cast<HANDLE>(static_cast<UINT_PTR>(paddingX)));
-    SetPropW(reminderPanel_, kTooltipPaddingYProp, reinterpret_cast<HANDLE>(static_cast<UINT_PTR>(paddingY)));
-    SetPropW(reminderPanel_, kTooltipLineGapProp, reinterpret_cast<HANDLE>(static_cast<UINT_PTR>(lineGap)));
-    SetPropW(reminderPanel_, kTooltipRadiusProp, reinterpret_cast<HANDLE>(static_cast<UINT_PTR>(radius)));
-    SetPropW(reminderPanel_, kTooltipBorderWidthProp, reinterpret_cast<HANDLE>(static_cast<UINT_PTR>(borderWidth)));
+    SetTooltipStyle(reminderPanel_, TooltipStyle{
+        ToColorRef(theme_.color(L"tooltip", L"normal", L"bg")),
+        ToColorRef(theme_.color(L"tooltip", L"normal", L"text")),
+        ToColorRef(theme_.color(L"tooltip", L"normal", L"border")),
+        paddingX, paddingY, lineGap, radius, borderWidth});
     if (radius > 0) {
         HRGN region = CreateRoundRectRgn(0, 0, width + 1, height + 1, radius * 2, radius * 2);
         if (!region || SetWindowRgn(reminderPanel_, region, TRUE) == 0) {
@@ -4882,18 +4910,15 @@ void MainWindow::OnUrlIconDownloaded(int linkId, bool success) {
 }
 
 void MainWindow::ShowAbout() {
-    const std::wstring privilegeText = runningAsAdmin_ ? L"管理员" : L"普通用户";
-    const std::wstring message =
-        std::wstring(kAppDisplayName) + L"\n版本：" + QuattroVersionText() +
-        L"\n\n轻量级 Windows 快速启动工具\nC++ / Win32 / Direct2D / DirectWrite\n\n开源仓库：https://github.com/codingriver/quattro\n当前权限：" + privilegeText;
-    MessageBoxW(
-        hwnd_,
-        message.c_str(),
-        L"关于",
-        MB_OK | MB_ICONINFORMATION);
+    ShowAboutDialog(hwnd_, instance_, theme_, runningAsAdmin_);
 }
 
 void MainWindow::CheckForUpdates() {
+    if (updateDownloadActive_) {
+        MessageBoxW(hwnd_, L"更新包正在下载，请等待当前下载完成。", L"检查更新", MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+
     UpdateCheckService service(appDirectory_, config_.updateUrl);
     UpdateReleaseInfo info;
     std::wstring error;
@@ -4908,30 +4933,34 @@ void MainWindow::CheckForUpdates() {
         return;
     }
 
-    std::wstring notes = info.releaseNotes;
-    if (notes.size() > 360) {
-        notes = notes.substr(0, 360) + L"...";
-    }
-    const std::wstring prompt =
-        L"发现新版本。\n\n当前版本：" + info.currentVersion +
-        L"\n最新版本：" + info.latestVersion +
-        L"\n更新包：" + info.assetName +
-        (notes.empty() ? L"" : L"\n\n发布说明：\n" + notes) +
-        L"\n\n选择“是”下载并自动覆盖更新；选择“否”打开发布页。";
-    const int choice = MessageBoxW(hwnd_, prompt.c_str(), L"检查更新", MB_YESNOCANCEL | MB_ICONINFORMATION);
-    if (choice == IDNO) {
+    const UpdateCheckDialogChoice choice = ShowUpdateCheckDialog(hwnd_, instance_, theme_, info);
+    if (choice == UpdateCheckDialogChoice::OpenRelease) {
         OpenConfiguredUrl(info.releaseUrl, L"检查更新");
         return;
     }
-    if (choice != IDYES) {
+    if (choice != UpdateCheckDialogChoice::Download) {
         return;
     }
 
     UpdateDownloadResult download;
-    if (!service.DownloadUpdate(info, download, error)) {
+    updateDownloadActive_ = true;
+    const bool downloaded = ShowUpdateDownloadDialog(hwnd_, instance_, theme_, appDirectory_, info, download, error);
+    updateDownloadActive_ = false;
+    if (!downloaded) {
+        if (error == L"下载已取消。") {
+            return;
+        }
         MessageBoxW(hwnd_, error.empty() ? L"下载更新失败。" : error.c_str(), L"检查更新", MB_OK | MB_ICONWARNING);
         return;
     }
+    WriteAppLog(
+        L"更新包下载完成。version=" + info.latestVersion +
+        L"，asset=" + info.assetName +
+        L"，expected_size=" + std::to_wstring(info.assetSizeBytes) +
+        L"，saved=" + AbsolutePathForLog(download.filePath).wstring() +
+        L"，saved_size=" + FileSizeForLog(download.filePath) +
+        L"，checksum_verified=" + std::wstring(download.checksumVerified ? L"1" : L"0") +
+        (download.checksumMessage.empty() ? L"" : (L"，checksum_message=" + download.checksumMessage)));
 
     if (!download.checksumVerified) {
         const std::wstring warning =
@@ -4946,12 +4975,18 @@ void MainWindow::CheckForUpdates() {
     plan.downloadedExe = download.filePath;
     plan.currentExe = CurrentExecutablePath();
     plan.logPath = appDirectory_ / L"logs" / L"update.log";
+    plan.latestVersion = info.latestVersion;
+    plan.assetName = info.assetName;
+    plan.assetSizeBytes = info.assetSizeBytes;
     if (!LaunchEmbeddedUpdater(plan, error)) {
         MessageBoxW(hwnd_, error.empty() ? L"启动更新器失败。" : error.c_str(), L"检查更新", MB_OK | MB_ICONWARNING);
         return;
     }
 
-    WriteAppLog(L"更新器已启动，准备退出当前进程。");
+    WriteAppLog(
+        L"更新器已启动，准备退出当前进程。version=" + info.latestVersion +
+        L"，downloaded=" + AbsolutePathForLog(download.filePath).wstring() +
+        L"，target=" + AbsolutePathForLog(plan.currentExe).wstring());
     DestroyWindow(hwnd_);
 }
 
@@ -5831,7 +5866,7 @@ void MainWindow::ShowTrayMenu(POINT screenPoint) {
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_RESET_LAYOUT, L"重置布局");
     AppendThemedSeparator(menu);
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_ABOUT, L"关于");
-    AppendThemedMenuItem(menu, MF_STRING, ID_MENU_CHECK_UPDATE, L"检查更新");
+    AppendThemedMenuItem(menu, MF_STRING | (updateDownloadActive_ ? MF_GRAYED : 0), ID_MENU_CHECK_UPDATE, L"检查更新");
     AppendThemedSeparator(menu);
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_EXIT, L"退出");
     ActivateWindow(hwnd_);
@@ -5873,7 +5908,7 @@ void MainWindow::ShowMainMenu(POINT screenPoint) {
     AppendThemedSeparator(menu);
     AppendUnifiedViewOptionItems(menu);
     AppendThemedSeparator(menu);
-    AppendThemedMenuItem(menu, MF_STRING, ID_MENU_CHECK_UPDATE, L"检查更新");
+    AppendThemedMenuItem(menu, MF_STRING | (updateDownloadActive_ ? MF_GRAYED : 0), ID_MENU_CHECK_UPDATE, L"检查更新");
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_EXIT, L"关闭退出");
     ActivateWindow(hwnd_);
     TrackPopupMenu(menu, TPM_RIGHTBUTTON, screenPoint.x, screenPoint.y, 0, hwnd_, nullptr);
@@ -6007,14 +6042,11 @@ void MainWindow::ApplyTooltipTheme() {
     const int lineGap = static_cast<int>(std::max(0.0f, Metric(theme_, L"tooltip", L"lineGap", 4.0f)));
     const int radius = static_cast<int>(std::max(0.0f, Metric(theme_, L"tooltip", L"radius", 6.0f)));
     const int borderWidth = static_cast<int>(std::max(0.0f, Metric(theme_, L"tooltip", L"borderWidth", 1.0f)));
-    SetPropW(tooltip_, kTooltipBgProp, reinterpret_cast<HANDLE>(static_cast<UINT_PTR>(ToColorRef(theme_.color(L"tooltip", L"normal", L"bg")))));
-    SetPropW(tooltip_, kTooltipTextProp, reinterpret_cast<HANDLE>(static_cast<UINT_PTR>(ToColorRef(theme_.color(L"tooltip", L"normal", L"text")))));
-    SetPropW(tooltip_, kTooltipBorderProp, reinterpret_cast<HANDLE>(static_cast<UINT_PTR>(ToColorRef(theme_.color(L"tooltip", L"normal", L"border")))));
-    SetPropW(tooltip_, kTooltipPaddingXProp, reinterpret_cast<HANDLE>(static_cast<UINT_PTR>(paddingX)));
-    SetPropW(tooltip_, kTooltipPaddingYProp, reinterpret_cast<HANDLE>(static_cast<UINT_PTR>(paddingY)));
-    SetPropW(tooltip_, kTooltipLineGapProp, reinterpret_cast<HANDLE>(static_cast<UINT_PTR>(lineGap)));
-    SetPropW(tooltip_, kTooltipRadiusProp, reinterpret_cast<HANDLE>(static_cast<UINT_PTR>(radius)));
-    SetPropW(tooltip_, kTooltipBorderWidthProp, reinterpret_cast<HANDLE>(static_cast<UINT_PTR>(borderWidth)));
+    SetTooltipStyle(tooltip_, TooltipStyle{
+        ToColorRef(theme_.color(L"tooltip", L"normal", L"bg")),
+        ToColorRef(theme_.color(L"tooltip", L"normal", L"text")),
+        ToColorRef(theme_.color(L"tooltip", L"normal", L"border")),
+        paddingX, paddingY, lineGap, radius, borderWidth});
 }
 
 void MainWindow::HideItemTooltip() {
@@ -6191,13 +6223,14 @@ void MainWindow::UpdateItemTooltip(const HitArea& hit, POINT screenPoint) {
     HDC dc = GetDC(tooltip_);
     HFONT font = reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
     HFONT previousFont = reinterpret_cast<HFONT>(SelectObject(dc, font));
-    const int lineGap = WindowPropInt(tooltip_, kTooltipLineGapProp, 4);
+    const TooltipStyle style = TooltipStyleFor(tooltip_);
+    const int lineGap = style.lineGap;
     const SIZE textSize = MeasureTooltipText(dc, tooltipText_, lineGap);
     SelectObject(dc, previousFont);
     ReleaseDC(tooltip_, dc);
 
-    const int paddingX = WindowPropInt(tooltip_, kTooltipPaddingXProp, 8);
-    const int paddingY = WindowPropInt(tooltip_, kTooltipPaddingYProp, 7);
+    const int paddingX = style.paddingX;
+    const int paddingY = style.paddingY;
     int width = std::max(80, static_cast<int>(textSize.cx) + paddingX * 2);
     int height = std::max(24, static_cast<int>(textSize.cy) + paddingY * 2);
     int x = screenPoint.x + 14;
@@ -6218,7 +6251,7 @@ void MainWindow::UpdateItemTooltip(const HitArea& hit, POINT screenPoint) {
     }
 
     SetWindowPos(tooltip_, HWND_TOPMOST, x, y, width, height, SWP_NOACTIVATE);
-    const int radius = WindowPropInt(tooltip_, kTooltipRadiusProp, 0);
+    const int radius = style.radius;
     if (radius > 0) {
         HRGN region = CreateRoundRectRgn(0, 0, width + 1, height + 1, radius * 2, radius * 2);
         if (!region || SetWindowRgn(tooltip_, region, TRUE) == 0) {

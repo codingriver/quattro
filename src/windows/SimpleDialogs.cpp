@@ -1,6 +1,6 @@
 #include "SimpleDialogs.h"
 
-#include "../resources/resource.h"
+#include "../../resources/resource.h"
 
 #include "AppLog.h"
 #include "ConfigPackageService.h"
@@ -10,6 +10,7 @@
 #include "LocalHttpServerService.h"
 #include "Storage.h"
 #include "ThemedControls.h"
+#include "ThemedUi.h"
 #include "TodoSchedule.h"
 #include "Utilities.h"
 #include "WebDavBackupService.h"
@@ -1031,6 +1032,10 @@ private:
         return (flags_ & MB_TYPEMASK) == MB_YESNO;
     }
 
+    bool YesNoCancel() const {
+        return (flags_ & MB_TYPEMASK) == MB_YESNOCANCEL;
+    }
+
     bool OkCancel() const {
         return (flags_ & MB_TYPEMASK) == MB_OKCANCEL;
     }
@@ -1217,21 +1222,24 @@ private:
             }
             backgroundBrush_ = CreateSolidBrush(ToColorRef(theme_.color(L"dialog", L"normal", L"bg")));
             const DialogLayoutMetrics layout = GetDialogLayoutMetrics(theme_, DialogLayoutKind::Mini);
-            const int buttonHeight = ThemedControls::ButtonHeight(theme_);
             RECT client{};
             GetClientRect(hwnd_, &client);
             const int clientWidth = client.right - client.left;
             const int clientHeight = client.bottom - client.top;
             CreateMessageTextControl(layout, clientWidth);
-            const int y = layout.FooterButtonY(clientHeight, buttonHeight);
-            if (YesNo()) {
-                ThemedControls::CreatePrimaryButton(instance_, hwnd_, IDYES, L"是", layout.FooterButtonX(clientWidth, 0, 2), y, layout.footerButtonWidth, buttonHeight, font_, true);
-                ThemedControls::CreateButton(instance_, hwnd_, IDNO, L"否", layout.FooterButtonX(clientWidth, 1, 2), y, layout.footerButtonWidth, buttonHeight, font_);
+            const ThemedUi ui(instance_, hwnd_, theme_, font_, DialogLayoutKind::Mini, clientWidth, clientHeight);
+            if (YesNoCancel()) {
+                ui.FooterButton(IDYES, L"是", 0, 3, true, true);
+                ui.FooterButton(IDNO, L"否", 1, 3);
+                ui.FooterButton(IDCANCEL, L"取消", 2, 3);
+            } else if (YesNo()) {
+                ui.FooterButton(IDYES, L"是", 0, 2, true, true);
+                ui.FooterButton(IDNO, L"否", 1, 2);
             } else if (OkCancel()) {
-                ThemedControls::CreatePrimaryButton(instance_, hwnd_, IDOK, L"确定", layout.FooterButtonX(clientWidth, 0, 2), y, layout.footerButtonWidth, buttonHeight, font_, true);
-                ThemedControls::CreateButton(instance_, hwnd_, IDCANCEL, L"取消", layout.FooterButtonX(clientWidth, 1, 2), y, layout.footerButtonWidth, buttonHeight, font_);
+                ui.FooterButton(IDOK, L"确定", 0, 2, true, true);
+                ui.FooterButton(IDCANCEL, L"取消", 1, 2);
             } else {
-                ThemedControls::CreatePrimaryButton(instance_, hwnd_, IDOK, L"确定", layout.FooterButtonX(clientWidth, 0, 1), y, layout.footerButtonWidth, buttonHeight, font_, true);
+                ui.FooterButton(IDOK, L"确定", 0, 1, true, true);
             }
             return 0;
         }
@@ -1250,6 +1258,12 @@ private:
             if (HandleMessageTextNotify(lParam)) {
                 return TRUE;
             }
+            {
+                LRESULT result = 0;
+                if (ThemedUi::HandleParentMessage(theme_, message, wParam, lParam, result)) {
+                    return result;
+                }
+            }
             return 0;
         case WM_CTLCOLOREDIT:
         case WM_CTLCOLORSTATIC:
@@ -1260,11 +1274,13 @@ private:
                 return reinterpret_cast<LRESULT>(backgroundBrush_ ? backgroundBrush_ : GetStockObject(WHITE_BRUSH));
             }
             return DefWindowProcW(hwnd_, message, wParam, lParam);
-        case WM_DRAWITEM:
-            if (ThemedControls::Draw(theme_, reinterpret_cast<const DRAWITEMSTRUCT*>(lParam))) {
-                return TRUE;
+        case WM_DRAWITEM: {
+            LRESULT result = 0;
+            if (ThemedUi::HandleParentMessage(theme_, message, wParam, lParam, result)) {
+                return result;
             }
             return 0;
+        }
         case WM_COMMAND:
             switch (LOWORD(wParam)) {
             case IDYES:
@@ -1430,10 +1446,9 @@ private:
             const int editY = labelY + ThemedControls::LabelHeight(theme_) + layout.rowGap;
             editFrame_ = RECT{layout.contentInsetX, editY, layout.contentInsetX + contentWidth, editY + fieldHeight};
             edit_ = ThemedControls::CreateSingleLineEdit(instance_, hwnd_, 100, theme_, editFrame_, value_, editFont_ ? editFont_ : font_);
-            const int buttonHeight = ThemedControls::ButtonHeight(theme_);
-            const int footerY = layout.FooterButtonY(clientHeight, buttonHeight);
-            ThemedControls::CreatePrimaryButton(instance_, hwnd_, IDOK, L"确定", layout.FooterButtonX(clientWidth, 0, 2), footerY, layout.footerButtonWidth, buttonHeight, font_, true);
-            ThemedControls::CreateButton(instance_, hwnd_, IDCANCEL, L"取消", layout.FooterButtonX(clientWidth, 1, 2), footerY, layout.footerButtonWidth, buttonHeight, font_);
+            const ThemedUi ui(instance_, hwnd_, theme_, font_, DialogLayoutKind::Mini, clientWidth, clientHeight);
+            ui.FooterButton(IDOK, L"确定", 0, 2, true, true);
+            ui.FooterButton(IDCANCEL, L"取消", 1, 2);
             SetFocus(edit_);
             SendMessageW(edit_, EM_SETSEL, 0, -1);
             return 0;
@@ -1717,9 +1732,11 @@ private:
                 SendMessageW(list_, LB_SETCURSEL, 0, 0);
             }
 
-            const int buttonHeight = ThemedControls::ButtonHeight(theme_);
-            ThemedControls::CreatePrimaryButton(instance_, hwnd_, IDOK, L"下载", 360, 310, 76, buttonHeight, font_, true);
-            ThemedControls::CreateButton(instance_, hwnd_, IDCANCEL, L"取消", 452, 310, 76, buttonHeight, font_);
+            RECT client{};
+            GetClientRect(hwnd_, &client);
+            const ThemedUi ui(instance_, hwnd_, theme_, font_, DialogLayoutKind::Standard, client.right - client.left, client.bottom - client.top);
+            ui.Button(IDOK, L"下载", 360, 310, ThemedButtonRole::Primary, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, 76, true);
+            ui.Button(IDCANCEL, L"取消", 452, 310, ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, 76);
             SetFocus(list_);
             return 0;
         }
@@ -1971,6 +1988,12 @@ private:
         return hwnd;
     }
 
+    HWND StatusBadge(int tab, const wchar_t* text, int x, int y, int width, const wchar_t* state) {
+        HWND hwnd = ThemedControls::CreateStatusBadge(instance_, hwnd_, text, x, ContentY(y), width, theme_, font_, state);
+        AddTabChild(hwnd, tab);
+        return hwnd;
+    }
+
     HWND CheckBox(int tab, int id, const wchar_t* text, int x, int y, bool checked, int width = 210) {
         HWND hwnd = ThemedControls::CreateCheckBox(instance_, hwnd_, id, text, x, ContentY(y), width, ThemedControls::CheckBoxHeight(theme_), font_, checked);
         AddTabChild(hwnd, tab);
@@ -1984,8 +2007,14 @@ private:
         return hwnd;
     }
 
+    ThemedUi MakeUi() const {
+        RECT client{};
+        GetClientRect(hwnd_, &client);
+        return ThemedUi(instance_, hwnd_, theme_, font_, DialogLayoutKind::Standard, client.right - client.left, client.bottom - client.top);
+    }
+
     HWND Button(int tab, int id, const wchar_t* text, int x, int y, int width) {
-        HWND hwnd = ThemedControls::CreateButton(instance_, hwnd_, id, text, x, ContentY(y), width, ThemedControls::CompactButtonHeight(theme_), font_);
+        HWND hwnd = MakeUi().Button(id, text, x, ContentY(y), ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Fixed, width);
         AddTabChild(hwnd, tab);
         return hwnd;
     }
@@ -2113,17 +2142,14 @@ private:
             tabStripRect_.left = std::min(static_cast<int>(tabStripRect_.left), x - stripPadding);
             tabStripRect_.right = std::max(static_cast<int>(tabStripRect_.right), x + rowWidth + stripPadding);
             tabStripRect_.bottom = std::max(static_cast<int>(tabStripRect_.bottom), y + itemHeight + stripPadding);
+            const ThemedUi tabUi = MakeUi();
             for (int i = begin; i < end; ++i) {
-                HWND button = ThemedControls::CreateTabButton(
-                    instance_,
-                    hwnd_,
+                HWND button = tabUi.TabButton(
                     ID_SETTINGS_TAB_BASE + i,
                     titles[i],
                     x,
                     y,
                     itemWidths[static_cast<std::size_t>(i)],
-                    itemHeight,
-                    font_,
                     i == TabDisplay);
                 tabButtons_.push_back(button);
                 x += itemWidths[static_cast<std::size_t>(i)];
@@ -2736,12 +2762,12 @@ private:
         }
         std::wstring tag;
         std::wstring detail;
-        httpServerStatusOk_ = false;
+        const wchar_t* statusState = L"danger";
         if (httpServer_ && httpServer_->IsRunning()) {
             const auto& options = httpServer_->options();
             tag = L"运行中";
             detail = HttpAddressText(options.lanAccess, options.port, true);
-            httpServerStatusOk_ = true;
+            statusState = L"success";
         } else if (httpServer_ && !Trim(httpServer_->lastError()).empty()) {
             tag = L"启动异常";
             detail = httpServer_->lastError();
@@ -2753,6 +2779,7 @@ private:
             detail = L"服务未启动。";
         }
         SetWindowTextW(httpServerStatusTag_, tag.c_str());
+        ThemedControls::SetStatusBadgeState(httpServerStatusTag_, statusState);
         SetWindowTextW(httpServerStatusDetail_, detail.c_str());
         InvalidateRect(httpServerStatusTag_, nullptr, TRUE);
         InvalidateRect(httpServerStatusDetail_, nullptr, TRUE);
@@ -2920,10 +2947,10 @@ private:
             Label(TabDisplay, L"透明度", 34, 260, 76);
             alphaEdit_ = NumberEdit(TabDisplay, 201, 118, 254, 78, draft_.alpha);
             Label(TabDisplay, L"标签文字", 282, 260, 72);
-            const int tabButtonHeight = ThemedControls::TabButtonHeight(theme_);
-            tagAlignLeft_ = ThemedControls::CreateTabButton(instance_, hwnd_, ID_TAG_ALIGN_LEFT, L"左", 364, ContentY(255), 36, tabButtonHeight, font_, false);
-            tagAlignCenter_ = ThemedControls::CreateTabButton(instance_, hwnd_, ID_TAG_ALIGN_CENTER, L"中", 404, ContentY(255), 36, tabButtonHeight, font_, true);
-            tagAlignRight_ = ThemedControls::CreateTabButton(instance_, hwnd_, ID_TAG_ALIGN_RIGHT, L"右", 444, ContentY(255), 36, tabButtonHeight, font_, false);
+            const ThemedUi tagAlignUi = MakeUi();
+            tagAlignLeft_ = tagAlignUi.TabButton(ID_TAG_ALIGN_LEFT, L"左", 364, ContentY(255), 36, false);
+            tagAlignCenter_ = tagAlignUi.TabButton(ID_TAG_ALIGN_CENTER, L"中", 404, ContentY(255), 36, true);
+            tagAlignRight_ = tagAlignUi.TabButton(ID_TAG_ALIGN_RIGHT, L"右", 444, ContentY(255), 36, false);
             AddTabChild(tagAlignLeft_, TabDisplay);
             AddTabChild(tagAlignCenter_, TabDisplay);
             AddTabChild(tagAlignRight_, TabDisplay);
@@ -3121,9 +3148,10 @@ private:
             AddSectionFrame(TabHttp, RECT{httpFrameLeft, httpControlFrameTop, httpFrameRight, httpControlFrameBottom});
             UsePanelBackground(Label(TabHttp, L"运行控制", httpContentLeft, httpControlHeadingY, httpHeadingWidth));
             UsePanelBackground(Label(TabHttp, L"状态", httpContentLeft, httpStatusY + 4, 34));
-            httpServerStatusTag_ = Label(TabHttp, L"", httpContentLeft + 42, httpStatusY + 4, 64);
+            httpServerStatusTag_ = StatusBadge(TabHttp, L"", httpContentLeft + 42, httpStatusY + 4, 64, L"danger");
             httpServerStatusDetail_ = Label(TabHttp, L"", httpContentLeft + 112, httpStatusY + 4, httpContentRight - httpContentLeft - 112);
             UsePanelBackground(httpServerStatusTag_);
+            ThemedControls::SetControlBackgroundComponent(httpServerStatusTag_, L"panel");
             UsePanelBackground(httpServerStatusDetail_);
             httpStartButton_ = Button(TabHttp, ID_HTTP_START, L"启动", httpContentLeft, httpButtonY, 72);
             httpStopButton_ = Button(TabHttp, ID_HTTP_STOP, L"停止", httpContentLeft + 82, httpButtonY, 72);
@@ -3156,42 +3184,10 @@ private:
 
             RECT client{};
             GetClientRect(hwnd_, &client);
-            const int clientWidth = static_cast<int>(client.right - client.left);
-            const int clientHeight = static_cast<int>(client.bottom - client.top);
-            const int buttonHeight = ThemedControls::ButtonHeight(theme_);
-            const DialogLayoutMetrics footerLayout = GetDialogLayoutMetrics(theme_, DialogLayoutKind::Compact);
-            const int footerY = footerLayout.FooterButtonY(clientHeight, buttonHeight);
-            okButton_ = ThemedControls::CreatePrimaryButton(
-                instance_,
-                hwnd_,
-                IDOK,
-                L"确定",
-                footerLayout.FooterButtonX(clientWidth, 0, 3),
-                footerY,
-                footerLayout.footerButtonWidth,
-                buttonHeight,
-                font_,
-                true);
-            applyButton_ = ThemedControls::CreateButton(
-                instance_,
-                hwnd_,
-                ID_SETTINGS_APPLY,
-                L"应用",
-                footerLayout.FooterButtonX(clientWidth, 1, 3),
-                footerY,
-                footerLayout.footerButtonWidth,
-                buttonHeight,
-                font_);
-            cancelButton_ = ThemedControls::CreateButton(
-                instance_,
-                hwnd_,
-                IDCANCEL,
-                L"取消",
-                footerLayout.FooterButtonX(clientWidth, 2, 3),
-                footerY,
-                footerLayout.footerButtonWidth,
-                buttonHeight,
-                font_);
+            const ThemedUi footerUi(instance_, hwnd_, theme_, font_, DialogLayoutKind::Compact, client.right - client.left, client.bottom - client.top);
+            okButton_ = footerUi.FooterButton(IDOK, L"确定", 0, 3, true, true);
+            applyButton_ = footerUi.FooterButton(ID_SETTINGS_APPLY, L"应用", 1, 3);
+            cancelButton_ = footerUi.FooterButton(IDCANCEL, L"取消", 2, 3);
             ShowTab(TabDisplay);
             return 0;
         }
@@ -3222,11 +3218,7 @@ private:
             SetBkMode(dc, TRANSPARENT);
             HWND child = reinterpret_cast<HWND>(lParam);
             const bool fieldChild = IsFieldChild(child);
-            if (child == httpServerStatusTag_) {
-                SetTextColor(dc, ToColorRef(theme_.color(L"global", httpServerStatusOk_ ? L"success" : L"danger", L"text")));
-            } else {
-                SetTextColor(dc, ToColorRef(fieldChild ? theme_.color(L"field", L"readonly", L"text") : theme_.color(L"label", L"normal", L"text")));
-            }
+            SetTextColor(dc, ToColorRef(fieldChild ? theme_.color(L"field", L"readonly", L"text") : theme_.color(L"label", L"normal", L"text")));
             if (fieldChild && readOnlyFieldBrush_) {
                 return reinterpret_cast<LRESULT>(readOnlyFieldBrush_);
             }
@@ -3504,7 +3496,6 @@ private:
     HWND todoOnlyFuture_ = nullptr;
     bool importedData_ = false;
     bool webDavBusy_ = false;
-    bool httpServerStatusOk_ = false;
     bool accepted_ = false;
     bool done_ = false;
     SettingsApplyCallback applyCallback_;

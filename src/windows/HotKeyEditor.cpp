@@ -1,6 +1,6 @@
 #include "HotKeyEditor.h"
 
-#include "../resources/resource.h"
+#include "../../resources/resource.h"
 
 #include "ThemedControls.h"
 #include "Utilities.h"

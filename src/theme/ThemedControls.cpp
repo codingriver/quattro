@@ -5,44 +5,88 @@
 
 #include <algorithm>
 #include <cstring>
+#include <mutex>
+#include <optional>
 #include <string>
+#include <unordered_map>
 
 namespace {
-const wchar_t kControlKindProp[] = L"QuattroThemedControlKind";
-const wchar_t kControlHoverProp[] = L"QuattroThemedControlHover";
-const wchar_t kControlThemeProp[] = L"QuattroThemedControlTheme";
-const wchar_t kControlSelectedProp[] = L"QuattroThemedControlSelected";
-const wchar_t kControlCheckedProp[] = L"QuattroThemedControlChecked";
-const wchar_t kControlTextProp[] = L"QuattroThemedControlText";
-const wchar_t kControlBackgroundComponentProp[] = L"QuattroThemedControlBackgroundComponent";
-const wchar_t kControlMultilineProp[] = L"QuattroThemedControlMultiline";
-const wchar_t kControlButtonPaletteProp[] = L"QuattroThemedControlButtonPalette";
-HANDLE ButtonKind() {
-    return reinterpret_cast<HANDLE>(static_cast<INT_PTR>(1));
+enum class ControlKind {
+    None,
+    Button,
+    MiniButton,
+    PrimaryButton,
+    CheckBox,
+    TabButton,
+    ComboBox,
+    ListBox,
+    ProgressBar,
+    StatusBadge,
+};
+
+// 主题控件的运行时状态。以进程内 HWND 映射存储，避免使用桌面堆（SetPropW），
+// 因为某些桌面的桌面堆不可用会导致 SetPropW 以 ERROR_NOT_ENOUGH_MEMORY 失败。
+struct ControlState {
+    ControlKind kind = ControlKind::None;
+    const Theme* theme = nullptr;
+    std::wstring text;
+    std::wstring backgroundComponent;
+    std::wstring statusState;
+    bool hasText = false;
+    bool hover = false;
+    bool checked = false;
+    bool selected = false;
+    bool multiline = false;
+    bool progressIndeterminate = false;
+    double progressValue = 0.0;
+    std::optional<ThemedControls::ButtonPalette> palette;
+};
+
+std::mutex& StateMutex() {
+    static std::mutex mutex;
+    return mutex;
 }
 
-HANDLE MiniButtonKind() {
-    return reinterpret_cast<HANDLE>(static_cast<INT_PTR>(5));
+std::unordered_map<HWND, ControlState>& StateMap() {
+    static std::unordered_map<HWND, ControlState> map;
+    return map;
 }
 
-HANDLE PrimaryButtonKind() {
-    return reinterpret_cast<HANDLE>(static_cast<INT_PTR>(6));
+// 获取或创建控件状态（若不存在则插入默认值）。
+ControlState& StateFor(HWND hwnd) {
+    std::lock_guard<std::mutex> lock(StateMutex());
+    return StateMap()[hwnd];
 }
 
-HANDLE CheckBoxKind() {
-    return reinterpret_cast<HANDLE>(static_cast<INT_PTR>(2));
+// 复制式读取控件状态，不存在时返回空 optional，避免持锁期间暴露引用。
+std::optional<ControlState> FindState(HWND hwnd) {
+    std::lock_guard<std::mutex> lock(StateMutex());
+    auto& map = StateMap();
+    auto it = map.find(hwnd);
+    if (it == map.end()) {
+        return std::nullopt;
+    }
+    return it->second;
 }
 
-HANDLE TabButtonKind() {
-    return reinterpret_cast<HANDLE>(static_cast<INT_PTR>(3));
+ControlKind KindFor(HWND hwnd) {
+    std::lock_guard<std::mutex> lock(StateMutex());
+    auto& map = StateMap();
+    auto it = map.find(hwnd);
+    return it == map.end() ? ControlKind::None : it->second.kind;
 }
 
-HANDLE ComboBoxKind() {
-    return reinterpret_cast<HANDLE>(static_cast<INT_PTR>(4));
+void EraseState(HWND hwnd) {
+    std::lock_guard<std::mutex> lock(StateMutex());
+    StateMap().erase(hwnd);
 }
 
-HANDLE ListBoxKind() {
-    return reinterpret_cast<HANDLE>(static_cast<INT_PTR>(7));
+bool IsOwnerDrawButtonKind(ControlKind kind) {
+    return kind == ControlKind::Button ||
+           kind == ControlKind::MiniButton ||
+           kind == ControlKind::PrimaryButton ||
+           kind == ControlKind::CheckBox ||
+           kind == ControlKind::TabButton;
 }
 
 float ClampFloat(float value, float minValue, float maxValue) {
@@ -66,46 +110,10 @@ std::wstring WindowText(HWND hwnd) {
     return text;
 }
 
-void SetStringProp(HWND hwnd, const wchar_t* propName, const wchar_t* text) {
-    HGLOBAL oldMemory = static_cast<HGLOBAL>(RemovePropW(hwnd, propName));
-    if (oldMemory) {
-        GlobalFree(oldMemory);
-    }
-
-    const std::wstring value = text ? text : L"";
-    const auto bytes = (value.size() + 1) * sizeof(wchar_t);
-    HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, bytes);
-    if (!memory) {
-        return;
-    }
-    void* data = GlobalLock(memory);
-    if (!data) {
-        GlobalFree(memory);
-        return;
-    }
-    memcpy(data, value.c_str(), bytes);
-    GlobalUnlock(memory);
-    if (!SetPropW(hwnd, propName, memory)) {
-        GlobalFree(memory);
-    }
-}
-
-std::wstring StringProp(HWND hwnd, const wchar_t* propName) {
-    HGLOBAL memory = static_cast<HGLOBAL>(GetPropW(hwnd, propName));
-    if (!memory) {
-        return {};
-    }
-    const wchar_t* data = static_cast<const wchar_t*>(GlobalLock(memory));
-    if (!data) {
-        return {};
-    }
-    std::wstring text = data;
-    GlobalUnlock(memory);
-    return text;
-}
-
 void SetControlTextProp(HWND hwnd, const wchar_t* text) {
-    SetStringProp(hwnd, kControlTextProp, text);
+    ControlState& state = StateFor(hwnd);
+    state.text = text ? text : L"";
+    state.hasText = true;
 }
 
 std::wstring ControlText(HWND hwnd) {
@@ -113,20 +121,27 @@ std::wstring ControlText(HWND hwnd) {
     if (!text.empty()) {
         return text;
     }
-    return StringProp(hwnd, kControlTextProp);
+    if (auto state = FindState(hwnd); state && state->hasText) {
+        return state->text;
+    }
+    return {};
 }
 
 std::wstring BackgroundComponent(HWND hwnd) {
-    std::wstring component = StringProp(hwnd, kControlBackgroundComponentProp);
-    return component.empty() ? L"dialog" : component;
-}
-
-const ThemedControls::ButtonPalette* CustomButtonPalette(HWND hwnd) {
-    return static_cast<const ThemedControls::ButtonPalette*>(GetPropW(hwnd, kControlButtonPaletteProp));
+    auto state = FindState(hwnd);
+    if (!state || state->backgroundComponent.empty()) {
+        return L"dialog";
+    }
+    return state->backgroundComponent;
 }
 
 void SetButtonDrawColors(const Theme& theme, HWND hwnd, const wchar_t* component, const wchar_t* state, bool disabled, COLORREF& fill, COLORREF& border, COLORREF& text) {
-    const auto* palette = disabled ? nullptr : CustomButtonPalette(hwnd);
+    std::optional<ThemedControls::ButtonPalette> palette;
+    if (!disabled) {
+        if (auto controlState = FindState(hwnd); controlState) {
+            palette = controlState->palette;
+        }
+    }
     if (palette) {
         if (std::wcscmp(state, L"pressed") == 0) {
             fill = ToColorRef(palette->pressedBg);
@@ -180,19 +195,17 @@ void DrawRoundRect(HDC dc, RECT rect, int radius, COLORREF border, int borderWid
 }
 
 bool IsHover(HWND hwnd) {
-    return GetPropW(hwnd, kControlHoverProp) != nullptr;
+    auto state = FindState(hwnd);
+    return state && state->hover;
 }
 
 bool IsChecked(HWND hwnd) {
-    return GetPropW(hwnd, kControlCheckedProp) != nullptr;
+    auto state = FindState(hwnd);
+    return state && state->checked;
 }
 
 void SetChecked(HWND hwnd, bool checked) {
-    if (checked) {
-        SetPropW(hwnd, kControlCheckedProp, reinterpret_cast<HANDLE>(static_cast<INT_PTR>(1)));
-    } else {
-        RemovePropW(hwnd, kControlCheckedProp);
-    }
+    StateFor(hwnd).checked = checked;
     InvalidateRect(hwnd, nullptr, TRUE);
 }
 
@@ -245,7 +258,8 @@ void InvalidateComboBox(HWND hwnd) {
 }
 
 void DrawComboOverlay(HWND hwnd, HDC targetDc = nullptr) {
-    const auto* theme = reinterpret_cast<const Theme*>(GetPropW(hwnd, kControlThemeProp));
+    auto controlState = FindState(hwnd);
+    const Theme* theme = controlState ? controlState->theme : nullptr;
     if (!theme) {
         return;
     }
@@ -307,11 +321,119 @@ void DrawComboOverlay(HWND hwnd, HDC targetDc = nullptr) {
     }
 }
 
+double ProgressValue(HWND hwnd) {
+    auto state = FindState(hwnd);
+    return state ? state->progressValue : 0.0;
+}
+
+bool ProgressIndeterminate(HWND hwnd) {
+    auto state = FindState(hwnd);
+    return state && state->progressIndeterminate;
+}
+
+void DrawStatusBadge(HWND hwnd, HDC dc, RECT rect) {
+    auto controlState = FindState(hwnd);
+    const Theme* theme = controlState ? controlState->theme : nullptr;
+    if (!theme) {
+        return;
+    }
+
+    const std::wstring backgroundComponent = BackgroundComponent(hwnd);
+    HBRUSH background = CreateSolidBrush(ToColorRef(theme->color(backgroundComponent, L"normal", L"bg")));
+    FillRect(dc, &rect, background);
+    DeleteObject(background);
+
+    RECT badge = rect;
+    InflateRect(&badge, 0, -1);
+    const std::wstring stateValue = controlState->statusState;
+    const wchar_t* state = stateValue.empty() ? L"success" : stateValue.c_str();
+    const int height = std::max(1, static_cast<int>(badge.bottom - badge.top));
+    FillRoundRect(
+        dc,
+        badge,
+        height / 2,
+        ToColorRef(theme->color(L"global", state, L"bg")),
+        ToColorRef(theme->color(L"global", state, L"text")),
+        1);
+
+    SetBkMode(dc, TRANSPARENT);
+    SetTextColor(dc, ToColorRef(theme->color(L"global", state, L"text")));
+    HFONT font = reinterpret_cast<HFONT>(SendMessageW(hwnd, WM_GETFONT, 0, 0));
+    HGDIOBJ oldFont = font ? SelectObject(dc, font) : nullptr;
+    std::wstring text = ControlText(hwnd);
+    DrawTextW(dc, text.c_str(), static_cast<int>(text.size()), &badge, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    if (oldFont) {
+        SelectObject(dc, oldFont);
+    }
+}
+
+void DrawProgressBar(HWND hwnd, HDC targetDc = nullptr) {
+    auto controlState = FindState(hwnd);
+    const Theme* theme = controlState ? controlState->theme : nullptr;
+    if (!theme) {
+        return;
+    }
+
+    HDC dc = targetDc ? targetDc : GetDC(hwnd);
+    if (!dc) {
+        return;
+    }
+
+    RECT rect{};
+    GetClientRect(hwnd, &rect);
+    const bool disabled = !IsWindowEnabled(hwnd);
+    const wchar_t* state = disabled ? L"disabled" : L"normal";
+    const int radius = static_cast<int>(theme->metric(L"progressBar", L"radius", 7.0f));
+    const int borderWidth = static_cast<int>(theme->metric(L"progressBar", L"borderWidth", 1.0f));
+    FillRoundRect(
+        dc,
+        rect,
+        radius,
+        ToColorRef(theme->color(L"progressBar", state, L"track")),
+        ToColorRef(theme->color(L"progressBar", state, L"border")),
+        borderWidth);
+
+    RECT fillRect = rect;
+    InflateRect(&fillRect, -std::max(1, borderWidth), -std::max(1, borderWidth));
+    if (fillRect.right > fillRect.left && fillRect.bottom > fillRect.top) {
+        if (ProgressIndeterminate(hwnd)) {
+            const int width = fillRect.right - fillRect.left;
+            const int segmentWidth = std::max(width / 3, 24);
+            const DWORD tick = GetTickCount();
+            const int span = width + segmentWidth;
+            const int offset = static_cast<int>((tick / 16) % static_cast<DWORD>(std::max(1, span)));
+            fillRect.left = rect.left + std::max(1, borderWidth) + offset - segmentWidth;
+            fillRect.right = std::min(rect.right - std::max(1, borderWidth), fillRect.left + segmentWidth);
+            fillRect.left = std::max(rect.left + std::max(1, borderWidth), fillRect.left);
+        } else {
+            const double value = ClampFloat(static_cast<float>(ProgressValue(hwnd)), 0.0f, 1.0f);
+            fillRect.right = fillRect.left + static_cast<int>((fillRect.right - fillRect.left) * value + 0.5);
+        }
+        if (fillRect.right > fillRect.left) {
+            FillRoundRect(
+                dc,
+                fillRect,
+                std::max(0, radius - borderWidth),
+                ToColorRef(theme->color(L"progressBar", state, L"fill")),
+                ToColorRef(theme->color(L"progressBar", state, L"fill")),
+                1);
+        }
+    }
+
+    if (!targetDc) {
+        ReleaseDC(hwnd, dc);
+    }
+}
+
+void DrawButton(const Theme& theme, const DRAWITEMSTRUCT* draw);
+void DrawPrimaryButton(const Theme& theme, const DRAWITEMSTRUCT* draw);
+void DrawMiniButton(const Theme& theme, const DRAWITEMSTRUCT* draw);
+
 LRESULT CALLBACK ThemedControlProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR subclassId, DWORD_PTR) {
     switch (message) {
     case CB_SETCURSEL: {
         LRESULT result = DefSubclassProc(hwnd, message, wParam, lParam);
-        if (GetPropW(hwnd, kControlKindProp) == ComboBoxKind()) {
+        if (KindFor(hwnd) == ControlKind::ComboBox) {
             InvalidateComboBox(hwnd);
         }
         return result;
@@ -321,39 +443,36 @@ LRESULT CALLBACK ThemedControlProc(HWND hwnd, UINT message, WPARAM wParam, LPARA
     case CB_DELETESTRING:
     case CB_RESETCONTENT: {
         LRESULT result = DefSubclassProc(hwnd, message, wParam, lParam);
-        if (GetPropW(hwnd, kControlKindProp) == ComboBoxKind()) {
+        if (KindFor(hwnd) == ControlKind::ComboBox) {
             InvalidateComboBox(hwnd);
         }
         return result;
     }
     case BM_SETCHECK:
-        if (GetPropW(hwnd, kControlKindProp) == CheckBoxKind()) {
+        if (KindFor(hwnd) == ControlKind::CheckBox) {
             SetChecked(hwnd, wParam == BST_CHECKED);
             return 0;
         }
-        if (GetPropW(hwnd, kControlKindProp) == TabButtonKind()) {
-            if (wParam == BST_CHECKED) {
-                SetPropW(hwnd, kControlSelectedProp, reinterpret_cast<HANDLE>(static_cast<INT_PTR>(1)));
-            } else {
-                RemovePropW(hwnd, kControlSelectedProp);
-            }
+        if (KindFor(hwnd) == ControlKind::TabButton) {
+            StateFor(hwnd).selected = wParam == BST_CHECKED;
             InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
         }
         break;
     case BM_GETCHECK:
-        if (GetPropW(hwnd, kControlKindProp) == TabButtonKind()) {
-            if (GetPropW(hwnd, kControlSelectedProp) != nullptr) {
+        if (KindFor(hwnd) == ControlKind::TabButton) {
+            auto state = FindState(hwnd);
+            if (state && state->selected) {
                 return BST_CHECKED;
             }
             return DefSubclassProc(hwnd, message, wParam, lParam);
         }
-        if (GetPropW(hwnd, kControlKindProp) == CheckBoxKind()) {
+        if (KindFor(hwnd) == ControlKind::CheckBox) {
             return IsChecked(hwnd) ? BST_CHECKED : BST_UNCHECKED;
         }
         break;
     case BM_CLICK:
-        if (GetPropW(hwnd, kControlKindProp) == CheckBoxKind() && IsWindowEnabled(hwnd)) {
+        if (KindFor(hwnd) == ControlKind::CheckBox && IsWindowEnabled(hwnd)) {
             ToggleChecked(hwnd);
             if (HWND parent = GetParent(hwnd)) {
                 SendMessageW(parent, WM_COMMAND, MAKEWPARAM(GetDlgCtrlID(hwnd), BN_CLICKED), reinterpret_cast<LPARAM>(hwnd));
@@ -362,7 +481,7 @@ LRESULT CALLBACK ThemedControlProc(HWND hwnd, UINT message, WPARAM wParam, LPARA
         }
         break;
     case WM_LBUTTONUP:
-        if (GetPropW(hwnd, kControlKindProp) == CheckBoxKind() && IsWindowEnabled(hwnd)) {
+        if (KindFor(hwnd) == ControlKind::CheckBox && IsWindowEnabled(hwnd)) {
             POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
             RECT rect{};
             GetClientRect(hwnd, &rect);
@@ -372,27 +491,46 @@ LRESULT CALLBACK ThemedControlProc(HWND hwnd, UINT message, WPARAM wParam, LPARA
         }
         break;
     case WM_KEYUP:
-        if (GetPropW(hwnd, kControlKindProp) == CheckBoxKind() && IsWindowEnabled(hwnd) && wParam == VK_SPACE) {
+        if (KindFor(hwnd) == ControlKind::CheckBox && IsWindowEnabled(hwnd) && wParam == VK_SPACE) {
             ToggleChecked(hwnd);
         }
         break;
     case WM_PAINT: {
+        ControlKind kind = KindFor(hwnd);
+        if (IsOwnerDrawButtonKind(kind)) {
+            return DefSubclassProc(hwnd, message, wParam, lParam);
+        }
+        if (kind == ControlKind::ProgressBar) {
+            PAINTSTRUCT ps{};
+            HDC dc = BeginPaint(hwnd, &ps);
+            DrawProgressBar(hwnd, dc);
+            EndPaint(hwnd, &ps);
+            return 0;
+        }
         LRESULT result = DefSubclassProc(hwnd, message, wParam, lParam);
-        if (GetPropW(hwnd, kControlKindProp) == ComboBoxKind()) {
+        if (kind == ControlKind::ComboBox) {
             DrawComboOverlay(hwnd);
         }
         return result;
     }
     case WM_PRINTCLIENT: {
+        ControlKind kind = KindFor(hwnd);
+        if (IsOwnerDrawButtonKind(kind)) {
+            return DefSubclassProc(hwnd, message, wParam, lParam);
+        }
+        if (kind == ControlKind::ProgressBar) {
+            DrawProgressBar(hwnd, reinterpret_cast<HDC>(wParam));
+            return 0;
+        }
         LRESULT result = DefSubclassProc(hwnd, message, wParam, lParam);
-        if (GetPropW(hwnd, kControlKindProp) == ComboBoxKind()) {
+        if (kind == ControlKind::ComboBox) {
             DrawComboOverlay(hwnd, reinterpret_cast<HDC>(wParam));
         }
         return result;
     }
     case WM_MOUSEMOVE:
         if (!IsHover(hwnd)) {
-            SetPropW(hwnd, kControlHoverProp, reinterpret_cast<HANDLE>(static_cast<INT_PTR>(1)));
+            StateFor(hwnd).hover = true;
             TRACKMOUSEEVENT event{};
             event.cbSize = sizeof(event);
             event.dwFlags = TME_LEAVE;
@@ -402,34 +540,19 @@ LRESULT CALLBACK ThemedControlProc(HWND hwnd, UINT message, WPARAM wParam, LPARA
         }
         break;
     case WM_MOUSELEAVE:
-        RemovePropW(hwnd, kControlHoverProp);
+        StateFor(hwnd).hover = false;
         InvalidateRect(hwnd, nullptr, TRUE);
         break;
     case WM_SETFOCUS:
     case WM_KILLFOCUS:
-        if (GetPropW(hwnd, kControlKindProp) == ComboBoxKind()) {
+        if (KindFor(hwnd) == ControlKind::ComboBox) {
             LRESULT result = DefSubclassProc(hwnd, message, wParam, lParam);
             InvalidateComboBox(hwnd);
             return result;
         }
         break;
     case WM_DESTROY: {
-        RemovePropW(hwnd, kControlHoverProp);
-        RemovePropW(hwnd, kControlKindProp);
-        RemovePropW(hwnd, kControlThemeProp);
-        RemovePropW(hwnd, kControlSelectedProp);
-        RemovePropW(hwnd, kControlCheckedProp);
-        HGLOBAL textMemory = static_cast<HGLOBAL>(RemovePropW(hwnd, kControlTextProp));
-        if (textMemory) {
-            GlobalFree(textMemory);
-        }
-        HGLOBAL backgroundComponentMemory = static_cast<HGLOBAL>(RemovePropW(hwnd, kControlBackgroundComponentProp));
-        if (backgroundComponentMemory) {
-            GlobalFree(backgroundComponentMemory);
-        }
-        RemovePropW(hwnd, kControlMultilineProp);
-        auto* palette = static_cast<ThemedControls::ButtonPalette*>(RemovePropW(hwnd, kControlButtonPaletteProp));
-        delete palette;
+        EraseState(hwnd);
         RemoveWindowSubclass(hwnd, ThemedControlProc, subclassId);
         break;
     }
@@ -586,7 +709,7 @@ void DrawCheckBox(const Theme& theme, const DRAWITEMSTRUCT* draw) {
         DeleteObject(pen);
     }
 
-    const bool multiline = GetPropW(draw->hwndItem, kControlMultilineProp) != nullptr;
+    const bool multiline = [&] { auto s = FindState(draw->hwndItem); return s && s->multiline; }();
     RECT textRect = ThemedControls::CheckBoxTextRect(theme, rect);
     if (multiline) {
         textRect.top = rect.top + static_cast<int>(theme.metric(L"checkbox", L"textOffsetY", 1.0f));
@@ -608,7 +731,7 @@ void DrawCheckBox(const Theme& theme, const DRAWITEMSTRUCT* draw) {
 
 void DrawTabButton(const Theme& theme, const DRAWITEMSTRUCT* draw) {
     const bool disabled = (draw->itemState & ODS_DISABLED) != 0;
-    const bool selected = GetPropW(draw->hwndItem, kControlSelectedProp) != nullptr;
+    const bool selected = [&] { auto s = FindState(draw->hwndItem); return s && s->selected; }();
     const bool hover = IsHover(draw->hwndItem);
     const wchar_t* state = disabled ? L"disabled" : (selected ? (hover ? L"selectedHover" : L"selected") : (hover ? L"hover" : L"normal"));
 
@@ -944,13 +1067,49 @@ HWND CreateLabelText(HINSTANCE instance, HWND parent, const wchar_t* text, int x
     return CreateStaticText(instance, parent, text, x, y, width, LabelHeight(theme), font, style);
 }
 
+HWND CreateStatusBadge(HINSTANCE instance, HWND parent, const wchar_t* text, int x, int y, int width, const Theme& theme, HFONT font, const wchar_t* state) {
+    HWND hwnd = CreateWindowExW(
+        0,
+        L"STATIC",
+        text,
+        WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | SS_OWNERDRAW,
+        x,
+        y,
+        width,
+        LabelHeight(theme),
+        parent,
+        nullptr,
+        instance,
+        nullptr);
+    if (hwnd) {
+        SendMessageW(hwnd, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+        SetControlTextProp(hwnd, text);
+        {
+            auto& s = StateFor(hwnd);
+            s.kind = ControlKind::StatusBadge;
+            s.statusState = state ? state : L"success";
+            s.theme = &theme;
+        }
+        AttachThemedBehavior(hwnd);
+    }
+    return hwnd;
+}
+
+void SetStatusBadgeState(HWND hwnd, const wchar_t* state) {
+    if (!hwnd) {
+        return;
+    }
+    StateFor(hwnd).statusState = state ? state : L"success";
+    InvalidateRect(hwnd, nullptr, TRUE);
+}
+
 HWND CreateButton(HINSTANCE instance, HWND parent, int id, const wchar_t* text, int x, int y, int width, int height, HFONT font, bool defaultButton) {
     const DWORD style = WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_CLIPSIBLINGS | BS_OWNERDRAW | (defaultButton ? BS_DEFPUSHBUTTON : BS_PUSHBUTTON);
     HWND hwnd = CreateWindowExW(0, L"BUTTON", text, style, x, y, width, height, parent, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), instance, nullptr);
     if (hwnd) {
         SendMessageW(hwnd, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
         SetControlTextProp(hwnd, text);
-        SetPropW(hwnd, kControlKindProp, ButtonKind());
+        StateFor(hwnd).kind = ControlKind::Button;
         AttachThemedBehavior(hwnd);
     }
     return hwnd;
@@ -962,10 +1121,23 @@ HWND CreatePrimaryButton(HINSTANCE instance, HWND parent, int id, const wchar_t*
     if (hwnd) {
         SendMessageW(hwnd, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
         SetControlTextProp(hwnd, text);
-        SetPropW(hwnd, kControlKindProp, PrimaryButtonKind());
+        StateFor(hwnd).kind = ControlKind::PrimaryButton;
         AttachThemedBehavior(hwnd);
     }
     return hwnd;
+}
+
+void SetControlTheme(HWND hwnd, const Theme& theme) {
+    if (hwnd) {
+        auto state = FindState(hwnd);
+        const ControlKind kind = state ? state->kind : ControlKind::None;
+        if (kind == ControlKind::ComboBox || kind == ControlKind::ProgressBar || kind == ControlKind::StatusBadge) {
+            StateFor(hwnd).theme = &theme;
+        } else {
+            StateFor(hwnd).theme = nullptr;
+        }
+        InvalidateRect(hwnd, nullptr, TRUE);
+    }
 }
 
 HWND CreateMiniButton(HINSTANCE instance, HWND parent, int id, const wchar_t* text, int x, int y, int width, int height, HFONT font) {
@@ -974,7 +1146,7 @@ HWND CreateMiniButton(HINSTANCE instance, HWND parent, int id, const wchar_t* te
     if (hwnd) {
         SendMessageW(hwnd, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
         SetControlTextProp(hwnd, text);
-        SetPropW(hwnd, kControlKindProp, MiniButtonKind());
+        StateFor(hwnd).kind = ControlKind::MiniButton;
         AttachThemedBehavior(hwnd);
     }
     return hwnd;
@@ -986,7 +1158,7 @@ HWND CreateCheckBox(HINSTANCE instance, HWND parent, int id, const wchar_t* text
     if (hwnd) {
         SendMessageW(hwnd, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
         SetControlTextProp(hwnd, text);
-        SetPropW(hwnd, kControlKindProp, CheckBoxKind());
+        StateFor(hwnd).kind = ControlKind::CheckBox;
         AttachThemedBehavior(hwnd);
         SendMessageW(hwnd, BM_SETCHECK, checked ? BST_CHECKED : BST_UNCHECKED, 0);
     }
@@ -997,7 +1169,7 @@ void SetControlBackgroundComponent(HWND hwnd, const wchar_t* component) {
     if (!hwnd) {
         return;
     }
-    SetStringProp(hwnd, kControlBackgroundComponentProp, component);
+    StateFor(hwnd).backgroundComponent = component ? component : L"";
     InvalidateRect(hwnd, nullptr, TRUE);
 }
 
@@ -1005,11 +1177,7 @@ void SetControlMultiline(HWND hwnd, bool multiline) {
     if (!hwnd) {
         return;
     }
-    if (multiline) {
-        SetPropW(hwnd, kControlMultilineProp, reinterpret_cast<HANDLE>(static_cast<INT_PTR>(1)));
-    } else {
-        RemovePropW(hwnd, kControlMultilineProp);
-    }
+    StateFor(hwnd).multiline = multiline;
     InvalidateRect(hwnd, nullptr, TRUE);
 }
 
@@ -1017,12 +1185,7 @@ void SetButtonPalette(HWND hwnd, const ButtonPalette& palette) {
     if (!hwnd) {
         return;
     }
-    auto* oldPalette = static_cast<ButtonPalette*>(RemovePropW(hwnd, kControlButtonPaletteProp));
-    delete oldPalette;
-    auto* copy = new ButtonPalette(palette);
-    if (!SetPropW(hwnd, kControlButtonPaletteProp, copy)) {
-        delete copy;
-    }
+    StateFor(hwnd).palette = palette;
     InvalidateRect(hwnd, nullptr, TRUE);
 }
 
@@ -1032,9 +1195,10 @@ HWND CreateTabButton(HINSTANCE instance, HWND parent, int id, const wchar_t* tex
     if (hwnd) {
         SendMessageW(hwnd, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
         SetControlTextProp(hwnd, text);
-        SetPropW(hwnd, kControlKindProp, TabButtonKind());
-        if (selected) {
-            SetPropW(hwnd, kControlSelectedProp, reinterpret_cast<HANDLE>(static_cast<INT_PTR>(1)));
+        {
+            auto& s = StateFor(hwnd);
+            s.kind = ControlKind::TabButton;
+            s.selected = selected;
         }
         AttachThemedBehavior(hwnd);
     }
@@ -1045,16 +1209,13 @@ void SetTabButtonSelected(HWND hwnd, bool selected) {
     if (!hwnd) {
         return;
     }
-    if (selected) {
-        SetPropW(hwnd, kControlSelectedProp, reinterpret_cast<HANDLE>(static_cast<INT_PTR>(1)));
-    } else {
-        RemovePropW(hwnd, kControlSelectedProp);
-    }
+    StateFor(hwnd).selected = selected;
     InvalidateRect(hwnd, nullptr, FALSE);
 }
 
 bool IsTabButtonSelected(HWND hwnd) {
-    return hwnd && GetPropW(hwnd, kControlSelectedProp) != nullptr;
+    auto state = FindState(hwnd);
+    return state && state->selected;
 }
 
 HWND CreateComboBox(HINSTANCE instance, HWND parent, int id, int x, int y, int width, int height, HFONT font, const Theme& theme) {
@@ -1065,8 +1226,11 @@ HWND CreateComboBox(HINSTANCE instance, HWND parent, int id, int x, int y, int w
         SendMessageW(hwnd, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
         SendMessageW(hwnd, CB_SETITEMHEIGHT, static_cast<WPARAM>(-1), static_cast<LPARAM>(ComboBoxHeight(theme)));
         SendMessageW(hwnd, CB_SETITEMHEIGHT, 0, static_cast<LPARAM>(ComboBoxItemHeight(theme)));
-        SetPropW(hwnd, kControlKindProp, ComboBoxKind());
-        SetPropW(hwnd, kControlThemeProp, const_cast<Theme*>(&theme));
+        {
+            auto& s = StateFor(hwnd);
+            s.kind = ControlKind::ComboBox;
+            s.theme = &theme;
+        }
         AttachThemedBehavior(hwnd);
     }
     return hwnd;
@@ -1089,7 +1253,7 @@ HWND CreateListBox(HINSTANCE instance, HWND parent, int id, int x, int y, int wi
     if (hwnd) {
         SendMessageW(hwnd, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
         SendMessageW(hwnd, LB_SETITEMHEIGHT, 0, static_cast<LPARAM>(ListBoxItemHeight(theme)));
-        SetPropW(hwnd, kControlKindProp, ListBoxKind());
+        StateFor(hwnd).kind = ControlKind::ListBox;
         AttachThemedBehavior(hwnd);
     }
     return hwnd;
@@ -1207,6 +1371,44 @@ HWND CreateFramedStatic(HINSTANCE instance, HWND parent, const Theme& theme, REC
         style);
 }
 
+HWND CreateProgressBar(HINSTANCE instance, HWND parent, int id, const Theme& theme, int x, int y, int width, int height) {
+    HWND hwnd = CreateWindowExW(
+        0,
+        L"STATIC",
+        nullptr,
+        WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | SS_OWNERDRAW,
+        x,
+        y,
+        width,
+        height,
+        parent,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),
+        instance,
+        nullptr);
+    if (hwnd) {
+        auto& s = StateFor(hwnd);
+        s.kind = ControlKind::ProgressBar;
+        s.theme = &theme;
+        s.progressValue = 0.0;
+        AttachThemedBehavior(hwnd);
+    }
+    return hwnd;
+}
+
+void SetProgressBarValue(HWND hwnd, double value, bool indeterminate) {
+    if (!hwnd) {
+        return;
+    }
+    auto& s = StateFor(hwnd);
+    s.progressValue = std::max(0.0, std::min(1.0, value));
+    s.progressIndeterminate = indeterminate;
+    InvalidateRect(hwnd, nullptr, FALSE);
+}
+
+int ProgressBarHeight(const Theme& theme) {
+    return static_cast<int>(theme.metric(L"progressBar", L"height", 16.0f));
+}
+
 void DrawFieldFrame(const Theme& theme, HDC dc, RECT rect, HWND child, bool readOnly, bool error) {
     const bool disabled = child && !IsWindowEnabled(child);
     const bool focused = child && GetFocus() == child;
@@ -1288,35 +1490,43 @@ bool Draw(const Theme& theme, const DRAWITEMSTRUCT* draw) {
     if (!draw || !draw->hwndItem) {
         return false;
     }
-    HANDLE kind = GetPropW(draw->hwndItem, kControlKindProp);
-    if (draw->CtlType == ODT_COMBOBOX && kind == ComboBoxKind()) {
+    ControlKind kind = KindFor(draw->hwndItem);
+    if (draw->CtlType == ODT_STATIC && kind == ControlKind::StatusBadge) {
+        DrawStatusBadge(draw->hwndItem, draw->hDC, draw->rcItem);
+        return true;
+    }
+    if (draw->CtlType == ODT_STATIC && kind == ControlKind::ProgressBar) {
+        DrawProgressBar(draw->hwndItem, draw->hDC);
+        return true;
+    }
+    if (draw->CtlType == ODT_COMBOBOX && kind == ControlKind::ComboBox) {
         DrawComboBox(theme, draw);
         return true;
     }
-    if (draw->CtlType == ODT_LISTBOX && kind == ListBoxKind()) {
+    if (draw->CtlType == ODT_LISTBOX && kind == ControlKind::ListBox) {
         DrawListBox(theme, draw);
         return true;
     }
     if (draw->CtlType != ODT_BUTTON) {
         return false;
     }
-    if (kind == ButtonKind()) {
+    if (kind == ControlKind::Button) {
         DrawButton(theme, draw);
         return true;
     }
-    if (kind == PrimaryButtonKind()) {
+    if (kind == ControlKind::PrimaryButton) {
         DrawPrimaryButton(theme, draw);
         return true;
     }
-    if (kind == MiniButtonKind()) {
+    if (kind == ControlKind::MiniButton) {
         DrawMiniButton(theme, draw);
         return true;
     }
-    if (kind == CheckBoxKind()) {
+    if (kind == ControlKind::CheckBox) {
         DrawCheckBox(theme, draw);
         return true;
     }
-    if (kind == TabButtonKind()) {
+    if (kind == ControlKind::TabButton) {
         DrawTabButton(theme, draw);
         return true;
     }

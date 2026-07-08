@@ -1,5 +1,5 @@
-#include "../src/JsonValue.h"
-#include "../src/Utilities.h"
+#include "../src/common/JsonValue.h"
+#include "../src/common/Utilities.h"
 
 #include <filesystem>
 #include <iostream>

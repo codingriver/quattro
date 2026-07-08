@@ -1,4 +1,4 @@
-#include "../src/MenuCatalog.h"
+#include "../src/domain/MenuCatalog.h"
 
 #include <windows.h>
 
@@ -125,7 +125,7 @@ std::filesystem::path ModuleDirectory() {
 }
 
 bool ExerciseAboutTwice(HWND mainWindow, DWORD processId) {
-    const FindWindowRequest aboutRequest{L"QuattroThemedMessageDialog", L"关于", processId};
+    const FindWindowRequest aboutRequest{L"QuattroAboutDialog", L"关于", processId};
     for (int i = 0; i < 2; ++i) {
         PostMessageW(mainWindow, WM_COMMAND, MAKEWPARAM(ID_MENU_ABOUT, 0), 0);
         HWND about = WaitForTopWindow(aboutRequest, 5000);

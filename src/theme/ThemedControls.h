@@ -31,6 +31,8 @@ HWND CreatePrimaryButton(
     HFONT font,
     bool defaultButton = true);
 
+void SetControlTheme(HWND hwnd, const Theme& theme);
+
 HWND CreateMiniButton(
     HINSTANCE instance,
     HWND parent,
@@ -134,6 +136,19 @@ HWND CreateLabelText(
     HFONT font,
     DWORD style = SS_LEFT);
 
+HWND CreateStatusBadge(
+    HINSTANCE instance,
+    HWND parent,
+    const wchar_t* text,
+    int x,
+    int y,
+    int width,
+    const Theme& theme,
+    HFONT font,
+    const wchar_t* state = L"success");
+
+void SetStatusBadgeState(HWND hwnd, const wchar_t* state);
+
 int ButtonHeight(const Theme& theme);
 int CompactButtonHeight(const Theme& theme);
 int ButtonPaddingX(const Theme& theme);
@@ -195,6 +210,19 @@ HWND CreateFramedStatic(
     const std::wstring& value,
     HFONT font,
     DWORD style = SS_LEFTNOWORDWRAP);
+
+HWND CreateProgressBar(
+    HINSTANCE instance,
+    HWND parent,
+    int id,
+    const Theme& theme,
+    int x,
+    int y,
+    int width,
+    int height);
+
+void SetProgressBarValue(HWND hwnd, double value, bool indeterminate = false);
+int ProgressBarHeight(const Theme& theme);
 
 void DrawFieldFrame(
     const Theme& theme,
