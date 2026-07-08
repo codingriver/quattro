@@ -1539,8 +1539,8 @@ private:
 
         RECT prev = Offset(CalendarPrevRect());
         RECT next = Offset(CalendarNextRect());
-        DrawRoundFill(dc, prev, 4, ColorFor(L"iconButton", L"normal", L"bg"), ColorFor(L"panel", L"normal", L"border"));
-        DrawRoundFill(dc, next, 4, ColorFor(L"iconButton", L"normal", L"bg"), ColorFor(L"panel", L"normal", L"border"));
+        ThemedControls::DrawIconButtonFrame(theme_, dc, prev);
+        ThemedControls::DrawIconButtonFrame(theme_, dc, next);
         DrawTextIn(dc, L"<", prev, ColorFor(L"text", L"muted", L"text"), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         DrawTextIn(dc, L">", next, ColorFor(L"text", L"muted", L"text"), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
@@ -1570,8 +1570,8 @@ private:
 
         RECT yearTitle = Offset(CalendarYearTitleRect());
         RECT monthTitle = Offset(CalendarMonthTitleRect());
-        DrawRoundFill(dc, yearTitle, 5, ColorFor(L"miniButton", L"normal", L"bg"), ColorFor(L"miniButton", L"normal", L"border"));
-        DrawRoundFill(dc, monthTitle, 5, ColorFor(L"miniButton", L"normal", L"bg"), ColorFor(L"miniButton", L"normal", L"border"));
+        ThemedControls::DrawMiniButtonFrame(theme_, dc, yearTitle);
+        ThemedControls::DrawMiniButtonFrame(theme_, dc, monthTitle);
         DrawTextIn(dc, std::to_wstring(calendarYear_) + L"年", yearTitle, ColorFor(L"text", L"normal", L"text"), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         DrawTextIn(dc, std::to_wstring(calendarMonth_) + L"月", monthTitle, ColorFor(L"text", L"normal", L"text"), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 

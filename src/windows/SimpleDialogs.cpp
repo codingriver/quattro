@@ -164,14 +164,6 @@ std::wstring HttpAddressText(bool lanAccess, int port, bool trailingSlash) {
     return value;
 }
 
-ThemedControls::ButtonPalette ActionButtonPalette(Color normal, Color hover, Color pressed) {
-    const Color white{1.0f, 1.0f, 1.0f, 1.0f};
-    return ThemedControls::ButtonPalette{
-        normal, white, normal,
-        hover, white, hover,
-        pressed, white, pressed};
-}
-
 struct HotKeyAvailability {
     bool available = false;
     DWORD error = ERROR_SUCCESS;
@@ -3156,9 +3148,6 @@ private:
             httpStartButton_ = Button(TabHttp, ID_HTTP_START, L"启动", httpContentLeft, httpButtonY, 72);
             httpStopButton_ = Button(TabHttp, ID_HTTP_STOP, L"停止", httpContentLeft + 82, httpButtonY, 72);
             httpRestartButton_ = Button(TabHttp, ID_HTTP_RESTART, L"重启", httpContentLeft + 164, httpButtonY, 72);
-            ThemedControls::SetButtonPalette(httpStartButton_, ActionButtonPalette(Color{0.09f, 0.64f, 0.29f, 1.0f}, Color{0.08f, 0.50f, 0.24f, 1.0f}, Color{0.07f, 0.40f, 0.20f, 1.0f}));
-            ThemedControls::SetButtonPalette(httpStopButton_, ActionButtonPalette(Color{0.86f, 0.15f, 0.15f, 1.0f}, Color{0.73f, 0.11f, 0.11f, 1.0f}, Color{0.60f, 0.09f, 0.09f, 1.0f}));
-            ThemedControls::SetButtonPalette(httpRestartButton_, ActionButtonPalette(Color{0.85f, 0.47f, 0.02f, 1.0f}, Color{0.71f, 0.36f, 0.01f, 1.0f}, Color{0.57f, 0.28f, 0.01f, 1.0f}));
             Button(TabHttp, ID_HTTP_OPEN_HOME, L"打开网站", httpContentLeft + 248, httpButtonY, 84);
             Button(TabHttp, ID_HTTP_COPY_URL, L"复制地址", httpContentLeft + 342, httpButtonY, 84);
             Button(TabHttp, ID_HTTP_OPEN_CONFIG_DIR, L"配置目录", httpContentLeft, httpConfigY, 92);

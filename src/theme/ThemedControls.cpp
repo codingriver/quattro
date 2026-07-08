@@ -39,7 +39,6 @@ struct ControlState {
     bool multiline = false;
     bool progressIndeterminate = false;
     double progressValue = 0.0;
-    std::optional<ThemedControls::ButtonPalette> palette;
 };
 
 std::mutex& StateMutex() {
@@ -135,32 +134,14 @@ std::wstring BackgroundComponent(HWND hwnd) {
     return state->backgroundComponent;
 }
 
-void SetButtonDrawColors(const Theme& theme, HWND hwnd, const wchar_t* component, const wchar_t* state, bool disabled, COLORREF& fill, COLORREF& border, COLORREF& text) {
-    std::optional<ThemedControls::ButtonPalette> palette;
-    if (!disabled) {
-        if (auto controlState = FindState(hwnd); controlState) {
-            palette = controlState->palette;
-        }
-    }
-    if (palette) {
-        if (std::wcscmp(state, L"pressed") == 0) {
-            fill = ToColorRef(palette->pressedBg);
-            border = ToColorRef(palette->pressedBorder);
-            text = ToColorRef(palette->pressedText);
-        } else if (std::wcscmp(state, L"hover") == 0) {
-            fill = ToColorRef(palette->hoverBg);
-            border = ToColorRef(palette->hoverBorder);
-            text = ToColorRef(palette->hoverText);
-        } else {
-            fill = ToColorRef(palette->normalBg);
-            border = ToColorRef(palette->normalBorder);
-            text = ToColorRef(palette->normalText);
-        }
-        return;
-    }
+void SetButtonDrawColors(const Theme& theme, const wchar_t* component, const wchar_t* state, COLORREF& fill, COLORREF& border, COLORREF& text) {
     fill = ToColorRef(theme.color(component, state, L"bg"));
     border = ToColorRef(theme.color(component, state, L"border"));
     text = ToColorRef(theme.color(component, state, L"text"));
+}
+
+const wchar_t* ButtonState(bool hover, bool pressed, bool disabled) {
+    return disabled ? L"disabled" : (pressed ? L"pressed" : (hover ? L"hover" : L"normal"));
 }
 
 void FillRoundRect(HDC dc, RECT rect, int radius, COLORREF fill, COLORREF border, int borderWidth) {
@@ -192,6 +173,27 @@ void DrawRoundRect(HDC dc, RECT rect, int radius, COLORREF border, int borderWid
     SelectObject(dc, oldPen);
     SelectObject(dc, oldBrush);
     DeleteObject(pen);
+}
+
+void DrawButtonFrame(
+    const Theme& theme,
+    HDC dc,
+    RECT rect,
+    const wchar_t* component,
+    bool hover,
+    bool pressed,
+    bool focused,
+    bool disabled) {
+    const wchar_t* state = ButtonState(hover, pressed, disabled);
+    const int radius = static_cast<int>(theme.metric(L"button", L"radius", 6.0f));
+    const int borderWidth = static_cast<int>(theme.metric(L"button", L"borderWidth", 1.0f));
+    FillRoundRect(
+        dc,
+        rect,
+        radius,
+        ToColorRef(theme.color(component, state, L"bg")),
+        ToColorRef(theme.color(component, focused ? L"focused" : state, L"border")),
+        borderWidth);
 }
 
 bool IsHover(HWND hwnd) {
@@ -577,16 +579,8 @@ void DrawButton(const Theme& theme, const DRAWITEMSTRUCT* draw) {
     COLORREF fill{};
     COLORREF border{};
     COLORREF textColor{};
-    SetButtonDrawColors(theme, draw->hwndItem, L"button", state, disabled, fill, border, textColor);
-    const int radius = static_cast<int>(theme.metric(L"button", L"radius", 6.0f));
-    const int borderWidth = static_cast<int>(theme.metric(L"button", L"borderWidth", 1.0f));
-    FillRoundRect(
-        draw->hDC,
-        rect,
-        radius,
-        fill,
-        focused ? ToColorRef(theme.color(L"button", L"focused", L"border")) : border,
-        borderWidth);
+    SetButtonDrawColors(theme, L"button", state, fill, border, textColor);
+    DrawButtonFrame(theme, draw->hDC, rect, L"button", hover, pressed, focused, disabled);
 
     SetBkMode(draw->hDC, TRANSPARENT);
     SetTextColor(draw->hDC, textColor);
@@ -611,16 +605,8 @@ void DrawPrimaryButton(const Theme& theme, const DRAWITEMSTRUCT* draw) {
     COLORREF fill{};
     COLORREF border{};
     COLORREF textColor{};
-    SetButtonDrawColors(theme, draw->hwndItem, L"primaryButton", state, disabled, fill, border, textColor);
-    const int radius = static_cast<int>(theme.metric(L"button", L"radius", 6.0f));
-    const int borderWidth = static_cast<int>(theme.metric(L"button", L"borderWidth", 1.0f));
-    FillRoundRect(
-        draw->hDC,
-        rect,
-        radius,
-        fill,
-        focused ? ToColorRef(theme.color(L"primaryButton", L"focused", L"border")) : border,
-        borderWidth);
+    SetButtonDrawColors(theme, L"primaryButton", state, fill, border, textColor);
+    DrawButtonFrame(theme, draw->hDC, rect, L"primaryButton", hover, pressed, focused, disabled);
 
     SetBkMode(draw->hDC, TRANSPARENT);
     SetTextColor(draw->hDC, textColor);
@@ -639,16 +625,10 @@ void DrawMiniButton(const Theme& theme, const DRAWITEMSTRUCT* draw) {
     const bool pressed = (draw->itemState & ODS_SELECTED) != 0;
     const bool focused = (draw->itemState & ODS_FOCUS) != 0;
     const bool hover = IsHover(draw->hwndItem);
-    const wchar_t* state = disabled ? L"disabled" : (pressed ? L"pressed" : (hover ? L"hover" : L"normal"));
+    const wchar_t* state = ButtonState(hover, pressed, disabled);
 
     RECT rect = draw->rcItem;
-    FillRoundRect(
-        draw->hDC,
-        rect,
-        static_cast<int>(theme.metric(L"miniButton", L"radius", 5.0f)),
-        ToColorRef(theme.color(L"miniButton", state, L"bg")),
-        ToColorRef(theme.color(L"miniButton", focused ? L"focused" : state, L"border")),
-        static_cast<int>(theme.metric(L"miniButton", L"borderWidth", 1.0f)));
+    ThemedControls::DrawMiniButtonFrame(theme, draw->hDC, rect, hover, pressed, focused, disabled);
 
     const std::wstring text = ControlText(draw->hwndItem);
     const bool down = text == L"down" || text == L"next" || text == L"v";
@@ -918,6 +898,46 @@ int MiniButtonHeight(const Theme& theme) {
     return static_cast<int>(theme.metric(L"miniButton", L"height", 24.0f));
 }
 
+void DrawIconButtonFrame(
+    const Theme& theme,
+    HDC dc,
+    RECT rect,
+    bool hover,
+    bool pressed,
+    bool focused,
+    bool disabled) {
+    const wchar_t* state = ButtonState(hover, pressed, disabled);
+    const int radius = static_cast<int>(theme.metric(L"iconButton", L"radius", 7.0f));
+    const COLORREF border = focused
+        ? ToColorRef(theme.color(L"button", L"focused", L"border"))
+        : ToColorRef(theme.color(L"panel", L"normal", L"border"));
+    FillRoundRect(
+        dc,
+        rect,
+        radius,
+        ToColorRef(theme.color(L"iconButton", state, L"bg")),
+        border,
+        1);
+}
+
+void DrawMiniButtonFrame(
+    const Theme& theme,
+    HDC dc,
+    RECT rect,
+    bool hover,
+    bool pressed,
+    bool focused,
+    bool disabled) {
+    const wchar_t* state = ButtonState(hover, pressed, disabled);
+    FillRoundRect(
+        dc,
+        rect,
+        static_cast<int>(theme.metric(L"miniButton", L"radius", 6.0f)),
+        ToColorRef(theme.color(L"miniButton", state, L"bg")),
+        ToColorRef(theme.color(L"miniButton", focused ? L"focused" : state, L"border")),
+        static_cast<int>(theme.metric(L"miniButton", L"borderWidth", 1.0f)));
+}
+
 int ButtonPaddingX(const Theme& theme) {
     return static_cast<int>(theme.metric(L"button", L"paddingX", 12.0f));
 }
@@ -1178,14 +1198,6 @@ void SetControlMultiline(HWND hwnd, bool multiline) {
         return;
     }
     StateFor(hwnd).multiline = multiline;
-    InvalidateRect(hwnd, nullptr, TRUE);
-}
-
-void SetButtonPalette(HWND hwnd, const ButtonPalette& palette) {
-    if (!hwnd) {
-        return;
-    }
-    StateFor(hwnd).palette = palette;
     InvalidateRect(hwnd, nullptr, TRUE);
 }
 

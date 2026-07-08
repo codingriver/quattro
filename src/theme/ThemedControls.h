@@ -59,20 +59,6 @@ HWND CreateCheckBox(
 void SetControlBackgroundComponent(HWND hwnd, const wchar_t* component);
 void SetControlMultiline(HWND hwnd, bool multiline);
 
-struct ButtonPalette {
-    Color normalBg;
-    Color normalText;
-    Color normalBorder;
-    Color hoverBg;
-    Color hoverText;
-    Color hoverBorder;
-    Color pressedBg;
-    Color pressedText;
-    Color pressedBorder;
-};
-
-void SetButtonPalette(HWND hwnd, const ButtonPalette& palette);
-
 HWND CreateTabButton(
     HINSTANCE instance,
     HWND parent,
@@ -155,6 +141,22 @@ int ButtonPaddingX(const Theme& theme);
 int ButtonTextHeight(const Theme& theme);
 RECT ButtonTextRect(const Theme& theme, RECT frame, bool pressed = false);
 int MiniButtonHeight(const Theme& theme);
+void DrawIconButtonFrame(
+    const Theme& theme,
+    HDC dc,
+    RECT rect,
+    bool hover = false,
+    bool pressed = false,
+    bool focused = false,
+    bool disabled = false);
+void DrawMiniButtonFrame(
+    const Theme& theme,
+    HDC dc,
+    RECT rect,
+    bool hover = false,
+    bool pressed = false,
+    bool focused = false,
+    bool disabled = false);
 int CheckBoxHeight(const Theme& theme);
 RECT CheckBoxBoxRect(const Theme& theme, RECT frame);
 RECT CheckBoxTextRect(const Theme& theme, RECT frame);
