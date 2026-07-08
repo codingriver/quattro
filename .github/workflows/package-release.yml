@@ -34,11 +34,21 @@ on:
         required: true
         default: false
         type: boolean
-      release_tag:
-        description: "Release tag for manual publishing, for example v1.0.0"
-        required: false
-        default: ""
+      version:
+        description: "Release version for manual runs, for example 1.2.3"
+        required: true
+        default: "0.1.0"
         type: string
+      make_latest:
+        description: "Mark the published release as Latest"
+        required: true
+        default: true
+        type: boolean
+      move_existing_tag:
+        description: "Move an existing tag to this workflow commit"
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -68,28 +78,42 @@ jobs:
           $configuration = if ($isTagBuild) { "Release" } else { "${{ inputs.configuration }}" }
           $useUpx = if ($isTagBuild) { "true" } else { "${{ inputs.use_upx }}" }
           $publishRelease = if ($isTagBuild) { "true" } else { "${{ inputs.publish_release }}" }
-          $releaseTag = if ($isTagBuild) { "${{ github.ref_name }}" } else { "${{ inputs.release_tag }}" }
+          $makeLatest = if ($isTagBuild) { "true" } else { "${{ inputs.make_latest }}" }
+          $moveExistingTag = if ($isTagBuild) { "false" } else { "${{ inputs.move_existing_tag }}" }
+          if ($isTagBuild) {
+            $releaseTag = "${{ github.ref_name }}".Trim()
+            $version = $releaseTag
+            if ($version.StartsWith("v", [System.StringComparison]::OrdinalIgnoreCase)) {
+              $version = $version.Substring(1)
+            }
+          } else {
+            $version = "${{ inputs.version }}".Trim()
+            if ($version.StartsWith("v", [System.StringComparison]::OrdinalIgnoreCase)) {
+              $version = $version.Substring(1)
+            }
+            $releaseTag = "v$version"
+          }
           $useUpx = $useUpx.ToLowerInvariant()
           $publishRelease = $publishRelease.ToLowerInvariant()
-          $version = $releaseTag.Trim()
-          if ($version.StartsWith("v", [System.StringComparison]::OrdinalIgnoreCase)) {
-            $version = $version.Substring(1)
-          }
+          $makeLatest = $makeLatest.ToLowerInvariant()
+          $moveExistingTag = $moveExistingTag.ToLowerInvariant()
 
-          if ($publishRelease -eq "true" -and [string]::IsNullOrWhiteSpace($releaseTag)) {
-            throw "release_tag is required when publish_release is enabled for a manual run."
-          }
           if ([string]::IsNullOrWhiteSpace($version)) {
-            $version = "0.1.0"
+            throw "version is required."
           }
           if ($version -notmatch '^\d+\.\d+\.\d+(\.\d+)?$') {
-            throw "Release tag must resolve to a numeric semantic version, for example v1.2.3. Actual: $releaseTag"
+            throw "version must be numeric semantic version, for example 1.2.3. Actual: $version"
+          }
+          if ($publishRelease -ne "true" -and $moveExistingTag -eq "true") {
+            throw "move_existing_tag requires publish_release to be enabled."
           }
 
           "platform=$platform" >> $env:GITHUB_OUTPUT
           "configuration=$configuration" >> $env:GITHUB_OUTPUT
           "use_upx=$useUpx" >> $env:GITHUB_OUTPUT
           "publish_release=$publishRelease" >> $env:GITHUB_OUTPUT
+          "make_latest=$makeLatest" >> $env:GITHUB_OUTPUT
+          "move_existing_tag=$moveExistingTag" >> $env:GITHUB_OUTPUT
           "release_tag=$releaseTag" >> $env:GITHUB_OUTPUT
           "version=$version" >> $env:GITHUB_OUTPUT
 
@@ -191,6 +215,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $tag = "${{ steps.options.outputs.release_tag }}"
+          $makeLatest = "${{ steps.options.outputs.make_latest }}" -eq "true"
+          $moveExistingTag = "${{ steps.options.outputs.move_existing_tag }}" -eq "true"
           $files = @(Get-ChildItem -LiteralPath dist -Filter "Quattro-*.exe" -File | ForEach-Object { $_.FullName })
           $files += @(Get-ChildItem -LiteralPath dist -Filter "Quattro.exe" -File | ForEach-Object { $_.FullName })
           $files += @(Get-ChildItem -LiteralPath dist -Filter "SHA256SUMS.txt" -File | ForEach-Object { $_.FullName })
@@ -199,9 +225,35 @@ jobs:
             throw "No release assets were found under dist."
           }
 
+          $tagExists = $false
+          git ls-remote --exit-code --tags origin $tag | Out-Null
+          if ($LASTEXITCODE -eq 0) {
+            $tagExists = $true
+          }
+          if ($tagExists -and $moveExistingTag) {
+            git tag -f $tag "${{ github.sha }}"
+            git push --force origin "refs/tags/$tag"
+          } elseif (!$tagExists) {
+            git tag $tag "${{ github.sha }}"
+            git push origin "refs/tags/$tag"
+          }
+
           $existing = gh release view $tag 2>$null
           if ($LASTEXITCODE -eq 0) {
             gh release upload $tag @files --clobber
+            if ($makeLatest) {
+              gh release edit $tag --latest
+            }
           } else {
-            gh release create $tag @files --title $tag --generate-notes --target "${{ github.sha }}"
+            $createArgs = @("release", "create", $tag) + $files + @(
+              "--title", $tag,
+              "--generate-notes",
+              "--target", "${{ github.sha }}"
+            )
+            if ($makeLatest) {
+              $createArgs += "--latest"
+            } else {
+              $createArgs += "--latest=false"
+            }
+            gh @createArgs
           }
