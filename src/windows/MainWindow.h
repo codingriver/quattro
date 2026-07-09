@@ -194,13 +194,14 @@ private:
     void EndDockAutoHidePause();
     bool DockAutoHidePaused() const;
     void UpdateDockState();
-    void DockHide();
+    bool DockHide();
     void DockRestore();
     void ShowDockPeek(const RECT& peekRect);
     void HideDockPeek();
     bool SnapDockWindowRect(RECT& window) const;
     bool IsNearDockEdge(POINT screenPoint) const;
     bool IsEffectivelyVisible() const;
+    void HideMainWindowAfterLink();
     void HideMainWindow();
     void ImportPath(const std::wstring& path);
     void ImportClipboard();

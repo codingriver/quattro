@@ -4298,7 +4298,7 @@ void MainWindow::RunLink(int linkId) {
         storageService_.IncrementRunCount(link->id, link->runCount);
     }
     if (config_.hideAfterLink) {
-        HideMainWindow();
+        HideMainWindowAfterLink();
     }
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
@@ -4320,7 +4320,7 @@ void MainWindow::RunLinkAsAdmin(int linkId) {
         storageService_.IncrementRunCount(link->id, link->runCount);
     }
     if (config_.hideAfterLink) {
-        HideMainWindow();
+        HideMainWindowAfterLink();
     }
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
@@ -4351,7 +4351,7 @@ void MainWindow::RunUrlPrivate(int linkId) {
         storageService_.IncrementRunCount(link->id, link->runCount);
     }
     if (config_.hideAfterLink) {
-        HideMainWindow();
+        HideMainWindowAfterLink();
     }
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
@@ -5349,27 +5349,27 @@ void MainWindow::HideDockPeek() {
     }
 }
 
-void MainWindow::DockHide() {
+bool MainWindow::DockHide() {
     HideItemTooltip();
     if (dockHidden_) {
-        return;
+        return true;
     }
 
     RECT window{};
     if (!GetWindowRect(hwnd_, &window)) {
-        return;
+        return false;
     }
 
     auto target = FindDockTarget(window, kDockSnapThreshold);
     if (!target) {
-        return;
+        return false;
     }
 
     dockRestoreRect_ = SnapRectToDockTarget(window, *target);
     RECT hidden = HiddenRectForDockTarget(dockRestoreRect_, *target);
     RECT peek = DockPeekRectForDockTarget(dockRestoreRect_, *target);
     if (HiddenRectIntersectsOtherMonitor(hidden, target->monitor)) {
-        return;
+        return false;
     }
 
     const int width = hidden.right - hidden.left;
@@ -5388,9 +5388,11 @@ void MainWindow::DockHide() {
                       MainWindowMoveFlags(config_.topMost, SWP_NOZORDER | SWP_NOACTIVATE))) {
         dockHidden_ = false;
         HideDockPeek();
+        return false;
     } else {
         ShowDockPeek(peek);
     }
+    return true;
 }
 
 void MainWindow::DockRestore() {
@@ -6736,6 +6738,13 @@ void MainWindow::WakeUp() {
 
 bool MainWindow::IsEffectivelyVisible() const {
     return IsWindowVisible(hwnd_) && !dockHidden_;
+}
+
+void MainWindow::HideMainWindowAfterLink() {
+    if (config_.autoDock && IsWindowVisible(hwnd_) && DockHide()) {
+        return;
+    }
+    HideMainWindow();
 }
 
 void MainWindow::HideMainWindow() {

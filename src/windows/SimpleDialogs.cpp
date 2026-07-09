@@ -3010,7 +3010,7 @@ private:
             const int behaviorRunFrameBottom = behaviorRunRowY + behaviorRowStep * 2 + behaviorPanelPaddingY;
             AddSectionFrame(TabBehavior, RECT{behaviorFrameLeft, behaviorRunFrameTop, behaviorFrameRight, behaviorRunFrameBottom});
             UsePanelBackground(Label(TabBehavior, L"运行与数据", behaviorLeft, behaviorRunHeadingY, behaviorHeadingWidth));
-            hideAfterLink_ = CheckBox(TabBehavior, 107, L"运行后隐藏", behaviorLeft, behaviorRunRowY, draft_.hideAfterLink, behaviorCheckWidth);
+            hideAfterLink_ = CheckBox(TabBehavior, 107, L"启动项运行后隐藏", behaviorLeft, behaviorRunRowY, draft_.hideAfterLink, behaviorCheckWidth);
             saveRunCount_ = CheckBox(TabBehavior, 112, L"记录运行次数", behaviorRight, behaviorRunRowY, draft_.saveRunCount, behaviorCheckWidth);
             deleteConfirm_ = CheckBox(TabBehavior, 111, L"删除前确认", behaviorLeft, behaviorRunRowY + behaviorRowStep, draft_.deleteConfirm, behaviorCheckWidth);
             UsePanelBackground(hideAfterLink_);
