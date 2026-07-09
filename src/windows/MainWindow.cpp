@@ -30,6 +30,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cfloat>
 #include <commctrl.h>
 #include <commdlg.h>
 #include <cstdint>
@@ -2535,6 +2536,13 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
     case WM_MOUSEMOVE: {
         const float x = static_cast<float>(GET_X_LPARAM(lParam));
         const float y = static_cast<float>(GET_Y_LPARAM(lParam));
+        POINT clientPoint{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+        if (linkDragCandidateId_ > 0 || linkDragActive_) {
+            UpdateLinkDrag(clientPoint);
+            if (linkDragActive_) {
+                return 0;
+            }
+        }
         HitArea next = HitTest(x, y);
         if (next.kind != hover_.kind || next.id != hover_.id) {
             hover_ = next;
@@ -2600,8 +2608,10 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         HideItemTooltip();
         SetFocus(hwnd_);
         selectionByKeyboard_ = false;
+        CancelLinkDrag();
         const float x = static_cast<float>(GET_X_LPARAM(lParam));
         const float y = static_cast<float>(GET_Y_LPARAM(lParam));
+        POINT clientPoint{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
         HitArea hit = HitTest(x, y);
         switch (hit.kind) {
         case HitKind::CloseButton:
@@ -2643,11 +2653,8 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             return 0;
         case HitKind::Link:
             selectedLinkId_ = hit.id;
-            if (!config_.doubleClickToRun) {
-                RunLink(hit.id);
-            } else {
-                InvalidateRect(hwnd_, nullptr, FALSE);
-            }
+            BeginLinkDragCandidate(hit.id, clientPoint);
+            InvalidateRect(hwnd_, nullptr, FALSE);
             return 0;
         case HitKind::Todo:
             selectedTodoId_ = hit.id;
@@ -2656,6 +2663,24 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         default:
             return 0;
         }
+    }
+    case WM_LBUTTONUP: {
+        HideItemTooltip();
+        if (linkDragActive_) {
+            CommitLinkDrag();
+            return 0;
+        }
+        const int clickLinkId = linkDragCandidateId_;
+        linkDragCandidateId_ = 0;
+        linkDragId_ = 0;
+        linkDragMode_ = LinkDragMode::None;
+        linkDragTargetLinkId_ = 0;
+        linkDragInsertIndex_ = -1;
+        if (clickLinkId > 0 && !config_.doubleClickToRun) {
+            RunLink(clickLinkId);
+            return 0;
+        }
+        return 0;
     }
     case WM_RBUTTONUP: {
         HideItemTooltip();
@@ -4081,34 +4106,49 @@ void MainWindow::MoveMenuContext(int direction) {
     }
 }
 
+bool MainWindow::ApplyManualLinkOrder(int tagId, const std::vector<int>& orderedLinkIds, const wchar_t* title) {
+    Group* tag = FindGroup(tagId);
+    if (!tag || tag->parentGroup == 0 || orderedLinkIds.empty()) {
+        return false;
+    }
+
+    for (int i = 0; i < static_cast<int>(orderedLinkIds.size()); ++i) {
+        Link* link = FindLink(orderedLinkIds[i]);
+        if (!link || link->parentGroup != tagId) {
+            continue;
+        }
+        if (link->pos == i) {
+            continue;
+        }
+        Link edited = *link;
+        edited.pos = i;
+        if (!storageService_.UpdateLink(edited)) {
+            MessageBoxW(hwnd_, storageService_.lastError().c_str(), title, MB_OK | MB_ICONWARNING);
+            return false;
+        }
+        *link = edited;
+    }
+
+    if (tag->sort != 0 || tag->sortDirection != 0) {
+        Group edited = *tag;
+        edited.sort = 0;
+        edited.sortDirection = 0;
+        if (!storageService_.UpdateGroup(edited)) {
+            MessageBoxW(hwnd_, storageService_.lastError().c_str(), title, MB_OK | MB_ICONWARNING);
+            return false;
+        }
+        *tag = edited;
+    }
+    return true;
+}
+
 void MainWindow::MoveLinkWithinTag(int linkId, int direction) {
     Link* link = FindLink(linkId);
     if (!link) {
         return;
     }
 
-    Group* tag = FindGroup(link->parentGroup);
-    if (tag && tag->sort != 0) {
-        Group edited = *tag;
-        edited.sort = 0;
-        edited.sortDirection = 0;
-        if (storageService_.UpdateGroup(edited)) {
-            *tag = edited;
-        }
-    }
-
-    std::vector<Link*> siblings;
-    for (auto& item : model_.links) {
-        if (item.parentGroup == link->parentGroup) {
-            siblings.push_back(&item);
-        }
-    }
-    std::sort(siblings.begin(), siblings.end(), [](const Link* left, const Link* right) {
-        if (left->pos != right->pos) {
-            return left->pos < right->pos;
-        }
-        return left->id < right->id;
-    });
+    std::vector<Link*> siblings = OrderedLinksForTag(link->parentGroup);
 
     auto it = std::find(siblings.begin(), siblings.end(), link);
     if (it == siblings.end()) {
@@ -4121,14 +4161,13 @@ void MainWindow::MoveLinkWithinTag(int linkId, int direction) {
     }
 
     std::swap(siblings[index], siblings[targetIndex]);
-    for (int i = 0; i < static_cast<int>(siblings.size()); ++i) {
-        Link edited = *siblings[i];
-        edited.pos = i;
-        if (!storageService_.UpdateLink(edited)) {
-            MessageBoxW(hwnd_, storageService_.lastError().c_str(), L"移动启动项", MB_OK | MB_ICONWARNING);
-            return;
-        }
-        *siblings[i] = edited;
+    std::vector<int> orderedIds;
+    orderedIds.reserve(siblings.size());
+    for (const Link* item : siblings) {
+        orderedIds.push_back(item->id);
+    }
+    if (!ApplyManualLinkOrder(link->parentGroup, orderedIds, L"移动启动项")) {
+        return;
     }
     selectedLinkId_ = linkId;
     EnsureLinkVisible(selectedLinkId_);
@@ -7230,7 +7269,10 @@ void MainWindow::DrawLinks(D2D1_RECT_F rect) {
             break;
         }
 
-        if (link->id == selectedLinkId_) {
+        if (linkDragActive_ && link->id == linkDragTargetLinkId_ && linkDragMode_ == LinkDragMode::Swap) {
+            FillRoundedRect(item, theme_.color(L"linkItem", L"hover", L"bg"), itemRadius);
+            DrawRoundedRect(Inset(item, 1.5f, 1.5f), theme_.color(L"linkItem", L"selected", L"accent"), itemRadius, 2.0f);
+        } else if (link->id == selectedLinkId_) {
             FillRoundedRect(item, theme_.color(L"linkItem", L"selected", L"bg"), itemRadius);
             FillRect(D2D1::RectF(item.left, item.top + 2.0f, item.left + Metric(theme_, L"linkItem", L"selectedAccentWidth", 4.0f), item.bottom - 2.0f), theme_.color(L"linkItem", L"selected", L"accent"));
             if (selectionByKeyboard_) {
@@ -7283,6 +7325,34 @@ void MainWindow::DrawLinks(D2D1_RECT_F rect) {
         }
         DrawLinkName(link->name, nameFormat, nameRect, theme_.color(L"linkItem", L"normal", L"text"));
         hitAreas_.push_back(HitArea{HitKind::Link, link->id, IntersectRectF(item, content)});
+    }
+    if (linkDragActive_ && linkDragMode_ == LinkDragMode::Insert && linkDragInsertIndex_ >= 0) {
+        const int count = static_cast<int>(links.size());
+        const int index = std::max(0, std::min(count, linkDragInsertIndex_));
+        const float thickness = std::max(2.0f, Metric(theme_, L"separator", L"thickness", 1.0f) + 1.0f);
+        const Color accent = theme_.color(L"linkItem", L"selected", L"accent");
+        D2D1_RECT_F line{};
+        if (metrics.layout == 0 || metrics.compactTile) {
+            D2D1_RECT_F anchor = LinkItemRect(content, metrics, std::min(index, std::max(0, count - 1)), linkScrollOffset_);
+            const float y = index >= count ? anchor.bottom + metrics.gapY * 0.5f : anchor.top - metrics.gapY * 0.5f;
+            line = D2D1::RectF(anchor.left + 4.0f, y - thickness * 0.5f, anchor.right - 4.0f, y + thickness * 0.5f);
+        } else {
+            D2D1_RECT_F anchor = LinkItemRect(content, metrics, std::min(index, std::max(0, count - 1)), linkScrollOffset_);
+            if (index >= count) {
+                const int nextColumn = index % std::max(1, metrics.columns);
+                if (nextColumn == 0) {
+                    const float y = anchor.bottom + metrics.gapY * 0.5f;
+                    line = D2D1::RectF(content.left + metrics.leftInset, y - thickness * 0.5f, content.left + metrics.leftInset + metrics.itemWidth, y + thickness * 0.5f);
+                } else {
+                    const float x = anchor.right + metrics.gapX * 0.5f;
+                    line = D2D1::RectF(x - thickness * 0.5f, anchor.top + 6.0f, x + thickness * 0.5f, anchor.bottom - 6.0f);
+                }
+            } else {
+                const float x = anchor.left - metrics.gapX * 0.5f;
+                line = D2D1::RectF(x - thickness * 0.5f, anchor.top + 6.0f, x + thickness * 0.5f, anchor.bottom - 6.0f);
+            }
+        }
+        FillRoundedRect(IntersectRectF(line, content), accent, thickness * 0.5f);
     }
     renderTarget_->PopAxisAlignedClip();
     DrawScrollBar(content, linkScrollOffset_, MaxLinkScrollOffset(rect), false);
@@ -8230,6 +8300,205 @@ MainWindow::HitArea MainWindow::CursorHitArea() const {
     return HitTest(static_cast<float>(point.x), static_cast<float>(point.y));
 }
 
+void MainWindow::BeginLinkDragCandidate(int linkId, POINT point) {
+    const Group* tag = FindGroup(currentTagId_);
+    if (!tag || tag->parentGroup == 0 || IsAllTag(*tag) || IsTodoTag(*tag) || IsNoteTag(*tag) || IsTodoItemsTag(*tag)) {
+        return;
+    }
+    Link* link = FindLink(linkId);
+    if (!link || link->parentGroup != currentTagId_) {
+        return;
+    }
+    linkDragCandidateId_ = linkId;
+    linkDragId_ = 0;
+    linkDragStartPoint_ = point;
+    linkDragCurrentPoint_ = point;
+    linkDragActive_ = false;
+    linkDragMode_ = LinkDragMode::None;
+    linkDragTargetLinkId_ = 0;
+    linkDragInsertIndex_ = -1;
+}
+
+void MainWindow::UpdateLinkDrag(POINT point) {
+    if (linkDragCandidateId_ <= 0 && !linkDragActive_) {
+        return;
+    }
+
+    linkDragCurrentPoint_ = point;
+    if (!linkDragActive_) {
+        const int thresholdX = std::max(2, GetSystemMetrics(SM_CXDRAG));
+        const int thresholdY = std::max(2, GetSystemMetrics(SM_CYDRAG));
+        if (std::abs(point.x - linkDragStartPoint_.x) < thresholdX &&
+            std::abs(point.y - linkDragStartPoint_.y) < thresholdY) {
+            return;
+        }
+        linkDragActive_ = true;
+        linkDragId_ = linkDragCandidateId_;
+        selectedLinkId_ = linkDragId_;
+        selectionByKeyboard_ = false;
+        HideItemTooltip();
+        SetCapture(hwnd_);
+    }
+
+    UpdateLinkDragTarget(point);
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void MainWindow::UpdateLinkDragTarget(POINT point) {
+    linkDragMode_ = LinkDragMode::None;
+    linkDragTargetLinkId_ = 0;
+    linkDragInsertIndex_ = -1;
+
+    RECT client{};
+    if (!GetClientRect(hwnd_, &client)) {
+        return;
+    }
+    D2D1_RECT_F title{}, groupsRect{}, tagsRect{}, linksRect{};
+    BuildLayout(static_cast<float>(client.right - client.left), static_cast<float>(client.bottom - client.top), title, groupsRect, tagsRect, linksRect);
+    const D2D1_RECT_F content = CardContentRectFor(linksRect);
+    if (!Contains(content, static_cast<float>(point.x), static_cast<float>(point.y))) {
+        return;
+    }
+
+    const Group* tag = FindGroup(currentTagId_);
+    if (!tag) {
+        return;
+    }
+    const LinkLayoutMetrics metrics = MakeLinkLayout(theme_, content, tag);
+    const std::vector<Link*> links = LinksForCurrentTag();
+    if (links.empty()) {
+        return;
+    }
+
+    const float x = static_cast<float>(point.x);
+    const float y = static_cast<float>(point.y);
+    int nearestIndex = -1;
+    float nearestDistance = FLT_MAX;
+    for (int i = 0; i < static_cast<int>(links.size()); ++i) {
+        const D2D1_RECT_F item = LinkItemRect(content, metrics, i, linkScrollOffset_);
+        const float centerX = (item.left + item.right) * 0.5f;
+        const float centerY = (item.top + item.bottom) * 0.5f;
+        const float dx = x - centerX;
+        const float dy = y - centerY;
+        const float distance = dx * dx + dy * dy;
+        if (distance < nearestDistance) {
+            nearestDistance = distance;
+            nearestIndex = i;
+        }
+
+        if (!Contains(item, x, y)) {
+            continue;
+        }
+
+        if (links[i]->id == linkDragId_) {
+            return;
+        }
+
+        const float edgeRatio = Metric(theme_, L"linkItem", L"dragInsertEdgeRatio", 0.28f);
+        if (metrics.layout == 0 || metrics.compactTile) {
+            const float edgeHeight = Height(item) * edgeRatio;
+            if (y < item.top + edgeHeight) {
+                linkDragMode_ = LinkDragMode::Insert;
+                linkDragInsertIndex_ = i;
+            } else if (y > item.bottom - edgeHeight) {
+                linkDragMode_ = LinkDragMode::Insert;
+                linkDragInsertIndex_ = i + 1;
+            } else {
+                linkDragMode_ = LinkDragMode::Swap;
+                linkDragTargetLinkId_ = links[i]->id;
+            }
+        } else {
+            const float edgeWidth = Width(item) * edgeRatio;
+            const float edgeHeight = Height(item) * edgeRatio;
+            if (x > item.left + edgeWidth && x < item.right - edgeWidth &&
+                y > item.top + edgeHeight && y < item.bottom - edgeHeight) {
+                linkDragMode_ = LinkDragMode::Swap;
+                linkDragTargetLinkId_ = links[i]->id;
+            } else {
+                linkDragMode_ = LinkDragMode::Insert;
+                linkDragInsertIndex_ = (y < centerY || (std::abs(y - centerY) < 1.0f && x < centerX)) ? i : i + 1;
+            }
+        }
+        return;
+    }
+
+    if (nearestIndex >= 0) {
+        const D2D1_RECT_F item = LinkItemRect(content, metrics, nearestIndex, linkScrollOffset_);
+        const float centerX = (item.left + item.right) * 0.5f;
+        const float centerY = (item.top + item.bottom) * 0.5f;
+        linkDragMode_ = LinkDragMode::Insert;
+        linkDragInsertIndex_ = (y < centerY || (std::abs(y - centerY) < 1.0f && x < centerX)) ? nearestIndex : nearestIndex + 1;
+    }
+}
+
+void MainWindow::CommitLinkDrag() {
+    if (!linkDragActive_ || linkDragId_ <= 0 || linkDragMode_ == LinkDragMode::None) {
+        CancelLinkDrag();
+        return;
+    }
+
+    std::vector<Link*> links = LinksForCurrentTag();
+    auto sourceIt = std::find_if(links.begin(), links.end(), [this](const Link* link) {
+        return link && link->id == linkDragId_;
+    });
+    if (sourceIt == links.end()) {
+        CancelLinkDrag();
+        return;
+    }
+
+    if (linkDragMode_ == LinkDragMode::Swap) {
+        auto targetIt = std::find_if(links.begin(), links.end(), [this](const Link* link) {
+            return link && link->id == linkDragTargetLinkId_;
+        });
+        if (targetIt == links.end() || targetIt == sourceIt) {
+            CancelLinkDrag();
+            return;
+        }
+        std::iter_swap(sourceIt, targetIt);
+    } else {
+        const int sourceIndex = static_cast<int>(std::distance(links.begin(), sourceIt));
+        int targetIndex = std::max(0, std::min(static_cast<int>(links.size()), linkDragInsertIndex_));
+        Link* moved = *sourceIt;
+        links.erase(sourceIt);
+        if (sourceIndex < targetIndex) {
+            --targetIndex;
+        }
+        targetIndex = std::max(0, std::min(static_cast<int>(links.size()), targetIndex));
+        if (targetIndex == sourceIndex) {
+            CancelLinkDrag();
+            return;
+        }
+        links.insert(links.begin() + targetIndex, moved);
+    }
+
+    std::vector<int> orderedIds;
+    orderedIds.reserve(links.size());
+    for (const Link* link : links) {
+        orderedIds.push_back(link->id);
+    }
+    const int draggedId = linkDragId_;
+    const int tagId = currentTagId_;
+    CancelLinkDrag();
+    if (ApplyManualLinkOrder(tagId, orderedIds, L"拖动启动项")) {
+        selectedLinkId_ = draggedId;
+        EnsureLinkVisible(selectedLinkId_);
+        InvalidateRect(hwnd_, nullptr, FALSE);
+    }
+}
+
+void MainWindow::CancelLinkDrag() {
+    if (linkDragActive_ && GetCapture() == hwnd_) {
+        ReleaseCapture();
+    }
+    linkDragCandidateId_ = 0;
+    linkDragId_ = 0;
+    linkDragActive_ = false;
+    linkDragMode_ = LinkDragMode::None;
+    linkDragTargetLinkId_ = 0;
+    linkDragInsertIndex_ = -1;
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
 void MainWindow::MoveLinkSelection(int dx, int dy) {
     auto links = LinksForCurrentTag();
     if (links.empty()) {
@@ -8363,6 +8632,10 @@ bool MainWindow::HandleKeyDown(WPARAM key) {
 
     switch (key) {
     case VK_ESCAPE:
+        if (linkDragCandidateId_ > 0 || linkDragActive_) {
+            CancelLinkDrag();
+            return true;
+        }
         HideMainWindow();
         return true;
     case VK_TAB:
@@ -8510,29 +8783,24 @@ std::wstring MainWindow::TagDisplayName(const Group& tag) const {
     return tag.name;
 }
 
-std::vector<Link*> MainWindow::LinksForCurrentTag() {
+std::vector<Link*> MainWindow::OrderedLinksForTag(int tagId) {
     std::vector<Link*> links;
-    const Group* tag = nullptr;
-    for (const auto& group : model_.groups) {
-        if (group.id == currentTagId_) {
-            tag = &group;
-            break;
-        }
-    }
+    const Group* tag = FindGroup(tagId);
     const bool showAllInGroup = tag && IsAllTag(*tag);
     const bool showTodoInGroup = tag && IsTodoTag(*tag);
+    const int groupId = tag ? tag->parentGroup : 0;
     for (auto& link : model_.links) {
         if (showAllInGroup) {
             const Group* parentTag = FindGroup(link.parentGroup);
-            if (parentTag && parentTag->parentGroup == currentGroupId_) {
+            if (parentTag && parentTag->parentGroup == groupId) {
                 links.push_back(&link);
             }
         } else if (showTodoInGroup) {
             const Group* parentTag = FindGroup(link.parentGroup);
-            if (parentTag && parentTag->parentGroup == currentGroupId_ && LooksLikeTodoLink(link)) {
+            if (parentTag && parentTag->parentGroup == groupId && LooksLikeTodoLink(link)) {
                 links.push_back(&link);
             }
-        } else if (link.parentGroup == currentTagId_) {
+        } else if (link.parentGroup == tagId) {
             links.push_back(&link);
         }
     }
@@ -8542,6 +8810,10 @@ std::vector<Link*> MainWindow::LinksForCurrentTag() {
         return LinkSortLess(left, right, sortMode, sortDirection);
     });
     return links;
+}
+
+std::vector<Link*> MainWindow::LinksForCurrentTag() {
+    return OrderedLinksForTag(currentTagId_);
 }
 
 std::vector<TodoItem*> MainWindow::TodosForCurrentTag() {

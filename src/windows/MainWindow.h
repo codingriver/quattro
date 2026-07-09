@@ -94,6 +94,12 @@ private:
         Muted,
     };
 
+    enum class LinkDragMode {
+        None,
+        Insert,
+        Swap,
+    };
+
     struct MenuItemData {
         std::wstring text;
         int icon = 0;
@@ -147,6 +153,7 @@ private:
     void PasteLinkInternal();
     void MoveMenuContext(int direction);
     void MoveLinkWithinTag(int linkId, int direction);
+    bool ApplyManualLinkOrder(int tagId, const std::vector<int>& orderedLinkIds, const wchar_t* title);
     void MoveGroupWithinParent(int groupId, int direction);
     void MoveTagToGroup(int tagId, int groupId);
     void MoveLinkToTag(int linkId, int tagId);
@@ -302,6 +309,11 @@ private:
     void EnsureLinkVisible(int linkId);
     void EnsureTodoVisible(int todoId);
 
+    void BeginLinkDragCandidate(int linkId, POINT point);
+    void UpdateLinkDrag(POINT point);
+    void CommitLinkDrag();
+    void CancelLinkDrag();
+    void UpdateLinkDragTarget(POINT point);
     void MoveLinkSelection(int dx, int dy);
     void MoveTodoSelection(int delta);
     void SelectAdjacentTag(int direction);
@@ -313,6 +325,7 @@ private:
     std::vector<Group> MajorGroups() const;
     std::vector<Group> TagsForCurrentGroup() const;
     std::wstring TagDisplayName(const Group& tag) const;
+    std::vector<Link*> OrderedLinksForTag(int tagId);
     std::vector<Link*> LinksForCurrentTag();
     std::vector<TodoItem*> TodosForCurrentTag();
     Group* FindGroup(int id);
@@ -378,6 +391,14 @@ private:
     int tooltipItemId_ = 0;
     bool trackingMouse_ = false;
     bool dragOver_ = false;
+    int linkDragCandidateId_ = 0;
+    int linkDragId_ = 0;
+    POINT linkDragStartPoint_{};
+    POINT linkDragCurrentPoint_{};
+    bool linkDragActive_ = false;
+    LinkDragMode linkDragMode_ = LinkDragMode::None;
+    int linkDragTargetLinkId_ = 0;
+    int linkDragInsertIndex_ = -1;
     bool trayIconVisible_ = false;
     bool hotKeysRegistered_ = false;
     bool mainHotKeyRegistered_ = false;
