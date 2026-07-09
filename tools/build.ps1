@@ -120,13 +120,13 @@ function Get-CMakeVisualStudioGenerator {
 
     foreach ($generator in ($generators | Sort-Object Major -Descending)) {
         $roots = @(
-            Join-Path ${env:ProgramFiles} "Microsoft Visual Studio\$($generator.Year)",
-            Join-Path ${env:ProgramFiles} "Microsoft Visual Studio\$($generator.Major)"
+            (Join-Path ${env:ProgramFiles} "Microsoft Visual Studio\$($generator.Year)"),
+            (Join-Path ${env:ProgramFiles} "Microsoft Visual Studio\$($generator.Major)")
         )
         if (![string]::IsNullOrWhiteSpace(${env:ProgramFiles(x86)})) {
             $roots += @(
-                Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\$($generator.Year)",
-                Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\$($generator.Major)"
+                (Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\$($generator.Year)"),
+                (Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\$($generator.Major)")
             )
         }
 
