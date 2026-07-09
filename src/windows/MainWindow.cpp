@@ -1103,6 +1103,14 @@ bool IsTodoItemsTag(const Group& tag) {
     return tag.type == 4 || ToLower(tag.content) == L"todoitems";
 }
 
+std::wstring ClipboardPathTextForLink(const Link& link, bool isUrl) {
+    std::wstring text = isUrl ? NormalizeUrl(link.path) : link.path;
+    if (!isUrl) {
+        std::replace(text.begin(), text.end(), L'\\', L'/');
+    }
+    return text;
+}
+
 std::wstring TodoScheduleText(TodoScheduleKind kind) {
     switch (kind) {
     case TodoScheduleKind::Once:
@@ -3415,8 +3423,13 @@ void MainWindow::AddNoteTag() {
         AddGroup();
         return;
     }
+    std::wstring name = UniqueSiblingGroupName(model_.groups, parentGroupId, L"便签");
+    if (!ShowTextInputDialog(hwnd_, instance_, theme_, L"新建便签", L"便签标题", name)) {
+        return;
+    }
+
     Group tag;
-    tag.name = UniqueSiblingGroupName(model_.groups, parentGroupId, L"便签");
+    tag.name = name;
     tag.parentGroup = parentGroupId;
     tag.pos = -1;
     tag.layout = 1;
@@ -3424,7 +3437,7 @@ void MainWindow::AddNoteTag() {
     tag.type = 3;
     tag.content = L"note";
     if (!storageService_.InsertGroup(tag)) {
-        MessageBoxW(hwnd_, storageService_.lastError().c_str(), L"新增便签标签页", MB_OK | MB_ICONWARNING);
+        MessageBoxW(hwnd_, storageService_.lastError().c_str(), L"新增便签", MB_OK | MB_ICONWARNING);
         return;
     }
     model_.groups.push_back(tag);
@@ -4817,7 +4830,7 @@ void MainWindow::CopyLinkPath(int linkId) {
         return;
     }
     EmptyClipboard();
-    const std::wstring text = IsUrlLink(*link) ? NormalizeUrl(link->path) : link->path;
+    const std::wstring text = ClipboardPathTextForLink(*link, IsUrlLink(*link));
     const SIZE_T bytes = (text.size() + 1) * sizeof(wchar_t);
     HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, bytes);
     if (memory) {
@@ -6065,6 +6078,9 @@ void MainWindow::AppendLinkActionItems(HMENU menu, Link* link, bool includeNativ
     const bool isUrl = link && IsUrlLink(*link);
     AppendThemedMenuItem(menu, MF_STRING, isUrl ? ID_MENU_RUN_PRIVATE : ID_MENU_RUN_ADMIN, isUrl ? L"以隐私模式运行" : L"以管理员身份运行");
     AppendThemedMenuItem(menu, MF_STRING, isUrl ? ID_MENU_COPY_URL : ID_MENU_OPEN_LOCATION, isUrl ? L"复制网址(URL)" : L"打开文件位置");
+    if (!isUrl) {
+        AppendThemedMenuItem(menu, MF_STRING, ID_MENU_COPY_PATH, L"复制路径");
+    }
     if (includeNativeMenuItem && link && !isUrl) {
         AppendThemedMenuItem(menu, MF_STRING, ID_MENU_WINDOWS_CONTEXT, L"Windows 原生菜单", false, -1, -1, MenuIconWindows);
     }
@@ -6419,7 +6435,7 @@ void MainWindow::ShowTagMenu(int tagId, POINT screenPoint) {
     HMENU menu = CreatePopupMenu();
     Group* tag = FindGroup(tagId);
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_ADD_TAG, L"新建普通标签");
-    AppendThemedMenuItem(menu, MF_STRING, ID_MENU_ADD_NOTE_TAG, L"新建便签标签页");
+    AppendThemedMenuItem(menu, MF_STRING, ID_MENU_ADD_NOTE_TAG, L"新建便签");
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_ADD_TODO_TAG, L"新建待办事项标签页");
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_EDIT_TAG, L"重命名标签");
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_DELETE_TAG, L"删除标签");
@@ -6454,7 +6470,7 @@ void MainWindow::ShowTagBlankMenu(POINT screenPoint) {
     ResetMenuVisuals();
     HMENU menu = CreatePopupMenu();
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_ADD_TAG, L"新建普通标签");
-    AppendThemedMenuItem(menu, MF_STRING, ID_MENU_ADD_NOTE_TAG, L"新建便签标签页");
+    AppendThemedMenuItem(menu, MF_STRING, ID_MENU_ADD_NOTE_TAG, L"新建便签");
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_ADD_TODO_TAG, L"新建待办事项标签页");
     menuContextKind_ = HitKind::Group;
     menuContextId_ = currentGroupId_;
