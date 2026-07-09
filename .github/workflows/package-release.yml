@@ -56,7 +56,7 @@ permissions:
 jobs:
   package:
     name: Package Quattro
-    runs-on: windows-2022
+    runs-on: windows-latest
 
     defaults:
       run:
@@ -133,6 +133,9 @@ jobs:
       - name: Prepare vcpkg binary cache
         run: |
           New-Item -ItemType Directory -Force -Path "$env:VCPKG_DEFAULT_BINARY_CACHE" | Out-Null
+
+      - name: Install current CMake
+        uses: lukka/get-cmake@latest
 
       - name: Bootstrap vcpkg
         run: |
