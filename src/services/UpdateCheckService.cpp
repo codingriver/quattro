@@ -39,6 +39,7 @@ const std::vector<std::vector<std::wstring>>& BuiltinGithubMirrorGroups() {
         {L"https://gh.aptv.app", L"https://gh.927223.xyz", L"https://gh.halonice.com"},
         {L"https://github.akams.cn", L"https://ui.ghproxy.cc", L"https://gh.ddlc.top"},
         {L"https://gh-proxy.net", L"https://hub.gitmirror.com", L"https://github.moeyy.xyz", L"https://ghfile.geekertao.top"},
+        {L"https://proxy.606055.xyz"},
     };
     return mirrors;
 }
