@@ -5002,6 +5002,8 @@ void MainWindow::CheckForUpdates() {
         L"，asset_size=" + std::to_wstring(info.assetSizeBytes) +
         L"，asset_sha256=" + (info.expectedSha256.empty() ? L"(none)" : info.expectedSha256) +
         L"，checksum_url=" + (info.checksumDownloadUrl.empty() ? L"(none)" : info.checksumDownloadUrl) +
+        L"，update_source=" + (info.sourceName.empty() ? L"(none)" : info.sourceName) +
+        L"，source_manifest_url=" + (info.sourceManifestUrl.empty() ? L"(none)" : info.sourceManifestUrl) +
         L"，release_url=" + (info.releaseUrl.empty() ? L"(none)" : info.releaseUrl));
 
     if (!info.updateAvailable) {

@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <cwchar>
 #include <fstream>
+#include <set>
 #include <sstream>
 #include <utility>
 #include <vector>
@@ -21,6 +22,26 @@
 
 namespace {
 constexpr const wchar_t* kDefaultLatestManifestUrl = L"https://github.com/codingriver/quattro/releases/latest/download/latest.json";
+
+std::wstring NormalizeUpdateInfoUrl(const std::wstring& configuredUrl);
+
+struct UpdateSourceCandidate {
+    std::wstring name;
+    std::wstring manifestUrl;
+    std::wstring mirrorBase;
+};
+
+const std::vector<std::vector<std::wstring>>& BuiltinGithubMirrorGroups() {
+    static const std::vector<std::vector<std::wstring>> mirrors{
+        {L"https://gh-proxy.303066.xyz"},
+        {L"https://gh-proxy.com", L"https://gh-proxy.org", L"https://gh-proxy.303066.xyz", L"https://mirror.ghproxy.com"},
+        {L"https://ghfast.top", L"https://ghp.ci", L"https://gh.llkk.cc"},
+        {L"https://gh.aptv.app", L"https://gh.927223.xyz", L"https://gh.halonice.com"},
+        {L"https://github.akams.cn", L"https://ui.ghproxy.cc", L"https://gh.ddlc.top"},
+        {L"https://gh-proxy.net", L"https://hub.gitmirror.com", L"https://github.moeyy.xyz", L"https://ghfile.geekertao.top"},
+    };
+    return mirrors;
+}
 
 std::string WideToUtf8(const std::wstring& value) {
     if (value.empty()) {
@@ -106,6 +127,243 @@ std::wstring SanitizeFileName(std::wstring value) {
 
 std::filesystem::path UpdateDownloadDirectory() {
     return QuattroUserConfigDirectory() / L"updates";
+}
+
+std::wstring NormalizeMirrorBase(const std::wstring& value) {
+    std::wstring base = Trim(value);
+    while (!base.empty() && base.back() == L'/') {
+        base.pop_back();
+    }
+    const std::wstring lower = ToLower(base);
+    if (lower.rfind(L"https://", 0) != 0 && lower.rfind(L"http://", 0) != 0) {
+        return {};
+    }
+    return base;
+}
+
+bool IsGithubComUrl(const std::wstring& url) {
+    const std::wstring lower = ToLower(Trim(url));
+    return lower.rfind(L"https://github.com/", 0) == 0 ||
+           lower.rfind(L"http://github.com/", 0) == 0;
+}
+
+std::wstring MirrorGithubUrlInternal(const std::wstring& url, const std::wstring& mirrorBase) {
+    const std::wstring trimmedUrl = Trim(url);
+    const std::wstring base = NormalizeMirrorBase(mirrorBase);
+    if (trimmedUrl.empty() || base.empty() || !IsGithubComUrl(trimmedUrl)) {
+        return trimmedUrl;
+    }
+    return base + L"/" + trimmedUrl;
+}
+
+std::wstring JsonEscapeString(const std::wstring& value) {
+    std::wstring escaped;
+    escaped.reserve(value.size() + 8);
+    for (wchar_t ch : value) {
+        switch (ch) {
+        case L'"': escaped += L"\\\""; break;
+        case L'\\': escaped += L"\\\\"; break;
+        case L'\b': escaped += L"\\b"; break;
+        case L'\f': escaped += L"\\f"; break;
+        case L'\n': escaped += L"\\n"; break;
+        case L'\r': escaped += L"\\r"; break;
+        case L'\t': escaped += L"\\t"; break;
+        default:
+            escaped.push_back(ch);
+            break;
+        }
+    }
+    return escaped;
+}
+
+std::wstring BuiltinMirrorConfigJson() {
+    std::wstring json = L"{\n";
+    json += L"  \"version\": \"" + JsonEscapeString(QuattroVersionText()) + L"\",\n";
+    json += L"  \"githubMirrors\": [\n";
+    const auto& groups = BuiltinGithubMirrorGroups();
+    for (std::size_t groupIndex = 0; groupIndex < groups.size(); ++groupIndex) {
+        json += L"    [\n";
+        const auto& group = groups[groupIndex];
+        for (std::size_t itemIndex = 0; itemIndex < group.size(); ++itemIndex) {
+            json += L"      \"" + JsonEscapeString(group[itemIndex]) + L"\"";
+            if (itemIndex + 1 < group.size()) {
+                json += L",";
+            }
+            json += L"\n";
+        }
+        json += L"    ]";
+        if (groupIndex + 1 < groups.size()) {
+            json += L",";
+        }
+        json += L"\n";
+    }
+    json += L"  ]\n";
+    json += L"}\n";
+    return json;
+}
+
+void AddMirrorBase(std::vector<std::wstring>& bases, std::set<std::wstring>& seen, const std::wstring& value) {
+    const std::wstring base = NormalizeMirrorBase(value);
+    if (base.empty()) {
+        return;
+    }
+    const std::wstring key = ToLower(base);
+    if (seen.insert(key).second) {
+        bases.push_back(base);
+    }
+}
+
+std::vector<std::wstring> ParseMirrorBasesFromJsonValue(const JsonValue& root) {
+    std::vector<std::wstring> bases;
+    std::set<std::wstring> seen;
+    const JsonValue* mirrors = root.get(L"githubMirrors");
+    if (!mirrors || !mirrors->isArray()) {
+        return bases;
+    }
+    for (const JsonValue& group : mirrors->arrayValue) {
+        if (group.isArray()) {
+            for (const JsonValue& item : group.arrayValue) {
+                if (item.isString()) {
+                    AddMirrorBase(bases, seen, item.stringValue);
+                }
+            }
+            continue;
+        }
+        if (group.isString()) {
+            AddMirrorBase(bases, seen, group.stringValue);
+        }
+    }
+    return bases;
+}
+
+std::vector<std::wstring> MirrorBasesFromJson(const std::wstring& json, std::wstring& error) {
+    JsonValue root;
+    if (!ParseJson(json, root, error) || !root.isObject()) {
+        if (error.empty()) {
+            error = L"GitHub 镜像配置格式无效。";
+        }
+        return {};
+    }
+    return ParseMirrorBasesFromJsonValue(root);
+}
+
+std::wstring MirrorConfigVersionFromJson(const std::wstring& json) {
+    JsonValue root;
+    std::wstring error;
+    if (!ParseJson(json, root, error) || !root.isObject()) {
+        return {};
+    }
+    const JsonValue* version = root.get(L"version");
+    return version && version->isString() ? Trim(version->stringValue) : L"";
+}
+
+std::filesystem::path MirrorConfigPath(const std::filesystem::path& appDirectory) {
+    return appDirectory / L"update-mirrors.json";
+}
+
+bool WriteMirrorConfigFile(const std::filesystem::path& path, std::wstring& error) {
+    std::error_code ec;
+    std::filesystem::create_directories(path.parent_path(), ec);
+    if (ec) {
+        error = L"创建 GitHub 镜像配置目录失败: " + Utf8ToWide(ec.message());
+        return false;
+    }
+    std::ofstream file(path, std::ios::binary | std::ios::trunc);
+    if (!file) {
+        error = L"写入 GitHub 镜像配置失败: " + path.wstring();
+        return false;
+    }
+    const std::string utf8 = WideToUtf8(BuiltinMirrorConfigJson());
+    file.write(utf8.data(), static_cast<std::streamsize>(utf8.size()));
+    if (!file) {
+        error = L"写入 GitHub 镜像配置失败: " + path.wstring();
+        return false;
+    }
+    return true;
+}
+
+bool EnsureMirrorConfigFile(const std::filesystem::path& appDirectory, std::wstring& error) {
+    const std::filesystem::path path = MirrorConfigPath(appDirectory);
+    const std::wstring currentVersion = QuattroVersionText();
+    if (!FileExists(path)) {
+        return WriteMirrorConfigFile(path, error);
+    }
+    const std::wstring json = LoadUtf8File(path);
+    if (MirrorConfigVersionFromJson(json) != currentVersion) {
+        return WriteMirrorConfigFile(path, error);
+    }
+    return true;
+}
+
+std::vector<std::wstring> LoadConfiguredMirrorBases(const std::filesystem::path& appDirectory) {
+    const std::wstring json = LoadUtf8File(MirrorConfigPath(appDirectory));
+    if (json.empty()) {
+        return {};
+    }
+    std::wstring error;
+    return MirrorBasesFromJson(json, error);
+}
+
+std::vector<std::wstring> EffectiveMirrorBases(const std::filesystem::path& appDirectory) {
+    std::vector<std::wstring> bases = LoadConfiguredMirrorBases(appDirectory);
+    std::set<std::wstring> seen;
+    std::vector<std::wstring> merged;
+    for (const auto& base : bases) {
+        AddMirrorBase(merged, seen, base);
+    }
+    for (const auto& group : BuiltinGithubMirrorGroups()) {
+        for (const auto& base : group) {
+            AddMirrorBase(merged, seen, base);
+        }
+    }
+    return merged;
+}
+
+std::vector<UpdateSourceCandidate> BuildUpdateSourceCandidates(const std::wstring& configuredUrl, const std::vector<std::wstring>& mirrorBases) {
+    std::vector<UpdateSourceCandidate> candidates;
+    const std::wstring primary = NormalizeUpdateInfoUrl(configuredUrl);
+    candidates.push_back(UpdateSourceCandidate{L"github", primary, L""});
+    if (!IsGithubComUrl(primary)) {
+        return candidates;
+    }
+    int index = 1;
+    for (const auto& base : mirrorBases) {
+        const std::wstring mirrored = MirrorGithubUrlInternal(primary, base);
+        if (mirrored != primary) {
+            candidates.push_back(UpdateSourceCandidate{L"github-mirror-" + std::to_wstring(index), mirrored, NormalizeMirrorBase(base)});
+            ++index;
+        }
+    }
+    return candidates;
+}
+
+std::vector<UpdateSourceCandidate> DownloadSourceCandidatesForInfo(const UpdateReleaseInfo& info, const std::filesystem::path& appDirectory) {
+    std::vector<UpdateSourceCandidate> candidates;
+    if (!info.sourceMirrorBase.empty()) {
+        candidates.push_back(UpdateSourceCandidate{
+            info.sourceName.empty() ? L"github-mirror" : info.sourceName,
+            info.sourceManifestUrl,
+            NormalizeMirrorBase(info.sourceMirrorBase)});
+    } else {
+        candidates.push_back(UpdateSourceCandidate{L"github", info.sourceManifestUrl, L""});
+    }
+
+    const std::vector<std::wstring> mirrorBases = EffectiveMirrorBases(appDirectory);
+    std::set<std::wstring> seen;
+    if (!info.sourceMirrorBase.empty()) {
+        seen.insert(ToLower(NormalizeMirrorBase(info.sourceMirrorBase)));
+    }
+    int index = 1;
+    for (const auto& base : mirrorBases) {
+        const std::wstring normalized = NormalizeMirrorBase(base);
+        if (normalized.empty() || !seen.insert(ToLower(normalized)).second) {
+            ++index;
+            continue;
+        }
+        candidates.push_back(UpdateSourceCandidate{L"github-mirror-" + std::to_wstring(index), L"", normalized});
+        ++index;
+    }
+    return candidates;
 }
 
 std::wstring NormalizeUpdateInfoUrl(const std::wstring& configuredUrl) {
@@ -494,6 +752,26 @@ std::wstring UpdateCheckService::ReleaseApiUrlForConfig(const std::wstring& conf
     return UpdateInfoUrlForConfig(configuredUrl);
 }
 
+std::wstring UpdateCheckService::MirrorGithubUrl(const std::wstring& url, const std::wstring& mirrorBase) {
+    return MirrorGithubUrlInternal(url, mirrorBase);
+}
+
+std::vector<std::wstring> UpdateCheckService::ParseGithubMirrorBasesJson(const std::wstring& json, std::wstring& error) {
+    return MirrorBasesFromJson(json, error);
+}
+
+std::vector<std::wstring> UpdateCheckService::UpdateInfoUrlsForConfig(const std::wstring& configuredUrl, const std::vector<std::wstring>& mirrorBases) {
+    std::vector<std::wstring> urls;
+    for (const auto& candidate : BuildUpdateSourceCandidates(configuredUrl, mirrorBases)) {
+        urls.push_back(candidate.manifestUrl);
+    }
+    return urls;
+}
+
+bool UpdateCheckService::EnsureGithubMirrorConfigFile(const std::filesystem::path& appDirectory, std::wstring& error) {
+    return EnsureMirrorConfigFile(appDirectory, error);
+}
+
 bool UpdateCheckService::ParseReleaseInfoJson(const std::wstring& json, UpdateReleaseInfo& info, std::wstring& error) {
     info = {};
     info.currentVersion = QuattroVersionText();
@@ -522,14 +800,35 @@ bool UpdateCheckService::ParseReleaseInfoJson(const std::wstring& json, UpdateRe
 }
 
 bool UpdateCheckService::CheckLatest(UpdateReleaseInfo& info, std::wstring& error) const {
-    std::string body;
-    if (!DownloadText(NormalizeUpdateInfoUrl(releaseApiUrl_), body, error)) {
-        info = {};
-        info.currentVersion = QuattroVersionText();
-        return false;
+    std::wstring mirrorConfigError;
+    EnsureMirrorConfigFile(appDirectory_, mirrorConfigError);
+
+    std::wstring lastError;
+    const std::vector<UpdateSourceCandidate> candidates = BuildUpdateSourceCandidates(releaseApiUrl_, EffectiveMirrorBases(appDirectory_));
+    for (const auto& candidate : candidates) {
+        std::string body;
+        std::wstring currentError;
+        if (!DownloadText(candidate.manifestUrl, body, currentError)) {
+            lastError = candidate.name + L": " + currentError;
+            continue;
+        }
+
+        UpdateReleaseInfo parsed;
+        if (ParseReleaseInfoJson(Utf8ToWide(body), parsed, currentError)) {
+            parsed.sourceName = candidate.name;
+            parsed.sourceManifestUrl = candidate.manifestUrl;
+            parsed.sourceMirrorBase = candidate.mirrorBase;
+            info = std::move(parsed);
+            error.clear();
+            return true;
+        }
+        lastError = candidate.name + L": " + currentError;
     }
 
-    return ParseReleaseInfoJson(Utf8ToWide(body), info, error);
+    info = {};
+    info.currentVersion = QuattroVersionText();
+    error = lastError.empty() ? L"检查更新失败。" : lastError;
+    return false;
 }
 
 bool UpdateCheckService::DownloadUpdate(const UpdateReleaseInfo& info, UpdateDownloadResult& result, std::wstring& error) const {
@@ -561,14 +860,39 @@ bool UpdateCheckService::DownloadUpdate(
     if (progress) {
         progress(UpdateDownloadProgress{0, info.assetSizeBytes});
     }
-    if (!DownloadFile(info.assetDownloadUrl, temp, error, [&](const UpdateDownloadProgress& current) {
+    const std::vector<UpdateSourceCandidate> candidates = DownloadSourceCandidatesForInfo(info, appDirectory_);
+    std::wstring lastError;
+    bool downloaded = false;
+    std::wstring downloadMirrorBase;
+    for (const auto& candidate : candidates) {
+        const std::wstring assetUrl = candidate.mirrorBase.empty()
+            ? info.assetDownloadUrl
+            : MirrorGithubUrlInternal(info.assetDownloadUrl, candidate.mirrorBase);
+        std::wstring currentError;
+        if (DownloadFile(assetUrl, temp, currentError, [&](const UpdateDownloadProgress& current) {
             if (progress) {
                 progress(UpdateDownloadProgress{
                     current.downloadedBytes,
                     current.totalBytes != 0 ? current.totalBytes : info.assetSizeBytes});
             }
         }, cancel)) {
+            downloaded = true;
+            downloadMirrorBase = candidate.mirrorBase;
+            error.clear();
+            break;
+        }
         removeTemp();
+        if (currentError == L"下载已取消。") {
+            error = currentError;
+            return false;
+        }
+        lastError = candidate.name + L": " + currentError;
+        if (progress) {
+            progress(UpdateDownloadProgress{0, info.assetSizeBytes});
+        }
+    }
+    if (!downloaded) {
+        error = lastError.empty() ? L"下载更新失败。" : lastError;
         return false;
     }
     const auto size = std::filesystem::file_size(temp, ec);
@@ -594,7 +918,10 @@ bool UpdateCheckService::DownloadUpdate(
     } else if (!info.checksumDownloadUrl.empty()) {
         std::string checksumBody;
         std::wstring checksumError;
-        if (DownloadText(info.checksumDownloadUrl, checksumBody, checksumError)) {
+        const std::wstring checksumUrl = downloadMirrorBase.empty()
+            ? info.checksumDownloadUrl
+            : MirrorGithubUrlInternal(info.checksumDownloadUrl, downloadMirrorBase);
+        if (DownloadText(checksumUrl, checksumBody, checksumError)) {
             const std::wstring expected = ExpectedSha256For(Utf8ToWide(checksumBody), info.assetName);
             std::wstring actual;
             if (!expected.empty() && Sha256File(temp, actual, error)) {

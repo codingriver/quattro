@@ -15,6 +15,7 @@
 #include "../src/services/WebDavCredentialService.h"
 #include "../src/services/WebDavRecoveryService.h"
 #include "../src/windows/MenuAnchorGeometry.h"
+#include "Version.h"
 
 #include <sqlite3.h>
 
@@ -37,6 +38,15 @@ void Check(bool condition, const char* name) {
 
 bool Near(float left, float right) {
     return std::fabs(left - right) < 0.002f;
+}
+
+std::string NarrowAscii(const std::wstring& value) {
+    std::string result;
+    result.reserve(value.size());
+    for (wchar_t ch : value) {
+        result.push_back(static_cast<char>(ch));
+    }
+    return result;
 }
 
 std::wstring ExpectedUpdateAssetName() {
@@ -118,6 +128,68 @@ int wmain() {
         UpdateCheckService::UpdateInfoUrlForConfig(L"https://api.github.com/repos/codingriver/quattro/releases/latest") ==
             L"https://api.github.com/repos/codingriver/quattro/releases/latest",
         "Update GitHub API URL remains API");
+    {
+        std::wstring mirrorError;
+        const std::vector<std::wstring> mirrors = UpdateCheckService::ParseGithubMirrorBasesJson(
+            L"{\"githubMirrors\":[[\"https://mirror-a.local/\",\"https://mirror-b.local\"],[\"https://mirror-a.local\",\"ftp://ignored.local\",\"  \"]]}",
+            mirrorError);
+        Check(mirrors.size() == 2, "Update mirror json nested array parses and dedupes");
+        Check(mirrors.size() > 0 && mirrors[0] == L"https://mirror-a.local", "Update mirror trims trailing slash");
+        Check(mirrors.size() > 1 && mirrors[1] == L"https://mirror-b.local", "Update mirror preserves order");
+        Check(
+            UpdateCheckService::MirrorGithubUrl(
+                L"https://github.com/codingriver/quattro/releases/latest/download/latest.json",
+                L"https://mirror-a.local/") ==
+                L"https://mirror-a.local/https://github.com/codingriver/quattro/releases/latest/download/latest.json",
+            "Update mirror rewrites github URL");
+        Check(
+            UpdateCheckService::MirrorGithubUrl(L"https://example.com/latest.json", L"https://mirror-a.local") ==
+                L"https://example.com/latest.json",
+            "Update mirror leaves non-github URL unchanged");
+        const std::vector<std::wstring> urls = UpdateCheckService::UpdateInfoUrlsForConfig(
+            L"",
+            std::vector<std::wstring>{L"https://mirror-a.local", L"https://mirror-b.local/"});
+        Check(urls.size() == 3, "Update candidate URL count includes primary and mirrors");
+        Check(urls.size() > 0 && urls[0].find(L"https://github.com/") == 0, "Update candidate primary first");
+        Check(urls.size() > 1 && urls[1].find(L"https://mirror-a.local/https://github.com/") == 0, "Update candidate first mirror second");
+        Check(urls.size() > 2 && urls[2].find(L"https://mirror-b.local/https://github.com/") == 0, "Update candidate second mirror third");
+        const std::vector<std::wstring> customUrls = UpdateCheckService::UpdateInfoUrlsForConfig(
+            L"https://updates.local/latest.json",
+            std::vector<std::wstring>{L"https://mirror-a.local"});
+        Check(customUrls.size() == 1 && customUrls[0] == L"https://updates.local/latest.json", "Update custom non-github URL skips mirrors");
+
+        const std::filesystem::path mirrorConfigRoot = unitUserConfigRoot / L"mirror_config_unit";
+        const std::filesystem::path mirrorConfigPath = mirrorConfigRoot / L"update-mirrors.json";
+        std::filesystem::remove_all(mirrorConfigRoot, ec);
+        std::wstring ensureError;
+        Check(UpdateCheckService::EnsureGithubMirrorConfigFile(mirrorConfigRoot, ensureError), "Update mirror config generated");
+        const std::wstring generatedConfig = LoadUtf8File(mirrorConfigPath);
+        Check(generatedConfig.find(L"\"version\": \"" + std::wstring(QuattroVersionText()) + L"\"") != std::wstring::npos, "Update mirror config writes current version");
+        Check(generatedConfig.find(L"\"githubMirrors\"") != std::wstring::npos, "Update mirror config writes mirrors");
+
+        {
+            std::ofstream file(mirrorConfigPath, std::ios::binary | std::ios::trunc);
+            file << "{\n"
+                 << "  \"version\": \"" << "0.0.0" << "\",\n"
+                 << "  \"githubMirrors\": [[\"https://old-mirror.local\"]]\n"
+                 << "}\n";
+        }
+        Check(UpdateCheckService::EnsureGithubMirrorConfigFile(mirrorConfigRoot, ensureError), "Update mirror config old version overwritten");
+        const std::wstring overwrittenConfig = LoadUtf8File(mirrorConfigPath);
+        Check(overwrittenConfig.find(L"https://old-mirror.local") == std::wstring::npos, "Update mirror config removes stale mirrors");
+        Check(overwrittenConfig.find(L"\"version\": \"" + std::wstring(QuattroVersionText()) + L"\"") != std::wstring::npos, "Update mirror config overwrite writes current version");
+
+        {
+            std::ofstream file(mirrorConfigPath, std::ios::binary | std::ios::trunc);
+            file << "{\n"
+                 << "  \"version\": \"" << NarrowAscii(QuattroVersionText()) << "\",\n"
+                 << "  \"githubMirrors\": [[\"https://custom-mirror.local\"]]\n"
+                 << "}\n";
+        }
+        Check(UpdateCheckService::EnsureGithubMirrorConfigFile(mirrorConfigRoot, ensureError), "Update mirror config same version preserved");
+        const std::wstring sameVersionConfig = LoadUtf8File(mirrorConfigPath);
+        Check(sameVersionConfig.find(L"https://custom-mirror.local") != std::wstring::npos, "Update mirror config same version keeps custom mirrors");
+    }
     {
         const std::wstring expectedAsset = ExpectedUpdateAssetName();
         const std::wstring staticManifest =

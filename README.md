@@ -108,6 +108,25 @@ Quattro 是便携应用，但需要保存你的配置、启动项数据库、图
 
 这样不依赖 GitHub REST API 的匿名请求额度。清单中的 `assets[].sha256` 会在覆盖前校验下载包；如果清单未提供内联 SHA256，但 Release 附带 `SHA256SUMS.txt`，也会继续使用该文件校验。
 
+如果默认 GitHub 链接不可用，程序会按 GitHub 镜像列表顺序兜底；也可以在程序数据目录放置 `update-mirrors.json` 优先追加自定义镜像站点，格式如下：
+
+```json
+{
+  "version": "0.1.0",
+  "githubMirrors": [
+    [
+      "https://example-mirror.com",
+      "https://example-mirror-backup.com"
+    ],
+    [
+      "https://example-mirror.net"
+    ]
+  ]
+}
+```
+
+打开“检查更新”时，如果 `update-mirrors.json` 不存在，程序会写入当前版本内置镜像源；如果文件中的 `version` 与当前程序版本不一致，会覆盖写入新版本内置镜像源。检查更新和下载更新均优先使用 GitHub 原链；原链不可用时从第一组第一个镜像开始依次尝试，成功后本次检查和下载使用同一个镜像。程序不会记忆上次成功的镜像，下次启动仍从 GitHub 原链重新开始。
+
 发布时使用 `tools/build.ps1 -Version <版本号>` 会在 `dist/` 生成 `latest.json` 和 `SHA256SUMS.txt`。把它们和对应的 `Quattro-x64.exe` / `Quattro-x86.exe` 一起上传到同一个 GitHub Release 即可。
 
 GitHub Actions 的手动发布会优先使用仓库 Secret `RELEASE_TOKEN`，未配置时回退到默认 `GITHUB_TOKEN`。如果发布目标提交修改过 `.github/workflows/`，GitHub 会拒绝默认 token 创建或移动 tag；此时需要创建 fine-grained token 或 classic PAT，并授予仓库 `Contents` 写权限和 `Workflows` 权限，然后保存为仓库 Secret `RELEASE_TOKEN`。
