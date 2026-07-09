@@ -88,6 +88,62 @@ function New-ArchitectureList {
     return $all | Where-Object { $_.Name -eq $Requested }
 }
 
+function Invoke-NativeCommand {
+    param(
+        [string]$Description,
+        [string]$Command,
+        [string[]]$Arguments
+    )
+
+    & $Command @Arguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "$Description failed with exit code $LASTEXITCODE."
+    }
+}
+
+function Get-CMakeVisualStudioGenerator {
+    $help = & cmake --help 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to query CMake generators."
+    }
+
+    $generators = @()
+    foreach ($line in $help) {
+        if ($line -match '^\s*\*?\s*(Visual Studio\s+(\d+)\s+(\d+))\s*=') {
+            $generators += [pscustomobject]@{
+                Name = $matches[1]
+                Major = [int]$matches[2]
+                Year = [int]$matches[3]
+            }
+        }
+    }
+
+    foreach ($generator in ($generators | Sort-Object Major -Descending)) {
+        $roots = @(
+            Join-Path ${env:ProgramFiles} "Microsoft Visual Studio\$($generator.Year)",
+            Join-Path ${env:ProgramFiles} "Microsoft Visual Studio\$($generator.Major)"
+        )
+        if (![string]::IsNullOrWhiteSpace(${env:ProgramFiles(x86)})) {
+            $roots += @(
+                Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\$($generator.Year)",
+                Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\$($generator.Major)"
+            )
+        }
+
+        foreach ($vsRoot in $roots) {
+            if (![string]::IsNullOrWhiteSpace($vsRoot) -and (Test-Path -LiteralPath $vsRoot)) {
+                return $generator.Name
+            }
+        }
+    }
+
+    $available = ($generators | ForEach-Object { $_.Name }) -join ", "
+    if ([string]::IsNullOrWhiteSpace($available)) {
+        throw "No Visual Studio CMake generators were reported by CMake."
+    }
+    throw "No installed Visual Studio instance matched CMake generators: $available"
+}
+
 function Ensure-Configured {
     param(
         [string]$BuildDir,
@@ -97,9 +153,11 @@ function Ensure-Configured {
         [switch]$BuildTests
     )
 
+    $generator = Get-CMakeVisualStudioGenerator
     $cache = Join-Path $BuildDir "CMakeCache.txt"
     if (Test-Path $cache) {
         $cacheText = Get-Content -Path $cache -Raw
+        $expectedGenerator = "CMAKE_GENERATOR:INTERNAL=$generator"
         $expected = "CMAKE_GENERATOR_PLATFORM:INTERNAL=$CMakePlatform"
         $expectedSource = "CMAKE_HOME_DIRECTORY:INTERNAL=$($root.Replace('\', '/'))"
         $expectedToolchain = "CMAKE_TOOLCHAIN_FILE:FILEPATH=$($root.Replace('\', '/'))/.vcpkg-root/scripts/buildsystems/vcpkg.cmake"
@@ -107,7 +165,8 @@ function Ensure-Configured {
         $expectedTestOption = "QUATTRO_BUILD_TESTS:BOOL=ON"
         $expectedVersion = "QUATTRO_VERSION:STRING=$effectiveVersion"
         $expectedLogging = "QUATTRO_DEFAULT_LOGGING_ENABLED:BOOL=$defaultLoggingEnabled"
-        if ($cacheText -notmatch [regex]::Escape($expected) -or
+        if ($cacheText -notmatch [regex]::Escape($expectedGenerator) -or
+            $cacheText -notmatch [regex]::Escape($expected) -or
             $cacheText -notmatch [regex]::Escape($expectedSource) -or
             $cacheText -notmatch [regex]::Escape($expectedVersion) -or
             $cacheText -notmatch [regex]::Escape($expectedLogging) -or
@@ -119,7 +178,7 @@ function Ensure-Configured {
     }
 
     if (!(Test-Path $cache)) {
-        $configureArgs = @("-S", $root, "-B", $BuildDir, "-G", "Visual Studio 17 2022", "-A", $CMakePlatform)
+        $configureArgs = @("-S", $root, "-B", $BuildDir, "-G", $generator, "-A", $CMakePlatform)
         if ($UseVcpkg) {
             $toolchain = Join-Path $root ".vcpkg-root\scripts\buildsystems\vcpkg.cmake"
             if (!(Test-Path $toolchain)) {
@@ -135,7 +194,7 @@ function Ensure-Configured {
         }
         $configureArgs += "-DQUATTRO_VERSION=$effectiveVersion"
         $configureArgs += "-DQUATTRO_DEFAULT_LOGGING_ENABLED=$defaultLoggingEnabled"
-        & cmake @configureArgs
+        Invoke-NativeCommand -Description "CMake configure" -Command "cmake" -Arguments $configureArgs
     }
 }
 
@@ -241,7 +300,7 @@ function Invoke-PackageBuild {
     }
 
     $buildArgs = @("--build", $BuildDir, "--config", $Configuration, "--target") + $targets + @("--", "/m")
-    & cmake @buildArgs
+    Invoke-NativeCommand -Description "CMake build" -Command "cmake" -Arguments $buildArgs
 }
 
 function Invoke-UpxCompress {
