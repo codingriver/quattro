@@ -6,6 +6,7 @@
 #include "Elevation.h"
 #include "HotKeyEditor.h"
 #include "LinkEditDialog.h"
+#include "MenuAnchorGeometry.h"
 #include "MenuCatalog.h"
 #include "QuickImportDialog.h"
 #include "ShellItemService.h"
@@ -2861,7 +2862,9 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         case ID_MENU_WINDOWS_CONTEXT:
             {
                 POINT point{};
-                GetCursorPos(&point);
+                if (!LinkCenterScreenPoint(CommandLinkId(), point)) {
+                    GetCursorPos(&point);
+                }
                 ShowWindowsContextMenu(CommandLinkId(), point);
             }
             return 0;
@@ -4341,6 +4344,20 @@ void MainWindow::OpenContainingFolder(int linkId) {
     if (!ShellItemService::OpenContainingLocation(hwnd_, *link, error)) {
         MessageBoxW(hwnd_, error.empty() ? L"无法打开所在位置。" : error.c_str(), L"打开所在目录", MB_OK | MB_ICONINFORMATION);
     }
+}
+
+bool MainWindow::LinkCenterScreenPoint(int linkId, POINT& screenPoint) const {
+    POINT clientPoint{};
+    if (!quattro::windows::TryMatchedAreaCenterPoint(
+            hitAreas_,
+            [linkId](const HitArea& area) {
+                return area.kind == HitKind::Link && area.id == linkId;
+            },
+            clientPoint)) {
+        return false;
+    }
+    screenPoint = clientPoint;
+    return ClientToScreen(hwnd_, &screenPoint) != FALSE;
 }
 
 void MainWindow::ShowWindowsContextMenu(int linkId, POINT screenPoint) {

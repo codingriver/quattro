@@ -148,6 +148,7 @@ private:
     void CopyLinkToTag(int linkId, int tagId);
     void OpenContainingFolder(int linkId);
     void CopyLinkPath(int linkId);
+    bool LinkCenterScreenPoint(int linkId, POINT& screenPoint) const;
     void ShowWindowsContextMenu(int linkId, POINT screenPoint);
     void CreateDesktopShortcut(int linkId);
     void OpenSystemProperties(int linkId);
