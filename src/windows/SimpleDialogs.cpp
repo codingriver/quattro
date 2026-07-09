@@ -70,6 +70,7 @@ constexpr int ID_HTTP_COPY_URL = 428;
 constexpr int ID_HTTP_OPEN_ROOT = 429;
 constexpr int ID_SETTINGS_APPLY = 430;
 constexpr int ID_HTTP_ADDRESS = 431;
+constexpr int ID_LOGGING_ENABLED = 432;
 constexpr int ID_MESSAGE_TEXT = 501;
 constexpr int ID_MAIN_HOTKEY_PROBE = 0x5148;
 constexpr UINT WM_SETTINGS_WEBDAV_DONE = WM_APP + 0x81;
@@ -2287,6 +2288,7 @@ private:
         draft_.showToolboxButton = SendMessageW(showToolboxButton_, BM_GETCHECK, 0, 0) == BST_CHECKED;
         draft_.showSkinButton = SendMessageW(showSkinButton_, BM_GETCHECK, 0, 0) == BST_CHECKED;
         draft_.autoRun = SendMessageW(autoRun_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        draft_.loggingEnabled = SendMessageW(loggingEnabled_, BM_GETCHECK, 0, 0) == BST_CHECKED;
         draft_.linkNameSingleLine = SendMessageW(linkNameSingleLine_, BM_GETCHECK, 0, 0) == BST_CHECKED;
         draft_.showTooltip = SendMessageW(showTooltip_, BM_GETCHECK, 0, 0) == BST_CHECKED;
         draft_.groupRight = SendMessageW(groupRight_, BM_GETCHECK, 0, 0) == BST_CHECKED;
@@ -2314,7 +2316,7 @@ private:
         if (Trim(draft_.webDavRemotePath).empty()) {
             draft_.webDavRemotePath = L"/Quattro/backups/";
         }
-        draft_.httpServerEnabled = true;
+        draft_.httpServerEnabled = httpServer_ && httpServer_->IsRunning();
         draft_.httpServerAutoStart = httpServerAutoStart_ && SendMessageW(httpServerAutoStart_, BM_GETCHECK, 0, 0) == BST_CHECKED;
         draft_.httpServerLanAccess = true;
         draft_.httpServerPort = ParseHttpPortText(GetText(httpServerAddressEdit_), draft_.httpServerPort);
@@ -2700,7 +2702,7 @@ private:
 
     AppConfig ReadHttpDraftFromControls() {
         AppConfig value = draft_;
-        value.httpServerEnabled = true;
+        value.httpServerEnabled = httpServer_ && httpServer_->IsRunning();
         value.httpServerAutoStart = httpServerAutoStart_ && SendMessageW(httpServerAutoStart_, BM_GETCHECK, 0, 0) == BST_CHECKED;
         value.httpServerLanAccess = true;
         value.httpServerPort = ParseHttpPortText(GetText(httpServerAddressEdit_), value.httpServerPort);
@@ -3018,13 +3020,15 @@ private:
             const int behaviorSystemFrameTop = behaviorRunFrameBottom + behaviorFrameGap;
             const int behaviorSystemHeadingY = behaviorSystemFrameTop + behaviorPanelPaddingY;
             const int behaviorSystemRowY = behaviorSystemHeadingY + behaviorTitleGap;
-            const int behaviorSystemFrameBottom = behaviorSystemRowY + behaviorRowStep + behaviorPanelPaddingY;
+            const int behaviorSystemFrameBottom = behaviorSystemRowY + behaviorRowStep * 2 + behaviorPanelPaddingY;
             AddSectionFrame(TabBehavior, RECT{behaviorFrameLeft, behaviorSystemFrameTop, behaviorFrameRight, behaviorSystemFrameBottom});
             UsePanelBackground(Label(TabBehavior, L"系统集成", behaviorLeft, behaviorSystemHeadingY, behaviorHeadingWidth));
             hideOnStart_ = CheckBox(TabBehavior, 116, L"启动后隐藏", behaviorLeft, behaviorSystemRowY, draft_.hideOnStart, behaviorCheckWidth);
             autoRun_ = CheckBox(TabBehavior, 117, L"开机启动", behaviorRight, behaviorSystemRowY, draft_.autoRun, behaviorCheckWidth);
+            loggingEnabled_ = CheckBox(TabBehavior, ID_LOGGING_ENABLED, L"启用日志", behaviorLeft, behaviorSystemRowY + behaviorRowStep, draft_.loggingEnabled, behaviorCheckWidth);
             UsePanelBackground(hideOnStart_);
             UsePanelBackground(autoRun_);
+            UsePanelBackground(loggingEnabled_);
 
             doubleClick_ = CheckBox(TabInteraction, 109, L"双击运行", 34, 64, draft_.doubleClickToRun);
             enterActiveGroup_ = CheckBox(TabInteraction, 124, L"鼠标进入激活分组", 34, 94, draft_.mouseEnterActiveGroup);
@@ -3438,6 +3442,7 @@ private:
     HWND showToolboxButton_ = nullptr;
     HWND showSkinButton_ = nullptr;
     HWND autoRun_ = nullptr;
+    HWND loggingEnabled_ = nullptr;
     HWND linkNameSingleLine_ = nullptr;
     HWND showTooltip_ = nullptr;
     HWND groupRight_ = nullptr;

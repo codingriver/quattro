@@ -23,6 +23,7 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 $effectiveVersion = if ([string]::IsNullOrWhiteSpace($Version)) { "0.1.0" } else { $Version }
+$defaultLoggingEnabled = if ($env:GITHUB_ACTIONS -eq "true") { "OFF" } else { "ON" }
 
 function Show-PackageHelp {
     $scriptName = Split-Path -Leaf $PSCommandPath
@@ -105,9 +106,11 @@ function Ensure-Configured {
         $expectedTriplet = "VCPKG_TARGET_TRIPLET:STRING=$VcpkgTriplet"
         $expectedTestOption = "QUATTRO_BUILD_TESTS:BOOL=ON"
         $expectedVersion = "QUATTRO_VERSION:STRING=$effectiveVersion"
+        $expectedLogging = "QUATTRO_DEFAULT_LOGGING_ENABLED:BOOL=$defaultLoggingEnabled"
         if ($cacheText -notmatch [regex]::Escape($expected) -or
             $cacheText -notmatch [regex]::Escape($expectedSource) -or
             $cacheText -notmatch [regex]::Escape($expectedVersion) -or
+            $cacheText -notmatch [regex]::Escape($expectedLogging) -or
             ($BuildTests -and $cacheText -notmatch [regex]::Escape($expectedTestOption)) -or
             ($UseVcpkg -and ($cacheText -notmatch [regex]::Escape($expectedToolchain) -or
                              $cacheText -notmatch [regex]::Escape($expectedTriplet)))) {
@@ -131,6 +134,7 @@ function Ensure-Configured {
             $configureArgs += "-DQUATTRO_BUILD_TESTS=ON"
         }
         $configureArgs += "-DQUATTRO_VERSION=$effectiveVersion"
+        $configureArgs += "-DQUATTRO_DEFAULT_LOGGING_ENABLED=$defaultLoggingEnabled"
         & cmake @configureArgs
     }
 }

@@ -3,7 +3,9 @@
 #include <filesystem>
 #include <string>
 
-void InitializeAppLog(const std::filesystem::path& appDirectory);
+void InitializeAppLog(const std::filesystem::path& appDirectory, bool enabled = true);
+void SetAppLogEnabled(bool enabled);
+bool IsAppLogEnabled();
 void WriteAppLog(const std::wstring& message);
 void ResetStartupTiming();
 void FinishStartupTiming();

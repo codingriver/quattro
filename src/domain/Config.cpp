@@ -43,6 +43,7 @@ AppConfig ConfigService::Load() const {
     config.preferAdminRun = ReadBool(L"bPreferAdminRun", config.preferAdminRun);
     config.showToolboxButton = ReadBool(L"bShowBtnToolbox", ReadBool(L"bShowBtnMenu", config.showToolboxButton));
     config.showSkinButton = ReadBool(L"bShowBtnSkin", config.showSkinButton);
+    config.loggingEnabled = ReadBool(L"bLoggingEnabled", config.loggingEnabled);
 
     config.mouseEnterActiveGroup = ReadBool(L"bMouseEnterActiveGroup", config.mouseEnterActiveGroup);
     config.mouseEnterActiveTag = ReadBool(L"bMouseEnterActiveTag", config.mouseEnterActiveTag);
@@ -133,6 +134,7 @@ void ConfigService::SaveWindowState(const AppConfig& config) const {
     WriteInt(L"bShowBtnToolbox", config.showToolboxButton ? 1 : 0);
     WriteString(L"bShowBtnMenu", L"");
     WriteInt(L"bShowBtnSkin", config.showSkinButton ? 1 : 0);
+    WriteInt(L"bLoggingEnabled", config.loggingEnabled ? 1 : 0);
     WriteInt(L"bGroupRight", config.groupRight ? 1 : 0);
     WriteInt(L"bTagRight", config.tagRight ? 1 : 0);
     WriteInt(L"nGroupWidth", config.groupWidth);
@@ -176,6 +178,7 @@ void ConfigService::Save(const AppConfig& config) const {
     WriteInt(L"bShowBtnToolbox", config.showToolboxButton ? 1 : 0);
     WriteString(L"bShowBtnMenu", L"");
     WriteInt(L"bShowBtnSkin", config.showSkinButton ? 1 : 0);
+    WriteInt(L"bLoggingEnabled", config.loggingEnabled ? 1 : 0);
     WriteInt(L"bGroupRight", config.groupRight ? 1 : 0);
     WriteInt(L"bTagRight", config.tagRight ? 1 : 0);
     WriteInt(L"nGroupWidth", config.groupWidth);

@@ -11,6 +11,7 @@ LARGE_INTEGER g_startCounter{};
 LARGE_INTEGER g_lastCounter{};
 LARGE_INTEGER g_counterFrequency{};
 bool g_startupTimingActive = false;
+bool g_logEnabled = true;
 
 long long ElapsedMilliseconds(LARGE_INTEGER start, LARGE_INTEGER end) {
     if (g_counterFrequency.QuadPart <= 0) {
@@ -42,14 +43,30 @@ std::wstring Timestamp() {
 }
 }
 
-void InitializeAppLog(const std::filesystem::path& appDirectory) {
+void InitializeAppLog(const std::filesystem::path& appDirectory, bool enabled) {
+    g_logEnabled = enabled;
     g_logPath = appDirectory / L"logs" / L"app.log";
+    if (!g_logEnabled) {
+        return;
+    }
     std::error_code ec;
     std::filesystem::create_directories(g_logPath.parent_path(), ec);
 }
 
+void SetAppLogEnabled(bool enabled) {
+    g_logEnabled = enabled;
+    if (g_logEnabled && !g_logPath.empty()) {
+        std::error_code ec;
+        std::filesystem::create_directories(g_logPath.parent_path(), ec);
+    }
+}
+
+bool IsAppLogEnabled() {
+    return g_logEnabled;
+}
+
 void WriteAppLog(const std::wstring& message) {
-    if (g_logPath.empty()) {
+    if (!g_logEnabled || g_logPath.empty()) {
         return;
     }
     std::ofstream file(g_logPath, std::ios::binary | std::ios::app);
@@ -79,7 +96,7 @@ void WriteStartupTiming(const std::wstring& stage) {
 }
 
 void WriteStartupTiming(const std::wstring& stage, const std::wstring& detail) {
-    if (!g_startupTimingActive) {
+    if (!g_logEnabled || !g_startupTimingActive) {
         return;
     }
     if (g_startCounter.QuadPart == 0 || g_lastCounter.QuadPart == 0 || g_counterFrequency.QuadPart == 0) {

@@ -46,6 +46,12 @@ struct AppConfig {
     bool preferAdminRun = false;
     bool showToolboxButton = true;
     bool showSkinButton = false;
+    bool loggingEnabled =
+#if defined(QUATTRO_DEFAULT_LOGGING_ENABLED)
+        QUATTRO_DEFAULT_LOGGING_ENABLED != 0;
+#else
+        true;
+#endif
 
     bool mouseEnterActiveGroup = false;
     bool mouseEnterActiveTag = false;

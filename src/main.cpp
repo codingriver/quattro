@@ -556,7 +556,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     const std::filesystem::path appDirectory = assetInstall.appDirectory;
     SetCurrentDirectoryW(appDirectory.c_str());
     std::filesystem::create_directories(appDirectory / L"db");
-    InitializeAppLog(appDirectory);
+    ConfigService configService(appDirectory / L"conf.ini");
+    AppConfig config = configService.Load();
+    InitializeAppLog(appDirectory, config.loggingEnabled);
     WriteAppLog(L"应用启动。pid=" + CurrentPidText());
     WriteStartupTiming(
         L"app directory ready",
@@ -586,8 +588,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     if (updateRestart) {
         WriteAppLog(L"检测到更新后重启参数。pid=" + CurrentPidText());
     }
-    ConfigService configService(appDirectory / L"conf.ini");
-    AppConfig config = configService.Load();
     if (config.version < kCurrentConfigVersion) {
         const int previousVersion = config.version;
         if (BackupConfigForMigration(appDirectory, configService.path())) {
@@ -603,6 +603,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     WriteStartupTiming(
         L"config loaded",
         L"theme=" + config.theme +
+            L", logging=" + BoolText(config.loggingEnabled) +
             L", prefer_admin=" + BoolText(config.preferAdminRun) +
             L", hide_on_start=" + BoolText(config.hideOnStart) +
             L", http_auto=" + BoolText(config.httpServerAutoStart));
@@ -724,8 +725,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
             L", file=" + AbsolutePathForLog(themeFile).wstring() +
             L", exists=" + BoolText(FileExists(themeFile)));
     WriteAppLog(storageService.sqliteAvailable() ? L"数据存储可用: db/link.db" : (L"数据存储降级: " + storageService.lastError()));
-    WriteStartupReport(appDirectory, storageService, config, model);
-    WriteStartupTiming(L"startup report written");
+    if (config.loggingEnabled) {
+        WriteStartupReport(appDirectory, storageService, config, model);
+        WriteStartupTiming(L"startup report written");
+    } else {
+        WriteStartupTiming(L"startup report skipped", L"logging=0");
+    }
 
     MainWindow window(instance, appDirectory, moduleDirectory, configService, storageService, config, model, theme);
     WriteStartupTiming(L"main window constructed");

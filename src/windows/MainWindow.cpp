@@ -2292,11 +2292,11 @@ bool MainWindow::Create() {
     } else {
         InitializeTrayIcon();
         WriteStartupTiming(L"tray icon initialized", L"visible=" + std::wstring(trayIconVisible_ ? L"1" : L"0"));
-        if (config_.httpServerAutoStart || config_.httpServerEnabled) {
+        if (config_.httpServerAutoStart) {
             StartHttpServer(false);
-            WriteStartupTiming(L"http server startup checked", L"enabled=1");
+            WriteStartupTiming(L"http server startup checked", L"auto_start=1");
         } else {
-            WriteStartupTiming(L"http server startup skipped", L"enabled=0");
+            WriteStartupTiming(L"http server startup skipped", L"auto_start=0");
         }
         reminderScanTimerId_ = SetTimer(hwnd_, ID_TIMER_REMINDER_SCAN, 1000, nullptr);
         CheckTodoReminders();
@@ -2372,7 +2372,7 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
                 DragAcceptFiles(hwnd_, TRUE);
             }
             InitializeTrayIcon();
-            if (config_.httpServerAutoStart || config_.httpServerEnabled) {
+            if (config_.httpServerAutoStart) {
                 StartHttpServer(false);
             }
             reminderScanTimerId_ = SetTimer(hwnd_, ID_TIMER_REMINDER_SCAN, 1000, nullptr);
@@ -4783,6 +4783,10 @@ void MainWindow::CommitSettingsConfig(const AppConfig& next, bool importedData) 
     AppConfig previous = config_;
     config_ = next;
     configService_.Save(config_);
+    if (previous.loggingEnabled != config_.loggingEnabled) {
+        SetAppLogEnabled(config_.loggingEnabled);
+        WriteAppLog(config_.loggingEnabled ? L"日志已启用。" : L"日志已关闭。");
+    }
     std::wstring webDavRecoveryError;
     WebDavRecoveryService().Save(config_, webDavRecoveryError);
     if (!webDavRecoveryError.empty()) {
@@ -5012,7 +5016,9 @@ void MainWindow::CheckForUpdates() {
     UpdateInstallPlan plan;
     plan.downloadedExe = download.filePath;
     plan.currentExe = CurrentExecutablePath();
-    plan.logPath = appDirectory_ / L"logs" / L"update.log";
+    if (config_.loggingEnabled) {
+        plan.logPath = appDirectory_ / L"logs" / L"update.log";
+    }
     plan.latestVersion = info.latestVersion;
     plan.assetName = info.assetName;
     plan.assetSizeBytes = info.assetSizeBytes;
@@ -5738,13 +5744,13 @@ bool MainWindow::RestartHttpServer(bool showMessage) {
 }
 
 void MainWindow::SyncHttpServerRuntime(const AppConfig& previous) {
-    const bool shouldRun = config_.httpServerEnabled || config_.httpServerAutoStart;
+    const bool shouldRun = config_.httpServerEnabled;
     if (!shouldRun) {
         StopHttpServer(false);
         return;
     }
 
-    const bool wasConfiguredToRun = previous.httpServerEnabled || previous.httpServerAutoStart;
+    const bool wasConfiguredToRun = previous.httpServerEnabled;
     const bool settingsChanged =
         previous.httpServerPort != config_.httpServerPort ||
         previous.httpServerLanAccess != config_.httpServerLanAccess ||
