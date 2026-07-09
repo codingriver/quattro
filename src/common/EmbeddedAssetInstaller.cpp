@@ -35,6 +35,13 @@ bool CanWriteDirectory(const std::filesystem::path& directory) {
     return true;
 }
 
+bool IsLocalBuildDirectory(const std::filesystem::path& moduleDirectory) {
+    return FileExists(moduleDirectory / L"CMakeCache.txt") ||
+           DirectoryExists(moduleDirectory / L"CMakeFiles") ||
+           FileExists(moduleDirectory.parent_path() / L"CMakeCache.txt") ||
+           DirectoryExists(moduleDirectory.parent_path() / L"CMakeFiles");
+}
+
 std::filesystem::path LocalAppDataDirectory() {
     std::wstring buffer(32768, L'\0');
     DWORD copied = GetEnvironmentVariableW(L"LOCALAPPDATA", buffer.data(), static_cast<DWORD>(buffer.size()));
@@ -46,9 +53,15 @@ std::filesystem::path LocalAppDataDirectory() {
 }
 
 std::filesystem::path SelectAppDirectory(const std::filesystem::path& moduleDirectory, bool& usedFallbackDirectory) {
-    if (HasCoreAssets(moduleDirectory) || CanWriteDirectory(moduleDirectory)) {
+    if (IsLocalBuildDirectory(moduleDirectory)) {
         usedFallbackDirectory = false;
         return moduleDirectory;
+    }
+
+    const std::filesystem::path userConfigDirectory = QuattroUserConfigDirectory();
+    if (CanWriteDirectory(userConfigDirectory)) {
+        usedFallbackDirectory = false;
+        return userConfigDirectory;
     }
 
     usedFallbackDirectory = true;
@@ -58,6 +71,9 @@ std::filesystem::path SelectAppDirectory(const std::filesystem::path& moduleDire
     }
 
     usedFallbackDirectory = false;
+    if (HasCoreAssets(moduleDirectory) || CanWriteDirectory(moduleDirectory)) {
+        return moduleDirectory;
+    }
     return moduleDirectory;
 }
 

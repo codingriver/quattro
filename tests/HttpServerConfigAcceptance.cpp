@@ -41,7 +41,7 @@ int wmain() {
     const auto options = LocalHttpServerService::OptionsFromConfig(config, root);
     ok = Require(options.port == 65535, L"port should be clamped") && ok;
     ok = Require(!options.lanAccess, L"LAN access option should round-trip") && ok;
-    ok = Require(options.rootPath == LocalHttpServerService::DefaultRootPath(root), L"empty root should use appDirectory/web") && ok;
+    ok = Require(options.rootPath == LocalHttpServerService::DefaultRootPath(root), L"empty root should use rootBaseDirectory/quattro_web") && ok;
 
     std::filesystem::remove_all(root, ec);
     std::filesystem::remove_all(userConfig, ec);

@@ -279,7 +279,8 @@ int wmain() {
         applyCalled = true;
         return false;
     };
-    ShowSettingsDialog(owner, instance, config, theme, std::filesystem::current_path(), &importedData, &service, false, applyCallback);
+    const std::filesystem::path baseDirectory = std::filesystem::current_path();
+    ShowSettingsDialog(owner, instance, config, theme, baseDirectory, baseDirectory, &importedData, &service, false, applyCallback);
     if (interactor.joinable()) {
         interactor.join();
     }

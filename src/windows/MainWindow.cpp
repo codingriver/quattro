@@ -2090,6 +2090,7 @@ private:
 MainWindow::MainWindow(
     HINSTANCE instance,
     std::filesystem::path appDirectory,
+    std::filesystem::path httpRootBaseDirectory,
     ConfigService& configService,
     StorageService& storageService,
     AppConfig config,
@@ -2097,6 +2098,7 @@ MainWindow::MainWindow(
     Theme theme)
     : instance_(instance),
       appDirectory_(std::move(appDirectory)),
+      httpRootBaseDirectory_(std::move(httpRootBaseDirectory)),
       configService_(configService),
       storageService_(storageService),
       pluginRegistry_(appDirectory_),
@@ -4764,7 +4766,7 @@ void MainWindow::OpenSettings() {
         next = config_;
         return mainHotKeyRegistered_;
     };
-    if (!ShowSettingsDialog(hwnd_, instance_, next, theme_, appDirectory_, &importedData, &httpServerService_, mainHotKeyRegistered_, applySettings)) {
+    if (!ShowSettingsDialog(hwnd_, instance_, next, theme_, appDirectory_, httpRootBaseDirectory_, &importedData, &httpServerService_, mainHotKeyRegistered_, applySettings)) {
         if (importedData) {
             model_ = storageService_.Load();
             SelectInitialItems();
@@ -5030,15 +5032,7 @@ void MainWindow::OpenHelp() {
     if (OpenConfiguredUrl(config_.helpUrl, L"帮助")) {
         return;
     }
-    std::filesystem::path help = appDirectory_ / L"docs" / L"Quattro" / L"00-文档索引.md";
-    if (!FileExists(help)) {
-        help = appDirectory_ / L"README.md";
-    }
-    if (!FileExists(help)) {
-        MessageBoxW(hwnd_, L"未找到帮助文档。", L"帮助", MB_OK | MB_ICONINFORMATION);
-        return;
-    }
-    ShellExecuteW(hwnd_, L"open", help.c_str(), nullptr, help.parent_path().c_str(), SW_SHOWNORMAL);
+    MessageBoxW(hwnd_, L"帮助链接尚未配置，可在设置窗口填写。", L"帮助", MB_OK | MB_ICONINFORMATION);
 }
 
 void MainWindow::OpenFaq() {
@@ -5698,7 +5692,7 @@ bool MainWindow::ImportDropData(IDataObject* dataObject) {
 
 bool MainWindow::StartHttpServer(bool showMessage) {
     std::wstring error;
-    const auto options = LocalHttpServerService::OptionsFromConfig(config_, appDirectory_);
+    const auto options = LocalHttpServerService::OptionsFromConfig(config_, httpRootBaseDirectory_);
     const bool ok = httpServerService_.Start(options, error);
     if (!ok) {
         WriteAppLog(error.empty() ? L"HTTP 服务启动失败。" : (L"HTTP 服务启动失败: " + error));
@@ -5727,7 +5721,7 @@ void MainWindow::StopHttpServer(bool showMessage) {
 
 bool MainWindow::RestartHttpServer(bool showMessage) {
     std::wstring error;
-    const auto options = LocalHttpServerService::OptionsFromConfig(config_, appDirectory_);
+    const auto options = LocalHttpServerService::OptionsFromConfig(config_, httpRootBaseDirectory_);
     const bool ok = httpServerService_.Restart(options, error);
     if (!ok) {
         WriteAppLog(error.empty() ? L"HTTP 服务重启失败。" : (L"HTTP 服务重启失败: " + error));

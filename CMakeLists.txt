@@ -31,15 +31,12 @@ else()
     message(WARNING "CURL was not found. WebDAV backup UI will build, but network operations will report that the third-party backend is unavailable.")
 endif()
 
-set(EMBEDDED_ASSET_INPUTS
-    "${CMAKE_CURRENT_SOURCE_DIR}/README.md"
-)
+set(EMBEDDED_ASSET_INPUTS)
 
 file(GLOB_RECURSE EMBEDDED_ASSET_DIR_INPUTS CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/theme/*"
     "${CMAKE_CURRENT_SOURCE_DIR}/icons/menu/*"
     "${CMAKE_CURRENT_SOURCE_DIR}/icons/url/*"
-    "${CMAKE_CURRENT_SOURCE_DIR}/docs/*"
 )
 list(APPEND EMBEDDED_ASSET_INPUTS ${EMBEDDED_ASSET_DIR_INPUTS})
 
@@ -764,6 +761,8 @@ add_custom_command(TARGET Quattro POST_BUILD
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/icons")
     add_custom_command(TARGET Quattro POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/icons" "$<TARGET_FILE_DIR:Quattro>/icons"
+        COMMAND ${CMAKE_COMMAND} -E rm -f "$<TARGET_FILE_DIR:Quattro>/icons/menu/tabler/README.md"
+        COMMAND ${CMAKE_COMMAND} -E rm -f "$<TARGET_FILE_DIR:Quattro>/icons/menu/tabler/LICENSE"
     )
 endif()
 

@@ -31,6 +31,22 @@ std::filesystem::path LegacyStartupShortcutPath() {
     return result;
 }
 
+std::filesystem::path CurrentExecutablePath() {
+    std::wstring buffer(MAX_PATH, L'\0');
+    DWORD copied = 0;
+    for (;;) {
+        copied = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
+        if (copied == 0) {
+            return GetModuleDirectory() / L"Quattro.exe";
+        }
+        if (copied < buffer.size() - 1) {
+            buffer.resize(copied);
+            return buffer;
+        }
+        buffer.resize(buffer.size() * 2);
+    }
+}
+
 bool CreateShortcut(const std::filesystem::path& shortcutPath, const std::filesystem::path& exePath, std::wstring& error) {
     IShellLinkW* shellLink = nullptr;
     HRESULT hr = CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&shellLink));
@@ -60,7 +76,7 @@ bool CreateShortcut(const std::filesystem::path& shortcutPath, const std::filesy
 }
 }
 
-bool SyncStartupShortcut(const std::filesystem::path& appDirectory, bool enabled, std::wstring& error) {
+bool SyncStartupShortcut(const std::filesystem::path&, bool enabled, std::wstring& error) {
     error.clear();
     const std::filesystem::path shortcutPath = StartupShortcutPath();
     if (shortcutPath.empty()) {
@@ -75,7 +91,7 @@ bool SyncStartupShortcut(const std::filesystem::path& appDirectory, bool enabled
             error = L"无法创建 Startup 目录。";
             return false;
         }
-        const bool created = CreateShortcut(shortcutPath, appDirectory / L"Quattro.exe", error);
+        const bool created = CreateShortcut(shortcutPath, CurrentExecutablePath(), error);
         if (created) {
             const std::filesystem::path legacyShortcutPath = LegacyStartupShortcutPath();
             if (!legacyShortcutPath.empty() && legacyShortcutPath != shortcutPath) {

@@ -1830,6 +1830,7 @@ public:
         AppConfig& config,
         const Theme& theme,
         std::filesystem::path appDirectory,
+        std::filesystem::path httpRootBaseDirectory,
         LocalHttpServerService* httpServer,
         bool mainHotKeyRegistered,
         SettingsApplyCallback applyCallback)
@@ -1839,6 +1840,7 @@ public:
           draft_(config),
           theme_(theme),
           appDirectory_(std::move(appDirectory)),
+          httpRootBaseDirectory_(std::move(httpRootBaseDirectory)),
           httpServer_(httpServer),
           mainHotKeyRegistered_(mainHotKeyRegistered),
           applyCallback_(std::move(applyCallback)) {}
@@ -2318,7 +2320,7 @@ private:
         draft_.httpServerPort = ParseHttpPortText(GetText(httpServerAddressEdit_), draft_.httpServerPort);
         draft_.httpServerRootPath = GetText(httpServerRootEdit_);
         if (Trim(draft_.httpServerRootPath).empty()) {
-            draft_.httpServerRootPath = LocalHttpServerService::DefaultRootPath(appDirectory_).wstring();
+            draft_.httpServerRootPath = LocalHttpServerService::DefaultRootPath(httpRootBaseDirectory_).wstring();
         }
     }
 
@@ -2704,7 +2706,7 @@ private:
         value.httpServerPort = ParseHttpPortText(GetText(httpServerAddressEdit_), value.httpServerPort);
         value.httpServerRootPath = GetText(httpServerRootEdit_);
         if (Trim(value.httpServerRootPath).empty()) {
-            value.httpServerRootPath = LocalHttpServerService::DefaultRootPath(appDirectory_).wstring();
+            value.httpServerRootPath = LocalHttpServerService::DefaultRootPath(httpRootBaseDirectory_).wstring();
         }
         return value;
     }
@@ -2805,7 +2807,7 @@ private:
 
     void OpenHttpRootDirectory() {
         const AppConfig value = ReadHttpDraftFromControls();
-        const auto options = LocalHttpServerService::OptionsFromConfig(value, appDirectory_);
+        const auto options = LocalHttpServerService::OptionsFromConfig(value, httpRootBaseDirectory_);
         std::error_code ec;
         std::filesystem::create_directories(options.rootPath, ec);
         if (ec) {
@@ -2817,7 +2819,7 @@ private:
 
     void OpenHttpConfigDirectory() {
         const AppConfig value = ReadHttpDraftFromControls();
-        const auto options = LocalHttpServerService::OptionsFromConfig(value, appDirectory_);
+        const auto options = LocalHttpServerService::OptionsFromConfig(value, httpRootBaseDirectory_);
         std::wstring error;
         if (!LocalHttpServerService::EnsureDetailConfig(options.rootPath, error)) {
             ShowThemedMessageBox(hwnd_, instance_, theme_, error, L"HTTP 服务", MB_OK | MB_ICONWARNING);
@@ -2868,7 +2870,7 @@ private:
         value.httpServerEnabled = true;
         draft_ = value;
         std::wstring error;
-        const auto options = LocalHttpServerService::OptionsFromConfig(value, appDirectory_);
+        const auto options = LocalHttpServerService::OptionsFromConfig(value, httpRootBaseDirectory_);
         const bool ok = restart ? httpServer_->Restart(options, error) : httpServer_->Start(options, error);
         UpdateHttpStatusLabel();
         ShowThemedMessageBox(hwnd_, instance_, theme_, ok ? L"HTTP 服务已启动。" : error, L"HTTP 服务", MB_OK | (ok ? MB_ICONINFORMATION : MB_ICONWARNING));
@@ -3126,7 +3128,7 @@ private:
                 httpFieldX,
                 httpBindingRowY + httpFieldRowStep,
                 206,
-                Trim(draft_.httpServerRootPath).empty() ? LocalHttpServerService::DefaultRootPath(appDirectory_).wstring() : draft_.httpServerRootPath);
+                Trim(draft_.httpServerRootPath).empty() ? LocalHttpServerService::DefaultRootPath(httpRootBaseDirectory_).wstring() : draft_.httpServerRootPath);
             const int httpBrowseX = httpFieldX + 206 + httpLayout.controlGapX;
             httpBrowseRootButton_ = Button(TabHttp, ID_HTTP_BROWSE_ROOT, L"选择", httpBrowseX, httpBindingRowY + httpFieldRowStep + 1, 54);
             Button(TabHttp, ID_HTTP_OPEN_ROOT, L"打开目录", httpBrowseX + 54 + httpLayout.controlGapX, httpBindingRowY + httpFieldRowStep + 1, 84);
@@ -3404,6 +3406,7 @@ private:
     AppConfig draft_;
     const Theme& theme_;
     std::filesystem::path appDirectory_;
+    std::filesystem::path httpRootBaseDirectory_;
     LocalHttpServerService* httpServer_ = nullptr;
     bool mainHotKeyRegistered_ = false;
     HBRUSH backgroundBrush_ = nullptr;
@@ -3517,11 +3520,12 @@ bool ShowSettingsDialog(
     AppConfig& config,
     const Theme& theme,
     const std::filesystem::path& appDirectory,
+    const std::filesystem::path& httpRootBaseDirectory,
     bool* importedData,
     LocalHttpServerService* httpServer,
     bool mainHotKeyRegistered,
     SettingsApplyCallback applyCallback) {
-    SettingsDialog dialog(owner, instance, config, theme, appDirectory, httpServer, mainHotKeyRegistered, std::move(applyCallback));
+    SettingsDialog dialog(owner, instance, config, theme, appDirectory, httpRootBaseDirectory, httpServer, mainHotKeyRegistered, std::move(applyCallback));
     const bool accepted = dialog.Run();
     if (importedData) {
         *importedData = dialog.webDavDataImported();

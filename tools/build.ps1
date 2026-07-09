@@ -373,8 +373,12 @@ function Publish-Package {
         Copy-Item -LiteralPath (Join-Path $source "db") -Destination $dist -Recurse -ErrorAction SilentlyContinue
         Copy-Item -LiteralPath (Join-Path $source "theme") -Destination $dist -Recurse -ErrorAction SilentlyContinue
         Copy-Item -LiteralPath (Join-Path $source "icons") -Destination $dist -Recurse -ErrorAction SilentlyContinue
-        Copy-Item -LiteralPath (Join-Path $root "README.md") -Destination $dist -ErrorAction SilentlyContinue
-        Copy-Item -LiteralPath (Join-Path $root "docs") -Destination $dist -Recurse -ErrorAction SilentlyContinue
+        $packagedIcons = Join-Path $dist "icons"
+        if (Test-Path $packagedIcons) {
+            Get-ChildItem -LiteralPath $packagedIcons -Recurse -File |
+                Where-Object { $_.Name -ieq "README.md" -or $_.Name -ieq "LICENSE" -or $_.Extension -ieq ".md" } |
+                Remove-Item -Force
+        }
     }
 
     if ($Zip) {

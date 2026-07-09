@@ -486,8 +486,8 @@ LocalHttpServerService::~LocalHttpServerService() {
     Stop();
 }
 
-std::filesystem::path LocalHttpServerService::DefaultRootPath(const std::filesystem::path& appDirectory) {
-    return appDirectory / L"web";
+std::filesystem::path LocalHttpServerService::DefaultRootPath(const std::filesystem::path& rootBaseDirectory) {
+    return rootBaseDirectory / L"quattro_web";
 }
 
 std::filesystem::path LocalHttpServerService::DetailConfigDirectory() {
@@ -518,11 +518,11 @@ bool LocalHttpServerService::EnsureDetailConfig(const std::filesystem::path& roo
     return WriteUtf8TextFile(configPath, DefaultDetailConfigText(), error);
 }
 
-LocalHttpServerOptions LocalHttpServerService::OptionsFromConfig(const AppConfig& config, const std::filesystem::path& appDirectory) {
+LocalHttpServerOptions LocalHttpServerService::OptionsFromConfig(const AppConfig& config, const std::filesystem::path& rootBaseDirectory) {
     LocalHttpServerOptions options;
     options.port = std::max(1, std::min(65535, config.httpServerPort));
     options.lanAccess = config.httpServerLanAccess;
-    options.rootPath = Trim(config.httpServerRootPath).empty() ? DefaultRootPath(appDirectory) : std::filesystem::path(config.httpServerRootPath);
+    options.rootPath = Trim(config.httpServerRootPath).empty() ? DefaultRootPath(rootBaseDirectory) : std::filesystem::path(config.httpServerRootPath);
     return options;
 }
 

@@ -32,6 +32,17 @@ function Convert-ToCppBytes {
     return $lines -join ",`n"
 }
 
+function Test-EmbeddedAssetFile {
+    param([string]$RelativePath)
+
+    $name = [System.IO.Path]::GetFileName($RelativePath)
+    if ($name.Equals("README.md", [System.StringComparison]::OrdinalIgnoreCase) -or
+        $name.Equals("LICENSE", [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $false
+    }
+    return $true
+}
+
 $rootPath = (Resolve-Path -LiteralPath $Root).Path
 $rootPrefix = $rootPath.TrimEnd("\") + "\"
 $outputPath = [System.IO.Path]::GetFullPath($Output)
@@ -39,14 +50,8 @@ $outputDir = Split-Path -Parent $outputPath
 New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
 
 $relativeFiles = New-Object System.Collections.Generic.List[string]
-foreach ($file in @("README.md")) {
-    $path = Join-Path $rootPath $file
-    if (Test-Path -LiteralPath $path) {
-        $relativeFiles.Add($file.Replace("/", "\")) | Out-Null
-    }
-}
 
-foreach ($dir in @("theme", "icons/menu", "icons/url", "docs")) {
+foreach ($dir in @("theme", "icons/menu", "icons/url")) {
     $path = Join-Path $rootPath $dir
     if (Test-Path -LiteralPath $path) {
         Get-ChildItem -LiteralPath $path -Recurse -File |
@@ -58,7 +63,9 @@ foreach ($dir in @("theme", "icons/menu", "icons/url", "docs")) {
                 } else {
                     $relative = $_.Name
                 }
-                $relativeFiles.Add($relative) | Out-Null
+                if (Test-EmbeddedAssetFile -RelativePath $relative) {
+                    $relativeFiles.Add($relative) | Out-Null
+                }
             }
     }
 }

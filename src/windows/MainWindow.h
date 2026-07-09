@@ -42,6 +42,7 @@ public:
     MainWindow(
         HINSTANCE instance,
         std::filesystem::path appDirectory,
+        std::filesystem::path httpRootBaseDirectory,
         ConfigService& configService,
         StorageService& storageService,
         AppConfig config,
@@ -328,6 +329,7 @@ private:
     HINSTANCE instance_ = nullptr;
     HWND hwnd_ = nullptr;
     std::filesystem::path appDirectory_;
+    std::filesystem::path httpRootBaseDirectory_;
     ConfigService& configService_;
     StorageService& storageService_;
     PluginRegistry pluginRegistry_;

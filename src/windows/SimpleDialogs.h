@@ -28,6 +28,7 @@ bool ShowSettingsDialog(
     AppConfig& config,
     const Theme& theme,
     const std::filesystem::path& appDirectory,
+    const std::filesystem::path& httpRootBaseDirectory,
     bool* importedData = nullptr,
     LocalHttpServerService* httpServer = nullptr,
     bool mainHotKeyRegistered = false,

@@ -727,7 +727,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     WriteStartupReport(appDirectory, storageService, config, model);
     WriteStartupTiming(L"startup report written");
 
-    MainWindow window(instance, appDirectory, configService, storageService, config, model, theme);
+    MainWindow window(instance, appDirectory, moduleDirectory, configService, storageService, config, model, theme);
     WriteStartupTiming(L"main window constructed");
     if (!window.Create()) {
         WriteAppLog(L"主窗口初始化失败。");
