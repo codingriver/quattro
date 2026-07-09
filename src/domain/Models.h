@@ -109,6 +109,7 @@ struct Group {
     int pos = 0;
     int type = 0;
     int sort = 0;
+    int sortDirection = 0;
     std::wstring content;
     int flag = 0;
 };

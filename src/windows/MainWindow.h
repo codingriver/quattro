@@ -88,16 +88,21 @@ private:
         D2D1_RECT_F rect{};
     };
 
+    enum class MenuIconTone {
+        Default,
+        Active,
+        Muted,
+    };
+
     struct MenuItemData {
         std::wstring text;
         int icon = 0;
         int systemImageIndex = -1;
         int stockIcon = -1;
-        bool checked = false;
         bool disabled = false;
         bool submenu = false;
-        bool checkedIconAccent = false;
         bool separator = false;
+        MenuIconTone iconTone = MenuIconTone::Default;
     };
 
     static LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
@@ -278,8 +283,9 @@ private:
     void DrawTextBlock(const std::wstring& text, IDWriteTextFormat* format, const D2D1_RECT_F& rect, const Color& color);
     void DrawLinkName(const std::wstring& text, IDWriteTextFormat* format, const D2D1_RECT_F& rect, const Color& color);
     void ResetMenuVisuals();
-    void AppendThemedMenuItem(HMENU menu, UINT flags, UINT_PTR id, const std::wstring& text, bool submenu = false, int systemImageIndex = -1, int stockIcon = -1, int menuIcon = 0, bool checkedIconAccent = false);
-    void InsertThemedMenuItem(HMENU menu, UINT position, UINT flags, UINT_PTR id, const std::wstring& text, bool submenu = false, int systemImageIndex = -1, int stockIcon = -1, int menuIcon = 0, bool checkedIconAccent = false);
+    void AppendThemedMenuItem(HMENU menu, UINT flags, UINT_PTR id, const std::wstring& text, bool submenu = false, int systemImageIndex = -1, int stockIcon = -1, int menuIcon = 0);
+    void InsertThemedMenuItem(HMENU menu, UINT position, UINT flags, UINT_PTR id, const std::wstring& text, bool submenu = false, int systemImageIndex = -1, int stockIcon = -1, int menuIcon = 0);
+    void AppendThemedStateMenuItem(HMENU menu, UINT flags, UINT_PTR id, const std::wstring& text, bool active, int menuIcon = 0, bool submenu = false);
     void AppendThemedSeparator(HMENU menu);
     const MenuItemData* ThemedMenuItemFromData(ULONG_PTR itemData) const;
     bool MeasureThemedMenuItem(MEASUREITEMSTRUCT* measure);

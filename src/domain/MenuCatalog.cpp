@@ -23,7 +23,7 @@ constexpr std::array<MenuVisualRequirement, 27> kTopRightMenuVisuals{{
     {ID_MENU_ALL_ICON_LARGE, L"大图标", MenuIconSize},
     {ID_MENU_ALL_LAYOUT_LIST, L"列表", MenuIconList},
     {ID_MENU_ALL_LAYOUT_TILE, L"平铺", MenuIconTile},
-    {ID_MENU_ALL_SORT_POS, L"按位置", MenuIconSort},
+    {ID_MENU_ALL_SORT_POS, L"手动排序", MenuIconSort},
     {ID_MENU_ALL_SORT_RUNCOUNT, L"按运行次数", MenuIconSort},
     {ID_MENU_ALL_SORT_NAME, L"按名称", MenuIconSort},
     {0, L"统一图标大小", MenuIconSize},
@@ -158,7 +158,7 @@ int MenuIconFor(UINT_PTR id, const std::wstring& text) {
     if (text == L"复制到" || text == L"复制到标签") return MenuIconCopy;
     if (text == L"图标大小" || text == L"统一图标大小") return MenuIconSize;
     if (text == L"查看方式" || text == L"统一查看方式") return MenuIconView;
-    if (text == L"排序方式" || text == L"统一排序方式") return MenuIconSort;
+    if (text == L"排序方式" || text == L"统一排序方式" || text == L"手动排序") return MenuIconSort;
     if (text == L"列表") return MenuIconList;
     if (text == L"平铺") return MenuIconTile;
     if (text == L"系统功能") return MenuIconSystem;
@@ -195,6 +195,8 @@ const wchar_t* MenuIconName(MenuIcon icon) {
     case MenuIconList: return L"list";
     case MenuIconTile: return L"tile";
     case MenuIconSort: return L"sort";
+    case MenuIconSortAsc: return L"sort-asc";
+    case MenuIconSortDesc: return L"sort-desc";
     case MenuIconClear: return L"clear";
     case MenuIconEye: return L"eye";
     case MenuIconEyeOff: return L"eye-off";
@@ -259,6 +261,8 @@ wchar_t MenuIconGlyph(MenuIcon icon) {
     case MenuIconList: return static_cast<wchar_t>(0xEC14); // layout-list
     case MenuIconTile: return static_cast<wchar_t>(0xEDBA); // layout-grid
     case MenuIconSort: return static_cast<wchar_t>(0xEB5A); // arrows-sort
+    case MenuIconSortAsc: return static_cast<wchar_t>(0xEB26); // sort-ascending
+    case MenuIconSortDesc: return static_cast<wchar_t>(0xEB27); // sort-descending
     case MenuIconClear: return static_cast<wchar_t>(0xEF88); // trash-x
     case MenuIconEye: return static_cast<wchar_t>(0xEA9A); // eye
     case MenuIconEyeOff: return static_cast<wchar_t>(0xECF0); // eye-off

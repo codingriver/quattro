@@ -120,6 +120,8 @@ enum MenuIcon {
     MenuIconList,
     MenuIconTile,
     MenuIconSort,
+    MenuIconSortAsc,
+    MenuIconSortDesc,
     MenuIconClear,
     MenuIconEye,
     MenuIconEyeOff,

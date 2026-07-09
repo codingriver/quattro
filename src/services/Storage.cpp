@@ -12,7 +12,7 @@
 #include <vector>
 
 namespace {
-constexpr int kSchemaVersion = 20000;
+constexpr int kSchemaVersion = 20001;
 
 class SQLiteDatabase {
 public:
@@ -135,6 +135,7 @@ void CreateSchema(sqlite3* db, std::wstring& error) {
          "NAME CHARACTER(16) NOT NULL,"
          "TYPE INTEGER DEFAULT 0,"
          "SORT INTEGER DEFAULT 0,"
+         "SORTDIRECTION INTEGER DEFAULT 0,"
          "POS INTEGER DEFAULT 0,"
          "ParentGroup INTEGER DEFAULT 0,"
          "ICON TEXT,"
@@ -229,6 +230,7 @@ bool NeedsSchemaMigration(sqlite3* db) {
            !HasTable(db, L"Links") ||
            !HasTable(db, L"NotePages") ||
            !HasTable(db, L"TodoItems") ||
+           !HasColumn(db, L"Groups", L"SortDirection") ||
            !HasColumn(db, L"Links", L"Pidl") ||
            !HasColumn(db, L"TodoItems", L"Enabled") ||
            !HasColumn(db, L"TodoItems", L"RepeatInterval") ||
@@ -272,6 +274,10 @@ bool BackupDatabaseBeforeMigration(const std::filesystem::path& appDirectory, co
 }
 
 void MigrateSchema(sqlite3* db, std::wstring& error) {
+    if (!HasColumn(db, L"Groups", L"SortDirection")) {
+        Exec(db, "ALTER TABLE Groups ADD COLUMN SortDirection INTEGER DEFAULT 0;", error);
+        Exec(db, "UPDATE Groups SET SortDirection=1 WHERE SORT=1;", error);
+    }
     if (!HasColumn(db, L"Links", L"Pidl")) {
         Exec(db, "ALTER TABLE Links ADD COLUMN Pidl BLOB;", error);
     }
@@ -404,6 +410,8 @@ bool NormalizeGroupForSave(sqlite3* db, Group& group) {
     if (group.pos < 0) {
         group.pos = NextGroupPosition(db, group.parentGroup);
     }
+    group.sort = std::max(0, std::min(3, group.sort));
+    group.sortDirection = group.sortDirection == 0 ? 0 : 1;
     return true;
 }
 
@@ -530,8 +538,8 @@ AppModel StorageService::Load() {
     WriteStartupTiming(L"storage group rows counted", L"rows=" + std::to_wstring(groupRows));
     if (groupRows == 0) {
         Exec(db.get(),
-             "INSERT INTO Groups(ID,NAME,POS,ParentGroup,ICONSIZE,LAYOUT,SORT,TYPE) VALUES(1,'新的分组',0,0,0,0,0,0);"
-             "INSERT INTO Groups(ID,NAME,POS,ParentGroup,ICONSIZE,LAYOUT,SORT,TYPE) VALUES(2,'新的标签',0,1,32,1,0,0);",
+             "INSERT INTO Groups(ID,NAME,POS,ParentGroup,ICONSIZE,LAYOUT,SORT,SORTDIRECTION,TYPE) VALUES(1,'新的分组',0,0,0,0,0,0,0);"
+             "INSERT INTO Groups(ID,NAME,POS,ParentGroup,ICONSIZE,LAYOUT,SORT,SORTDIRECTION,TYPE) VALUES(2,'新的标签',0,1,32,1,0,0,0);",
              lastError_);
         WriteStartupTiming(L"storage default groups inserted", lastError_);
     }
@@ -549,7 +557,7 @@ AppModel StorageService::Load() {
     AppModel model;
     {
         SQLiteStatement statement(db.get(),
-            L"SELECT ID,NAME,ParentGroup,ICON,LAYOUT,ICONSIZE,POS,TYPE,SORT,Content,FLAG "
+            L"SELECT ID,NAME,ParentGroup,ICON,LAYOUT,ICONSIZE,POS,TYPE,SORT,SORTDIRECTION,Content,FLAG "
             L"FROM Groups ORDER BY ParentGroup,POS,ID;");
         if (statement.ok()) {
             while (statement.step() == SQLITE_ROW) {
@@ -563,8 +571,9 @@ AppModel StorageService::Load() {
                 group.pos = statement.columnInt(6);
                 group.type = statement.columnInt(7);
                 group.sort = statement.columnInt(8);
-                group.content = statement.columnText(9);
-                group.flag = statement.columnInt(10);
+                group.sortDirection = statement.columnInt(9) == 0 ? 0 : 1;
+                group.content = statement.columnText(10);
+                group.flag = statement.columnInt(11);
                 model.groups.push_back(std::move(group));
             }
         }
@@ -673,8 +682,8 @@ bool StorageService::InsertGroup(Group& group) {
     }
 
     SQLiteStatement statement(db.get(),
-        L"INSERT INTO Groups(NAME,TYPE,SORT,POS,ParentGroup,ICON,LAYOUT,ICONSIZE,FLAG,Content) "
-        L"VALUES(?,?,?,?,?,?,?,?,?,?);");
+        L"INSERT INTO Groups(NAME,TYPE,SORT,SORTDIRECTION,POS,ParentGroup,ICON,LAYOUT,ICONSIZE,FLAG,Content) "
+        L"VALUES(?,?,?,?,?,?,?,?,?,?,?);");
     if (!statement.ok()) {
         lastError_ = L"新增分组 SQL 准备失败。";
         return false;
@@ -682,13 +691,14 @@ bool StorageService::InsertGroup(Group& group) {
     statement.bindText(1, group.name);
     statement.bindInt(2, group.type);
     statement.bindInt(3, group.sort);
-    statement.bindInt(4, group.pos);
-    statement.bindInt(5, group.parentGroup);
-    statement.bindText(6, group.icon);
-    statement.bindInt(7, group.layout);
-    statement.bindInt(8, group.iconSize);
-    statement.bindInt(9, group.flag);
-    statement.bindText(10, group.content);
+    statement.bindInt(4, group.sortDirection);
+    statement.bindInt(5, group.pos);
+    statement.bindInt(6, group.parentGroup);
+    statement.bindText(7, group.icon);
+    statement.bindInt(8, group.layout);
+    statement.bindInt(9, group.iconSize);
+    statement.bindInt(10, group.flag);
+    statement.bindText(11, group.content);
     if (statement.step() != SQLITE_DONE) {
         const void* message = sqlite3_errmsg16(db.get());
         lastError_ = message ? static_cast<const wchar_t*>(message) : L"新增分组失败。";
@@ -713,7 +723,7 @@ bool StorageService::UpdateGroup(const Group& source) {
     }
 
     SQLiteStatement statement(db.get(),
-        L"UPDATE Groups SET NAME=?,TYPE=?,SORT=?,POS=?,ParentGroup=?,ICON=?,LAYOUT=?,ICONSIZE=?,FLAG=?,Content=? WHERE ID=?;");
+        L"UPDATE Groups SET NAME=?,TYPE=?,SORT=?,SORTDIRECTION=?,POS=?,ParentGroup=?,ICON=?,LAYOUT=?,ICONSIZE=?,FLAG=?,Content=? WHERE ID=?;");
     if (!statement.ok()) {
         lastError_ = L"更新分组 SQL 准备失败。";
         return false;
@@ -721,14 +731,15 @@ bool StorageService::UpdateGroup(const Group& source) {
     statement.bindText(1, group.name);
     statement.bindInt(2, group.type);
     statement.bindInt(3, group.sort);
-    statement.bindInt(4, group.pos);
-    statement.bindInt(5, group.parentGroup);
-    statement.bindText(6, group.icon);
-    statement.bindInt(7, group.layout);
-    statement.bindInt(8, group.iconSize);
-    statement.bindInt(9, group.flag);
-    statement.bindText(10, group.content);
-    statement.bindInt(11, group.id);
+    statement.bindInt(4, group.sortDirection);
+    statement.bindInt(5, group.pos);
+    statement.bindInt(6, group.parentGroup);
+    statement.bindText(7, group.icon);
+    statement.bindInt(8, group.layout);
+    statement.bindInt(9, group.iconSize);
+    statement.bindInt(10, group.flag);
+    statement.bindText(11, group.content);
+    statement.bindInt(12, group.id);
     if (statement.step() != SQLITE_DONE) {
         const void* message = sqlite3_errmsg16(db.get());
         lastError_ = message ? static_cast<const wchar_t*>(message) : L"更新分组失败。";
@@ -1199,8 +1210,8 @@ bool StorageService::SetTodoEnabled(int todoId, bool enabled) {
 
 AppModel StorageService::LoadFallback() const {
     AppModel model;
-    model.groups.push_back(Group{1, L"默认分组", 0, L"", 0, 0, 0, 0, 0, L"", 0});
-    model.groups.push_back(Group{2, L"默认标签", 1, L"", 1, 32, 0, 0, 0, L"", 0});
+    model.groups.push_back(Group{1, L"默认分组", 0, L"", 0, 0, 0, 0, 0, 0, L"", 0});
+    model.groups.push_back(Group{2, L"默认标签", 1, L"", 1, 32, 0, 0, 0, 0, L"", 0});
     return model;
 }
 
@@ -1218,7 +1229,7 @@ void StorageService::EnsureDefaultData(AppModel& model) const {
         }
     }
     if (!hasMajor) {
-        model.groups.insert(model.groups.begin(), Group{1, L"默认分组", 0, L"", 0, 0, 0, 0, 0, L"", 0});
+        model.groups.insert(model.groups.begin(), Group{1, L"默认分组", 0, L"", 0, 0, 0, 0, 0, 0, L"", 0});
     }
 
     bool hasTag = false;
@@ -1236,6 +1247,6 @@ void StorageService::EnsureDefaultData(AppModel& model) const {
                 break;
             }
         }
-        model.groups.push_back(Group{2, L"默认标签", parent, L"", 1, 32, 0, 0, 0, L"", 0});
+        model.groups.push_back(Group{2, L"默认标签", parent, L"", 1, 32, 0, 0, 0, 0, L"", 0});
     }
 }

@@ -170,6 +170,7 @@ add_executable(Quattro WIN32
     src/windows/HotKeyEditor.cpp
     src/services/IconService.cpp
     src/common/JsonValue.cpp
+    src/domain/LinkSorting.cpp
     src/services/Launcher.cpp
     src/services/LocalHttpServerService.cpp
     src/windows/LinkEditDialog.cpp
@@ -245,6 +246,7 @@ add_executable(QuattroTests
     src/services/ConfigPackageService.cpp
     src/services/Launcher.cpp
     src/common/JsonValue.cpp
+    src/domain/LinkSorting.cpp
     src/domain/MenuCatalog.cpp
     src/domain/PluginRegistry.cpp
     src/services/ShellItemService.cpp
@@ -283,6 +285,14 @@ add_executable(QuattroDbProbe
 
 add_executable(QuattroDbSeed
     tests/DbSeed.cpp
+    src/common/AppLog.cpp
+    src/services/Storage.cpp
+    src/domain/TodoSchedule.cpp
+    src/common/Utilities.cpp
+)
+
+add_executable(QuattroSortScreenshotSeed
+    tests/SortScreenshotSeed.cpp
     src/common/AppLog.cpp
     src/services/Storage.cpp
     src/domain/TodoSchedule.cpp
@@ -386,6 +396,14 @@ target_compile_definitions(QuattroDbSeed PRIVATE
     NOMINMAX
 )
 
+target_compile_definitions(QuattroSortScreenshotSeed PRIVATE
+    UNICODE
+    _UNICODE
+    WINVER=0x0A00
+    _WIN32_WINNT=0x0A00
+    NOMINMAX
+)
+
 target_compile_definitions(QuattroThemeStateProbe PRIVATE
     UNICODE
     _UNICODE
@@ -437,6 +455,10 @@ target_compile_options(QuattroDbProbe PRIVATE
 )
 
 target_compile_options(QuattroDbSeed PRIVATE
+    $<$<CXX_COMPILER_ID:MSVC>:/W4 /permissive- /EHsc /utf-8>
+)
+
+target_compile_options(QuattroSortScreenshotSeed PRIVATE
     $<$<CXX_COMPILER_ID:MSVC>:/W4 /permissive- /EHsc /utf-8>
 )
 
@@ -500,6 +522,12 @@ target_link_libraries(QuattroDbProbe PRIVATE
 )
 
 target_link_libraries(QuattroDbSeed PRIVATE
+    sqlite3
+    ccronexpr
+    user32
+)
+
+target_link_libraries(QuattroSortScreenshotSeed PRIVATE
     sqlite3
     ccronexpr
     user32

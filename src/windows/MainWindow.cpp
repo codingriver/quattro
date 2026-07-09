@@ -6,6 +6,7 @@
 #include "Elevation.h"
 #include "HotKeyEditor.h"
 #include "LinkEditDialog.h"
+#include "LinkSorting.h"
 #include "MenuAnchorGeometry.h"
 #include "MenuCatalog.h"
 #include "QuickImportDialog.h"
@@ -1432,23 +1433,11 @@ std::vector<std::wstring> LimitedTooltipContentLines(const std::wstring& value) 
     return lines;
 }
 
-std::wstring InitialSortKey(const std::wstring& value) {
-    const std::wstring text = Trim(value);
-    if (text.empty()) {
-        return L"#";
+int SortDirectionMenuIcon(int sort, int sortDirection) {
+    if (sort == 0) {
+        return MenuIconSort;
     }
-    const wchar_t first = text.front();
-    if ((first >= L'a' && first <= L'z') || (first >= L'A' && first <= L'Z')) {
-        std::wstring key(1, static_cast<wchar_t>(std::towupper(first)));
-        return key + L"|" + ToLower(text);
-    }
-    if (first >= L'0' && first <= L'9') {
-        return L"0|" + text;
-    }
-    if (first >= 0x4E00 && first <= 0x9FFF) {
-        return L"Z|" + text;
-    }
-    return L"#|" + text;
+    return sortDirection == 0 ? MenuIconSortAsc : MenuIconSortDesc;
 }
 
 struct ThemeMenuItem {
@@ -3509,7 +3498,14 @@ void MainWindow::SetCurrentTagSort(int sort) {
         return;
     }
     Group edited = *tag;
-    edited.sort = sort;
+    sort = std::max(0, std::min(2, sort));
+    if (sort == 0) {
+        edited.sort = 0;
+        edited.sortDirection = 0;
+    } else {
+        edited.sortDirection = edited.sort == sort ? (edited.sortDirection == 0 ? 1 : 0) : DefaultLinkSortDirection(sort);
+        edited.sort = sort;
+    }
     if (!storageService_.UpdateGroup(edited)) {
         MessageBoxW(hwnd_, storageService_.lastError().c_str(), L"排序", MB_OK | MB_ICONWARNING);
         return;
@@ -3575,12 +3571,36 @@ void MainWindow::SetCurrentTagIconSize(int iconSize) {
 }
 
 void MainWindow::SetAllTagsSort(int sort) {
+    sort = std::max(0, std::min(2, sort));
+    bool hasSameAutoSort = false;
+    bool allSameAutoDirection = true;
+    int currentDirection = DefaultLinkSortDirection(sort);
+    if (sort != 0) {
+        for (const Group& tag : model_.groups) {
+            if (tag.parentGroup == 0) {
+                continue;
+            }
+            if (tag.sort != sort) {
+                allSameAutoDirection = false;
+                continue;
+            }
+            if (!hasSameAutoSort) {
+                currentDirection = tag.sortDirection == 0 ? 0 : 1;
+                hasSameAutoSort = true;
+            } else {
+                allSameAutoDirection = allSameAutoDirection && (tag.sortDirection == currentDirection);
+            }
+        }
+    }
+    const int targetDirection = sort == 0 ? 0 :
+        (hasSameAutoSort && allSameAutoDirection ? (currentDirection == 0 ? 1 : 0) : DefaultLinkSortDirection(sort));
     for (Group& tag : model_.groups) {
         if (tag.parentGroup == 0) {
             continue;
         }
         Group edited = tag;
         edited.sort = sort;
+        edited.sortDirection = targetDirection;
         if (!storageService_.UpdateGroup(edited)) {
             MessageBoxW(hwnd_, storageService_.lastError().c_str(), L"统一排序方式", MB_OK | MB_ICONWARNING);
             return;
@@ -4071,6 +4091,7 @@ void MainWindow::MoveLinkWithinTag(int linkId, int direction) {
     if (tag && tag->sort != 0) {
         Group edited = *tag;
         edited.sort = 0;
+        edited.sortDirection = 0;
         if (storageService_.UpdateGroup(edited)) {
             *tag = edited;
         }
@@ -6429,8 +6450,7 @@ void MainWindow::AppendThemeItemsToMenu(HMENU menu) {
     const std::wstring effectiveTheme = EffectiveThemeName(themeDirectory, config_.theme);
     const std::size_t count = std::min<std::size_t>(themeItems.size(), 100);
     for (std::size_t i = 0; i < count; ++i) {
-        const UINT flags = MF_STRING | (effectiveTheme == themeItems[i].name ? MF_CHECKED : 0);
-        AppendThemedMenuItem(menu, flags, ID_MENU_THEME_BASE + static_cast<UINT>(i), themeItems[i].label, false, -1, -1, MenuIconTheme, true);
+        AppendThemedStateMenuItem(menu, MF_STRING, ID_MENU_THEME_BASE + static_cast<UINT>(i), themeItems[i].label, effectiveTheme == themeItems[i].name, MenuIconTheme);
     }
 }
 
@@ -6447,32 +6467,33 @@ void MainWindow::AppendViewOptionItems(HMENU menu, const Group* tag) {
     // These submenus reflect the selected tag page, not a global display preference.
     HMENU iconMenu = CreatePopupMenu();
     const int iconSize = EffectiveIconSize(tag);
-    AppendThemedMenuItem(iconMenu, MF_STRING | (iconSize == 24 ? MF_CHECKED : 0), ID_MENU_ICON_SMALL, L"小图标");
-    AppendThemedMenuItem(iconMenu, MF_STRING | (iconSize == 32 ? MF_CHECKED : 0), ID_MENU_ICON_MEDIUM, L"中图标");
-    AppendThemedMenuItem(iconMenu, MF_STRING | (iconSize == 48 ? MF_CHECKED : 0), ID_MENU_ICON_LARGE, L"大图标");
+    AppendThemedStateMenuItem(iconMenu, MF_STRING, ID_MENU_ICON_SMALL, L"小图标", iconSize == 24, MenuIconSize);
+    AppendThemedStateMenuItem(iconMenu, MF_STRING, ID_MENU_ICON_MEDIUM, L"中图标", iconSize == 32, MenuIconSize);
+    AppendThemedStateMenuItem(iconMenu, MF_STRING, ID_MENU_ICON_LARGE, L"大图标", iconSize == 48, MenuIconSize);
     AppendThemedMenuItem(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(iconMenu), L"图标大小", true);
 
     HMENU layoutMenu = CreatePopupMenu();
     const int layout = EffectiveLinkLayout(tag);
-    AppendThemedMenuItem(layoutMenu, MF_STRING | (layout == 0 ? MF_CHECKED : 0), ID_MENU_LAYOUT_LIST, L"列表");
-    AppendThemedMenuItem(layoutMenu, MF_STRING | (layout == 1 ? MF_CHECKED : 0), ID_MENU_LAYOUT_TILE, L"平铺");
+    AppendThemedStateMenuItem(layoutMenu, MF_STRING, ID_MENU_LAYOUT_LIST, L"列表", layout == 0, MenuIconList);
+    AppendThemedStateMenuItem(layoutMenu, MF_STRING, ID_MENU_LAYOUT_TILE, L"平铺", layout == 1, MenuIconTile);
     AppendThemedMenuItem(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(layoutMenu), L"查看方式", true);
 
     HMENU sortMenu = CreatePopupMenu();
     const int sort = tag ? tag->sort : 0;
-    AppendThemedMenuItem(sortMenu, MF_STRING | (sort == 0 ? MF_CHECKED : 0), ID_MENU_SORT_POS, L"按位置");
-    AppendThemedMenuItem(sortMenu, MF_STRING | (sort == 1 ? MF_CHECKED : 0), ID_MENU_SORT_RUNCOUNT, L"按运行次数");
-    AppendThemedMenuItem(sortMenu, MF_STRING | (sort == 2 ? MF_CHECKED : 0), ID_MENU_SORT_NAME, L"按名称");
+    const int sortDirection = tag ? tag->sortDirection : 0;
+    AppendThemedStateMenuItem(sortMenu, MF_STRING, ID_MENU_SORT_POS, L"手动排序", sort == 0, MenuIconSort);
+    AppendThemedStateMenuItem(sortMenu, MF_STRING, ID_MENU_SORT_RUNCOUNT, L"按运行次数", sort == 1, SortDirectionMenuIcon(1, sort == 1 ? sortDirection : DefaultLinkSortDirection(1)));
+    AppendThemedStateMenuItem(sortMenu, MF_STRING, ID_MENU_SORT_NAME, L"按名称", sort == 2, SortDirectionMenuIcon(2, sort == 2 ? sortDirection : DefaultLinkSortDirection(2)));
     AppendThemedMenuItem(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(sortMenu), L"排序方式", true);
 }
 
 void MainWindow::AppendTodoSortItems(HMENU menu, const Group* tag) {
     HMENU sortMenu = CreatePopupMenu();
     const int sort = tag ? tag->sort : 0;
-    AppendThemedMenuItem(sortMenu, MF_STRING | (sort == 0 ? MF_CHECKED : 0), ID_MENU_TODO_SORT_DUE, L"按提醒时间（推荐）");
-    AppendThemedMenuItem(sortMenu, MF_STRING | (sort == 1 ? MF_CHECKED : 0), ID_MENU_TODO_SORT_CREATED, L"按创建时间");
-    AppendThemedMenuItem(sortMenu, MF_STRING | (sort == 2 ? MF_CHECKED : 0), ID_MENU_TODO_SORT_TITLE, L"按标题");
-    AppendThemedMenuItem(sortMenu, MF_STRING | (sort == 3 ? MF_CHECKED : 0), ID_MENU_TODO_SORT_STATUS, L"按完成状态");
+    AppendThemedStateMenuItem(sortMenu, MF_STRING, ID_MENU_TODO_SORT_DUE, L"按提醒时间（推荐）", sort == 0, MenuIconSort);
+    AppendThemedStateMenuItem(sortMenu, MF_STRING, ID_MENU_TODO_SORT_CREATED, L"按创建时间", sort == 1, MenuIconSort);
+    AppendThemedStateMenuItem(sortMenu, MF_STRING, ID_MENU_TODO_SORT_TITLE, L"按标题", sort == 2, MenuIconSort);
+    AppendThemedStateMenuItem(sortMenu, MF_STRING, ID_MENU_TODO_SORT_STATUS, L"按完成状态", sort == 3, MenuIconSort);
     AppendThemedMenuItem(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(sortMenu), L"排序方式", true);
 }
 
@@ -6486,6 +6507,8 @@ void MainWindow::AppendUnifiedViewOptionItems(HMENU menu) {
     bool allSortPos = true;
     bool allSortRunCount = true;
     bool allSortName = true;
+    bool allSortAscending = true;
+    bool allSortDescending = true;
 
     for (const auto& tag : model_.groups) {
         if (tag.parentGroup == 0) {
@@ -6502,24 +6525,30 @@ void MainWindow::AppendUnifiedViewOptionItems(HMENU menu) {
         allSortPos = allSortPos && tag.sort == 0;
         allSortRunCount = allSortRunCount && tag.sort == 1;
         allSortName = allSortName && tag.sort == 2;
+        allSortAscending = allSortAscending && tag.sortDirection == 0;
+        allSortDescending = allSortDescending && tag.sortDirection != 0;
     }
 
     const UINT disabled = hasTag ? 0 : MF_GRAYED;
     HMENU iconMenu = CreatePopupMenu();
-    AppendThemedMenuItem(iconMenu, MF_STRING | disabled | (hasTag && allSmall ? MF_CHECKED : 0), ID_MENU_ALL_ICON_SMALL, L"小图标");
-    AppendThemedMenuItem(iconMenu, MF_STRING | disabled | (hasTag && allMedium ? MF_CHECKED : 0), ID_MENU_ALL_ICON_MEDIUM, L"中图标");
-    AppendThemedMenuItem(iconMenu, MF_STRING | disabled | (hasTag && allLarge ? MF_CHECKED : 0), ID_MENU_ALL_ICON_LARGE, L"大图标");
+    AppendThemedStateMenuItem(iconMenu, MF_STRING | disabled, ID_MENU_ALL_ICON_SMALL, L"小图标", hasTag && allSmall, MenuIconSize);
+    AppendThemedStateMenuItem(iconMenu, MF_STRING | disabled, ID_MENU_ALL_ICON_MEDIUM, L"中图标", hasTag && allMedium, MenuIconSize);
+    AppendThemedStateMenuItem(iconMenu, MF_STRING | disabled, ID_MENU_ALL_ICON_LARGE, L"大图标", hasTag && allLarge, MenuIconSize);
     AppendThemedMenuItem(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(iconMenu), L"统一图标大小", true);
 
     HMENU layoutMenu = CreatePopupMenu();
-    AppendThemedMenuItem(layoutMenu, MF_STRING | disabled | (hasTag && allList ? MF_CHECKED : 0), ID_MENU_ALL_LAYOUT_LIST, L"列表");
-    AppendThemedMenuItem(layoutMenu, MF_STRING | disabled | (hasTag && allTile ? MF_CHECKED : 0), ID_MENU_ALL_LAYOUT_TILE, L"平铺");
+    AppendThemedStateMenuItem(layoutMenu, MF_STRING | disabled, ID_MENU_ALL_LAYOUT_LIST, L"列表", hasTag && allList, MenuIconList);
+    AppendThemedStateMenuItem(layoutMenu, MF_STRING | disabled, ID_MENU_ALL_LAYOUT_TILE, L"平铺", hasTag && allTile, MenuIconTile);
     AppendThemedMenuItem(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(layoutMenu), L"统一查看方式", true);
 
     HMENU sortMenu = CreatePopupMenu();
-    AppendThemedMenuItem(sortMenu, MF_STRING | disabled | (hasTag && allSortPos ? MF_CHECKED : 0), ID_MENU_ALL_SORT_POS, L"按位置");
-    AppendThemedMenuItem(sortMenu, MF_STRING | disabled | (hasTag && allSortRunCount ? MF_CHECKED : 0), ID_MENU_ALL_SORT_RUNCOUNT, L"按运行次数");
-    AppendThemedMenuItem(sortMenu, MF_STRING | disabled | (hasTag && allSortName ? MF_CHECKED : 0), ID_MENU_ALL_SORT_NAME, L"按名称");
+    const bool allSortRunCountSameDirection = allSortRunCount && (allSortAscending || allSortDescending);
+    const bool allSortNameSameDirection = allSortName && (allSortAscending || allSortDescending);
+    const int unifiedRunCountDirection = hasTag && allSortRunCount && allSortDescending ? 1 : DefaultLinkSortDirection(1);
+    const int unifiedNameDirection = hasTag && allSortName && allSortDescending ? 1 : 0;
+    AppendThemedStateMenuItem(sortMenu, MF_STRING | disabled, ID_MENU_ALL_SORT_POS, L"手动排序", hasTag && allSortPos, MenuIconSort);
+    AppendThemedStateMenuItem(sortMenu, MF_STRING | disabled, ID_MENU_ALL_SORT_RUNCOUNT, L"按运行次数", hasTag && allSortRunCountSameDirection, SortDirectionMenuIcon(1, unifiedRunCountDirection));
+    AppendThemedStateMenuItem(sortMenu, MF_STRING | disabled, ID_MENU_ALL_SORT_NAME, L"按名称", hasTag && allSortNameSameDirection, SortDirectionMenuIcon(2, unifiedNameDirection));
     AppendThemedMenuItem(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(sortMenu), L"统一排序方式", true);
 }
 
@@ -7705,28 +7734,38 @@ void MainWindow::ResetMenuVisuals() {
     activeMenuItems_.clear();
 }
 
-void MainWindow::AppendThemedMenuItem(HMENU menu, UINT flags, UINT_PTR id, const std::wstring& text, bool submenu, int systemImageIndex, int stockIcon, int menuIcon, bool checkedIconAccent) {
-    InsertThemedMenuItem(menu, static_cast<UINT>(-1), flags, id, text, submenu, systemImageIndex, stockIcon, menuIcon, checkedIconAccent);
+void MainWindow::AppendThemedMenuItem(HMENU menu, UINT flags, UINT_PTR id, const std::wstring& text, bool submenu, int systemImageIndex, int stockIcon, int menuIcon) {
+    InsertThemedMenuItem(menu, static_cast<UINT>(-1), flags, id, text, submenu, systemImageIndex, stockIcon, menuIcon);
 }
 
-void MainWindow::InsertThemedMenuItem(HMENU menu, UINT position, UINT flags, UINT_PTR id, const std::wstring& text, bool submenu, int systemImageIndex, int stockIcon, int menuIcon, bool checkedIconAccent) {
+void MainWindow::InsertThemedMenuItem(HMENU menu, UINT position, UINT flags, UINT_PTR id, const std::wstring& text, bool submenu, int systemImageIndex, int stockIcon, int menuIcon) {
     auto item = std::make_unique<MenuItemData>();
     item->text = MenuTextFromRaw(text);
     item->icon = menuIcon != MenuIconNone ? menuIcon : MenuIconFor(id, item->text);
     item->systemImageIndex = systemImageIndex;
     item->stockIcon = stockIcon;
-    item->checked = (flags & MF_CHECKED) != 0;
     item->disabled = (flags & (MF_DISABLED | MF_GRAYED)) != 0;
     item->submenu = submenu || ((flags & MF_POPUP) != 0);
-    item->checkedIconAccent = checkedIconAccent;
     MenuItemData* raw = item.get();
     activeMenuItems_.push_back(std::move(item));
-    const UINT menuFlags = (flags | MF_OWNERDRAW) & ~MF_STRING;
+    const UINT menuFlags = (flags | MF_OWNERDRAW) & ~(MF_STRING | MF_CHECKED);
     if (position == static_cast<UINT>(-1)) {
         AppendMenuW(menu, menuFlags, id, reinterpret_cast<LPCWSTR>(raw));
     } else {
         InsertMenuW(menu, position, menuFlags, id, reinterpret_cast<LPCWSTR>(raw));
     }
+}
+
+void MainWindow::AppendThemedStateMenuItem(HMENU menu, UINT flags, UINT_PTR id, const std::wstring& text, bool active, int menuIcon, bool submenu) {
+    auto item = std::make_unique<MenuItemData>();
+    item->text = MenuTextFromRaw(text);
+    item->icon = menuIcon != MenuIconNone ? menuIcon : MenuIconFor(id, item->text);
+    item->disabled = (flags & (MF_DISABLED | MF_GRAYED)) != 0;
+    item->submenu = submenu || ((flags & MF_POPUP) != 0);
+    item->iconTone = active ? MenuIconTone::Active : MenuIconTone::Muted;
+    MenuItemData* raw = item.get();
+    activeMenuItems_.push_back(std::move(item));
+    AppendMenuW(menu, (flags | MF_OWNERDRAW) & ~(MF_STRING | MF_CHECKED), id, reinterpret_cast<LPCWSTR>(raw));
 }
 
 void MainWindow::AppendThemedSeparator(HMENU menu) {
@@ -7824,9 +7863,12 @@ bool MainWindow::DrawThemedMenuItem(const DRAWITEMSTRUCT* draw) {
     const int iconTopInset = static_cast<int>(Metric(theme_, L"menuItem", L"iconInsetY", 6.0f));
     const int iconSize = static_cast<int>(Metric(theme_, L"menuItem", L"iconSize", 16.0f));
     const RECT iconRect{rc.left + iconLeft, rc.top + iconTopInset, rc.left + iconLeft + iconSize, rc.bottom - iconTopInset};
-    const COLORREF iconColorRef = item->checkedIconAccent
-        ? ToColorRef(theme_.color(L"menuItem", item->checked ? L"checked" : (item->disabled ? L"disabled" : L"normal"), L"icon"))
-        : CLR_INVALID;
+    COLORREF iconColorRef = CLR_INVALID;
+    if (item->iconTone == MenuIconTone::Active) {
+        iconColorRef = ToColorRef(theme_.color(L"menuItem", item->disabled ? L"disabled" : L"checked", L"icon"));
+    } else if (item->iconTone == MenuIconTone::Muted) {
+        iconColorRef = ToColorRef(theme_.color(L"menuItem", item->disabled ? L"disabled" : L"normal", L"icon"));
+    }
     MenuIconPalette iconPalette;
     iconPalette.accent = ToColorRef(theme_.color(L"menuItem", L"accent", L"icon"));
     iconPalette.danger = ToColorRef(theme_.color(L"menuItem", L"danger", L"icon"));
@@ -7848,36 +7890,9 @@ bool MainWindow::DrawThemedMenuItem(const DRAWITEMSTRUCT* draw) {
         DrawMenuIcon(dc, iconRect, item->icon, item->disabled, iconColorRef, iconPalette, appDirectory_);
     }
 
-    if (item->checked) {
-        if (item->checkedIconAccent) {
-            HPEN checkPen = CreatePen(PS_SOLID, static_cast<int>(Metric(theme_, L"menuItem", L"checkMarkWidth", 2.0f)), ToColorRef(theme_.color(L"menuItem", L"checked", L"mark")));
-            HGDIOBJ oldPen = SelectObject(dc, checkPen);
-            const int dotCenterY = (rc.top + rc.bottom) / 2;
-            const int checkRight = rc.right - static_cast<int>(Metric(theme_, L"menuItem", L"checkRight", 10.0f));
-            const int checkWidth = static_cast<int>(Metric(theme_, L"menuItem", L"checkWidth", 9.0f));
-            const int checkHeight = static_cast<int>(Metric(theme_, L"menuItem", L"checkHeight", 7.0f));
-            MoveToEx(dc, checkRight - checkWidth, dotCenterY - 1, nullptr);
-            LineTo(dc, checkRight - checkWidth / 2 - 1, dotCenterY + checkHeight / 2);
-            LineTo(dc, checkRight, dotCenterY - checkHeight / 2);
-            SelectObject(dc, oldPen);
-            DeleteObject(checkPen);
-        } else {
-            HBRUSH dotBrush = CreateSolidBrush(ToColorRef(theme_.color(L"menuItem", L"checked", L"mark")));
-            HGDIOBJ oldBrush = SelectObject(dc, dotBrush);
-            HPEN dotPen = CreatePen(PS_SOLID, 1, ToColorRef(theme_.color(L"menuItem", L"checked", L"mark")));
-            HGDIOBJ oldPen = SelectObject(dc, dotPen);
-            const int dotCenterY = (rc.top + rc.bottom) / 2;
-            Ellipse(dc, rc.left + 3, dotCenterY - 2, rc.left + 7, dotCenterY + 2);
-            SelectObject(dc, oldPen);
-            SelectObject(dc, oldBrush);
-            DeleteObject(dotPen);
-            DeleteObject(dotBrush);
-        }
-    }
-
     RECT textRect = rc;
     textRect.left += static_cast<int>(Metric(theme_, L"menuItem", L"textLeft", 34.0f));
-    textRect.right -= item->submenu ? static_cast<int>(Metric(theme_, L"menuItem", L"submenuRight", 22.0f)) : static_cast<int>(Metric(theme_, L"menuItem", item->checked && item->checkedIconAccent ? L"checkedTextRight" : L"textRight", item->checked && item->checkedIconAccent ? 28.0f : 8.0f));
+    textRect.right -= item->submenu ? static_cast<int>(Metric(theme_, L"menuItem", L"submenuRight", 22.0f)) : static_cast<int>(Metric(theme_, L"menuItem", L"textRight", 8.0f));
     SetBkMode(dc, TRANSPARENT);
     SetTextColor(dc, ToColorRef(theme_.color(L"menuItem", item->disabled ? L"disabled" : L"normal", L"text")));
     HFONT font = reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
@@ -8511,21 +8526,9 @@ std::vector<Link*> MainWindow::LinksForCurrentTag() {
         }
     }
     const int sortMode = tag ? tag->sort : 0;
-    std::sort(links.begin(), links.end(), [sortMode](const Link* left, const Link* right) {
-        if (sortMode == 1 && left->runCount != right->runCount) {
-            return left->runCount > right->runCount;
-        }
-        if (sortMode == 2) {
-            const std::wstring leftName = InitialSortKey(left->name);
-            const std::wstring rightName = InitialSortKey(right->name);
-            if (leftName != rightName) {
-                return leftName < rightName;
-            }
-        }
-        if (left->pos != right->pos) {
-            return left->pos < right->pos;
-        }
-        return left->id < right->id;
+    const int sortDirection = tag ? tag->sortDirection : 0;
+    std::sort(links.begin(), links.end(), [sortMode, sortDirection](const Link* left, const Link* right) {
+        return LinkSortLess(left, right, sortMode, sortDirection);
     });
     return links;
 }
