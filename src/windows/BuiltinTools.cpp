@@ -74,6 +74,8 @@ constexpr int ID_LOCATOR_PICK = 7502;
 constexpr int ID_LOCATOR_KILL = 7503;
 constexpr int ID_LOCATOR_OPEN = 7504;
 constexpr int ID_LOCATOR_GLOBAL_HOTKEY = 7505;
+constexpr int ID_LOCATOR_PID_VALUE = 7506;
+constexpr int ID_LOCATOR_PATH_VALUE = 7507;
 constexpr UINT WM_QUATTRO_TOOL_AUTOMATION = WM_APP + 0x80;
 constexpr UINT WM_QUATTRO_TOOL_TIMER_AUTOMATION = WM_APP + 0x81;
 constexpr UINT kTimerDisplayIntervalMs = 33;
@@ -2121,6 +2123,9 @@ private:
                 LocateHoveredProcess();
             }
             return 0;
+        case WM_PAINT:
+            PaintFields();
+            return 0;
         case WM_CLOSE:
             DestroyWindow(hwnd_);
             return 0;
@@ -2149,13 +2154,15 @@ private:
         const int row2 = ui.nextRowY(row1, rowHeight) + layout.sectionGap;
 
         ui.Label(L"进程 ID", left, row0 + labelOffsetY, layout.labelWidth);
-        pidValue_ = ui.FramedStatic(L"等待获取", ui.rect(fieldX, row0 + fieldOffsetY, fieldWidth, fieldHeight));
+        pidFrame_ = ui.rect(fieldX, row0 + fieldOffsetY, fieldWidth, fieldHeight);
+        pidValue_ = ui.SingleLineEdit(ID_LOCATOR_PID_VALUE, pidFrame_, L"等待获取", ES_AUTOHSCROLL | ES_READONLY);
         killButton_ = ui.Button(
             ID_LOCATOR_KILL, L"结束进程", fieldX + fieldWidth + layout.controlGapX, row0 + buttonOffsetY,
             ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, actionWidth);
 
         ui.Label(L"绝对路径", left, row1 + labelOffsetY, layout.labelWidth);
-        pathValue_ = ui.FramedStatic(L"等待获取", ui.rect(fieldX, row1 + fieldOffsetY, fieldWidth, fieldHeight));
+        pathFrame_ = ui.rect(fieldX, row1 + fieldOffsetY, fieldWidth, fieldHeight);
+        pathValue_ = ui.SingleLineEdit(ID_LOCATOR_PATH_VALUE, pathFrame_, L"等待获取", ES_AUTOHSCROLL | ES_READONLY);
         openButton_ = ui.Button(
             ID_LOCATOR_OPEN, L"打开所在目录", fieldX + fieldWidth + layout.controlGapX, row1 + buttonOffsetY,
             ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, actionWidth);
@@ -2196,6 +2203,14 @@ private:
             SS_CENTER);
         UpdateActionButtons();
         SaveAndRegisterHotKey();
+    }
+
+    void PaintFields() {
+        PAINTSTRUCT ps{};
+        HDC dc = BeginPaint(hwnd_, &ps);
+        ThemedControls::DrawFieldFrame(theme_, dc, pidFrame_, pidValue_, true);
+        ThemedControls::DrawFieldFrame(theme_, dc, pathFrame_, pathValue_, true);
+        EndPaint(hwnd_, &ps);
     }
 
     std::wstring SelectedHotKey() const {
@@ -2290,6 +2305,8 @@ private:
     HWND hwnd_ = nullptr;
     HWND pidValue_ = nullptr;
     HWND pathValue_ = nullptr;
+    RECT pidFrame_{};
+    RECT pathFrame_{};
     HWND hotKey_ = nullptr;
     HWND killButton_ = nullptr;
     HWND openButton_ = nullptr;
