@@ -9,6 +9,7 @@
 #include "Models.h"
 #include "PluginRegistry.h"
 #include "Storage.h"
+#include "SystemFunctions.h"
 #include "Theme.h"
 #include "UrlIconDownloadService.h"
 
@@ -230,6 +231,9 @@ private:
     void ShowToolMenu(POINT screenPoint);
     void ShowLinkMenu(int linkId, POINT screenPoint);
     void AppendLinkActionItems(HMENU menu, Link* link, bool includeNativeMenuItem);
+    void AppendBuiltinSystemContextItems(HMENU menu, const Link& link);
+    void ExecuteBuiltinSystemContextAction(int linkId, BuiltinSystemContextAction action);
+    void RestoreLegacyBuiltinSystemFunctionKeys();
     void CreateTooltip();
     void ApplyTooltipTheme();
     void HideItemTooltip();

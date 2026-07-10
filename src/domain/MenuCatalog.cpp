@@ -70,6 +70,9 @@ int MenuIconFor(UINT_PTR id, const std::wstring& text) {
     if (id >= ID_MENU_MOVE_TAG_TO_BASE && id < ID_MENU_MOVE_TAG_TO_BASE + ID_MENU_DYNAMIC_TARGET_LIMIT) {
         return MenuIconMove;
     }
+    if (id >= ID_MENU_BUILTIN_SYSTEM_ACTION_BASE && id < ID_MENU_BUILTIN_SYSTEM_ACTION_BASE + ID_MENU_BUILTIN_SYSTEM_ACTION_LIMIT) {
+        return MenuIconSystem;
+    }
 
     switch (id) {
     case ID_MENU_ADD_LINK: return MenuIconFile;

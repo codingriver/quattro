@@ -23,6 +23,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <unordered_set>
 #include <string>
 #include <vector>
 
@@ -430,7 +431,10 @@ int wmain() {
     bool hasPowerActions = false;
     bool hasRemovedAudioActions = false;
     bool genericCommandActionsHaveIconOverrides = true;
+    std::unordered_set<std::wstring> systemFunctionKeys;
     for (std::size_t i = 0; i < systemFunctions.size(); ++i) {
+        Check(systemFunctions[i].key && *systemFunctions[i].key, "System function stable key exists");
+        Check(systemFunctionKeys.insert(systemFunctions[i].key).second, "System function stable key unique");
         if (std::wstring(systemFunctions[i].name) == L"我的电脑") {
             hasComputer = true;
             Link systemLink;
@@ -439,7 +443,22 @@ int wmain() {
             Check(systemLink.type == 3, "System function computer type");
             Check(systemLink.path == L"::{20D04FE0-3AEA-1069-A2D8-08002B30309D}", "System function computer path");
             Check(systemLink.parameter.empty(), "System function computer parameter");
+            Check(systemLink.systemFunctionKey == L"this-pc", "System function computer stable key");
             Check(SystemFunctionForLink(systemLink) != nullptr, "System function computer lookup");
+            Check(BuiltinSystemFunctionForLink(systemLink) != nullptr, "Builtin system function computer lookup");
+            Check(BuiltinSystemContextMenuItems(systemLink).size() == 3, "This PC fixed context menu count");
+        }
+        if (std::wstring(systemFunctions[i].name) == L"网络") {
+            Link networkLink;
+            Check(ConfigureSystemFunctionLink(i, networkLink), "System function configure network");
+            Check(BuiltinSystemContextMenuItems(networkLink).size() == 2, "Network fixed context menu count");
+        }
+        if (std::wstring(systemFunctions[i].name) == L"回收站") {
+            Link recycleBinLink;
+            Check(ConfigureSystemFunctionLink(i, recycleBinLink), "System function configure recycle bin");
+            const auto contextItems = BuiltinSystemContextMenuItems(recycleBinLink);
+            Check(contextItems.size() == 1 && contextItems.front().action == BuiltinSystemContextAction::EmptyRecycleBin,
+                  "Recycle Bin fixed context menu");
         }
         if (std::wstring(systemFunctions[i].name) == L"系统自启目录" ||
             std::wstring(systemFunctions[i].name) == L"用户自启目录") {
@@ -473,6 +492,21 @@ int wmain() {
     Check(hasPowerActions, "System function contains power actions");
     Check(!hasRemovedAudioActions, "System function excludes audio actions");
     Check(genericCommandActionsHaveIconOverrides, "System function generic command icon overrides");
+    Link customComputerLink;
+    customComputerLink.name = L"自定义电脑入口";
+    customComputerLink.type = 3;
+    customComputerLink.path = L"::{20D04FE0-3AEA-1069-A2D8-08002B30309D}";
+    customComputerLink.showCmd = SW_SHOWNORMAL;
+    Check(BuiltinSystemContextMenuItems(customComputerLink).empty(), "Custom matching target has no fixed context menu");
+    Check(!RestoreLegacyBuiltinSystemFunctionKey(customComputerLink), "Custom matching target is not restored as builtin");
+
+    Link legacyComputerLink;
+    legacyComputerLink.name = L"我的电脑";
+    legacyComputerLink.type = 3;
+    legacyComputerLink.path = L"::{20D04FE0-3AEA-1069-A2D8-08002B30309D}";
+    legacyComputerLink.showCmd = SW_SHOWNORMAL;
+    Check(RestoreLegacyBuiltinSystemFunctionKey(legacyComputerLink), "Legacy builtin system function key restored");
+    Check(legacyComputerLink.systemFunctionKey == L"this-pc", "Legacy builtin stable key restored");
     Link invalidSystemLink;
     Check(!ConfigureSystemFunctionLink(systemFunctions.size(), invalidSystemLink), "System function invalid index");
 
@@ -654,6 +688,7 @@ int wmain() {
     link.type = 2;
     link.pos = -1;
     link.pidl = {6, 0, 1, 2, 3, 4, 0, 0};
+    link.systemFunctionKey = L"this-pc";
     Check(storage.InsertLink(link) && link.id > 0, "Storage insert link");
 
     link.remark = L"updated";
@@ -671,7 +706,8 @@ int wmain() {
     Check(foundTagSortDirection, "Storage reload tag sort direction");
     bool foundLink = false;
     for (const auto& item : loadedModel.links) {
-        if (item.id == link.id && item.remark == L"updated" && item.runCount == 5 && item.pidl == link.pidl) {
+        if (item.id == link.id && item.remark == L"updated" && item.runCount == 5 && item.pidl == link.pidl &&
+            item.systemFunctionKey == link.systemFunctionKey) {
             foundLink = true;
             break;
         }
@@ -759,6 +795,51 @@ int wmain() {
     Check(legacyRunCountDirectionMigrated, "Legacy run count sort migrates to descending");
     std::filesystem::remove_all(legacySortRoot, ec);
 
+    const std::filesystem::path legacySystemKeyRoot = std::filesystem::temp_directory_path() / L"quattro_system_function_key_legacy_unit";
+    std::filesystem::remove_all(legacySystemKeyRoot, ec);
+    std::filesystem::create_directories(legacySystemKeyRoot / L"db", ec);
+    {
+        sqlite3* legacyDb = nullptr;
+        Check(sqlite3_open16((legacySystemKeyRoot / L"db" / L"link.db").c_str(), &legacyDb) == SQLITE_OK && legacyDb,
+              "Legacy system function key db open");
+        if (legacyDb) {
+            Check(ExecSql(
+                      legacyDb,
+                      "CREATE TABLE Version(ID INTEGER PRIMARY KEY, Ver INTEGER);"
+                      "INSERT INTO Version(ID,Ver) VALUES(1,20001);"
+                      "CREATE TABLE Groups("
+                      "ID INTEGER PRIMARY KEY AUTOINCREMENT,NAME CHARACTER(16) NOT NULL,TYPE INTEGER DEFAULT 0,"
+                      "SORT INTEGER DEFAULT 0,SORTDIRECTION INTEGER DEFAULT 0,POS INTEGER DEFAULT 0,"
+                      "ParentGroup INTEGER DEFAULT 0,ICON TEXT,LAYOUT INTEGER DEFAULT 0,ICONSIZE INTEGER DEFAULT 0,"
+                      "FLAG INTEGER DEFAULT 0,Content TEXT);"
+                      "INSERT INTO Groups(ID,NAME,POS,ParentGroup,ICONSIZE,LAYOUT) VALUES(1,'LegacyGroup',0,0,0,0);"
+                      "INSERT INTO Groups(ID,NAME,POS,ParentGroup,ICONSIZE,LAYOUT) VALUES(2,'LegacyTag',0,1,32,0);"
+                      "CREATE TABLE Links("
+                      "ID INTEGER PRIMARY KEY AUTOINCREMENT,NAME TEXT NOT NULL,POS INTEGER DEFAULT 0,RunCount INTEGER DEFAULT 0,"
+                      "ParentGroup INTEGER DEFAULT 0,TYPE INTEGER DEFAULT 0,ICON TEXT NOT NULL DEFAULT '',PATH TEXT NOT NULL DEFAULT '',"
+                      "Parameter TEXT NOT NULL DEFAULT '',WorkDir TEXT NOT NULL DEFAULT '',HotKey INTEGER DEFAULT 0,ShowCmd INTEGER DEFAULT 0,"
+                      "IsAdmin INTEGER DEFAULT 0,IsCustomColor INTEGER DEFAULT 0,CustomColor CHARACTER(10),Remark TEXT,Pidl BLOB);"
+                      "INSERT INTO Links(ID,NAME,POS,ParentGroup,TYPE,PATH,ShowCmd) "
+                      "VALUES(1,'我的电脑',0,2,3,'::{20D04FE0-3AEA-1069-A2D8-08002B30309D}',1);"),
+                  "Legacy system function key db seed");
+            sqlite3_close(legacyDb);
+        }
+    }
+    StorageService legacySystemKeyStorage(legacySystemKeyRoot);
+    AppModel legacySystemKeyModel = legacySystemKeyStorage.Load();
+    Check(legacySystemKeyStorage.sqliteAvailable(), "Legacy system function key storage sqlite available");
+    Check(legacySystemKeyModel.links.size() == 1 && legacySystemKeyModel.links.front().systemFunctionKey.empty(),
+          "Legacy link survives system function key migration");
+    if (!legacySystemKeyModel.links.empty()) {
+        legacySystemKeyModel.links.front().systemFunctionKey = L"this-pc";
+        Check(legacySystemKeyStorage.UpdateLink(legacySystemKeyModel.links.front()), "Migrated link writes system function key");
+        AppModel reloadedLegacySystemKeyModel = legacySystemKeyStorage.Load();
+        Check(reloadedLegacySystemKeyModel.links.size() == 1 &&
+                  reloadedLegacySystemKeyModel.links.front().systemFunctionKey == L"this-pc",
+              "Migrated link reloads system function key");
+    }
+    std::filesystem::remove_all(legacySystemKeyRoot, ec);
+
     const std::filesystem::path packageSourceRoot = std::filesystem::temp_directory_path() / L"quattro_package_source_unit";
     const std::filesystem::path packageTargetRoot = std::filesystem::temp_directory_path() / L"quattro_package_target_unit";
     const std::filesystem::path packagePath = std::filesystem::temp_directory_path() / L"quattro_package_unit.q4cfg";
@@ -821,6 +902,7 @@ int wmain() {
     sourceLink.type = 2;
     sourceLink.pos = -1;
     sourceLink.runCount = 9;
+    sourceLink.systemFunctionKey = L"this-pc";
     Check(sourceStorage.InsertLink(sourceLink), "Package source link insert");
     Link duplicateSourceLink;
     duplicateSourceLink.name = L"PackageDuplicateLink";
@@ -890,7 +972,8 @@ int wmain() {
         if (item.path == L"https://target.example") {
             ++duplicateLinkCount;
         }
-        if (item.name == L"PackageLink" && item.path == L"https://package.example" && item.runCount == 9) {
+        if (item.name == L"PackageLink" && item.path == L"https://package.example" && item.runCount == 9 &&
+            item.systemFunctionKey == L"this-pc") {
             hasImportedLink = true;
             for (const auto& groupItem : mergedModel.groups) {
                 importedLinkParentExists = importedLinkParentExists || groupItem.id == item.parentGroup;

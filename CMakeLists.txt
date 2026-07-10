@@ -346,6 +346,14 @@ add_executable(QuattroAboutTrayExitAcceptance
     tests/AboutTrayExitAcceptance.cpp
 )
 
+add_executable(QuattroBuiltinSystemContextMenuAcceptance
+    tests/BuiltinSystemContextMenuAcceptance.cpp
+    src/common/AppLog.cpp
+    src/services/Storage.cpp
+    src/domain/TodoSchedule.cpp
+    src/common/Utilities.cpp
+)
+
 add_executable(QuattroWebDavAcceptance
     tests/WebDavAcceptance.cpp
     src/common/AppLog.cpp
@@ -428,6 +436,14 @@ target_compile_definitions(QuattroAboutTrayExitAcceptance PRIVATE
     NOMINMAX
 )
 
+target_compile_definitions(QuattroBuiltinSystemContextMenuAcceptance PRIVATE
+    UNICODE
+    _UNICODE
+    WINVER=0x0A00
+    _WIN32_WINNT=0x0A00
+    NOMINMAX
+)
+
 target_compile_definitions(QuattroWebDavAcceptance PRIVATE
     UNICODE
     _UNICODE
@@ -471,6 +487,10 @@ target_compile_options(QuattroUiScreenshotAcceptance PRIVATE
 )
 
 target_compile_options(QuattroAboutTrayExitAcceptance PRIVATE
+    $<$<CXX_COMPILER_ID:MSVC>:/W4 /permissive- /EHsc /utf-8>
+)
+
+target_compile_options(QuattroBuiltinSystemContextMenuAcceptance PRIVATE
     $<$<CXX_COMPILER_ID:MSVC>:/W4 /permissive- /EHsc /utf-8>
 )
 
@@ -558,6 +578,12 @@ target_link_libraries(QuattroUiScreenshotAcceptance PRIVATE
 )
 
 target_link_libraries(QuattroAboutTrayExitAcceptance PRIVATE
+    user32
+)
+
+target_link_libraries(QuattroBuiltinSystemContextMenuAcceptance PRIVATE
+    sqlite3
+    ccronexpr
     user32
 )
 
@@ -762,6 +788,7 @@ target_link_libraries(Quattro PRIVATE
     d2d1
     dwrite
     iphlpapi
+    mpr
     ole32
     oleaut32
     shell32

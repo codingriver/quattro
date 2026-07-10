@@ -41,6 +41,7 @@
 #include <endpointvolume.h>
 #include <mmdeviceapi.h>
 #include <mutex>
+#include <winnetwk.h>
 #include <optional>
 #include <shlobj.h>
 #include <shobjidl.h>
@@ -2108,6 +2109,7 @@ MainWindow::MainWindow(
       iconService_(appDirectory_),
       urlIconDownloadService_(appDirectory_),
       runningAsAdmin_(IsRunningAsAdmin()) {
+    RestoreLegacyBuiltinSystemFunctionKeys();
     if (config_.preferAdminRun != runningAsAdmin_) {
         config_.preferAdminRun = runningAsAdmin_;
         configService_.Save(config_);
@@ -2826,6 +2828,12 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         }
         if (command >= ID_MENU_ADD_SYSTEM_FUNCTION_BASE && command < ID_MENU_ADD_SYSTEM_FUNCTION_BASE + ID_MENU_ADD_SYSTEM_FUNCTION_LIMIT) {
             AddSystemFunction(static_cast<std::size_t>(command - ID_MENU_ADD_SYSTEM_FUNCTION_BASE));
+            return 0;
+        }
+        if (command >= ID_MENU_BUILTIN_SYSTEM_ACTION_BASE && command < ID_MENU_BUILTIN_SYSTEM_ACTION_BASE + ID_MENU_BUILTIN_SYSTEM_ACTION_LIMIT) {
+            ExecuteBuiltinSystemContextAction(
+                CommandLinkId(),
+                static_cast<BuiltinSystemContextAction>(command - ID_MENU_BUILTIN_SYSTEM_ACTION_BASE));
             return 0;
         }
         if (command >= ID_MENU_TOOL_BASE && command < ID_MENU_TOOL_BASE + ID_MENU_TOOL_LIMIT) {
@@ -4859,6 +4867,7 @@ void MainWindow::OpenSettings() {
     if (!ShowSettingsDialog(hwnd_, instance_, next, theme_, appDirectory_, httpRootBaseDirectory_, &importedData, &httpServerService_, mainHotKeyRegistered_, applySettings)) {
         if (importedData) {
             model_ = storageService_.Load();
+            RestoreLegacyBuiltinSystemFunctionKeys();
             SelectInitialItems();
             RegisterConfiguredHotKeys();
             ClearUiBitmaps();
@@ -4886,6 +4895,7 @@ void MainWindow::CommitSettingsConfig(const AppConfig& next, bool importedData) 
     ApplyConfigRuntimeChanges(previous);
     if (importedData) {
         model_ = storageService_.Load();
+        RestoreLegacyBuiltinSystemFunctionKeys();
         SelectInitialItems();
         RegisterConfiguredHotKeys();
         ClearUiBitmaps();
@@ -5651,6 +5661,7 @@ void MainWindow::ImportConfigPackageMerge() {
     const ConfigPackageReport report = service.ImportPackageMerge(buffer.c_str(), options);
     if (report.ok) {
         model_ = storageService_.Load();
+        RestoreLegacyBuiltinSystemFunctionKeys();
         SelectInitialItems();
         RegisterConfiguredHotKeys();
         ClearUiBitmaps();
@@ -6076,12 +6087,13 @@ void MainWindow::ShowLinkMenu(int linkId, POINT screenPoint) {
 
 void MainWindow::AppendLinkActionItems(HMENU menu, Link* link, bool includeNativeMenuItem) {
     const bool isUrl = link && IsUrlLink(*link);
+    const bool isBuiltinSystemFunction = link && BuiltinSystemFunctionForLink(*link);
     AppendThemedMenuItem(menu, MF_STRING, isUrl ? ID_MENU_RUN_PRIVATE : ID_MENU_RUN_ADMIN, isUrl ? L"以隐私模式运行" : L"以管理员身份运行");
     AppendThemedMenuItem(menu, MF_STRING, isUrl ? ID_MENU_COPY_URL : ID_MENU_OPEN_LOCATION, isUrl ? L"复制网址(URL)" : L"打开文件位置");
     if (!isUrl) {
         AppendThemedMenuItem(menu, MF_STRING, ID_MENU_COPY_PATH, L"复制路径");
     }
-    if (includeNativeMenuItem && link && !isUrl) {
+    if (includeNativeMenuItem && link && !isUrl && !isBuiltinSystemFunction) {
         AppendThemedMenuItem(menu, MF_STRING, ID_MENU_WINDOWS_CONTEXT, L"Windows 原生菜单", false, -1, -1, MenuIconWindows);
     }
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_CREATE_DESKTOP_SHORTCUT, L"创建桌面快捷方式");
@@ -6097,6 +6109,78 @@ void MainWindow::AppendLinkActionItems(HMENU menu, Link* link, bool includeNativ
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_EDIT_LINK, L"编辑");
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_PROPERTIES, L"属性");
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_DELETE_LINK, L"删除");
+    if (includeNativeMenuItem && isBuiltinSystemFunction) {
+        AppendThemedSeparator(menu);
+        AppendBuiltinSystemContextItems(menu, *link);
+        AppendThemedMenuItem(menu, MF_STRING, ID_MENU_WINDOWS_CONTEXT, L"Windows 原生菜单", false, -1, -1, MenuIconWindows);
+    }
+}
+
+void MainWindow::AppendBuiltinSystemContextItems(HMENU menu, const Link& link) {
+    const auto items = BuiltinSystemContextMenuItems(link);
+    if (items.empty()) {
+        return;
+    }
+    for (const auto& item : items) {
+        AppendThemedMenuItem(
+            menu,
+            MF_STRING,
+            ID_MENU_BUILTIN_SYSTEM_ACTION_BASE + static_cast<UINT>(item.action),
+            item.text,
+            false,
+            -1,
+            -1,
+            item.menuIcon);
+    }
+}
+
+void MainWindow::RestoreLegacyBuiltinSystemFunctionKeys() {
+    for (auto& link : model_.links) {
+        if (RestoreLegacyBuiltinSystemFunctionKey(link)) {
+            storageService_.UpdateLink(link);
+        }
+    }
+}
+
+void MainWindow::ExecuteBuiltinSystemContextAction(int linkId, BuiltinSystemContextAction action) {
+    Link* link = FindLink(linkId);
+    if (!link) {
+        return;
+    }
+
+    const auto items = BuiltinSystemContextMenuItems(*link);
+    const bool allowed = std::any_of(items.begin(), items.end(), [action](const auto& item) {
+        return item.action == action;
+    });
+    if (!allowed) {
+        return;
+    }
+
+    DWORD result = NO_ERROR;
+    switch (action) {
+    case BuiltinSystemContextAction::ManageComputer:
+        if (reinterpret_cast<INT_PTR>(ShellExecuteW(hwnd_, L"open", L"compmgmt.msc", nullptr, nullptr, SW_SHOWNORMAL)) <= 32) {
+            MessageBoxW(hwnd_, L"无法打开计算机管理。", L"系统功能", MB_OK | MB_ICONWARNING);
+        }
+        return;
+    case BuiltinSystemContextAction::MapNetworkDrive:
+        result = WNetConnectionDialog(hwnd_, RESOURCETYPE_DISK);
+        break;
+    case BuiltinSystemContextAction::DisconnectNetworkDrive:
+        result = WNetDisconnectDialog(hwnd_, RESOURCETYPE_DISK);
+        break;
+    case BuiltinSystemContextAction::EmptyRecycleBin: {
+        const HRESULT hr = SHEmptyRecycleBinW(hwnd_, nullptr, 0);
+        if (FAILED(hr) && hr != HRESULT_FROM_WIN32(ERROR_CANCELLED)) {
+            MessageBoxW(hwnd_, L"清空回收站失败。", L"回收站", MB_OK | MB_ICONWARNING);
+        }
+        return;
+    }
+    }
+
+    if (result != NO_ERROR && result != ERROR_CANCELLED) {
+        MessageBoxW(hwnd_, (L"Windows 系统操作失败，错误代码：" + std::to_wstring(result)).c_str(), L"系统功能", MB_OK | MB_ICONWARNING);
+    }
 }
 
 void MainWindow::ShowTodoMenu(int todoId, POINT screenPoint) {

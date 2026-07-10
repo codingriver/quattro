@@ -12,7 +12,7 @@
 #include <vector>
 
 namespace {
-constexpr int kSchemaVersion = 20001;
+constexpr int kSchemaVersion = 20002;
 
 class SQLiteDatabase {
 public:
@@ -160,7 +160,8 @@ void CreateSchema(sqlite3* db, std::wstring& error) {
          "IsCustomColor INTEGER DEFAULT 0,"
          "CustomColor CHARACTER(10),"
          "Remark TEXT,"
-         "Pidl BLOB);"
+         "Pidl BLOB,"
+         "SystemFunctionKey TEXT NOT NULL DEFAULT '');"
          "CREATE TABLE IF NOT EXISTS NotePages("
          "TagId INTEGER PRIMARY KEY,"
          "Content TEXT NOT NULL DEFAULT '',"
@@ -232,6 +233,7 @@ bool NeedsSchemaMigration(sqlite3* db) {
            !HasTable(db, L"TodoItems") ||
            !HasColumn(db, L"Groups", L"SortDirection") ||
            !HasColumn(db, L"Links", L"Pidl") ||
+           !HasColumn(db, L"Links", L"SystemFunctionKey") ||
            !HasColumn(db, L"TodoItems", L"Enabled") ||
            !HasColumn(db, L"TodoItems", L"RepeatInterval") ||
            !HasColumn(db, L"TodoItems", L"RepeatMode") ||
@@ -280,6 +282,9 @@ void MigrateSchema(sqlite3* db, std::wstring& error) {
     }
     if (!HasColumn(db, L"Links", L"Pidl")) {
         Exec(db, "ALTER TABLE Links ADD COLUMN Pidl BLOB;", error);
+    }
+    if (!HasColumn(db, L"Links", L"SystemFunctionKey")) {
+        Exec(db, "ALTER TABLE Links ADD COLUMN SystemFunctionKey TEXT NOT NULL DEFAULT '';", error);
     }
     Exec(db,
          "CREATE TABLE IF NOT EXISTS NotePages("
@@ -376,6 +381,7 @@ bool NormalizeLinkForSave(sqlite3* db, Link& link) {
     link.parameter = Trim(link.parameter);
     link.workDir = Trim(link.workDir);
     link.remark = Trim(link.remark);
+    link.systemFunctionKey = Trim(link.systemFunctionKey);
     if (link.name.empty() || link.path.empty()) {
         return false;
     }
@@ -583,7 +589,7 @@ AppModel StorageService::Load() {
     {
         SQLiteStatement statement(db.get(),
             L"SELECT ID,NAME,ParentGroup,TYPE,POS,ICON,PATH,Parameter,WorkDir,"
-            L"IsAdmin,IsCustomColor,CustomColor,Remark,RunCount,HotKey,ShowCmd,Pidl "
+            L"IsAdmin,IsCustomColor,CustomColor,Remark,RunCount,HotKey,ShowCmd,Pidl,SystemFunctionKey "
             L"FROM Links ORDER BY POS,ID;");
         if (statement.ok()) {
             while (statement.step() == SQLITE_ROW) {
@@ -605,6 +611,7 @@ AppModel StorageService::Load() {
                 link.hotKey = statement.columnInt(14);
                 link.showCmd = statement.columnInt(15);
                 link.pidl = statement.columnBlob(16);
+                link.systemFunctionKey = statement.columnText(17);
                 model.links.push_back(std::move(link));
             }
         }
@@ -838,8 +845,8 @@ bool StorageService::InsertLink(Link& link) {
 
     SQLiteStatement statement(db.get(),
         L"INSERT INTO Links(NAME,ParentGroup,TYPE,POS,ICON,PATH,Parameter,WorkDir,"
-        L"IsAdmin,IsCustomColor,CustomColor,Remark,RunCount,HotKey,ShowCmd,Pidl) "
-        L"VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);");
+        L"IsAdmin,IsCustomColor,CustomColor,Remark,RunCount,HotKey,ShowCmd,Pidl,SystemFunctionKey) "
+        L"VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);");
     if (!statement.ok()) {
         lastError_ = L"新增启动项 SQL 准备失败。";
         return false;
@@ -860,6 +867,7 @@ bool StorageService::InsertLink(Link& link) {
     statement.bindInt(14, link.hotKey);
     statement.bindInt(15, link.showCmd);
     statement.bindBlob(16, link.pidl);
+    statement.bindText(17, link.systemFunctionKey);
     if (statement.step() != SQLITE_DONE) {
         const void* message = sqlite3_errmsg16(db.get());
         lastError_ = message ? static_cast<const wchar_t*>(message) : L"新增启动项失败。";
@@ -887,7 +895,7 @@ bool StorageService::UpdateLink(const Link& source) {
 
     SQLiteStatement statement(db.get(),
         L"UPDATE Links SET NAME=?,ParentGroup=?,TYPE=?,POS=?,ICON=?,PATH=?,Parameter=?,WorkDir=?,"
-        L"IsAdmin=?,IsCustomColor=?,CustomColor=?,Remark=?,RunCount=?,HotKey=?,ShowCmd=?,Pidl=? WHERE ID=?;");
+        L"IsAdmin=?,IsCustomColor=?,CustomColor=?,Remark=?,RunCount=?,HotKey=?,ShowCmd=?,Pidl=?,SystemFunctionKey=? WHERE ID=?;");
     if (!statement.ok()) {
         lastError_ = L"更新启动项 SQL 准备失败。";
         return false;
@@ -908,7 +916,8 @@ bool StorageService::UpdateLink(const Link& source) {
     statement.bindInt(14, link.hotKey);
     statement.bindInt(15, link.showCmd);
     statement.bindBlob(16, link.pidl);
-    statement.bindInt(17, link.id);
+    statement.bindText(17, link.systemFunctionKey);
+    statement.bindInt(18, link.id);
     if (statement.step() != SQLITE_DONE) {
         const void* message = sqlite3_errmsg16(db.get());
         lastError_ = message ? static_cast<const wchar_t*>(message) : L"更新启动项失败。";

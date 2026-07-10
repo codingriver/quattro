@@ -685,7 +685,10 @@ private:
         if (next.showCmd <= 0) {
             next.showCmd = SW_SHOWNORMAL;
         }
-        const bool targetChanged = next.path != link_.path || next.type != link_.type;
+        const bool targetChanged = next.path != link_.path || next.parameter != link_.parameter || next.type != link_.type;
+        if (targetChanged) {
+            next.systemFunctionKey.clear();
+        }
         ShellItemService::RefreshLinkShellData(next, targetChanged);
 
         link_ = std::move(next);

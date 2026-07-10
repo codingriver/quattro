@@ -132,6 +132,7 @@ struct Link {
     std::wstring remark;
     int runCount = 0;
     std::vector<std::uint8_t> pidl;
+    std::wstring systemFunctionKey;
 };
 
 struct NotePage {
