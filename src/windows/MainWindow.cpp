@@ -6088,13 +6088,22 @@ void MainWindow::ShowLinkMenu(int linkId, POINT screenPoint) {
 void MainWindow::AppendLinkActionItems(HMENU menu, Link* link, bool includeNativeMenuItem) {
     const bool isUrl = link && IsUrlLink(*link);
     const bool isBuiltinSystemFunction = link && BuiltinSystemFunctionForLink(*link);
-    AppendThemedMenuItem(menu, MF_STRING, isUrl ? ID_MENU_RUN_PRIVATE : ID_MENU_RUN_ADMIN, isUrl ? L"以隐私模式运行" : L"以管理员身份运行");
-    AppendThemedMenuItem(menu, MF_STRING, isUrl ? ID_MENU_COPY_URL : ID_MENU_OPEN_LOCATION, isUrl ? L"复制网址(URL)" : L"打开文件位置");
-    if (!isUrl) {
-        AppendThemedMenuItem(menu, MF_STRING, ID_MENU_COPY_PATH, L"复制路径");
+
+    if (includeNativeMenuItem && isBuiltinSystemFunction) {
+        AppendBuiltinSystemContextItems(menu, *link);
+        AppendThemedSeparator(menu);
     }
-    if (includeNativeMenuItem && link && !isUrl && !isBuiltinSystemFunction) {
-        AppendThemedMenuItem(menu, MF_STRING, ID_MENU_WINDOWS_CONTEXT, L"Windows 原生菜单", false, -1, -1, MenuIconWindows);
+
+    if (isUrl) {
+        AppendThemedMenuItem(menu, MF_STRING, ID_MENU_RUN_PRIVATE, L"以隐私模式运行");
+        AppendThemedMenuItem(menu, MF_STRING, ID_MENU_COPY_URL, L"复制网址(URL)");
+    } else {
+        AppendThemedMenuItem(menu, MF_STRING, ID_MENU_OPEN_LOCATION, L"打开文件位置");
+        AppendThemedMenuItem(menu, MF_STRING, ID_MENU_RUN_ADMIN, L"以管理员身份运行");
+        AppendThemedMenuItem(menu, MF_STRING, ID_MENU_COPY_PATH, L"复制路径");
+        if (includeNativeMenuItem && link) {
+            AppendThemedMenuItem(menu, MF_STRING, ID_MENU_WINDOWS_CONTEXT, L"Windows 原生菜单", false, -1, -1, MenuIconWindows);
+        }
     }
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_CREATE_DESKTOP_SHORTCUT, L"创建桌面快捷方式");
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_REFRESH_LINK_ICON, L"刷新图标缓存");
@@ -6109,11 +6118,6 @@ void MainWindow::AppendLinkActionItems(HMENU menu, Link* link, bool includeNativ
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_EDIT_LINK, L"编辑");
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_PROPERTIES, L"属性");
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_DELETE_LINK, L"删除");
-    if (includeNativeMenuItem && isBuiltinSystemFunction) {
-        AppendThemedSeparator(menu);
-        AppendBuiltinSystemContextItems(menu, *link);
-        AppendThemedMenuItem(menu, MF_STRING, ID_MENU_WINDOWS_CONTEXT, L"Windows 原生菜单", false, -1, -1, MenuIconWindows);
-    }
 }
 
 void MainWindow::AppendBuiltinSystemContextItems(HMENU menu, const Link& link) {

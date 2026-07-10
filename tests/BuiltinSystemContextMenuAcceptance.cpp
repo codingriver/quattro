@@ -196,9 +196,9 @@ bool ContainsCommand(const std::vector<UINT>& commands, UINT command) {
     return std::find(commands.begin(), commands.end(), command) != commands.end();
 }
 
-bool EndsWith(const std::vector<UINT>& commands, const std::vector<UINT>& suffix) {
-    return commands.size() >= suffix.size() &&
-           std::equal(suffix.rbegin(), suffix.rend(), commands.rbegin());
+bool StartsWith(const std::vector<UINT>& commands, const std::vector<UINT>& prefix) {
+    return commands.size() >= prefix.size() &&
+           std::equal(prefix.begin(), prefix.end(), commands.begin());
 }
 
 struct PopupResult {
@@ -239,7 +239,7 @@ PopupResult OpenLinkMenu(HWND mainWindow, DWORD processId, int rowIndex) {
     return result;
 }
 
-bool ValidateMenu(const PopupResult& popup, const std::vector<UINT>& expectedSuffix, bool expectFixedActions) {
+bool ValidateMenu(const PopupResult& popup, const std::vector<UINT>& expectedPrefix) {
     if (!popup.opened || popup.commands.empty()) {
         return false;
     }
@@ -249,15 +249,12 @@ bool ValidateMenu(const PopupResult& popup, const std::vector<UINT>& expectedSuf
     for (UINT command = ID_MENU_BUILTIN_SYSTEM_ACTION_BASE;
          command < ID_MENU_BUILTIN_SYSTEM_ACTION_BASE + ID_MENU_BUILTIN_SYSTEM_ACTION_LIMIT;
          ++command) {
-        const bool expected = std::find(expectedSuffix.begin(), expectedSuffix.end(), command) != expectedSuffix.end();
+        const bool expected = std::find(expectedPrefix.begin(), expectedPrefix.end(), command) != expectedPrefix.end();
         if (ContainsCommand(popup.commands, command) != expected) {
             return false;
         }
     }
-    if (expectFixedActions && !EndsWith(popup.commands, expectedSuffix)) {
-        return false;
-    }
-    return true;
+    return StartsWith(popup.commands, expectedPrefix);
 }
 
 void PrintCommands(const char* label, const PopupResult& popup) {
@@ -338,19 +335,54 @@ int wmain() {
         PrintCommands("recycle_bin", recycleBin);
         PrintCommands("custom", custom);
 
-        if (!ValidateMenu(thisPc, {base, base + 1, base + 2, ID_MENU_WINDOWS_CONTEXT}, true)) {
+        const std::vector<UINT> commonFileActions{
+            ID_MENU_OPEN_LOCATION,
+            ID_MENU_RUN_ADMIN,
+            ID_MENU_COPY_PATH,
+            ID_MENU_WINDOWS_CONTEXT,
+            ID_MENU_CREATE_DESKTOP_SHORTCUT,
+            ID_MENU_REFRESH_LINK_ICON,
+        };
+        if (!ValidateMenu(thisPc, {
+                base,
+                base + 1,
+                base + 2,
+                commonFileActions[0],
+                commonFileActions[1],
+                commonFileActions[2],
+                commonFileActions[3],
+                commonFileActions[4],
+                commonFileActions[5],
+            })) {
             std::cerr << "This PC context menu validation failed\n";
             exitCode = 1;
         }
-        if (!ValidateMenu(network, {base + 1, base + 2, ID_MENU_WINDOWS_CONTEXT}, true)) {
+        if (!ValidateMenu(network, {
+                base + 1,
+                base + 2,
+                commonFileActions[0],
+                commonFileActions[1],
+                commonFileActions[2],
+                commonFileActions[3],
+                commonFileActions[4],
+                commonFileActions[5],
+            })) {
             std::cerr << "Network context menu validation failed\n";
             exitCode = 1;
         }
-        if (!ValidateMenu(recycleBin, {base + 3, ID_MENU_WINDOWS_CONTEXT}, true)) {
+        if (!ValidateMenu(recycleBin, {
+                base + 3,
+                commonFileActions[0],
+                commonFileActions[1],
+                commonFileActions[2],
+                commonFileActions[3],
+                commonFileActions[4],
+                commonFileActions[5],
+            })) {
             std::cerr << "Recycle Bin context menu validation failed\n";
             exitCode = 1;
         }
-        if (!ValidateMenu(custom, {ID_MENU_WINDOWS_CONTEXT}, false)) {
+        if (!ValidateMenu(custom, commonFileActions)) {
             std::cerr << "Custom link context menu isolation failed\n";
             exitCode = 1;
         }
