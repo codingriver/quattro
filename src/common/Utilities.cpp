@@ -74,6 +74,18 @@ std::wstring ToLower(std::wstring value) {
     return value;
 }
 
+std::wstring FormatVersionForDisplay(const std::wstring& version) {
+    std::wstring result = Trim(version);
+    if (result.empty()) {
+        return result;
+    }
+    if (result.front() == L'v' || result.front() == L'V') {
+        result.front() = L'v';
+        return result;
+    }
+    return L"v" + result;
+}
+
 std::wstring FormatLastError(DWORD error) {
     if (error == 0) {
         error = GetLastError();

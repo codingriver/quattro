@@ -244,7 +244,7 @@ private:
             auto versionGroup = form.labelText(labelWidth, valueWidth);
             auto versionRows = form.rowGroups(y, ThemedRowAlign::Left, {versionGroup});
             ui.Label(L"版本：", versionRows[0][0].left, versionRows[0][0].top, versionRows[0][0].right - versionRows[0][0].left);
-            versionLabel_ = ui.Label(info_.latestVersion, versionRows[0][1].left, versionRows[0][1].top, versionRows[0][1].right - versionRows[0][1].left);
+            versionLabel_ = ui.Label(FormatVersionForDisplay(info_.latestVersion), versionRows[0][1].left, versionRows[0][1].top, versionRows[0][1].right - versionRows[0][1].left);
             y = form.nextRowY(y, {versionGroup});
             auto fileGroup = form.labelText(labelWidth, valueWidth);
             auto fileRows = form.rowGroups(y, ThemedRowAlign::Left, {fileGroup});

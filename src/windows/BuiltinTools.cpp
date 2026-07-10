@@ -7,10 +7,12 @@
 #include "SimpleDialogs.h"
 #include "ThemedControls.h"
 #include "ThemedUi.h"
+#include "ThemedWindowUi.h"
 #include "Utilities.h"
 
 #include <commdlg.h>
 #include <commctrl.h>
+#include <shellapi.h>
 #include <iphlpapi.h>
 #include <tcpmib.h>
 #include <tlhelp32.h>
@@ -67,6 +69,11 @@ constexpr int ID_PORT_KILL_BASE = 7310;
 constexpr int ID_PROCESS_VALUE = 7401;
 constexpr int ID_PROCESS_QUERY = 7402;
 constexpr int ID_PROCESS_KILL_BASE = 7410;
+constexpr int ID_LOCATOR_HOTKEY = 7501;
+constexpr int ID_LOCATOR_PICK = 7502;
+constexpr int ID_LOCATOR_KILL = 7503;
+constexpr int ID_LOCATOR_OPEN = 7504;
+constexpr int ID_LOCATOR_GLOBAL_HOTKEY = 7505;
 constexpr UINT WM_QUATTRO_TOOL_AUTOMATION = WM_APP + 0x80;
 constexpr UINT WM_QUATTRO_TOOL_TIMER_AUTOMATION = WM_APP + 0x81;
 constexpr UINT kTimerDisplayIntervalMs = 33;
@@ -445,6 +452,165 @@ std::wstring KillProcessById(DWORD pid) {
     WaitForSingleObject(process, 1500);
     CloseHandle(process);
     return {};
+}
+
+bool ClassNameEquals(HWND hwnd, const wchar_t* expected) {
+    wchar_t className[128]{};
+    return hwnd && GetClassNameW(hwnd, className, static_cast<int>(_countof(className))) > 0
+        && _wcsicmp(className, expected) == 0;
+}
+
+bool IsTrayWindow(HWND hwnd) {
+    for (HWND current = hwnd; current; current = GetParent(current)) {
+        if (ClassNameEquals(current, L"Shell_TrayWnd") || ClassNameEquals(current, L"NotifyIconOverflowWindow")) {
+            return true;
+        }
+    }
+    return false;
+}
+
+HWND FindTrayToolbar(HWND hwnd) {
+    for (HWND current = hwnd; current; current = GetParent(current)) {
+        if (ClassNameEquals(current, L"ToolbarWindow32")) {
+            return current;
+        }
+    }
+    return nullptr;
+}
+
+DWORD QueryClassicTrayProcessId(HWND toolbar, POINT screenPoint, DWORD& error) {
+    error = ERROR_NOT_FOUND;
+    DWORD explorerPid = 0;
+    GetWindowThreadProcessId(toolbar, &explorerPid);
+    if (!explorerPid) {
+        error = GetLastError();
+        return 0;
+    }
+
+    HANDLE explorer = OpenProcess(PROCESS_VM_OPERATION | PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, explorerPid);
+    if (!explorer) {
+        error = GetLastError();
+        return 0;
+    }
+
+    const SIZE_T remoteSize = std::max(sizeof(TBBUTTON), sizeof(RECT));
+    void* remote = VirtualAllocEx(explorer, nullptr, remoteSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    if (!remote) {
+        error = GetLastError();
+        CloseHandle(explorer);
+        return 0;
+    }
+
+    DWORD resultPid = 0;
+    const LRESULT buttonCount = SendMessageW(toolbar, TB_BUTTONCOUNT, 0, 0);
+    for (int index = 0; index < buttonCount; ++index) {
+        if (!SendMessageW(toolbar, TB_GETITEMRECT, static_cast<WPARAM>(index), reinterpret_cast<LPARAM>(remote))) {
+            continue;
+        }
+        RECT itemRect{};
+        if (!ReadProcessMemory(explorer, remote, &itemRect, sizeof(itemRect), nullptr)) {
+            continue;
+        }
+        POINT corners[2]{{itemRect.left, itemRect.top}, {itemRect.right, itemRect.bottom}};
+        MapWindowPoints(toolbar, nullptr, corners, 2);
+        RECT screenRect{corners[0].x, corners[0].y, corners[1].x, corners[1].y};
+        if (!PtInRect(&screenRect, screenPoint)) {
+            continue;
+        }
+        if (!SendMessageW(toolbar, TB_GETBUTTON, static_cast<WPARAM>(index), reinterpret_cast<LPARAM>(remote))) {
+            break;
+        }
+        TBBUTTON button{};
+        if (!ReadProcessMemory(explorer, remote, &button, sizeof(button), nullptr) || !button.dwData) {
+            break;
+        }
+        ULONG_PTR ownerValue = 0;
+        if (!ReadProcessMemory(explorer, reinterpret_cast<const void*>(button.dwData), &ownerValue, sizeof(ownerValue), nullptr)) {
+            error = GetLastError();
+            break;
+        }
+        HWND ownerWindow = reinterpret_cast<HWND>(ownerValue);
+        if (!IsWindow(ownerWindow)) {
+            error = ERROR_INVALID_WINDOW_HANDLE;
+            break;
+        }
+        GetWindowThreadProcessId(ownerWindow, &resultPid);
+        error = resultPid ? ERROR_SUCCESS : GetLastError();
+        break;
+    }
+
+    VirtualFreeEx(explorer, remote, 0, MEM_RELEASE);
+    CloseHandle(explorer);
+    return resultPid;
+}
+
+struct HoveredProcessResult {
+    DWORD pid = 0;
+    DWORD error = ERROR_SUCCESS;
+    bool trayTarget = false;
+};
+
+HoveredProcessResult QueryHoveredProcess(HWND locatorWindow) {
+    HoveredProcessResult result{};
+    POINT point{};
+    if (!GetCursorPos(&point)) {
+        result.error = GetLastError();
+        return result;
+    }
+    HWND target = WindowFromPoint(point);
+    if (!target) {
+        result.error = ERROR_NOT_FOUND;
+        return result;
+    }
+    if (target == locatorWindow || IsChild(locatorWindow, target)) {
+        result.error = ERROR_INVALID_TARGET_HANDLE;
+        return result;
+    }
+
+    result.trayTarget = IsTrayWindow(target);
+    if (result.trayTarget) {
+        HWND toolbar = FindTrayToolbar(target);
+        if (!toolbar) {
+            result.error = ERROR_NOT_SUPPORTED;
+            return result;
+        }
+        result.pid = QueryClassicTrayProcessId(toolbar, point, result.error);
+        return result;
+    }
+
+    HWND root = GetAncestor(target, GA_ROOT);
+    GetWindowThreadProcessId(root ? root : target, &result.pid);
+    if (!result.pid) {
+        result.error = GetLastError();
+    }
+    return result;
+}
+
+std::wstring DirectoryFromPath(const std::wstring& path) {
+    const std::size_t slash = path.find_last_of(L"\\/");
+    return slash == std::wstring::npos ? std::wstring{} : path.substr(0, slash);
+}
+
+std::wstring OpenProcessLocation(const std::wstring& path) {
+    if (path.empty()) {
+        return L"没有可打开的程序路径。";
+    }
+    const DWORD attributes = GetFileAttributesW(path.c_str());
+    const std::wstring directory = DirectoryFromPath(path);
+    if (attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY) == 0) {
+        const std::wstring parameters = L"/select,\"" + path + L"\"";
+        HINSTANCE opened = ShellExecuteW(nullptr, L"open", L"explorer.exe", parameters.c_str(), nullptr, SW_SHOWNORMAL);
+        if (reinterpret_cast<INT_PTR>(opened) > 32) {
+            return {};
+        }
+    }
+    if (!directory.empty() && GetFileAttributesW(directory.c_str()) != INVALID_FILE_ATTRIBUTES) {
+        HINSTANCE opened = ShellExecuteW(nullptr, L"open", directory.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        if (reinterpret_cast<INT_PTR>(opened) > 32) {
+            return {};
+        }
+    }
+    return L"打开程序所在目录失败，路径可能已经失效。";
 }
 
 int VisibleProcessRowCount(const Theme& theme, RECT frame) {
@@ -1876,6 +2042,264 @@ private:
     ULONGLONG accumulatedMs_ = 0;
     ULONGLONG lastLapMs_ = 0;
 };
+
+class ProcessLocatorDialog final {
+public:
+    ProcessLocatorDialog(HWND owner, HINSTANCE instance, const Theme& theme, PluginRegistry& registry)
+        : owner_(owner), instance_(instance), theme_(theme), registry_(registry) {}
+
+    bool Run() {
+        const std::wstring className = L"QuattroProcessLocator_" +
+            std::to_wstring(GetCurrentProcessId()) + L"_" + std::to_wstring(GetTickCount64());
+        HICON icon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_QUATTRO_APP_ICON));
+        ThemedWindowCreateOptions options = ThemedWindowUi::DialogOptions(
+            instance_, owner_, className.c_str(), L"进程定位器", ProcessLocatorDialog::Proc, this, icon, icon);
+        std::wstring error;
+        hwnd_ = ThemedWindowUi::CreateWindowHandle(options, &error);
+        if (!hwnd_) {
+            WriteAppLog(L"进程定位器窗口创建失败: " + error);
+            return false;
+        }
+        windowUi_->ShowModal();
+        MSG message{};
+        while (!done_ && GetMessageW(&message, nullptr, 0, 0) > 0) {
+            if (!IsDialogMessageW(hwnd_, &message)) {
+                TranslateMessage(&message);
+                DispatchMessageW(&message);
+            }
+        }
+        return true;
+    }
+
+private:
+    static LRESULT CALLBACK Proc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
+        ProcessLocatorDialog* dialog = nullptr;
+        if (message == WM_NCCREATE) {
+            auto* create = reinterpret_cast<CREATESTRUCTW*>(lParam);
+            dialog = static_cast<ProcessLocatorDialog*>(create->lpCreateParams);
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(dialog));
+            dialog->hwnd_ = hwnd;
+        } else {
+            dialog = reinterpret_cast<ProcessLocatorDialog*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+        }
+        return dialog ? dialog->Handle(message, wParam, lParam) : DefWindowProcW(hwnd, message, wParam, lParam);
+    }
+
+    LRESULT Handle(UINT message, WPARAM wParam, LPARAM lParam) {
+        if (message == WM_DESTROY) {
+            UnregisterHotKey(hwnd_, ID_LOCATOR_GLOBAL_HOTKEY);
+            hotKeyRegistered_ = false;
+        }
+        LRESULT commonResult = 0;
+        if (ThemedWindowUi::HandleCommonMessage(windowUi_, message, wParam, lParam, commonResult)) {
+            if (message == WM_DESTROY) {
+                done_ = true;
+            }
+            return commonResult;
+        }
+        switch (message) {
+        case WM_CREATE:
+            windowUi_ = std::make_unique<ThemedWindowUi>(
+                instance_, owner_, hwnd_, theme_, kThemedDialogLayoutKind, kThemedDialogClientWidth, kThemedDialogClientHeight);
+            CreateControls();
+            return 0;
+        case WM_COMMAND:
+            if (LOWORD(wParam) == ID_LOCATOR_PICK) {
+                LocateHoveredProcess();
+            } else if (LOWORD(wParam) == ID_LOCATOR_KILL) {
+                KillCurrentProcess();
+            } else if (LOWORD(wParam) == ID_LOCATOR_OPEN) {
+                OpenCurrentDirectory();
+            } else if (LOWORD(wParam) == ID_LOCATOR_HOTKEY && HIWORD(wParam) == CBN_SELCHANGE) {
+                SaveAndRegisterHotKey();
+            } else if (LOWORD(wParam) == IDCANCEL) {
+                DestroyWindow(hwnd_);
+            }
+            return 0;
+        case WM_HOTKEY:
+            if (static_cast<int>(wParam) == ID_LOCATOR_GLOBAL_HOTKEY) {
+                LocateHoveredProcess();
+            }
+            return 0;
+        case WM_CLOSE:
+            DestroyWindow(hwnd_);
+            return 0;
+        default:
+            return DefWindowProcW(hwnd_, message, wParam, lParam);
+        }
+    }
+
+    void CreateControls() {
+        const ThemedUi ui = windowUi_->ui();
+        const DialogLayoutMetrics& layout = ui.layout();
+        const int labelHeight = ui.labelHeight();
+        const int fieldHeight = ThemedControls::FieldFrameHeight(theme_);
+        const int buttonHeight = ui.buttonHeight();
+        const int rowHeight = std::max(fieldHeight, buttonHeight);
+        const int labelOffsetY = std::max(0, (rowHeight - labelHeight) / 2);
+        const int fieldOffsetY = std::max(0, (rowHeight - fieldHeight) / 2);
+        const int buttonOffsetY = std::max(0, (rowHeight - buttonHeight) / 2);
+        const int left = ui.contentLeft();
+        const int actionWidth = ui.buttonWidth(
+            L"打开所在目录", ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
+        const int fieldX = left + layout.labelWidth + layout.labelGap;
+        const int fieldWidth = ui.clientWidth() - left - fieldX - layout.controlGapX - actionWidth;
+        const int row0 = ui.contentTop();
+        const int row1 = ui.nextRowY(row0, rowHeight);
+        const int row2 = ui.nextRowY(row1, rowHeight) + layout.sectionGap;
+
+        ui.Label(L"进程 ID", left, row0 + labelOffsetY, layout.labelWidth);
+        pidValue_ = ui.FramedStatic(L"等待获取", ui.rect(fieldX, row0 + fieldOffsetY, fieldWidth, fieldHeight));
+        killButton_ = ui.Button(
+            ID_LOCATOR_KILL, L"结束进程", fieldX + fieldWidth + layout.controlGapX, row0 + buttonOffsetY,
+            ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, actionWidth);
+
+        ui.Label(L"绝对路径", left, row1 + labelOffsetY, layout.labelWidth);
+        pathValue_ = ui.FramedStatic(L"等待获取", ui.rect(fieldX, row1 + fieldOffsetY, fieldWidth, fieldHeight));
+        openButton_ = ui.Button(
+            ID_LOCATOR_OPEN, L"打开所在目录", fieldX + fieldWidth + layout.controlGapX, row1 + buttonOffsetY,
+            ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, actionWidth);
+
+        const wchar_t* hotKeys[] = {L"F6", L"F7", L"F8", L"F9", L"F10", L"F11", L"F12"};
+        const int hotKeyWidth = 88;
+        const int pickWidth = ui.buttonWidth(
+            L"立即获取", ThemedButtonRole::Primary, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
+        const int groupWidth = layout.labelWidth + layout.labelGap + hotKeyWidth + layout.controlGapX + pickWidth;
+        const int groupX = ui.centeredGroupX(groupWidth);
+        ui.Label(L"全局快捷键", groupX, row2 + labelOffsetY, layout.labelWidth);
+        hotKey_ = ui.ComboBox(
+            ID_LOCATOR_HOTKEY,
+            groupX + layout.labelWidth + layout.labelGap,
+            row2 + std::max(0, (rowHeight - ThemedControls::ComboBoxHeight(theme_)) / 2),
+            hotKeyWidth,
+            ThemedControls::ComboBoxDropdownHeight(theme_));
+        const std::wstring savedHotKey = registry_.GetSetting(L"quattro.builtin.process-locator", L"hotKey", L"F10");
+        int selectedIndex = 4;
+        for (int index = 0; index < static_cast<int>(_countof(hotKeys)); ++index) {
+            SendMessageW(hotKey_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(hotKeys[index]));
+            if (savedHotKey == hotKeys[index]) {
+                selectedIndex = index;
+            }
+        }
+        SendMessageW(hotKey_, CB_SETCURSEL, selectedIndex, 0);
+        ui.Button(
+            ID_LOCATOR_PICK, L"立即获取",
+            groupX + layout.labelWidth + layout.labelGap + hotKeyWidth + layout.controlGapX,
+            row2 + buttonOffsetY,
+            ThemedButtonRole::Primary, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, pickWidth, true);
+
+        status_ = ui.Label(
+            L"将鼠标移到目标程序上，然后按全局快捷键。",
+            left,
+            ui.footerButtonY(labelHeight),
+            ui.contentWidth(),
+            SS_CENTER);
+        UpdateActionButtons();
+        SaveAndRegisterHotKey();
+    }
+
+    std::wstring SelectedHotKey() const {
+        const LRESULT selected = SendMessageW(hotKey_, CB_GETCURSEL, 0, 0);
+        if (selected == CB_ERR) {
+            return L"F10";
+        }
+        wchar_t text[32]{};
+        SendMessageW(hotKey_, CB_GETLBTEXT, static_cast<WPARAM>(selected), reinterpret_cast<LPARAM>(text));
+        return text[0] ? std::wstring(text) : L"F10";
+    }
+
+    void SaveAndRegisterHotKey() {
+        UnregisterHotKey(hwnd_, ID_LOCATOR_GLOBAL_HOTKEY);
+        const std::wstring hotKeyName = SelectedHotKey();
+        registry_.SetSetting(L"quattro.builtin.process-locator", L"hotKey", hotKeyName);
+        hotKeyRegistered_ = RegisterHotKey(hwnd_, ID_LOCATOR_GLOBAL_HOTKEY, MOD_NOREPEAT, HotKeyFromName(hotKeyName)) != FALSE;
+        SetText(status_, hotKeyRegistered_
+            ? L"将鼠标移到目标程序上，然后按 " + hotKeyName + L"。"
+            : L"全局快捷键注册失败，请更换一个 F 键。");
+    }
+
+    void LocateHoveredProcess() {
+        const HoveredProcessResult hovered = QueryHoveredProcess(hwnd_);
+        if (!hovered.pid) {
+            currentPid_ = 0;
+            currentPath_.clear();
+            SetText(pidValue_, L"获取失败");
+            SetText(pathValue_, L"无法获取");
+            UpdateActionButtons();
+            SetText(status_, hovered.trayTarget
+                ? L"无法识别该托盘图标所属的进程。"
+                : L"获取进程 ID 失败：" + FormatLastError(hovered.error));
+            return;
+        }
+        currentPid_ = hovered.pid;
+        const ProcessInfo info = QueryProcessInfo(currentPid_);
+        currentPath_ = info.path;
+        SetText(pidValue_, std::to_wstring(currentPid_));
+        SetText(pathValue_, currentPath_.empty() ? L"无法获取" : currentPath_);
+        UpdateActionButtons();
+        SetText(status_, currentPath_.empty()
+            ? L"已获取进程 ID，但程序路径不可读或权限不足。"
+            : (hovered.trayTarget ? L"已识别托盘图标所属进程。" : L"已获取鼠标位置对应的进程信息。"));
+    }
+
+    void KillCurrentProcess() {
+        if (!currentPid_) {
+            ShowThemedMessageBox(hwnd_, instance_, theme_, L"当前没有可结束的目标进程。", L"进程定位器", MB_OK | MB_ICONWARNING);
+            return;
+        }
+        const ProcessInfo info = QueryProcessInfo(currentPid_);
+        const std::wstring message = L"确认结束进程 " + info.name + L" (PID " + std::to_wstring(currentPid_) + L")？";
+        if (ShowThemedMessageBox(hwnd_, instance_, theme_, message, L"进程定位器", MB_OKCANCEL | MB_ICONWARNING) != IDOK) {
+            return;
+        }
+        const std::wstring error = KillProcessById(currentPid_);
+        if (!error.empty()) {
+            ShowThemedMessageBox(hwnd_, instance_, theme_, error, L"进程定位器", MB_OK | MB_ICONWARNING);
+            SetText(status_, L"结束进程失败，目标可能已退出、受保护或权限不足。");
+            return;
+        }
+        SetText(status_, L"目标进程已结束。");
+        currentPid_ = 0;
+        currentPath_.clear();
+        UpdateActionButtons();
+    }
+
+    void OpenCurrentDirectory() {
+        const std::wstring error = OpenProcessLocation(currentPath_);
+        if (!error.empty()) {
+            ShowThemedMessageBox(hwnd_, instance_, theme_, error, L"进程定位器", MB_OK | MB_ICONWARNING);
+            SetText(status_, L"打开所在目录失败。");
+            return;
+        }
+        SetText(status_, L"已在资源管理器中定位程序文件。");
+    }
+
+    void UpdateActionButtons() {
+        if (killButton_) {
+            EnableWindow(killButton_, currentPid_ != 0);
+        }
+        if (openButton_) {
+            EnableWindow(openButton_, !currentPath_.empty());
+        }
+    }
+
+    HWND owner_ = nullptr;
+    HINSTANCE instance_ = nullptr;
+    const Theme& theme_;
+    PluginRegistry& registry_;
+    HWND hwnd_ = nullptr;
+    HWND pidValue_ = nullptr;
+    HWND pathValue_ = nullptr;
+    HWND hotKey_ = nullptr;
+    HWND killButton_ = nullptr;
+    HWND openButton_ = nullptr;
+    HWND status_ = nullptr;
+    std::unique_ptr<ThemedWindowUi> windowUi_;
+    DWORD currentPid_ = 0;
+    std::wstring currentPath_;
+    bool hotKeyRegistered_ = false;
+    bool done_ = false;
+};
 }
 
 bool ShowBuiltinTool(HWND owner, HINSTANCE instance, const Theme& theme, PluginRegistry& registry, const std::wstring& engine) {
@@ -1897,6 +2321,10 @@ bool ShowBuiltinTool(HWND owner, HINSTANCE instance, const Theme& theme, PluginR
     }
     if (engine == L"process-inspector") {
         ProcessInspectorDialog dialog(owner, instance, theme, registry);
+        return dialog.Run();
+    }
+    if (engine == L"process-locator") {
+        ProcessLocatorDialog dialog(owner, instance, theme, registry);
         return dialog.Run();
     }
     ShowThemedMessageBox(owner, instance, theme, L"这个内置工具暂不可用。", L"工具箱", MB_OK | MB_ICONINFORMATION);

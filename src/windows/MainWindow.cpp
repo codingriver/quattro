@@ -72,6 +72,10 @@ constexpr const wchar_t* kDockPeekWindowClass = L"QuattroDockPeekWindow";
 constexpr const wchar_t* kTooltipWindowClass = L"QuattroTooltipWindow";
 constexpr const wchar_t* kAppDisplayName = L"Quattro快速启动器";
 
+std::wstring TrayTooltipText() {
+    return std::wstring(kAppDisplayName) + L"\n版本" + FormatVersionForDisplay(QuattroVersionText());
+}
+
 std::wstring VersionCompareText(int comparison) {
     if (comparison < 0) {
         return L"local_older";
@@ -4787,7 +4791,7 @@ bool MainWindow::EnsureNotificationIcon() {
     data.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
     data.uCallbackMessage = WM_QUATTRO_TRAY;
     data.hIcon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_QUATTRO_APP_ICON));
-    wcscpy_s(data.szTip, kAppDisplayName);
+    wcscpy_s(data.szTip, TrayTooltipText().c_str());
     if (Shell_NotifyIconW(NIM_ADD, &data)) {
         trayIconVisible_ = true;
     }
@@ -5069,7 +5073,9 @@ void MainWindow::CheckForUpdates() {
         L"，release_url=" + (info.releaseUrl.empty() ? L"(none)" : info.releaseUrl));
 
     if (!info.updateAvailable) {
-        const std::wstring message = L"当前已是最新版本。\n\n当前版本：" + info.currentVersion + L"\n最新版本：" + info.latestVersion;
+        const std::wstring message =
+            L"当前已是最新版本。\n\n当前版本：" + FormatVersionForDisplay(info.currentVersion) +
+            L"\n最新版本：" + FormatVersionForDisplay(info.latestVersion);
         MessageBoxW(hwnd_, message.c_str(), L"检查更新", MB_OK | MB_ICONINFORMATION);
         return;
     }
@@ -5982,7 +5988,7 @@ void MainWindow::InitializeTrayIcon() {
     data.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
     data.uCallbackMessage = WM_QUATTRO_TRAY;
     data.hIcon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_QUATTRO_APP_ICON));
-    wcscpy_s(data.szTip, kAppDisplayName);
+    wcscpy_s(data.szTip, TrayTooltipText().c_str());
     if (Shell_NotifyIconW(NIM_ADD, &data)) {
         trayIconVisible_ = true;
     }

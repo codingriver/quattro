@@ -116,12 +116,29 @@ std::vector<PluginRecord> PluginRegistry::BuiltinPlugins() {
     processInspector.enabled = true;
     processInspector.installed = true;
 
+    PluginRecord processLocator;
+    processLocator.id = L"quattro.builtin.process-locator";
+    processLocator.name = L"进程定位器";
+    processLocator.version = L"1.0.0";
+    processLocator.category = L"builtin-tools";
+    processLocator.kind = L"builtin-tool";
+    processLocator.engine = L"process-locator";
+    processLocator.description = L"按快捷键获取鼠标悬浮程序的进程 ID 和绝对路径。";
+    processLocator.permissions = L"进程查询, 结束进程, 打开目录, 全局快捷键";
+    processLocator.author = L"Quattro快速启动器";
+    processLocator.license = L"Built-in";
+    processLocator.builtin = true;
+    processLocator.deletable = false;
+    processLocator.enabled = true;
+    processLocator.installed = true;
+
     return {
         clicker,
         timer,
         stopwatch,
         portInspector,
         processInspector,
+        processLocator,
     };
 }
 

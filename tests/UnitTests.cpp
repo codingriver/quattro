@@ -78,6 +78,11 @@ int wmain() {
 
     Check(Trim(L"  abc \t") == L"abc", "Trim");
     Check(ToLower(L"AbC") == L"abc", "ToLower");
+    Check(FormatVersionForDisplay(L"0.1.0") == L"v0.1.0", "Version display adds prefix");
+    Check(FormatVersionForDisplay(L"v0.1.0") == L"v0.1.0", "Version display preserves prefix");
+    Check(FormatVersionForDisplay(L"V0.1.0") == L"v0.1.0", "Version display normalizes prefix");
+    Check(FormatVersionForDisplay(L" 0.1.0 ") == L"v0.1.0", "Version display trims whitespace");
+    Check(FormatVersionForDisplay(L"").empty(), "Version display preserves empty value");
     Check(QuattroUserConfigDirectory() == unitUserConfigRoot, "User config env override");
     Check(HasUrlScheme(L"https://example.com"), "HasUrlScheme");
     Check(NormalizeUrl(L"example.com") == L"https://example.com", "NormalizeUrl");
@@ -550,14 +555,22 @@ int wmain() {
     auto plugins = pluginRegistry.LoadPlugins();
     Check(plugins.size() >= 3, "Plugin registry builtin count");
     bool hasAutoClickerName = false;
+    bool hasProcessLocator = false;
     for (const auto& plugin : plugins) {
         if (plugin.id == L"quattro.builtin.clicker" && plugin.name == L"连点器") {
             hasAutoClickerName = true;
         }
+        if (plugin.id == L"quattro.builtin.process-locator" &&
+            plugin.name == L"进程定位器" &&
+            plugin.engine == L"process-locator") {
+            hasProcessLocator = true;
+        }
     }
     Check(hasAutoClickerName, "Plugin clicker display name");
+    Check(hasProcessLocator, "Plugin process locator registration");
     Check(pluginRegistry.IsEnabled(L"quattro.builtin.clicker"), "Plugin clicker enabled by default");
     Check(pluginRegistry.IsEnabled(L"quattro.builtin.timer"), "Plugin timer enabled by default");
+    Check(pluginRegistry.IsEnabled(L"quattro.builtin.process-locator"), "Plugin process locator enabled by default");
     Check(pluginRegistry.SetEnabled(L"quattro.builtin.clicker", false), "Plugin builtin disable");
     Check(!pluginRegistry.IsEnabled(L"quattro.builtin.clicker"), "Plugin builtin can be disabled");
     Check(pluginRegistry.SetSetting(L"quattro.builtin.clicker", L"interval", L"250"), "Plugin setting save");

@@ -3,6 +3,7 @@
 #include "ThemedFormLayout.h"
 #include "ThemedUi.h"
 #include "ThemedWindowUi.h"
+#include "Utilities.h"
 #include "../../resources/resource.h"
 
 #include <memory>
@@ -133,8 +134,8 @@ private:
             y = form.nextRowY(y, {form.text(ui.contentWidth())});
 
             const int labelWidth = form.labelWidthForTexts({L"当前版本：", L"最新版本：", L"更新包：", L"发布说明："});
-            CreateLabelValueRow(ui, form, y, labelWidth, L"当前版本：", info_.currentVersion);
-            CreateLabelValueRow(ui, form, y, labelWidth, L"最新版本：", info_.latestVersion);
+            CreateLabelValueRow(ui, form, y, labelWidth, L"当前版本：", FormatVersionForDisplay(info_.currentVersion));
+            CreateLabelValueRow(ui, form, y, labelWidth, L"最新版本：", FormatVersionForDisplay(info_.latestVersion));
             CreateLabelValueRow(ui, form, y, labelWidth, L"更新包：", info_.assetName);
 
             const int valueWidth = ui.contentWidth() - labelWidth - ui.layout().labelGap;
