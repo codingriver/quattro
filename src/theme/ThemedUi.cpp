@@ -193,6 +193,10 @@ HWND ThemedUi::Label(const std::wstring& text, int x, int y, int width, DWORD st
     return ThemedControls::CreateLabelText(instance_, parent_, text.c_str(), x, y, width, theme_, font_, style);
 }
 
+HWND ThemedUi::StatusText(const std::wstring& text, int x, int y, int width, const wchar_t* state, DWORD style) const {
+    return BindTheme(ThemedControls::CreateStatusText(instance_, parent_, text.c_str(), x, y, width, theme_, font_, state, style));
+}
+
 // 使用统一按钮规格创建主题按钮，并绑定当前主题。
 // 参数：
 // - id：子控件 ID，用于 WM_COMMAND/WM_DRAWITEM。

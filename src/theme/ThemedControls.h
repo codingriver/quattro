@@ -135,6 +135,20 @@ HWND CreateStatusBadge(
 
 void SetStatusBadgeState(HWND hwnd, const wchar_t* state);
 
+HWND CreateStatusText(
+    HINSTANCE instance,
+    HWND parent,
+    const wchar_t* text,
+    int x,
+    int y,
+    int width,
+    const Theme& theme,
+    HFONT font,
+    const wchar_t* state = L"normal",
+    DWORD style = SS_CENTER);
+
+void SetStatusTextState(HWND hwnd, const wchar_t* state);
+
 int ButtonHeight(const Theme& theme);
 int CompactButtonHeight(const Theme& theme);
 int ButtonPaddingX(const Theme& theme);

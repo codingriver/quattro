@@ -81,6 +81,7 @@ public:
     // extra theme binding needed by owner-draw controls. Callers should pass
     // only semantic values, text, and geometry; visual styling stays in Theme.
     HWND Label(const std::wstring& text, int x, int y, int width, DWORD style = SS_LEFT) const;
+    HWND StatusText(const std::wstring& text, int x, int y, int width, const wchar_t* state = L"normal", DWORD style = SS_CENTER) const;
     // Button is the single public entry point for creating any themed button.
     // Height is fixed by (role, size) templates and cannot be overridden by
     // callers; only width is adjustable (fixed width, or measured from text).

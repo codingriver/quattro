@@ -396,6 +396,8 @@ int wmain() {
     Check(Near(fallbackTheme.metric(L"progressBar", L"height", 0.0f), 16.0f), "Theme default progress bar metric");
     Check(fallbackTheme.color(L"progressBar", L"normal", L"fill").a > 0.9f, "Theme default progress bar color");
     Check(fallbackTheme.color(L"global", L"warning", L"text").r > 0.5f, "Theme default semantic warning");
+    Check(fallbackTheme.color(L"text", L"success", L"text").a > 0.9f, "Theme default text success");
+    Check(fallbackTheme.color(L"text", L"danger", L"text").a > 0.9f, "Theme default text danger");
     Check(Near(fallbackTheme.metric(L"global", L"fieldHeight", 0.0f), 32.0f), "Theme default global metric");
     Check(Near(fallbackTheme.metric(L"dialog", L"contentInsetX", 0.0f), 28.0f), "Theme default dialog standard inset");
     Check(Near(fallbackTheme.metric(L"dialog", L"labelMinWidth", 0.0f), 20.0f), "Theme default dialog label min width");

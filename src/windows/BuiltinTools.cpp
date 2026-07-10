@@ -2195,11 +2195,12 @@ private:
             row2 + buttonOffsetY,
             ThemedButtonRole::Primary, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, pickWidth, true);
 
-        status_ = ui.Label(
+        status_ = ui.StatusText(
             L"将鼠标移到目标程序上，然后按全局快捷键。",
             left,
             ui.footerButtonY(labelHeight),
             ui.contentWidth(),
+            L"normal",
             SS_CENTER);
         UpdateActionButtons();
         SaveAndRegisterHotKey();
@@ -2228,9 +2229,11 @@ private:
         const std::wstring hotKeyName = SelectedHotKey();
         registry_.SetSetting(L"quattro.builtin.process-locator", L"hotKey", hotKeyName);
         hotKeyRegistered_ = RegisterHotKey(hwnd_, ID_LOCATOR_GLOBAL_HOTKEY, MOD_NOREPEAT, HotKeyFromName(hotKeyName)) != FALSE;
-        SetText(status_, hotKeyRegistered_
-            ? L"将鼠标移到目标程序上，然后按 " + hotKeyName + L"。"
-            : L"全局快捷键注册失败，请更换一个 F 键。");
+        SetStatus(
+            hotKeyRegistered_
+                ? L"将鼠标移到目标程序上，然后按 " + hotKeyName + L"。"
+                : L"全局快捷键注册失败，请更换一个 F 键。",
+            hotKeyRegistered_ ? L"normal" : L"danger");
     }
 
     void LocateHoveredProcess() {
@@ -2241,9 +2244,11 @@ private:
             SetText(pidValue_, L"获取失败");
             SetText(pathValue_, L"无法获取");
             UpdateActionButtons();
-            SetText(status_, hovered.trayTarget
-                ? L"无法识别该托盘图标所属的进程。"
-                : L"获取进程 ID 失败：" + FormatLastError(hovered.error));
+            SetStatus(
+                hovered.trayTarget
+                    ? L"无法识别该托盘图标所属的进程。"
+                    : L"获取进程 ID 失败：" + FormatLastError(hovered.error),
+                L"danger");
             return;
         }
         currentPid_ = hovered.pid;
@@ -2252,9 +2257,11 @@ private:
         SetText(pidValue_, std::to_wstring(currentPid_));
         SetText(pathValue_, currentPath_.empty() ? L"无法获取" : currentPath_);
         UpdateActionButtons();
-        SetText(status_, currentPath_.empty()
-            ? L"已获取进程 ID，但程序路径不可读或权限不足。"
-            : (hovered.trayTarget ? L"已识别托盘图标所属进程。" : L"已获取鼠标位置对应的进程信息。"));
+        SetStatus(
+            currentPath_.empty()
+                ? L"已获取进程 ID，但程序路径不可读或权限不足。"
+                : (hovered.trayTarget ? L"已识别托盘图标所属进程。" : L"已获取鼠标位置对应的进程信息。"),
+            currentPath_.empty() ? L"warning" : L"success");
     }
 
     void KillCurrentProcess() {
@@ -2270,10 +2277,10 @@ private:
         const std::wstring error = KillProcessById(currentPid_);
         if (!error.empty()) {
             ShowThemedMessageBox(hwnd_, instance_, theme_, error, L"进程定位器", MB_OK | MB_ICONWARNING);
-            SetText(status_, L"结束进程失败，目标可能已退出、受保护或权限不足。");
+            SetStatus(L"结束进程失败，目标可能已退出、受保护或权限不足。", L"danger");
             return;
         }
-        SetText(status_, L"目标进程已结束。");
+        SetStatus(L"目标进程已结束。", L"success");
         currentPid_ = 0;
         currentPath_.clear();
         UpdateActionButtons();
@@ -2283,10 +2290,15 @@ private:
         const std::wstring error = OpenProcessLocation(currentPath_);
         if (!error.empty()) {
             ShowThemedMessageBox(hwnd_, instance_, theme_, error, L"进程定位器", MB_OK | MB_ICONWARNING);
-            SetText(status_, L"打开所在目录失败。");
+            SetStatus(L"打开所在目录失败。", L"danger");
             return;
         }
-        SetText(status_, L"已在资源管理器中定位程序文件。");
+        SetStatus(L"已在资源管理器中定位程序文件。", L"success");
+    }
+
+    void SetStatus(const std::wstring& text, const wchar_t* state) {
+        SetText(status_, text);
+        ThemedControls::SetStatusTextState(status_, state);
     }
 
     void UpdateActionButtons() {

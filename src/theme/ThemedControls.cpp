@@ -22,6 +22,7 @@ enum class ControlKind {
     ListBox,
     ProgressBar,
     StatusBadge,
+    StatusText,
 };
 
 // 主题控件的运行时状态。以进程内 HWND 映射存储，避免使用桌面堆（SetPropW），
@@ -364,6 +365,40 @@ void DrawStatusBadge(HWND hwnd, HDC dc, RECT rect) {
     HGDIOBJ oldFont = font ? SelectObject(dc, font) : nullptr;
     std::wstring text = ControlText(hwnd);
     DrawTextW(dc, text.c_str(), static_cast<int>(text.size()), &badge, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    if (oldFont) {
+        SelectObject(dc, oldFont);
+    }
+}
+
+void DrawStatusText(HWND hwnd, HDC dc, RECT rect) {
+    auto controlState = FindState(hwnd);
+    const Theme* theme = controlState ? controlState->theme : nullptr;
+    if (!theme) {
+        return;
+    }
+
+    const std::wstring backgroundComponent = BackgroundComponent(hwnd);
+    HBRUSH background = CreateSolidBrush(ToColorRef(theme->color(backgroundComponent, L"normal", L"bg")));
+    FillRect(dc, &rect, background);
+    DeleteObject(background);
+
+    const std::wstring stateValue = controlState->statusState;
+    const wchar_t* state = stateValue.empty() ? L"normal" : stateValue.c_str();
+    SetBkMode(dc, TRANSPARENT);
+    SetTextColor(dc, ToColorRef(theme->color(L"text", state, L"text")));
+    HFONT font = reinterpret_cast<HFONT>(SendMessageW(hwnd, WM_GETFONT, 0, 0));
+    HGDIOBJ oldFont = font ? SelectObject(dc, font) : nullptr;
+    std::wstring text = ControlText(hwnd);
+    const LONG style = GetWindowLongW(hwnd, GWL_STYLE);
+    UINT format = DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS;
+    if ((style & SS_CENTER) == SS_CENTER) {
+        format |= DT_CENTER;
+    } else if ((style & SS_RIGHT) == SS_RIGHT) {
+        format |= DT_RIGHT;
+    } else {
+        format |= DT_LEFT;
+    }
+    DrawTextW(dc, text.c_str(), static_cast<int>(text.size()), &rect, format);
     if (oldFont) {
         SelectObject(dc, oldFont);
     }
@@ -1123,6 +1158,42 @@ void SetStatusBadgeState(HWND hwnd, const wchar_t* state) {
     InvalidateRect(hwnd, nullptr, TRUE);
 }
 
+HWND CreateStatusText(HINSTANCE instance, HWND parent, const wchar_t* text, int x, int y, int width, const Theme& theme, HFONT font, const wchar_t* state, DWORD style) {
+    HWND hwnd = CreateWindowExW(
+        0,
+        L"STATIC",
+        text,
+        WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | SS_OWNERDRAW | style,
+        x,
+        y,
+        width,
+        LabelHeight(theme),
+        parent,
+        nullptr,
+        instance,
+        nullptr);
+    if (hwnd) {
+        SendMessageW(hwnd, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+        SetControlTextProp(hwnd, text);
+        {
+            auto& s = StateFor(hwnd);
+            s.kind = ControlKind::StatusText;
+            s.statusState = state ? state : L"normal";
+            s.theme = &theme;
+        }
+        AttachThemedBehavior(hwnd);
+    }
+    return hwnd;
+}
+
+void SetStatusTextState(HWND hwnd, const wchar_t* state) {
+    if (!hwnd) {
+        return;
+    }
+    StateFor(hwnd).statusState = state ? state : L"normal";
+    InvalidateRect(hwnd, nullptr, TRUE);
+}
+
 HWND CreateButton(HINSTANCE instance, HWND parent, int id, const wchar_t* text, int x, int y, int width, int height, HFONT font, bool defaultButton) {
     const DWORD style = WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_CLIPSIBLINGS | BS_OWNERDRAW | (defaultButton ? BS_DEFPUSHBUTTON : BS_PUSHBUTTON);
     HWND hwnd = CreateWindowExW(0, L"BUTTON", text, style, x, y, width, height, parent, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), instance, nullptr);
@@ -1151,7 +1222,7 @@ void SetControlTheme(HWND hwnd, const Theme& theme) {
     if (hwnd) {
         auto state = FindState(hwnd);
         const ControlKind kind = state ? state->kind : ControlKind::None;
-        if (kind == ControlKind::ComboBox || kind == ControlKind::ProgressBar || kind == ControlKind::StatusBadge) {
+        if (kind == ControlKind::ComboBox || kind == ControlKind::ProgressBar || kind == ControlKind::StatusBadge || kind == ControlKind::StatusText) {
             StateFor(hwnd).theme = &theme;
         } else {
             StateFor(hwnd).theme = nullptr;
@@ -1505,6 +1576,10 @@ bool Draw(const Theme& theme, const DRAWITEMSTRUCT* draw) {
     ControlKind kind = KindFor(draw->hwndItem);
     if (draw->CtlType == ODT_STATIC && kind == ControlKind::StatusBadge) {
         DrawStatusBadge(draw->hwndItem, draw->hDC, draw->rcItem);
+        return true;
+    }
+    if (draw->CtlType == ODT_STATIC && kind == ControlKind::StatusText) {
+        DrawStatusText(draw->hwndItem, draw->hDC, draw->rcItem);
         return true;
     }
     if (draw->CtlType == ODT_STATIC && kind == ControlKind::ProgressBar) {
