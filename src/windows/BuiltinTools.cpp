@@ -546,6 +546,14 @@ DWORD QueryClassicTrayProcessId(HWND toolbar, POINT screenPoint, DWORD& error) {
     return resultPid;
 }
 
+bool IsExplorerProcess(DWORD pid) {
+    if (!pid) {
+        return false;
+    }
+    const ProcessInfo info = QueryProcessInfo(pid);
+    return _wcsicmp(info.name.c_str(), L"explorer.exe") == 0;
+}
+
 struct HoveredProcessResult {
     DWORD pid = 0;
     DWORD error = ERROR_SUCCESS;
@@ -577,6 +585,10 @@ HoveredProcessResult QueryHoveredProcess(HWND locatorWindow) {
             return result;
         }
         result.pid = QueryClassicTrayProcessId(toolbar, point, result.error);
+        if (IsExplorerProcess(result.pid)) {
+            result.pid = 0;
+            result.error = ERROR_NOT_SUPPORTED;
+        }
         return result;
     }
 
