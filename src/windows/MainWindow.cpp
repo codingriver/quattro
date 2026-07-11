@@ -142,10 +142,6 @@ void UninstallDoubleAltHotKeyHook(HWND hwnd) {
     gOtherKeySinceAlt = false;
 }
 
-std::wstring TrayTooltipText() {
-    return std::wstring(kAppDisplayName) + L"\n版本" + FormatVersionForDisplay(QuattroVersionText());
-}
-
 std::wstring VersionCompareText(int comparison) {
     if (comparison < 0) {
         return L"local_older";
@@ -4865,7 +4861,7 @@ bool MainWindow::EnsureNotificationIcon() {
     data.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
     data.uCallbackMessage = WM_QUATTRO_TRAY;
     data.hIcon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_QUATTRO_APP_ICON));
-    wcscpy_s(data.szTip, TrayTooltipText().c_str());
+    wcsncpy_s(data.szTip, TrayTooltipText().c_str(), _TRUNCATE);
     if (Shell_NotifyIconW(NIM_ADD, &data)) {
         trayIconVisible_ = true;
     }
@@ -6051,6 +6047,7 @@ void MainWindow::RegisterConfiguredHotKeys() {
             MB_OK | MB_ICONWARNING);
     }
     hotKeysRegistered_ = true;
+    UpdateTrayTooltip();
 }
 
 void MainWindow::UnregisterConfiguredHotKeys() {
@@ -6069,6 +6066,34 @@ void MainWindow::UnregisterConfiguredHotKeys() {
     hotKeysRegistered_ = false;
 }
 
+std::wstring MainWindow::TrayTooltipText() const {
+    std::wstring text = std::wstring(kAppDisplayName) + L"\n版本" + FormatVersionForDisplay(QuattroVersionText());
+    if (!config_.globalHotKeysEnabled) {
+        return text;
+    }
+    if (mainHotKeyRegistered_ && config_.mainHotKey != 0) {
+        text += L"\n主窗口：" + FormatMainHotKeyText(config_.mainHotKey);
+    }
+    if (processLocatorHotKeyRegistered_ && config_.processLocatorHotKey != 0) {
+        text += L"\n进程定位器：" + FormatGlobalHotKeyText(config_.processLocatorHotKey);
+    }
+    return text;
+}
+
+void MainWindow::UpdateTrayTooltip() {
+    if (!trayIconVisible_) {
+        return;
+    }
+
+    NOTIFYICONDATAW data{};
+    data.cbSize = sizeof(data);
+    data.hWnd = hwnd_;
+    data.uID = kTrayIconId;
+    data.uFlags = NIF_TIP;
+    wcsncpy_s(data.szTip, TrayTooltipText().c_str(), _TRUNCATE);
+    Shell_NotifyIconW(NIM_MODIFY, &data);
+}
+
 void MainWindow::InitializeTrayIcon() {
     if (trayIconVisible_ || config_.hideNotifyIcon) {
         return;
@@ -6081,7 +6106,7 @@ void MainWindow::InitializeTrayIcon() {
     data.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
     data.uCallbackMessage = WM_QUATTRO_TRAY;
     data.hIcon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_QUATTRO_APP_ICON));
-    wcscpy_s(data.szTip, TrayTooltipText().c_str());
+    wcsncpy_s(data.szTip, TrayTooltipText().c_str(), _TRUNCATE);
     if (Shell_NotifyIconW(NIM_ADD, &data)) {
         trayIconVisible_ = true;
     }

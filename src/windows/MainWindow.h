@@ -227,6 +227,8 @@ private:
     void SyncAutoRun(const AppConfig& previous);
     void RegisterConfiguredHotKeys();
     void UnregisterConfiguredHotKeys();
+    std::wstring TrayTooltipText() const;
+    void UpdateTrayTooltip();
     void InitializeTrayIcon();
     void RemoveTrayIcon();
     void ShowTrayMenu(POINT screenPoint);
