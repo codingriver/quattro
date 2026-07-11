@@ -9,6 +9,7 @@
 #include "../src/services/SystemFunctions.h"
 #include "../src/services/UpdateCheckService.h"
 #include "../src/theme/Theme.h"
+#include "../src/theme/ThemedUi.h"
 #include "../src/domain/TodoSchedule.h"
 #include "../src/common/Utilities.h"
 #include "../src/services/WebDavClient.h"
@@ -398,6 +399,13 @@ int wmain() {
     Check(fallbackTheme.color(L"global", L"warning", L"text").r > 0.5f, "Theme default semantic warning");
     Check(fallbackTheme.color(L"text", L"success", L"text").a > 0.9f, "Theme default text success");
     Check(fallbackTheme.color(L"text", L"danger", L"text").a > 0.9f, "Theme default text danger");
+    Check(fallbackTheme.color(L"link", L"hover", L"text").a > 0.9f, "Theme default link hover");
+    Check(fallbackTheme.color(L"table", L"normal", L"border").a > 0.9f, "Theme default table border");
+    Check(Near(fallbackTheme.metric(L"tableHeader", L"height", 0.0f), 28.0f), "Theme default table header height");
+    Check(Near(fallbackTheme.metric(L"tooltip", L"maxWidth", 0.0f), 420.0f), "Theme default tooltip max width");
+    Check(fallbackTheme.color(L"groupBox", L"normal", L"border").a > 0.9f, "Theme default group box border");
+    Check(fallbackTheme.color(L"tabControl", L"normal", L"bg").a > 0.9f, "Theme default tab control background");
+    Check(Near(fallbackTheme.metric(L"toolbar", L"itemGap", 0.0f), 4.0f), "Theme default toolbar gap");
     Check(Near(fallbackTheme.metric(L"global", L"fieldHeight", 0.0f), 32.0f), "Theme default global metric");
     Check(Near(fallbackTheme.metric(L"dialog", L"contentInsetX", 0.0f), 28.0f), "Theme default dialog standard inset");
     Check(Near(fallbackTheme.metric(L"dialog", L"labelMinWidth", 0.0f), 20.0f), "Theme default dialog label min width");
@@ -408,6 +416,180 @@ int wmain() {
     Check(Near(fallbackTheme.metric(L"miniButton", L"height", 0.0f), 24.0f), "Theme default mini button metric");
     Check(fallbackTheme.color(L"miniButton", L"hover", L"icon").a > 0.9f, "Theme default mini button hover");
     Check(Near(fallbackTheme.metric(L"tabButton", L"minTextWidth", 0.0f), 18.0f), "Theme default tab button min text width");
+    ThemedEditOptions editOptions{};
+    editOptions.mode = ThemedEditMode::MultiLine;
+    editOptions.content = ThemedEditContent::Password;
+    editOptions.readOnly = true;
+    editOptions.enabled = false;
+    editOptions.error = true;
+    editOptions.selectAllOnFocus = true;
+    editOptions.maxLength = 128;
+    editOptions.placeholder = L"unit placeholder";
+    Check(editOptions.mode == ThemedEditMode::MultiLine, "Themed edit mode composes with other options");
+    Check(editOptions.acceptsReturn, "Multiline themed edits accept return by default");
+    Check(editOptions.content == ThemedEditContent::Password, "Themed edit content composes with mode");
+    Check(editOptions.readOnly && !editOptions.enabled && editOptions.error, "Themed edit state options compose");
+    Check(editOptions.selectAllOnFocus && editOptions.maxLength == 128 && !editOptions.placeholder.empty(), "Themed edit behavior options compose");
+    ThemedLabelOptions labelOptions{};
+    labelOptions.align = ThemedTextAlign::End;
+    Check(labelOptions.align == ThemedTextAlign::End, "Themed label alignment is semantic");
+    labelOptions.lines = ThemedLabelLines::Two;
+    Check(labelOptions.lines == ThemedLabelLines::Two, "Themed label line count is semantic");
+    ThemedFramedTextOptions framedTextOptions{};
+    framedTextOptions.align = ThemedTextAlign::Center;
+    framedTextOptions.wrap = true;
+    Check(framedTextOptions.align == ThemedTextAlign::Center && framedTextOptions.wrap, "Themed framed text options compose");
+    ThemedStatusTextOptions statusOptions{};
+    statusOptions.role = ThemedStatusRole::Warning;
+    statusOptions.align = ThemedTextAlign::Start;
+    Check(statusOptions.role == ThemedStatusRole::Warning && statusOptions.align == ThemedTextAlign::Start, "Themed status options compose");
+    ThemedComboBoxOptions comboOptions{};
+    comboOptions.enabled = false;
+    Check(!comboOptions.enabled, "Themed combo state is semantic");
+    ThemedListBoxOptions listOptions{};
+    listOptions.selection = ThemedListSelection::Multiple;
+    listOptions.scroll = ThemedListScroll::Both;
+    listOptions.notify = false;
+    Check(listOptions.selection == ThemedListSelection::Multiple && listOptions.scroll == ThemedListScroll::Both && !listOptions.notify, "Themed list options compose");
+    ThemedCheckBoxOptions checkBoxOptions{};
+    checkBoxOptions.checked = true;
+    checkBoxOptions.enabled = false;
+    Check(checkBoxOptions.checked && !checkBoxOptions.enabled, "Themed checkbox options compose");
+    ThemedProgressBarOptions progressOptions{};
+    progressOptions.value = 0.5;
+    progressOptions.indeterminate = true;
+    progressOptions.enabled = false;
+    Check(Near(static_cast<float>(progressOptions.value), 0.5f) && progressOptions.indeterminate && !progressOptions.enabled, "Themed progress options compose");
+    ThemedToggleOptions toggleOptions{};
+    toggleOptions.checked = true;
+    toggleOptions.enabled = false;
+    Check(toggleOptions.checked && !toggleOptions.enabled, "Themed toggle options compose");
+    ThemedHotKeyCaptureOptions hotKeyCaptureOptions{};
+    hotKeyCaptureOptions.enabled = false;
+    Check(!hotKeyCaptureOptions.enabled, "Themed hot key capture options compose");
+    ThemedRadioButtonOptions radioOptions{};
+    radioOptions.group = 7;
+    radioOptions.checked = true;
+    Check(radioOptions.group == 7 && radioOptions.checked, "Themed radio options compose");
+    ThemedSliderOptions sliderOptions{};
+    sliderOptions.minimum = -10.0;
+    sliderOptions.maximum = 10.0;
+    sliderOptions.step = 0.5;
+    sliderOptions.value = 2.5;
+    Check(Near(static_cast<float>(sliderOptions.value), 2.5f) && Near(static_cast<float>(sliderOptions.step), 0.5f), "Themed slider options compose");
+    ThemedLinkOptions linkOptions{};
+    linkOptions.role = ThemedLinkRole::External;
+    linkOptions.visited = true;
+    Check(linkOptions.role == ThemedLinkRole::External && linkOptions.visited, "Themed link options compose");
+    ThemedTableOptions tableOptions{};
+    tableOptions.checkable = true;
+    tableOptions.view = ThemedTableView::Icons;
+    Check(tableOptions.checkable && tableOptions.view == ThemedTableView::Icons, "Themed table options compose");
+    ThemedTooltipOptions tooltipOptions{};
+    tooltipOptions.role = ThemedTooltipRole::Warning;
+    tooltipOptions.placement = ThemedTooltipPlacement::Cursor;
+    Check(tooltipOptions.role == ThemedTooltipRole::Warning && tooltipOptions.placement == ThemedTooltipPlacement::Cursor, "Themed tooltip options compose");
+    Check(fallbackTheme.color(L"toggle", L"disabled", L"text").a > 0.9f, "Theme default toggle text state");
+    Check(fallbackTheme.color(L"radio", L"hover", L"border").a > 0.9f, "Theme default radio hover state");
+    Check(fallbackTheme.color(L"slider", L"disabled", L"thumb").a > 0.9f, "Theme default slider disabled state");
+    HWND controlParent = CreateWindowExW(
+        0, L"STATIC", L"", WS_POPUP,
+        0, 0, 320, 200, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+    Check(controlParent != nullptr, "Themed control test parent created");
+    if (controlParent) {
+        ThemedUi controlUi(
+            GetModuleHandleW(nullptr), controlParent, fallbackTheme,
+            reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT)),
+            DialogLayoutKind::Compact, 320, 200);
+        ThemedToggleOptions runtimeToggleOptions{};
+        runtimeToggleOptions.checked = true;
+        HWND runtimeToggle = controlUi.Toggle(7101, L"toggle", 8, 8, 120, runtimeToggleOptions);
+        Check(ThemedUi::IsChecked(runtimeToggle), "Themed toggle initial checked state");
+        ThemedUi::SetChecked(runtimeToggle, false);
+        Check(!ThemedUi::IsChecked(runtimeToggle), "Themed toggle public state update");
+
+        ThemedRadioButtonOptions firstRadioOptions{};
+        firstRadioOptions.group = 3;
+        firstRadioOptions.checked = true;
+        HWND firstRadio = controlUi.RadioButton(7102, L"first", 8, 40, 120, firstRadioOptions);
+        ThemedRadioButtonOptions secondRadioOptions{};
+        secondRadioOptions.group = 3;
+        HWND secondRadio = controlUi.RadioButton(7103, L"second", 136, 40, 120, secondRadioOptions);
+        ThemedUi::SetChecked(secondRadio, true);
+        Check(!ThemedUi::IsChecked(firstRadio) && ThemedUi::IsChecked(secondRadio), "Themed radio group is exclusive");
+
+        ThemedSliderOptions runtimeSliderOptions{};
+        runtimeSliderOptions.minimum = 0.0;
+        runtimeSliderOptions.maximum = 10.0;
+        runtimeSliderOptions.step = 2.0;
+        HWND runtimeSlider = controlUi.Slider(7104, 8, 72, 220, runtimeSliderOptions);
+        ThemedUi::SetSliderValue(runtimeSlider, 3.7);
+        Check(Near(static_cast<float>(ThemedUi::SliderValue(runtimeSlider)), 4.0f), "Themed slider applies public step");
+        HWND runtimeLink = controlUi.LinkText(510, L"link", 0, 100, 120, linkOptions);
+        Check(runtimeLink != nullptr, "Themed link public factory");
+        ThemedUi::SetLinkVisited(runtimeLink, false);
+        HWND runtimeTable = controlUi.Table(
+            511, RECT{0, 130, 360, 260},
+            {ThemedTableColumn{L"name", L"Name", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, 120},
+             ThemedTableColumn{L"value", L"Value", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Remaining}},
+            tableOptions);
+        Check(runtimeTable != nullptr, "Themed table public factory");
+        ThemedUi::SetTableRows(runtimeTable, {ThemedTableRow{42, {{L"row"}, {L"value"}}, true, true}});
+        Check(ThemedUi::TableRowCount(runtimeTable) == 1 && ThemedUi::TableRowKey(runtimeTable, 0) == 42, "Themed table public row model");
+        Check(ThemedUi::IsTableChecked(runtimeTable, 0), "Themed table public checked state");
+        HWND groupChild = CreateWindowExW(0, L"STATIC", L"child", WS_CHILD | WS_VISIBLE, 0, 0, 40, 20, controlParent, nullptr, GetModuleHandleW(nullptr), nullptr);
+        HWND runtimeGroup = controlUi.GroupBox(512, L"Group", RECT{380, 0, 620, 120});
+        ThemedUi::BindGroupChildren(runtimeGroup, {groupChild});
+        ThemedUi::SetGroupEnabled(runtimeGroup, false);
+        Check(!IsWindowEnabled(groupChild), "Themed group box propagates enabled state");
+        HWND page0 = CreateWindowExW(0, L"STATIC", L"page0", WS_CHILD | WS_VISIBLE, 0, 0, 40, 20, controlParent, nullptr, GetModuleHandleW(nullptr), nullptr);
+        HWND page1 = CreateWindowExW(0, L"STATIC", L"page1", WS_CHILD | WS_VISIBLE, 0, 0, 40, 20, controlParent, nullptr, GetModuleHandleW(nullptr), nullptr);
+        HWND runtimeTabs = controlUi.TabControl(
+            513, RECT{380, 130, 700, 190},
+            {{601, L"One", true}, {602, L"Two", true}});
+        ThemedUi::BindTabPage(runtimeTabs, 0, {page0});
+        ThemedUi::BindTabPage(runtimeTabs, 1, {page1});
+        ThemedUi::SetActiveTab(runtimeTabs, 1);
+        const bool page0Visible = (GetWindowLongW(page0, GWL_STYLE) & WS_VISIBLE) != 0;
+        const bool page1Visible = (GetWindowLongW(page1, GWL_STYLE) & WS_VISIBLE) != 0;
+        Check(ThemedUi::ActiveTab(runtimeTabs) == 1 && !page0Visible && page1Visible, "Themed tab control binds page visibility");
+        ThemedUi::BindTabPageRoot(runtimeTabs, 1, page1);
+        HWND panelChild = CreateWindowExW(0, L"STATIC", L"panel child", WS_CHILD | WS_VISIBLE, 400, 310, 80, 20, controlParent, nullptr, GetModuleHandleW(nullptr), nullptr);
+        ThemedPanelOptions panelOptions{};
+        panelOptions.role = ThemedPanelRole::Inset;
+        panelOptions.scrollable = true;
+        HWND runtimePanel = controlUi.Panel(516, RECT{380, 300, 620, 380}, panelOptions);
+        ThemedUi::BindPanelChildren(runtimePanel, {panelChild});
+        ThemedUi::SetPanelEnabled(runtimePanel, false);
+        Check(runtimePanel != nullptr && !IsWindowEnabled(panelChild), "Themed panel propagates enabled state");
+        ThemedUi::SetPanelEnabled(runtimePanel, true);
+        ThemedUi::SetPanelRole(runtimePanel, ThemedPanelRole::Raised);
+        Check(ThemedUi::IsPanelEnabled(runtimePanel) && ThemedUi::IsPanelVisible(runtimePanel), "Themed panel public state queries");
+        HWND runtimeToolbar = controlUi.ToolBar(
+            514, RECT{380, 200, 700, 240},
+            {{701, L"Run"}, {702, L"Pin", ThemedToolItemKind::Toggle, ThemedToolItemAlignment::Leading, true, false}});
+        ThemedUi::SetToolChecked(runtimeToolbar, 702, true);
+        Check(ThemedUi::IsToolChecked(runtimeToolbar, 702), "Themed toolbar public toggle state");
+        ThemedToolItem iconTool{703, L"Open"};
+        iconTool.icon = LoadIconW(nullptr, IDI_APPLICATION);
+        iconTool.display = ThemedToolItemDisplay::IconAndText;
+        HWND overflowToolbar = controlUi.ToolBar(
+            515, RECT{380, 250, 500, 290},
+            {iconTool, ThemedToolItem{0, L"", ThemedToolItemKind::Separator}, ThemedToolItem{704, L"Long action"}});
+        Check(overflowToolbar != nullptr, "Themed toolbar public icon item factory");
+        HWND overflowButton = GetDlgItem(overflowToolbar, 0x7ff0);
+        Check(overflowButton != nullptr && (GetWindowLongW(overflowButton, GWL_STYLE) & WS_VISIBLE) != 0, "Themed toolbar enables public automatic overflow");
+        ThemedUi::BeginToolBarUpdate(runtimeToolbar);
+        ThemedUi::SetToolText(runtimeToolbar, 701, L"Run now");
+        ThemedUi::SetToolTooltip(runtimeToolbar, 701, L"Execute");
+        ThemedUi::SetToolAlignment(runtimeToolbar, 702, ThemedToolItemAlignment::Trailing);
+        ThemedUi::EndToolBarUpdate(runtimeToolbar);
+        Check(ThemedUi::HasTool(runtimeToolbar, 701) && ThemedUi::IsToolEnabled(runtimeToolbar, 701), "Themed toolbar dynamic query state");
+        Check(ThemedUi::InsertTool(runtimeToolbar, 1, ThemedToolItem{705, L"More"}), "Themed toolbar dynamic insert");
+        Check(ThemedUi::MoveTool(runtimeToolbar, 705, 0) && ThemedUi::ToolIndex(runtimeToolbar, 705) == 0, "Themed toolbar dynamic reorder");
+        Check(ThemedUi::RemoveTool(runtimeToolbar, 705) && !ThemedUi::HasTool(runtimeToolbar, 705), "Themed toolbar dynamic remove");
+        DestroyWindow(controlParent);
+    }
     std::filesystem::remove_all(themeRoot, ec);
 
     Link urlLink;

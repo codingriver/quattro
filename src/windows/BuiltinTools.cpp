@@ -849,61 +849,39 @@ public:
     bool Run() {
         const std::wstring className = L"QuattroBuiltinTool_" +
             std::to_wstring(GetCurrentProcessId()) + L"_" + std::to_wstring(GetTickCount64());
-        WNDCLASSEXW wc{};
-        wc.cbSize = sizeof(wc);
-        wc.lpfnWndProc = ToolDialogBase::Proc;
-        wc.hInstance = instance_;
-        wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-        wc.hIcon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_QUATTRO_APP_ICON));
-        wc.hIconSm = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_QUATTRO_APP_ICON));
-        wc.hbrBackground = nullptr;
-        wc.lpszClassName = className.c_str();
-        if (!RegisterClassExW(&wc)) {
-            const DWORD error = GetLastError();
-            if (error != ERROR_CLASS_ALREADY_EXISTS) {
-                WriteAppLog(title_ + L"窗口类注册失败: " + FormatLastError(error));
-                return false;
-            }
-        }
-
-        const DWORD exStyle = WS_EX_DLGMODALFRAME | WS_EX_WINDOWEDGE;
-        const DWORD style = WS_CAPTION | WS_SYSMENU | WS_POPUP | WS_CLIPCHILDREN;
-        RECT windowRect{0, 0, width_, height_};
-        AdjustWindowRectEx(&windowRect, style, FALSE, exStyle);
-        const int windowWidth = windowRect.right - windowRect.left;
-        const int windowHeight = windowRect.bottom - windowRect.top;
-        const POINT position = OffsetWindowFromOwnerOnMonitor(owner_, windowWidth, windowHeight, 70, 70);
-        hwnd_ = CreateWindowExW(
-            exStyle,
+        auto options = ThemedWindowUi::DialogOptions(
+            instance_,
+            owner_,
             className.c_str(),
             title_.c_str(),
-            style,
-            position.x,
-            position.y,
-            windowWidth,
-            windowHeight,
-            owner_,
-            nullptr,
-            instance_,
-            this);
+            ToolDialogBase::Proc,
+            this,
+            LoadIconW(instance_, MAKEINTRESOURCEW(IDI_QUATTRO_APP_ICON)),
+            LoadIconW(instance_, MAKEINTRESOURCEW(IDI_QUATTRO_APP_ICON)));
+        options.clientWidth = width_;
+        options.clientHeight = height_;
+        options.placement = ThemedWindowPlacement::OffsetOwner;
+        options.offsetX = 70;
+        options.offsetY = 70;
+        std::wstring error;
+        hwnd_ = ThemedWindowUi::CreateWindowHandle(options, &error);
         if (!hwnd_) {
-            WriteAppLog(title_ + L"窗口创建失败: " + FormatLastError(GetLastError()));
+            WriteAppLog(title_ + L"窗口创建失败: " + error);
             return false;
         }
 
-        ownerWasEnabled_ = ShowModalWindow(owner_, hwnd_);
+        windowUi_->ShowModal();
         RedrawWindow(hwnd_, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
         MSG message{};
         while (!done_ && GetMessageW(&message, nullptr, 0, 0) > 0) {
             if (IsToolKeyMessage(message) && OnShortcutKey(message)) {
                 continue;
             }
-            if (!IsDialogMessageW(hwnd_, &message)) {
+            if (!ThemedUi::PreTranslateMessage(message) && !IsDialogMessageW(hwnd_, &message)) {
                 TranslateMessage(&message);
                 DispatchMessageW(&message);
             }
         }
-        RestoreModalOwner(owner_, ownerWasEnabled_, ownerRestored_);
         return true;
     }
 
@@ -922,19 +900,22 @@ protected:
     }
 
     LRESULT Handle(UINT message, WPARAM wParam, LPARAM lParam) {
+        LRESULT commonResult = 0;
+        if (ThemedWindowUi::HandleCommonMessage(windowUi_, message, wParam, lParam, commonResult)) {
+            if (message == WM_DESTROY) {
+                OnDestroy();
+                done_ = true;
+            }
+            return commonResult;
+        }
+
         switch (message) {
         case WM_CREATE:
-            font_ = ThemedControls::CreateDialogFont();
-            editFont_ = ThemedControls::CreateEditFont(theme_);
-            backgroundBrush_ = CreateSolidBrush(ToColorRef(theme_.color(L"dialog", L"normal", L"bg")));
-            editBrush_ = CreateSolidBrush(ToColorRef(theme_.color(L"edit", L"normal", L"bg")));
-            listBrush_ = CreateSolidBrush(ToColorRef(theme_.color(L"list", L"normal", L"bg")));
+            windowUi_ = std::make_unique<ThemedWindowUi>(
+                instance_, owner_, hwnd_, theme_, DialogLayoutKind::Compact, width_, height_);
             OnCreate();
             return 0;
         case WM_COMMAND:
-            if (HIWORD(wParam) == EN_SETFOCUS || HIWORD(wParam) == EN_KILLFOCUS) {
-                InvalidateEditFrame(reinterpret_cast<HWND>(lParam));
-            }
             if (OnCommand(LOWORD(wParam), HIWORD(wParam))) {
                 return 0;
             }
@@ -966,66 +947,14 @@ protected:
         case WM_PAINT: {
             PAINTSTRUCT ps{};
             HDC dc = BeginPaint(hwnd_, &ps);
-            RECT rect{};
-            GetClientRect(hwnd_, &rect);
-            FillRect(dc, &rect, backgroundBrush_ ? backgroundBrush_ : reinterpret_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
-            DrawEditFrames(dc);
+            windowUi_->FillBackground(dc);
+            windowUi_->DrawRegisteredEditFrames(dc);
             OnPaint(dc);
             EndPaint(hwnd_, &ps);
             return 0;
         }
-        case WM_ERASEBKGND:
-            return 1;
-        case WM_CTLCOLOREDIT: {
-            HDC dc = reinterpret_cast<HDC>(wParam);
-            SetTextColor(dc, ToColorRef(theme_.color(L"edit", L"normal", L"text")));
-            SetBkColor(dc, ToColorRef(theme_.color(L"edit", L"normal", L"bg")));
-            return reinterpret_cast<LRESULT>(editBrush_ ? editBrush_ : GetStockObject(WHITE_BRUSH));
-        }
-        case WM_CTLCOLORSTATIC: {
-            HDC dc = reinterpret_cast<HDC>(wParam);
-            SetBkMode(dc, TRANSPARENT);
-            SetTextColor(dc, ToColorRef(theme_.color(L"label", L"normal", L"text")));
-            return reinterpret_cast<LRESULT>(backgroundBrush_ ? backgroundBrush_ : GetStockObject(WHITE_BRUSH));
-        }
-        case WM_CTLCOLORLISTBOX: {
-            HDC dc = reinterpret_cast<HDC>(wParam);
-            SetTextColor(dc, ToColorRef(theme_.color(L"list", L"normal", L"text")));
-            SetBkColor(dc, ToColorRef(theme_.color(L"list", L"normal", L"bg")));
-            return reinterpret_cast<LRESULT>(listBrush_ ? listBrush_ : GetStockObject(WHITE_BRUSH));
-        }
-        case WM_DRAWITEM:
-            if (ThemedControls::Draw(theme_, reinterpret_cast<const DRAWITEMSTRUCT*>(lParam))) {
-                return TRUE;
-            }
-            return 0;
         case WM_CLOSE:
             Close();
-            return 0;
-        case WM_DESTROY:
-            OnDestroy();
-            done_ = true;
-            RestoreModalOwner(owner_, ownerWasEnabled_, ownerRestored_);
-            if (font_) {
-                DeleteObject(font_);
-                font_ = nullptr;
-            }
-            if (backgroundBrush_) {
-                DeleteObject(backgroundBrush_);
-                backgroundBrush_ = nullptr;
-            }
-            if (editBrush_) {
-                DeleteObject(editBrush_);
-                editBrush_ = nullptr;
-            }
-            if (listBrush_) {
-                DeleteObject(listBrush_);
-                listBrush_ = nullptr;
-            }
-            if (editFont_) {
-                DeleteObject(editFont_);
-                editFont_ = nullptr;
-            }
             return 0;
         default:
             return DefWindowProcW(hwnd_, message, wParam, lParam);
@@ -1047,11 +976,11 @@ protected:
     }
 
     HFONT font() const {
-        return font_ ? font_ : reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
+        return windowUi_ ? windowUi_->font() : reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
     }
 
     HFONT editFont() const {
-        return editFont_ ? editFont_ : font();
+        return font();
     }
 
     DialogLayoutMetrics CompactLayout() const {
@@ -1059,17 +988,14 @@ protected:
     }
 
     ThemedUi MakeUi() const {
-        return ThemedUi(instance_, hwnd_, theme_, font(), DialogLayoutKind::Compact, width_, height_);
+        return windowUi_->ui();
     }
 
     HWND CreateEdit(int id, int x, int y, int width, const std::wstring& value, DWORD extraStyle = ES_AUTOHSCROLL) {
-        const int height = ThemedControls::EditFrameHeight(theme_);
-        const RECT frame{x, y, x + width, y + height};
-        HWND edit = ThemedControls::CreateSingleLineEdit(instance_, hwnd_, id, theme_, frame, value, editFont(), extraStyle);
-        if (edit) {
-            editFrames_.push_back(EditFrame{frame, edit});
-        }
-        return edit;
+        ThemedEditOptions options{};
+        options.content = (extraStyle & ES_NUMBER) != 0 ? ThemedEditContent::Integer : ThemedEditContent::Text;
+        options.readOnly = (extraStyle & ES_READONLY) != 0;
+        return MakeUi().Edit(id, MakeUi().editFrame(x, y, width), value, options);
     }
 
     bool IsToolKeyMessage(const MSG& message) const {
@@ -1085,26 +1011,6 @@ protected:
             && (GetKeyState(VK_SHIFT) & 0x8000) == 0;
     }
 
-    void DrawEditFrames(HDC dc) {
-        for (const auto& frame : editFrames_) {
-            ThemedControls::DrawFieldFrame(theme_, dc, frame.rect, frame.child);
-        }
-    }
-
-    void InvalidateEditFrame(HWND child) {
-        for (const auto& frame : editFrames_) {
-            if (frame.child == child) {
-                InvalidateRect(hwnd_, &frame.rect, TRUE);
-                return;
-            }
-        }
-    }
-
-    struct EditFrame {
-        RECT rect{};
-        HWND child = nullptr;
-    };
-
     HWND owner_ = nullptr;
     HINSTANCE instance_ = nullptr;
     const Theme& theme_;
@@ -1113,14 +1019,7 @@ protected:
     std::wstring title_;
     int width_ = 0;
     int height_ = 0;
-    HFONT font_ = nullptr;
-    HFONT editFont_ = nullptr;
-    HBRUSH backgroundBrush_ = nullptr;
-    HBRUSH editBrush_ = nullptr;
-    HBRUSH listBrush_ = nullptr;
-    std::vector<EditFrame> editFrames_;
-    bool ownerWasEnabled_ = false;
-    bool ownerRestored_ = false;
+    std::unique_ptr<ThemedWindowUi> windowUi_;
     bool done_ = false;
 };
 
@@ -1151,32 +1050,32 @@ private:
         const int row2 = row1 + rowStep;
         const int row3 = row2 + rowStep;
 
-        ThemedControls::CreateStaticText(instance_, hwnd_, L"坐标（x，y）", left, row0 + labelOffsetY, layout.labelWidth, labelHeight, font());
+        MakeUi().Label(L"坐标（x，y）", left, row0 + labelOffsetY, layout.labelWidth);
         coord_ = CreateEdit(ID_CLICK_COORD, fieldX, row0, 100, savedX + L", " + savedY);
         MakeUi().Button(ID_CLICK_PICK, L"拾取(&P)", fieldX + 100 + layout.controlGapX, row0 + 1, ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, layout.footerButtonWidth);
 
-        ThemedControls::CreateStaticText(instance_, hwnd_, L"点击次数", left, row1 + labelOffsetY, layout.labelWidth, labelHeight, font());
+        MakeUi().Label(L"点击次数", left, row1 + labelOffsetY, layout.labelWidth);
         count_ = CreateEdit(ID_CLICK_COUNT, fieldX, row1, fieldW, registry_.GetSetting(pluginId, L"count", L"10"), ES_NUMBER);
-        ThemedControls::CreateStaticText(instance_, hwnd_, L"间隔(ms)", rightLabelX, row1 + labelOffsetY, layout.labelWidth, labelHeight, font());
+        MakeUi().Label(L"间隔(ms)", rightLabelX, row1 + labelOffsetY, layout.labelWidth);
         interval_ = CreateEdit(ID_CLICK_INTERVAL, rightFieldX, row1, fieldW, registry_.GetSetting(pluginId, L"interval", L"1000"), ES_NUMBER);
 
-        ThemedControls::CreateStaticText(instance_, hwnd_, L"鼠标按键", left, row2 + labelOffsetY, layout.labelWidth, labelHeight, font());
-        button_ = ThemedControls::CreateComboBox(instance_, hwnd_, ID_CLICK_BUTTON, fieldX, row2 + 2, layout.footerButtonWidth, ThemedControls::ComboBoxDropdownHeight(theme_), font(), theme_);
+        MakeUi().Label(L"鼠标按键", left, row2 + labelOffsetY, layout.labelWidth);
+        button_ = MakeUi().ComboBox(ID_CLICK_BUTTON, fieldX, row2 + 2, layout.footerButtonWidth);
         SendMessageW(button_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"左键"));
         SendMessageW(button_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"右键"));
         SendMessageW(button_, CB_SETCURSEL, registry_.GetSetting(pluginId, L"button", L"left") == L"right" ? 1 : 0, 0);
 
-        ThemedControls::CreateStaticText(instance_, hwnd_, L"倒计时(s)", rightLabelX, row2 + labelOffsetY, layout.labelWidth, labelHeight, font());
+        MakeUi().Label(L"倒计时(s)", rightLabelX, row2 + labelOffsetY, layout.labelWidth);
         countdownEdit_ = CreateEdit(ID_CLICK_COUNTDOWN, rightFieldX, row2, fieldW, registry_.GetSetting(pluginId, L"countdown", L"3"), ES_NUMBER);
 
         const wchar_t* hotKeys[] = {L"F6", L"F7", L"F8", L"F9", L"F10", L"F11", L"F12"};
 
-        ThemedControls::CreateStaticText(instance_, hwnd_, L"启动停止热键", left, row3 + labelOffsetY, layout.labelWidth + layout.labelGap, labelHeight, font());
-        toggleHotKey_ = ThemedControls::CreateComboBox(instance_, hwnd_, ID_CLICK_HOTKEY, fieldX, row3 + 2, fieldW, ThemedControls::ComboBoxDropdownHeight(theme_), font(), theme_);
+        MakeUi().Label(L"启动停止热键", left, row3 + labelOffsetY, layout.labelWidth + layout.labelGap);
+        toggleHotKey_ = MakeUi().ComboBox(ID_CLICK_HOTKEY, fieldX, row3 + 2, fieldW);
         FillHotKeyCombo(toggleHotKey_, registry_.GetSetting(pluginId, L"toggleHotKey", registry_.GetSetting(pluginId, L"stopHotKey", L"F8")), hotKeys, 7);
 
-        ThemedControls::CreateStaticText(instance_, hwnd_, L"拾取热键", rightLabelX, row3 + labelOffsetY, layout.labelWidth, labelHeight, font());
-        pickHotKey_ = ThemedControls::CreateComboBox(instance_, hwnd_, ID_CLICK_PICK_HOTKEY_CONTROL, rightFieldX, row3 + 2, fieldW, ThemedControls::ComboBoxDropdownHeight(theme_), font(), theme_);
+        MakeUi().Label(L"拾取热键", rightLabelX, row3 + labelOffsetY, layout.labelWidth);
+        pickHotKey_ = MakeUi().ComboBox(ID_CLICK_PICK_HOTKEY_CONTROL, rightFieldX, row3 + 2, fieldW);
         FillHotKeyCombo(pickHotKey_, registry_.GetSetting(pluginId, L"pickHotKey", L"F9"), hotKeys, 7);
 
         const int toggleY = row3 + rowStep + layout.footerGap;
@@ -1191,8 +1090,12 @@ private:
             layout.footerButtonWidth,
             true);
         const int statusY = toggleY + bh + layout.rowGap;
-        status_ = ThemedControls::CreateStaticText(instance_, hwnd_, L"就绪。", left, statusY, width_ - left * 2 - 120, labelHeight, font());
-        progress_ = ThemedControls::CreateStaticText(instance_, hwnd_, L"当前点击：0 / 0", width_ - left - 120, statusY, 120, labelHeight, font(), SS_RIGHT);
+        ThemedStatusTextOptions startAligned{};
+        startAligned.align = ThemedTextAlign::Start;
+        status_ = MakeUi().StatusText(L"就绪。", left, statusY, width_ - left * 2 - 120, startAligned);
+        ThemedStatusTextOptions endAligned{};
+        endAligned.align = ThemedTextAlign::End;
+        progress_ = MakeUi().StatusText(L"当前点击：0 / 0", width_ - left - 120, statusY, 120, endAligned);
         RegisterToolHotKeys();
     }
 
@@ -1565,14 +1468,16 @@ private:
         const int scanW = layout.footerButtonWidth;
         const int fieldW = width_ - fieldX - scanW - layout.controlGapX - left;
 
-        ThemedControls::CreateStaticText(instance_, hwnd_, L"端口号", left, row0 + labelOffsetY, layout.labelWidth, labelHeight, font());
+        MakeUi().Label(L"端口号", left, row0 + labelOffsetY, layout.labelWidth);
         port_ = CreateEdit(ID_PORT_VALUE, fieldX, row0, fieldW, registry_.GetSetting(L"quattro.builtin.port-inspector", L"port", L""), ES_NUMBER);
         MakeUi().Button(ID_PORT_SCAN, L"扫描(&S)", fieldX + fieldW + layout.controlGapX, row0 + 1, ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, scanW, true);
 
         const int frameTop = row0 + layout.RowStep(bh) + layout.rowGap;
         const int statusY = height_ - layout.contentInsetY - labelHeight;
         resultsFrame_ = RECT{left, frameTop, width_ - left, statusY - layout.rowGap};
-        status_ = ThemedControls::CreateStaticText(instance_, hwnd_, L"输入端口号后点击扫描。", left, statusY, width_ - left * 2, labelHeight, font());
+        ThemedStatusTextOptions statusOptions{};
+        statusOptions.align = ThemedTextAlign::Start;
+        status_ = MakeUi().StatusText(L"输入端口号后点击扫描。", left, statusY, width_ - left * 2, statusOptions);
         emptyText_ = L"暂无占用进程";
     }
 
@@ -1646,14 +1551,16 @@ private:
         const int queryW = layout.footerButtonWidth;
         const int fieldW = width_ - fieldX - queryW - layout.controlGapX - left;
 
-        ThemedControls::CreateStaticText(instance_, hwnd_, L"进程ID", left, row0 + labelOffsetY, layout.labelWidth, labelHeight, font());
+        MakeUi().Label(L"进程ID", left, row0 + labelOffsetY, layout.labelWidth);
         pid_ = CreateEdit(ID_PROCESS_VALUE, fieldX, row0, fieldW, registry_.GetSetting(L"quattro.builtin.process-inspector", L"pid", L""), ES_NUMBER);
         MakeUi().Button(ID_PROCESS_QUERY, L"查询(&Q)", fieldX + fieldW + layout.controlGapX, row0 + 1, ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, queryW, true);
 
         const int frameTop = row0 + layout.RowStep(bh) + layout.rowGap;
         const int statusY = height_ - layout.contentInsetY - labelHeight;
         resultsFrame_ = RECT{left, frameTop, width_ - left, statusY - layout.rowGap};
-        status_ = ThemedControls::CreateStaticText(instance_, hwnd_, L"输入进程ID后点击查询。", left, statusY, width_ - left * 2, labelHeight, font());
+        ThemedStatusTextOptions statusOptions{};
+        statusOptions.align = ThemedTextAlign::Start;
+        status_ = MakeUi().StatusText(L"输入进程ID后点击查询。", left, statusY, width_ - left * 2, statusOptions);
         emptyText_ = L"暂无进程条目";
     }
 
@@ -1730,10 +1637,7 @@ public:
         windowUi_->ShowModal();
         MSG message{};
         while (!done_ && GetMessageW(&message, nullptr, 0, 0) > 0) {
-            if (IsShortcutKey(message)) {
-                continue;
-            }
-            if (!IsDialogMessageW(hwnd_, &message)) {
+            if (!ThemedUi::PreTranslateMessage(message) && !IsDialogMessageW(hwnd_, &message)) {
                 TranslateMessage(&message);
                 DispatchMessageW(&message);
             }
@@ -1803,8 +1707,8 @@ private:
         const int fieldW = width_ - fieldX - actionsW - left;
 
         ui.Label(L"路径", left, row0 + labelOffsetY, layout.labelWidth);
-        pathFrame_ = ui.rect(fieldX, row0, fieldW, editHeight);
-        path_ = ui.SingleLineEdit(ID_FILE_LOCK_PATH, pathFrame_, registry_.GetSetting(L"quattro.builtin.file-lock-inspector", L"path", L""));
+        pathFrame_ = ui.editFrame(fieldX, row0, fieldW);
+        path_ = ui.Edit(ID_FILE_LOCK_PATH, pathFrame_, registry_.GetSetting(L"quattro.builtin.file-lock-inspector", L"path", L""));
         ui.Button(ID_FILE_LOCK_PICK_FILE, L"文件", fieldX + fieldW + layout.controlGapX, row0 + 1, ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, pickW);
         ui.Button(ID_FILE_LOCK_PICK_DIR, L"目录", fieldX + fieldW + layout.controlGapX * 2 + pickW, row0 + 1, ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, pickW);
         ui.Button(ID_FILE_LOCK_SCAN, L"检查(&C)", fieldX + fieldW + layout.controlGapX * 3 + pickW * 2, row0 + 1, ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, scanW, true);
@@ -1812,7 +1716,12 @@ private:
         const int frameTop = row0 + layout.RowStep(bh) + layout.rowGap;
         const int statusY = height_ - layout.contentInsetY - labelHeight;
         resultsFrame_ = RECT{left, frameTop, width_ - left, statusY - layout.rowGap};
-        status_ = ui.StatusText(L"输入文件或目录路径后点击检查。", left, statusY, width_ - left * 2, L"normal", SS_LEFT);
+        status_ = ui.StatusText(
+            L"输入文件或目录路径后点击检查。",
+            left,
+            statusY,
+            width_ - left * 2,
+            ThemedStatusTextOptions{ThemedStatusRole::Normal, ThemedTextAlign::Start});
         emptyText_ = L"暂无占用进程";
     }
 
@@ -1832,23 +1741,6 @@ private:
         if (id >= ID_FILE_LOCK_KILL_BASE && id < ID_FILE_LOCK_KILL_BASE + 100) {
             ConfirmAndKillRow(static_cast<std::size_t>(id - ID_FILE_LOCK_KILL_BASE));
         }
-    }
-
-    bool IsShortcutKey(const MSG& message) {
-        if ((message.message == WM_KEYDOWN || message.message == WM_SYSKEYDOWN)
-            && (message.hwnd == hwnd_ || IsChild(hwnd_, message.hwnd))
-            && CtrlOnly()
-            && message.wParam == 'C') {
-            Scan();
-            return true;
-        }
-        return false;
-    }
-
-    bool CtrlOnly() const {
-        return (GetKeyState(VK_CONTROL) & 0x8000) != 0
-            && (GetKeyState(VK_MENU) & 0x8000) == 0
-            && (GetKeyState(VK_SHIFT) & 0x8000) == 0;
     }
 
     void ClearRowButtons() {
@@ -1905,7 +1797,7 @@ private:
     void Paint() {
         PAINTSTRUCT ps{};
         HDC dc = BeginPaint(hwnd_, &ps);
-        ThemedControls::DrawFieldFrame(theme_, dc, pathFrame_, path_);
+        windowUi_->DrawRegisteredEditFrames(dc);
         DrawProcessRows(theme_, dc, resultsFrame_, rows_, emptyText_, windowUi_->font());
         EndPaint(hwnd_, &ps);
     }
@@ -2011,6 +1903,7 @@ private:
         const std::wstring seconds = registry_.GetSetting(L"quattro.builtin.timer", L"secondsPart", std::to_wstring(fallbackSeconds % 60));
 
         const DialogLayoutMetrics layout = CompactLayout();
+        const ThemedUi timerUi = MakeUi();
         const int editHeight = ThemedControls::EditFrameHeight(theme_);
         const int labelHeight = ThemedControls::LabelHeight(theme_);
         const int labelOffsetY = std::max(0, (editHeight - labelHeight) / 2);
@@ -2022,27 +1915,36 @@ private:
         const int row0 = layout.contentInsetY;
         const int row1 = row0 + layout.RowStep(ThemedControls::ButtonHeight(theme_));
         const int row2 = row1 + layout.RowStep(ThemedControls::ButtonHeight(theme_));
-        ThemedControls::CreateStaticText(instance_, hwnd_, L"时", unitGroupX, row0 + labelOffsetY, unitLabelW, labelHeight, font());
+        timerUi.Label(L"时", unitGroupX, row0 + labelOffsetY, unitLabelW);
         hours_ = CreateEdit(ID_TIMER_HOURS, unitGroupX + unitLabelW + layout.controlGapX / 2, row0, unitFieldW, hours, ES_NUMBER);
-        ThemedControls::CreateStaticText(instance_, hwnd_, L"分", unitGroupX + unitStep, row0 + labelOffsetY, unitLabelW, labelHeight, font());
+        timerUi.Label(L"分", unitGroupX + unitStep, row0 + labelOffsetY, unitLabelW);
         minutes_ = CreateEdit(ID_TIMER_MINUTES, unitGroupX + unitStep + unitLabelW + layout.controlGapX / 2, row0, unitFieldW, minutes, ES_NUMBER);
-        ThemedControls::CreateStaticText(instance_, hwnd_, L"秒", unitGroupX + unitStep * 2, row0 + labelOffsetY, unitLabelW, labelHeight, font());
+        timerUi.Label(L"秒", unitGroupX + unitStep * 2, row0 + labelOffsetY, unitLabelW);
         seconds_ = CreateEdit(ID_TIMER_SECONDS, unitGroupX + unitStep * 2 + unitLabelW + layout.controlGapX / 2, row0, unitFieldW, seconds, ES_NUMBER);
         const int checkBoxW = 100;
         const int checkGroupW = checkBoxW * 2 + layout.controlGapX + layout.labelGap;
         const int checkGroupX = layout.CenteredGroupX(width_, checkGroupW);
-        sound_ = ThemedControls::CreateCheckBox(instance_, hwnd_, ID_TIMER_SOUND, L"声音提醒", checkGroupX, row1, checkBoxW, ThemedControls::CheckBoxHeight(theme_), font_, registry_.GetSetting(L"quattro.builtin.timer", L"sound", L"1") != L"0");
-        topMost_ = ThemedControls::CreateCheckBox(instance_, hwnd_, ID_TIMER_TOPMOST, L"置顶提醒", checkGroupX + checkBoxW + layout.controlGapX + layout.labelGap, row1, checkBoxW, ThemedControls::CheckBoxHeight(theme_), font_, registry_.GetSetting(L"quattro.builtin.timer", L"topMost", L"1") != L"0");
-        display_ = ThemedControls::CreateStaticText(instance_, hwnd_, L"00:05:00.000", layout.contentInsetX, row2, width_ - layout.contentInsetX * 2, 26, font(), SS_CENTER);
+        ThemedCheckBoxOptions soundOptions{};
+        soundOptions.checked = registry_.GetSetting(L"quattro.builtin.timer", L"sound", L"1") != L"0";
+        sound_ = timerUi.CheckBox(ID_TIMER_SOUND, L"声音提醒", checkGroupX, row1, checkBoxW, soundOptions);
+        ThemedCheckBoxOptions topMostOptions{};
+        topMostOptions.checked = registry_.GetSetting(L"quattro.builtin.timer", L"topMost", L"1") != L"0";
+        topMost_ = timerUi.CheckBox(
+            ID_TIMER_TOPMOST,
+            L"置顶提醒",
+            checkGroupX + checkBoxW + layout.controlGapX + layout.labelGap,
+            row1,
+            checkBoxW,
+            topMostOptions);
+        display_ = timerUi.StatusText(L"00:05:00.000", layout.contentInsetX, row2, width_ - layout.contentInsetX * 2);
         const int bh = ThemedControls::ButtonHeight(theme_);
         const int buttonWidth = layout.footerButtonWidth;
         const int buttonY = row2 + 26 + layout.sectionGap;
         const int buttonsX = layout.CenteredGroupX(width_, buttonWidth * 2 + layout.footerButtonGap);
-        const ThemedUi timerUi = MakeUi();
         start_ = timerUi.Button(ID_TIMER_START, L"开始(&S)", buttonsX, buttonY, ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, buttonWidth, true);
         pause_ = timerUi.Button(ID_TIMER_PAUSE, L"暂停(&P)", buttonsX, buttonY, ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, buttonWidth);
         reset_ = timerUi.Button(ID_TIMER_RESET, L"重置(&R)", buttonsX + buttonWidth + layout.footerButtonGap, buttonY, ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, buttonWidth);
-        status_ = ThemedControls::CreateStaticText(instance_, hwnd_, L"", layout.contentInsetX, buttonY + bh + layout.rowGap, width_ - layout.contentInsetX * 2, labelHeight, font(), SS_CENTER);
+        status_ = timerUi.StatusText(L"", layout.contentInsetX, buttonY + bh + layout.rowGap, width_ - layout.contentInsetX * 2);
         UpdateDisplay(ReadDurationMs());
         UpdateButtons();
     }
@@ -2254,7 +2156,7 @@ private:
         const int contentWidth = width_ - left * 2;
         const int displayY = layout.contentInsetY;
         const int displayHeight = 34;
-        display_ = ThemedControls::CreateStaticText(instance_, hwnd_, L"00:00:00.000", left, displayY, contentWidth, displayHeight, font(), SS_CENTER);
+        display_ = MakeUi().StatusText(L"00:00:00.000", left, displayY, contentWidth);
         const int bh = ThemedControls::ButtonHeight(theme_);
         const int buttonWidth = (contentWidth - layout.controlGapX) / 2;
         const int buttonRow0 = displayY + displayHeight + layout.rowGap;
@@ -2270,17 +2172,12 @@ private:
         swUi.Button(ID_SW_EXPORT, L"导出(&E)", left, buttonRow2, ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, contentWidth);
         const int lapsTop = buttonRow2 + bh + layout.sectionGap;
         lapsFrame_ = RECT{left, lapsTop, width_ - left, height_ - layout.contentInsetY - layout.sectionGap - layout.rowGap};
-        laps_ = ThemedControls::CreateListBox(
-            instance_,
-            hwnd_,
+        laps_ = swUi.ListBox(
             ID_SW_LAPS,
             lapsFrame_.left + 2,
             lapsFrame_.top + 2,
             lapsFrame_.right - lapsFrame_.left - 4,
-            lapsFrame_.bottom - lapsFrame_.top - 4,
-            font(),
-            theme_,
-            WS_VSCROLL);
+            lapsFrame_.bottom - lapsFrame_.top - 4);
         LoadLapHistory();
         UpdateControls();
     }
@@ -2538,7 +2435,7 @@ public:
         windowUi_->ShowModal();
         MSG message{};
         while (!done_ && GetMessageW(&message, nullptr, 0, 0) > 0) {
-            if (!IsDialogMessageW(hwnd_, &message)) {
+            if (!ThemedUi::PreTranslateMessage(message) && !IsDialogMessageW(hwnd_, &message)) {
                 TranslateMessage(&message);
                 DispatchMessageW(&message);
             }
@@ -2628,14 +2525,16 @@ private:
 
         ui.Label(L"进程 ID", left, row0 + labelOffsetY, layout.labelWidth);
         pidFrame_ = ui.rect(fieldX, row0 + fieldOffsetY, fieldWidth, fieldHeight);
-        pidValue_ = ui.SingleLineEdit(ID_LOCATOR_PID_VALUE, pidFrame_, L"等待获取", ES_AUTOHSCROLL | ES_READONLY);
+        ThemedEditOptions readOnlyOptions{};
+        readOnlyOptions.readOnly = true;
+        pidValue_ = ui.Edit(ID_LOCATOR_PID_VALUE, pidFrame_, L"等待获取", readOnlyOptions);
         killButton_ = ui.Button(
             ID_LOCATOR_KILL, L"结束进程", fieldX + fieldWidth + layout.controlGapX, row0 + buttonOffsetY,
             ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, actionWidth);
 
         ui.Label(L"绝对路径", left, row1 + labelOffsetY, layout.labelWidth);
         pathFrame_ = ui.rect(fieldX, row1 + fieldOffsetY, fieldWidth, fieldHeight);
-        pathValue_ = ui.SingleLineEdit(ID_LOCATOR_PATH_VALUE, pathFrame_, L"等待获取", ES_AUTOHSCROLL | ES_READONLY);
+        pathValue_ = ui.Edit(ID_LOCATOR_PATH_VALUE, pathFrame_, L"等待获取", readOnlyOptions);
         openButton_ = ui.Button(
             ID_LOCATOR_OPEN, L"打开所在目录", fieldX + fieldWidth + layout.controlGapX, row1 + buttonOffsetY,
             ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, actionWidth);
@@ -2651,8 +2550,7 @@ private:
             ID_LOCATOR_HOTKEY,
             groupX + layout.labelWidth + layout.labelGap,
             row2 + std::max(0, (rowHeight - ThemedControls::ComboBoxHeight(theme_)) / 2),
-            hotKeyWidth,
-            ThemedControls::ComboBoxDropdownHeight(theme_));
+            hotKeyWidth);
         const std::wstring savedHotKey = registry_.GetSetting(L"quattro.builtin.process-locator", L"hotKey", L"F10");
         int selectedIndex = 4;
         for (int index = 0; index < static_cast<int>(_countof(hotKeys)); ++index) {
@@ -2672,9 +2570,7 @@ private:
             L"将鼠标移到目标程序上，然后按全局快捷键。",
             left,
             ui.footerButtonY(labelHeight),
-            ui.contentWidth(),
-            L"normal",
-            SS_CENTER);
+            ui.contentWidth());
         UpdateActionButtons();
         SaveAndRegisterHotKey();
     }
@@ -2682,8 +2578,7 @@ private:
     void PaintFields() {
         PAINTSTRUCT ps{};
         HDC dc = BeginPaint(hwnd_, &ps);
-        ThemedControls::DrawFieldFrame(theme_, dc, pidFrame_, pidValue_, true);
-        ThemedControls::DrawFieldFrame(theme_, dc, pathFrame_, pathValue_, true);
+        windowUi_->DrawRegisteredEditFrames(dc);
         EndPaint(hwnd_, &ps);
     }
 
@@ -2706,7 +2601,7 @@ private:
             hotKeyRegistered_
                 ? L"将鼠标移到目标程序上，然后按 " + hotKeyName + L"。"
                 : L"全局快捷键注册失败，请更换一个 F 键。",
-            hotKeyRegistered_ ? L"normal" : L"danger");
+            hotKeyRegistered_ ? ThemedStatusRole::Normal : ThemedStatusRole::Danger);
     }
 
     void LocateHoveredProcess() {
@@ -2721,7 +2616,7 @@ private:
                 hovered.trayTarget
                     ? L"无法识别该托盘图标所属的进程。"
                     : L"获取进程 ID 失败：" + FormatLastError(hovered.error),
-                L"danger");
+                ThemedStatusRole::Danger);
             return;
         }
         currentPid_ = hovered.pid;
@@ -2734,7 +2629,7 @@ private:
             currentPath_.empty()
                 ? L"已获取进程 ID，但程序路径不可读或权限不足。"
                 : (hovered.trayTarget ? L"已识别托盘图标所属进程。" : L"已获取鼠标位置对应的进程信息。"),
-            currentPath_.empty() ? L"warning" : L"success");
+            currentPath_.empty() ? ThemedStatusRole::Warning : ThemedStatusRole::Success);
     }
 
     void KillCurrentProcess() {
@@ -2750,10 +2645,10 @@ private:
         const std::wstring error = KillProcessById(currentPid_);
         if (!error.empty()) {
             ShowThemedMessageBox(hwnd_, instance_, theme_, error, L"进程定位器", MB_OK | MB_ICONWARNING);
-            SetStatus(L"结束进程失败，目标可能已退出、受保护或权限不足。", L"danger");
+            SetStatus(L"结束进程失败，目标可能已退出、受保护或权限不足。", ThemedStatusRole::Danger);
             return;
         }
-        SetStatus(L"目标进程已结束。", L"success");
+        SetStatus(L"目标进程已结束。", ThemedStatusRole::Success);
         currentPid_ = 0;
         currentPath_.clear();
         UpdateActionButtons();
@@ -2763,23 +2658,24 @@ private:
         const std::wstring error = OpenProcessLocation(currentPath_);
         if (!error.empty()) {
             ShowThemedMessageBox(hwnd_, instance_, theme_, error, L"进程定位器", MB_OK | MB_ICONWARNING);
-            SetStatus(L"打开所在目录失败。", L"danger");
+            SetStatus(L"打开所在目录失败。", ThemedStatusRole::Danger);
             return;
         }
-        SetStatus(L"已在资源管理器中定位程序文件。", L"success");
+        SetStatus(L"已在资源管理器中定位程序文件。", ThemedStatusRole::Success);
     }
 
-    void SetStatus(const std::wstring& text, const wchar_t* state) {
+    void SetStatus(const std::wstring& text, ThemedStatusRole role) {
         SetText(status_, text);
-        ThemedControls::SetStatusTextState(status_, state);
+        windowUi_->ui().SetStatusTextRole(status_, role);
     }
 
     void UpdateActionButtons() {
+        const ThemedUi ui = windowUi_->ui();
         if (killButton_) {
-            EnableWindow(killButton_, currentPid_ != 0);
+            ui.SetEnabled(killButton_, currentPid_ != 0);
         }
         if (openButton_) {
-            EnableWindow(openButton_, !currentPath_.empty());
+            ui.SetEnabled(openButton_, !currentPath_.empty());
         }
     }
 

@@ -15,6 +15,7 @@
 #include "StartupService.h"
 #include "SystemFunctions.h"
 #include "ThemedControls.h"
+#include "ThemedWindowUi.h"
 #include "TodoEditDialog.h"
 #include "TodoSchedule.h"
 #include "UpdateCheckService.h"
@@ -2128,29 +2129,14 @@ MainWindow::~MainWindow() {
         DestroyWindow(dockPeek_);
         dockPeek_ = nullptr;
     }
-    if (tooltip_) {
-        DestroyWindow(tooltip_);
-        tooltip_ = nullptr;
-    }
     if (noteEdit_) {
         DestroyWindow(noteEdit_);
         noteEdit_ = nullptr;
     }
-    if (noteEditFont_) {
-        DeleteObject(noteEditFont_);
-        noteEditFont_ = nullptr;
-    }
-    if (noteEditBrush_) {
-        DeleteObject(noteEditBrush_);
-        noteEditBrush_ = nullptr;
-    }
+    embeddedUi_.reset();
     if (reminderPanel_) {
         DestroyWindow(reminderPanel_);
         reminderPanel_ = nullptr;
-    }
-    if (tooltipFont_) {
-        DeleteObject(tooltipFont_);
-        tooltipFont_ = nullptr;
     }
     if (reminderPanelFont_) {
         DeleteObject(reminderPanelFont_);
@@ -2314,6 +2300,7 @@ bool MainWindow::Create() {
 int MainWindow::RunMessageLoop() {
     MSG message{};
     while (GetMessageW(&message, nullptr, 0, 0) > 0) {
+        if (ThemedUi::PreTranslateMessage(message)) continue;
         TranslateMessage(&message);
         DispatchMessageW(&message);
     }
@@ -2406,6 +2393,18 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         OnUrlIconDownloaded(static_cast<int>(wParam), lParam != 0);
         return 0;
     case WM_NCHITTEST: {
+        // The auto-hidden main window intentionally leaves a narrow strip on
+        // screen. Normally the separate dock-peek window receives the hover,
+        // but z-order changes (for example after activating from the tray) can
+        // briefly leave the main window's resize frame above that window. In
+        // that case treating the strip as HTLEFT/HTRIGHT only shows a resize
+        // cursor and the window can never restore. Make the main strip an
+        // equivalent restore target so either window reliably reveals it.
+        if (dockHidden_) {
+            PostMessageW(hwnd_, WM_QUATTRO_DOCK_PEEK_ACTIVATE, 0, 0);
+            return HTCLIENT;
+        }
+
         POINT screenPoint{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
         POINT clientPoint = screenPoint;
         ScreenToClient(hwnd_, &clientPoint);
@@ -3151,14 +3150,11 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         }
         return DefWindowProcW(hwnd_, message, wParam, lParam);
     case WM_CTLCOLOREDIT:
-        if (reinterpret_cast<HWND>(lParam) == noteEdit_) {
-            HDC dc = reinterpret_cast<HDC>(wParam);
-            SetTextColor(dc, ToColorRef(theme_.color(L"edit", L"normal", L"text")));
-            SetBkColor(dc, ToColorRef(theme_.color(L"edit", L"normal", L"bg")));
-            if (!noteEditBrush_) {
-                noteEditBrush_ = CreateSolidBrush(ToColorRef(theme_.color(L"edit", L"normal", L"bg")));
+        if (reinterpret_cast<HWND>(lParam) == noteEdit_ && embeddedUi_) {
+            LRESULT result = 0;
+            if (embeddedUi_->HandleMessage(message, wParam, lParam, result)) {
+                return result;
             }
-            return reinterpret_cast<LRESULT>(noteEditBrush_);
         }
         return DefWindowProcW(hwnd_, message, wParam, lParam);
     case WM_DESTROY:
@@ -3167,10 +3163,6 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         SaveCurrentNotePage();
         urlIconDownloadService_.Shutdown();
         HideItemTooltip();
-        if (tooltip_) {
-            DestroyWindow(tooltip_);
-            tooltip_ = nullptr;
-        }
         if (dockTimerId_ != 0) {
             KillTimer(hwnd_, dockTimerId_);
             dockTimerId_ = 0;
@@ -5236,13 +5228,6 @@ void MainWindow::ApplyTheme(const std::wstring& themeName) {
     theme_ = Theme::Load(appDirectory_ / L"theme", config_.theme);
     configService_.Save(config_);
     ResetMenuVisuals();
-    if (tooltipFont_) {
-        if (tooltip_) {
-            SendMessageW(tooltip_, WM_SETFONT, 0, TRUE);
-        }
-        DeleteObject(tooltipFont_);
-        tooltipFont_ = nullptr;
-    }
     if (reminderPanelFont_) {
         if (reminderPanel_) {
             SendMessageW(reminderPanel_, WM_SETFONT, 0, TRUE);
@@ -5250,22 +5235,16 @@ void MainWindow::ApplyTheme(const std::wstring& themeName) {
         DeleteObject(reminderPanelFont_);
         reminderPanelFont_ = nullptr;
     }
-    HFONT newNoteEditFont = ThemedControls::CreateEditFont(theme_);
-    if (newNoteEditFont) {
-        HFONT oldNoteEditFont = noteEditFont_;
-        noteEditFont_ = newNoteEditFont;
-        if (noteEdit_) {
-            SendMessageW(noteEdit_, WM_SETFONT, reinterpret_cast<WPARAM>(noteEditFont_), TRUE);
-        }
-        if (oldNoteEditFont) {
-            DeleteObject(oldNoteEditFont);
-        }
+    embeddedUi_.reset();
+    if (noteEdit_) {
+        embeddedUi_ = std::make_unique<ThemedWindowUi>(
+            instance_, nullptr, hwnd_, theme_, DialogLayoutKind::Compact, 1, 1);
+        ThemedEditOptions options{};
+        options.mode = ThemedEditMode::MultiLine;
+        embeddedUi_->RegisterEditFrame(noteEdit_, noteEditFrame_, options);
+        SendMessageW(noteEdit_, WM_SETFONT, reinterpret_cast<WPARAM>(embeddedUi_->font()), TRUE);
     }
     ApplyTooltipTheme();
-    if (noteEditBrush_) {
-        DeleteObject(noteEditBrush_);
-        noteEditBrush_ = nullptr;
-    }
     if (noteEdit_) {
         InvalidateRect(noteEdit_, nullptr, TRUE);
     }
@@ -6217,70 +6196,20 @@ void MainWindow::ShowTodoMenu(int todoId, POINT screenPoint) {
 }
 
 void MainWindow::CreateTooltip() {
-    if (tooltip_ || !hwnd_) {
+    if (embeddedUi_ || !hwnd_) {
         return;
     }
-
-    WNDCLASSEXW wc{};
-    wc.cbSize = sizeof(wc);
-    wc.lpfnWndProc = TooltipWindowProc;
-    wc.hInstance = instance_;
-    wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-    wc.lpszClassName = kTooltipWindowClass;
-    wc.hbrBackground = nullptr;
-    RegisterClassExW(&wc);
-
-    tooltip_ = CreateWindowExW(
-        WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
-        kTooltipWindowClass,
-        nullptr,
-        WS_POPUP,
-        0,
-        0,
-        0,
-        0,
-        hwnd_,
-        nullptr,
-        instance_,
-        nullptr);
-    if (!tooltip_) {
-        return;
-    }
-
-    SetWindowPos(tooltip_, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-
+    embeddedUi_ = std::make_unique<ThemedWindowUi>(
+        instance_, nullptr, hwnd_, theme_, DialogLayoutKind::Compact, 1, 1);
     tooltipText_.clear();
-    tooltipInfo_ = {};
-    ApplyTooltipTheme();
 }
 
 void MainWindow::ApplyTooltipTheme() {
-    if (!tooltip_) {
-        return;
-    }
-    if (!tooltipFont_) {
-        tooltipFont_ = ThemedControls::CreateDialogFont();
-    }
-    if (tooltipFont_) {
-        SendMessageW(tooltip_, WM_SETFONT, reinterpret_cast<WPARAM>(tooltipFont_), TRUE);
-    }
-    const int paddingX = static_cast<int>(std::max(0.0f, Metric(theme_, L"tooltip", L"paddingX", 8.0f)));
-    const int paddingY = static_cast<int>(std::max(0.0f, Metric(theme_, L"tooltip", L"paddingY", 5.0f)));
-    const int lineGap = static_cast<int>(std::max(0.0f, Metric(theme_, L"tooltip", L"lineGap", 4.0f)));
-    const int radius = static_cast<int>(std::max(0.0f, Metric(theme_, L"tooltip", L"radius", 6.0f)));
-    const int borderWidth = static_cast<int>(std::max(0.0f, Metric(theme_, L"tooltip", L"borderWidth", 1.0f)));
-    SetTooltipStyle(tooltip_, TooltipStyle{
-        ToColorRef(theme_.color(L"tooltip", L"normal", L"bg")),
-        ToColorRef(theme_.color(L"tooltip", L"normal", L"text")),
-        ToColorRef(theme_.color(L"tooltip", L"normal", L"border")),
-        paddingX, paddingY, lineGap, radius, borderWidth});
+    // The embedded themed host resolves tooltip resources lazily from theme_.
 }
 
 void MainWindow::HideItemTooltip() {
-    if (!tooltip_) {
-        return;
-    }
-    ShowWindow(tooltip_, SW_HIDE);
+    if (embeddedUi_) embeddedUi_->ui().HideTooltip();
     tooltipItemKind_ = HitKind::None;
     tooltipItemId_ = 0;
 }
@@ -6433,65 +6362,22 @@ void MainWindow::UpdateItemTooltip(const HitArea& hit, POINT screenPoint) {
         return;
     }
 
-    if (!tooltip_) {
+    if (!embeddedUi_) {
         CreateTooltip();
     }
-    if (!tooltip_) {
+    if (!embeddedUi_) {
         return;
     }
 
     if (tooltipItemKind_ != hit.kind || tooltipItemId_ != hit.id || tooltipText_ != text) {
         tooltipText_ = text;
-        SetWindowTextW(tooltip_, tooltipText_.c_str());
         tooltipItemKind_ = hit.kind;
         tooltipItemId_ = hit.id;
     }
-
-    HDC dc = GetDC(tooltip_);
-    HFONT font = reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
-    HFONT previousFont = reinterpret_cast<HFONT>(SelectObject(dc, font));
-    const TooltipStyle style = TooltipStyleFor(tooltip_);
-    const int lineGap = style.lineGap;
-    const SIZE textSize = MeasureTooltipText(dc, tooltipText_, lineGap);
-    SelectObject(dc, previousFont);
-    ReleaseDC(tooltip_, dc);
-
-    const int paddingX = style.paddingX;
-    const int paddingY = style.paddingY;
-    int width = std::max(80, static_cast<int>(textSize.cx) + paddingX * 2);
-    int height = std::max(24, static_cast<int>(textSize.cy) + paddingY * 2);
-    int x = screenPoint.x + 14;
-    int y = screenPoint.y + 18;
-
-    HMONITOR monitor = MonitorFromPoint(screenPoint, MONITOR_DEFAULTTONEAREST);
-    MONITORINFO monitorInfo{};
-    monitorInfo.cbSize = sizeof(monitorInfo);
-    if (GetMonitorInfoW(monitor, &monitorInfo)) {
-        if (x + width > monitorInfo.rcWork.right) {
-            x = screenPoint.x - width - 14;
-        }
-        if (y + height > monitorInfo.rcWork.bottom) {
-            y = screenPoint.y - height - 18;
-        }
-        x = std::max(static_cast<int>(monitorInfo.rcWork.left), x);
-        y = std::max(static_cast<int>(monitorInfo.rcWork.top), y);
-    }
-
-    SetWindowPos(tooltip_, HWND_TOPMOST, x, y, width, height, SWP_NOACTIVATE);
-    const int radius = style.radius;
-    if (radius > 0) {
-        HRGN region = CreateRoundRectRgn(0, 0, width + 1, height + 1, radius * 2, radius * 2);
-        if (!region || SetWindowRgn(tooltip_, region, TRUE) == 0) {
-            if (region) {
-                DeleteObject(region);
-            }
-        }
-    } else {
-        SetWindowRgn(tooltip_, nullptr, TRUE);
-    }
-    ShowWindow(tooltip_, SW_SHOWNA);
-    SetWindowPos(tooltip_, HWND_TOPMOST, x, y, width, height, SWP_NOACTIVATE | SWP_SHOWWINDOW);
-    InvalidateRect(tooltip_, nullptr, TRUE);
+    ThemedTooltipOptions options{};
+    options.placement = ThemedTooltipPlacement::Cursor;
+    options.multiline = true;
+    embeddedUi_->ui().ShowTooltip(tooltipText_, screenPoint, options);
 }
 
 void MainWindow::ShowGroupMenu(int groupId, POINT screenPoint) {
@@ -9069,26 +8955,20 @@ void MainWindow::EnsureNoteEdit(const D2D1_RECT_F& rect, const Group& tag) {
         static_cast<LONG>(rect.right + 0.5f),
         static_cast<LONG>(rect.bottom + 0.5f),
     };
-    RECT editRect = ThemedControls::MultiLineEditRect(theme_, frame);
     const NotePage* note = FindNotePage(tag.id);
     const std::wstring content = note ? note->content : L"";
-    if (!noteEditFont_) {
-        noteEditFont_ = ThemedControls::CreateEditFont(theme_);
+    if (!embeddedUi_) {
+        embeddedUi_ = std::make_unique<ThemedWindowUi>(
+            instance_, nullptr, hwnd_, theme_, DialogLayoutKind::Compact, 1, 1);
     }
 
     if (!noteEdit_) {
-        noteEdit_ = ThemedControls::CreateMultiLineEdit(
-            instance_,
-            hwnd_,
-            ID_NOTE_EDIT,
-            theme_,
-            frame,
-            content,
-            noteEditFont_,
-            ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN | WS_VSCROLL | WS_CLIPSIBLINGS);
+        ThemedEditOptions options{};
+        options.mode = ThemedEditMode::MultiLine;
+        noteEdit_ = embeddedUi_->ui().Edit(ID_NOTE_EDIT, frame, content, options);
         if (noteEdit_) {
             noteEditTagId_ = tag.id;
-            noteEditFrame_ = editRect;
+            noteEditFrame_ = frame;
             noteDirty_ = false;
         }
     }
@@ -9102,9 +8982,9 @@ void MainWindow::EnsureNoteEdit(const D2D1_RECT_F& rect, const Group& tag) {
         noteEditTagId_ = tag.id;
         noteDirty_ = false;
     }
-    if (!EqualRect(&noteEditFrame_, &editRect)) {
-        MoveWindow(noteEdit_, editRect.left, editRect.top, editRect.right - editRect.left, editRect.bottom - editRect.top, TRUE);
-        noteEditFrame_ = editRect;
+    if (!EqualRect(&noteEditFrame_, &frame)) {
+        embeddedUi_->MoveEditFrame(noteEdit_, frame);
+        noteEditFrame_ = frame;
     }
     ShowWindow(noteEdit_, SW_SHOWNA);
 }

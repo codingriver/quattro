@@ -4,6 +4,8 @@
 
 #include <memory>
 #include <string>
+#include <unordered_map>
+#include <vector>
 #include <windows.h>
 
 enum class ThemedWindowPlacement {
@@ -37,7 +39,7 @@ constexpr int kThemedDialogClientWidth = 460;
 constexpr int kThemedDialogClientHeight = 246;
 constexpr DialogLayoutKind kThemedDialogLayoutKind = DialogLayoutKind::Compact;
 
-class ThemedWindowUi {
+class ThemedWindowUi : public ThemedEditFrameRegistry, public ThemedTableFrameRegistry, public ThemedTooltipRegistry {
 public:
     ThemedWindowUi(
         HINSTANCE instance,
@@ -78,12 +80,42 @@ public:
     bool ShowModal();
     void RestoreModalOwner();
     bool HandleMessage(UINT message, WPARAM wParam, LPARAM lParam, LRESULT& result);
+    void RegisterEditFrame(HWND child, RECT frame, const ThemedEditOptions& options) override;
+    void RegisterTableFrame(HWND child, RECT frame) override;
+    void UnregisterTableFrame(HWND child);
+    void UnregisterEditFrame(HWND child);
+    void MoveEditFrame(HWND child, RECT frame);
+    void SetEditFrameState(HWND child, bool readOnly, bool error);
+    void SetEditReadOnly(HWND child, bool readOnly);
+    void SetEditError(HWND child, bool error);
+    void SetEditEnabled(HWND child, bool enabled);
+    void SetEditPlaceholder(HWND child, const std::wstring& placeholder);
+    void DrawRegisteredEditFrames(HDC dc) const;
+    void DrawRegisteredTableFrames(HDC dc) const;
+    void ShowTooltip(const std::wstring& text, POINT screenPoint, const ThemedTooltipOptions& options) override;
+    void HideTooltip() override;
+    void FillBackground(HDC dc) const;
+    void InvalidateEditFrame(HWND child) const;
 
 private:
+    struct EditFrame {
+        HWND child = nullptr;
+        RECT frame{};
+        ThemedEditOptions options{};
+    };
+
     static COLORREF ToColorRef(Color color);
     HBRUSH BackgroundBrush();
-    HBRUSH EditBrush();
+    HBRUSH BrushForColor(COLORREF color);
+    HBRUSH ApplyEditColors(HDC dc, HWND child);
+    EditFrame* FindEditFrame(HWND child);
+    const EditFrame* FindEditFrame(HWND child) const;
+    const wchar_t* EditState(const EditFrame& editFrame) const;
     void ReleaseResources();
+    bool EnsureTooltipWindow();
+    SIZE MeasureTooltip(const std::wstring& text, const ThemedTooltipOptions& options) const;
+    void PaintTooltip(HDC dc) const;
+    static LRESULT CALLBACK TooltipProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
 
     HINSTANCE instance_ = nullptr;
     HWND owner_ = nullptr;
@@ -95,7 +127,16 @@ private:
     mutable HFONT font_ = nullptr;
     mutable bool ownsFont_ = false;
     HBRUSH backgroundBrush_ = nullptr;
-    HBRUSH editBrush_ = nullptr;
+    std::unordered_map<COLORREF, HBRUSH> colorBrushes_;
     bool ownerWasEnabled_ = false;
     bool ownerRestored_ = false;
+    std::vector<EditFrame> editFrames_;
+    struct TableFrame {
+        HWND child = nullptr;
+        RECT frame{};
+    };
+    std::vector<TableFrame> tableFrames_;
+    HWND tooltip_ = nullptr;
+    std::wstring tooltipText_;
+    ThemedTooltipOptions tooltipOptions_{};
 };

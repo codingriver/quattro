@@ -11,6 +11,7 @@
 #include "Storage.h"
 #include "ThemedControls.h"
 #include "ThemedUi.h"
+#include "ThemedWindowUi.h"
 #include "TodoSchedule.h"
 #include "Utilities.h"
 #include "WebDavBackupService.h"
@@ -38,6 +39,7 @@
 
 namespace {
 constexpr int ID_SETTINGS_TAB_BASE = 280;
+constexpr int ID_SETTINGS_TAB_CONTROL = 279;
 constexpr int ID_MAIN_HOTKEY_CAPTURE = 301;
 constexpr int ID_MAIN_HOTKEY_CLEAR = 302;
 constexpr int ID_GROUP_WIDTH = 401;
@@ -998,7 +1000,7 @@ public:
 
         MSG message{};
         while (!done_ && GetMessageW(&message, nullptr, 0, 0) > 0) {
-            if (!IsDialogMessageW(hwnd_, &message)) {
+            if (!ThemedUi::PreTranslateMessage(message) && !IsDialogMessageW(hwnd_, &message)) {
                 TranslateMessage(&message);
                 DispatchMessageW(&message);
             }
@@ -1341,63 +1343,33 @@ public:
     bool Run() {
         const std::wstring className = L"QuattroTextInputDialog_" +
             std::to_wstring(GetCurrentProcessId()) + L"_" + std::to_wstring(GetTickCount64());
-        WNDCLASSEXW wc{};
-        wc.cbSize = sizeof(wc);
-        wc.lpfnWndProc = TextDialog::Proc;
-        wc.hInstance = instance_;
-        wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-        wc.hIcon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_QUATTRO_APP_ICON));
-        wc.hIconSm = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_QUATTRO_APP_ICON));
-        wc.hbrBackground = nullptr;
-        wc.lpszClassName = className.c_str();
-        if (!RegisterClassExW(&wc)) {
-            const DWORD error = GetLastError();
-            if (error != ERROR_CLASS_ALREADY_EXISTS) {
-                WriteAppLog(L"文本输入窗口类注册失败: " + FormatLastError(error));
-                return false;
-            }
-        }
-
-        SetLastError(ERROR_SUCCESS);
-        hwnd_ = nullptr;
         constexpr int kClientWidth = 390;
         constexpr int kClientHeight = 162;
-        const DWORD exStyle = WS_EX_DLGMODALFRAME | WS_EX_WINDOWEDGE;
-        const DWORD style = WS_CAPTION | WS_SYSMENU | WS_POPUP | WS_CLIPCHILDREN;
-        RECT windowRect{0, 0, kClientWidth, kClientHeight};
-        AdjustWindowRectEx(&windowRect, style, FALSE, exStyle);
-        const int windowWidth = windowRect.right - windowRect.left;
-        const int windowHeight = windowRect.bottom - windowRect.top;
-        const POINT position = OffsetWindowFromOwnerOnMonitor(owner_, windowWidth, windowHeight, 80, 100);
-        hwnd_ = CreateWindowExW(
-            exStyle,
-            className.c_str(),
-            title_.c_str(),
-            style,
-            position.x,
-            position.y,
-            windowWidth,
-            windowHeight,
-            owner_,
-            nullptr,
-            instance_,
-            this);
+        HICON icon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_QUATTRO_APP_ICON));
+        ThemedWindowCreateOptions options = ThemedWindowUi::DialogOptions(
+            instance_, owner_, className.c_str(), title_.c_str(), TextDialog::Proc, this, icon, icon);
+        options.clientWidth = kClientWidth;
+        options.clientHeight = kClientHeight;
+        options.placement = ThemedWindowPlacement::OffsetOwner;
+        options.offsetX = 80;
+        options.offsetY = 100;
+        hwnd_ = ThemedWindowUi::CreateWindowHandle(options);
         if (!hwnd_) {
             const DWORD error = GetLastError();
             WriteAppLog(L"文本输入窗口创建失败: " + FormatLastError(error));
             return false;
         }
-        ownerWasEnabled_ = ShowModalWindow(owner_, hwnd_);
+        if (windowUi_) windowUi_->ShowModal();
         UpdateWindow(hwnd_);
 
         MSG message{};
         while (!done_ && GetMessageW(&message, nullptr, 0, 0) > 0) {
-            if (!IsDialogMessageW(hwnd_, &message)) {
+            if (!ThemedUi::PreTranslateMessage(message) && !IsDialogMessageW(hwnd_, &message)) {
                 TranslateMessage(&message);
                 DispatchMessageW(&message);
             }
         }
-        RestoreModalOwner(owner_, ownerWasEnabled_, ownerRestored_);
+        if (windowUi_) windowUi_->RestoreModalOwner();
         return accepted_;
     }
 
@@ -1416,30 +1388,28 @@ private:
     }
 
     LRESULT Handle(UINT message, WPARAM wParam, LPARAM lParam) {
+        LRESULT commonResult = 0;
+        if (ThemedWindowUi::HandleCommonMessage(windowUi_, message, wParam, lParam, commonResult)) {
+            return commonResult;
+        }
         switch (message) {
         case WM_CREATE: {
-            font_ = ThemedControls::CreateDialogFont();
-            if (!font_) {
-                font_ = reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
-            } else {
-                ownsFont_ = true;
-            }
-            editFont_ = ThemedControls::CreateEditFont(theme_);
-            backgroundBrush_ = CreateSolidBrush(ToColorRef(theme_.color(L"dialog", L"normal", L"bg")));
-            fieldBrush_ = CreateSolidBrush(ToColorRef(theme_.color(L"edit", L"normal", L"bg")));
+            constexpr int kClientWidth = 390;
+            constexpr int kClientHeight = 162;
+            windowUi_ = std::make_unique<ThemedWindowUi>(
+                instance_, owner_, hwnd_, theme_, DialogLayoutKind::Mini, kClientWidth, kClientHeight);
             const DialogLayoutMetrics layout = GetDialogLayoutMetrics(theme_, DialogLayoutKind::Mini);
             RECT client{};
             GetClientRect(hwnd_, &client);
             const int clientWidth = client.right - client.left;
-            const int clientHeight = client.bottom - client.top;
             const int contentWidth = clientWidth - layout.contentInsetX * 2;
             const int labelY = layout.contentInsetY;
-            ThemedControls::CreateLabelText(instance_, hwnd_, label_.c_str(), layout.contentInsetX, labelY, contentWidth, theme_, font_);
+            const ThemedUi ui = windowUi_->ui();
+            ui.Label(label_, layout.contentInsetX, labelY, contentWidth);
             const int fieldHeight = ThemedControls::EditFrameHeight(theme_);
             const int editY = labelY + ThemedControls::LabelHeight(theme_) + layout.rowGap;
             editFrame_ = RECT{layout.contentInsetX, editY, layout.contentInsetX + contentWidth, editY + fieldHeight};
-            edit_ = ThemedControls::CreateSingleLineEdit(instance_, hwnd_, 100, theme_, editFrame_, value_, editFont_ ? editFont_ : font_);
-            const ThemedUi ui(instance_, hwnd_, theme_, font_, DialogLayoutKind::Mini, clientWidth, clientHeight);
+            edit_ = ui.Edit(100, editFrame_, value_);
             ui.FooterButton(IDOK, L"确定", 0, 2, true, true);
             ui.FooterButton(IDCANCEL, L"取消", 1, 2);
             SetFocus(edit_);
@@ -1449,36 +1419,12 @@ private:
         case WM_PAINT: {
             PAINTSTRUCT ps{};
             HDC dc = BeginPaint(hwnd_, &ps);
-            RECT rect{};
-            GetClientRect(hwnd_, &rect);
-            FillRect(dc, &rect, backgroundBrush_ ? backgroundBrush_ : reinterpret_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
-            ThemedControls::DrawFieldFrame(theme_, dc, editFrame_, edit_);
+            windowUi_->FillBackground(dc);
+            windowUi_->DrawRegisteredEditFrames(dc);
             EndPaint(hwnd_, &ps);
             return 0;
         }
-        case WM_ERASEBKGND:
-            return 1;
-        case WM_CTLCOLOREDIT: {
-            HDC dc = reinterpret_cast<HDC>(wParam);
-            SetTextColor(dc, ToColorRef(theme_.color(L"edit", L"normal", L"text")));
-            SetBkColor(dc, ToColorRef(theme_.color(L"edit", L"normal", L"bg")));
-            return reinterpret_cast<LRESULT>(fieldBrush_ ? fieldBrush_ : GetStockObject(WHITE_BRUSH));
-        }
-        case WM_CTLCOLORSTATIC: {
-            HDC dc = reinterpret_cast<HDC>(wParam);
-            SetBkMode(dc, TRANSPARENT);
-            SetTextColor(dc, ToColorRef(theme_.color(L"label", L"normal", L"text")));
-            return reinterpret_cast<LRESULT>(backgroundBrush_ ? backgroundBrush_ : GetStockObject(WHITE_BRUSH));
-        }
-        case WM_DRAWITEM:
-            if (ThemedControls::Draw(theme_, reinterpret_cast<const DRAWITEMSTRUCT*>(lParam))) {
-                return TRUE;
-            }
-            return 0;
         case WM_COMMAND:
-            if (HIWORD(wParam) == EN_SETFOCUS || HIWORD(wParam) == EN_KILLFOCUS) {
-                InvalidateRect(hwnd_, &editFrame_, TRUE);
-            }
             if (LOWORD(wParam) == IDOK) {
                 std::wstring next = Trim(GetText(edit_));
                 if (next.empty()) {
@@ -1501,26 +1447,6 @@ private:
             done_ = true;
             DestroyWindow(hwnd_);
             return 0;
-        case WM_DESTROY:
-            done_ = true;
-            RestoreModalOwner(owner_, ownerWasEnabled_, ownerRestored_);
-            if (editFont_) {
-                DeleteObject(editFont_);
-                editFont_ = nullptr;
-            }
-            if (ownsFont_ && font_) {
-                DeleteObject(font_);
-                font_ = nullptr;
-            }
-            if (backgroundBrush_) {
-                DeleteObject(backgroundBrush_);
-                backgroundBrush_ = nullptr;
-            }
-            if (fieldBrush_) {
-                DeleteObject(fieldBrush_);
-                fieldBrush_ = nullptr;
-            }
-            return 0;
         default:
             return DefWindowProcW(hwnd_, message, wParam, lParam);
         }
@@ -1535,13 +1461,7 @@ private:
     std::wstring label_;
     std::wstring& value_;
     RECT editFrame_{};
-    HFONT font_ = nullptr;
-    HBRUSH backgroundBrush_ = nullptr;
-    HBRUSH fieldBrush_ = nullptr;
-    HFONT editFont_ = nullptr;
-    bool ownsFont_ = false;
-    bool ownerWasEnabled_ = false;
-    bool ownerRestored_ = false;
+    std::unique_ptr<ThemedWindowUi> windowUi_;
     bool accepted_ = false;
     bool done_ = false;
 };
@@ -1600,7 +1520,7 @@ public:
 
         MSG message{};
         while (!done_ && GetMessageW(&message, nullptr, 0, 0) > 0) {
-            if (!IsDialogMessageW(hwnd_, &message)) {
+            if (!ThemedUi::PreTranslateMessage(message) && !IsDialogMessageW(hwnd_, &message)) {
                 TranslateMessage(&message);
                 DispatchMessageW(&message);
             }
@@ -1707,17 +1627,11 @@ private:
             }
             backgroundBrush_ = CreateSolidBrush(ToColorRef(theme_.color(L"dialog", L"normal", L"bg")));
             listBrush_ = CreateSolidBrush(ToColorRef(theme_.color(L"list", L"normal", L"bg")));
-            ThemedControls::CreateLabelText(instance_, hwnd_, L"云端备份记录", 24, 20, 180, theme_, font_);
-            list_ = ThemedControls::CreateListBox(
-                instance_,
-                hwnd_,
-                ID_WEBDAV_BACKUP_LIST,
-                24,
-                48,
-                500,
-                238,
-                font_,
-                theme_);
+            RECT client{};
+            GetClientRect(hwnd_, &client);
+            const ThemedUi ui(instance_, hwnd_, theme_, font_, DialogLayoutKind::Standard, client.right - client.left, client.bottom - client.top);
+            ui.Label(L"云端备份记录", 24, 20, 180);
+            list_ = ui.ListBox(ID_WEBDAV_BACKUP_LIST, 24, 48, 500, 238);
             for (const auto& backup : backups_) {
                 SendMessageW(list_, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(FormatBackupListItem(backup).c_str()));
             }
@@ -1725,9 +1639,6 @@ private:
                 SendMessageW(list_, LB_SETCURSEL, 0, 0);
             }
 
-            RECT client{};
-            GetClientRect(hwnd_, &client);
-            const ThemedUi ui(instance_, hwnd_, theme_, font_, DialogLayoutKind::Standard, client.right - client.left, client.bottom - client.top);
             ui.Button(IDOK, L"下载", 360, 310, ThemedButtonRole::Primary, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, 76, true);
             ui.Button(IDCANCEL, L"取消", 452, 310, ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, 76);
             SetFocus(list_);
@@ -1895,7 +1806,7 @@ public:
                 ShowTab((currentTab_ + (reverse ? TabCount - 1 : 1)) % TabCount);
                 continue;
             }
-            if (!IsDialogMessageW(hwnd_, &message)) {
+            if (!ThemedUi::PreTranslateMessage(message) && !IsDialogMessageW(hwnd_, &message)) {
                 TranslateMessage(&message);
                 DispatchMessageW(&message);
             }
@@ -1934,12 +1845,8 @@ private:
     };
 
     struct SectionFrame {
-        RECT rect{};
+        HWND hwnd = nullptr;
         int tab = 0;
-    };
-
-    struct TabSeparator {
-        RECT rect{};
     };
 
     static LRESULT CALLBACK Proc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
@@ -1978,26 +1885,31 @@ private:
     }
 
     HWND Label(int tab, const wchar_t* text, int x, int y, int width = 110) {
-        HWND hwnd = ThemedControls::CreateLabelText(instance_, hwnd_, text, x, ContentY(y), width, theme_, font_);
+        HWND hwnd = MakeUi().Label(text, x, ContentY(y), width);
         AddTabChild(hwnd, tab);
         return hwnd;
     }
 
-    HWND StatusBadge(int tab, const wchar_t* text, int x, int y, int width, const wchar_t* state) {
-        HWND hwnd = ThemedControls::CreateStatusBadge(instance_, hwnd_, text, x, ContentY(y), width, theme_, font_, state);
+    HWND StatusBadge(int tab, const wchar_t* text, int x, int y, int width, ThemedStatusRole role) {
+        HWND hwnd = MakeUi().StatusBadge(text, x, ContentY(y), width, role);
         AddTabChild(hwnd, tab);
         return hwnd;
     }
 
     HWND CheckBox(int tab, int id, const wchar_t* text, int x, int y, bool checked, int width = 210) {
-        HWND hwnd = ThemedControls::CreateCheckBox(instance_, hwnd_, id, text, x, ContentY(y), width, ThemedControls::CheckBoxHeight(theme_), font_, checked);
+        ThemedCheckBoxOptions options{};
+        options.checked = checked;
+        HWND hwnd = MakeUi().CheckBox(id, text, x, ContentY(y), width, options);
         AddTabChild(hwnd, tab);
         return hwnd;
     }
 
     HWND MultiLineCheckBox(int tab, int id, const wchar_t* text, int x, int y, bool checked, int width, int height) {
-        HWND hwnd = ThemedControls::CreateCheckBox(instance_, hwnd_, id, text, x, ContentY(y), width, height, font_, checked);
-        ThemedControls::SetControlMultiline(hwnd, true);
+        (void)height;
+        ThemedCheckBoxOptions options{};
+        options.checked = checked;
+        options.size = ThemedCheckBoxSize::TwoLines;
+        HWND hwnd = MakeUi().CheckBox(id, text, x, ContentY(y), width, options);
         AddTabChild(hwnd, tab);
         return hwnd;
     }
@@ -2005,7 +1917,10 @@ private:
     ThemedUi MakeUi() const {
         RECT client{};
         GetClientRect(hwnd_, &client);
-        return ThemedUi(instance_, hwnd_, theme_, font_, DialogLayoutKind::Standard, client.right - client.left, client.bottom - client.top);
+        return ThemedUi(
+            instance_, hwnd_, theme_, font_, DialogLayoutKind::Standard,
+            client.right - client.left, client.bottom - client.top,
+            const_cast<ThemedEditFrameCollection*>(&editFrameCollection_));
     }
 
     HWND Button(int tab, int id, const wchar_t* text, int x, int y, int width) {
@@ -2018,7 +1933,12 @@ private:
         const int fieldHeight = ThemedControls::EditFrameHeight(theme_);
         y = ContentY(y);
         const RECT frame{x, y, x + width, y + fieldHeight};
-        HWND hwnd = ThemedControls::CreateSingleLineEdit(instance_, hwnd_, id, theme_, frame, text, editFont_ ? editFont_ : font_, extraStyle);
+        ThemedEditOptions options{};
+        options.readOnly = (extraStyle & ES_READONLY) != 0;
+        options.content = (extraStyle & ES_PASSWORD) != 0
+            ? ThemedEditContent::Password
+            : ((extraStyle & ES_NUMBER) != 0 ? ThemedEditContent::Integer : ThemedEditContent::Text);
+        HWND hwnd = MakeUi().Edit(id, frame, text, options);
         AddTabChild(hwnd, tab);
         fieldFrames_.push_back(FieldFrame{frame, hwnd, tab, false});
         return hwnd;
@@ -2028,7 +1948,9 @@ private:
         const int fieldHeight = ThemedControls::EditFrameHeight(theme_);
         y = ContentY(y);
         const RECT frame{x, y, x + width, y + fieldHeight};
-        HWND hwnd = ThemedControls::CreateFramedStatic(instance_, hwnd_, theme_, frame, text, font_);
+        ThemedEditOptions options{};
+        options.readOnly = true;
+        HWND hwnd = MakeUi().Edit(nextGeneratedControlId_++, frame, text, options);
         AddTabChild(hwnd, tab);
         fieldFrames_.push_back(FieldFrame{frame, hwnd, tab, true});
         return hwnd;
@@ -2060,8 +1982,7 @@ private:
         const HWND buttons[] = {tagAlignLeft_, tagAlignCenter_, tagAlignRight_};
         for (int i = 0; i < 3; ++i) {
             if (buttons[i]) {
-                SendMessageW(buttons[i], BM_SETCHECK, i == tagAlignIndex_ ? BST_CHECKED : BST_UNCHECKED, 0);
-                InvalidateRect(buttons[i], nullptr, TRUE);
+                ThemedUi::SetTabSelected(buttons[i], i == tagAlignIndex_);
             }
         }
     }
@@ -2093,83 +2014,36 @@ private:
         GetClientRect(hwnd_, &client);
         const int clientWidth = std::max(1, static_cast<int>(client.right - client.left));
         const DialogLayoutMetrics layout = GetDialogLayoutMetrics(theme_, DialogLayoutKind::Compact);
-        const int startY = 18;
-        std::array<int, TabCount> itemWidths{};
+        const int startY = 15;
+        std::vector<ThemedTabItem> items;
+        items.reserve(TabCount);
         for (int i = 0; i < TabCount; ++i) {
-            itemWidths[static_cast<std::size_t>(i)] = SettingsTabWidth(titles[i]);
+            items.push_back(ThemedTabItem{ID_SETTINGS_TAB_BASE + i, titles[i], true});
         }
-        const int itemGap = static_cast<int>(theme_.metric(L"tabButton", L"groupGap", 0.0f));
-        const int separatorWidth = static_cast<int>(theme_.metric(L"tabButton", L"groupBorderWidth", 1.0f));
-        const int itemSpacing = std::max(itemGap, separatorWidth > 0 ? separatorWidth : 0);
         const int itemHeight = ThemedControls::TabButtonHeight(theme_);
-        const int stripPadding = static_cast<int>(theme_.metric(L"tabButton", L"groupPadding", 3.0f));
-        const int rowGap = std::max(2, stripPadding * 2 + 2);
-        int totalWidth = 0;
-        for (int width : itemWidths) {
-            totalWidth += width;
-        }
-        totalWidth += (TabCount - 1) * itemSpacing;
-
-        const int availableWidth = std::max(1, clientWidth - layout.contentInsetX * 2);
-        const bool wrapTabs = totalWidth > availableWidth;
-        const int rows = wrapTabs ? 2 : 1;
-        const int firstRowCount = wrapTabs ? ((TabCount + 1) / 2) : TabCount;
-        const int rowStarts[] = {0, firstRowCount};
-        const int rowEnds[] = {firstRowCount, TabCount};
-        const int rowStep = itemHeight + rowGap;
-        tabContentOffsetY_ = wrapTabs ? rowStep : 0;
-        tabSeparators_.clear();
-
-        tabStripRect_ = RECT{clientWidth, startY - stripPadding, 0, startY - stripPadding};
-        for (int row = 0; row < rows; ++row) {
-            const int begin = rowStarts[row];
-            const int end = rowEnds[row];
-            if (begin >= end) {
-                continue;
-            }
-            int rowWidth = 0;
-            for (int i = begin; i < end; ++i) {
-                rowWidth += itemWidths[static_cast<std::size_t>(i)];
-            }
-            rowWidth += (end - begin - 1) * itemSpacing;
-            const int y = startY + row * rowStep;
-            int x = layout.CenteredGroupX(clientWidth, rowWidth);
-            tabStripRect_.left = std::min(static_cast<int>(tabStripRect_.left), x - stripPadding);
-            tabStripRect_.right = std::max(static_cast<int>(tabStripRect_.right), x + rowWidth + stripPadding);
-            tabStripRect_.bottom = std::max(static_cast<int>(tabStripRect_.bottom), y + itemHeight + stripPadding);
-            const ThemedUi tabUi = MakeUi();
-            for (int i = begin; i < end; ++i) {
-                HWND button = tabUi.TabButton(
-                    ID_SETTINGS_TAB_BASE + i,
-                    titles[i],
-                    x,
-                    y,
-                    itemWidths[static_cast<std::size_t>(i)],
-                    i == TabDisplay);
-                tabButtons_.push_back(button);
-                x += itemWidths[static_cast<std::size_t>(i)];
-                if (i < end - 1) {
-                    tabSeparators_.push_back(TabSeparator{RECT{x, y, x + separatorWidth, y + itemHeight}});
-                    x += itemSpacing;
-                }
-            }
-        }
+        tabStripRect_ = RECT{
+            layout.contentInsetX,
+            startY,
+            clientWidth - layout.contentInsetX,
+            startY + itemHeight + 8};
+        ThemedTabControlOptions options{};
+        options.activeIndex = TabDisplay;
+        options.equalWidth = false;
+        settingsTabs_ = MakeUi().TabControl(ID_SETTINGS_TAB_CONTROL, tabStripRect_, items, options);
+        tabContentOffsetY_ = 0;
     }
 
-    void PaintTabs(HDC dc) {
-        if (tabStripRect_.right <= tabStripRect_.left || tabStripRect_.bottom <= tabStripRect_.top) {
-            return;
+    void PaintTabs(HDC) {}
+
+    void BindTabPages() {
+        if (!settingsTabs_) return;
+        for (int tab = 0; tab < TabCount; ++tab) {
+            std::vector<HWND> children;
+            for (const auto& child : tabChildren_) {
+                if (child.hwnd && child.tab == tab) children.push_back(child.hwnd);
+            }
+            ThemedUi::BindTabPage(settingsTabs_, tab, children);
         }
-        ThemedControls::DrawTabGroupFrame(theme_, dc, tabStripRect_);
-        const int separatorWidth = static_cast<int>(theme_.metric(L"tabButton", L"groupBorderWidth", 1.0f));
-        if (separatorWidth <= 0) {
-            return;
-        }
-        HBRUSH separator = CreateSolidBrush(ToColorRef(theme_.color(L"tabButton", L"normal", L"groupBorder")));
-        for (const auto& separatorRect : tabSeparators_) {
-            FillRect(dc, &separatorRect.rect, separator);
-        }
-        DeleteObject(separator);
     }
 
     void ShowTab(int tab) {
@@ -2195,29 +2069,9 @@ private:
             }
         }
 
-        for (const auto& child : tabChildren_) {
-            if (!child.hwnd || child.tab == tab) {
-                continue;
-            }
-            EnableWindow(child.hwnd, FALSE);
-            ShowWindow(child.hwnd, SW_HIDE);
-        }
-
         currentTab_ = tab;
-        for (int i = 0; i < static_cast<int>(tabButtons_.size()); ++i) {
-            SendMessageW(tabButtons_[i], BM_SETCHECK, i == currentTab_ ? BST_CHECKED : BST_UNCHECKED, 0);
-        }
-        for (const auto& child : tabChildren_) {
-            if (!child.hwnd || child.tab != currentTab_) {
-                continue;
-            }
-            ShowWindow(child.hwnd, SW_SHOWNA);
-            EnableWindow(child.hwnd, TRUE);
-        }
-
-        if (focusMovesToTab && tab < static_cast<int>(tabButtons_.size())) {
-            SetFocus(tabButtons_[tab]);
-        }
+        ThemedUi::SetActiveTab(settingsTabs_, tab, false);
+        if (focusMovesToTab && settingsTabs_) SetFocus(settingsTabs_);
         if (contentRect.bottom > contentRect.top) {
             RedrawWindow(hwnd_, &contentRect, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
         }
@@ -2252,25 +2106,15 @@ private:
     void AddSectionFrame(int tab, RECT rect) {
         rect.top = ContentY(rect.top);
         rect.bottom = ContentY(rect.bottom);
-        sectionFrames_.push_back(SectionFrame{rect, tab});
+        HWND group = MakeUi().GroupBox(nextGeneratedControlId_++, L"", rect);
+        AddTabChild(group, tab);
+        sectionFrames_.push_back(SectionFrame{group, tab});
     }
 
-    void PaintSectionFrames(HDC dc) {
-        for (const auto& frame : sectionFrames_) {
-            if (frame.tab != currentTab_) {
-                continue;
-            }
-            ThemedControls::DrawPanelFrame(theme_, dc, frame.rect);
-        }
-    }
+    void PaintSectionFrames(HDC) {}
 
     void PaintFields(HDC dc) {
-        for (const auto& frame : fieldFrames_) {
-            if (frame.tab != currentTab_) {
-                continue;
-            }
-            ThemedControls::DrawFieldFrame(theme_, dc, frame.rect, frame.child, frame.readOnly);
-        }
+        editFrameCollection_.Draw(theme_, dc);
     }
 
     void ReadDraft() {
@@ -2758,12 +2602,11 @@ private:
         }
         std::wstring tag;
         std::wstring detail;
-        const wchar_t* statusState = L"danger";
-        if (httpServer_ && httpServer_->IsRunning()) {
+        const bool running = httpServer_ && httpServer_->IsRunning();
+        if (running) {
             const auto& options = httpServer_->options();
             tag = L"运行中";
             detail = HttpAddressText(options.lanAccess, options.port, true);
-            statusState = L"success";
         } else if (httpServer_ && !Trim(httpServer_->lastError()).empty()) {
             tag = L"启动异常";
             detail = httpServer_->lastError();
@@ -2775,7 +2618,8 @@ private:
             detail = L"服务未启动。";
         }
         SetWindowTextW(httpServerStatusTag_, tag.c_str());
-        ThemedControls::SetStatusBadgeState(httpServerStatusTag_, statusState);
+        MakeUi().SetStatusBadgeRole(
+            httpServerStatusTag_, running ? ThemedStatusRole::Success : ThemedStatusRole::Danger);
         SetWindowTextW(httpServerStatusDetail_, detail.c_str());
         InvalidateRect(httpServerStatusTag_, nullptr, TRUE);
         InvalidateRect(httpServerStatusDetail_, nullptr, TRUE);
@@ -3146,7 +2990,8 @@ private:
             AddSectionFrame(TabHttp, RECT{httpFrameLeft, httpControlFrameTop, httpFrameRight, httpControlFrameBottom});
             UsePanelBackground(Label(TabHttp, L"运行控制", httpContentLeft, httpControlHeadingY, httpHeadingWidth));
             UsePanelBackground(Label(TabHttp, L"状态", httpContentLeft, httpStatusY + 4, 34));
-            httpServerStatusTag_ = StatusBadge(TabHttp, L"", httpContentLeft + 42, httpStatusY + 4, 64, L"danger");
+            httpServerStatusTag_ = StatusBadge(
+                TabHttp, L"", httpContentLeft + 42, httpStatusY + 4, 64, ThemedStatusRole::Danger);
             httpServerStatusDetail_ = Label(TabHttp, L"", httpContentLeft + 112, httpStatusY + 4, httpContentRight - httpContentLeft - 112);
             UsePanelBackground(httpServerStatusTag_);
             ThemedControls::SetControlBackgroundComponent(httpServerStatusTag_, L"panel");
@@ -3183,6 +3028,7 @@ private:
             okButton_ = footerUi.FooterButton(IDOK, L"确定", 0, 3, true, true);
             applyButton_ = footerUi.FooterButton(ID_SETTINGS_APPLY, L"应用", 1, 3);
             cancelButton_ = footerUi.FooterButton(IDCANCEL, L"取消", 2, 3);
+            BindTabPages();
             ShowTab(TabDisplay);
             return 0;
         }
@@ -3240,8 +3086,8 @@ private:
             if (HIWORD(wParam) == EN_SETFOCUS || HIWORD(wParam) == EN_KILLFOCUS) {
                 InvalidateField(reinterpret_cast<HWND>(lParam));
             }
-            if (LOWORD(wParam) >= ID_SETTINGS_TAB_BASE && LOWORD(wParam) < ID_SETTINGS_TAB_BASE + TabCount) {
-                ShowTab(static_cast<int>(LOWORD(wParam) - ID_SETTINGS_TAB_BASE));
+            if (LOWORD(wParam) == ID_SETTINGS_TAB_CONTROL && HIWORD(wParam) == CBN_SELCHANGE) {
+                ShowTab(ThemedUi::ActiveTab(settingsTabs_));
                 return 0;
             }
         if (LOWORD(wParam) >= ID_TAG_ALIGN_LEFT && LOWORD(wParam) <= ID_TAG_ALIGN_RIGHT) {
@@ -3423,11 +3269,12 @@ private:
     int currentTab_ = -1;
     RECT tabStripRect_{};
     int tabContentOffsetY_ = 0;
-    std::vector<HWND> tabButtons_;
-    std::vector<TabSeparator> tabSeparators_;
+    HWND settingsTabs_ = nullptr;
     std::vector<TabChild> tabChildren_;
     std::vector<SectionFrame> sectionFrames_;
     std::vector<FieldFrame> fieldFrames_;
+    mutable ThemedEditFrameCollection editFrameCollection_;
+    int nextGeneratedControlId_ = 6000;
     std::vector<HWND> panelBackgroundChildren_;
     HWND showTitle_ = nullptr;
     HWND showGroup_ = nullptr;

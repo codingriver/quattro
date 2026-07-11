@@ -4,11 +4,13 @@
 #include <windowsx.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <mutex>
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace {
 enum class ControlKind {
@@ -17,10 +19,22 @@ enum class ControlKind {
     MiniButton,
     PrimaryButton,
     CheckBox,
+    Toggle,
+    Radio,
+    HotKeyCapture,
+    Link,
+    Panel,
+    GroupBox,
+    TabControl,
+    ToolBar,
+    Separator,
     TabButton,
     ComboBox,
+    Edit,
     ListBox,
+    Table,
     ProgressBar,
+    Slider,
     StatusBadge,
     StatusText,
 };
@@ -38,8 +52,16 @@ struct ControlState {
     bool checked = false;
     bool selected = false;
     bool multiline = false;
+    bool selectAllOnFocus = false;
+    int radioGroup = 0;
     bool progressIndeterminate = false;
     double progressValue = 0.0;
+    double sliderMinimum = 0.0;
+    double sliderMaximum = 100.0;
+    double sliderStep = 1.0;
+    double sliderValue = 0.0;
+    std::vector<int> tableColumnWidthModes;
+    std::vector<bool> tableRowEnabled;
 };
 
 std::mutex& StateMutex() {
@@ -86,6 +108,15 @@ bool IsOwnerDrawButtonKind(ControlKind kind) {
            kind == ControlKind::MiniButton ||
            kind == ControlKind::PrimaryButton ||
            kind == ControlKind::CheckBox ||
+           kind == ControlKind::Toggle ||
+           kind == ControlKind::Radio ||
+           kind == ControlKind::HotKeyCapture ||
+           kind == ControlKind::Link ||
+           kind == ControlKind::Panel ||
+           kind == ControlKind::GroupBox ||
+           kind == ControlKind::TabControl ||
+           kind == ControlKind::ToolBar ||
+           kind == ControlKind::Separator ||
            kind == ControlKind::TabButton;
 }
 
@@ -202,6 +233,18 @@ bool IsHover(HWND hwnd) {
     return state && state->hover;
 }
 
+void InvalidateParentAround(HWND hwnd) {
+    HWND parent = GetParent(hwnd);
+    if (!parent) {
+        return;
+    }
+    RECT rect{};
+    GetWindowRect(hwnd, &rect);
+    MapWindowPoints(HWND_DESKTOP, parent, reinterpret_cast<POINT*>(&rect), 2);
+    InflateRect(&rect, 16, 16);
+    InvalidateRect(parent, &rect, TRUE);
+}
+
 bool IsChecked(HWND hwnd) {
     auto state = FindState(hwnd);
     return state && state->checked;
@@ -214,6 +257,67 @@ void SetChecked(HWND hwnd, bool checked) {
 
 void ToggleChecked(HWND hwnd) {
     SetChecked(hwnd, !IsChecked(hwnd));
+}
+
+void SelectRadio(HWND hwnd) {
+    const auto selectedState = FindState(hwnd);
+    if (!selectedState || selectedState->kind != ControlKind::Radio) {
+        return;
+    }
+    const HWND parent = GetParent(hwnd);
+    std::vector<HWND> groupMembers;
+    {
+        std::lock_guard<std::mutex> lock(StateMutex());
+        for (const auto& [candidate, state] : StateMap()) {
+            if (state.kind == ControlKind::Radio
+                && state.radioGroup == selectedState->radioGroup
+                && GetParent(candidate) == parent) {
+                groupMembers.push_back(candidate);
+            }
+        }
+    }
+    for (HWND candidate : groupMembers) {
+        SetChecked(candidate, candidate == hwnd);
+    }
+}
+
+double ClampSliderValue(const ControlState& state, double value) {
+    const double minimum = std::min(state.sliderMinimum, state.sliderMaximum);
+    const double maximum = std::max(state.sliderMinimum, state.sliderMaximum);
+    double clamped = std::max(minimum, std::min(maximum, value));
+    if (state.sliderStep > 0.0) {
+        clamped = minimum + std::round((clamped - minimum) / state.sliderStep) * state.sliderStep;
+        clamped = std::max(minimum, std::min(maximum, clamped));
+    }
+    return clamped;
+}
+
+void NotifySlider(HWND hwnd) {
+    if (HWND parent = GetParent(hwnd)) {
+        SendMessageW(parent, WM_HSCROLL, MAKEWPARAM(SB_THUMBPOSITION, 0), reinterpret_cast<LPARAM>(hwnd));
+    }
+}
+
+void SetSliderFromClientX(HWND hwnd, int x, bool notify) {
+    auto state = FindState(hwnd);
+    if (!state || state->kind != ControlKind::Slider) {
+        return;
+    }
+    RECT rect{};
+    GetClientRect(hwnd, &rect);
+    const int thumbSize = state->theme
+        ? static_cast<int>(state->theme->metric(L"slider", L"thumbSize", 14.0f))
+        : 14;
+    const int left = thumbSize / 2;
+    const int right = std::max(left + 1, static_cast<int>(rect.right) - thumbSize / 2);
+    const double ratio = static_cast<double>(std::max(left, std::min(right, x)) - left) / static_cast<double>(right - left);
+    const double value = state->sliderMinimum + ratio * (state->sliderMaximum - state->sliderMinimum);
+    auto& mutableState = StateFor(hwnd);
+    mutableState.sliderValue = ClampSliderValue(mutableState, value);
+    InvalidateRect(hwnd, nullptr, FALSE);
+    if (notify) {
+        NotifySlider(hwnd);
+    }
 }
 
 RECT ComboTextRect(const Theme& theme, RECT frame) {
@@ -465,9 +569,21 @@ void DrawProgressBar(HWND hwnd, HDC targetDc = nullptr) {
 void DrawButton(const Theme& theme, const DRAWITEMSTRUCT* draw);
 void DrawPrimaryButton(const Theme& theme, const DRAWITEMSTRUCT* draw);
 void DrawMiniButton(const Theme& theme, const DRAWITEMSTRUCT* draw);
+void DrawSlider(HWND hwnd, HDC dc);
 
 LRESULT CALLBACK ThemedControlProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR subclassId, DWORD_PTR) {
     switch (message) {
+    case WM_SETCURSOR:
+        if (KindFor(hwnd) == ControlKind::Link && IsWindowEnabled(hwnd)) {
+            SetCursor(LoadCursorW(nullptr, IDC_HAND));
+            return TRUE;
+        }
+        break;
+    case WM_GETDLGCODE:
+        if (KindFor(hwnd) == ControlKind::HotKeyCapture) {
+            return DLGC_WANTALLKEYS;
+        }
+        break;
     case CB_SETCURSEL: {
         LRESULT result = DefSubclassProc(hwnd, message, wParam, lParam);
         if (KindFor(hwnd) == ControlKind::ComboBox) {
@@ -486,8 +602,16 @@ LRESULT CALLBACK ThemedControlProc(HWND hwnd, UINT message, WPARAM wParam, LPARA
         return result;
     }
     case BM_SETCHECK:
-        if (KindFor(hwnd) == ControlKind::CheckBox) {
+        if (KindFor(hwnd) == ControlKind::CheckBox || KindFor(hwnd) == ControlKind::Toggle) {
             SetChecked(hwnd, wParam == BST_CHECKED);
+            return 0;
+        }
+        if (KindFor(hwnd) == ControlKind::Radio) {
+            if (wParam == BST_CHECKED) {
+                SelectRadio(hwnd);
+            } else {
+                SetChecked(hwnd, false);
+            }
             return 0;
         }
         if (KindFor(hwnd) == ControlKind::TabButton) {
@@ -504,13 +628,18 @@ LRESULT CALLBACK ThemedControlProc(HWND hwnd, UINT message, WPARAM wParam, LPARA
             }
             return DefSubclassProc(hwnd, message, wParam, lParam);
         }
-        if (KindFor(hwnd) == ControlKind::CheckBox) {
+        if (KindFor(hwnd) == ControlKind::CheckBox || KindFor(hwnd) == ControlKind::Toggle || KindFor(hwnd) == ControlKind::Radio) {
             return IsChecked(hwnd) ? BST_CHECKED : BST_UNCHECKED;
         }
         break;
     case BM_CLICK:
-        if (KindFor(hwnd) == ControlKind::CheckBox && IsWindowEnabled(hwnd)) {
-            ToggleChecked(hwnd);
+        if ((KindFor(hwnd) == ControlKind::CheckBox || KindFor(hwnd) == ControlKind::Toggle || KindFor(hwnd) == ControlKind::Radio)
+            && IsWindowEnabled(hwnd)) {
+            if (KindFor(hwnd) == ControlKind::Radio) {
+                SelectRadio(hwnd);
+            } else {
+                ToggleChecked(hwnd);
+            }
             if (HWND parent = GetParent(hwnd)) {
                 SendMessageW(parent, WM_COMMAND, MAKEWPARAM(GetDlgCtrlID(hwnd), BN_CLICKED), reinterpret_cast<LPARAM>(hwnd));
             }
@@ -518,18 +647,80 @@ LRESULT CALLBACK ThemedControlProc(HWND hwnd, UINT message, WPARAM wParam, LPARA
         }
         break;
     case WM_LBUTTONUP:
-        if (KindFor(hwnd) == ControlKind::CheckBox && IsWindowEnabled(hwnd)) {
+        if ((KindFor(hwnd) == ControlKind::CheckBox || KindFor(hwnd) == ControlKind::Toggle || KindFor(hwnd) == ControlKind::Radio)
+            && IsWindowEnabled(hwnd)) {
             POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
             RECT rect{};
             GetClientRect(hwnd, &rect);
             if (PtInRect(&rect, point)) {
+                if (KindFor(hwnd) == ControlKind::Radio) {
+                    SelectRadio(hwnd);
+                } else {
+                    ToggleChecked(hwnd);
+                }
+            }
+        }
+        if (KindFor(hwnd) == ControlKind::Slider && IsWindowEnabled(hwnd)) {
+            ReleaseCapture();
+            SetSliderFromClientX(hwnd, GET_X_LPARAM(lParam), true);
+            return 0;
+        }
+        break;
+    case WM_LBUTTONDOWN:
+        if (KindFor(hwnd) == ControlKind::Slider && IsWindowEnabled(hwnd)) {
+            SetFocus(hwnd);
+            SetCapture(hwnd);
+            SetSliderFromClientX(hwnd, GET_X_LPARAM(lParam), true);
+            return 0;
+        }
+        break;
+    case WM_KEYUP:
+        if ((KindFor(hwnd) == ControlKind::CheckBox || KindFor(hwnd) == ControlKind::Toggle || KindFor(hwnd) == ControlKind::Radio)
+            && IsWindowEnabled(hwnd) && wParam == VK_SPACE) {
+            if (KindFor(hwnd) == ControlKind::Radio) {
+                SelectRadio(hwnd);
+            } else {
                 ToggleChecked(hwnd);
             }
         }
         break;
-    case WM_KEYUP:
-        if (KindFor(hwnd) == ControlKind::CheckBox && IsWindowEnabled(hwnd) && wParam == VK_SPACE) {
-            ToggleChecked(hwnd);
+    case WM_KEYDOWN:
+    case WM_SYSKEYDOWN:
+        if (KindFor(hwnd) == ControlKind::HotKeyCapture) {
+            if (wParam != VK_CONTROL && wParam != VK_MENU && wParam != VK_SHIFT
+                && wParam != VK_LWIN && wParam != VK_RWIN) {
+                if (HWND parent = GetParent(hwnd)) {
+                    SendMessageW(
+                        parent,
+                        ThemedControls::WM_HOTKEY_CAPTURED,
+                        static_cast<WPARAM>(GetDlgCtrlID(hwnd)),
+                        static_cast<LPARAM>(wParam));
+                }
+            }
+            return 0;
+        }
+        if (KindFor(hwnd) == ControlKind::Slider && IsWindowEnabled(hwnd)) {
+            auto state = FindState(hwnd);
+            if (state) {
+                double value = state->sliderValue;
+                if (wParam == VK_LEFT || wParam == VK_DOWN) value -= state->sliderStep;
+                else if (wParam == VK_RIGHT || wParam == VK_UP) value += state->sliderStep;
+                else if (wParam == VK_HOME) value = state->sliderMinimum;
+                else if (wParam == VK_END) value = state->sliderMaximum;
+                else break;
+                auto& mutableState = StateFor(hwnd);
+                mutableState.sliderValue = ClampSliderValue(mutableState, value);
+                InvalidateRect(hwnd, nullptr, FALSE);
+                NotifySlider(hwnd);
+                return 0;
+            }
+        }
+        if (KindFor(hwnd) == ControlKind::Edit
+            && (GetKeyState(VK_CONTROL) & 0x8000) != 0
+            && (GetKeyState(VK_MENU) & 0x8000) == 0
+            && (wParam == L'A' || wParam == L'a')) {
+            SendMessageW(hwnd, EM_SETSEL, 0, -1);
+            return 0;
         }
         break;
     case WM_PAINT: {
@@ -541,6 +732,13 @@ LRESULT CALLBACK ThemedControlProc(HWND hwnd, UINT message, WPARAM wParam, LPARA
             PAINTSTRUCT ps{};
             HDC dc = BeginPaint(hwnd, &ps);
             DrawProgressBar(hwnd, dc);
+            EndPaint(hwnd, &ps);
+            return 0;
+        }
+        if (kind == ControlKind::Slider) {
+            PAINTSTRUCT ps{};
+            HDC dc = BeginPaint(hwnd, &ps);
+            DrawSlider(hwnd, dc);
             EndPaint(hwnd, &ps);
             return 0;
         }
@@ -559,6 +757,10 @@ LRESULT CALLBACK ThemedControlProc(HWND hwnd, UINT message, WPARAM wParam, LPARA
             DrawProgressBar(hwnd, reinterpret_cast<HDC>(wParam));
             return 0;
         }
+        if (kind == ControlKind::Slider) {
+            DrawSlider(hwnd, reinterpret_cast<HDC>(wParam));
+            return 0;
+        }
         LRESULT result = DefSubclassProc(hwnd, message, wParam, lParam);
         if (kind == ControlKind::ComboBox) {
             DrawComboOverlay(hwnd, reinterpret_cast<HDC>(wParam));
@@ -566,6 +768,10 @@ LRESULT CALLBACK ThemedControlProc(HWND hwnd, UINT message, WPARAM wParam, LPARA
         return result;
     }
     case WM_MOUSEMOVE:
+        if (KindFor(hwnd) == ControlKind::Slider && GetCapture() == hwnd) {
+            SetSliderFromClientX(hwnd, GET_X_LPARAM(lParam), true);
+            return 0;
+        }
         if (!IsHover(hwnd)) {
             StateFor(hwnd).hover = true;
             TRACKMOUSEEVENT event{};
@@ -574,14 +780,30 @@ LRESULT CALLBACK ThemedControlProc(HWND hwnd, UINT message, WPARAM wParam, LPARA
             event.hwndTrack = hwnd;
             TrackMouseEvent(&event);
             InvalidateRect(hwnd, nullptr, TRUE);
+            if (KindFor(hwnd) == ControlKind::Edit) {
+                InvalidateParentAround(hwnd);
+            }
         }
         break;
     case WM_MOUSELEAVE:
         StateFor(hwnd).hover = false;
         InvalidateRect(hwnd, nullptr, TRUE);
+        if (KindFor(hwnd) == ControlKind::Edit) {
+            InvalidateParentAround(hwnd);
+        }
         break;
     case WM_SETFOCUS:
     case WM_KILLFOCUS:
+        if (KindFor(hwnd) == ControlKind::Edit) {
+            if (message == WM_SETFOCUS) {
+                const auto state = FindState(hwnd);
+                if (state && state->selectAllOnFocus) {
+                    SendMessageW(hwnd, EM_SETSEL, 0, -1);
+                }
+            }
+            InvalidateParentAround(hwnd);
+            break;
+        }
         if (KindFor(hwnd) == ControlKind::ComboBox) {
             LRESULT result = DefSubclassProc(hwnd, message, wParam, lParam);
             InvalidateComboBox(hwnd);
@@ -601,6 +823,54 @@ LRESULT CALLBACK ThemedControlProc(HWND hwnd, UINT message, WPARAM wParam, LPARA
 
 void AttachThemedBehavior(HWND hwnd) {
     SetWindowSubclass(hwnd, ThemedControlProc, 1, 0);
+}
+
+void DrawSlider(HWND hwnd, HDC dc) {
+    auto state = FindState(hwnd);
+    if (!state || !state->theme) {
+        return;
+    }
+    const Theme& theme = *state->theme;
+    RECT rect{};
+    GetClientRect(hwnd, &rect);
+    HBRUSH background = CreateSolidBrush(ToColorRef(theme.color(L"dialog", L"normal", L"bg")));
+    FillRect(dc, &rect, background);
+    DeleteObject(background);
+
+    const bool disabled = !IsWindowEnabled(hwnd);
+    const bool hover = IsHover(hwnd);
+    const wchar_t* visualState = disabled ? L"disabled" : (hover ? L"hover" : L"normal");
+    const int thumbSize = static_cast<int>(theme.metric(L"slider", L"thumbSize", 14.0f));
+    const int trackHeight = static_cast<int>(theme.metric(L"slider", L"trackHeight", 4.0f));
+    const int left = thumbSize / 2;
+    const int right = std::max(left + 1, static_cast<int>(rect.right) - thumbSize / 2);
+    const double range = state->sliderMaximum - state->sliderMinimum;
+    const double ratio = range == 0.0 ? 0.0 : (state->sliderValue - state->sliderMinimum) / range;
+    const int thumbCenter = left + static_cast<int>(std::max(0.0, std::min(1.0, ratio)) * (right - left) + 0.5);
+    const int centerY = (rect.top + rect.bottom) / 2;
+    RECT track{left, centerY - trackHeight / 2, right, centerY + (trackHeight + 1) / 2};
+    FillRoundRect(
+        dc, track, trackHeight / 2,
+        ToColorRef(theme.color(L"slider", visualState, L"track")),
+        ToColorRef(theme.color(L"slider", visualState, L"track")), 1);
+    RECT fill = track;
+    fill.right = thumbCenter;
+    if (fill.right > fill.left) {
+        FillRoundRect(
+            dc, fill, trackHeight / 2,
+            ToColorRef(theme.color(L"slider", visualState, L"fill")),
+            ToColorRef(theme.color(L"slider", visualState, L"fill")), 1);
+    }
+    RECT thumb{thumbCenter - thumbSize / 2, centerY - thumbSize / 2, thumbCenter + (thumbSize + 1) / 2, centerY + (thumbSize + 1) / 2};
+    HBRUSH thumbBrush = CreateSolidBrush(ToColorRef(theme.color(L"slider", visualState, L"thumb")));
+    HPEN thumbPen = CreatePen(PS_SOLID, 1, ToColorRef(theme.color(L"slider", visualState, L"border")));
+    HGDIOBJ oldBrush = SelectObject(dc, thumbBrush);
+    HGDIOBJ oldPen = SelectObject(dc, thumbPen);
+    Ellipse(dc, thumb.left, thumb.top, thumb.right, thumb.bottom);
+    SelectObject(dc, oldPen);
+    SelectObject(dc, oldBrush);
+    DeleteObject(thumbPen);
+    DeleteObject(thumbBrush);
 }
 
 void DrawButton(const Theme& theme, const DRAWITEMSTRUCT* draw) {
@@ -623,7 +893,23 @@ void DrawButton(const Theme& theme, const DRAWITEMSTRUCT* draw) {
     HGDIOBJ oldFont = font ? SelectObject(draw->hDC, font) : nullptr;
     std::wstring text = ControlText(draw->hwndItem);
     RECT textRect = ThemedControls::ButtonTextRect(theme, rect, pressed);
-    DrawTextW(draw->hDC, text.c_str(), static_cast<int>(text.size()), &textRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    HICON icon = reinterpret_cast<HICON>(SendMessageW(draw->hwndItem, BM_GETIMAGE, IMAGE_ICON, 0));
+    if (icon) {
+        const int iconSize = static_cast<int>(theme.metric(L"toolbarItem", L"iconSize", 16.0f));
+        const int iconGap = text.empty() ? 0 : static_cast<int>(theme.metric(L"toolbarItem", L"iconGap", 6.0f));
+        SIZE textSize{};
+        if (!text.empty()) GetTextExtentPoint32W(draw->hDC, text.c_str(), static_cast<int>(text.size()), &textSize);
+        const int contentWidth = iconSize + iconGap + textSize.cx;
+        const int iconX = rect.left + std::max(0, (static_cast<int>(rect.right - rect.left) - contentWidth) / 2) + (pressed ? 1 : 0);
+        const int iconY = rect.top + ((rect.bottom - rect.top) - iconSize) / 2 + (pressed ? 1 : 0);
+        if (disabled) {
+            DrawStateW(draw->hDC, nullptr, nullptr, reinterpret_cast<LPARAM>(icon), 0, iconX, iconY, iconSize, iconSize, DST_ICON | DSS_DISABLED);
+        } else {
+            DrawIconEx(draw->hDC, iconX, iconY, icon, iconSize, iconSize, 0, nullptr, DI_NORMAL);
+        }
+        if (!text.empty()) textRect.left = iconX + iconSize + iconGap;
+    }
+    DrawTextW(draw->hDC, text.c_str(), static_cast<int>(text.size()), &textRect, icon ? (DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS) : (DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS));
     if (oldFont) {
         SelectObject(draw->hDC, oldFont);
     }
@@ -744,6 +1030,222 @@ void DrawCheckBox(const Theme& theme, const DRAWITEMSTRUCT* draw) {
     }
 }
 
+void DrawToggle(const Theme& theme, const DRAWITEMSTRUCT* draw) {
+    const bool disabled = (draw->itemState & ODS_DISABLED) != 0;
+    const bool checked = IsChecked(draw->hwndItem);
+    const bool hover = IsHover(draw->hwndItem);
+    const wchar_t* state = disabled ? L"disabled" : (checked ? L"checked" : (hover ? L"hover" : L"normal"));
+    RECT rect = draw->rcItem;
+    const std::wstring backgroundComponent = BackgroundComponent(draw->hwndItem);
+    HBRUSH bg = CreateSolidBrush(ToColorRef(theme.color(backgroundComponent, L"normal", L"bg")));
+    FillRect(draw->hDC, &rect, bg);
+    DeleteObject(bg);
+
+    const int trackWidth = static_cast<int>(theme.metric(L"toggle", L"width", 38.0f));
+    const int trackHeight = static_cast<int>(theme.metric(L"toggle", L"height", 22.0f));
+    const int thumbSize = static_cast<int>(theme.metric(L"toggle", L"thumbSize", 18.0f));
+    RECT track{rect.left, rect.top + (rect.bottom - rect.top - trackHeight) / 2, rect.left + trackWidth, 0};
+    track.bottom = track.top + trackHeight;
+    FillRoundRect(
+        draw->hDC, track, trackHeight / 2,
+        ToColorRef(theme.color(L"toggle", state, L"track")),
+        ToColorRef(theme.color(L"toggle", state, L"track")), 1);
+    const int inset = std::max(1, (trackHeight - thumbSize) / 2);
+    RECT thumb{};
+    thumb.left = checked ? track.right - inset - thumbSize : track.left + inset;
+    thumb.top = track.top + inset;
+    thumb.right = thumb.left + thumbSize;
+    thumb.bottom = thumb.top + thumbSize;
+    HBRUSH thumbBrush = CreateSolidBrush(ToColorRef(theme.color(L"toggle", state, L"thumb")));
+    HGDIOBJ oldBrush = SelectObject(draw->hDC, thumbBrush);
+    HGDIOBJ oldPen = SelectObject(draw->hDC, GetStockObject(NULL_PEN));
+    Ellipse(draw->hDC, thumb.left, thumb.top, thumb.right, thumb.bottom);
+    SelectObject(draw->hDC, oldPen);
+    SelectObject(draw->hDC, oldBrush);
+    DeleteObject(thumbBrush);
+
+    const int gap = static_cast<int>(theme.metric(L"toggle", L"gap", 8.0f));
+    RECT textRect{track.right + gap, rect.top, rect.right, rect.bottom};
+    SetBkMode(draw->hDC, TRANSPARENT);
+    SetTextColor(draw->hDC, ToColorRef(theme.color(L"toggle", state, L"text")));
+    HFONT font = reinterpret_cast<HFONT>(SendMessageW(draw->hwndItem, WM_GETFONT, 0, 0));
+    HGDIOBJ oldFont = font ? SelectObject(draw->hDC, font) : nullptr;
+    const std::wstring text = ControlText(draw->hwndItem);
+    DrawTextW(draw->hDC, text.c_str(), static_cast<int>(text.size()), &textRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    if (oldFont) SelectObject(draw->hDC, oldFont);
+}
+
+void DrawRadioButton(const Theme& theme, const DRAWITEMSTRUCT* draw) {
+    const bool disabled = (draw->itemState & ODS_DISABLED) != 0;
+    const bool checked = IsChecked(draw->hwndItem);
+    const bool hover = IsHover(draw->hwndItem);
+    const wchar_t* state = disabled ? L"disabled" : (checked ? L"checked" : (hover ? L"hover" : L"normal"));
+    RECT rect = draw->rcItem;
+    const std::wstring backgroundComponent = BackgroundComponent(draw->hwndItem);
+    HBRUSH bg = CreateSolidBrush(ToColorRef(theme.color(backgroundComponent, L"normal", L"bg")));
+    FillRect(draw->hDC, &rect, bg);
+    DeleteObject(bg);
+
+    const int dotSize = static_cast<int>(theme.metric(L"radio", L"dotSize", 16.0f));
+    RECT dot{rect.left, rect.top + (rect.bottom - rect.top - dotSize) / 2, rect.left + dotSize, 0};
+    dot.bottom = dot.top + dotSize;
+    HBRUSH dotBrush = CreateSolidBrush(ToColorRef(theme.color(L"radio", state, L"dot")));
+    HPEN dotPen = CreatePen(PS_SOLID, 1, ToColorRef(theme.color(L"radio", state, L"border")));
+    HGDIOBJ oldBrush = SelectObject(draw->hDC, dotBrush);
+    HGDIOBJ oldPen = SelectObject(draw->hDC, dotPen);
+    Ellipse(draw->hDC, dot.left, dot.top, dot.right, dot.bottom);
+    SelectObject(draw->hDC, oldPen);
+    SelectObject(draw->hDC, oldBrush);
+    DeleteObject(dotPen);
+    DeleteObject(dotBrush);
+    if (checked) {
+        const int innerSize = static_cast<int>(theme.metric(L"radio", L"innerDotSize", 8.0f));
+        RECT inner{dot.left + (dotSize - innerSize) / 2, dot.top + (dotSize - innerSize) / 2, 0, 0};
+        inner.right = inner.left + innerSize;
+        inner.bottom = inner.top + innerSize;
+        HBRUSH innerBrush = CreateSolidBrush(ToColorRef(theme.color(L"radio", L"checked", L"border")));
+        oldBrush = SelectObject(draw->hDC, innerBrush);
+        oldPen = SelectObject(draw->hDC, GetStockObject(NULL_PEN));
+        Ellipse(draw->hDC, inner.left, inner.top, inner.right, inner.bottom);
+        SelectObject(draw->hDC, oldPen);
+        SelectObject(draw->hDC, oldBrush);
+        DeleteObject(innerBrush);
+    }
+    const int gap = static_cast<int>(theme.metric(L"radio", L"gap", 8.0f));
+    RECT textRect{dot.right + gap, rect.top, rect.right, rect.bottom};
+    SetBkMode(draw->hDC, TRANSPARENT);
+    SetTextColor(draw->hDC, ToColorRef(theme.color(L"radio", state, L"text")));
+    HFONT font = reinterpret_cast<HFONT>(SendMessageW(draw->hwndItem, WM_GETFONT, 0, 0));
+    HGDIOBJ oldFont = font ? SelectObject(draw->hDC, font) : nullptr;
+    const std::wstring text = ControlText(draw->hwndItem);
+    DrawTextW(draw->hDC, text.c_str(), static_cast<int>(text.size()), &textRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    if (oldFont) SelectObject(draw->hDC, oldFont);
+}
+
+void DrawHotKeyCapture(const Theme& theme, const DRAWITEMSTRUCT* draw) {
+    const bool disabled = (draw->itemState & ODS_DISABLED) != 0;
+    const bool focused = (draw->itemState & ODS_FOCUS) != 0 || GetFocus() == draw->hwndItem;
+    const bool hover = IsHover(draw->hwndItem);
+    const wchar_t* state = disabled ? L"disabled" : (focused ? L"focused" : (hover ? L"hover" : L"normal"));
+    RECT rect = draw->rcItem;
+    FillRoundRect(
+        draw->hDC,
+        rect,
+        static_cast<int>(theme.metric(L"edit", L"radius", 7.0f)),
+        ToColorRef(theme.color(L"edit", state, L"bg")),
+        ToColorRef(theme.color(L"edit", state, L"border")),
+        static_cast<int>(theme.metric(L"edit", L"borderWidth", 1.0f)));
+    InflateRect(&rect, -ThemedControls::EditPaddingX(theme), 0);
+    SetBkMode(draw->hDC, TRANSPARENT);
+    SetTextColor(draw->hDC, ToColorRef(theme.color(L"edit", state, L"text")));
+    HFONT font = reinterpret_cast<HFONT>(SendMessageW(draw->hwndItem, WM_GETFONT, 0, 0));
+    HGDIOBJ oldFont = font ? SelectObject(draw->hDC, font) : nullptr;
+    const std::wstring text = ControlText(draw->hwndItem);
+    DrawTextW(draw->hDC, text.c_str(), static_cast<int>(text.size()), &rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    if (oldFont) SelectObject(draw->hDC, oldFont);
+}
+
+void DrawLinkText(const Theme& theme, const DRAWITEMSTRUCT* draw) {
+    const auto controlState = FindState(draw->hwndItem);
+    const bool disabled = (draw->itemState & ODS_DISABLED) != 0;
+    const bool pressed = (draw->itemState & ODS_SELECTED) != 0;
+    const bool focused = (draw->itemState & ODS_FOCUS) != 0;
+    const bool hover = IsHover(draw->hwndItem);
+    const bool visited = controlState && controlState->selected;
+    const std::wstring role = controlState ? controlState->statusState : L"normal";
+    const wchar_t* state = disabled ? L"disabled"
+        : (pressed ? L"pressed"
+        : (focused ? L"focused"
+        : (hover ? L"hover"
+        : (visited ? L"visited" : (role.empty() ? L"normal" : role.c_str())))));
+
+    RECT rect = draw->rcItem;
+    const std::wstring backgroundComponent = BackgroundComponent(draw->hwndItem);
+    HBRUSH background = CreateSolidBrush(ToColorRef(theme.color(backgroundComponent, L"normal", L"bg")));
+    FillRect(draw->hDC, &rect, background);
+    DeleteObject(background);
+
+    SetBkMode(draw->hDC, TRANSPARENT);
+    SetTextColor(draw->hDC, ToColorRef(theme.color(L"link", state, L"text")));
+    HFONT font = reinterpret_cast<HFONT>(SendMessageW(draw->hwndItem, WM_GETFONT, 0, 0));
+    HGDIOBJ oldFont = font ? SelectObject(draw->hDC, font) : nullptr;
+    const LONG style = GetWindowLongW(draw->hwndItem, GWL_STYLE);
+    UINT format = DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS;
+    if ((style & BS_CENTER) == BS_CENTER) format |= DT_CENTER;
+    else if ((style & BS_RIGHT) == BS_RIGHT) format |= DT_RIGHT;
+    else format |= DT_LEFT;
+    const std::wstring text = ControlText(draw->hwndItem);
+    DrawTextW(draw->hDC, text.c_str(), static_cast<int>(text.size()), &rect, format);
+    if (oldFont) SelectObject(draw->hDC, oldFont);
+
+    if (focused) {
+        RECT focusRect = rect;
+        InflateRect(&focusRect, -1, -2);
+        DrawFocusRect(draw->hDC, &focusRect);
+    }
+}
+
+void DrawContainer(const Theme& theme, const DRAWITEMSTRUCT* draw, ControlKind kind) {
+    RECT rect = draw->rcItem;
+    const wchar_t* component = kind == ControlKind::Panel ? L"panel"
+        : (kind == ControlKind::GroupBox ? L"groupBox"
+        : (kind == ControlKind::TabControl ? L"tabControl" : L"toolbar"));
+
+    const bool disabled = (draw->itemState & ODS_DISABLED) != 0;
+    const auto state = FindState(draw->hwndItem);
+    const wchar_t* visualState = disabled ? L"disabled"
+        : (kind == ControlKind::Panel && state && !state->statusState.empty() ? state->statusState.c_str()
+        : ((kind == ControlKind::GroupBox && state && state->checked) ? L"raised" : L"normal"));
+    const int radius = static_cast<int>(theme.metric(component, L"radius", 7.0f));
+    const int borderWidth = static_cast<int>(theme.metric(component, L"borderWidth", 1.0f));
+    FillRoundRect(
+        draw->hDC, rect, radius,
+        ToColorRef(theme.color(component, visualState, L"bg")),
+        ToColorRef(theme.color(component, visualState, L"border")),
+        borderWidth);
+    if (kind != ControlKind::GroupBox) return;
+
+    const std::wstring title = ControlText(draw->hwndItem);
+    if (title.empty()) return;
+    HFONT font = reinterpret_cast<HFONT>(SendMessageW(draw->hwndItem, WM_GETFONT, 0, 0));
+    HGDIOBJ oldFont = font ? SelectObject(draw->hDC, font) : nullptr;
+    SIZE size{};
+    GetTextExtentPoint32W(draw->hDC, title.c_str(), static_cast<int>(title.size()), &size);
+    const int inset = static_cast<int>(theme.metric(L"groupBox", L"titleInsetX", 10.0f));
+    const int gap = static_cast<int>(theme.metric(L"groupBox", L"titleGap", 6.0f));
+    RECT titleBg{rect.left + inset - gap / 2, rect.top, rect.left + inset + size.cx + gap / 2, rect.top + std::max(size.cy, 20L)};
+    HBRUSH background = CreateSolidBrush(ToColorRef(theme.color(L"groupBox", visualState, L"bg")));
+    FillRect(draw->hDC, &titleBg, background);
+    DeleteObject(background);
+    SetBkMode(draw->hDC, TRANSPARENT);
+    SetTextColor(draw->hDC, ToColorRef(theme.color(L"groupBox", visualState, L"text")));
+    RECT titleRect{rect.left + inset, rect.top, rect.right - inset, titleBg.bottom};
+    DrawTextW(draw->hDC, title.c_str(), static_cast<int>(title.size()), &titleRect, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS);
+    if (oldFont) SelectObject(draw->hDC, oldFont);
+}
+
+void DrawSeparator(const Theme& theme, const DRAWITEMSTRUCT* draw) {
+    RECT rect = draw->rcItem;
+    const auto state = FindState(draw->hwndItem);
+    const bool vertical = state && state->checked;
+    HPEN pen = CreatePen(
+        PS_SOLID,
+        std::max(1, static_cast<int>(theme.metric(L"separator", L"thickness", 1.0f))),
+        ToColorRef(theme.color(L"separator", L"normal", L"line")));
+    HGDIOBJ oldPen = SelectObject(draw->hDC, pen);
+    if (vertical) {
+        const int x = (rect.left + rect.right) / 2;
+        MoveToEx(draw->hDC, x, rect.top + 3, nullptr);
+        LineTo(draw->hDC, x, rect.bottom - 3);
+    } else {
+        const int y = (rect.top + rect.bottom) / 2;
+        MoveToEx(draw->hDC, rect.left + 3, y, nullptr);
+        LineTo(draw->hDC, rect.right - 3, y);
+    }
+    SelectObject(draw->hDC, oldPen);
+    DeleteObject(pen);
+}
+
 void DrawTabButton(const Theme& theme, const DRAWITEMSTRUCT* draw) {
     const bool disabled = (draw->itemState & ODS_DISABLED) != 0;
     const bool selected = [&] { auto s = FindState(draw->hwndItem); return s && s->selected; }();
@@ -784,7 +1286,23 @@ void DrawTabButton(const Theme& theme, const DRAWITEMSTRUCT* draw) {
     HGDIOBJ oldFont = font ? SelectObject(draw->hDC, font) : nullptr;
     std::wstring text = ControlText(draw->hwndItem);
     RECT textRect = ThemedControls::TabButtonTextRect(theme, rect);
-    DrawTextW(draw->hDC, text.c_str(), static_cast<int>(text.size()), &textRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    HICON icon = reinterpret_cast<HICON>(SendMessageW(draw->hwndItem, BM_GETIMAGE, IMAGE_ICON, 0));
+    if (icon) {
+        const int iconSize = static_cast<int>(theme.metric(L"toolbarItem", L"iconSize", 16.0f));
+        const int iconGap = text.empty() ? 0 : static_cast<int>(theme.metric(L"toolbarItem", L"iconGap", 6.0f));
+        SIZE textSize{};
+        if (!text.empty()) GetTextExtentPoint32W(draw->hDC, text.c_str(), static_cast<int>(text.size()), &textSize);
+        const int contentWidth = iconSize + iconGap + textSize.cx;
+        const int iconX = rect.left + std::max(0, (static_cast<int>(rect.right - rect.left) - contentWidth) / 2);
+        const int iconY = rect.top + ((rect.bottom - rect.top) - iconSize) / 2;
+        if (disabled) {
+            DrawStateW(draw->hDC, nullptr, nullptr, reinterpret_cast<LPARAM>(icon), 0, iconX, iconY, iconSize, iconSize, DST_ICON | DSS_DISABLED);
+        } else {
+            DrawIconEx(draw->hDC, iconX, iconY, icon, iconSize, iconSize, 0, nullptr, DI_NORMAL);
+        }
+        if (!text.empty()) textRect.left = iconX + iconSize + iconGap;
+    }
+    DrawTextW(draw->hDC, text.c_str(), static_cast<int>(text.size()), &textRect, icon ? (DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS) : (DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS));
     if (oldFont) {
         SelectObject(draw->hDC, oldFont);
     }
@@ -845,8 +1363,10 @@ std::wstring ClassName(HWND hwnd) {
 }
 
 void DrawHeaderItem(const Theme& theme, HWND header, const NMCUSTOMDRAW* draw) {
+    const bool table = KindFor(GetParent(header)) == ControlKind::Table;
+    const wchar_t* component = table ? L"tableHeader" : L"list";
     RECT rect = draw->rc;
-    HBRUSH brush = CreateSolidBrush(ToColorRef(theme.color(L"list", L"normal", L"bg")));
+    HBRUSH brush = CreateSolidBrush(ToColorRef(theme.color(component, L"normal", L"bg")));
     FillRect(draw->hdc, &rect, brush);
     DeleteObject(brush);
 
@@ -858,7 +1378,7 @@ void DrawHeaderItem(const Theme& theme, HWND header, const NMCUSTOMDRAW* draw) {
     item.cchTextMax = static_cast<int>(sizeof(text) / sizeof(text[0]));
     Header_GetItem(header, index, &item);
 
-    const COLORREF line = ToColorRef(theme.color(L"list", L"normal", L"border"));
+    const COLORREF line = ToColorRef(theme.color(component, L"normal", L"border"));
     HPEN pen = CreatePen(PS_SOLID, 1, line);
     HGDIOBJ oldPen = SelectObject(draw->hdc, pen);
     MoveToEx(draw->hdc, rect.left, rect.bottom - 1, nullptr);
@@ -880,7 +1400,7 @@ void DrawHeaderItem(const Theme& theme, HWND header, const NMCUSTOMDRAW* draw) {
     }
 
     SetBkMode(draw->hdc, TRANSPARENT);
-    SetTextColor(draw->hdc, ToColorRef(theme.color(L"label", L"normal", L"text")));
+    SetTextColor(draw->hdc, ToColorRef(theme.color(component, L"normal", L"text")));
     HFONT font = reinterpret_cast<HFONT>(SendMessageW(header, WM_GETFONT, 0, 0));
     HGDIOBJ oldFont = font ? SelectObject(draw->hdc, font) : nullptr;
     DrawTextW(draw->hdc, text, -1, &textRect, format);
@@ -891,6 +1411,10 @@ void DrawHeaderItem(const Theme& theme, HWND header, const NMCUSTOMDRAW* draw) {
 }
 
 namespace ThemedControls {
+
+bool IsControlHovered(HWND hwnd) {
+    return IsHover(hwnd);
+}
 
 namespace {
 constexpr int kDialogFontPx = 14;
@@ -987,6 +1511,14 @@ RECT ButtonTextRect(const Theme& theme, RECT frame, bool pressed) {
 
 int CheckBoxHeight(const Theme& theme) {
     return static_cast<int>(theme.metric(L"checkbox", L"height", 24.0f));
+}
+
+int ToggleHeight(const Theme& theme) {
+    return static_cast<int>(theme.metric(L"toggle", L"height", 22.0f));
+}
+
+int RadioButtonHeight(const Theme& theme) {
+    return static_cast<int>(theme.metric(L"radio", L"height", 24.0f));
 }
 
 RECT CheckBoxBoxRect(const Theme& theme, RECT frame) {
@@ -1222,7 +1754,8 @@ void SetControlTheme(HWND hwnd, const Theme& theme) {
     if (hwnd) {
         auto state = FindState(hwnd);
         const ControlKind kind = state ? state->kind : ControlKind::None;
-        if (kind == ControlKind::ComboBox || kind == ControlKind::ProgressBar || kind == ControlKind::StatusBadge || kind == ControlKind::StatusText) {
+        if (kind == ControlKind::ComboBox || kind == ControlKind::Edit || kind == ControlKind::ProgressBar || kind == ControlKind::Slider
+            || kind == ControlKind::Toggle || kind == ControlKind::Radio || kind == ControlKind::StatusBadge || kind == ControlKind::StatusText) {
             StateFor(hwnd).theme = &theme;
         } else {
             StateFor(hwnd).theme = nullptr;
@@ -1254,6 +1787,198 @@ HWND CreateCheckBox(HINSTANCE instance, HWND parent, int id, const wchar_t* text
         SendMessageW(hwnd, BM_SETCHECK, checked ? BST_CHECKED : BST_UNCHECKED, 0);
     }
     return hwnd;
+}
+
+HWND CreateToggle(HINSTANCE instance, HWND parent, int id, const wchar_t* text, int x, int y, int width, HFONT font, const Theme& theme, bool checked) {
+    HWND hwnd = CreateWindowExW(
+        0, L"BUTTON", text,
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_CLIPSIBLINGS | BS_OWNERDRAW,
+        x, y, width, ToggleHeight(theme), parent,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), instance, nullptr);
+    if (hwnd) {
+        SendMessageW(hwnd, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+        SetControlTextProp(hwnd, text);
+        auto& state = StateFor(hwnd);
+        state.kind = ControlKind::Toggle;
+        state.theme = &theme;
+        AttachThemedBehavior(hwnd);
+        SendMessageW(hwnd, BM_SETCHECK, checked ? BST_CHECKED : BST_UNCHECKED, 0);
+    }
+    return hwnd;
+}
+
+HWND CreateRadioButton(HINSTANCE instance, HWND parent, int id, const wchar_t* text, int x, int y, int width, HFONT font, const Theme& theme, int group, bool checked) {
+    HWND hwnd = CreateWindowExW(
+        0, L"BUTTON", text,
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_CLIPSIBLINGS | BS_OWNERDRAW,
+        x, y, width, RadioButtonHeight(theme), parent,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), instance, nullptr);
+    if (hwnd) {
+        SendMessageW(hwnd, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+        SetControlTextProp(hwnd, text);
+        auto& state = StateFor(hwnd);
+        state.kind = ControlKind::Radio;
+        state.theme = &theme;
+        state.radioGroup = group;
+        AttachThemedBehavior(hwnd);
+        if (checked) {
+            SendMessageW(hwnd, BM_SETCHECK, BST_CHECKED, 0);
+        }
+    }
+    return hwnd;
+}
+
+HWND CreateHotKeyCapture(HINSTANCE instance, HWND parent, int id, const wchar_t* text, int x, int y, int width, HFONT font, const Theme& theme) {
+    HWND hwnd = CreateWindowExW(
+        0, L"BUTTON", text,
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_CLIPSIBLINGS | BS_OWNERDRAW,
+        x, y, width, EditFrameHeight(theme), parent,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), instance, nullptr);
+    if (hwnd) {
+        SendMessageW(hwnd, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+        SetControlTextProp(hwnd, text);
+        auto& state = StateFor(hwnd);
+        state.kind = ControlKind::HotKeyCapture;
+        state.theme = &theme;
+        AttachThemedBehavior(hwnd);
+    }
+    return hwnd;
+}
+
+HWND CreateLinkText(
+    HINSTANCE instance,
+    HWND parent,
+    int id,
+    const wchar_t* text,
+    int x,
+    int y,
+    int width,
+    int height,
+    HFONT font,
+    const Theme& theme,
+    const wchar_t* role,
+    bool visited,
+    DWORD style) {
+    HWND hwnd = CreateWindowExW(
+        0, L"BUTTON", text,
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_CLIPSIBLINGS | BS_OWNERDRAW | style,
+        x, y, width, height, parent,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), instance, nullptr);
+    if (hwnd) {
+        SendMessageW(hwnd, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+        SetControlTextProp(hwnd, text);
+        auto& state = StateFor(hwnd);
+        state.kind = ControlKind::Link;
+        state.theme = &theme;
+        state.statusState = role ? role : L"normal";
+        state.selected = visited;
+        AttachThemedBehavior(hwnd);
+    }
+    return hwnd;
+}
+
+HWND CreateContainerControl(
+    HINSTANCE instance, HWND parent, int id, const wchar_t* text, RECT frame,
+    HFONT font, const Theme& theme, ControlKind kind, bool raised) {
+    HWND hwnd = CreateWindowExW(
+        0, L"BUTTON", text ? text : L"",
+        WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | BS_OWNERDRAW,
+        frame.left, frame.top, frame.right - frame.left, frame.bottom - frame.top,
+        parent, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), instance, nullptr);
+    if (hwnd) {
+        SendMessageW(hwnd, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+        SetControlTextProp(hwnd, text);
+        auto& state = StateFor(hwnd);
+        state.kind = kind;
+        state.theme = &theme;
+        state.checked = raised;
+        AttachThemedBehavior(hwnd);
+    }
+    return hwnd;
+}
+
+HWND CreateGroupBox(HINSTANCE instance, HWND parent, int id, const wchar_t* title, RECT frame, HFONT font, const Theme& theme, bool raised) {
+    return CreateContainerControl(instance, parent, id, title, frame, font, theme, ControlKind::GroupBox, raised);
+}
+
+HWND CreatePanel(HINSTANCE instance, HWND parent, int id, RECT frame, HFONT font, const Theme& theme, const wchar_t* role, bool scrollable) {
+    HWND hwnd = CreateContainerControl(instance, parent, id, L"", frame, font, theme, ControlKind::Panel, false);
+    if (hwnd) {
+        auto& state = StateFor(hwnd);
+        state.statusState = role ? role : L"normal";
+        if (scrollable) {
+            SetWindowLongPtrW(hwnd, GWL_STYLE, GetWindowLongPtrW(hwnd, GWL_STYLE) | WS_VSCROLL);
+        }
+    }
+    return hwnd;
+}
+
+RECT PanelContentRect(HWND hwnd) {
+    RECT rect{};
+    if (!hwnd) return rect;
+    GetClientRect(hwnd, &rect);
+    auto state = FindState(hwnd);
+    if (!state || !state->theme) return rect;
+    const int insetX = static_cast<int>(state->theme->metric(L"panel", L"contentInsetX", 10.0f));
+    const int insetY = static_cast<int>(state->theme->metric(L"panel", L"contentInsetY", 8.0f));
+    InflateRect(&rect, -insetX, -insetY);
+    return rect;
+}
+
+void SetPanelRole(HWND hwnd, const wchar_t* role) {
+    if (!hwnd || KindFor(hwnd) != ControlKind::Panel) return;
+    StateFor(hwnd).statusState = role ? role : L"normal";
+    InvalidateRect(hwnd, nullptr, TRUE);
+}
+
+HWND CreateTabControlFrame(HINSTANCE instance, HWND parent, int id, RECT frame, HFONT font, const Theme& theme) {
+    return CreateContainerControl(instance, parent, id, L"", frame, font, theme, ControlKind::TabControl, false);
+}
+
+HWND CreateToolBarFrame(HINSTANCE instance, HWND parent, int id, RECT frame, HFONT font, const Theme& theme) {
+    return CreateContainerControl(instance, parent, id, L"", frame, font, theme, ControlKind::ToolBar, false);
+}
+
+RECT GroupBoxContentRect(HWND hwnd) {
+    RECT rect{};
+    if (!hwnd) return rect;
+    GetClientRect(hwnd, &rect);
+    const auto state = FindState(hwnd);
+    if (!state || !state->theme) return rect;
+    const Theme& theme = *state->theme;
+    rect.left += static_cast<int>(theme.metric(L"groupBox", L"paddingX", 12.0f));
+    rect.right -= static_cast<int>(theme.metric(L"groupBox", L"paddingX", 12.0f));
+    rect.top += static_cast<int>(theme.metric(L"groupBox", L"titleHeight", 24.0f))
+        + static_cast<int>(theme.metric(L"groupBox", L"paddingY", 10.0f));
+    rect.bottom -= static_cast<int>(theme.metric(L"groupBox", L"paddingY", 10.0f));
+    return rect;
+}
+
+HWND CreateSeparator(HINSTANCE instance, HWND parent, RECT frame, const Theme& theme, bool vertical) {
+    HWND hwnd = CreateWindowExW(
+        0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | WS_DISABLED | BS_OWNERDRAW,
+        frame.left, frame.top, frame.right - frame.left, frame.bottom - frame.top,
+        parent, nullptr, instance, nullptr);
+    if (hwnd) {
+        auto& state = StateFor(hwnd);
+        state.kind = ControlKind::Separator;
+        state.theme = &theme;
+        state.checked = vertical;
+        AttachThemedBehavior(hwnd);
+    }
+    return hwnd;
+}
+
+void SetLinkRole(HWND hwnd, const wchar_t* role) {
+    if (!hwnd) return;
+    StateFor(hwnd).statusState = role ? role : L"normal";
+    InvalidateRect(hwnd, nullptr, TRUE);
+}
+
+void SetLinkVisited(HWND hwnd, bool visited) {
+    if (!hwnd) return;
+    StateFor(hwnd).selected = visited;
+    InvalidateRect(hwnd, nullptr, TRUE);
 }
 
 void SetControlBackgroundComponent(HWND hwnd, const wchar_t* component) {
@@ -1396,6 +2121,13 @@ RECT MultiLineEditRect(const Theme& theme, RECT frame) {
     return rect;
 }
 
+void ConfigureEditBehavior(HWND hwnd, bool selectAllOnFocus) {
+    if (!hwnd || KindFor(hwnd) != ControlKind::Edit) {
+        return;
+    }
+    StateFor(hwnd).selectAllOnFocus = selectAllOnFocus;
+}
+
 HWND CreateSingleLineEdit(HINSTANCE instance, HWND parent, int id, const Theme& theme, RECT frame, const std::wstring& value, HFONT font, DWORD extraStyle) {
     const RECT editRect = SingleLineEditRect(theme, frame);
     HWND hwnd = CreateWindowExW(
@@ -1414,6 +2146,10 @@ HWND CreateSingleLineEdit(HINSTANCE instance, HWND parent, int id, const Theme& 
     if (hwnd) {
         SendMessageW(hwnd, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
         SendMessageW(hwnd, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, MAKELPARAM(0, 0));
+        auto& state = StateFor(hwnd);
+        state.kind = ControlKind::Edit;
+        state.theme = &theme;
+        AttachThemedBehavior(hwnd);
     }
     return hwnd;
 }
@@ -1436,6 +2172,11 @@ HWND CreateMultiLineEdit(HINSTANCE instance, HWND parent, int id, const Theme& t
     if (hwnd) {
         SendMessageW(hwnd, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
         SendMessageW(hwnd, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, MAKELPARAM(0, 0));
+        auto& state = StateFor(hwnd);
+        state.kind = ControlKind::Edit;
+        state.theme = &theme;
+        state.multiline = true;
+        AttachThemedBehavior(hwnd);
     }
     return hwnd;
 }
@@ -1492,6 +2233,47 @@ int ProgressBarHeight(const Theme& theme) {
     return static_cast<int>(theme.metric(L"progressBar", L"height", 16.0f));
 }
 
+int SliderHeight(const Theme& theme) {
+    return static_cast<int>(theme.metric(L"slider", L"height", 24.0f));
+}
+
+HWND CreateSlider(HINSTANCE instance, HWND parent, int id, const Theme& theme, int x, int y, int width, double minimum, double maximum, double step, double value) {
+    HWND hwnd = CreateWindowExW(
+        0, L"STATIC", nullptr,
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_CLIPSIBLINGS,
+        x, y, width, SliderHeight(theme), parent,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), instance, nullptr);
+    if (hwnd) {
+        auto& state = StateFor(hwnd);
+        state.kind = ControlKind::Slider;
+        state.theme = &theme;
+        state.sliderMinimum = minimum;
+        state.sliderMaximum = maximum;
+        state.sliderStep = std::max(0.0, step);
+        state.sliderValue = ClampSliderValue(state, value);
+        AttachThemedBehavior(hwnd);
+    }
+    return hwnd;
+}
+
+void SetSliderValue(HWND hwnd, double value, bool notify) {
+    auto state = FindState(hwnd);
+    if (!state || state->kind != ControlKind::Slider) {
+        return;
+    }
+    auto& mutableState = StateFor(hwnd);
+    mutableState.sliderValue = ClampSliderValue(mutableState, value);
+    InvalidateRect(hwnd, nullptr, FALSE);
+    if (notify) {
+        NotifySlider(hwnd);
+    }
+}
+
+double SliderValue(HWND hwnd) {
+    auto state = FindState(hwnd);
+    return state && state->kind == ControlKind::Slider ? state->sliderValue : 0.0;
+}
+
 void DrawFieldFrame(const Theme& theme, HDC dc, RECT rect, HWND child, bool readOnly, bool error) {
     const bool disabled = child && !IsWindowEnabled(child);
     const bool focused = child && GetFocus() == child;
@@ -1505,6 +2287,20 @@ void DrawFieldFrame(const Theme& theme, HDC dc, RECT rect, HWND child, bool read
         ToColorRef(theme.color(component, state, L"bg")),
         ToColorRef(theme.color(component, state, L"border")),
         static_cast<int>(theme.metric(component, L"borderWidth", 1.0f)));
+}
+
+void DrawEditFrame(const Theme& theme, HDC dc, RECT rect, HWND child, bool readOnly, bool error) {
+    const bool disabled = child && !IsWindowEnabled(child);
+    const bool focused = child && GetFocus() == child;
+    const bool hover = child && IsHover(child);
+    const wchar_t* state = disabled ? L"disabled" : (error ? L"error" : (focused ? L"focused" : (hover ? L"hover" : (readOnly ? L"readonly" : L"normal"))));
+    FillRoundRect(
+        dc,
+        rect,
+        static_cast<int>(theme.metric(L"edit", L"radius", 7.0f)),
+        ToColorRef(theme.color(L"edit", state, L"bg")),
+        ToColorRef(theme.color(L"edit", state, L"border")),
+        static_cast<int>(theme.metric(L"edit", L"borderWidth", 1.0f)));
 }
 
 void DrawComboFrame(const Theme& theme, HDC dc, RECT rect, HWND child) {
@@ -1549,14 +2345,41 @@ void ApplyListViewTheme(HWND list, const Theme& theme) {
     if (!list) {
         return;
     }
-    const COLORREF bg = ToColorRef(theme.color(L"list", L"normal", L"bg"));
+    const wchar_t* component = KindFor(list) == ControlKind::Table ? L"table" : L"list";
+    const COLORREF bg = ToColorRef(theme.color(component, L"normal", L"bg"));
     ListView_SetBkColor(list, bg);
     ListView_SetTextBkColor(list, bg);
-    ListView_SetTextColor(list, ToColorRef(theme.color(L"list", L"normal", L"text")));
+    ListView_SetTextColor(list, ToColorRef(theme.color(component, L"normal", L"text")));
     if (HWND header = ListView_GetHeader(list)) {
         InvalidateRect(header, nullptr, TRUE);
     }
     InvalidateRect(list, nullptr, TRUE);
+}
+
+void RegisterTable(HWND table, const Theme& theme) {
+    if (!table) return;
+    auto& state = StateFor(table);
+    state.kind = ControlKind::Table;
+    state.theme = &theme;
+    AttachThemedBehavior(table);
+    ApplyListViewTheme(table, theme);
+}
+
+void ConfigureTableColumns(HWND table, const std::vector<int>& widthModes) {
+    if (!table) return;
+    StateFor(table).tableColumnWidthModes = widthModes;
+}
+
+void SetTableRowEnabledStates(HWND table, const std::vector<bool>& enabled) {
+    if (!table) return;
+    StateFor(table).tableRowEnabled = enabled;
+}
+
+bool IsTableRowEnabled(HWND table, int index) {
+    const auto state = FindState(table);
+    return state && index >= 0 && static_cast<std::size_t>(index) < state->tableRowEnabled.size()
+        ? state->tableRowEnabled[static_cast<std::size_t>(index)]
+        : true;
 }
 
 void DrawTabGroupFrame(const Theme& theme, HDC dc, RECT rect) {
@@ -1613,6 +2436,30 @@ bool Draw(const Theme& theme, const DRAWITEMSTRUCT* draw) {
         DrawCheckBox(theme, draw);
         return true;
     }
+    if (kind == ControlKind::Toggle) {
+        DrawToggle(theme, draw);
+        return true;
+    }
+    if (kind == ControlKind::Radio) {
+        DrawRadioButton(theme, draw);
+        return true;
+    }
+    if (kind == ControlKind::HotKeyCapture) {
+        DrawHotKeyCapture(theme, draw);
+        return true;
+    }
+    if (kind == ControlKind::Link) {
+        DrawLinkText(theme, draw);
+        return true;
+    }
+    if (kind == ControlKind::Panel || kind == ControlKind::GroupBox || kind == ControlKind::TabControl || kind == ControlKind::ToolBar) {
+        DrawContainer(theme, draw, kind);
+        return true;
+    }
+    if (kind == ControlKind::Separator) {
+        DrawSeparator(theme, draw);
+        return true;
+    }
     if (kind == ControlKind::TabButton) {
         DrawTabButton(theme, draw);
         return true;
@@ -1656,9 +2503,10 @@ bool HandleListViewCustomDraw(const Theme& theme, LPARAM lParam, LRESULT& result
     case CDDS_ITEMPREPAINT: {
         const bool selected = (draw->nmcd.uItemState & CDIS_SELECTED) != 0;
         const bool focused = (draw->nmcd.uItemState & CDIS_FOCUS) != 0;
-        const wchar_t* state = selected ? L"selected" : (focused ? L"focused" : L"normal");
-        draw->clrText = ToColorRef(theme.color(selected ? L"listItem" : L"list", state, L"text"));
-        draw->clrTextBk = ToColorRef(theme.color(selected ? L"listItem" : L"list", state, L"bg"));
+        const bool enabled = IsTableRowEnabled(header->hwndFrom, static_cast<int>(draw->nmcd.dwItemSpec));
+        const wchar_t* state = !enabled ? L"disabled" : (selected ? L"selected" : (focused ? L"focused" : L"normal"));
+        draw->clrText = ToColorRef(theme.color((selected && enabled) ? L"listItem" : L"listItem", state, L"text"));
+        draw->clrTextBk = ToColorRef(theme.color((selected && enabled) ? L"listItem" : L"list", state, L"bg"));
         result = CDRF_DODEFAULT;
         return true;
     }

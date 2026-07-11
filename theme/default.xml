@@ -196,10 +196,19 @@
     <Component name="panel">
         <Metric name="radius" value="7"/>
         <Metric name="borderWidth" value="1"/>
-        <Metric name="paddingX" value="10"/>
-        <Metric name="paddingY" value="8"/>
-        <State name="normal" bg="@surface" border="@line"/>
-        <State name="raised" bg="@surfaceRaised" border="@border"/>
+          <Metric name="paddingX" value="10"/>
+          <Metric name="paddingY" value="8"/>
+          <Metric name="contentInsetX" value="10"/>
+          <Metric name="contentInsetY" value="8"/>
+          <Metric name="childGap" value="6"/>
+          <Metric name="scrollStep" value="24"/>
+          <State name="normal" bg="@surface" border="@line"/>
+          <State name="subtle" bg="@background" border="@line"/>
+          <State name="raised" bg="@surfaceRaised" border="@border"/>
+          <State name="inset" bg="@surface" border="@border"/>
+          <State name="warning" bg="@warningSoft" border="@warning"/>
+          <State name="danger" bg="@dangerSoft" border="@danger"/>
+          <State name="disabled" bg="@background" border="@line"/>
         <State name="hover" bg="@hover" border="@border"/>
         <State name="selected" bg="@selected" border="@accent"/>
     </Component>
@@ -213,6 +222,17 @@
         <State name="readonly" bg="@surfaceRaised" text="@mutedText" border="@line"/>
         <State name="disabled" bg="@background" text="@disabledText" border="@line"/>
         <State name="focused" bg="@surface" text="@text" border="@focus"/>
+    </Component>
+    <Component name="link">
+        <State name="normal" text="@accent"/>
+        <State name="external" text="@accent"/>
+        <State name="muted" text="@mutedText"/>
+        <State name="danger" text="@danger"/>
+        <State name="hover" text="@focus"/>
+        <State name="pressed" text="@accent"/>
+        <State name="focused" text="@accent"/>
+        <State name="visited" text="@mutedText"/>
+        <State name="disabled" text="@disabledText"/>
     </Component>
     <Component name="linkItem">
         <Metric name="viewportPaddingX" value="16"/>
@@ -484,10 +504,12 @@
         <Metric name="width" value="38"/>
         <Metric name="height" value="22"/>
         <Metric name="thumbSize" value="18"/>
-        <State name="normal" track="@border" thumb="@surface"/>
-        <State name="checked" track="@accent" thumb="@surface"/>
-        <State name="hover" track="@focus" thumb="@surface"/>
-        <State name="disabled" track="@line" thumb="@surfaceRaised"/>
+        <Metric name="gap" value="8"/>
+        <Metric name="textHeight" value="20"/>
+        <State name="normal" track="@border" thumb="@surface" text="@text"/>
+        <State name="checked" track="@accent" thumb="@surface" text="@text"/>
+        <State name="hover" track="@focus" thumb="@surface" text="@text"/>
+        <State name="disabled" track="@line" thumb="@surfaceRaised" text="@disabledText"/>
     </Component>
     <Component name="radio">
         <Metric name="dotSize" value="16"/>
@@ -496,7 +518,7 @@
         <Metric name="gap" value="8"/>
         <State name="normal" text="@text" dot="@surface" border="@border"/>
         <State name="hover" text="@text" dot="@hover" border="@accent"/>
-        <State name="checked" text="@text" dot="@accent" border="@accent"/>
+        <State name="checked" text="@text" dot="@surface" border="@accent"/>
         <State name="disabled" text="@disabledText" dot="@surfaceRaised" border="@line"/>
     </Component>
     <Component name="list">
@@ -519,6 +541,55 @@
         <State name="selected" bg="@selected" text="@text"/>
         <State name="disabled" text="@disabledText"/>
     </Component>
+    <Component name="table">
+        <Metric name="radius" value="7"/>
+        <Metric name="borderWidth" value="1"/>
+        <State name="normal" bg="@surface" text="@text" border="@border"/>
+        <State name="focused" bg="@surface" text="@text" border="@focus"/>
+        <State name="disabled" bg="@background" text="@disabledText" border="@line"/>
+    </Component>
+    <Component name="tableHeader">
+        <Metric name="height" value="28"/>
+        <State name="normal" bg="@surfaceRaised" text="@text" border="@line"/>
+    </Component>
+    <Component name="groupBox">
+        <Metric name="radius" value="7"/>
+        <Metric name="borderWidth" value="1"/>
+        <Metric name="paddingX" value="12"/>
+        <Metric name="paddingY" value="10"/>
+        <Metric name="titleHeight" value="24"/>
+        <Metric name="titleInsetX" value="10"/>
+        <Metric name="titleGap" value="6"/>
+        <State name="normal" bg="@surface" text="@text" border="@border"/>
+        <State name="raised" bg="@surfaceRaised" text="@text" border="@border"/>
+        <State name="disabled" bg="@background" text="@disabledText" border="@line"/>
+    </Component>
+    <Component name="tabControl">
+        <Metric name="radius" value="7"/>
+        <Metric name="borderWidth" value="1"/>
+        <Metric name="paddingX" value="4"/>
+        <Metric name="itemGap" value="2"/>
+        <State name="normal" bg="@surface" border="@border"/>
+        <State name="disabled" bg="@background" border="@line"/>
+    </Component>
+    <Component name="toolbar">
+        <Metric name="radius" value="6"/>
+        <Metric name="borderWidth" value="1"/>
+        <Metric name="paddingX" value="6"/>
+        <Metric name="itemGap" value="4"/>
+        <Metric name="separatorWidth" value="9"/>
+        <State name="normal" bg="@surface" border="@line"/>
+        <State name="disabled" bg="@background" border="@line"/>
+    </Component>
+    <Component name="toolbarItem">
+        <Metric name="iconSize" value="16"/>
+        <Metric name="iconGap" value="6"/>
+        <Metric name="iconPaddingX" value="8"/>
+        <State name="normal" bg="@surface" text="@text"/>
+        <State name="hover" bg="@hover" text="@text"/>
+        <State name="checked" bg="@selected" text="@text"/>
+        <State name="disabled" bg="@background" text="@disabledText"/>
+    </Component>
     <Component name="slider">
         <Metric name="height" value="24"/>
         <Metric name="trackHeight" value="4"/>
@@ -540,7 +611,13 @@
         <Metric name="paddingX" value="8"/>
         <Metric name="paddingY" value="7"/>
         <Metric name="lineGap" value="4"/>
+        <Metric name="maxWidth" value="420"/>
+        <Metric name="cursorOffsetX" value="14"/>
+        <Metric name="cursorOffsetY" value="18"/>
         <State name="normal" bg="rgb(229,231,235)" text="rgb(17,24,39)" border="rgb(156,163,175)"/>
+        <State name="info" bg="@accentSoft" text="@text" border="@accent"/>
+        <State name="warning" bg="@surfaceRaised" text="@warning" border="@warning"/>
+        <State name="danger" bg="@surfaceRaised" text="@danger" border="@danger"/>
     </Component>
     <Component name="separator">
         <Metric name="thickness" value="1"/>

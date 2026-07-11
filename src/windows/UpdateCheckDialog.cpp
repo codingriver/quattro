@@ -63,7 +63,7 @@ public:
                 }
                 break;
             }
-            if (!IsDialogMessageW(hwnd_, &message)) {
+            if (!ThemedUi::PreTranslateMessage(message) && !IsDialogMessageW(hwnd_, &message)) {
                 TranslateMessage(&message);
                 DispatchMessageW(&message);
             }
@@ -142,7 +142,9 @@ private:
             auto notesGroup = form.group({form.fixedLabel(labelWidth), form.field(valueWidth, kNotesHeight)});
             auto notesRows = form.rowGroups(y, ThemedRowAlign::Left, {notesGroup});
             ui.Label(L"发布说明：", notesRows[0][0].left, notesRows[0][0].top, notesRows[0][0].right - notesRows[0][0].left);
-            ui.FramedStatic(TruncatedReleaseNotes(info_.releaseNotes), notesRows[0][1], SS_LEFT);
+            ThemedFramedTextOptions notesOptions{};
+            notesOptions.wrap = true;
+            ui.FramedStatic(TruncatedReleaseNotes(info_.releaseNotes), notesRows[0][1], notesOptions);
 
             ui.FooterButton(IDOK, L"下载更新", 0, 3, true, true);
             ui.FooterButton(ID_OPEN_RELEASE, L"发布页", 1, 3);

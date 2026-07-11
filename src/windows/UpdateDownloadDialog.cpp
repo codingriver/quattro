@@ -105,7 +105,7 @@ public:
                 }
                 break;
             }
-            if (!IsDialogMessageW(hwnd_, &message)) {
+            if (!ThemedUi::PreTranslateMessage(message) && !IsDialogMessageW(hwnd_, &message)) {
                 TranslateMessage(&message);
                 DispatchMessageW(&message);
             }
@@ -191,7 +191,9 @@ private:
         }
         cancelRequested_.store(true);
         SetText(statusLabel_, L"正在取消下载...");
-        EnableWindow(cancelButton_, FALSE);
+        if (windowUi_) {
+            windowUi_->ui().SetEnabled(cancelButton_, false);
+        }
     }
 
     void Close() {
@@ -213,7 +215,7 @@ private:
         }
         const bool indeterminate = total == 0;
         const double value = total == 0 ? 0.0 : static_cast<double>(downloaded) / static_cast<double>(total);
-        ThemedControls::SetProgressBarValue(progressBar_, value, indeterminate);
+        ThemedUi::SetProgress(progressBar_, value, indeterminate);
     }
 
     LRESULT Handle(UINT message, WPARAM wParam, LPARAM lParam) {

@@ -3,11 +3,13 @@
 #include "DialogLayout.h"
 #include "ThemedControls.h"
 #include "ThemedUi.h"
+#include "ThemedWindowUi.h"
 #include "Utilities.h"
 #include "../../resources/resource.h"
 
 #include <algorithm>
 #include <commctrl.h>
+#include <memory>
 #include <shellapi.h>
 #include <shlobj.h>
 #include <shobjidl.h>
@@ -28,19 +30,12 @@ constexpr int IdSelectNone = 1005;
 constexpr int IdPickDirectory = 1006;
 constexpr int IdViewList = 1007;
 constexpr int IdViewIcon = 1008;
+constexpr int IdActionToolbar = 1009;
 
 enum class ImportViewMode {
     List,
     Icon,
 };
-
-COLORREF ToColorRef(Color color) {
-    const auto byte = [](float value) -> BYTE {
-        const float clamped = std::max(0.0f, std::min(1.0f, value));
-        return static_cast<BYTE>(clamped * 255.0f + 0.5f);
-    };
-    return RGB(byte(color.r), byte(color.g), byte(color.b));
-}
 
 std::wstring SourceText(QuickImportService::Source source) {
     switch (source) {
@@ -156,49 +151,37 @@ public:
     DialogWindow(HWND owner, HINSTANCE instance, const Theme& theme, const std::vector<Link>& existingLinks, std::vector<Link>& selectedLinks)
         : owner_(owner), instance_(instance), theme_(theme), existingLinks_(existingLinks), selectedLinks_(selectedLinks) {}
 
+    ~DialogWindow() {
+        DestroyImageLists();
+    }
+
     bool Run() {
-        WNDCLASSEXW wc{};
-        wc.cbSize = sizeof(wc);
-        wc.lpfnWndProc = DialogWindow::WindowProc;
-        wc.hInstance = instance_;
-        wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-        wc.hIcon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_QUATTRO_APP_ICON));
-        wc.hIconSm = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_QUATTRO_APP_ICON));
-        wc.hbrBackground = nullptr;
-        wc.lpszClassName = L"QuattroQuickImportDialog";
-        RegisterClassExW(&wc);
-
-        const POINT position = CenterWindowOnOwnerMonitor(owner_, kDialogWidth, kDialogHeight);
-
-        hwnd_ = CreateWindowExW(
-            WS_EX_DLGMODALFRAME | WS_EX_WINDOWEDGE,
-            wc.lpszClassName,
-            L"快速导入",
-            WS_CAPTION | WS_SYSMENU | WS_POPUP | WS_CLIPCHILDREN,
-            position.x,
-            position.y,
-            kDialogWidth,
-            kDialogHeight,
-            owner_,
-            nullptr,
-            instance_,
-            this);
+        HICON icon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_QUATTRO_APP_ICON));
+        ThemedWindowCreateOptions options = ThemedWindowUi::DialogOptions(
+            instance_, owner_, L"QuattroQuickImportDialog", L"快速导入", DialogWindow::WindowProc, this, icon, icon);
+        options.clientWidth = kDialogWidth;
+        options.clientHeight = kDialogHeight;
+        hwnd_ = ThemedWindowUi::CreateWindowHandle(options);
         if (!hwnd_) {
             return false;
         }
 
-        ownerWasEnabled_ = ShowModalWindow(owner_, hwnd_);
+        if (windowUi_) {
+            windowUi_->ShowModal();
+        }
         UpdateWindow(hwnd_);
 
         MSG message{};
         while (!done_ && GetMessageW(&message, nullptr, 0, 0) > 0) {
-            if (!IsDialogMessageW(hwnd_, &message)) {
+            if (!ThemedUi::PreTranslateMessage(message) && !IsDialogMessageW(hwnd_, &message)) {
                 TranslateMessage(&message);
                 DispatchMessageW(&message);
             }
         }
 
-        RestoreModalOwner(owner_, ownerWasEnabled_, ownerRestored_);
+        if (windowUi_) {
+            windowUi_->RestoreModalOwner();
+        }
         return accepted_;
     }
 
@@ -217,8 +200,14 @@ private:
     }
 
     LRESULT HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
+        LRESULT commonResult = 0;
+        if (ThemedWindowUi::HandleCommonMessage(windowUi_, message, wParam, lParam, commonResult)) {
+            return commonResult;
+        }
         switch (message) {
         case WM_CREATE:
+            windowUi_ = std::make_unique<ThemedWindowUi>(
+                instance_, owner_, hwnd_, theme_, DialogLayoutKind::Compact, kDialogWidth, kDialogHeight);
             CreateControls();
             return 0;
         case WM_PAINT: {
@@ -231,31 +220,9 @@ private:
         case WM_PRINTCLIENT:
             Paint(reinterpret_cast<HDC>(wParam));
             return 0;
-        case WM_ERASEBKGND:
-            return 1;
-        case WM_CTLCOLORSTATIC: {
-            HDC dc = reinterpret_cast<HDC>(wParam);
-            SetBkMode(dc, TRANSPARENT);
-            SetTextColor(dc, ToColorRef(theme_.color(L"label", L"normal", L"text")));
-            return reinterpret_cast<LRESULT>(backgroundBrush_ ? backgroundBrush_ : GetStockObject(WHITE_BRUSH));
-        }
-        case WM_CTLCOLORLISTBOX: {
-            HDC dc = reinterpret_cast<HDC>(wParam);
-            SetTextColor(dc, ToColorRef(theme_.color(L"comboBox", L"normal", L"text")));
-            SetBkColor(dc, ToColorRef(theme_.color(L"comboBox", L"normal", L"itemBg")));
-            return reinterpret_cast<LRESULT>(comboListBrush_ ? comboListBrush_ : GetStockObject(WHITE_BRUSH));
-        }
-        case WM_DRAWITEM:
-            if (ThemedControls::Draw(theme_, reinterpret_cast<const DRAWITEMSTRUCT*>(lParam))) {
-                return TRUE;
-            }
-            return 0;
         case WM_NOTIFY: {
             LRESULT result = 0;
-            if (HandleListNotify(reinterpret_cast<NMHDR*>(lParam), result)) {
-                return result;
-            }
-            if (ThemedControls::HandleListViewCustomDraw(theme_, lParam, result)) {
+            if (HandleListNotify(lParam, result)) {
                 return result;
             }
             return 0;
@@ -298,40 +265,18 @@ private:
         case WM_CLOSE:
             Close(false);
             return 0;
-        case WM_DESTROY:
-            RestoreModalOwner(owner_, ownerWasEnabled_, ownerRestored_);
-            if (font_ && ownsFont_) {
-                DeleteObject(font_);
-            }
-            if (backgroundBrush_) {
-                DeleteObject(backgroundBrush_);
-            }
-            if (comboListBrush_) {
-                DeleteObject(comboListBrush_);
-            }
-            DestroyImageLists();
-            done_ = true;
-            return 0;
         default:
             return DefWindowProcW(hwnd_, message, wParam, lParam);
         }
     }
 
     void CreateControls() {
-        backgroundBrush_ = CreateSolidBrush(ToColorRef(theme_.color(L"dialog", L"normal", L"bg")));
-        comboListBrush_ = CreateSolidBrush(ToColorRef(theme_.color(L"comboBox", L"normal", L"itemBg")));
-        font_ = ThemedControls::CreateDialogFont();
-        ownsFont_ = font_ != nullptr;
-        if (!font_) {
-            font_ = reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
-        }
-
         layout_ = GetDialogLayoutMetrics(theme_, DialogLayoutKind::Compact);
         RECT client{};
         GetClientRect(hwnd_, &client);
         const int clientWidth = client.right - client.left;
         const int clientHeight = client.bottom - client.top;
-        const ThemedUi ui(instance_, hwnd_, theme_, font_, DialogLayoutKind::Compact, clientWidth, clientHeight);
+        const ThemedUi ui = windowUi_->ui();
         const int labelHeight = ThemedControls::LabelHeight(theme_);
         const int fieldHeight = ThemedControls::ComboBoxHeight(theme_);
         const int buttonHeight = ThemedControls::ButtonHeight(theme_);
@@ -358,15 +303,17 @@ private:
         const int toolbarX = layout_.CenteredGroupX(clientWidth, toolbarWidth);
         const int sourceX = toolbarX + layout_.labelWidth + layout_.labelGap;
 
-        sourceLabel_ = ThemedControls::CreateStaticText(instance_, hwnd_, L"来源", toolbarX, topY + labelOffset, layout_.labelWidth, labelHeight, font_);
-        sourceCombo_ = ThemedControls::CreateComboBox(instance_, hwnd_, IdSource, sourceX, topY, sourceWidth, ThemedControls::ComboBoxDropdownHeight(theme_), font_, theme_);
+        sourceLabel_ = ui.Label(L"来源", toolbarX, topY + labelOffset, layout_.labelWidth);
+        sourceCombo_ = ui.ComboBox(IdSource, sourceX, topY, sourceWidth);
         ComboBox_AddString(sourceCombo_, SourceText(QuickImportService::Source::Directory).c_str());
         ComboBox_AddString(sourceCombo_, SourceText(QuickImportService::Source::Desktop).c_str());
         ComboBox_AddString(sourceCombo_, SourceText(QuickImportService::Source::StartMenu).c_str());
         ComboBox_SetCurSel(sourceCombo_, 0);
 
         directoryFrame_ = RECT{sourceX + sourceWidth + layout_.controlGapX, topY, sourceX + sourceWidth + layout_.controlGapX + directoryWidth, topY + fieldHeight};
-        directoryText_ = ThemedControls::CreateFramedStatic(instance_, hwnd_, theme_, directoryFrame_, L"未选择目录", font_);
+        ThemedEditOptions directoryOptions{};
+        directoryOptions.readOnly = true;
+        directoryText_ = ui.Edit(IdPickDirectory + 100, directoryFrame_, L"未选择目录", directoryOptions);
         pickDirectoryButton_ = ui.Button(IdPickDirectory, L"选择目录", directoryFrame_.right + layout_.controlGapX, topY, ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, pickDirectoryWidth);
         scanButton_ = ui.Button(IdScan, L"扫描", directoryFrame_.right + layout_.controlGapX + pickDirectoryWidth + layout_.controlGapX, topY, ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, scanWidth);
 
@@ -380,38 +327,37 @@ private:
             selectNoneWidth;
         const int actionX = clientWidth - layout_.contentInsetX - actionWidth;
         const int statusY = statusRowY + std::max(0, (statusRowHeight - labelHeight) / 2);
-        status_ = ThemedControls::CreateStaticText(instance_, hwnd_, L"请选择目录后扫描。", layout_.contentInsetX, statusY, actionX - layout_.contentInsetX - layout_.controlGapX, labelHeight, font_);
+        status_ = ui.StatusText(
+            L"请选择目录后扫描。",
+            layout_.contentInsetX,
+            statusY,
+            actionX - layout_.contentInsetX - layout_.controlGapX,
+            ThemedStatusTextOptions{ThemedStatusRole::Normal, ThemedTextAlign::Start});
 
-        const int viewY = statusRowY + std::max(0, (statusRowHeight - tabHeight) / 2);
-        viewListButton_ = ui.TabButton(IdViewList, L"列表", actionX, viewY, viewButtonWidth, true);
-        viewIconButton_ = ui.TabButton(IdViewIcon, L"图标", actionX + viewButtonWidth, viewY, viewButtonWidth, false);
-
-        const int actionButtonY = statusRowY + std::max(0, (statusRowHeight - buttonHeight) / 2);
-        selectAllButton_ = ui.Button(IdSelectAll, L"全选", actionX + viewButtonWidth * 2 + layout_.controlGapX, actionButtonY, ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, selectAllWidth);
-        selectNoneButton_ = ui.Button(IdSelectNone, L"清空", actionX + viewButtonWidth * 2 + layout_.controlGapX + selectAllWidth + layout_.controlGapX, actionButtonY, ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, selectNoneWidth);
+        actionToolbar_ = ui.ToolBar(
+            IdActionToolbar,
+            RECT{actionX, statusRowY, actionX + actionWidth, statusRowY + statusRowHeight},
+            {
+                ThemedToolItem{IdViewList, L"列表", ThemedToolItemKind::Toggle, ThemedToolItemAlignment::Leading, true, true},
+                ThemedToolItem{IdViewIcon, L"图标", ThemedToolItemKind::Toggle},
+                ThemedToolItem{0, L"", ThemedToolItemKind::Separator},
+                ThemedToolItem{IdSelectAll, L"全选"},
+                ThemedToolItem{IdSelectNone, L"清空"},
+            });
 
         listFrame_ = RECT{layout_.contentInsetX, statusRowY + statusRowHeight + layout_.rowGap, clientWidth - layout_.contentInsetX, clientHeight - layout_.footerInsetY - buttonHeight - layout_.footerGap};
-        const RECT listRect = ThemedControls::ListFrameInnerRect(theme_, listFrame_);
-        list_ = CreateWindowExW(
-            0,
-            WC_LISTVIEWW,
-            L"",
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | LVS_REPORT | LVS_SHOWSELALWAYS | LVS_SHAREIMAGELISTS,
-            listRect.left,
-            listRect.top,
-            listRect.right - listRect.left,
-            listRect.bottom - listRect.top,
-            hwnd_,
-            reinterpret_cast<HMENU>(static_cast<INT_PTR>(IdList)),
-            instance_,
-            nullptr);
-        SendMessageW(list_, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
-        ThemedControls::ApplyListViewTheme(list_, theme_);
-        ListView_SetExtendedListViewStyle(list_, LVS_EX_CHECKBOXES | LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER);
-        AddColumn(0, L"名称", 170);
-        AddColumn(1, L"类型", 68);
-        AddColumn(2, L"路径", 330);
-        AddColumn(3, L"状态", 88);
+        ThemedTableOptions tableOptions{};
+        tableOptions.checkable = true;
+        list_ = ui.Table(
+            IdList,
+            listFrame_,
+            {
+                ThemedTableColumn{L"name", L"名称", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, 170},
+                ThemedTableColumn{L"type", L"类型", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, 68},
+                ThemedTableColumn{L"path", L"路径", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Remaining},
+                ThemedTableColumn{L"status", L"状态", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, 88},
+            },
+            tableOptions);
         RebuildImageLists();
 
         const int footerY = layout_.FooterButtonY(clientHeight, buttonHeight);
@@ -424,22 +370,12 @@ private:
         ApplyViewMode();
     }
 
-    void AddColumn(int index, const wchar_t* text, int width) {
-        LVCOLUMNW column{};
-        column.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM;
-        column.pszText = const_cast<wchar_t*>(text);
-        column.cx = width;
-        column.iSubItem = index;
-        ListView_InsertColumn(list_, index, &column);
-    }
-
     void LayoutSourceRow(bool directorySource) {
         RECT client{};
         GetClientRect(hwnd_, &client);
         const int clientWidth = client.right - client.left;
         const int labelHeight = ThemedControls::LabelHeight(theme_);
         const int fieldHeight = ThemedControls::ComboBoxHeight(theme_);
-        const int buttonHeight = ThemedControls::ButtonHeight(theme_);
         const int topY = layout_.contentInsetY;
         const int labelOffset = std::max(0, (fieldHeight - labelHeight) / 2);
         const int sourceWidth = 150;
@@ -458,17 +394,19 @@ private:
             scanWidth;
         const int toolbarX = layout_.CenteredGroupX(clientWidth, toolbarWidth);
         const int sourceX = toolbarX + layout_.labelWidth + layout_.labelGap;
+        const ThemedUi ui = windowUi_->ui();
 
-        SetWindowPos(sourceLabel_, nullptr, toolbarX, topY + labelOffset, layout_.labelWidth, labelHeight, SWP_NOZORDER | SWP_NOACTIVATE);
-        SetWindowPos(sourceCombo_, nullptr, sourceX, topY, sourceWidth, ThemedControls::ComboBoxDropdownHeight(theme_), SWP_NOZORDER | SWP_NOACTIVATE);
+        ui.MoveControl(sourceLabel_, toolbarX, topY + labelOffset, layout_.labelWidth);
+        ui.MoveComboBox(sourceCombo_, sourceX, topY, sourceWidth);
 
         int nextX = sourceX + sourceWidth + layout_.controlGapX;
         if (directorySource) {
             directoryFrame_ = RECT{nextX, topY, nextX + directoryWidth, topY + fieldHeight};
-            const RECT textRect = ThemedControls::FieldTextRect(theme_, directoryFrame_);
-            SetWindowPos(directoryText_, nullptr, textRect.left, textRect.top, textRect.right - textRect.left, textRect.bottom - textRect.top, SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+            windowUi_->MoveEditFrame(directoryText_, directoryFrame_);
+            ShowWindow(directoryText_, SW_SHOWNA);
             nextX = directoryFrame_.right + layout_.controlGapX;
-            SetWindowPos(pickDirectoryButton_, nullptr, nextX, topY, pickDirectoryWidth, buttonHeight, SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+            ui.MoveControl(pickDirectoryButton_, nextX, topY, pickDirectoryWidth);
+            ShowWindow(pickDirectoryButton_, SW_SHOWNA);
             nextX += pickDirectoryWidth + layout_.controlGapX;
         } else {
             ShowWindow(directoryText_, SW_HIDE);
@@ -476,7 +414,7 @@ private:
             directoryFrame_ = {};
         }
 
-        SetWindowPos(scanButton_, nullptr, nextX, topY, scanWidth, buttonHeight, SWP_NOZORDER | SWP_NOACTIVATE);
+        ui.MoveControl(scanButton_, nextX, topY, scanWidth);
         InvalidateRect(hwnd_, nullptr, TRUE);
     }
 
@@ -521,18 +459,16 @@ private:
         ApplyViewMode();
     }
 
-    bool HandleListNotify(NMHDR* header, LRESULT& result) {
-        if (!header || header->hwndFrom != list_) {
-            return false;
-        }
-
-        switch (header->code) {
-        case NM_CLICK:
-            ToggleClickedListItem(reinterpret_cast<NMITEMACTIVATE*>(header));
+    bool HandleListNotify(LPARAM lParam, LRESULT& result) {
+        ThemedTableEvent event{};
+        if (!ThemedUi::DecodeTableEvent(list_, lParam, event)) return false;
+        switch (event.kind) {
+        case ThemedTableEventKind::Click:
+            ToggleClickedListItem(event.point);
             result = 0;
             return true;
-        case LVN_ITEMCHANGED:
-            RefreshSelectedStatusIfCheckChanged(reinterpret_cast<NMLISTVIEW*>(header));
+        case ThemedTableEventKind::CheckChanged:
+            RefreshSelectedStatus();
             result = 0;
             return true;
         default:
@@ -540,64 +476,31 @@ private:
         }
     }
 
-    void ToggleClickedListItem(const NMITEMACTIVATE* activate) {
-        if (!activate) {
+    void ToggleClickedListItem(POINT point) {
+        bool stateIcon = false;
+        const int index = ThemedUi::TableHitTest(
+            list_, point, viewMode_ == ImportViewMode::List, &stateIcon);
+        if (index < 0 || index >= ThemedUi::TableRowCount(list_)) {
             return;
         }
-
-        LVHITTESTINFO hit{};
-        hit.pt = activate->ptAction;
-        int index = viewMode_ == ImportViewMode::List
-            ? ListView_SubItemHitTest(list_, &hit)
-            : ListView_HitTest(list_, &hit);
-        if (viewMode_ == ImportViewMode::List && index < 0 && (hit.flags & LVHT_ONITEMSTATEICON) == 0) {
-            index = HitTestListRow(activate->ptAction);
-        }
-        if (index < 0 || index >= ListView_GetItemCount(list_)) {
-            return;
-        }
-        if ((hit.flags & LVHT_ONITEMSTATEICON) != 0) {
+        if (stateIcon) {
             return;
         }
 
         ToggleItemCheck(index);
     }
 
-    int HitTestListRow(POINT point) const {
-        RECT client{};
-        GetClientRect(list_, &client);
-        if (!PtInRect(&client, point)) {
-            return -1;
-        }
-
-        const int count = ListView_GetItemCount(list_);
-        const int top = std::max(0, ListView_GetTopIndex(list_));
-        const int bottom = std::min(count, top + ListView_GetCountPerPage(list_) + 1);
-        for (int i = top; i < bottom; ++i) {
-            RECT row{};
-            if (!ListView_GetItemRect(list_, i, &row, LVIR_BOUNDS)) {
-                continue;
-            }
-            row.left = client.left;
-            row.right = client.right;
-            if (PtInRect(&row, point)) {
-                return i;
-            }
-        }
-        return -1;
-    }
-
     void ToggleItemCheck(int index) {
-        if (index < 0 || index >= ListView_GetItemCount(list_)) {
+        if (index < 0 || index >= ThemedUi::TableRowCount(list_)) {
             return;
         }
 
-        const bool checked = ListView_GetCheckState(list_, index) != FALSE;
+        const bool checked = ThemedUi::IsTableChecked(list_, index);
         SetItemCheck(index, !checked);
     }
 
     void SetItemCheck(int index, bool checked) {
-        if (index < 0 || index >= ListView_GetItemCount(list_)) {
+        if (index < 0 || index >= ThemedUi::TableRowCount(list_)) {
             return;
         }
 
@@ -607,21 +510,7 @@ private:
         }
 
         const bool canSelect = !items_[itemIndex].duplicate;
-        ListView_SetCheckState(list_, index, checked && canSelect ? TRUE : FALSE);
-    }
-
-    void RefreshSelectedStatusIfCheckChanged(const NMLISTVIEW* changed) {
-        if (!changed || changed->iItem < 0) {
-            return;
-        }
-        if ((changed->uChanged & LVIF_STATE) == 0) {
-            return;
-        }
-        if ((changed->uOldState & LVIS_STATEIMAGEMASK) == (changed->uNewState & LVIS_STATEIMAGEMASK)) {
-            return;
-        }
-
-        RefreshSelectedStatus();
+        ThemedUi::SetTableChecked(list_, index, checked && canSelect);
     }
 
     void RefreshSelectedStatus() {
@@ -632,22 +521,17 @@ private:
         if (!list_) {
             return;
         }
-        DWORD_PTR style = static_cast<DWORD_PTR>(GetWindowLongPtrW(list_, GWL_STYLE));
-        style &= ~LVS_TYPEMASK;
-        style |= viewMode_ == ImportViewMode::List ? LVS_REPORT : LVS_ICON;
-        SetWindowLongPtrW(list_, GWL_STYLE, static_cast<LONG_PTR>(style));
-        ListView_SetView(list_, viewMode_ == ImportViewMode::List ? LV_VIEW_DETAILS : LV_VIEW_ICON);
-        ListView_SetIconSpacing(list_, 96, 72);
-        ThemedControls::SetTabButtonSelected(viewListButton_, viewMode_ == ImportViewMode::List);
-        ThemedControls::SetTabButtonSelected(viewIconButton_, viewMode_ == ImportViewMode::Icon);
+        ThemedUi::SetTableView(list_, viewMode_ == ImportViewMode::List ? ThemedTableView::Details : ThemedTableView::Icons);
+        ThemedUi::SetTableIconSpacing(list_, 96, 72);
+        ThemedUi::SetToolChecked(actionToolbar_, IdViewList, viewMode_ == ImportViewMode::List);
+        ThemedUi::SetToolChecked(actionToolbar_, IdViewIcon, viewMode_ == ImportViewMode::Icon);
         SetWindowPos(list_, nullptr, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
         InvalidateRect(list_, nullptr, TRUE);
     }
 
     void DestroyImageLists() {
         if (list_ && IsWindow(list_)) {
-            ListView_SetImageList(list_, nullptr, LVSIL_SMALL);
-            ListView_SetImageList(list_, nullptr, LVSIL_NORMAL);
+            ThemedUi::SetTableImageLists(list_, nullptr, nullptr);
         }
         if (smallImages_) {
             ImageList_Destroy(smallImages_);
@@ -694,8 +578,7 @@ private:
             itemImageIndexes_.push_back(AddImageForItem(item));
         }
         if (list_) {
-            ListView_SetImageList(list_, smallImages_, LVSIL_SMALL);
-            ListView_SetImageList(list_, mediumImages_, LVSIL_NORMAL);
+            ThemedUi::SetTableImageLists(list_, smallImages_, mediumImages_);
         }
     }
 
@@ -741,25 +624,27 @@ private:
     }
 
     void PopulateList() {
-        ListView_DeleteAllItems(list_);
+        std::vector<ThemedTableRow> rows;
+        rows.reserve(items_.size());
         for (std::size_t i = 0; i < items_.size(); ++i) {
             const auto& item = items_[i];
-            LVITEMW row{};
-            row.mask = LVIF_TEXT | LVIF_PARAM | LVIF_IMAGE;
-            row.iItem = static_cast<int>(i);
-            row.pszText = const_cast<wchar_t*>(item.link.name.c_str());
-            row.lParam = static_cast<LPARAM>(i);
-            row.iImage = i < itemImageIndexes_.size() ? itemImageIndexes_[i] : -1;
-            ListView_InsertItem(list_, &row);
-            ListView_SetItemText(list_, static_cast<int>(i), 1, const_cast<wchar_t*>(TypeText(item.link.type).c_str()));
-            ListView_SetItemText(list_, static_cast<int>(i), 2, const_cast<wchar_t*>(item.link.path.c_str()));
-            ListView_SetItemText(list_, static_cast<int>(i), 3, const_cast<wchar_t*>(item.status.c_str()));
-            ListView_SetCheckState(list_, static_cast<int>(i), item.selected ? TRUE : FALSE);
+            ThemedTableRow row{};
+            row.key = static_cast<std::intptr_t>(i);
+            row.checked = item.selected;
+            row.enabled = !item.duplicate;
+            row.cells = {
+                ThemedTableCell{item.link.name, i < itemImageIndexes_.size() ? itemImageIndexes_[i] : -1},
+                ThemedTableCell{TypeText(item.link.type)},
+                ThemedTableCell{item.link.path},
+                ThemedTableCell{item.status},
+            };
+            rows.push_back(std::move(row));
         }
+        ThemedUi::SetTableRows(list_, rows);
     }
 
     void SetAllChecks(bool checked) {
-        for (int i = 0; i < ListView_GetItemCount(list_); ++i) {
+        for (int i = 0; i < ThemedUi::TableRowCount(list_); ++i) {
             SetItemCheck(i, checked);
         }
         RefreshSelectedStatus();
@@ -767,8 +652,8 @@ private:
 
     int SelectedCount() const {
         int count = 0;
-        for (int i = 0; i < ListView_GetItemCount(list_); ++i) {
-            if (!items_[static_cast<std::size_t>(i)].duplicate && ListView_GetCheckState(list_, i)) {
+        for (int i = 0; i < ThemedUi::TableRowCount(list_); ++i) {
+            if (!items_[static_cast<std::size_t>(i)].duplicate && ThemedUi::IsTableChecked(list_, i)) {
                 ++count;
             }
         }
@@ -777,9 +662,9 @@ private:
 
     void Accept() {
         selectedLinks_.clear();
-        for (int i = 0; i < ListView_GetItemCount(list_); ++i) {
+        for (int i = 0; i < ThemedUi::TableRowCount(list_); ++i) {
             const auto& item = items_[static_cast<std::size_t>(i)];
-            if (!item.duplicate && ListView_GetCheckState(list_, i)) {
+            if (!item.duplicate && ThemedUi::IsTableChecked(list_, i)) {
                 selectedLinks_.push_back(item.link);
             }
         }
@@ -791,17 +676,14 @@ private:
     }
 
     void Paint(HDC dc) {
-        RECT rect{};
-        GetClientRect(hwnd_, &rect);
-        FillRect(dc, &rect, backgroundBrush_ ? backgroundBrush_ : reinterpret_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
-        if (IsWindowVisible(directoryText_)) {
-            ThemedControls::DrawFieldFrame(theme_, dc, directoryFrame_, directoryText_, true);
-        }
-        ThemedControls::DrawListFrame(theme_, dc, listFrame_, list_);
+        windowUi_->DrawRegisteredEditFrames(dc);
+        windowUi_->DrawRegisteredTableFrames(dc);
     }
 
     void Close(bool accepted) {
         accepted_ = accepted;
+        done_ = true;
+        DestroyImageLists();
         DestroyWindow(hwnd_);
     }
 
@@ -822,24 +704,16 @@ private:
     HWND directoryText_ = nullptr;
     HWND pickDirectoryButton_ = nullptr;
     HWND scanButton_ = nullptr;
-    HWND viewListButton_ = nullptr;
-    HWND viewIconButton_ = nullptr;
-    HWND selectAllButton_ = nullptr;
-    HWND selectNoneButton_ = nullptr;
+    HWND actionToolbar_ = nullptr;
     HWND list_ = nullptr;
     HWND status_ = nullptr;
     RECT directoryFrame_{};
     RECT listFrame_{};
     HIMAGELIST smallImages_ = nullptr;
     HIMAGELIST mediumImages_ = nullptr;
-    HFONT font_ = nullptr;
-    bool ownsFont_ = false;
-    HBRUSH backgroundBrush_ = nullptr;
-    HBRUSH comboListBrush_ = nullptr;
+    std::unique_ptr<ThemedWindowUi> windowUi_;
     bool done_ = false;
     bool accepted_ = false;
-    bool ownerWasEnabled_ = true;
-    bool ownerRestored_ = false;
 };
 
 }

@@ -5,6 +5,7 @@
 #include "SimpleDialogs.h"
 #include "ThemedControls.h"
 #include "ThemedUi.h"
+#include "ThemedWindowUi.h"
 #include "TodoSchedule.h"
 #include "Utilities.h"
 
@@ -14,6 +15,7 @@
 #include <commctrl.h>
 #include <cwctype>
 #include <optional>
+#include <memory>
 #include <string>
 #include <vector>
 #include <windowsx.h>
@@ -324,50 +326,35 @@ public:
         : owner_(owner), instance_(instance), theme_(theme), item_(item), draft_(item), isNew_(isNew) {}
 
     bool Run() {
-        WNDCLASSEXW wc{};
-        wc.cbSize = sizeof(wc);
-        wc.lpfnWndProc = DialogWindow::WindowProc;
-        wc.hInstance = instance_;
-        wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-        wc.hIcon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_QUATTRO_APP_ICON));
-        wc.hIconSm = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_QUATTRO_APP_ICON));
-        wc.hbrBackground = nullptr;
-        wc.lpszClassName = L"QuattroTodoEditDialog";
-        if (!RegisterClassExW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
-            return false;
-        }
-
-        const POINT position = CenterWindowOnOwnerMonitor(owner_, kDialogWidth, kDialogHeight);
-        hwnd_ = CreateWindowExW(
-            WS_EX_DLGMODALFRAME | WS_EX_WINDOWEDGE,
-            wc.lpszClassName,
-            isNew_ ? L"新建待办" : L"编辑待办",
-            WS_CAPTION | WS_SYSMENU | WS_POPUP | WS_CLIPCHILDREN | WS_VSCROLL,
-            position.x,
-            position.y,
-            kDialogWidth,
-            kDialogHeight,
-            owner_,
-            nullptr,
-            instance_,
-            this);
+        HICON icon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_QUATTRO_APP_ICON));
+        ThemedWindowCreateOptions options = ThemedWindowUi::DialogOptions(
+            instance_, owner_, L"QuattroTodoEditDialog", isNew_ ? L"新建待办" : L"编辑待办",
+            DialogWindow::WindowProc, this, icon, icon);
+        options.clientWidth = kDialogWidth;
+        options.clientHeight = kDialogHeight;
+        options.style |= WS_VSCROLL;
+        hwnd_ = ThemedWindowUi::CreateWindowHandle(options);
         if (!hwnd_) {
             return false;
         }
 
-        ownerWasEnabled_ = ShowModalWindow(owner_, hwnd_);
+        if (windowUi_) {
+            windowUi_->ShowModal();
+        }
         ShowWindow(hwnd_, SW_SHOW);
         UpdateWindow(hwnd_);
 
         MSG message{};
         while (!done_ && GetMessageW(&message, nullptr, 0, 0) > 0) {
-            if (!IsDialogMessageW(hwnd_, &message)) {
+            if (!ThemedUi::PreTranslateMessage(message) && !IsDialogMessageW(hwnd_, &message)) {
                 TranslateMessage(&message);
                 DispatchMessageW(&message);
             }
         }
 
-        RestoreModalOwner(owner_, ownerWasEnabled_, ownerRestored_);
+        if (windowUi_) {
+            windowUi_->RestoreModalOwner();
+        }
         return accepted_;
     }
 
@@ -448,7 +435,7 @@ private:
         if (!dc) {
             return static_cast<int>(text.size()) * 14;
         }
-        HFONT oldFont = reinterpret_cast<HFONT>(SelectObject(dc, font ? font : font_));
+        HFONT oldFont = reinterpret_cast<HFONT>(SelectObject(dc, font ? font : windowUi_->font()));
         SIZE size{};
         GetTextExtentPoint32W(dc, text.c_str(), static_cast<int>(text.size()), &size);
         SelectObject(dc, oldFont);
@@ -493,30 +480,44 @@ private:
     }
 
     void SetEnabled(HWND hwnd, bool enabled) {
-        if (hwnd) {
-            EnableWindow(hwnd, enabled ? TRUE : FALSE);
-        }
+        windowUi_->ui().SetEnabled(hwnd, enabled);
     }
 
     HWND Label(const wchar_t* text, int x, int y, int width = 180) {
-        return ThemedControls::CreateLabelText(instance_, hwnd_, text, x, y - scrollY_, width, theme_, font_, SS_LEFT);
+        return windowUi_->ui().Label(text, x, y - scrollY_, width);
     }
 
     HWND Text(const wchar_t* text, int x, int y, int width, int height = 20) {
-        return ThemedControls::CreateStaticText(instance_, hwnd_, text, x, y - scrollY_, width, height, font_, SS_LEFT | SS_CENTERIMAGE);
+        (void)height;
+        return windowUi_->ui().Label(text, x, y - scrollY_, width);
+    }
+
+    HWND ErrorText(const wchar_t* text, int x, int y, int width) {
+        return windowUi_->ui().StatusText(
+            text,
+            x,
+            y - scrollY_,
+            width,
+            ThemedStatusTextOptions{ThemedStatusRole::Danger, ThemedTextAlign::Start});
     }
 
     HWND SingleEdit(int id, int x, int y, int width, const std::wstring& value, DWORD extraStyle = ES_AUTOHSCROLL) {
         const int height = ThemedControls::EditFrameHeight(theme_);
         RECT frame{x, y, x + width, y + height};
-        HWND edit = ThemedControls::CreateSingleLineEdit(instance_, hwnd_, id, theme_, Offset(frame), value, editFont_ ? editFont_ : font_, extraStyle);
+        ThemedEditOptions options{};
+        if ((extraStyle & ES_NUMBER) != 0) {
+            options.content = ThemedEditContent::Integer;
+        }
+        HWND edit = windowUi_->ui().Edit(id, Offset(frame), value, options);
         fields_.push_back(FieldFrame{frame, edit, false, false});
         return edit;
     }
 
     HWND MultiEdit(int id, int x, int y, int width, int height, const std::wstring& value) {
         RECT frame{x, y, x + width, y + height};
-        HWND edit = ThemedControls::CreateMultiLineEdit(instance_, hwnd_, id, theme_, Offset(frame), value, editFont_ ? editFont_ : font_);
+        ThemedEditOptions options{};
+        options.mode = ThemedEditMode::MultiLine;
+        HWND edit = windowUi_->ui().Edit(id, Offset(frame), value, options);
         fields_.push_back(FieldFrame{frame, edit, true, false});
         return edit;
     }
@@ -529,21 +530,22 @@ private:
 
     void MoveStatic(HWND hwnd, int x, int y, int width, int height) {
         if (hwnd) {
-            MoveWindow(hwnd, x, y - scrollY_, width, height, TRUE);
+            windowUi_->ui().MoveControl(hwnd, x, y - scrollY_, width);
             ShowWindow(hwnd, IntersectsContentViewport(y, height) ? SW_SHOW : SW_HIDE);
         }
     }
 
     void MoveButton(HWND hwnd, int x, int y, int width, int height) {
         if (hwnd) {
-            MoveWindow(hwnd, x, y - scrollY_, width, height, TRUE);
+            windowUi_->ui().MoveControl(hwnd, x, y - scrollY_, width);
             ShowWindow(hwnd, IntersectsContentViewport(y, height) ? SW_SHOW : SW_HIDE);
         }
     }
 
     void MoveCombo(HWND hwnd, int x, int y, int width, int height) {
         if (hwnd) {
-            MoveWindow(hwnd, x, y - scrollY_, width, height, TRUE);
+            (void)height;
+            windowUi_->ui().MoveComboBox(hwnd, x, y - scrollY_, width);
             ShowWindow(hwnd, IntersectsContentViewport(y, ThemedControls::ComboBoxHeight(theme_)) ? SW_SHOW : SW_HIDE);
         }
     }
@@ -552,8 +554,7 @@ private:
         for (auto& item : fields_) {
             if (item.child == child) {
                 item.rect = frame;
-                const RECT editRect = item.multiLine ? ThemedControls::MultiLineEditRect(theme_, Offset(frame)) : ThemedControls::SingleLineEditRect(theme_, Offset(frame));
-                MoveWindow(child, editRect.left, editRect.top, editRect.right - editRect.left, editRect.bottom - editRect.top, TRUE);
+                windowUi_->MoveEditFrame(child, Offset(frame));
                 ShowWindow(child, IntersectsContentViewport(frame.top, frame.bottom - frame.top) ? SW_SHOW : SW_HIDE);
                 return;
             }
@@ -564,17 +565,18 @@ private:
         for (auto& item : fields_) {
             if (item.child == child) {
                 item.error = error;
+                windowUi_->SetEditError(child, error);
                 break;
             }
         }
     }
 
     void SetTabChecked(HWND hwnd, bool checked) {
-        ThemedControls::SetTabButtonSelected(hwnd, checked);
+        ThemedUi::SetTabSelected(hwnd, checked);
     }
 
     bool IsTabChecked(HWND hwnd) const {
-        return ThemedControls::IsTabButtonSelected(hwnd);
+        return ThemedUi::IsTabSelected(hwnd);
     }
 
     void SetTimeText(int hour, int minute) {
@@ -1031,15 +1033,12 @@ private:
     }
 
     void CreateControls() {
-        font_ = ThemedControls::CreateDialogFont();
-        editFont_ = ThemedControls::CreateEditFont(theme_);
-        backgroundBrush_ = CreateSolidBrush(ColorFor(L"dialog", L"normal", L"bg"));
-        editBrush_ = CreateSolidBrush(ColorFor(L"edit", L"normal", L"bg"));
+        const ThemedUi ui = windowUi_->ui();
 
         titleLabel_ = Label(L"待办标题 *", 0, 0, TextControlWidth(L"待办标题 *"));
         titleEdit_ = SingleEdit(IdTitle, 0, 0, 1, draft_.title);
         SendMessageW(titleEdit_, EM_SETCUEBANNER, FALSE, reinterpret_cast<LPARAM>(L"请输入待办标题..."));
-        titleErrorText_ = Text(L"", 0, 0, 1, StaticTextHeight());
+        titleErrorText_ = ErrorText(L"", 0, 0, 1);
 
         contentLabel_ = Label(L"备注说明", 0, 0, TextControlWidth(L"备注说明"));
         contentEdit_ = MultiEdit(IdContent, 0, 0, 1, ThemedControls::EditFrameHeight(theme_) + StaticTextHeight() + RowGap(), draft_.content);
@@ -1048,7 +1047,6 @@ private:
         timeLabel_ = Text(L"时间", 0, 0, TextControlWidth(L"时间"), StaticTextHeight());
         timeEdit_ = SingleEdit(IdTime, 260, 0, 78, L"00:00");
 
-        const ThemedUi ui(instance_, hwnd_, theme_, font_, DialogLayoutKind::Standard, kDialogWidth, kDialogHeight);
         repeatNone_ = ui.TabButton(IdRepeatNone, L"不重复", 0, 0, TabWidth(L"不重复"), false);
         repeatDaily_ = ui.TabButton(IdRepeatDaily, L"每天", 0, 0, TabWidth(L"每天"), false);
         repeatWorkday_ = ui.TabButton(IdRepeatWorkday, L"工作日", 0, 0, TabWidth(L"工作日"), false);
@@ -1066,9 +1064,9 @@ private:
         monthlyDayLabel_ = Text(L"号", 0, 0, TextControlWidth(L"号"), StaticTextHeight());
         customPrefix_ = Text(L"每", 0, 0, TextControlWidth(L"每"), StaticTextHeight());
         customIntervalEdit_ = SingleEdit(IdCustomInterval, 0, 0, ThemedControls::EditFrameHeight(theme_) + ThemedControls::EditPaddingX(theme_) * 2, L"1", ES_NUMBER);
-        customUnitCombo_ = ThemedControls::CreateComboBox(instance_, hwnd_, IdCustomUnit, 0, 0, ComboBoxWidth(L"天"), ThemedControls::ComboBoxDropdownHeight(theme_), font_, theme_);
+        customUnitCombo_ = ui.ComboBox(IdCustomUnit, 0, 0, ComboBoxWidth(L"天"));
         customSuffix_ = Text(L"重复", 0, 0, TextControlWidth(L"重复"), StaticTextHeight());
-        repeatErrorText_ = Text(L"", 0, 0, 1, StaticTextHeight());
+        repeatErrorText_ = ErrorText(L"", 0, 0, 1);
 
         advancedButton_ = ui.Button(IdAdvancedToggle, L"高级设置 ▼", 0, 0, ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Fixed, ButtonWidth(L"高级设置 ▼"));
         endNeverButton_ = ui.TabButton(IdEndNever, L"永不结束", 0, 0, TabWidth(L"永不结束"), false);
@@ -1253,8 +1251,8 @@ private:
         const int y = ClientHeight() - footerHeight + (footerHeight - buttonHeight) / 2;
         const int okWidth = ButtonWidth(isNew_ ? L"保存待办" : L"保存");
         const int cancelWidth = ButtonWidth(L"取消");
-        MoveWindow(okButton_, DrawerWidth() - insetX - okWidth, y, okWidth, buttonHeight, TRUE);
-        MoveWindow(cancelButton_, DrawerWidth() - insetX - okWidth - itemGap - cancelWidth, y, cancelWidth, buttonHeight, TRUE);
+        windowUi_->ui().MoveControl(okButton_, DrawerWidth() - insetX - okWidth, y, okWidth);
+        windowUi_->ui().MoveControl(cancelButton_, DrawerWidth() - insetX - okWidth - itemGap - cancelWidth, y, cancelWidth);
     }
 
     void UpdateScrollBar() {
@@ -1328,7 +1326,7 @@ private:
     void DrawTextIn(HDC dc, const std::wstring& text, RECT rect, COLORREF color, UINT format, HFONT font = nullptr) {
         SetBkMode(dc, TRANSPARENT);
         SetTextColor(dc, color);
-        HFONT oldFont = reinterpret_cast<HFONT>(SelectObject(dc, font ? font : font_));
+        HFONT oldFont = reinterpret_cast<HFONT>(SelectObject(dc, font ? font : windowUi_->font()));
         DrawTextW(dc, text.c_str(), static_cast<int>(text.size()), &rect, format);
         SelectObject(dc, oldFont);
     }
@@ -1642,13 +1640,8 @@ private:
     void Paint(HDC dc) {
         RECT client{};
         GetClientRect(hwnd_, &client);
-        FillRect(dc, &client, backgroundBrush_ ? backgroundBrush_ : reinterpret_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
-
-        for (const auto& frame : fields_) {
-            if (frame.child && IsWindowVisible(frame.child)) {
-                ThemedControls::DrawFieldFrame(theme_, dc, Offset(frame.rect), frame.child, false, frame.error);
-            }
-        }
+        windowUi_->FillBackground(dc);
+        windowUi_->DrawRegisteredEditFrames(dc);
 
         RECT reminder = Offset(reminderRect_);
         const int textHeight = StaticTextHeight();
@@ -1672,8 +1665,14 @@ private:
     }
 
     LRESULT Handle(UINT message, WPARAM wParam, LPARAM lParam) {
+        LRESULT commonResult = 0;
+        if (ThemedWindowUi::HandleCommonMessage(windowUi_, message, wParam, lParam, commonResult)) {
+            return commonResult;
+        }
         switch (message) {
         case WM_CREATE:
+            windowUi_ = std::make_unique<ThemedWindowUi>(
+                instance_, owner_, hwnd_, theme_, DialogLayoutKind::Standard, kDialogWidth, kDialogHeight);
             CreateControls();
             Layout();
             return 0;
@@ -1759,30 +1758,6 @@ private:
             EndPaint(hwnd_, &ps);
             return 0;
         }
-        case WM_ERASEBKGND:
-            return 1;
-        case WM_CTLCOLOREDIT: {
-            HDC dc = reinterpret_cast<HDC>(wParam);
-            HWND child = reinterpret_cast<HWND>(lParam);
-            SetTextColor(dc, ColorFor(L"edit", IsWindowEnabled(child) ? L"normal" : L"disabled", L"text"));
-            SetBkColor(dc, ColorFor(L"edit", IsWindowEnabled(child) ? L"normal" : L"disabled", L"bg"));
-            return reinterpret_cast<LRESULT>(editBrush_ ? editBrush_ : GetStockObject(WHITE_BRUSH));
-        }
-        case WM_CTLCOLORSTATIC:
-        case WM_CTLCOLORLISTBOX:
-        case WM_CTLCOLORBTN: {
-            HDC dc = reinterpret_cast<HDC>(wParam);
-            HWND child = reinterpret_cast<HWND>(lParam);
-            SetBkMode(dc, TRANSPARENT);
-            const bool dangerText = child == titleErrorText_ || child == repeatErrorText_;
-            SetTextColor(dc, dangerText ? ColorFor(L"text", L"danger", L"text") : ColorFor(L"label", IsWindowEnabled(child) ? L"normal" : L"disabled", L"text"));
-            return reinterpret_cast<LRESULT>(backgroundBrush_ ? backgroundBrush_ : GetStockObject(WHITE_BRUSH));
-        }
-        case WM_DRAWITEM:
-            if (ThemedControls::Draw(theme_, reinterpret_cast<const DRAWITEMSTRUCT*>(lParam))) {
-                return TRUE;
-            }
-            return 0;
         case WM_KEYDOWN:
             if (calendarFocused_ && HandleCalendarKey(wParam)) {
                 return 0;
@@ -1843,26 +1818,6 @@ private:
                 DestroyWindow(hwnd_);
             }
             return 0;
-        case WM_DESTROY:
-            done_ = true;
-            RestoreModalOwner(owner_, ownerWasEnabled_, ownerRestored_);
-            if (font_) {
-                DeleteObject(font_);
-                font_ = nullptr;
-            }
-            if (editFont_) {
-                DeleteObject(editFont_);
-                editFont_ = nullptr;
-            }
-            if (backgroundBrush_) {
-                DeleteObject(backgroundBrush_);
-                backgroundBrush_ = nullptr;
-            }
-            if (editBrush_) {
-                DeleteObject(editBrush_);
-                editBrush_ = nullptr;
-            }
-            return 0;
         default:
             return DefWindowProcW(hwnd_, message, wParam, lParam);
         }
@@ -1900,10 +1855,7 @@ private:
     HWND endCountEdit_ = nullptr;
     HWND okButton_ = nullptr;
     HWND cancelButton_ = nullptr;
-    HFONT font_ = nullptr;
-    HFONT editFont_ = nullptr;
-    HBRUSH backgroundBrush_ = nullptr;
-    HBRUSH editBrush_ = nullptr;
+    std::unique_ptr<ThemedWindowUi> windowUi_;
     const Theme& theme_;
     TodoItem& item_;
     TodoItem draft_;
@@ -1928,8 +1880,6 @@ private:
     CalendarPickerMode calendarPickerMode_ = CalendarPickerMode::Day;
     bool calendarFocused_ = false;
     bool advancedExpanded_ = false;
-    bool ownerWasEnabled_ = false;
-    bool ownerRestored_ = false;
     bool initialized_ = false;
     bool accepted_ = false;
     bool done_ = false;

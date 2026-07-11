@@ -18,6 +18,13 @@ if(CURL_FOUND)
     set(QUATTRO_WITH_CURL ON)
 endif()
 
+add_custom_target(QuattroThemeFacadeLint
+    COMMAND ${CMAKE_COMMAND}
+        -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/src/theme/ThemeFacadeLint.cmake
+    VERBATIM
+)
+
 set(QUATTRO_WITH_HTTPLIB OFF)
 if(httplib_FOUND)
     set(QUATTRO_WITH_HTTPLIB ON)
@@ -254,6 +261,7 @@ add_executable(QuattroTests
     src/services/SystemFunctions.cpp
     src/theme/Theme.cpp
     src/theme/ThemedControls.cpp
+    src/theme/ThemedUi.cpp
     src/domain/TodoSchedule.cpp
     src/services/UpdateCheckService.cpp
     src/common/Utilities.cpp
@@ -303,6 +311,7 @@ add_executable(QuattroThemeStateProbe
     tests/ThemeStateProbe.cpp
     src/theme/Theme.cpp
     src/theme/ThemedControls.cpp
+    src/theme/ThemedUi.cpp
     src/common/Utilities.cpp
 )
 
@@ -515,6 +524,7 @@ target_link_libraries(QuattroTests PRIVATE
     comctl32
     gdi32
     ole32
+    rstrtmgr
     shell32
     shlwapi
     user32
@@ -571,6 +581,7 @@ target_link_libraries(QuattroUiScreenshotAcceptance PRIVATE
     gdi32
     iphlpapi
     ole32
+    rstrtmgr
     shell32
     shlwapi
     user32
@@ -766,6 +777,7 @@ target_link_libraries(QuattroSettingsHttpButtonsAcceptance PRIVATE
     gdi32
     iphlpapi
     ole32
+    rstrtmgr
     shell32
     shlwapi
     user32
@@ -832,3 +844,9 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/theme")
         COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/theme" "$<TARGET_FILE_DIR:Quattro>/theme"
     )
 endif()
+
+foreach(TARGET_NAME Quattro QuattroTests QuattroUiScreenshotAcceptance)
+    if(TARGET ${TARGET_NAME})
+        add_dependencies(${TARGET_NAME} QuattroThemeFacadeLint)
+    endif()
+endforeach()

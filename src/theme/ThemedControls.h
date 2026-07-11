@@ -3,9 +3,12 @@
 #include "Theme.h"
 
 #include <string>
+#include <vector>
 #include <windows.h>
 
 namespace ThemedControls {
+
+constexpr UINT WM_HOTKEY_CAPTURED = WM_APP + 0x361;
 
 HWND CreateButton(
     HINSTANCE instance,
@@ -32,6 +35,7 @@ HWND CreatePrimaryButton(
     bool defaultButton = true);
 
 void SetControlTheme(HWND hwnd, const Theme& theme);
+bool IsControlHovered(HWND hwnd);
 
 HWND CreateMiniButton(
     HINSTANCE instance,
@@ -55,6 +59,70 @@ HWND CreateCheckBox(
     int height,
     HFONT font,
     bool checked);
+
+HWND CreateToggle(
+    HINSTANCE instance,
+    HWND parent,
+    int id,
+    const wchar_t* text,
+    int x,
+    int y,
+    int width,
+    HFONT font,
+    const Theme& theme,
+    bool checked);
+
+HWND CreateRadioButton(
+    HINSTANCE instance,
+    HWND parent,
+    int id,
+    const wchar_t* text,
+    int x,
+    int y,
+    int width,
+    HFONT font,
+    const Theme& theme,
+    int group,
+    bool checked);
+
+HWND CreateHotKeyCapture(
+    HINSTANCE instance,
+    HWND parent,
+    int id,
+    const wchar_t* text,
+    int x,
+    int y,
+    int width,
+    HFONT font,
+    const Theme& theme);
+
+HWND CreateLinkText(
+    HINSTANCE instance,
+    HWND parent,
+    int id,
+    const wchar_t* text,
+    int x,
+    int y,
+    int width,
+    int height,
+    HFONT font,
+    const Theme& theme,
+    const wchar_t* role,
+    bool visited,
+    DWORD style);
+void SetLinkRole(HWND hwnd, const wchar_t* role);
+void SetLinkVisited(HWND hwnd, bool visited);
+
+HWND CreateGroupBox(
+    HINSTANCE instance, HWND parent, int id, const wchar_t* title,
+    RECT frame, HFONT font, const Theme& theme, bool raised);
+HWND CreateTabControlFrame(
+    HINSTANCE instance, HWND parent, int id, RECT frame, HFONT font, const Theme& theme);
+HWND CreateToolBarFrame(
+    HINSTANCE instance, HWND parent, int id, RECT frame, HFONT font, const Theme& theme);
+RECT GroupBoxContentRect(HWND hwnd);
+HWND CreateSeparator(
+    HINSTANCE instance, HWND parent, RECT frame, const Theme& theme, bool vertical);
 
 void SetControlBackgroundComponent(HWND hwnd, const wchar_t* component);
 void SetControlMultiline(HWND hwnd, bool multiline);
@@ -172,6 +240,8 @@ void DrawMiniButtonFrame(
     bool focused = false,
     bool disabled = false);
 int CheckBoxHeight(const Theme& theme);
+int ToggleHeight(const Theme& theme);
+int RadioButtonHeight(const Theme& theme);
 RECT CheckBoxBoxRect(const Theme& theme, RECT frame);
 RECT CheckBoxTextRect(const Theme& theme, RECT frame);
 int TabButtonHeight(const Theme& theme);
@@ -197,6 +267,7 @@ int EditFontSizePx(const Theme& theme);
 RECT SingleLineEditRect(const Theme& theme, RECT frame);
 RECT SingleLineEditRectForFrame(const Theme& theme, RECT frame);
 RECT MultiLineEditRect(const Theme& theme, RECT frame);
+void ConfigureEditBehavior(HWND hwnd, bool selectAllOnFocus);
 
 HWND CreateSingleLineEdit(
     HINSTANCE instance,
@@ -240,7 +311,31 @@ HWND CreateProgressBar(
 void SetProgressBarValue(HWND hwnd, double value, bool indeterminate = false);
 int ProgressBarHeight(const Theme& theme);
 
+HWND CreateSlider(
+    HINSTANCE instance,
+    HWND parent,
+    int id,
+    const Theme& theme,
+    int x,
+    int y,
+    int width,
+    double minimum,
+    double maximum,
+    double step,
+    double value);
+void SetSliderValue(HWND hwnd, double value, bool notify = false);
+double SliderValue(HWND hwnd);
+int SliderHeight(const Theme& theme);
+
 void DrawFieldFrame(
+    const Theme& theme,
+    HDC dc,
+    RECT rect,
+    HWND child,
+    bool readOnly = false,
+    bool error = false);
+
+void DrawEditFrame(
     const Theme& theme,
     HDC dc,
     RECT rect,
@@ -266,8 +361,23 @@ void DrawPanelFrame(
     HDC dc,
     RECT rect,
     bool raised = false);
+HWND CreatePanel(
+    HINSTANCE instance,
+    HWND parent,
+    int id,
+    RECT frame,
+    HFONT font,
+    const Theme& theme,
+    const wchar_t* role = L"normal",
+    bool scrollable = false);
+RECT PanelContentRect(HWND hwnd);
+void SetPanelRole(HWND hwnd, const wchar_t* role);
 
 void ApplyListViewTheme(HWND list, const Theme& theme);
+void RegisterTable(HWND table, const Theme& theme);
+void ConfigureTableColumns(HWND table, const std::vector<int>& widthModes);
+void SetTableRowEnabledStates(HWND table, const std::vector<bool>& enabled);
+bool IsTableRowEnabled(HWND table, int index);
 bool Draw(const Theme& theme, const DRAWITEMSTRUCT* draw);
 bool HandleListViewCustomDraw(const Theme& theme, LPARAM lParam, LRESULT& result);
 

@@ -6,6 +6,7 @@
 #include "SimpleDialogs.h"
 #include "ThemedControls.h"
 #include "ThemedUi.h"
+#include "ThemedWindowUi.h"
 #include "Utilities.h"
 
 #include <commctrl.h>
@@ -13,7 +14,7 @@
 
 #include <algorithm>
 #include <utility>
-#include <vector>
+#include <memory>
 
 namespace {
 #define MessageBoxW(owner, message, title, flags) ShowThemedMessageBox((owner), instance_, theme_, (message), (title), (flags))
@@ -37,17 +38,6 @@ std::wstring GetWindowTextString(HWND hwnd) {
     }
     text.resize(static_cast<std::size_t>(length));
     return text;
-}
-
-float ClampFloat(float value, float minValue, float maxValue) {
-    return std::max(minValue, std::min(maxValue, value));
-}
-
-COLORREF ToColorRef(Color color) {
-    const auto byte = [](float value) -> BYTE {
-        return static_cast<BYTE>(ClampFloat(value, 0.0f, 1.0f) * 255.0f + 0.5f);
-    };
-    return RGB(byte(color.r), byte(color.g), byte(color.b));
 }
 
 std::wstring UrlHostOrText(const std::wstring& value) {
@@ -82,49 +72,34 @@ public:
         : owner_(owner), instance_(instance), theme_(theme), link_(link), isNew_(isNew) {}
 
     bool Run() {
-        WNDCLASSEXW wc{};
-        wc.cbSize = sizeof(wc);
-        wc.lpfnWndProc = DialogWindow::WindowProc;
-        wc.hInstance = instance_;
-        wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-        wc.hIcon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_QUATTRO_APP_ICON));
-        wc.hIconSm = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_QUATTRO_APP_ICON));
-        wc.hbrBackground = nullptr;
-        wc.lpszClassName = L"QuattroUrlEditDialog";
-        RegisterClassExW(&wc);
-
-        const POINT position = CenterWindowOnOwnerMonitor(owner_, kDialogWidth, kDialogHeight);
-
-        hwnd_ = CreateWindowExW(
-            WS_EX_DLGMODALFRAME | WS_EX_WINDOWEDGE,
-            wc.lpszClassName,
-            isNew_ ? L"添加网址" : L"编辑<超链接>",
-            WS_CAPTION | WS_SYSMENU | WS_POPUP | WS_CLIPCHILDREN,
-            position.x,
-            position.y,
-            kDialogWidth,
-            kDialogHeight,
-            owner_,
-            nullptr,
-            instance_,
-            this);
+        HICON icon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_QUATTRO_APP_ICON));
+        ThemedWindowCreateOptions options = ThemedWindowUi::DialogOptions(
+            instance_, owner_, L"QuattroUrlEditDialog",
+            isNew_ ? L"添加网址" : L"编辑<超链接>", DialogWindow::WindowProc, this, icon, icon);
+        options.clientWidth = kDialogWidth;
+        options.clientHeight = kDialogHeight;
+        hwnd_ = ThemedWindowUi::CreateWindowHandle(options);
         if (!hwnd_) {
             return false;
         }
 
-        ownerWasEnabled_ = ShowModalWindow(owner_, hwnd_);
+        if (windowUi_) {
+            windowUi_->ShowModal();
+        }
         UpdateWindow(hwnd_);
         RedrawWindow(hwnd_, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
 
         MSG message{};
         while (!done_ && GetMessageW(&message, nullptr, 0, 0) > 0) {
-            if (!IsDialogMessageW(hwnd_, &message)) {
+            if (!ThemedUi::PreTranslateMessage(message) && !IsDialogMessageW(hwnd_, &message)) {
                 TranslateMessage(&message);
                 DispatchMessageW(&message);
             }
         }
 
-        RestoreModalOwner(owner_, ownerWasEnabled_, ownerRestored_);
+        if (windowUi_) {
+            windowUi_->RestoreModalOwner();
+        }
         return accepted_;
     }
 
@@ -143,42 +118,27 @@ private:
     }
 
     LRESULT HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
+        LRESULT commonResult = 0;
+        if (ThemedWindowUi::HandleCommonMessage(windowUi_, message, wParam, lParam, commonResult)) {
+            return commonResult;
+        }
         switch (message) {
         case WM_CREATE:
+            windowUi_ = std::make_unique<ThemedWindowUi>(
+                instance_, owner_, hwnd_, theme_, DialogLayoutKind::Standard, kDialogWidth, kDialogHeight);
             CreateControls();
             return 0;
         case WM_PAINT: {
             PAINTSTRUCT ps{};
             HDC dc = BeginPaint(hwnd_, &ps);
-            PaintBackground(dc);
-            PaintFields(dc);
+            windowUi_->DrawRegisteredEditFrames(dc);
             EndPaint(hwnd_, &ps);
             return 0;
         }
         case WM_PRINTCLIENT:
-            PaintBackground(reinterpret_cast<HDC>(wParam));
-            PaintFields(reinterpret_cast<HDC>(wParam));
+            windowUi_->DrawRegisteredEditFrames(reinterpret_cast<HDC>(wParam));
             return 0;
-        case WM_CTLCOLORSTATIC:
-            SetBkMode(reinterpret_cast<HDC>(wParam), TRANSPARENT);
-            SetTextColor(reinterpret_cast<HDC>(wParam), ToColorRef(theme_.color(L"label", L"normal", L"text")));
-            return reinterpret_cast<LRESULT>(backgroundBrush_ ? backgroundBrush_ : GetStockObject(WHITE_BRUSH));
-        case WM_CTLCOLOREDIT:
-            SetBkColor(reinterpret_cast<HDC>(wParam), ToColorRef(theme_.color(L"edit", L"normal", L"bg")));
-            SetTextColor(reinterpret_cast<HDC>(wParam), ToColorRef(theme_.color(L"edit", L"normal", L"text")));
-            return reinterpret_cast<LRESULT>(fieldBrush_ ? fieldBrush_ : GetStockObject(WHITE_BRUSH));
-        case WM_DRAWITEM:
-            if (ThemedControls::Draw(theme_, reinterpret_cast<const DRAWITEMSTRUCT*>(lParam))) {
-                return TRUE;
-            }
-            return 0;
-        case WM_ERASEBKGND: {
-            return 1;
-        }
         case WM_COMMAND:
-            if (HIWORD(wParam) == EN_SETFOCUS || HIWORD(wParam) == EN_KILLFOCUS) {
-                InvalidateField(reinterpret_cast<HWND>(lParam));
-            }
             if (LOWORD(wParam) == IdOk) {
                 Accept();
                 return 0;
@@ -191,58 +151,25 @@ private:
         case WM_CLOSE:
             Close(false);
             return 0;
-        case WM_DESTROY:
-            RestoreModalOwner(owner_, ownerWasEnabled_, ownerRestored_);
-            if (font_ && ownsFont_) {
-                DeleteObject(font_);
-            }
-            if (editFont_) {
-                DeleteObject(editFont_);
-                editFont_ = nullptr;
-            }
-            if (backgroundBrush_) {
-                DeleteObject(backgroundBrush_);
-            }
-            if (fieldBrush_) {
-                DeleteObject(fieldBrush_);
-            }
-            done_ = true;
-            return 0;
         default:
             return DefWindowProcW(hwnd_, message, wParam, lParam);
         }
     }
 
-    struct FieldFrame {
-        RECT rect{};
-        HWND child = nullptr;
-    };
-
     HWND Label(const wchar_t* text, int x, int y, int width) {
-        return ThemedControls::CreateLabelText(instance_, hwnd_, text, x, y + 7, width, theme_, editFont_ ? editFont_ : font_, SS_LEFT);
+        return windowUi_->ui().Label(text, x, y + 7, width);
     }
 
-    HWND Edit(int id, int x, int y, int width, const std::wstring& value, DWORD extraStyle = ES_AUTOHSCROLL) {
-        const int height = extraStyle & ES_MULTILINE ? ThemedControls::EditFrameHeight(theme_) * 2 + 14 : FieldHeight();
-        const RECT frame{x, y, x + width, y + height};
-        HWND hwnd = (extraStyle & ES_MULTILINE)
-            ? ThemedControls::CreateMultiLineEdit(instance_, hwnd_, id, theme_, frame, value, font_, extraStyle)
-            : ThemedControls::CreateSingleLineEdit(instance_, hwnd_, id, theme_, frame, value, editFont_ ? editFont_ : font_, extraStyle);
-        fieldFrames_.push_back(FieldFrame{frame, hwnd});
-        return hwnd;
+    HWND Edit(int id, int x, int y, int width, const std::wstring& value, ThemedEditMode mode = ThemedEditMode::SingleLine) {
+        const ThemedUi ui = windowUi_->ui();
+        ThemedEditOptions options{};
+        options.mode = mode;
+        return ui.Edit(id, ui.editFrame(x, y, width, mode), value, options);
     }
 
     void CreateControls() {
-        backgroundBrush_ = CreateSolidBrush(ToColorRef(theme_.color(L"dialog", L"normal", L"bg")));
-        fieldBrush_ = CreateSolidBrush(ToColorRef(theme_.color(L"edit", L"normal", L"bg")));
-        font_ = ThemedControls::CreateDialogFont();
-        ownsFont_ = font_ != nullptr;
-        if (!font_) {
-            font_ = reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
-        }
-        editFont_ = ThemedControls::CreateEditFont(theme_);
-
         const DialogLayoutMetrics layout = GetDialogLayoutMetrics(theme_, DialogLayoutKind::Standard);
+        const ThemedUi ui = windowUi_->ui();
         const int rowStep = layout.RowStep(FieldHeight());
         const int fieldWidth = kDialogWidth - layout.fieldX - layout.contentInsetX;
         int y = layout.contentInsetY;
@@ -255,10 +182,9 @@ private:
 
         y += rowStep;
         Label(L"备注", layout.contentInsetX, y, layout.labelWidth);
-        remarkEdit_ = Edit(IdRemark, layout.fieldX, y, fieldWidth, link_.remark, ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL);
+        remarkEdit_ = Edit(IdRemark, layout.fieldX, y, fieldWidth, link_.remark, ThemedEditMode::MultiLine);
 
-        const int footerY = layout.FooterY(y + FieldHeight() * 2 + 14);
-        const ThemedUi ui(instance_, hwnd_, theme_, font_, DialogLayoutKind::Standard, kDialogWidth, kDialogHeight);
+        const int footerY = layout.FooterY(y + ui.editHeight(ThemedEditMode::MultiLine));
         ui.Button(IdOk, L"确定", layout.FooterButtonX(kDialogWidth, 0, 2), footerY,
                   ThemedButtonRole::Primary, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, layout.footerButtonWidth, true);
         ui.Button(IdCancel, L"取消", layout.FooterButtonX(kDialogWidth, 1, 2), footerY,
@@ -267,31 +193,6 @@ private:
 
     int FieldHeight() const {
         return ThemedControls::EditFrameHeight(theme_);
-    }
-
-    int ButtonHeight() const {
-        return ThemedControls::ButtonHeight(theme_);
-    }
-
-    void PaintBackground(HDC dc) {
-        RECT rect{};
-        GetClientRect(hwnd_, &rect);
-        FillRect(dc, &rect, backgroundBrush_ ? backgroundBrush_ : reinterpret_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
-    }
-
-    void PaintFields(HDC dc) {
-        for (const auto& frame : fieldFrames_) {
-            ThemedControls::DrawFieldFrame(theme_, dc, frame.rect, frame.child);
-        }
-    }
-
-    void InvalidateField(HWND child) {
-        for (const auto& frame : fieldFrames_) {
-            if (frame.child == child) {
-                InvalidateRect(hwnd_, &frame.rect, TRUE);
-                return;
-            }
-        }
     }
 
     void Accept() {
@@ -341,16 +242,9 @@ private:
     const Theme& theme_;
     Link& link_;
     bool isNew_ = false;
-    bool ownerWasEnabled_ = false;
-    bool ownerRestored_ = false;
     bool done_ = false;
     bool accepted_ = false;
-    HFONT font_ = nullptr;
-    HFONT editFont_ = nullptr;
-    bool ownsFont_ = false;
-    HBRUSH backgroundBrush_ = nullptr;
-    HBRUSH fieldBrush_ = nullptr;
-    std::vector<FieldFrame> fieldFrames_;
+    std::unique_ptr<ThemedWindowUi> windowUi_;
     HWND nameEdit_ = nullptr;
     HWND urlEdit_ = nullptr;
     HWND remarkEdit_ = nullptr;

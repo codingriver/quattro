@@ -30,6 +30,7 @@ bool IsAllowedComponent(const std::wstring& component) {
         L"label",
         L"panel",
         L"field",
+        L"link",
         L"linkItem",
         L"iconFallback",
         L"scrollbar",
@@ -48,6 +49,12 @@ bool IsAllowedComponent(const std::wstring& component) {
         L"radio",
         L"list",
         L"listItem",
+        L"table",
+        L"tableHeader",
+        L"tabControl",
+        L"toolbar",
+        L"toolbarItem",
+        L"groupBox",
         L"slider",
         L"progressBar",
         L"tooltip",
@@ -340,6 +347,16 @@ void Theme::SetDefaults() {
     PutState(L"panel", L"normal", L"border", palette_[L"line"]);
     PutState(L"panel", L"raised", L"bg", palette_[L"surfaceRaised"]);
     PutState(L"panel", L"raised", L"border", palette_[L"border"]);
+    PutState(L"panel", L"subtle", L"bg", palette_[L"background"]);
+    PutState(L"panel", L"subtle", L"border", palette_[L"line"]);
+    PutState(L"panel", L"inset", L"bg", palette_[L"surface"]);
+    PutState(L"panel", L"inset", L"border", palette_[L"border"]);
+    PutState(L"panel", L"warning", L"bg", palette_[L"warningSoft"]);
+    PutState(L"panel", L"warning", L"border", palette_[L"warning"]);
+    PutState(L"panel", L"danger", L"bg", palette_[L"dangerSoft"]);
+    PutState(L"panel", L"danger", L"border", palette_[L"danger"]);
+    PutState(L"panel", L"disabled", L"bg", palette_[L"background"]);
+    PutState(L"panel", L"disabled", L"border", palette_[L"line"]);
     PutState(L"field", L"normal", L"bg", palette_[L"surface"]);
     PutState(L"field", L"normal", L"text", palette_[L"text"]);
     PutState(L"field", L"normal", L"border", palette_[L"border"]);
@@ -501,16 +518,28 @@ void Theme::SetDefaults() {
     PutState(L"checkbox", L"disabled", L"border", palette_[L"line"]);
     PutState(L"toggle", L"normal", L"track", palette_[L"border"]);
     PutState(L"toggle", L"normal", L"thumb", palette_[L"surface"]);
+    PutState(L"toggle", L"normal", L"text", palette_[L"text"]);
     PutState(L"toggle", L"checked", L"track", palette_[L"accent"]);
     PutState(L"toggle", L"checked", L"thumb", palette_[L"surface"]);
+    PutState(L"toggle", L"checked", L"text", palette_[L"text"]);
+    PutState(L"toggle", L"hover", L"track", palette_[L"focus"]);
+    PutState(L"toggle", L"hover", L"thumb", palette_[L"surface"]);
+    PutState(L"toggle", L"hover", L"text", palette_[L"text"]);
     PutState(L"toggle", L"disabled", L"track", palette_[L"line"]);
     PutState(L"toggle", L"disabled", L"thumb", palette_[L"surfaceRaised"]);
+    PutState(L"toggle", L"disabled", L"text", palette_[L"disabledText"]);
     PutState(L"radio", L"normal", L"text", palette_[L"text"]);
     PutState(L"radio", L"normal", L"dot", palette_[L"surface"]);
     PutState(L"radio", L"normal", L"border", palette_[L"border"]);
+    PutState(L"radio", L"hover", L"text", palette_[L"text"]);
+    PutState(L"radio", L"hover", L"dot", palette_[L"hover"]);
+    PutState(L"radio", L"hover", L"border", palette_[L"accent"]);
     PutState(L"radio", L"checked", L"text", palette_[L"text"]);
-    PutState(L"radio", L"checked", L"dot", palette_[L"accent"]);
+    PutState(L"radio", L"checked", L"dot", palette_[L"surface"]);
     PutState(L"radio", L"checked", L"border", palette_[L"accent"]);
+    PutState(L"radio", L"disabled", L"text", palette_[L"disabledText"]);
+    PutState(L"radio", L"disabled", L"dot", palette_[L"surfaceRaised"]);
+    PutState(L"radio", L"disabled", L"border", palette_[L"line"]);
     PutState(L"list", L"normal", L"bg", palette_[L"surface"]);
     PutState(L"list", L"normal", L"text", palette_[L"text"]);
     PutState(L"list", L"normal", L"border", palette_[L"border"]);
@@ -520,10 +549,61 @@ void Theme::SetDefaults() {
     PutState(L"listItem", L"hover", L"bg", palette_[L"hover"]);
     PutState(L"listItem", L"selected", L"bg", palette_[L"selected"]);
     PutState(L"listItem", L"selected", L"text", palette_[L"text"]);
+    PutState(L"table", L"normal", L"bg", palette_[L"surface"]);
+    PutState(L"table", L"normal", L"text", palette_[L"text"]);
+    PutState(L"table", L"normal", L"border", palette_[L"border"]);
+    PutState(L"table", L"focused", L"border", palette_[L"focus"]);
+    PutState(L"table", L"disabled", L"bg", palette_[L"background"]);
+    PutState(L"table", L"disabled", L"text", palette_[L"disabledText"]);
+    PutState(L"tableHeader", L"normal", L"bg", palette_[L"surfaceRaised"]);
+    PutState(L"tableHeader", L"normal", L"text", palette_[L"text"]);
+    PutState(L"tableHeader", L"normal", L"border", palette_[L"line"]);
+    PutState(L"link", L"normal", L"text", palette_[L"accent"]);
+    PutState(L"link", L"external", L"text", palette_[L"accent"]);
+    PutState(L"link", L"muted", L"text", palette_[L"mutedText"]);
+    PutState(L"link", L"danger", L"text", palette_[L"danger"]);
+    PutState(L"link", L"hover", L"text", palette_[L"focus"]);
+    PutState(L"link", L"pressed", L"text", palette_[L"accent"]);
+    PutState(L"link", L"focused", L"text", palette_[L"accent"]);
+    PutState(L"link", L"visited", L"text", palette_[L"mutedText"]);
+    PutState(L"link", L"disabled", L"text", palette_[L"disabledText"]);
+    PutState(L"groupBox", L"normal", L"bg", palette_[L"surface"]);
+    PutState(L"groupBox", L"normal", L"text", palette_[L"text"]);
+    PutState(L"groupBox", L"normal", L"border", palette_[L"border"]);
+    PutState(L"groupBox", L"raised", L"bg", palette_[L"surfaceRaised"]);
+    PutState(L"groupBox", L"raised", L"text", palette_[L"text"]);
+    PutState(L"groupBox", L"raised", L"border", palette_[L"border"]);
+    PutState(L"groupBox", L"disabled", L"bg", palette_[L"background"]);
+    PutState(L"groupBox", L"disabled", L"text", palette_[L"disabledText"]);
+    PutState(L"groupBox", L"disabled", L"border", palette_[L"line"]);
+    PutState(L"tabControl", L"normal", L"bg", palette_[L"surface"]);
+    PutState(L"tabControl", L"normal", L"border", palette_[L"border"]);
+    PutState(L"tabControl", L"disabled", L"bg", palette_[L"background"]);
+    PutState(L"tabControl", L"disabled", L"border", palette_[L"line"]);
+    PutState(L"toolbar", L"normal", L"bg", palette_[L"surface"]);
+    PutState(L"toolbar", L"normal", L"border", palette_[L"line"]);
+    PutState(L"toolbar", L"disabled", L"bg", palette_[L"background"]);
+    PutState(L"toolbar", L"disabled", L"border", palette_[L"line"]);
+    PutState(L"toolbarItem", L"normal", L"bg", palette_[L"surface"]);
+    PutState(L"toolbarItem", L"normal", L"text", palette_[L"text"]);
+    PutState(L"toolbarItem", L"hover", L"bg", palette_[L"hover"]);
+    PutState(L"toolbarItem", L"hover", L"text", palette_[L"text"]);
+    PutState(L"toolbarItem", L"checked", L"bg", palette_[L"selected"]);
+    PutState(L"toolbarItem", L"checked", L"text", palette_[L"text"]);
+    PutState(L"toolbarItem", L"disabled", L"bg", palette_[L"background"]);
+    PutState(L"toolbarItem", L"disabled", L"text", palette_[L"disabledText"]);
     PutState(L"slider", L"normal", L"track", palette_[L"line"]);
     PutState(L"slider", L"normal", L"fill", palette_[L"accent"]);
     PutState(L"slider", L"normal", L"thumb", palette_[L"surface"]);
     PutState(L"slider", L"normal", L"border", palette_[L"border"]);
+    PutState(L"slider", L"hover", L"track", palette_[L"line"]);
+    PutState(L"slider", L"hover", L"fill", palette_[L"focus"]);
+    PutState(L"slider", L"hover", L"thumb", palette_[L"surface"]);
+    PutState(L"slider", L"hover", L"border", palette_[L"accent"]);
+    PutState(L"slider", L"disabled", L"track", palette_[L"line"]);
+    PutState(L"slider", L"disabled", L"fill", palette_[L"border"]);
+    PutState(L"slider", L"disabled", L"thumb", palette_[L"surfaceRaised"]);
+    PutState(L"slider", L"disabled", L"border", palette_[L"line"]);
     PutState(L"progressBar", L"normal", L"track", palette_[L"line"]);
     PutState(L"progressBar", L"normal", L"fill", palette_[L"accent"]);
     PutState(L"progressBar", L"normal", L"border", palette_[L"border"]);
@@ -533,6 +613,15 @@ void Theme::SetDefaults() {
     PutState(L"tooltip", L"normal", L"bg", Color{229.0f / 255.0f, 231.0f / 255.0f, 235.0f / 255.0f, 1.0f});
     PutState(L"tooltip", L"normal", L"text", Color{17.0f / 255.0f, 24.0f / 255.0f, 39.0f / 255.0f, 1.0f});
     PutState(L"tooltip", L"normal", L"border", Color{156.0f / 255.0f, 163.0f / 255.0f, 175.0f / 255.0f, 1.0f});
+    PutState(L"tooltip", L"info", L"bg", palette_[L"accentSoft"]);
+    PutState(L"tooltip", L"info", L"text", palette_[L"text"]);
+    PutState(L"tooltip", L"info", L"border", palette_[L"accent"]);
+    PutState(L"tooltip", L"warning", L"bg", palette_[L"surfaceRaised"]);
+    PutState(L"tooltip", L"warning", L"text", palette_[L"warning"]);
+    PutState(L"tooltip", L"warning", L"border", palette_[L"warning"]);
+    PutState(L"tooltip", L"danger", L"bg", palette_[L"surfaceRaised"]);
+    PutState(L"tooltip", L"danger", L"text", palette_[L"danger"]);
+    PutState(L"tooltip", L"danger", L"border", palette_[L"danger"]);
     PutState(L"separator", L"normal", L"line", palette_[L"line"]);
 
     PutMetric(L"titleButton", L"size", 26.0f);
@@ -633,6 +722,10 @@ void Theme::SetDefaults() {
     PutMetric(L"panel", L"borderWidth", 1.0f);
     PutMetric(L"panel", L"paddingX", 10.0f);
     PutMetric(L"panel", L"paddingY", 8.0f);
+    PutMetric(L"panel", L"contentInsetX", 10.0f);
+    PutMetric(L"panel", L"contentInsetY", 8.0f);
+    PutMetric(L"panel", L"childGap", 6.0f);
+    PutMetric(L"panel", L"scrollStep", 24.0f);
     PutMetric(L"field", L"radius", 7.0f);
     PutMetric(L"field", L"borderWidth", 1.0f);
     PutMetric(L"field", L"height", 32.0f);
@@ -786,6 +879,8 @@ void Theme::SetDefaults() {
     PutMetric(L"toggle", L"width", 38.0f);
     PutMetric(L"toggle", L"height", 22.0f);
     PutMetric(L"toggle", L"thumbSize", 18.0f);
+    PutMetric(L"toggle", L"gap", 8.0f);
+    PutMetric(L"toggle", L"textHeight", 20.0f);
     PutMetric(L"radio", L"dotSize", 16.0f);
     PutMetric(L"radio", L"innerDotSize", 8.0f);
     PutMetric(L"radio", L"height", 24.0f);
@@ -798,6 +893,25 @@ void Theme::SetDefaults() {
     PutMetric(L"listItem", L"paddingX", 8.0f);
     PutMetric(L"listItem", L"textHeight", 20.0f);
     PutMetric(L"listItem", L"textOffsetY", 1.0f);
+    PutMetric(L"table", L"radius", 7.0f);
+    PutMetric(L"table", L"borderWidth", 1.0f);
+    PutMetric(L"tableHeader", L"height", 28.0f);
+    PutMetric(L"groupBox", L"radius", 7.0f);
+    PutMetric(L"groupBox", L"borderWidth", 1.0f);
+    PutMetric(L"groupBox", L"paddingX", 12.0f);
+    PutMetric(L"groupBox", L"paddingY", 10.0f);
+    PutMetric(L"groupBox", L"titleHeight", 24.0f);
+    PutMetric(L"groupBox", L"titleInsetX", 10.0f);
+    PutMetric(L"groupBox", L"titleGap", 6.0f);
+    PutMetric(L"tabControl", L"radius", 7.0f);
+    PutMetric(L"tabControl", L"borderWidth", 1.0f);
+    PutMetric(L"tabControl", L"paddingX", 4.0f);
+    PutMetric(L"tabControl", L"itemGap", 2.0f);
+    PutMetric(L"toolbar", L"radius", 6.0f);
+    PutMetric(L"toolbar", L"borderWidth", 1.0f);
+    PutMetric(L"toolbar", L"paddingX", 6.0f);
+    PutMetric(L"toolbar", L"itemGap", 4.0f);
+    PutMetric(L"toolbar", L"separatorWidth", 9.0f);
     PutMetric(L"slider", L"height", 24.0f);
     PutMetric(L"slider", L"trackHeight", 4.0f);
     PutMetric(L"slider", L"thumbSize", 14.0f);
@@ -809,6 +923,9 @@ void Theme::SetDefaults() {
     PutMetric(L"tooltip", L"paddingX", 8.0f);
     PutMetric(L"tooltip", L"paddingY", 7.0f);
     PutMetric(L"tooltip", L"lineGap", 4.0f);
+    PutMetric(L"tooltip", L"maxWidth", 420.0f);
+    PutMetric(L"tooltip", L"cursorOffsetX", 14.0f);
+    PutMetric(L"tooltip", L"cursorOffsetY", 18.0f);
     PutMetric(L"separator", L"thickness", 1.0f);
     PutMetric(L"separator", L"inset", 0.0f);
 }

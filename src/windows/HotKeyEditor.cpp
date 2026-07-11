@@ -3,18 +3,17 @@
 #include "../../resources/resource.h"
 
 #include "ThemedControls.h"
+#include "ThemedUi.h"
+#include "ThemedWindowUi.h"
 #include "Utilities.h"
 
+#include <memory>
 #include <windowsx.h>
 
 namespace {
-COLORREF ToColorRef(Color color) {
-    const auto channel = [](float value) -> int {
-        const float clamped = value < 0.0f ? 0.0f : (value > 1.0f ? 1.0f : value);
-        return static_cast<int>(clamped * 255.0f + 0.5f);
-    };
-    return RGB(channel(color.r), channel(color.g), channel(color.b));
-}
+constexpr int kDialogWidth = 360;
+constexpr int kDialogHeight = 150;
+constexpr int IdCapture = 1001;
 
 class HotKeyCapture {
 public:
@@ -28,45 +27,34 @@ private:
         : owner_(owner), instance_(instance), theme_(theme), currentKey_(currentKey) {}
 
     int RunImpl() {
-        WNDCLASSEXW wc{};
-        wc.cbSize = sizeof(wc);
-        wc.lpfnWndProc = HotKeyCapture::Proc;
-        wc.hInstance = instance_;
-        wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-        wc.hIcon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_QUATTRO_APP_ICON));
-        wc.hIconSm = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_QUATTRO_APP_ICON));
-        wc.hbrBackground = nullptr;
-        wc.lpszClassName = L"QuattroHotKeyCaptureDialog";
-        RegisterClassExW(&wc);
-
-        const POINT position = OffsetWindowFromOwnerOnMonitor(owner_, 360, 150, 110, 120);
-        hwnd_ = CreateWindowExW(
-            WS_EX_DLGMODALFRAME | WS_EX_WINDOWEDGE,
-            wc.lpszClassName,
-            L"录入热键",
-            WS_CAPTION | WS_SYSMENU | WS_POPUP | WS_CLIPCHILDREN,
-            position.x,
-            position.y,
-            360,
-            150,
-            owner_,
-            nullptr,
-            instance_,
-            this);
+        HICON icon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_QUATTRO_APP_ICON));
+        ThemedWindowCreateOptions options = ThemedWindowUi::DialogOptions(
+            instance_, owner_, L"QuattroHotKeyCaptureDialog", L"录入热键", HotKeyCapture::Proc, this, icon, icon);
+        options.clientWidth = kDialogWidth;
+        options.clientHeight = kDialogHeight;
+        options.placement = ThemedWindowPlacement::OffsetOwner;
+        options.offsetX = 110;
+        options.offsetY = 120;
+        hwnd_ = ThemedWindowUi::CreateWindowHandle(options);
         if (!hwnd_) {
             return currentKey_;
         }
 
-        ownerWasEnabled_ = ShowModalWindow(owner_, hwnd_);
+        if (windowUi_) {
+            windowUi_->ShowModal();
+        }
         UpdateWindow(hwnd_);
 
         MSG message{};
         while (!done_ && GetMessageW(&message, nullptr, 0, 0) > 0) {
+            if (ThemedUi::PreTranslateMessage(message)) continue;
             TranslateMessage(&message);
             DispatchMessageW(&message);
         }
 
-        RestoreModalOwner(owner_, ownerWasEnabled_, ownerRestored_);
+        if (windowUi_) {
+            windowUi_->RestoreModalOwner();
+        }
         return accepted_ ? capturedKey_ : currentKey_;
     }
 
@@ -84,82 +72,51 @@ private:
     }
 
     LRESULT Handle(UINT message, WPARAM wParam, LPARAM lParam) {
+        LRESULT commonResult = 0;
+        if (ThemedWindowUi::HandleCommonMessage(windowUi_, message, wParam, lParam, commonResult)) {
+            return commonResult;
+        }
         switch (message) {
         case WM_CREATE: {
-            font_ = ThemedControls::CreateDialogFont();
-            if (!font_) {
-                font_ = reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
-            } else {
-                ownsFont_ = true;
-            }
-            backgroundBrush_ = CreateSolidBrush(ToColorRef(theme_.color(L"dialog", L"normal", L"bg")));
-            ThemedControls::CreateStaticText(
-                instance_,
-                hwnd_,
+            windowUi_ = std::make_unique<ThemedWindowUi>(
+                instance_, owner_, hwnd_, theme_, DialogLayoutKind::Compact, kDialogWidth, kDialogHeight);
+            const ThemedUi ui = windowUi_->ui();
+            ThemedLabelOptions instructionOptions{};
+            instructionOptions.lines = ThemedLabelLines::Two;
+            ui.Label(
                 L"按下一个键，热键将保存为 Ctrl+Alt+该键。Backspace 清除，Esc 取消。",
                 20,
                 22,
                 300,
-                42,
-                font_);
-            ThemedControls::CreateStaticText(instance_, hwnd_, FormatHotKeyText(currentKey_).c_str(), 20, 72, 220, 22, font_);
-            SetFocus(hwnd_);
+                instructionOptions);
+            capture_ = ui.HotKeyCapture(IdCapture, FormatHotKeyText(currentKey_), 20, 72, 220);
+            SetFocus(capture_);
             return 0;
         }
-        case WM_ERASEBKGND:
-            return 1;
-        case WM_PAINT: {
-            PAINTSTRUCT ps{};
-            HDC dc = BeginPaint(hwnd_, &ps);
-            RECT rect{};
-            GetClientRect(hwnd_, &rect);
-            FillRect(dc, &rect, backgroundBrush_ ? backgroundBrush_ : reinterpret_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
-            EndPaint(hwnd_, &ps);
-            return 0;
-        }
-        case WM_CTLCOLORSTATIC: {
-            HDC dc = reinterpret_cast<HDC>(wParam);
-            SetBkMode(dc, TRANSPARENT);
-            SetTextColor(dc, ToColorRef(theme_.color(L"label", L"normal", L"text")));
-            return reinterpret_cast<LRESULT>(backgroundBrush_ ? backgroundBrush_ : GetStockObject(WHITE_BRUSH));
-        }
-        case WM_KEYDOWN:
-        case WM_SYSKEYDOWN:
-            if (wParam == VK_ESCAPE) {
+        case ThemedControls::WM_HOTKEY_CAPTURED:
+            if (wParam != IdCapture) {
+                return 0;
+            }
+            if (lParam == VK_ESCAPE) {
                 done_ = true;
                 DestroyWindow(hwnd_);
                 return 0;
             }
-            if (wParam == VK_BACK) {
+            if (lParam == VK_BACK) {
                 capturedKey_ = 0;
                 accepted_ = true;
                 done_ = true;
                 DestroyWindow(hwnd_);
                 return 0;
             }
-            if (wParam != VK_CONTROL && wParam != VK_MENU && wParam != VK_SHIFT && wParam != VK_LWIN && wParam != VK_RWIN) {
-                capturedKey_ = static_cast<int>(wParam);
-                accepted_ = true;
-                done_ = true;
-                DestroyWindow(hwnd_);
-                return 0;
-            }
+            capturedKey_ = static_cast<int>(lParam);
+            accepted_ = true;
+            done_ = true;
+            DestroyWindow(hwnd_);
             return 0;
         case WM_CLOSE:
             done_ = true;
             DestroyWindow(hwnd_);
-            return 0;
-        case WM_DESTROY:
-            RestoreModalOwner(owner_, ownerWasEnabled_, ownerRestored_);
-            if (font_ && ownsFont_) {
-                DeleteObject(font_);
-                font_ = nullptr;
-            }
-            if (backgroundBrush_) {
-                DeleteObject(backgroundBrush_);
-                backgroundBrush_ = nullptr;
-            }
-            done_ = true;
             return 0;
         default:
             return DefWindowProcW(hwnd_, message, wParam, lParam);
@@ -170,15 +127,12 @@ private:
     HINSTANCE instance_ = nullptr;
     const Theme& theme_;
     HWND hwnd_ = nullptr;
-    HFONT font_ = nullptr;
-    HBRUSH backgroundBrush_ = nullptr;
+    HWND capture_ = nullptr;
+    std::unique_ptr<ThemedWindowUi> windowUi_;
     int currentKey_ = 0;
     int capturedKey_ = 0;
-    bool ownerWasEnabled_ = false;
-    bool ownerRestored_ = false;
     bool accepted_ = false;
     bool done_ = false;
-    bool ownsFont_ = false;
 };
 }
 

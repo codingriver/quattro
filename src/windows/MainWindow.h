@@ -28,6 +28,8 @@
 #include <utility>
 #include <vector>
 
+class ThemedWindowUi;
+
 constexpr UINT WM_QUATTRO_WAKEUP = WM_APP + 0x65;
 constexpr UINT WM_QUATTRO_TRAY = WM_APP + 0x66;
 constexpr UINT WM_QUATTRO_URL_ICON_DOWNLOADED = WM_APP + 0x67;
@@ -388,8 +390,6 @@ private:
     bool hasClipboardLink_ = false;
     bool clipboardCut_ = false;
     int clipboardSourceId_ = 0;
-    HWND tooltip_ = nullptr;
-    TOOLINFOW tooltipInfo_{};
     std::wstring tooltipText_;
     HitKind tooltipItemKind_ = HitKind::None;
     int tooltipItemId_ = 0;
@@ -427,14 +427,12 @@ private:
     HWND noteEdit_ = nullptr;
     int noteEditTagId_ = 0;
     RECT noteEditFrame_{};
-    HFONT noteEditFont_ = nullptr;
-    HBRUSH noteEditBrush_ = nullptr;
+    std::unique_ptr<ThemedWindowUi> embeddedUi_;
     bool noteDirty_ = false;
     UINT_PTR noteSaveTimerId_ = 0;
     UINT_PTR reminderScanTimerId_ = 0;
     UINT_PTR reminderPanelTimerId_ = 0;
     HWND reminderPanel_ = nullptr;
-    HFONT tooltipFont_ = nullptr;
     HFONT reminderPanelFont_ = nullptr;
     std::unordered_set<std::wstring> shownReminderKeys_;
 
