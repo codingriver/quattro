@@ -169,8 +169,15 @@ bool ThemedWindowUi::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam, L
     }
 
     switch (message) {
-    case WM_CTLCOLORSTATIC:
     case WM_CTLCOLOREDIT: {
+        HDC dc = reinterpret_cast<HDC>(wParam);
+        SetBkMode(dc, OPAQUE);
+        SetTextColor(dc, ToColorRef(theme_.color(L"edit", L"normal", L"text")));
+        SetBkColor(dc, ToColorRef(theme_.color(L"edit", L"normal", L"bg")));
+        result = reinterpret_cast<LRESULT>(EditBrush());
+        return true;
+    }
+    case WM_CTLCOLORSTATIC: {
         HDC dc = reinterpret_cast<HDC>(wParam);
         SetBkMode(dc, TRANSPARENT);
         SetTextColor(dc, ToColorRef(theme_.color(L"label", L"normal", L"text")));
@@ -210,6 +217,13 @@ HBRUSH ThemedWindowUi::BackgroundBrush() {
     return backgroundBrush_;
 }
 
+HBRUSH ThemedWindowUi::EditBrush() {
+    if (!editBrush_) {
+        editBrush_ = CreateSolidBrush(ToColorRef(theme_.color(L"edit", L"normal", L"bg")));
+    }
+    return editBrush_;
+}
+
 void ThemedWindowUi::ReleaseResources() {
     if (font_ && ownsFont_) {
         DeleteObject(font_);
@@ -219,5 +233,9 @@ void ThemedWindowUi::ReleaseResources() {
     if (backgroundBrush_) {
         DeleteObject(backgroundBrush_);
         backgroundBrush_ = nullptr;
+    }
+    if (editBrush_) {
+        DeleteObject(editBrush_);
+        editBrush_ = nullptr;
     }
 }

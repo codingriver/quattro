@@ -82,6 +82,7 @@ public:
 private:
     static COLORREF ToColorRef(Color color);
     HBRUSH BackgroundBrush();
+    HBRUSH EditBrush();
     void ReleaseResources();
 
     HINSTANCE instance_ = nullptr;
@@ -94,6 +95,7 @@ private:
     mutable HFONT font_ = nullptr;
     mutable bool ownsFont_ = false;
     HBRUSH backgroundBrush_ = nullptr;
+    HBRUSH editBrush_ = nullptr;
     bool ownerWasEnabled_ = false;
     bool ownerRestored_ = false;
 };

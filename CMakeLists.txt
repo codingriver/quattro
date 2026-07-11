@@ -791,6 +791,7 @@ target_link_libraries(Quattro PRIVATE
     mpr
     ole32
     oleaut32
+    rstrtmgr
     shell32
     shlwapi
     uuid

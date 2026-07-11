@@ -132,6 +132,22 @@ std::vector<PluginRecord> PluginRegistry::BuiltinPlugins() {
     processLocator.enabled = true;
     processLocator.installed = true;
 
+    PluginRecord fileLockInspector;
+    fileLockInspector.id = L"quattro.builtin.file-lock-inspector";
+    fileLockInspector.name = L"文件占用检查";
+    fileLockInspector.version = L"1.0.0";
+    fileLockInspector.category = L"builtin-tools";
+    fileLockInspector.kind = L"builtin-tool";
+    fileLockInspector.engine = L"file-lock-inspector";
+    fileLockInspector.description = L"检查文件或目录被哪些进程占用，并可结束对应进程。";
+    fileLockInspector.permissions = L"文件查询, 进程查询, 结束进程";
+    fileLockInspector.author = L"Quattro快速启动器";
+    fileLockInspector.license = L"Built-in";
+    fileLockInspector.builtin = true;
+    fileLockInspector.deletable = false;
+    fileLockInspector.enabled = true;
+    fileLockInspector.installed = true;
+
     return {
         clicker,
         timer,
@@ -139,6 +155,7 @@ std::vector<PluginRecord> PluginRegistry::BuiltinPlugins() {
         portInspector,
         processInspector,
         processLocator,
+        fileLockInspector,
     };
 }
 

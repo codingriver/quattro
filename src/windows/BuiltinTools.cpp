@@ -12,14 +12,17 @@
 
 #include <commdlg.h>
 #include <commctrl.h>
+#include <shobjidl.h>
 #include <shellapi.h>
 #include <iphlpapi.h>
+#include <restartmanager.h>
 #include <tcpmib.h>
 #include <tlhelp32.h>
 #include <udpmib.h>
 #include <windowsx.h>
 
 #include <algorithm>
+#include <filesystem>
 #include <fstream>
 #include <map>
 #include <optional>
@@ -76,9 +79,15 @@ constexpr int ID_LOCATOR_OPEN = 7504;
 constexpr int ID_LOCATOR_GLOBAL_HOTKEY = 7505;
 constexpr int ID_LOCATOR_PID_VALUE = 7506;
 constexpr int ID_LOCATOR_PATH_VALUE = 7507;
+constexpr int ID_FILE_LOCK_PATH = 7601;
+constexpr int ID_FILE_LOCK_PICK_FILE = 7602;
+constexpr int ID_FILE_LOCK_PICK_DIR = 7603;
+constexpr int ID_FILE_LOCK_SCAN = 7604;
+constexpr int ID_FILE_LOCK_KILL_BASE = 7610;
 constexpr UINT WM_QUATTRO_TOOL_AUTOMATION = WM_APP + 0x80;
 constexpr UINT WM_QUATTRO_TOOL_TIMER_AUTOMATION = WM_APP + 0x81;
 constexpr UINT kTimerDisplayIntervalMs = 33;
+constexpr std::size_t kFileLockDirectoryFileLimit = 512;
 #ifndef AF_INET6
 constexpr ULONG AF_INET6 = 23;
 #endif
@@ -177,6 +186,19 @@ void CopyTextToClipboard(HWND owner, const std::wstring& text) {
         GlobalFree(memory);
     }
     CloseClipboard();
+}
+
+std::wstring Utf8ToWide(const std::string& text) {
+    if (text.empty()) {
+        return {};
+    }
+    const int length = MultiByteToWideChar(CP_UTF8, 0, text.c_str(), static_cast<int>(text.size()), nullptr, 0);
+    if (length <= 0) {
+        return {};
+    }
+    std::wstring wide(static_cast<std::size_t>(length), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, text.c_str(), static_cast<int>(text.size()), wide.data(), length);
+    return wide;
 }
 
 std::wstring FormatElapsed(ULONGLONG milliseconds) {
@@ -432,6 +454,155 @@ std::vector<ProcessDisplayRow> QueryPortRows(unsigned short port) {
         row.detail = info.path.empty() ? L"进程路径不可读，仍可尝试结束进程" : info.path;
         rows.push_back(std::move(row));
     }
+    return rows;
+}
+
+bool IsDriveRootPath(const std::wstring& path) {
+    return path.size() == 3 && path[1] == L':' && (path[2] == L'\\' || path[2] == L'/');
+}
+
+std::wstring DirectoryResourcePath(std::wstring path) {
+    if (path.empty() || IsDriveRootPath(path)) {
+        return path;
+    }
+    const wchar_t last = path.back();
+    if (last != L'\\' && last != L'/') {
+        path.push_back(L'\\');
+    }
+    return path;
+}
+
+std::vector<std::wstring> CollectFileLockResourcePaths(const std::wstring& rawPath, bool& truncated, std::wstring& warning, std::wstring& error) {
+    truncated = false;
+    warning.clear();
+    error.clear();
+    const DWORD attributes = GetFileAttributesW(rawPath.c_str());
+    if (attributes == INVALID_FILE_ATTRIBUTES) {
+        const DWORD code = GetLastError();
+        error = code == ERROR_FILE_NOT_FOUND || code == ERROR_PATH_NOT_FOUND
+            ? L"路径不存在。"
+            : L"读取路径属性失败：" + FormatLastError(code);
+        return {};
+    }
+
+    std::error_code ec;
+    const std::filesystem::path input(rawPath);
+    std::vector<std::wstring> resources;
+    if ((attributes & FILE_ATTRIBUTE_DIRECTORY) == 0) {
+        resources.push_back(input.wstring());
+        return resources;
+    }
+    resources.push_back(DirectoryResourcePath(input.wstring()));
+
+    std::filesystem::recursive_directory_iterator it(
+        input,
+        std::filesystem::directory_options::skip_permission_denied,
+        ec);
+    const std::filesystem::recursive_directory_iterator end;
+    while (!ec && it != end) {
+        if (resources.size() >= kFileLockDirectoryFileLimit) {
+            truncated = true;
+            break;
+        }
+        const std::filesystem::directory_entry& entry = *it;
+        std::error_code entryEc;
+        if (entry.is_regular_file(entryEc)) {
+            resources.push_back(entry.path().wstring());
+        }
+        it.increment(ec);
+    }
+    if (ec) {
+        warning = resources.size() <= 1
+            ? L"目录不可枚举，仅检查目录本身：" + Utf8ToWide(ec.message())
+            : L"目录部分内容不可枚举，已检查可读取的路径：" + Utf8ToWide(ec.message());
+    }
+    return resources;
+}
+
+std::vector<ProcessDisplayRow> QueryFileLockRows(const std::wstring& rawPath, std::wstring& statusSuffix) {
+    statusSuffix.clear();
+    bool truncated = false;
+    std::wstring collectWarning;
+    std::wstring collectError;
+    const std::vector<std::wstring> resources = CollectFileLockResourcePaths(rawPath, truncated, collectWarning, collectError);
+    if (!collectError.empty()) {
+        statusSuffix = collectError;
+        return {};
+    }
+    if (resources.empty()) {
+        statusSuffix = L"没有可检查的文件。";
+        return {};
+    }
+
+    DWORD session = 0;
+    WCHAR sessionKey[CCH_RM_SESSION_KEY + 1]{};
+    DWORD result = RmStartSession(&session, 0, sessionKey);
+    if (result != ERROR_SUCCESS) {
+        statusSuffix = L"启动文件占用检查失败：" + FormatLastError(result);
+        return {};
+    }
+
+    std::vector<LPCWSTR> resourcePointers;
+    resourcePointers.reserve(resources.size());
+    for (const std::wstring& resource : resources) {
+        resourcePointers.push_back(resource.c_str());
+    }
+
+    result = RmRegisterResources(
+        session,
+        static_cast<UINT>(resourcePointers.size()),
+        resourcePointers.data(),
+        0,
+        nullptr,
+        0,
+        nullptr);
+    if (result != ERROR_SUCCESS) {
+        RmEndSession(session);
+        statusSuffix = L"注册待检查路径失败：" + FormatLastError(result);
+        return {};
+    }
+
+    UINT needed = 0;
+    UINT count = 0;
+    DWORD rebootReasons = 0;
+    result = RmGetList(session, &needed, &count, nullptr, &rebootReasons);
+    std::vector<RM_PROCESS_INFO> affected;
+    if (result == ERROR_MORE_DATA && needed > 0) {
+        affected.resize(needed);
+        count = needed;
+        result = RmGetList(session, &needed, &count, affected.data(), &rebootReasons);
+    }
+    RmEndSession(session);
+
+    if (result != ERROR_SUCCESS) {
+        statusSuffix = L"读取占用进程失败：" + FormatLastError(result);
+        return {};
+    }
+
+    std::set<DWORD> pids;
+    for (DWORD i = 0; i < count && i < affected.size(); ++i) {
+        if (affected[i].Process.dwProcessId != 0) {
+            pids.insert(affected[i].Process.dwProcessId);
+        }
+    }
+
+    std::vector<ProcessDisplayRow> rows;
+    for (DWORD pid : pids) {
+        const ProcessInfo info = QueryProcessInfo(pid);
+        ProcessDisplayRow row{};
+        row.pid = pid;
+        row.title = L"PID " + std::to_wstring(pid) + L"  " + info.name;
+        row.detail = info.path.empty() ? L"进程路径不可读，仍可尝试结束进程" : info.path;
+        rows.push_back(std::move(row));
+    }
+    statusSuffix = L"已检查 " + std::to_wstring(resources.size()) + L" 个路径";
+    if (truncated) {
+        statusSuffix += L"，目录文件较多，已截断";
+    }
+    if (!collectWarning.empty()) {
+        statusSuffix += L"，" + collectWarning;
+    }
+    statusSuffix += L"。";
     return rows;
 }
 
@@ -1537,6 +1708,296 @@ private:
     HWND pid_ = nullptr;
 };
 
+class FileLockInspectorDialog final {
+public:
+    FileLockInspectorDialog(HWND owner, HINSTANCE instance, const Theme& theme, PluginRegistry& registry)
+        : owner_(owner), instance_(instance), theme_(theme), registry_(registry) {}
+
+    bool Run() {
+        const std::wstring className = L"QuattroFileLockInspector_" +
+            std::to_wstring(GetCurrentProcessId()) + L"_" + std::to_wstring(GetTickCount64());
+        HICON icon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_QUATTRO_APP_ICON));
+        ThemedWindowCreateOptions options = ThemedWindowUi::DialogOptions(
+            instance_, owner_, className.c_str(), L"文件占用检查", FileLockInspectorDialog::Proc, this, icon, icon);
+        options.clientWidth = width_;
+        options.clientHeight = height_;
+        std::wstring error;
+        hwnd_ = ThemedWindowUi::CreateWindowHandle(options, &error);
+        if (!hwnd_) {
+            WriteAppLog(L"文件占用检查窗口创建失败: " + error);
+            return false;
+        }
+        windowUi_->ShowModal();
+        MSG message{};
+        while (!done_ && GetMessageW(&message, nullptr, 0, 0) > 0) {
+            if (IsShortcutKey(message)) {
+                continue;
+            }
+            if (!IsDialogMessageW(hwnd_, &message)) {
+                TranslateMessage(&message);
+                DispatchMessageW(&message);
+            }
+        }
+        return true;
+    }
+
+private:
+    static LRESULT CALLBACK Proc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
+        FileLockInspectorDialog* dialog = nullptr;
+        if (message == WM_NCCREATE) {
+            auto* create = reinterpret_cast<CREATESTRUCTW*>(lParam);
+            dialog = static_cast<FileLockInspectorDialog*>(create->lpCreateParams);
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(dialog));
+            dialog->hwnd_ = hwnd;
+        } else {
+            dialog = reinterpret_cast<FileLockInspectorDialog*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+        }
+        return dialog ? dialog->Handle(message, wParam, lParam) : DefWindowProcW(hwnd, message, wParam, lParam);
+    }
+
+    LRESULT Handle(UINT message, WPARAM wParam, LPARAM lParam) {
+        LRESULT commonResult = 0;
+        if (ThemedWindowUi::HandleCommonMessage(windowUi_, message, wParam, lParam, commonResult)) {
+            if (message == WM_DESTROY) {
+                done_ = true;
+            }
+            return commonResult;
+        }
+        switch (message) {
+        case WM_CREATE:
+            windowUi_ = std::make_unique<ThemedWindowUi>(
+                instance_, owner_, hwnd_, theme_, kThemedDialogLayoutKind, width_, height_);
+            CreateControls();
+            return 0;
+        case WM_COMMAND:
+            HandleCommand(LOWORD(wParam));
+            return 0;
+        case WM_PAINT:
+            Paint();
+            return 0;
+        case WM_CLOSE:
+            DestroyWindow(hwnd_);
+            return 0;
+        case WM_DESTROY:
+            ClearRowButtons();
+            done_ = true;
+            return 0;
+        default:
+            return DefWindowProcW(hwnd_, message, wParam, lParam);
+        }
+    }
+
+    void CreateControls() {
+        const ThemedUi ui = windowUi_->ui();
+        const DialogLayoutMetrics& layout = ui.layout();
+        const int editHeight = ThemedControls::EditFrameHeight(theme_);
+        const int labelHeight = ui.labelHeight();
+        const int bh = ui.buttonHeight();
+        const int labelOffsetY = std::max(0, (editHeight - labelHeight) / 2);
+        const int left = layout.contentInsetX;
+        const int row0 = layout.contentInsetY;
+        const int fieldX = layout.fieldX;
+        const int pickW = 54;
+        const int scanW = layout.footerButtonWidth;
+        const int actionsW = pickW * 2 + scanW + layout.controlGapX * 3;
+        const int fieldW = width_ - fieldX - actionsW - left;
+
+        ui.Label(L"路径", left, row0 + labelOffsetY, layout.labelWidth);
+        pathFrame_ = ui.rect(fieldX, row0, fieldW, editHeight);
+        path_ = ui.SingleLineEdit(ID_FILE_LOCK_PATH, pathFrame_, registry_.GetSetting(L"quattro.builtin.file-lock-inspector", L"path", L""));
+        ui.Button(ID_FILE_LOCK_PICK_FILE, L"文件", fieldX + fieldW + layout.controlGapX, row0 + 1, ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, pickW);
+        ui.Button(ID_FILE_LOCK_PICK_DIR, L"目录", fieldX + fieldW + layout.controlGapX * 2 + pickW, row0 + 1, ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, pickW);
+        ui.Button(ID_FILE_LOCK_SCAN, L"检查(&C)", fieldX + fieldW + layout.controlGapX * 3 + pickW * 2, row0 + 1, ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, scanW, true);
+
+        const int frameTop = row0 + layout.RowStep(bh) + layout.rowGap;
+        const int statusY = height_ - layout.contentInsetY - labelHeight;
+        resultsFrame_ = RECT{left, frameTop, width_ - left, statusY - layout.rowGap};
+        status_ = ui.StatusText(L"输入文件或目录路径后点击检查。", left, statusY, width_ - left * 2, L"normal", SS_LEFT);
+        emptyText_ = L"暂无占用进程";
+    }
+
+    void HandleCommand(int id) {
+        if (id == ID_FILE_LOCK_PICK_FILE) {
+            PickFile();
+            return;
+        }
+        if (id == ID_FILE_LOCK_PICK_DIR) {
+            PickDirectory();
+            return;
+        }
+        if (id == ID_FILE_LOCK_SCAN) {
+            Scan();
+            return;
+        }
+        if (id >= ID_FILE_LOCK_KILL_BASE && id < ID_FILE_LOCK_KILL_BASE + 100) {
+            ConfirmAndKillRow(static_cast<std::size_t>(id - ID_FILE_LOCK_KILL_BASE));
+        }
+    }
+
+    bool IsShortcutKey(const MSG& message) {
+        if ((message.message == WM_KEYDOWN || message.message == WM_SYSKEYDOWN)
+            && (message.hwnd == hwnd_ || IsChild(hwnd_, message.hwnd))
+            && CtrlOnly()
+            && message.wParam == 'C') {
+            Scan();
+            return true;
+        }
+        return false;
+    }
+
+    bool CtrlOnly() const {
+        return (GetKeyState(VK_CONTROL) & 0x8000) != 0
+            && (GetKeyState(VK_MENU) & 0x8000) == 0
+            && (GetKeyState(VK_SHIFT) & 0x8000) == 0;
+    }
+
+    void ClearRowButtons() {
+        for (HWND button : rowButtons_) {
+            if (button) {
+                DestroyWindow(button);
+            }
+        }
+        rowButtons_.clear();
+    }
+
+    void RebuildRowButtons() {
+        ClearRowButtons();
+        const ThemedUi ui = windowUi_->ui();
+        const int visibleCount = std::min<int>(static_cast<int>(rows_.size()), VisibleProcessRowCount(theme_, resultsFrame_));
+        const int padding = 8;
+        const int rowHeight = std::max(40, ThemedControls::ListBoxItemHeight(theme_) + 14);
+        const int buttonWidth = 62;
+        const int buttonHeight = ThemedControls::CompactButtonHeight(theme_);
+        for (int i = 0; i < visibleCount; ++i) {
+            const int rowTop = resultsFrame_.top + padding + i * rowHeight;
+            HWND button = ui.Button(
+                ID_FILE_LOCK_KILL_BASE + i,
+                L"结束",
+                resultsFrame_.right - padding - buttonWidth,
+                rowTop + std::max(0, (rowHeight - buttonHeight) / 2) - 1,
+                ThemedButtonRole::Normal,
+                ThemedButtonSize::Compact,
+                ThemedButtonWidthMode::Fixed,
+                buttonWidth);
+            rowButtons_.push_back(button);
+        }
+        InvalidateRect(hwnd_, &resultsFrame_, TRUE);
+    }
+
+    void ConfirmAndKillRow(std::size_t index) {
+        if (index >= rows_.size()) {
+            return;
+        }
+        const ProcessDisplayRow& row = rows_[index];
+        const ProcessInfo info = QueryProcessInfo(row.pid);
+        const std::wstring name = info.name.empty() ? L"未知进程" : info.name;
+        const std::wstring message = L"确认结束进程 " + name + L" (PID " + std::to_wstring(row.pid) + L")？";
+        if (ShowThemedMessageBox(hwnd_, instance_, theme_, message, L"文件占用检查", MB_OKCANCEL | MB_ICONWARNING) != IDOK) {
+            return;
+        }
+        const std::wstring error = KillProcessById(row.pid);
+        if (!error.empty()) {
+            ShowThemedMessageBox(hwnd_, instance_, theme_, error, L"文件占用检查", MB_OK | MB_ICONWARNING);
+        }
+        Scan();
+    }
+
+    void Paint() {
+        PAINTSTRUCT ps{};
+        HDC dc = BeginPaint(hwnd_, &ps);
+        ThemedControls::DrawFieldFrame(theme_, dc, pathFrame_, path_);
+        DrawProcessRows(theme_, dc, resultsFrame_, rows_, emptyText_, windowUi_->font());
+        EndPaint(hwnd_, &ps);
+    }
+
+    void PickFile() {
+        std::wstring buffer(32768, L'\0');
+        OPENFILENAMEW ofn{};
+        ofn.lStructSize = sizeof(ofn);
+        ofn.hwndOwner = hwnd_;
+        ofn.lpstrFile = buffer.data();
+        ofn.nMaxFile = static_cast<DWORD>(buffer.size());
+        ofn.lpstrFilter = L"所有文件\0*.*\0";
+        ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+        if (GetOpenFileNameW(&ofn)) {
+            SetText(path_, buffer.c_str());
+        }
+    }
+
+    void PickDirectory() {
+        IFileDialog* dialog = nullptr;
+        if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog))) || !dialog) {
+            return;
+        }
+        DWORD options = 0;
+        dialog->GetOptions(&options);
+        dialog->SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST);
+        dialog->SetTitle(L"选择待检查目录");
+        if (SUCCEEDED(dialog->Show(hwnd_))) {
+            IShellItem* item = nullptr;
+            if (SUCCEEDED(dialog->GetResult(&item)) && item) {
+                PWSTR selected = nullptr;
+                if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &selected)) && selected) {
+                    SetText(path_, selected);
+                    CoTaskMemFree(selected);
+                }
+                item->Release();
+            }
+        }
+        dialog->Release();
+    }
+
+    void Scan() {
+        const std::wstring path = Trim(GetText(path_));
+        if (path.empty()) {
+            rows_.clear();
+            ClearRowButtons();
+            SetText(status_, L"请输入文件或目录路径。");
+            InvalidateRect(hwnd_, &resultsFrame_, TRUE);
+            return;
+        }
+
+        registry_.SetSetting(L"quattro.builtin.file-lock-inspector", L"path", path);
+        std::wstring detail;
+        rows_ = QueryFileLockRows(path, detail);
+        RebuildRowButtons();
+        if (rows_.empty()) {
+            if (detail.starts_with(L"已检查")) {
+                SetText(status_, L"未发现占用进程。 " + detail);
+            } else {
+                SetText(status_, detail.empty() ? L"未发现占用进程。" : detail);
+            }
+            return;
+        }
+        const int visibleCount = VisibleProcessRowCount(theme_, resultsFrame_);
+        std::wstring status = L"发现 " + std::to_wstring(rows_.size()) + L" 个占用进程。";
+        if (!detail.empty()) {
+            status += L" " + detail;
+        }
+        if (static_cast<int>(rows_.size()) > visibleCount) {
+            status += L" 当前显示前 " + std::to_wstring(visibleCount) + L" 个。";
+        }
+        SetText(status_, status);
+    }
+
+    HWND owner_ = nullptr;
+    HINSTANCE instance_ = nullptr;
+    const Theme& theme_;
+    PluginRegistry& registry_;
+    HWND hwnd_ = nullptr;
+    HWND path_ = nullptr;
+    HWND status_ = nullptr;
+    RECT pathFrame_{};
+    RECT resultsFrame_{};
+    std::wstring emptyText_;
+    std::vector<ProcessDisplayRow> rows_;
+    std::vector<HWND> rowButtons_;
+    std::unique_ptr<ThemedWindowUi> windowUi_;
+    bool done_ = false;
+    static constexpr int width_ = 660;
+    static constexpr int height_ = 380;
+};
+
 class TimerDialog final : public ToolDialogBase {
 public:
     TimerDialog(HWND owner, HINSTANCE instance, const Theme& theme, PluginRegistry& registry)
@@ -2366,6 +2827,10 @@ bool ShowBuiltinTool(HWND owner, HINSTANCE instance, const Theme& theme, PluginR
     }
     if (engine == L"process-locator") {
         ProcessLocatorDialog dialog(owner, instance, theme, registry);
+        return dialog.Run();
+    }
+    if (engine == L"file-lock-inspector") {
+        FileLockInspectorDialog dialog(owner, instance, theme, registry);
         return dialog.Run();
     }
     ShowThemedMessageBox(owner, instance, theme, L"这个内置工具暂不可用。", L"工具箱", MB_OK | MB_ICONINFORMATION);
