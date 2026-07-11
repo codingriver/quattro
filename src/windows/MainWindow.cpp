@@ -7,6 +7,7 @@
 #include "HotKeyEditor.h"
 #include "LinkEditDialog.h"
 #include "LinkSorting.h"
+#include "MainHotKey.h"
 #include "MenuAnchorGeometry.h"
 #include "MenuCatalog.h"
 #include "QuickImportDialog.h"
@@ -65,6 +66,7 @@ constexpr UINT_PTR ID_TIMER_NOTE_AUTOSAVE = 12;
 constexpr UINT_PTR ID_TIMER_REMINDER_SCAN = 13;
 constexpr UINT_PTR ID_TIMER_REMINDER_PANEL = 14;
 constexpr UINT kTrayIconId = 1;
+constexpr UINT WM_QUATTRO_DOUBLE_ALT_HOTKEY = WM_APP + 0x6C;
 constexpr int kDockVisiblePixels = 3;
 constexpr int kDockPeekVisiblePixels = 6;
 constexpr int kDockRestoreGraceMs = 1500;
@@ -72,6 +74,72 @@ constexpr int kDockSnapThreshold = 12;
 constexpr const wchar_t* kDockPeekWindowClass = L"QuattroDockPeekWindow";
 constexpr const wchar_t* kTooltipWindowClass = L"QuattroTooltipWindow";
 constexpr const wchar_t* kAppDisplayName = L"Quattro快速启动器";
+constexpr DWORD kDoubleAltMaxIntervalMs = 450;
+
+HHOOK gDoubleAltHook = nullptr;
+HWND gDoubleAltTarget = nullptr;
+DWORD gLastAltUpTick = 0;
+bool gOtherKeySinceAlt = false;
+
+bool IsAltVirtualKey(DWORD vkCode) {
+    return vkCode == VK_MENU || vkCode == VK_LMENU || vkCode == VK_RMENU;
+}
+
+LRESULT CALLBACK DoubleAltKeyboardProc(int code, WPARAM wParam, LPARAM lParam) {
+    if (code == HC_ACTION && gDoubleAltTarget) {
+        const auto* event = reinterpret_cast<const KBDLLHOOKSTRUCT*>(lParam);
+        const bool keyDown = wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN;
+        const bool keyUp = wParam == WM_KEYUP || wParam == WM_SYSKEYUP;
+        if (keyDown || keyUp) {
+            if (IsAltVirtualKey(event->vkCode)) {
+                if (keyDown) {
+                    gOtherKeySinceAlt = false;
+                } else if (!gOtherKeySinceAlt) {
+                    const DWORD tick = event->time != 0 ? event->time : GetTickCount();
+                    if (gLastAltUpTick != 0 && tick - gLastAltUpTick <= kDoubleAltMaxIntervalMs) {
+                        PostMessageW(gDoubleAltTarget, WM_QUATTRO_DOUBLE_ALT_HOTKEY, 0, 0);
+                        gLastAltUpTick = 0;
+                    } else {
+                        gLastAltUpTick = tick;
+                    }
+                }
+            } else if (keyDown) {
+                gOtherKeySinceAlt = true;
+                gLastAltUpTick = 0;
+            }
+        }
+    }
+    return CallNextHookEx(gDoubleAltHook, code, wParam, lParam);
+}
+
+bool InstallDoubleAltHotKeyHook(HWND hwnd) {
+    if (gDoubleAltHook) {
+        gDoubleAltTarget = hwnd;
+        return true;
+    }
+    gDoubleAltTarget = hwnd;
+    gLastAltUpTick = 0;
+    gOtherKeySinceAlt = false;
+    gDoubleAltHook = SetWindowsHookExW(WH_KEYBOARD_LL, DoubleAltKeyboardProc, GetModuleHandleW(nullptr), 0);
+    if (!gDoubleAltHook) {
+        gDoubleAltTarget = nullptr;
+        return false;
+    }
+    return true;
+}
+
+void UninstallDoubleAltHotKeyHook(HWND hwnd) {
+    if (gDoubleAltTarget != hwnd) {
+        return;
+    }
+    if (gDoubleAltHook) {
+        UnhookWindowsHookEx(gDoubleAltHook);
+        gDoubleAltHook = nullptr;
+    }
+    gDoubleAltTarget = nullptr;
+    gLastAltUpTick = 0;
+    gOtherKeySinceAlt = false;
+}
 
 std::wstring TrayTooltipText() {
     return std::wstring(kAppDisplayName) + L"\n版本" + FormatVersionForDisplay(QuattroVersionText());
@@ -2450,6 +2518,15 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
                 RunLink(linkId);
             }
             return 0;
+        }
+        return 0;
+    case WM_QUATTRO_DOUBLE_ALT_HOTKEY:
+        if (IsDoubleAltMainHotKey(config_.mainHotKey)) {
+            if (IsEffectivelyVisible()) {
+                HideMainWindow();
+            } else {
+                WakeUp();
+            }
         }
         return 0;
     case WM_PAINT:
@@ -5914,7 +5991,14 @@ void MainWindow::RegisterConfiguredHotKeys() {
         return false;
     };
 
-    if (config_.mainHotKey != 0) {
+    if (IsDoubleAltMainHotKey(config_.mainHotKey)) {
+        mainHotKeyRegistered_ = InstallDoubleAltHotKeyHook(hwnd_);
+        if (!mainHotKeyRegistered_) {
+            const std::wstring line = L"主窗口（" + FormatMainHotKeyText(config_.mainHotKey) + L"）";
+            failures += failures.empty() ? line : (L"\n" + line);
+            WriteAppLog(L"热键注册失败: " + line + L" - " + FormatLastError(GetLastError()));
+        }
+    } else if (config_.mainHotKey != 0) {
         mainHotKeyRegistered_ = registerHotKey(ID_HOTKEY_MAIN, config_.mainHotKey, L"主窗口");
     }
     int nextHotKeyId = ID_HOTKEY_LINK_BASE;
@@ -5946,6 +6030,7 @@ void MainWindow::UnregisterConfiguredHotKeys() {
     if (!hwnd_) {
         return;
     }
+    UninstallDoubleAltHotKeyHook(hwnd_);
     UnregisterHotKey(hwnd_, ID_HOTKEY_MAIN);
     mainHotKeyRegistered_ = false;
     for (const auto& [hotKeyId, _] : registeredLinkHotKeys_) {

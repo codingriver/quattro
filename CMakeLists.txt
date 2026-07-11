@@ -181,6 +181,7 @@ add_executable(Quattro WIN32
     src/services/Launcher.cpp
     src/services/LocalHttpServerService.cpp
     src/windows/LinkEditDialog.cpp
+    src/windows/MainHotKey.cpp
     src/windows/MainWindow.cpp
     src/domain/MenuCatalog.cpp
     src/domain/PluginRegistry.cpp
@@ -327,6 +328,7 @@ add_executable(QuattroUiScreenshotAcceptance
     src/services/Launcher.cpp
     src/services/LocalHttpServerService.cpp
     src/windows/LinkEditDialog.cpp
+    src/windows/MainHotKey.cpp
     src/domain/MenuCatalog.cpp
     src/domain/PluginRegistry.cpp
     src/windows/QuickImportDialog.cpp
@@ -720,6 +722,7 @@ add_executable(QuattroSettingsHttpButtonsAcceptance
     src/services/Launcher.cpp
     src/services/LocalHttpServerService.cpp
     src/windows/LinkEditDialog.cpp
+    src/windows/MainHotKey.cpp
     src/domain/MenuCatalog.cpp
     src/domain/PluginRegistry.cpp
     src/windows/QuickImportDialog.cpp

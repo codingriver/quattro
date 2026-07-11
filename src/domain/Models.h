@@ -60,7 +60,7 @@ struct AppConfig {
 
     int currentGroupId = 0;
     int currentTagId = 0;
-    int mainHotKey = L'Q';
+    int mainHotKey = -1;
 
     int width = 400;
     int height = 560;

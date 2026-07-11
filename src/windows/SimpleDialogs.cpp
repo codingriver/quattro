@@ -8,6 +8,7 @@
 #include "HotKeyEditor.h"
 #include "JsonValue.h"
 #include "LocalHttpServerService.h"
+#include "MainHotKey.h"
 #include "Storage.h"
 #include "ThemedControls.h"
 #include "ThemedUi.h"
@@ -185,6 +186,9 @@ std::wstring ReservedMainHotKeyReason(int key) {
 }
 
 HotKeyAvailability CheckMainHotKeyAvailability(HWND hwnd, int key, int currentRegisteredKey) {
+    if (IsDoubleAltMainHotKey(key)) {
+        return HotKeyAvailability{true, ERROR_SUCCESS, {}};
+    }
     if (key <= 0 || key == currentRegisteredKey) {
         return HotKeyAvailability{true, ERROR_SUCCESS, {}};
     }
@@ -209,17 +213,20 @@ HotKeyAvailability CheckMainHotKeyAvailability(HWND hwnd, int key, int currentRe
 }
 
 std::wstring MainHotKeyConflictMessage(int key, const HotKeyAvailability& availability) {
-    return FormatHotKeyText(key) + L" 不可用。\n\n" + availability.reason;
+    return FormatMainHotKeyText(key) + L" 不可用。\n\n" + availability.reason;
 }
 
 std::wstring MainHotKeyStatusText(int key, const HotKeyAvailability& availability) {
+    if (IsDoubleAltMainHotKey(key)) {
+        return availability.available ? L"当前热键可用。" : L"热键冲突：双击 Alt 不可用。";
+    }
     if (key <= 0) {
         return L"未设置主窗口热键。";
     }
     if (availability.available) {
         return L"当前热键可用。";
     }
-    return L"热键冲突：" + FormatHotKeyText(key) + L" 可能已被系统、输入法或其它软件占用。";
+    return L"热键冲突：" + FormatMainHotKeyText(key) + L" 可能已被系统、输入法或其它软件占用。";
 }
 
 std::wstring GetText(HWND hwnd) {
@@ -2895,7 +2902,7 @@ private:
             const int hotKeyCaptureX = hotKeyFieldX + hotKeyFieldWidth + hotKeyLayout.controlGapX;
             const int hotKeyClearX = hotKeyCaptureX + hotKeyButtonWidth + hotKeyLayout.controlGapX;
             Label(TabHotKeys, L"主窗口热键", hotKeyX, 74, hotKeyLabelWidth);
-            mainHotKeyText_ = FramedStatic(TabHotKeys, hotKeyFieldX, 66, hotKeyFieldWidth, FormatHotKeyText(draft_.mainHotKey));
+            mainHotKeyText_ = FramedStatic(TabHotKeys, hotKeyFieldX, 66, hotKeyFieldWidth, FormatMainHotKeyText(draft_.mainHotKey));
             Button(TabHotKeys, ID_MAIN_HOTKEY_CAPTURE, L"录入", hotKeyCaptureX, 68, hotKeyButtonWidth);
             Button(TabHotKeys, ID_MAIN_HOTKEY_CLEAR, L"清除", hotKeyClearX, 68, hotKeyButtonWidth);
             mainHotKeyStatus_ = Label(TabHotKeys, L"", hotKeyX, 112, hotKeyRowWidth);
@@ -3239,7 +3246,7 @@ private:
 
     void UpdateHotKeyLabels() {
         if (mainHotKeyText_) {
-            SetWindowTextW(mainHotKeyText_, FormatHotKeyText(draft_.mainHotKey).c_str());
+            SetWindowTextW(mainHotKeyText_, FormatMainHotKeyText(draft_.mainHotKey).c_str());
         }
         if (mainHotKeyStatus_) {
             const HotKeyAvailability availability = CheckMainHotKeyAvailability(hwnd_, draft_.mainHotKey, CurrentRegisteredMainHotKey());
