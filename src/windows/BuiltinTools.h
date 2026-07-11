@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Models.h"
 #include "PluginRegistry.h"
 #include "Theme.h"
 
@@ -7,4 +8,11 @@
 
 #include <string>
 
-bool ShowBuiltinTool(HWND owner, HINSTANCE instance, const Theme& theme, PluginRegistry& registry, const std::wstring& engine);
+bool ShowBuiltinTool(
+    HWND owner,
+    HINSTANCE instance,
+    const Theme& theme,
+    PluginRegistry& registry,
+    const AppConfig& config,
+    const std::wstring& engine,
+    bool locateProcessOnOpen = false);

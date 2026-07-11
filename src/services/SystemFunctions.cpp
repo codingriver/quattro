@@ -28,7 +28,7 @@ const std::array<BuiltinSystemContextMenuItem, 2> kNetworkContextItems{{
     {BuiltinSystemContextAction::DisconnectNetworkDrive, L"断开网络驱动器", MenuIconComputer},
 }};
 
-const std::array<SystemFunctionDefinition, 33> kSystemFunctions{{
+const std::array<SystemFunctionDefinition, 34> kSystemFunctions{{
     {L"this-pc", L"我的电脑", L"::{20D04FE0-3AEA-1069-A2D8-08002B30309D}", L"", 3, SW_SHOWNORMAL, L"Windows Shell 系统位置", -1, MenuIconNone, BuiltinSystemContextProfile::ThisPc},
     {L"personal", L"我的文档", L"shell:Personal", L"", 3, SW_SHOWNORMAL, L"当前用户文档目录"},
     {L"network", L"网络", L"::{F02C1A0D-BE21-4350-88B0-7367FC96EF3C}", L"", 3, SW_SHOWNORMAL, L"网络位置", -1, MenuIconNone, BuiltinSystemContextProfile::Network},
@@ -37,6 +37,7 @@ const std::array<SystemFunctionDefinition, 33> kSystemFunctions{{
     {L"registry-editor", L"注册表", L"%windir%\\regedit.exe", L"", 0, SW_SHOWNORMAL, L"注册表编辑器", -1, MenuIconWindows},
     {L"calculator", L"计算器", L"calc.exe", L"", 0, SW_SHOWNORMAL, L"Windows 计算器", -1, MenuIconCalculator},
     {L"command-prompt", L"命令行", L"%ComSpec%", L"", 0, SW_SHOWNORMAL, L"命令提示符", -1, MenuIconTerminal},
+    {L"powershell", L"PowerShell", L"powershell.exe", L"", 0, SW_SHOWNORMAL, L"Windows PowerShell", -1, MenuIconTerminal},
     {L"notepad", L"记事本", L"notepad.exe", L"", 0, SW_SHOWNORMAL, L"记事本", -1, MenuIconNotebook},
     {L"paint", L"画图", L"mspaint.exe", L"", 0, SW_SHOWNORMAL, L"画图", -1, MenuIconTheme},
     {L"group-policy", L"组策略", L"gpedit.msc", L"", 0, SW_SHOWNORMAL, L"本地组策略编辑器", -1, MenuIconTools},

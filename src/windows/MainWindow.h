@@ -184,6 +184,7 @@ private:
     void OpenSettings();
     void CommitSettingsConfig(const AppConfig& next, bool importedData);
     void OpenBuiltinTool(std::size_t index);
+    void OpenBuiltinToolEngine(const std::wstring& engine, bool locateProcessOnOpen = false);
     void ResetLayoutToDefaults();
     void ClearIconCache();
     void RefreshAllIcons();
@@ -406,6 +407,7 @@ private:
     bool trayIconVisible_ = false;
     bool hotKeysRegistered_ = false;
     bool mainHotKeyRegistered_ = false;
+    bool processLocatorHotKeyRegistered_ = false;
     bool runningAsAdmin_ = false;
     bool exitingForPrivilegeRestart_ = false;
     bool startupFirstPaintLogged_ = false;

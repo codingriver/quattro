@@ -32,4 +32,5 @@ bool ShowSettingsDialog(
     bool* importedData = nullptr,
     LocalHttpServerService* httpServer = nullptr,
     bool mainHotKeyRegistered = false,
+    bool processLocatorHotKeyRegistered = false,
     SettingsApplyCallback applyCallback = {});

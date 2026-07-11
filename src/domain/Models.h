@@ -60,7 +60,9 @@ struct AppConfig {
 
     int currentGroupId = 0;
     int currentTagId = 0;
+    bool globalHotKeysEnabled = true;
     int mainHotKey = -1;
+    int processLocatorHotKey = L'P';
 
     int width = 400;
     int height = 560;

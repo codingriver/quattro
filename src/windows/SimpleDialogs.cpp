@@ -41,8 +41,10 @@
 namespace {
 constexpr int ID_SETTINGS_TAB_BASE = 280;
 constexpr int ID_SETTINGS_TAB_CONTROL = 279;
+constexpr int ID_GLOBAL_HOTKEYS_ENABLED = 300;
 constexpr int ID_MAIN_HOTKEY_CAPTURE = 301;
 constexpr int ID_MAIN_HOTKEY_CLEAR = 302;
+constexpr int ID_PROCESS_LOCATOR_HOTKEY_CAPTURE = 303;
 constexpr int ID_GROUP_WIDTH = 401;
 constexpr int ID_TAG_WIDTH = 402;
 constexpr int ID_DOCK_DELAY = 403;
@@ -212,6 +214,27 @@ HotKeyAvailability CheckMainHotKeyAvailability(HWND hwnd, int key, int currentRe
     return HotKeyAvailability{false, error, std::move(reason)};
 }
 
+HotKeyAvailability CheckCtrlAltHotKeyAvailability(HWND hwnd, int key, int currentRegisteredKey) {
+    if (key <= 0 || key == currentRegisteredKey) {
+        return HotKeyAvailability{true, ERROR_SUCCESS, {}};
+    }
+    std::wstring reservedReason = ReservedMainHotKeyReason(key);
+    if (!reservedReason.empty()) {
+        return HotKeyAvailability{false, ERROR_SUCCESS, std::move(reservedReason)};
+    }
+    SetLastError(ERROR_SUCCESS);
+    if (RegisterHotKey(hwnd, ID_MAIN_HOTKEY_PROBE, MOD_CONTROL | MOD_ALT, static_cast<UINT>(key))) {
+        UnregisterHotKey(hwnd, ID_MAIN_HOTKEY_PROBE);
+        return HotKeyAvailability{true, ERROR_SUCCESS, {}};
+    }
+    const DWORD error = GetLastError();
+    std::wstring reason = L"该热键无法注册，可能已被系统、输入法或其它软件占用。";
+    if (error != ERROR_SUCCESS) {
+        reason += L"\n\n系统返回: " + FormatLastError(error);
+    }
+    return HotKeyAvailability{false, error, std::move(reason)};
+}
+
 std::wstring MainHotKeyConflictMessage(int key, const HotKeyAvailability& availability) {
     return FormatMainHotKeyText(key) + L" 不可用。\n\n" + availability.reason;
 }
@@ -227,6 +250,16 @@ std::wstring MainHotKeyStatusText(int key, const HotKeyAvailability& availabilit
         return L"当前热键可用。";
     }
     return L"热键冲突：" + FormatMainHotKeyText(key) + L" 可能已被系统、输入法或其它软件占用。";
+}
+
+std::wstring ProcessLocatorHotKeyStatusText(int key, const HotKeyAvailability& availability) {
+    if (key <= 0) {
+        return L"进程定位器快捷键未设置。";
+    }
+    if (availability.available) {
+        return L"当前快捷键可用。";
+    }
+    return L"进程定位器快捷键 " + FormatGlobalHotKeyText(key) + L" 已被占用。";
 }
 
 std::wstring GetText(HWND hwnd) {
@@ -1752,6 +1785,7 @@ public:
         std::filesystem::path httpRootBaseDirectory,
         LocalHttpServerService* httpServer,
         bool mainHotKeyRegistered,
+        bool processLocatorHotKeyRegistered,
         SettingsApplyCallback applyCallback)
         : owner_(owner),
           instance_(instance),
@@ -1762,6 +1796,7 @@ public:
           httpRootBaseDirectory_(std::move(httpRootBaseDirectory)),
           httpServer_(httpServer),
           mainHotKeyRegistered_(mainHotKeyRegistered),
+          processLocatorHotKeyRegistered_(processLocatorHotKeyRegistered),
           applyCallback_(std::move(applyCallback)) {}
 
     bool Run() {
@@ -1917,6 +1952,14 @@ private:
         options.checked = checked;
         options.size = ThemedCheckBoxSize::TwoLines;
         HWND hwnd = MakeUi().CheckBox(id, text, x, ContentY(y), width, options);
+        AddTabChild(hwnd, tab);
+        return hwnd;
+    }
+
+    HWND Toggle(int tab, int id, const wchar_t* text, int x, int y, bool checked, int width) {
+        ThemedToggleOptions options{};
+        options.checked = checked;
+        HWND hwnd = MakeUi().Toggle(id, text, x, ContentY(y), width, options);
         AddTabChild(hwnd, tab);
         return hwnd;
     }
@@ -2175,6 +2218,7 @@ private:
         if (Trim(draft_.httpServerRootPath).empty()) {
             draft_.httpServerRootPath = LocalHttpServerService::DefaultRootPath(httpRootBaseDirectory_).wstring();
         }
+        draft_.globalHotKeysEnabled = ThemedUi::IsChecked(globalHotKeysEnabled_);
     }
 
     bool TrySetMainHotKey(int key) {
@@ -2201,15 +2245,59 @@ private:
         return mainHotKeyRegistered_ ? config_.mainHotKey : 0;
     }
 
-    bool ValidateMainHotKeyBeforeSave() {
-        const HotKeyAvailability availability = CheckMainHotKeyAvailability(hwnd_, draft_.mainHotKey, CurrentRegisteredMainHotKey());
+    int CurrentRegisteredProcessLocatorHotKey() const {
+        return processLocatorHotKeyRegistered_ ? config_.processLocatorHotKey : 0;
+    }
+
+    bool TrySetProcessLocatorHotKey(int key) {
+        if (key == kMainHotKeyDoubleAlt) {
+            key = 0;
+        }
+        const HotKeyAvailability availability = CheckCtrlAltHotKeyAvailability(hwnd_, key, CurrentRegisteredProcessLocatorHotKey());
+        if (!availability.available) {
+            draft_.processLocatorHotKey = key;
+            UpdateHotKeyLabels();
+            ShowThemedMessageBox(hwnd_, instance_, theme_, ProcessLocatorHotKeyStatusText(key, availability), L"热键冲突", MB_OK | MB_ICONWARNING);
+            return false;
+        }
+        draft_.processLocatorHotKey = key;
         UpdateHotKeyLabels();
-        if (availability.available) {
+        return true;
+    }
+
+    bool ValidateHotKeysBeforeSave() {
+        if (!draft_.globalHotKeysEnabled) {
+            UpdateHotKeyLabels();
             return true;
         }
+        if (!IsDoubleAltMainHotKey(draft_.mainHotKey) &&
+            draft_.mainHotKey != 0 &&
+            draft_.mainHotKey == draft_.processLocatorHotKey) {
+            UpdateHotKeyLabels();
+            ShowThemedMessageBox(hwnd_, instance_, theme_, L"主窗口显隐和进程定位器不能使用同一个快捷键。", L"热键冲突", MB_OK | MB_ICONWARNING);
+            return false;
+        }
+        const HotKeyAvailability availability = CheckMainHotKeyAvailability(hwnd_, draft_.mainHotKey, CurrentRegisteredMainHotKey());
+        UpdateHotKeyLabels();
+        if (!availability.available) {
+            ShowThemedMessageBox(hwnd_, instance_, theme_, MainHotKeyConflictMessage(draft_.mainHotKey, availability), L"热键冲突", MB_OK | MB_ICONWARNING);
+            return false;
+        }
 
-        ShowThemedMessageBox(hwnd_, instance_, theme_, MainHotKeyConflictMessage(draft_.mainHotKey, availability), L"热键冲突", MB_OK | MB_ICONWARNING);
-        return false;
+        const HotKeyAvailability locatorAvailability = CheckCtrlAltHotKeyAvailability(
+            hwnd_, draft_.processLocatorHotKey, CurrentRegisteredProcessLocatorHotKey());
+        UpdateHotKeyLabels();
+        if (!locatorAvailability.available) {
+            ShowThemedMessageBox(
+                hwnd_,
+                instance_,
+                theme_,
+                ProcessLocatorHotKeyStatusText(draft_.processLocatorHotKey, locatorAvailability),
+                L"热键冲突",
+                MB_OK | MB_ICONWARNING);
+            return false;
+        }
+        return true;
     }
 
     AppConfig ReadWebDavDraftFromControls() {
@@ -2746,7 +2834,7 @@ private:
             return false;
         }
         ReadDraft();
-        if (!ValidateMainHotKeyBeforeSave()) {
+        if (!ValidateHotKeysBeforeSave()) {
             return false;
         }
         if (!SaveWebDavPasswordIfNeeded()) {
@@ -2756,6 +2844,7 @@ private:
         config_ = draft_;
         if (!closeAfterCommit && applyCallback_) {
             mainHotKeyRegistered_ = applyCallback_(config_, importedData_);
+            processLocatorHotKeyRegistered_ = config_.globalHotKeysEnabled && config_.processLocatorHotKey != 0;
             importedData_ = false;
             draft_ = config_;
             UpdateHotKeyLabels();
@@ -2892,20 +2981,34 @@ private:
             Label(TabInteraction, L"ms", 488, 154, 32);
 
             const DialogLayoutMetrics hotKeyLayout = GetDialogLayoutMetrics(theme_, DialogLayoutKind::Compact);
-            const int hotKeyLabelWidth = 84;
-            const int hotKeyFieldWidth = 210;
+            const int hotKeyLeft = 34;
+            const int hotKeyRight = 526;
+            const int hotKeyWidth = hotKeyRight - hotKeyLeft;
             const int hotKeyButtonWidth = 56;
-            const int hotKeyRowWidth = hotKeyLabelWidth + hotKeyLayout.labelGap + hotKeyFieldWidth +
-                hotKeyLayout.controlGapX + hotKeyButtonWidth + hotKeyLayout.controlGapX + hotKeyButtonWidth;
-            const int hotKeyX = hotKeyLayout.CenteredGroupX(560, hotKeyRowWidth);
-            const int hotKeyFieldX = hotKeyX + hotKeyLabelWidth + hotKeyLayout.labelGap;
-            const int hotKeyCaptureX = hotKeyFieldX + hotKeyFieldWidth + hotKeyLayout.controlGapX;
-            const int hotKeyClearX = hotKeyCaptureX + hotKeyButtonWidth + hotKeyLayout.controlGapX;
-            Label(TabHotKeys, L"主窗口热键", hotKeyX, 74, hotKeyLabelWidth);
-            mainHotKeyText_ = FramedStatic(TabHotKeys, hotKeyFieldX, 66, hotKeyFieldWidth, FormatMainHotKeyText(draft_.mainHotKey));
-            Button(TabHotKeys, ID_MAIN_HOTKEY_CAPTURE, L"录入", hotKeyCaptureX, 68, hotKeyButtonWidth);
-            Button(TabHotKeys, ID_MAIN_HOTKEY_CLEAR, L"清除", hotKeyClearX, 68, hotKeyButtonWidth);
-            mainHotKeyStatus_ = Label(TabHotKeys, L"", hotKeyX, 112, hotKeyRowWidth);
+            const int hotKeyHeaderY = 108;
+            const int hotKeyRowStep = 40;
+            const int hotKeyNameWidth = 170;
+            const int hotKeyActionX = hotKeyRight - hotKeyButtonWidth;
+            const int hotKeyValueX = hotKeyLeft + hotKeyNameWidth + hotKeyLayout.controlGapX;
+            const int hotKeyValueWidth = hotKeyActionX - hotKeyValueX - hotKeyLayout.controlGapX;
+            globalHotKeysEnabled_ = Toggle(
+                TabHotKeys, ID_GLOBAL_HOTKEYS_ENABLED, L"启用全局快捷键", hotKeyLeft, 62, draft_.globalHotKeysEnabled, 180);
+            Label(TabHotKeys, L"功能", hotKeyLeft, hotKeyHeaderY, hotKeyNameWidth);
+            Label(TabHotKeys, L"快捷键", hotKeyValueX, hotKeyHeaderY, hotKeyValueWidth);
+            Label(TabHotKeys, L"操作", hotKeyActionX, hotKeyHeaderY, hotKeyButtonWidth);
+
+            const int mainHotKeyRowY = hotKeyHeaderY + 30;
+            Label(TabHotKeys, L"主窗口显隐", hotKeyLeft, mainHotKeyRowY + 6, hotKeyNameWidth);
+            mainHotKeyText_ = FramedStatic(TabHotKeys, hotKeyValueX, mainHotKeyRowY, hotKeyValueWidth, FormatMainHotKeyText(draft_.mainHotKey));
+            Button(TabHotKeys, ID_MAIN_HOTKEY_CAPTURE, L"录入", hotKeyActionX, mainHotKeyRowY + 2, hotKeyButtonWidth);
+
+            const int processHotKeyRowY = mainHotKeyRowY + hotKeyRowStep;
+            Label(TabHotKeys, L"进程定位器", hotKeyLeft, processHotKeyRowY + 6, hotKeyNameWidth);
+            processLocatorHotKeyText_ = FramedStatic(
+                TabHotKeys, hotKeyValueX, processHotKeyRowY, hotKeyValueWidth, FormatGlobalHotKeyText(draft_.processLocatorHotKey));
+            Button(TabHotKeys, ID_PROCESS_LOCATOR_HOTKEY_CAPTURE, L"录入", hotKeyActionX, processHotKeyRowY + 2, hotKeyButtonWidth);
+
+            mainHotKeyStatus_ = Label(TabHotKeys, L"", hotKeyLeft, processHotKeyRowY + hotKeyRowStep + 8, hotKeyWidth);
             UpdateHotKeyLabels();
 
             Label(TabLinks, L"打开目录命令", 34, 68, 110);
@@ -3112,6 +3215,15 @@ private:
                 TrySetMainHotKey(ShowHotKeyCaptureDialog(hwnd_, instance_, theme_, draft_.mainHotKey));
                 return 0;
             }
+            if (LOWORD(wParam) == ID_PROCESS_LOCATOR_HOTKEY_CAPTURE) {
+                TrySetProcessLocatorHotKey(ShowHotKeyCaptureDialog(hwnd_, instance_, theme_, draft_.processLocatorHotKey));
+                return 0;
+            }
+            if (LOWORD(wParam) == ID_GLOBAL_HOTKEYS_ENABLED) {
+                draft_.globalHotKeysEnabled = ThemedUi::IsChecked(globalHotKeysEnabled_);
+                UpdateHotKeyLabels();
+                return 0;
+            }
             if (LOWORD(wParam) == ID_MAIN_HOTKEY_CLEAR) {
                 draft_.mainHotKey = 0;
                 UpdateHotKeyLabels();
@@ -3248,9 +3360,28 @@ private:
         if (mainHotKeyText_) {
             SetWindowTextW(mainHotKeyText_, FormatMainHotKeyText(draft_.mainHotKey).c_str());
         }
+        if (processLocatorHotKeyText_) {
+            SetWindowTextW(processLocatorHotKeyText_, FormatGlobalHotKeyText(draft_.processLocatorHotKey).c_str());
+        }
         if (mainHotKeyStatus_) {
-            const HotKeyAvailability availability = CheckMainHotKeyAvailability(hwnd_, draft_.mainHotKey, CurrentRegisteredMainHotKey());
-            SetWindowTextW(mainHotKeyStatus_, MainHotKeyStatusText(draft_.mainHotKey, availability).c_str());
+            if (!draft_.globalHotKeysEnabled) {
+                SetWindowTextW(mainHotKeyStatus_, L"全局快捷键已关闭。");
+                return;
+            }
+            if (!IsDoubleAltMainHotKey(draft_.mainHotKey) &&
+                draft_.mainHotKey != 0 &&
+                draft_.mainHotKey == draft_.processLocatorHotKey) {
+                SetWindowTextW(mainHotKeyStatus_, L"主窗口显隐和进程定位器不能使用同一个快捷键。");
+                return;
+            }
+            const HotKeyAvailability mainAvailability = CheckMainHotKeyAvailability(hwnd_, draft_.mainHotKey, CurrentRegisteredMainHotKey());
+            if (!mainAvailability.available) {
+                SetWindowTextW(mainHotKeyStatus_, MainHotKeyStatusText(draft_.mainHotKey, mainAvailability).c_str());
+                return;
+            }
+            const HotKeyAvailability locatorAvailability = CheckCtrlAltHotKeyAvailability(
+                hwnd_, draft_.processLocatorHotKey, CurrentRegisteredProcessLocatorHotKey());
+            SetWindowTextW(mainHotKeyStatus_, ProcessLocatorHotKeyStatusText(draft_.processLocatorHotKey, locatorAvailability).c_str());
         }
     }
 
@@ -3266,6 +3397,7 @@ private:
     std::filesystem::path httpRootBaseDirectory_;
     LocalHttpServerService* httpServer_ = nullptr;
     bool mainHotKeyRegistered_ = false;
+    bool processLocatorHotKeyRegistered_ = false;
     HBRUSH backgroundBrush_ = nullptr;
     HBRUSH fieldBrush_ = nullptr;
     HBRUSH readOnlyFieldBrush_ = nullptr;
@@ -3313,7 +3445,9 @@ private:
     HWND tagAlignLeft_ = nullptr;
     HWND tagAlignCenter_ = nullptr;
     HWND tagAlignRight_ = nullptr;
+    HWND globalHotKeysEnabled_ = nullptr;
     HWND mainHotKeyText_ = nullptr;
+    HWND processLocatorHotKeyText_ = nullptr;
     HWND mainHotKeyStatus_ = nullptr;
     HWND openDirEdit_ = nullptr;
     HWND helpUrlEdit_ = nullptr;
@@ -3383,8 +3517,19 @@ bool ShowSettingsDialog(
     bool* importedData,
     LocalHttpServerService* httpServer,
     bool mainHotKeyRegistered,
+    bool processLocatorHotKeyRegistered,
     SettingsApplyCallback applyCallback) {
-    SettingsDialog dialog(owner, instance, config, theme, appDirectory, httpRootBaseDirectory, httpServer, mainHotKeyRegistered, std::move(applyCallback));
+    SettingsDialog dialog(
+        owner,
+        instance,
+        config,
+        theme,
+        appDirectory,
+        httpRootBaseDirectory,
+        httpServer,
+        mainHotKeyRegistered,
+        processLocatorHotKeyRegistered,
+        std::move(applyCallback));
     const bool accepted = dialog.Run();
     if (importedData) {
         *importedData = dialog.webDavDataImported();

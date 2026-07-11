@@ -280,7 +280,7 @@ int wmain() {
         return false;
     };
     const std::filesystem::path baseDirectory = std::filesystem::current_path();
-    ShowSettingsDialog(owner, instance, config, theme, baseDirectory, baseDirectory, &importedData, &service, false, applyCallback);
+    ShowSettingsDialog(owner, instance, config, theme, baseDirectory, baseDirectory, &importedData, &service, false, false, applyCallback);
     if (interactor.joinable()) {
         interactor.join();
     }

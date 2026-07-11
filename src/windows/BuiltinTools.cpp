@@ -4,6 +4,7 @@
 
 #include "AppLog.h"
 #include "DialogLayout.h"
+#include "MainHotKey.h"
 #include "SimpleDialogs.h"
 #include "ThemedControls.h"
 #include "ThemedUi.h"
@@ -72,11 +73,9 @@ constexpr int ID_PORT_KILL_BASE = 7310;
 constexpr int ID_PROCESS_VALUE = 7401;
 constexpr int ID_PROCESS_QUERY = 7402;
 constexpr int ID_PROCESS_KILL_BASE = 7410;
-constexpr int ID_LOCATOR_HOTKEY = 7501;
 constexpr int ID_LOCATOR_PICK = 7502;
 constexpr int ID_LOCATOR_KILL = 7503;
 constexpr int ID_LOCATOR_OPEN = 7504;
-constexpr int ID_LOCATOR_GLOBAL_HOTKEY = 7505;
 constexpr int ID_LOCATOR_PID_VALUE = 7506;
 constexpr int ID_LOCATOR_PATH_VALUE = 7507;
 constexpr int ID_FILE_LOCK_PATH = 7601;
@@ -2417,8 +2416,19 @@ private:
 
 class ProcessLocatorDialog final {
 public:
-    ProcessLocatorDialog(HWND owner, HINSTANCE instance, const Theme& theme, PluginRegistry& registry)
-        : owner_(owner), instance_(instance), theme_(theme), registry_(registry) {}
+    ProcessLocatorDialog(
+        HWND owner,
+        HINSTANCE instance,
+        const Theme& theme,
+        PluginRegistry& registry,
+        const AppConfig& config,
+        bool locateOnOpen)
+        : owner_(owner),
+          instance_(instance),
+          theme_(theme),
+          registry_(registry),
+          config_(config),
+          locateOnOpen_(locateOnOpen) {}
 
     bool Run() {
         const std::wstring className = L"QuattroProcessLocator_" +
@@ -2458,10 +2468,6 @@ private:
     }
 
     LRESULT Handle(UINT message, WPARAM wParam, LPARAM lParam) {
-        if (message == WM_DESTROY) {
-            UnregisterHotKey(hwnd_, ID_LOCATOR_GLOBAL_HOTKEY);
-            hotKeyRegistered_ = false;
-        }
         LRESULT commonResult = 0;
         if (ThemedWindowUi::HandleCommonMessage(windowUi_, message, wParam, lParam, commonResult)) {
             if (message == WM_DESTROY) {
@@ -2482,15 +2488,8 @@ private:
                 KillCurrentProcess();
             } else if (LOWORD(wParam) == ID_LOCATOR_OPEN) {
                 OpenCurrentDirectory();
-            } else if (LOWORD(wParam) == ID_LOCATOR_HOTKEY && HIWORD(wParam) == CBN_SELCHANGE) {
-                SaveAndRegisterHotKey();
             } else if (LOWORD(wParam) == IDCANCEL) {
                 DestroyWindow(hwnd_);
-            }
-            return 0;
-        case WM_HOTKEY:
-            if (static_cast<int>(wParam) == ID_LOCATOR_GLOBAL_HOTKEY) {
-                LocateHoveredProcess();
             }
             return 0;
         case WM_PAINT:
@@ -2539,27 +2538,18 @@ private:
             ID_LOCATOR_OPEN, L"打开所在目录", fieldX + fieldWidth + layout.controlGapX, row1 + buttonOffsetY,
             ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, actionWidth);
 
-        const wchar_t* hotKeys[] = {L"F6", L"F7", L"F8", L"F9", L"F10", L"F11", L"F12"};
-        const int hotKeyWidth = 88;
+        const int hotKeyWidth = 180;
         const int pickWidth = ui.buttonWidth(
             L"立即获取", ThemedButtonRole::Primary, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
         const int groupWidth = layout.labelWidth + layout.labelGap + hotKeyWidth + layout.controlGapX + pickWidth;
         const int groupX = ui.centeredGroupX(groupWidth);
         ui.Label(L"全局快捷键", groupX, row2 + labelOffsetY, layout.labelWidth);
-        hotKey_ = ui.ComboBox(
-            ID_LOCATOR_HOTKEY,
+        hotKeyFrame_ = ui.rect(
             groupX + layout.labelWidth + layout.labelGap,
-            row2 + std::max(0, (rowHeight - ThemedControls::ComboBoxHeight(theme_)) / 2),
-            hotKeyWidth);
-        const std::wstring savedHotKey = registry_.GetSetting(L"quattro.builtin.process-locator", L"hotKey", L"F10");
-        int selectedIndex = 4;
-        for (int index = 0; index < static_cast<int>(_countof(hotKeys)); ++index) {
-            SendMessageW(hotKey_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(hotKeys[index]));
-            if (savedHotKey == hotKeys[index]) {
-                selectedIndex = index;
-            }
-        }
-        SendMessageW(hotKey_, CB_SETCURSEL, selectedIndex, 0);
+            row2 + fieldOffsetY,
+            hotKeyWidth,
+            fieldHeight);
+        hotKeyText_ = ui.Edit(nextGeneratedControlId_++, hotKeyFrame_, LocatorHotKeyText(), readOnlyOptions);
         ui.Button(
             ID_LOCATOR_PICK, L"立即获取",
             groupX + layout.labelWidth + layout.labelGap + hotKeyWidth + layout.controlGapX,
@@ -2567,12 +2557,14 @@ private:
             ThemedButtonRole::Primary, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, pickWidth, true);
 
         status_ = ui.StatusText(
-            L"将鼠标移到目标程序上，然后按全局快捷键。",
+            LocatorStatusText(),
             left,
             ui.footerButtonY(labelHeight),
             ui.contentWidth());
         UpdateActionButtons();
-        SaveAndRegisterHotKey();
+        if (locateOnOpen_) {
+            PostMessageW(hwnd_, WM_COMMAND, MAKEWPARAM(ID_LOCATOR_PICK, BN_CLICKED), 0);
+        }
     }
 
     void PaintFields() {
@@ -2582,26 +2574,24 @@ private:
         EndPaint(hwnd_, &ps);
     }
 
-    std::wstring SelectedHotKey() const {
-        const LRESULT selected = SendMessageW(hotKey_, CB_GETCURSEL, 0, 0);
-        if (selected == CB_ERR) {
-            return L"F10";
+    std::wstring LocatorHotKeyText() const {
+        if (!config_.globalHotKeysEnabled) {
+            return L"已关闭";
         }
-        wchar_t text[32]{};
-        SendMessageW(hotKey_, CB_GETLBTEXT, static_cast<WPARAM>(selected), reinterpret_cast<LPARAM>(text));
-        return text[0] ? std::wstring(text) : L"F10";
+        if (config_.processLocatorHotKey == 0) {
+            return L"未设置";
+        }
+        return FormatGlobalHotKeyText(config_.processLocatorHotKey);
     }
 
-    void SaveAndRegisterHotKey() {
-        UnregisterHotKey(hwnd_, ID_LOCATOR_GLOBAL_HOTKEY);
-        const std::wstring hotKeyName = SelectedHotKey();
-        registry_.SetSetting(L"quattro.builtin.process-locator", L"hotKey", hotKeyName);
-        hotKeyRegistered_ = RegisterHotKey(hwnd_, ID_LOCATOR_GLOBAL_HOTKEY, MOD_NOREPEAT, HotKeyFromName(hotKeyName)) != FALSE;
-        SetStatus(
-            hotKeyRegistered_
-                ? L"将鼠标移到目标程序上，然后按 " + hotKeyName + L"。"
-                : L"全局快捷键注册失败，请更换一个 F 键。",
-            hotKeyRegistered_ ? ThemedStatusRole::Normal : ThemedStatusRole::Danger);
+    std::wstring LocatorStatusText() const {
+        if (!config_.globalHotKeysEnabled) {
+            return L"全局快捷键已关闭。";
+        }
+        if (config_.processLocatorHotKey == 0) {
+            return L"将鼠标移到目标程序上，然后点击立即获取。";
+        }
+        return L"将鼠标移到目标程序上，然后按 " + FormatGlobalHotKeyText(config_.processLocatorHotKey) + L"。";
     }
 
     void LocateHoveredProcess() {
@@ -2683,24 +2673,34 @@ private:
     HINSTANCE instance_ = nullptr;
     const Theme& theme_;
     PluginRegistry& registry_;
+    const AppConfig& config_;
     HWND hwnd_ = nullptr;
     HWND pidValue_ = nullptr;
     HWND pathValue_ = nullptr;
     RECT pidFrame_{};
     RECT pathFrame_{};
-    HWND hotKey_ = nullptr;
+    RECT hotKeyFrame_{};
+    int nextGeneratedControlId_ = 8500;
+    HWND hotKeyText_ = nullptr;
     HWND killButton_ = nullptr;
     HWND openButton_ = nullptr;
     HWND status_ = nullptr;
     std::unique_ptr<ThemedWindowUi> windowUi_;
     DWORD currentPid_ = 0;
     std::wstring currentPath_;
-    bool hotKeyRegistered_ = false;
+    bool locateOnOpen_ = false;
     bool done_ = false;
 };
 }
 
-bool ShowBuiltinTool(HWND owner, HINSTANCE instance, const Theme& theme, PluginRegistry& registry, const std::wstring& engine) {
+bool ShowBuiltinTool(
+    HWND owner,
+    HINSTANCE instance,
+    const Theme& theme,
+    PluginRegistry& registry,
+    const AppConfig& config,
+    const std::wstring& engine,
+    bool locateProcessOnOpen) {
     if (engine == L"clicker") {
         ClickerDialog dialog(owner, instance, theme, registry);
         return dialog.Run();
@@ -2722,7 +2722,7 @@ bool ShowBuiltinTool(HWND owner, HINSTANCE instance, const Theme& theme, PluginR
         return dialog.Run();
     }
     if (engine == L"process-locator") {
-        ProcessLocatorDialog dialog(owner, instance, theme, registry);
+        ProcessLocatorDialog dialog(owner, instance, theme, registry, config, locateProcessOnOpen);
         return dialog.Run();
     }
     if (engine == L"file-lock-inspector") {

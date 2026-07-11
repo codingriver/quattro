@@ -57,6 +57,7 @@
 
 namespace {
 constexpr int ID_HOTKEY_MAIN = 1;
+constexpr int ID_HOTKEY_PROCESS_LOCATOR = 2;
 constexpr int ID_HOTKEY_LINK_BASE = 1000;
 constexpr int ID_NOTE_EDIT = 2100;
 constexpr int ID_REMINDER_PANEL = 2101;
@@ -2512,6 +2513,10 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             }
             return 0;
         }
+        if (wParam == ID_HOTKEY_PROCESS_LOCATOR) {
+            OpenBuiltinToolEngine(L"process-locator", true);
+            return 0;
+        }
         if (wParam >= ID_HOTKEY_LINK_BASE) {
             const int linkId = LinkIdFromHotKeyId(static_cast<int>(wParam));
             if (linkId > 0) {
@@ -4937,7 +4942,18 @@ void MainWindow::OpenSettings() {
         next = config_;
         return mainHotKeyRegistered_;
     };
-    if (!ShowSettingsDialog(hwnd_, instance_, next, theme_, appDirectory_, httpRootBaseDirectory_, &importedData, &httpServerService_, mainHotKeyRegistered_, applySettings)) {
+    if (!ShowSettingsDialog(
+            hwnd_,
+            instance_,
+            next,
+            theme_,
+            appDirectory_,
+            httpRootBaseDirectory_,
+            &importedData,
+            &httpServerService_,
+            mainHotKeyRegistered_,
+            processLocatorHotKeyRegistered_,
+            applySettings)) {
         if (importedData) {
             model_ = storageService_.Load();
             RestoreLegacyBuiltinSystemFunctionKeys();
@@ -4996,7 +5012,11 @@ void MainWindow::OpenBuiltinTool(std::size_t index) {
     if (index < menuToolEnabled_.size() && !menuToolEnabled_[index]) {
         return;
     }
-    ShowBuiltinTool(hwnd_, instance_, theme_, pluginRegistry_, menuToolEngines_[index]);
+    OpenBuiltinToolEngine(menuToolEngines_[index]);
+}
+
+void MainWindow::OpenBuiltinToolEngine(const std::wstring& engine, bool locateProcessOnOpen) {
+    ShowBuiltinTool(hwnd_, instance_, theme_, pluginRegistry_, config_, engine, locateProcessOnOpen);
 }
 
 void MainWindow::ResetLayoutToDefaults() {
@@ -5948,7 +5968,9 @@ void MainWindow::ApplyConfigRuntimeChanges(const AppConfig& previous) {
         RemoveTrayIcon();
         InitializeTrayIcon();
     }
-    if (previous.mainHotKey != config_.mainHotKey) {
+    if (previous.globalHotKeysEnabled != config_.globalHotKeysEnabled ||
+        previous.mainHotKey != config_.mainHotKey ||
+        previous.processLocatorHotKey != config_.processLocatorHotKey) {
         UnregisterConfiguredHotKeys();
         RegisterConfiguredHotKeys();
     }
@@ -5979,7 +6001,7 @@ void MainWindow::RegisterConfiguredHotKeys() {
     UnregisterConfiguredHotKeys();
     std::wstring failures;
     auto registerHotKey = [&](int id, int key, const std::wstring& name) -> bool {
-        if (key == 0) {
+        if (key <= 0) {
             return false;
         }
         if (RegisterHotKey(hwnd_, id, MOD_CONTROL | MOD_ALT, static_cast<UINT>(key))) {
@@ -5991,28 +6013,33 @@ void MainWindow::RegisterConfiguredHotKeys() {
         return false;
     };
 
-    if (IsDoubleAltMainHotKey(config_.mainHotKey)) {
-        mainHotKeyRegistered_ = InstallDoubleAltHotKeyHook(hwnd_);
-        if (!mainHotKeyRegistered_) {
-            const std::wstring line = L"主窗口（" + FormatMainHotKeyText(config_.mainHotKey) + L"）";
-            failures += failures.empty() ? line : (L"\n" + line);
-            WriteAppLog(L"热键注册失败: " + line + L" - " + FormatLastError(GetLastError()));
+    if (config_.globalHotKeysEnabled) {
+        if (IsDoubleAltMainHotKey(config_.mainHotKey)) {
+            mainHotKeyRegistered_ = InstallDoubleAltHotKeyHook(hwnd_);
+            if (!mainHotKeyRegistered_) {
+                const std::wstring line = L"主窗口（" + FormatMainHotKeyText(config_.mainHotKey) + L"）";
+                failures += failures.empty() ? line : (L"\n" + line);
+                WriteAppLog(L"热键注册失败: " + line + L" - " + FormatLastError(GetLastError()));
+            }
+        } else if (config_.mainHotKey != 0) {
+            mainHotKeyRegistered_ = registerHotKey(ID_HOTKEY_MAIN, config_.mainHotKey, L"主窗口");
         }
-    } else if (config_.mainHotKey != 0) {
-        mainHotKeyRegistered_ = registerHotKey(ID_HOTKEY_MAIN, config_.mainHotKey, L"主窗口");
-    }
-    int nextHotKeyId = ID_HOTKEY_LINK_BASE;
-    for (const auto& link : model_.links) {
-        if (link.hotKey == 0) {
-            continue;
-        }
-        const int hotKeyId = nextHotKeyId++;
-        if (RegisterHotKey(hwnd_, hotKeyId, MOD_CONTROL | MOD_ALT, static_cast<UINT>(link.hotKey))) {
-            registeredLinkHotKeys_.push_back({hotKeyId, link.id});
-        } else {
-            const std::wstring line = link.name + L"（" + FormatHotKeyText(link.hotKey) + L"）";
-            failures += failures.empty() ? line : (L"\n" + line);
-            WriteAppLog(L"启动项热键注册失败: " + line + L" - " + FormatLastError(GetLastError()));
+        processLocatorHotKeyRegistered_ = registerHotKey(
+            ID_HOTKEY_PROCESS_LOCATOR, config_.processLocatorHotKey, L"进程定位器");
+
+        int nextHotKeyId = ID_HOTKEY_LINK_BASE;
+        for (const auto& link : model_.links) {
+            if (link.hotKey == 0) {
+                continue;
+            }
+            const int hotKeyId = nextHotKeyId++;
+            if (RegisterHotKey(hwnd_, hotKeyId, MOD_CONTROL | MOD_ALT, static_cast<UINT>(link.hotKey))) {
+                registeredLinkHotKeys_.push_back({hotKeyId, link.id});
+            } else {
+                const std::wstring line = link.name + L"（" + FormatHotKeyText(link.hotKey) + L"）";
+                failures += failures.empty() ? line : (L"\n" + line);
+                WriteAppLog(L"启动项热键注册失败: " + line + L" - " + FormatLastError(GetLastError()));
+            }
         }
     }
 
@@ -6032,7 +6059,9 @@ void MainWindow::UnregisterConfiguredHotKeys() {
     }
     UninstallDoubleAltHotKeyHook(hwnd_);
     UnregisterHotKey(hwnd_, ID_HOTKEY_MAIN);
+    UnregisterHotKey(hwnd_, ID_HOTKEY_PROCESS_LOCATOR);
     mainHotKeyRegistered_ = false;
+    processLocatorHotKeyRegistered_ = false;
     for (const auto& [hotKeyId, _] : registeredLinkHotKeys_) {
         UnregisterHotKey(hwnd_, hotKeyId);
     }

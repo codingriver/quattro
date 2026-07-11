@@ -13,3 +13,6 @@ std::wstring FormatMainHotKeyText(int key) {
     return FormatHotKeyText(key);
 }
 
+std::wstring FormatGlobalHotKeyText(int key) {
+    return FormatHotKeyText(key);
+}
