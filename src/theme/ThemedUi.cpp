@@ -289,6 +289,14 @@ void ApplyActiveTab(HWND tabControl, int index, bool notify) {
             for (HWND child : state.pages[static_cast<std::size_t>(i)]) {
                 if (child) ShowWindow(child, i == index ? SW_SHOWNA : SW_HIDE);
             }
+            if (i == index) {
+                for (HWND child : state.pages[static_cast<std::size_t>(i)]) {
+                    if (child && GroupBoxStates().find(child) != GroupBoxStates().end()) {
+                        SetWindowPos(child, HWND_BOTTOM, 0, 0, 0, 0,
+                            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+                    }
+                }
+            }
         }
     }
     if (notify && state.owner) {
@@ -845,6 +853,7 @@ HWND ThemedUi::GroupBox(int id, const std::wstring& title, RECT frame, ThemedGro
         instance_, parent_, id, title.c_str(), frame, font_, theme_, options.raised));
     if (group) {
         EnableWindow(group, options.enabled ? TRUE : FALSE);
+        SetWindowPos(group, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
         GroupBoxStates()[group] = GroupBoxRuntime{};
         SetWindowSubclass(group, GroupBoxRuntimeProc, 2, 0);
     }
@@ -1053,6 +1062,14 @@ void ThemedUi::BindTabPage(HWND tabControl, int index, const std::vector<HWND>& 
         if (child) {
             ShowWindow(child, index == it->second.activeIndex ? SW_SHOWNA : SW_HIDE);
             SetWindowSubclass(child, TabPageNavigationProc, 4, reinterpret_cast<DWORD_PTR>(tabControl));
+        }
+    }
+    if (index == it->second.activeIndex) {
+        for (HWND child : children) {
+            if (child && GroupBoxStates().find(child) != GroupBoxStates().end()) {
+                SetWindowPos(child, HWND_BOTTOM, 0, 0, 0, 0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            }
         }
     }
 }

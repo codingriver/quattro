@@ -1882,7 +1882,7 @@ HWND CreateContainerControl(
     HFONT font, const Theme& theme, ControlKind kind, bool raised) {
     HWND hwnd = CreateWindowExW(
         0, L"BUTTON", text ? text : L"",
-        WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | BS_OWNERDRAW,
+        WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS | BS_OWNERDRAW,
         frame.left, frame.top, frame.right - frame.left, frame.bottom - frame.top,
         parent, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), instance, nullptr);
     if (hwnd) {
