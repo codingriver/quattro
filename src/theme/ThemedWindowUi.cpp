@@ -5,8 +5,12 @@
 
 #include <commctrl.h>
 #include <algorithm>
+#include <utility>
 
 namespace {
+constexpr const wchar_t* kEditFrameClassName = L"QuattroThemedEditFrame";
+constexpr UINT_PTR kEditChildSubclassId = 0x51454652;
+
 std::wstring LastErrorText(const wchar_t* prefix) {
     return std::wstring(prefix) + L": " + FormatLastError(GetLastError());
 }
@@ -36,23 +40,46 @@ ThemedWindowUi::ThemedWindowUi(
       theme_(theme),
       layoutKind_(layoutKind),
       clientWidth_(clientWidth),
-      clientHeight_(clientHeight) {}
+      clientHeight_(clientHeight) {
+    dpi_ = hwnd_ ? GetDpiForWindow(hwnd_) : USER_DEFAULT_SCREEN_DPI;
+    if (!dpi_) dpi_ = USER_DEFAULT_SCREEN_DPI;
+    if (hwnd_) {
+        RECT client{};
+        if (GetClientRect(hwnd_, &client)) {
+            clientWidth_ = client.right - client.left;
+            clientHeight_ = client.bottom - client.top;
+        }
+    }
+}
 
 ThemedWindowUi::~ThemedWindowUi() {
     RestoreModalOwner();
     ReleaseResources();
 }
 
-SIZE ThemedWindowUi::AdjustedWindowSize(int clientWidth, int clientHeight, DWORD style, DWORD exStyle, bool hasMenu) {
+SIZE ThemedWindowUi::AdjustedWindowSize(int clientWidth, int clientHeight, DWORD style, DWORD exStyle, bool hasMenu, UINT dpi) {
     RECT rect{0, 0, clientWidth, clientHeight};
-    AdjustWindowRectEx(&rect, style, hasMenu ? TRUE : FALSE, exStyle);
+    AdjustWindowRectExForDpi(&rect, style, hasMenu ? TRUE : FALSE, exStyle, dpi ? dpi : USER_DEFAULT_SCREEN_DPI);
     return SIZE{rect.right - rect.left, rect.bottom - rect.top};
 }
 
+UINT ThemedWindowUi::TargetDpi(const ThemedWindowCreateOptions& options) {
+    UINT dpi = options.owner ? GetDpiForWindow(options.owner) : GetDpiForSystem();
+    return dpi ? dpi : USER_DEFAULT_SCREEN_DPI;
+}
+
+int ThemedWindowUi::ScaleForDpi(int logicalPixels, UINT dpi, UINT logicalDpi) {
+    return MulDiv(logicalPixels, static_cast<int>(dpi ? dpi : USER_DEFAULT_SCREEN_DPI),
+        static_cast<int>(logicalDpi ? logicalDpi : USER_DEFAULT_SCREEN_DPI));
+}
+
 POINT ThemedWindowUi::WindowPosition(const ThemedWindowCreateOptions& options, int windowWidth, int windowHeight) {
+    const UINT dpi = TargetDpi(options);
+    const int offsetX = options.scaleForDpi ? ScaleForDpi(options.offsetX, dpi, options.logicalDpi) : options.offsetX;
+    const int offsetY = options.scaleForDpi ? ScaleForDpi(options.offsetY, dpi, options.logicalDpi) : options.offsetY;
     switch (options.placement) {
     case ThemedWindowPlacement::OffsetOwner:
-        return OffsetWindowFromOwnerOnMonitor(options.owner, windowWidth, windowHeight, options.offsetX, options.offsetY);
+        return OffsetWindowFromOwnerOnMonitor(options.owner, windowWidth, windowHeight, offsetX, offsetY);
     case ThemedWindowPlacement::Manual:
         return ClampWindowToOwnerMonitor(options.owner, options.x, options.y, windowWidth, windowHeight);
     case ThemedWindowPlacement::CenterOwner:
@@ -110,7 +137,10 @@ HWND ThemedWindowUi::CreateWindowHandle(const ThemedWindowCreateOptions& options
         }
     }
 
-    const SIZE windowSize = AdjustedWindowSize(options.clientWidth, options.clientHeight, options.style, options.exStyle);
+    const UINT dpi = TargetDpi(options);
+    const int clientWidth = options.scaleForDpi ? ScaleForDpi(options.clientWidth, dpi, options.logicalDpi) : options.clientWidth;
+    const int clientHeight = options.scaleForDpi ? ScaleForDpi(options.clientHeight, dpi, options.logicalDpi) : options.clientHeight;
+    const SIZE windowSize = AdjustedWindowSize(clientWidth, clientHeight, options.style, options.exStyle, false, dpi);
     const POINT position = WindowPosition(options, windowSize.cx, windowSize.cy);
     HWND hwnd = CreateWindowExW(
         options.exStyle,
@@ -151,7 +181,7 @@ bool ThemedWindowUi::HandleCommonMessage(
 
 HFONT ThemedWindowUi::font() const {
     if (!font_) {
-        font_ = ThemedControls::CreateDialogFont();
+        font_ = ThemedControls::CreateDialogFont(dpi_);
         if (font_) {
             ownsFont_ = true;
         } else {
@@ -165,7 +195,7 @@ ThemedUi ThemedWindowUi::ui() const {
     return ThemedUi(
         instance_, hwnd_, theme_, font(), layoutKind_, clientWidth_, clientHeight_,
         const_cast<ThemedWindowUi*>(this), const_cast<ThemedWindowUi*>(this),
-        const_cast<ThemedWindowUi*>(this));
+        const_cast<ThemedWindowUi*>(this), dpi_);
 }
 
 bool ThemedWindowUi::ShowModal() {
@@ -183,6 +213,10 @@ bool ThemedWindowUi::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam, L
     }
 
     switch (message) {
+    case WM_DPICHANGED:
+        ApplyDpiChange(HIWORD(wParam), reinterpret_cast<const RECT*>(lParam));
+        result = 0;
+        return true;
     case WM_CTLCOLOREDIT: {
         result = reinterpret_cast<LRESULT>(ApplyEditColors(
             reinterpret_cast<HDC>(wParam), reinterpret_cast<HWND>(lParam)));
@@ -209,10 +243,12 @@ bool ThemedWindowUi::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam, L
             result = reinterpret_cast<LRESULT>(ApplyEditColors(dc, child));
             return true;
         }
+        const wchar_t* backgroundComponent = ThemedControls::ControlBackgroundComponent(child);
+        const COLORREF background = ToColorRef(theme_.color(backgroundComponent, L"normal", L"bg"));
         SetBkMode(dc, TRANSPARENT);
         SetTextColor(dc, ToColorRef(theme_.color(L"label", L"normal", L"text")));
-        SetBkColor(dc, ToColorRef(theme_.color(L"dialog", L"normal", L"bg")));
-        result = reinterpret_cast<LRESULT>(BackgroundBrush());
+        SetBkColor(dc, background);
+        result = reinterpret_cast<LRESULT>(BrushForColor(background));
         return true;
     }
     case WM_PARENTNOTIFY:
@@ -240,6 +276,65 @@ bool ThemedWindowUi::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam, L
     return false;
 }
 
+void ThemedWindowUi::ApplyDpiChange(UINT newDpi, const RECT* suggestedWindowRect) {
+    if (!newDpi || newDpi == dpi_) return;
+    const UINT oldDpi = dpi_;
+    dpi_ = newDpi;
+
+    if (ownsFont_ && font_) {
+        DeleteObject(font_);
+        font_ = nullptr;
+        ownsFont_ = false;
+    }
+    font();
+
+    if (suggestedWindowRect) {
+        SetWindowPos(hwnd_, nullptr,
+            suggestedWindowRect->left, suggestedWindowRect->top,
+            suggestedWindowRect->right - suggestedWindowRect->left,
+            suggestedWindowRect->bottom - suggestedWindowRect->top,
+            SWP_NOACTIVATE | SWP_NOZORDER);
+    }
+
+    struct DpiChangeContext {
+        UINT oldDpi;
+        UINT newDpi;
+        HFONT font;
+    };
+    const DpiChangeContext dpiChange{oldDpi, newDpi, font_};
+    EnumChildWindows(hwnd_, [](HWND child, LPARAM value) -> BOOL {
+        const auto* dpi = reinterpret_cast<const DpiChangeContext*>(value);
+        RECT rect{};
+        GetWindowRect(child, &rect);
+        MapWindowPoints(HWND_DESKTOP, GetParent(child), reinterpret_cast<POINT*>(&rect), 2);
+        SetWindowPos(child, nullptr,
+            MulDiv(rect.left, dpi->newDpi, dpi->oldDpi),
+            MulDiv(rect.top, dpi->newDpi, dpi->oldDpi),
+            MulDiv(rect.right - rect.left, dpi->newDpi, dpi->oldDpi),
+            MulDiv(rect.bottom - rect.top, dpi->newDpi, dpi->oldDpi),
+            SWP_NOACTIVATE | SWP_NOZORDER);
+        SendMessageW(child, WM_SETFONT, reinterpret_cast<WPARAM>(dpi->font), FALSE);
+        return TRUE;
+    }, reinterpret_cast<LPARAM>(&dpiChange));
+
+    for (auto& frame : editFrames_) {
+        frame.frame = RECT{
+            MulDiv(frame.frame.left, newDpi, oldDpi), MulDiv(frame.frame.top, newDpi, oldDpi),
+            MulDiv(frame.frame.right, newDpi, oldDpi), MulDiv(frame.frame.bottom, newDpi, oldDpi)};
+        SyncEditFrameWindow(frame);
+    }
+    for (auto& frame : tableFrames_) {
+        frame.frame = RECT{
+            MulDiv(frame.frame.left, newDpi, oldDpi), MulDiv(frame.frame.top, newDpi, oldDpi),
+            MulDiv(frame.frame.right, newDpi, oldDpi), MulDiv(frame.frame.bottom, newDpi, oldDpi)};
+    }
+    RECT client{};
+    GetClientRect(hwnd_, &client);
+    clientWidth_ = client.right - client.left;
+    clientHeight_ = client.bottom - client.top;
+    InvalidateRect(hwnd_, nullptr, TRUE);
+}
+
 void ThemedWindowUi::RegisterEditFrame(HWND child, RECT frame, const ThemedEditOptions& options) {
     if (!child) {
         return;
@@ -247,8 +342,27 @@ void ThemedWindowUi::RegisterEditFrame(HWND child, RECT frame, const ThemedEditO
     if (EditFrame* editFrame = FindEditFrame(child)) {
         editFrame->frame = frame;
         editFrame->options = options;
+        SyncEditFrameWindow(*editFrame);
     } else {
-        editFrames_.push_back(EditFrame{child, frame, options});
+        editFrames_.push_back(EditFrame{child, nullptr, frame, options});
+        EditFrame& newFrame = editFrames_.back();
+        if (EnsureEditFrameClass()) {
+            newFrame.frameWindow = CreateWindowExW(
+                WS_EX_NOPARENTNOTIFY,
+                kEditFrameClassName,
+                L"",
+                WS_CHILD | WS_CLIPSIBLINGS,
+                frame.left,
+                frame.top,
+                frame.right - frame.left,
+                frame.bottom - frame.top,
+                hwnd_,
+                nullptr,
+                instance_,
+                this);
+        }
+        SetWindowSubclass(child, EditChildProc, kEditChildSubclassId, reinterpret_cast<DWORD_PTR>(this));
+        SyncEditFrameWindow(newFrame);
     }
 }
 
@@ -270,6 +384,13 @@ void ThemedWindowUi::UnregisterTableFrame(HWND child) {
 }
 
 void ThemedWindowUi::UnregisterEditFrame(HWND child) {
+    EditFrame* editFrame = FindEditFrame(child);
+    if (editFrame) {
+        RemoveWindowSubclass(child, EditChildProc, kEditChildSubclassId);
+        if (editFrame->frameWindow && IsWindow(editFrame->frameWindow)) {
+            DestroyWindow(editFrame->frameWindow);
+        }
+    }
     editFrames_.erase(
         std::remove_if(editFrames_.begin(), editFrames_.end(), [child](const EditFrame& editFrame) {
             return editFrame.child == child;
@@ -295,6 +416,7 @@ void ThemedWindowUi::MoveEditFrame(HWND child, RECT frame) {
         childRect.right - childRect.left,
         childRect.bottom - childRect.top,
         SWP_NOACTIVATE | SWP_NOZORDER);
+    SyncEditFrameWindow(*editFrame);
     InvalidateRect(hwnd_, &oldFrame, TRUE);
     InvalidateRect(hwnd_, &frame, TRUE);
 }
@@ -332,6 +454,7 @@ void ThemedWindowUi::SetEditEnabled(HWND child, bool enabled) {
     }
     editFrame->options.enabled = enabled;
     EnableWindow(child, enabled ? TRUE : FALSE);
+    SyncEditFrameWindow(*editFrame);
     InvalidateEditFrame(child);
 }
 
@@ -346,7 +469,9 @@ void ThemedWindowUi::SetEditPlaceholder(HWND child, const std::wstring& placehol
 
 void ThemedWindowUi::DrawRegisteredEditFrames(HDC dc) const {
     for (const auto& editFrame : editFrames_) {
-        if (IsWindow(editFrame.child)) {
+        if (editFrame.frameWindow && IsWindow(editFrame.frameWindow)) {
+            InvalidateRect(editFrame.frameWindow, nullptr, FALSE);
+        } else if (IsWindow(editFrame.child) && IsWindowVisible(editFrame.child)) {
             ThemedControls::DrawEditFrame(
                 theme_, dc, editFrame.frame, editFrame.child, editFrame.options.readOnly, editFrame.options.error);
         }
@@ -355,7 +480,7 @@ void ThemedWindowUi::DrawRegisteredEditFrames(HDC dc) const {
 
 void ThemedWindowUi::DrawRegisteredTableFrames(HDC dc) const {
     for (const auto& entry : tableFrames_) {
-        if (IsWindow(entry.child)) {
+        if (IsWindow(entry.child) && IsWindowVisible(entry.child)) {
             ThemedControls::DrawListFrame(theme_, dc, entry.frame, entry.child);
         }
     }
@@ -519,6 +644,139 @@ const ThemedWindowUi::EditFrame* ThemedWindowUi::FindEditFrame(HWND child) const
     return it == editFrames_.end() ? nullptr : &*it;
 }
 
+ThemedWindowUi::EditFrame* ThemedWindowUi::FindEditFrameWindow(HWND frameWindow) {
+    auto it = std::find_if(editFrames_.begin(), editFrames_.end(), [frameWindow](const EditFrame& editFrame) {
+        return editFrame.frameWindow == frameWindow;
+    });
+    return it == editFrames_.end() ? nullptr : &*it;
+}
+
+const ThemedWindowUi::EditFrame* ThemedWindowUi::FindEditFrameWindow(HWND frameWindow) const {
+    auto it = std::find_if(editFrames_.begin(), editFrames_.end(), [frameWindow](const EditFrame& editFrame) {
+        return editFrame.frameWindow == frameWindow;
+    });
+    return it == editFrames_.end() ? nullptr : &*it;
+}
+
+bool ThemedWindowUi::EnsureEditFrameClass() {
+    WNDCLASSEXW wc{};
+    wc.cbSize = sizeof(wc);
+    wc.lpfnWndProc = ThemedWindowUi::EditFrameProc;
+    wc.hInstance = instance_;
+    wc.hCursor = LoadCursorW(nullptr, IDC_IBEAM);
+    wc.lpszClassName = kEditFrameClassName;
+    return RegisterClassExW(&wc) != 0 || GetLastError() == ERROR_CLASS_ALREADY_EXISTS;
+}
+
+void ThemedWindowUi::SyncEditFrameWindow(EditFrame& editFrame) {
+    if (!editFrame.frameWindow || !IsWindow(editFrame.frameWindow) || !IsWindow(editFrame.child)) {
+        return;
+    }
+    const bool visible = IsWindowVisible(editFrame.child) != FALSE;
+    const bool enabled = IsWindowEnabled(editFrame.child) != FALSE;
+    EnableWindow(editFrame.frameWindow, enabled ? TRUE : FALSE);
+    SetWindowPos(
+        editFrame.frameWindow,
+        editFrame.child,
+        editFrame.frame.left,
+        editFrame.frame.top,
+        editFrame.frame.right - editFrame.frame.left,
+        editFrame.frame.bottom - editFrame.frame.top,
+        SWP_NOACTIVATE | (visible ? SWP_SHOWWINDOW : SWP_HIDEWINDOW));
+    InvalidateRect(editFrame.frameWindow, nullptr, FALSE);
+}
+
+void ThemedWindowUi::PaintEditFrameWindow(HWND frameWindow, HDC dc) const {
+    const EditFrame* editFrame = FindEditFrameWindow(frameWindow);
+    if (!editFrame || !IsWindow(editFrame->child)) {
+        return;
+    }
+    RECT rect{};
+    GetClientRect(frameWindow, &rect);
+    ThemedControls::DrawEditFrame(
+        theme_, dc, rect, editFrame->child, editFrame->options.readOnly, editFrame->options.error);
+}
+
+LRESULT CALLBACK ThemedWindowUi::EditFrameProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
+    ThemedWindowUi* ui = reinterpret_cast<ThemedWindowUi*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    if (message == WM_NCCREATE) {
+        auto* create = reinterpret_cast<CREATESTRUCTW*>(lParam);
+        ui = static_cast<ThemedWindowUi*>(create->lpCreateParams);
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(ui));
+    }
+    switch (message) {
+    case WM_ERASEBKGND:
+        return 1;
+    case WM_PAINT:
+        if (ui) {
+            PAINTSTRUCT ps{};
+            HDC dc = BeginPaint(hwnd, &ps);
+            ui->PaintEditFrameWindow(hwnd, dc);
+            EndPaint(hwnd, &ps);
+            return 0;
+        }
+        break;
+    case WM_LBUTTONDOWN:
+        if (ui) {
+            if (EditFrame* editFrame = ui->FindEditFrameWindow(hwnd)) {
+                if (IsWindowEnabled(editFrame->child)) {
+                    SetFocus(editFrame->child);
+                }
+            }
+        }
+        return 0;
+    case WM_NCDESTROY:
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+        break;
+    default:
+        break;
+    }
+    return DefWindowProcW(hwnd, message, wParam, lParam);
+}
+
+LRESULT CALLBACK ThemedWindowUi::EditChildProc(
+    HWND hwnd,
+    UINT message,
+    WPARAM wParam,
+    LPARAM lParam,
+    UINT_PTR id,
+    DWORD_PTR data) {
+    auto* ui = reinterpret_cast<ThemedWindowUi*>(data);
+    if (message == WM_NCDESTROY) {
+        RemoveWindowSubclass(hwnd, EditChildProc, id);
+        const LRESULT result = DefSubclassProc(hwnd, message, wParam, lParam);
+        if (ui) {
+            ui->UnregisterEditFrame(hwnd);
+        }
+        return result;
+    }
+    const LRESULT result = DefSubclassProc(hwnd, message, wParam, lParam);
+    if (ui) {
+        if (EditFrame* editFrame = ui->FindEditFrame(hwnd)) {
+            if (message == WM_SHOWWINDOW && editFrame->frameWindow && IsWindow(editFrame->frameWindow)) {
+                if (wParam) {
+                    EnableWindow(editFrame->frameWindow, IsWindowEnabled(editFrame->child));
+                    SetWindowPos(
+                        editFrame->frameWindow,
+                        editFrame->child,
+                        editFrame->frame.left,
+                        editFrame->frame.top,
+                        editFrame->frame.right - editFrame->frame.left,
+                        editFrame->frame.bottom - editFrame->frame.top,
+                        SWP_NOACTIVATE | SWP_SHOWWINDOW);
+                    InvalidateRect(editFrame->frameWindow, nullptr, FALSE);
+                } else {
+                    ShowWindow(editFrame->frameWindow, SW_HIDE);
+                }
+            } else if (message == WM_ENABLE || message == WM_SETFOCUS || message == WM_KILLFOCUS ||
+                       message == WM_MOUSEMOVE || message == WM_MOUSELEAVE) {
+                ui->SyncEditFrameWindow(*editFrame);
+            }
+        }
+    }
+    return result;
+}
+
 const wchar_t* ThemedWindowUi::EditState(const EditFrame& editFrame) const {
     if (!IsWindowEnabled(editFrame.child)) {
         return L"disabled";
@@ -541,7 +799,11 @@ void ThemedWindowUi::InvalidateEditFrame(HWND child) const {
     }
     for (const auto& editFrame : editFrames_) {
         if (editFrame.child == child) {
-            InvalidateRect(hwnd_, &editFrame.frame, TRUE);
+            if (editFrame.frameWindow && IsWindow(editFrame.frameWindow)) {
+                InvalidateRect(editFrame.frameWindow, nullptr, FALSE);
+            } else {
+                InvalidateRect(hwnd_, &editFrame.frame, TRUE);
+            }
             return;
         }
     }
@@ -583,6 +845,15 @@ HBRUSH ThemedWindowUi::ApplyEditColors(HDC dc, HWND child) {
 }
 
 void ThemedWindowUi::ReleaseResources() {
+    for (auto& editFrame : editFrames_) {
+        if (editFrame.child && IsWindow(editFrame.child)) {
+            RemoveWindowSubclass(editFrame.child, EditChildProc, kEditChildSubclassId);
+        }
+        if (editFrame.frameWindow && IsWindow(editFrame.frameWindow)) {
+            DestroyWindow(editFrame.frameWindow);
+        }
+    }
+    editFrames_.clear();
     if (tooltip_) {
         DestroyWindow(tooltip_);
         tooltip_ = nullptr;

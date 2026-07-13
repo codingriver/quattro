@@ -9,7 +9,9 @@
 #include "../src/services/SystemFunctions.h"
 #include "../src/services/UpdateCheckService.h"
 #include "../src/theme/Theme.h"
+#include "../src/theme/ThemedFormLayout.h"
 #include "../src/theme/ThemedUi.h"
+#include "../src/theme/ThemedWindowUi.h"
 #include "../src/domain/TodoSchedule.h"
 #include "../src/common/Utilities.h"
 #include "../src/services/WebDavClient.h"
@@ -492,6 +494,8 @@ int wmain() {
     Check(fallbackTheme.color(L"toggle", L"disabled", L"text").a > 0.9f, "Theme default toggle text state");
     Check(fallbackTheme.color(L"radio", L"hover", L"border").a > 0.9f, "Theme default radio hover state");
     Check(fallbackTheme.color(L"slider", L"disabled", L"thumb").a > 0.9f, "Theme default slider disabled state");
+    Check(ThemedWindowUi::ScaleForDpi(544, 120) == 680, "Themed window scales logical width at 125 percent DPI");
+    Check(ThemedWindowUi::ScaleForDpi(441, 144) == 662, "Themed window scales logical height at 150 percent DPI");
     HWND controlParent = CreateWindowExW(
         0, L"STATIC", L"", WS_POPUP,
         0, 0, 320, 200, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
@@ -501,6 +505,35 @@ int wmain() {
             GetModuleHandleW(nullptr), controlParent, fallbackTheme,
             reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT)),
             DialogLayoutKind::Compact, 320, 200);
+        ThemedUi dpi125Ui(
+            GetModuleHandleW(nullptr), controlParent, fallbackTheme,
+            reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT)),
+            DialogLayoutKind::Compact, 680, 551, nullptr, nullptr, nullptr, 120);
+        ThemedUi dpi150Ui(
+            GetModuleHandleW(nullptr), controlParent, fallbackTheme,
+            reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT)),
+            DialogLayoutKind::Compact, 816, 662, nullptr, nullptr, nullptr, 144);
+        Check(dpi125Ui.layout().contentInsetX == ThemedWindowUi::ScaleForDpi(controlUi.layout().contentInsetX, 120),
+            "Themed UI scales dialog metrics at 125 percent DPI");
+        Check(dpi150Ui.checkBoxHeight() == ThemedWindowUi::ScaleForDpi(controlUi.checkBoxHeight(), 144),
+            "Themed UI scales component templates at 150 percent DPI");
+        const ThemedFormLayout sectionLayout(controlUi);
+        const ThemedContentInsets sectionInsets = controlUi.groupBoxInsets();
+        Check(sectionInsets.top == controlUi.scale(24),
+            "Themed group box separates title height from content gap");
+        const ThemedSectionGeometry section = sectionLayout.section(
+            10, 20, 280,
+            {sectionLayout.sectionRow({ThemedSectionItemKind::Label, ThemedSectionItemKind::Edit}),
+             sectionLayout.sectionRow({ThemedSectionItemKind::Label, ThemedSectionItemKind::Edit, ThemedSectionItemKind::CompactButton})});
+        const int sectionRowGap = controlUi.scale(static_cast<int>(fallbackTheme.metric(L"groupBox", L"contentRowGap", 4.0f)));
+        Check(section.rowTops.size() == 2 &&
+                section.rowTops[1] - section.rowTops[0] == controlUi.editHeight() + sectionRowGap,
+            "Themed section inserts one public row gap between rows");
+        Check(section.frame.bottom == section.rowTops[1] + controlUi.editHeight() + sectionInsets.bottom,
+            "Themed section does not append row gap after final row");
+        Check(sectionLayout.sectionItemY(section, 0, controlUi.labelHeight()) ==
+                section.rowTops[0] + (controlUi.editHeight() - controlUi.labelHeight()) / 2,
+            "Themed section vertically centers label in field row");
         ThemedToggleOptions runtimeToggleOptions{};
         runtimeToggleOptions.checked = true;
         HWND runtimeToggle = controlUi.Toggle(7101, L"toggle", 8, 8, 120, runtimeToggleOptions);
@@ -588,6 +621,25 @@ int wmain() {
         Check(ThemedUi::InsertTool(runtimeToolbar, 1, ThemedToolItem{705, L"More"}), "Themed toolbar dynamic insert");
         Check(ThemedUi::MoveTool(runtimeToolbar, 705, 0) && ThemedUi::ToolIndex(runtimeToolbar, 705) == 0, "Themed toolbar dynamic reorder");
         Check(ThemedUi::RemoveTool(runtimeToolbar, 705) && !ThemedUi::HasTool(runtimeToolbar, 705), "Themed toolbar dynamic remove");
+        HWND dpiChild = CreateWindowExW(0, L"STATIC", L"dpi", WS_CHILD | WS_VISIBLE,
+            10, 10, 40, 20, controlParent, nullptr, GetModuleHandleW(nullptr), nullptr);
+        ThemedWindowUi dpiWindow(
+            GetModuleHandleW(nullptr), nullptr, controlParent, fallbackTheme,
+            DialogLayoutKind::Compact, 320, 200);
+        RECT suggested{0, 0, 400, 250};
+        LRESULT dpiResult = 0;
+        Check(dpiWindow.HandleMessage(WM_DPICHANGED, MAKEWPARAM(120, 120), reinterpret_cast<LPARAM>(&suggested), dpiResult),
+            "Themed window handles 125 percent DPI change");
+        RECT dpiChildRect{};
+        GetWindowRect(dpiChild, &dpiChildRect);
+        Check(dpiChildRect.right - dpiChildRect.left == 50 && dpiChildRect.bottom - dpiChildRect.top == 25,
+            "Themed window scales child geometry at 125 percent DPI");
+        suggested = RECT{0, 0, 480, 300};
+        Check(dpiWindow.HandleMessage(WM_DPICHANGED, MAKEWPARAM(144, 144), reinterpret_cast<LPARAM>(&suggested), dpiResult),
+            "Themed window handles 150 percent DPI change");
+        GetWindowRect(dpiChild, &dpiChildRect);
+        Check(dpiChildRect.right - dpiChildRect.left == 60 && dpiChildRect.bottom - dpiChildRect.top == 30 && dpiWindow.ui().dpi() == 144,
+            "Themed window keeps public UI metrics at 150 percent DPI");
         DestroyWindow(controlParent);
     }
     std::filesystem::remove_all(themeRoot, ec);

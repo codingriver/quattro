@@ -125,6 +125,7 @@ HWND CreateSeparator(
     HINSTANCE instance, HWND parent, RECT frame, const Theme& theme, bool vertical);
 
 void SetControlBackgroundComponent(HWND hwnd, const wchar_t* component);
+const wchar_t* ControlBackgroundComponent(HWND hwnd);
 void SetControlMultiline(HWND hwnd, bool multiline);
 
 HWND CreateTabButton(
@@ -165,8 +166,8 @@ HWND CreateListBox(
     const Theme& theme,
     DWORD extraStyle = LBS_NOTIFY | LBS_HASSTRINGS | WS_VSCROLL);
 
-HFONT CreateDialogFont();
-HFONT CreateEditFont(const Theme& theme);
+HFONT CreateDialogFont(UINT dpi = USER_DEFAULT_SCREEN_DPI);
+HFONT CreateEditFont(const Theme& theme, UINT dpi = USER_DEFAULT_SCREEN_DPI);
 
 HWND CreateStaticText(
     HINSTANCE instance,

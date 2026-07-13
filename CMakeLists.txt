@@ -262,7 +262,9 @@ add_executable(QuattroTests
     src/services/SystemFunctions.cpp
     src/theme/Theme.cpp
     src/theme/ThemedControls.cpp
+    src/theme/ThemedFormLayout.cpp
     src/theme/ThemedUi.cpp
+    src/theme/ThemedWindowUi.cpp
     src/domain/TodoSchedule.cpp
     src/services/UpdateCheckService.cpp
     src/common/Utilities.cpp

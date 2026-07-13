@@ -63,6 +63,7 @@ struct AppConfig {
     bool globalHotKeysEnabled = true;
     int mainHotKey = -1;
     int processLocatorHotKey = L'P';
+    bool ignoreHotKeyConflictWarning = false;
 
     int width = 400;
     int height = 560;

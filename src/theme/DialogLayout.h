@@ -55,6 +55,27 @@ struct DialogLayoutMetrics {
     }
 };
 
+inline int ScaleDialogMetric(int value, UINT dpi) {
+    return MulDiv(value, static_cast<int>(dpi ? dpi : USER_DEFAULT_SCREEN_DPI), USER_DEFAULT_SCREEN_DPI);
+}
+
+inline DialogLayoutMetrics ScaleDialogLayoutMetrics(DialogLayoutMetrics metrics, UINT dpi) {
+    metrics.contentInsetX = ScaleDialogMetric(metrics.contentInsetX, dpi);
+    metrics.contentInsetY = ScaleDialogMetric(metrics.contentInsetY, dpi);
+    metrics.labelMinWidth = ScaleDialogMetric(metrics.labelMinWidth, dpi);
+    metrics.labelWidth = ScaleDialogMetric(metrics.labelWidth, dpi);
+    metrics.labelGap = ScaleDialogMetric(metrics.labelGap, dpi);
+    metrics.rowGap = ScaleDialogMetric(metrics.rowGap, dpi);
+    metrics.sectionGap = ScaleDialogMetric(metrics.sectionGap, dpi);
+    metrics.footerGap = ScaleDialogMetric(metrics.footerGap, dpi);
+    metrics.footerInsetY = ScaleDialogMetric(metrics.footerInsetY, dpi);
+    metrics.controlGapX = ScaleDialogMetric(metrics.controlGapX, dpi);
+    metrics.footerButtonWidth = ScaleDialogMetric(metrics.footerButtonWidth, dpi);
+    metrics.footerButtonGap = ScaleDialogMetric(metrics.footerButtonGap, dpi);
+    metrics.fieldX = metrics.contentInsetX + metrics.labelWidth + metrics.labelGap;
+    return metrics;
+}
+
 inline int DialogLayoutMetric(const Theme& theme, const wchar_t* name, float fallback) {
     return static_cast<int>(theme.metric(L"dialog", name, fallback));
 }

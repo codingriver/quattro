@@ -218,6 +218,7 @@ int wmain() {
 
     AppConfig config;
     config.mainHotKey = 0;
+    config.globalHotKeysEnabled = false;
     config.httpServerRootPath = root.wstring();
     config.httpServerPort = 45200 + static_cast<int>(GetCurrentProcessId() % 1000);
     config.httpServerLanAccess = false;

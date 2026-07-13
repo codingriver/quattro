@@ -2537,6 +2537,10 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         InvalidateRect(hwnd_, nullptr, FALSE);
         return 0;
     case WM_ACTIVATEAPP:
+        if (!wParam) {
+            CancelNavDrag();
+            CancelLinkDrag();
+        }
         if (!wParam && config_.hideWhenInactive && IsWindowVisible(hwnd_) && !DockAutoHidePaused()) {
             HideMainWindow();
         } else if (wParam && dockHidden_) {
@@ -2628,6 +2632,12 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         const float x = static_cast<float>(GET_X_LPARAM(lParam));
         const float y = static_cast<float>(GET_Y_LPARAM(lParam));
         POINT clientPoint{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+        if (navDragCandidateId_ > 0 || navDragActive_) {
+            UpdateNavDrag(clientPoint);
+            if (navDragActive_) {
+                return 0;
+            }
+        }
         if (linkDragCandidateId_ > 0 || linkDragActive_) {
             UpdateLinkDrag(clientPoint);
             if (linkDragActive_) {
@@ -2671,6 +2681,10 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
     }
     case WM_MOUSELEAVE:
         HideItemTooltip();
+        if (navDragActive_) {
+            return 0;
+        }
+        CancelNavDrag();
         trackingMouse_ = false;
         hover_ = {};
         pendingHoverActivationKind_ = HitKind::None;
@@ -2699,6 +2713,7 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         HideItemTooltip();
         SetFocus(hwnd_);
         selectionByKeyboard_ = false;
+        CancelNavDrag();
         CancelLinkDrag();
         const float x = static_cast<float>(GET_X_LPARAM(lParam));
         const float y = static_cast<float>(GET_Y_LPARAM(lParam));
@@ -2738,9 +2753,11 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             return 0;
         case HitKind::Group:
             SelectGroup(hit.id);
+            BeginNavDragCandidate(hit.kind, hit.id, clientPoint);
             return 0;
         case HitKind::Tag:
             SelectTag(hit.id);
+            BeginNavDragCandidate(hit.kind, hit.id, clientPoint);
             return 0;
         case HitKind::Link:
             selectedLinkId_ = hit.id;
@@ -2757,6 +2774,15 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
     }
     case WM_LBUTTONUP: {
         HideItemTooltip();
+        if (navDragActive_) {
+            CommitNavDrag();
+            return 0;
+        }
+        navDragCandidateId_ = 0;
+        navDragId_ = 0;
+        navDragKind_ = NavDragKind::None;
+        navDragMode_ = NavDragMode::None;
+        navDragInsertIndex_ = -1;
         if (linkDragActive_) {
             CommitLinkDrag();
             return 0;
@@ -3237,6 +3263,8 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         return DefWindowProcW(hwnd_, message, wParam, lParam);
     case WM_DESTROY:
         WriteAppLog(L"主窗口销毁，准备退出消息循环。");
+        CancelNavDrag();
+        CancelLinkDrag();
         RemoveTrayIcon();
         SaveCurrentNotePage();
         urlIconDownloadService_.Shutdown();
@@ -4237,6 +4265,31 @@ bool MainWindow::ApplyManualLinkOrder(int tagId, const std::vector<int>& ordered
     return true;
 }
 
+bool MainWindow::ApplyManualGroupOrder(int parentGroup, const std::vector<int>& orderedGroupIds, const wchar_t* title) {
+    if (parentGroup < 0 || orderedGroupIds.empty()) {
+        return false;
+    }
+
+    for (int i = 0; i < static_cast<int>(orderedGroupIds.size()); ++i) {
+        Group* group = FindGroup(orderedGroupIds[i]);
+        if (!group || group->parentGroup != parentGroup) {
+            continue;
+        }
+        if (group->pos == i) {
+            continue;
+        }
+        Group edited = *group;
+        edited.pos = i;
+        if (!storageService_.UpdateGroup(edited)) {
+            MessageBoxW(hwnd_, storageService_.lastError().c_str(), title, MB_OK | MB_ICONWARNING);
+            return false;
+        }
+        *group = edited;
+    }
+
+    return true;
+}
+
 void MainWindow::MoveLinkWithinTag(int linkId, int direction) {
     Link* link = FindLink(linkId);
     if (!link) {
@@ -4299,14 +4352,13 @@ void MainWindow::MoveGroupWithinParent(int groupId, int direction) {
     }
 
     std::swap(siblings[index], siblings[targetIndex]);
-    for (int i = 0; i < static_cast<int>(siblings.size()); ++i) {
-        Group edited = *siblings[i];
-        edited.pos = i;
-        if (!storageService_.UpdateGroup(edited)) {
-            MessageBoxW(hwnd_, storageService_.lastError().c_str(), L"移动分组", MB_OK | MB_ICONWARNING);
-            return;
-        }
-        *siblings[i] = edited;
+    std::vector<int> orderedIds;
+    orderedIds.reserve(siblings.size());
+    for (const Group* item : siblings) {
+        orderedIds.push_back(item->id);
+    }
+    if (!ApplyManualGroupOrder(group->parentGroup, orderedIds, group->parentGroup == 0 ? L"移动分组" : L"移动标签")) {
+        return;
     }
     if (group->parentGroup == 0) {
         currentGroupId_ = groupId;
@@ -6040,14 +6092,24 @@ void MainWindow::RegisterConfiguredHotKeys() {
     }
 
     if (!failures.empty()) {
-        MessageBoxW(
-            hwnd_,
-            (L"以下热键注册失败，可能已被系统保留，或已被其它软件/工具占用：\n" + failures).c_str(),
-            L"热键冲突",
-            MB_OK | MB_ICONWARNING);
+        ShowHotKeyConflictWarning(failures);
     }
     hotKeysRegistered_ = true;
     UpdateTrayTooltip();
+}
+
+void MainWindow::ShowHotKeyConflictWarning(const std::wstring& failures) {
+    if (failures.empty() || hotKeyConflictWarningShown_ || config_.ignoreHotKeyConflictWarning) {
+        return;
+    }
+    hotKeyConflictWarningShown_ = true;
+    bool ignoreFutureWarnings = config_.ignoreHotKeyConflictWarning;
+    const std::wstring message = L"以下热键注册失败，可能已被系统保留，或已被其它软件/工具占用：\n" + failures;
+    ShowHotKeyConflictDialog(hwnd_, instance_, theme_, message, ignoreFutureWarnings);
+    if (ignoreFutureWarnings != config_.ignoreHotKeyConflictWarning) {
+        config_.ignoreHotKeyConflictWarning = ignoreFutureWarnings;
+        configService_.Save(config_);
+    }
 }
 
 void MainWindow::UnregisterConfiguredHotKeys() {
@@ -6173,6 +6235,7 @@ void MainWindow::ShowMainMenu(POINT screenPoint) {
     AppendThemedSeparator(menu);
     AppendUnifiedViewOptionItems(menu);
     AppendThemedSeparator(menu);
+    AppendThemedMenuItem(menu, MF_STRING, ID_MENU_ABOUT, L"关于");
     AppendThemedMenuItem(menu, MF_STRING | (updateDownloadActive_ ? MF_GRAYED : 0), ID_MENU_CHECK_UPDATE, L"检查更新");
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_EXIT, L"关闭退出");
     ActivateWindow(hwnd_);
@@ -7126,59 +7189,40 @@ void MainWindow::DrawGroups(D2D1_RECT_F rect) {
 
     FillRect(rect, theme_.color(L"majorNav", L"normal", L"bg"));
     const bool vertical = Height(rect) > Width(rect);
+    const auto groups = MajorGroups();
+    const auto itemRects = MajorGroupItemRects(rect);
 
     renderTarget_->PushAxisAlignedClip(rect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-    const float groupPadding = Metric(theme_, L"tabButton", L"groupPadding", 3.0f);
-    const float itemOffsetX = groupPadding;
-    if (vertical) {
-        const float topInset = groupPadding;
-        const float itemHeight = Metric(theme_, L"tabButton", L"height", Metric(theme_, L"majorNavItem", L"verticalHeight", 32.0f));
-        const float itemGap = Metric(theme_, L"majorNavItem", L"verticalGap", 2.0f);
-        const float leftInset = groupPadding;
-        float y = rect.top + topInset - groupScrollOffset_;
-        for (const auto& group : MajorGroups()) {
-            D2D1_RECT_F item = D2D1::RectF(rect.left + leftInset, y, rect.right - groupPadding, y + itemHeight);
-            if (item.bottom < rect.top + topInset) {
-                y += itemHeight + itemGap;
-                continue;
-            }
-            if (item.top > rect.bottom - 2.0f) {
-                break;
-            }
-            const bool selected = group.id == currentGroupId_;
-            const bool hovered = IsHover(HitKind::Group, group.id);
-            DrawMajorNavItem(item, group.name, selected, hovered, true);
-            hitAreas_.push_back(HitArea{HitKind::Group, group.id, IntersectRectF(item, rect)});
-            y += itemHeight + itemGap;
-        }
-        renderTarget_->PopAxisAlignedClip();
-        FillRect(D2D1::RectF(rect.left, rect.bottom - 1.0f, rect.right, rect.bottom), theme_.color(L"majorNav", L"normal", L"line"));
-        DrawScrollBar(rect, groupScrollOffset_, MaxGroupScrollOffset(rect), false);
-        return;
-    }
-
-    float x = rect.left + itemOffsetX - groupScrollOffset_;
-    const float itemHeight = Metric(theme_, L"tabButton", L"height", 30.0f);
-    const float y = rect.top + std::max(0.0f, (Height(rect) - itemHeight) * 0.5f);
-    const float itemGap = Metric(theme_, L"tabButton", L"groupGap", 0.0f);
-    for (const auto& group : MajorGroups()) {
-        const float itemWidth = TabGroupItemWidth(theme_, group.name, textFormat_, MeasureTextWidth(group.name, textFormat_));
-        D2D1_RECT_F item = D2D1::RectF(x, y, x + itemWidth, y + itemHeight);
-        if (item.right < rect.left + 2.0f) {
-            x += itemWidth;
+    for (const auto& itemRect : itemRects) {
+        if (vertical && itemRect.rect.bottom < rect.top + Metric(theme_, L"tabButton", L"groupPadding", 3.0f)) {
             continue;
         }
-        if (item.left > rect.right - 2.0f) {
+        if (!vertical && itemRect.rect.right < rect.left + 2.0f) {
+            continue;
+        }
+        if ((vertical && itemRect.rect.top > rect.bottom - 2.0f) ||
+            (!vertical && itemRect.rect.left > rect.right - 2.0f)) {
             break;
         }
-        const bool selected = group.id == currentGroupId_;
-        const bool hovered = IsHover(HitKind::Group, group.id);
-        DrawMajorNavItem(item, group.name, selected, hovered, false);
-        hitAreas_.push_back(HitArea{HitKind::Group, group.id, IntersectRectF(item, rect)});
-        x += itemWidth + itemGap;
+        auto groupIt = std::find_if(groups.begin(), groups.end(), [&itemRect](const Group& group) {
+            return group.id == itemRect.id;
+        });
+        if (groupIt == groups.end()) {
+            continue;
+        }
+        const bool selected = groupIt->id == currentGroupId_;
+        const bool hovered = IsHover(HitKind::Group, groupIt->id);
+        DrawMajorNavItem(itemRect.rect, groupIt->name, selected, hovered, vertical);
+        hitAreas_.push_back(HitArea{HitKind::Group, groupIt->id, IntersectRectF(itemRect.rect, rect)});
+    }
+    if (navDragActive_ && navDragKind_ == NavDragKind::Group && navDragMode_ == NavDragMode::Insert) {
+        DrawNavInsertIndicator(itemRects, navDragInsertIndex_, vertical, rect, theme_.color(L"majorNavItem", L"selected", L"accent"));
     }
     renderTarget_->PopAxisAlignedClip();
     FillRect(D2D1::RectF(rect.left, rect.bottom - 1.0f, rect.right, rect.bottom), theme_.color(L"majorNav", L"normal", L"line"));
+    if (vertical) {
+        DrawScrollBar(rect, groupScrollOffset_, MaxGroupScrollOffset(rect), false);
+    }
 }
 
 void MainWindow::DrawTags(D2D1_RECT_F rect) {
@@ -7189,26 +7233,30 @@ void MainWindow::DrawTags(D2D1_RECT_F rect) {
     FillRect(rect, theme_.color(L"content", L"normal", L"bg"));
     DrawContentCard(rect);
     const D2D1_RECT_F content = CardContentRectFor(rect);
+    const auto tags = TagsForCurrentGroup();
+    const auto itemRects = TagItemRects(rect);
 
     renderTarget_->PushAxisAlignedClip(content, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-    const float topInset = Metric(theme_, L"minorNavItem", L"topInset", 2.0f);
-    const float itemHeight = Metric(theme_, L"tabButton", L"height", Metric(theme_, L"minorNavItem", L"height", 32.0f));
-    const float itemGap = Metric(theme_, L"minorNavItem", L"gap", 2.0f);
-    float y = content.top + topInset - tagScrollOffset_;
-    for (const auto& tag : TagsForCurrentGroup()) {
-        D2D1_RECT_F item = D2D1::RectF(content.left, y, content.right, y + itemHeight);
-        if (item.bottom < content.top + topInset) {
-            y += itemHeight + itemGap;
+    for (const auto& itemRect : itemRects) {
+        if (itemRect.rect.bottom < content.top + Metric(theme_, L"minorNavItem", L"topInset", 2.0f)) {
             continue;
         }
-        if (item.top > content.bottom - 2.0f) {
+        if (itemRect.rect.top > content.bottom - 2.0f) {
             break;
         }
-        const bool selected = tag.id == currentTagId_;
-        const bool hovered = IsHover(HitKind::Tag, tag.id);
-        DrawMinorNavItem(item, tag.name, selected, hovered);
-        hitAreas_.push_back(HitArea{HitKind::Tag, tag.id, IntersectRectF(item, content)});
-        y += itemHeight + itemGap;
+        auto tagIt = std::find_if(tags.begin(), tags.end(), [&itemRect](const Group& tag) {
+            return tag.id == itemRect.id;
+        });
+        if (tagIt == tags.end()) {
+            continue;
+        }
+        const bool selected = tagIt->id == currentTagId_;
+        const bool hovered = IsHover(HitKind::Tag, tagIt->id);
+        DrawMinorNavItem(itemRect.rect, tagIt->name, selected, hovered);
+        hitAreas_.push_back(HitArea{HitKind::Tag, tagIt->id, IntersectRectF(itemRect.rect, content)});
+    }
+    if (navDragActive_ && navDragKind_ == NavDragKind::Tag && navDragMode_ == NavDragMode::Insert) {
+        DrawNavInsertIndicator(itemRects, navDragInsertIndex_, true, content, theme_.color(L"minorNavItem", L"selected", L"accent"));
     }
     renderTarget_->PopAxisAlignedClip();
     DrawScrollBar(content, tagScrollOffset_, MaxTagScrollOffset(rect), false);
@@ -7281,6 +7329,47 @@ void MainWindow::DrawMinorNavItem(D2D1_RECT_F rect, const std::wstring& text, bo
     DrawTextBlock(text, textFormat_, D2D1::RectF(rect.left + textInsetX, rect.top, rect.right - textInsetX, rect.bottom),
                   theme_.color(L"minorNavItem", state, L"text"));
     textFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+}
+
+void MainWindow::DrawNavInsertIndicator(
+    const std::vector<NavItemRect>& items,
+    int insertIndex,
+    bool vertical,
+    const D2D1_RECT_F& clipRect,
+    const Color& accent) {
+    if (items.empty() || insertIndex < 0) {
+        return;
+    }
+
+    const int count = static_cast<int>(items.size());
+    const int index = std::max(0, std::min(count, insertIndex));
+    const float thickness = std::max(2.0f, Metric(theme_, L"separator", L"thickness", 1.0f) + 1.0f);
+    const NavItemRect& anchor = items[std::min(index, count - 1)];
+    D2D1_RECT_F line{};
+    if (vertical) {
+        float gap = 0.0f;
+        if (index > 0 && index < count) {
+            gap = std::max(0.0f, items[index].rect.top - items[index - 1].rect.bottom);
+        } else if (index >= count && count > 1) {
+            gap = std::max(0.0f, items[count - 1].rect.top - items[count - 2].rect.bottom);
+        }
+        const float y = index >= count ? anchor.rect.bottom + gap * 0.5f : anchor.rect.top - gap * 0.5f;
+        line = D2D1::RectF(anchor.rect.left + 4.0f, y - thickness * 0.5f, anchor.rect.right - 4.0f, y + thickness * 0.5f);
+    } else {
+        float gap = 0.0f;
+        if (index > 0 && index < count) {
+            gap = std::max(0.0f, items[index].rect.left - items[index - 1].rect.right);
+        } else if (index >= count && count > 1) {
+            gap = std::max(0.0f, items[count - 1].rect.left - items[count - 2].rect.right);
+        }
+        const float x = index >= count ? anchor.rect.right + gap * 0.5f : anchor.rect.left - gap * 0.5f;
+        line = D2D1::RectF(x - thickness * 0.5f, anchor.rect.top + 5.0f, x + thickness * 0.5f, anchor.rect.bottom - 5.0f);
+    }
+
+    const D2D1_RECT_F clipped = IntersectRectF(line, clipRect);
+    if (Width(clipped) > 0.0f && Height(clipped) > 0.0f) {
+        FillRoundedRect(clipped, accent, thickness * 0.5f);
+    }
 }
 
 D2D1_RECT_F MainWindow::CardRectFor(const D2D1_RECT_F& regionRect) const {
@@ -7404,17 +7493,18 @@ void MainWindow::DrawLinks(D2D1_RECT_F rect) {
             break;
         }
 
+        const bool linkHovered = IsHover(HitKind::Link, link->id);
+        const bool anyLinkHovered = hover_.kind == HitKind::Link;
+        const bool linkSelected = link->id == selectedLinkId_ && !anyLinkHovered;
+
         if (linkDragActive_ && link->id == linkDragTargetLinkId_ && linkDragMode_ == LinkDragMode::Swap) {
             FillRoundedRect(item, theme_.color(L"linkItem", L"hover", L"bg"), itemRadius);
             DrawRoundedRect(Inset(item, 1.5f, 1.5f), theme_.color(L"linkItem", L"selected", L"accent"), itemRadius, 2.0f);
-        } else if (link->id == selectedLinkId_) {
+        } else if (linkHovered || linkSelected) {
             FillRoundedRect(item, theme_.color(L"linkItem", L"selected", L"bg"), itemRadius);
-            FillRect(D2D1::RectF(item.left, item.top + 2.0f, item.left + Metric(theme_, L"linkItem", L"selectedAccentWidth", 4.0f), item.bottom - 2.0f), theme_.color(L"linkItem", L"selected", L"accent"));
-            if (selectionByKeyboard_) {
+            if (linkSelected && selectionByKeyboard_) {
                 DrawRoundedRect(Inset(item, 1.5f, 1.5f), theme_.color(L"linkItem", L"selected", L"accent"), itemRadius, 1.0f);
             }
-        } else if (IsHover(HitKind::Link, link->id)) {
-            FillRoundedRect(item, theme_.color(L"linkItem", L"hover", L"bg"), itemRadius);
         }
         if (link->isCustomColor) {
             if (auto color = ParseCustomColor(link->customColor)) {
@@ -8634,6 +8724,201 @@ void MainWindow::CancelLinkDrag() {
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
+void MainWindow::BeginNavDragCandidate(HitKind kind, int groupId, POINT point) {
+    Group* group = FindGroup(groupId);
+    if (!group) {
+        return;
+    }
+    if (kind == HitKind::Group && group->parentGroup != 0) {
+        return;
+    }
+    if (kind == HitKind::Tag && group->parentGroup == 0) {
+        return;
+    }
+
+    navDragKind_ = kind == HitKind::Group ? NavDragKind::Group : NavDragKind::Tag;
+    navDragCandidateId_ = groupId;
+    navDragId_ = 0;
+    navDragStartPoint_ = point;
+    navDragCurrentPoint_ = point;
+    navDragActive_ = false;
+    navDragMode_ = NavDragMode::None;
+    navDragInsertIndex_ = -1;
+}
+
+void MainWindow::UpdateNavDrag(POINT point) {
+    if (navDragCandidateId_ <= 0 && !navDragActive_) {
+        return;
+    }
+
+    navDragCurrentPoint_ = point;
+    if (!navDragActive_) {
+        const int thresholdX = std::max(2, GetSystemMetrics(SM_CXDRAG));
+        const int thresholdY = std::max(2, GetSystemMetrics(SM_CYDRAG));
+        if (std::abs(point.x - navDragStartPoint_.x) < thresholdX &&
+            std::abs(point.y - navDragStartPoint_.y) < thresholdY) {
+            return;
+        }
+        navDragActive_ = true;
+        navDragId_ = navDragCandidateId_;
+        navDragMode_ = NavDragMode::None;
+        navDragInsertIndex_ = -1;
+        HideItemTooltip();
+        hover_ = {};
+        pendingHoverActivationKind_ = HitKind::None;
+        pendingHoverActivationId_ = 0;
+        if (hoverActivationTimerId_ != 0) {
+            KillTimer(hwnd_, ID_TIMER_HOVER_ACTIVATE);
+            hoverActivationTimerId_ = 0;
+        }
+        SetCapture(hwnd_);
+    }
+
+    UpdateNavDragTarget(point);
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void MainWindow::UpdateNavDragTarget(POINT point) {
+    navDragMode_ = NavDragMode::None;
+    navDragInsertIndex_ = -1;
+
+    RECT client{};
+    if (!GetClientRect(hwnd_, &client)) {
+        return;
+    }
+    D2D1_RECT_F title{}, groupsRect{}, tagsRect{}, linksRect{};
+    BuildLayout(static_cast<float>(client.right - client.left), static_cast<float>(client.bottom - client.top), title, groupsRect, tagsRect, linksRect);
+
+    const bool groupDrag = navDragKind_ == NavDragKind::Group;
+    const D2D1_RECT_F targetRect = groupDrag ? groupsRect : CardContentRectFor(tagsRect);
+    if (!Contains(targetRect, static_cast<float>(point.x), static_cast<float>(point.y))) {
+        return;
+    }
+
+    const std::vector<NavItemRect> items = groupDrag ? MajorGroupItemRects(groupsRect) : TagItemRects(tagsRect);
+    if (items.size() < 2) {
+        return;
+    }
+
+    const bool vertical = groupDrag ? Height(groupsRect) > Width(groupsRect) : true;
+    const float x = static_cast<float>(point.x);
+    const float y = static_cast<float>(point.y);
+    int nearestIndex = -1;
+    float nearestDistance = FLT_MAX;
+    for (const auto& item : items) {
+        const float centerX = (item.rect.left + item.rect.right) * 0.5f;
+        const float centerY = (item.rect.top + item.rect.bottom) * 0.5f;
+        const float dx = x - centerX;
+        const float dy = y - centerY;
+        const float distance = dx * dx + dy * dy;
+        if (distance < nearestDistance) {
+            nearestDistance = distance;
+            nearestIndex = item.index;
+        }
+
+        if (!Contains(item.rect, x, y)) {
+            continue;
+        }
+
+        navDragMode_ = NavDragMode::Insert;
+        if (vertical) {
+            navDragInsertIndex_ = y < centerY ? item.index : item.index + 1;
+        } else {
+            navDragInsertIndex_ = x < centerX ? item.index : item.index + 1;
+        }
+        return;
+    }
+
+    if (nearestIndex >= 0) {
+        const auto nearestIt = std::find_if(items.begin(), items.end(), [nearestIndex](const NavItemRect& item) {
+            return item.index == nearestIndex;
+        });
+        if (nearestIt == items.end()) {
+            return;
+        }
+        const float centerX = (nearestIt->rect.left + nearestIt->rect.right) * 0.5f;
+        const float centerY = (nearestIt->rect.top + nearestIt->rect.bottom) * 0.5f;
+        navDragMode_ = NavDragMode::Insert;
+        navDragInsertIndex_ = vertical
+            ? (y < centerY ? nearestIndex : nearestIndex + 1)
+            : (x < centerX ? nearestIndex : nearestIndex + 1);
+    }
+}
+
+void MainWindow::CommitNavDrag() {
+    if (!navDragActive_ || navDragId_ <= 0 || navDragMode_ == NavDragMode::None || navDragInsertIndex_ < 0) {
+        CancelNavDrag();
+        return;
+    }
+
+    Group* dragged = FindGroup(navDragId_);
+    if (!dragged) {
+        CancelNavDrag();
+        return;
+    }
+    const int parentGroup = dragged->parentGroup;
+    std::vector<Group*> siblings = GroupsForParent(parentGroup);
+    auto sourceIt = std::find_if(siblings.begin(), siblings.end(), [this](const Group* group) {
+        return group && group->id == navDragId_;
+    });
+    if (sourceIt == siblings.end()) {
+        CancelNavDrag();
+        return;
+    }
+
+    const int sourceIndex = static_cast<int>(std::distance(siblings.begin(), sourceIt));
+    int targetIndex = std::max(0, std::min(static_cast<int>(siblings.size()), navDragInsertIndex_));
+    Group* moved = *sourceIt;
+    siblings.erase(sourceIt);
+    if (sourceIndex < targetIndex) {
+        --targetIndex;
+    }
+    targetIndex = std::max(0, std::min(static_cast<int>(siblings.size()), targetIndex));
+    if (targetIndex == sourceIndex) {
+        CancelNavDrag();
+        return;
+    }
+    siblings.insert(siblings.begin() + targetIndex, moved);
+
+    std::vector<int> orderedIds;
+    orderedIds.reserve(siblings.size());
+    for (const Group* group : siblings) {
+        orderedIds.push_back(group->id);
+    }
+
+    const NavDragKind draggedKind = navDragKind_;
+    const int draggedId = navDragId_;
+    CancelNavDrag();
+    if (!ApplyManualGroupOrder(parentGroup, orderedIds, draggedKind == NavDragKind::Group ? L"拖动分组" : L"拖动标签")) {
+        return;
+    }
+
+    if (draggedKind == NavDragKind::Group) {
+        currentGroupId_ = draggedId;
+        config_.currentGroupId = currentGroupId_;
+        EnsureGroupVisible(currentGroupId_);
+    } else {
+        currentTagId_ = draggedId;
+        config_.currentTagId = currentTagId_;
+        EnsureTagVisible(currentTagId_);
+    }
+    configService_.SaveWindowState(config_);
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void MainWindow::CancelNavDrag() {
+    if (navDragActive_ && GetCapture() == hwnd_) {
+        ReleaseCapture();
+    }
+    navDragKind_ = NavDragKind::None;
+    navDragCandidateId_ = 0;
+    navDragId_ = 0;
+    navDragActive_ = false;
+    navDragMode_ = NavDragMode::None;
+    navDragInsertIndex_ = -1;
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
 void MainWindow::MoveLinkSelection(int dx, int dy) {
     auto links = LinksForCurrentTag();
     if (links.empty()) {
@@ -8908,6 +9193,78 @@ std::vector<Group> MainWindow::TagsForCurrentGroup() const {
         return left.id < right.id;
     });
     return tags;
+}
+
+std::vector<Group*> MainWindow::GroupsForParent(int parentGroup) {
+    std::vector<Group*> groups;
+    for (auto& group : model_.groups) {
+        if (group.parentGroup == parentGroup) {
+            groups.push_back(&group);
+        }
+    }
+    std::sort(groups.begin(), groups.end(), [](const Group* left, const Group* right) {
+        if (left->pos != right->pos) {
+            return left->pos < right->pos;
+        }
+        return left->id < right->id;
+    });
+    return groups;
+}
+
+std::vector<MainWindow::NavItemRect> MainWindow::MajorGroupItemRects(const D2D1_RECT_F& rect) const {
+    std::vector<NavItemRect> items;
+    if (Height(rect) <= 0.0f || Width(rect) <= 0.0f || !config_.showGroup) {
+        return items;
+    }
+
+    const auto groups = MajorGroups();
+    items.reserve(groups.size());
+    const float groupPadding = Metric(theme_, L"tabButton", L"groupPadding", 3.0f);
+    if (Height(rect) > Width(rect)) {
+        const float itemHeight = Metric(theme_, L"tabButton", L"height", Metric(theme_, L"majorNavItem", L"verticalHeight", 32.0f));
+        const float itemGap = Metric(theme_, L"majorNavItem", L"verticalGap", 2.0f);
+        float y = rect.top + groupPadding - groupScrollOffset_;
+        for (int index = 0; index < static_cast<int>(groups.size()); ++index) {
+            D2D1_RECT_F item = D2D1::RectF(rect.left + groupPadding, y, rect.right - groupPadding, y + itemHeight);
+            items.push_back(NavItemRect{groups[index].id, index, item});
+            y += itemHeight + itemGap;
+        }
+        return items;
+    }
+
+    const float itemHeight = Metric(theme_, L"tabButton", L"height", 30.0f);
+    const float y = rect.top + std::max(0.0f, (Height(rect) - itemHeight) * 0.5f);
+    const float itemGap = Metric(theme_, L"tabButton", L"groupGap", 0.0f);
+    float x = rect.left + groupPadding - groupScrollOffset_;
+    for (int index = 0; index < static_cast<int>(groups.size()); ++index) {
+        const auto& group = groups[index];
+        const float itemWidth = TabGroupItemWidth(theme_, group.name, textFormat_, MeasureTextWidth(group.name, textFormat_));
+        D2D1_RECT_F item = D2D1::RectF(x, y, x + itemWidth, y + itemHeight);
+        items.push_back(NavItemRect{group.id, index, item});
+        x += itemWidth + itemGap;
+    }
+    return items;
+}
+
+std::vector<MainWindow::NavItemRect> MainWindow::TagItemRects(const D2D1_RECT_F& rect) const {
+    std::vector<NavItemRect> items;
+    if (Height(rect) <= 0.0f || Width(rect) <= 0.0f || !config_.showTag) {
+        return items;
+    }
+
+    const auto tags = TagsForCurrentGroup();
+    items.reserve(tags.size());
+    const D2D1_RECT_F content = CardContentRectFor(rect);
+    const float topInset = Metric(theme_, L"minorNavItem", L"topInset", 2.0f);
+    const float itemHeight = Metric(theme_, L"tabButton", L"height", Metric(theme_, L"minorNavItem", L"height", 32.0f));
+    const float itemGap = Metric(theme_, L"minorNavItem", L"gap", 2.0f);
+    float y = content.top + topInset - tagScrollOffset_;
+    for (int index = 0; index < static_cast<int>(tags.size()); ++index) {
+        D2D1_RECT_F item = D2D1::RectF(content.left, y, content.right, y + itemHeight);
+        items.push_back(NavItemRect{tags[index].id, index, item});
+        y += itemHeight + itemGap;
+    }
+    return items;
 }
 
 std::wstring MainWindow::TagDisplayName(const Group& tag) const {

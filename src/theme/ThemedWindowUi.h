@@ -33,6 +33,8 @@ struct ThemedWindowCreateOptions {
     HICON icon = nullptr;
     HICON smallIcon = nullptr;
     HCURSOR cursor = nullptr;
+    bool scaleForDpi = true;
+    UINT logicalDpi = USER_DEFAULT_SCREEN_DPI;
 };
 
 constexpr int kThemedDialogClientWidth = 460;
@@ -54,7 +56,9 @@ public:
     ThemedWindowUi(const ThemedWindowUi&) = delete;
     ThemedWindowUi& operator=(const ThemedWindowUi&) = delete;
 
-    static SIZE AdjustedWindowSize(int clientWidth, int clientHeight, DWORD style, DWORD exStyle, bool hasMenu = false);
+    static SIZE AdjustedWindowSize(int clientWidth, int clientHeight, DWORD style, DWORD exStyle, bool hasMenu = false, UINT dpi = USER_DEFAULT_SCREEN_DPI);
+    static UINT TargetDpi(const ThemedWindowCreateOptions& options);
+    static int ScaleForDpi(int logicalPixels, UINT dpi, UINT logicalDpi = USER_DEFAULT_SCREEN_DPI);
     static POINT WindowPosition(const ThemedWindowCreateOptions& options, int windowWidth, int windowHeight);
     static ThemedWindowCreateOptions DialogOptions(
         HINSTANCE instance,
@@ -74,6 +78,7 @@ public:
         LRESULT& result);
 
     HWND hwnd() const { return hwnd_; }
+    UINT dpi() const { return dpi_; }
     HFONT font() const;
     ThemedUi ui() const;
 
@@ -100,6 +105,7 @@ public:
 private:
     struct EditFrame {
         HWND child = nullptr;
+        HWND frameWindow = nullptr;
         RECT frame{};
         ThemedEditOptions options{};
     };
@@ -110,11 +116,19 @@ private:
     HBRUSH ApplyEditColors(HDC dc, HWND child);
     EditFrame* FindEditFrame(HWND child);
     const EditFrame* FindEditFrame(HWND child) const;
+    EditFrame* FindEditFrameWindow(HWND frameWindow);
+    const EditFrame* FindEditFrameWindow(HWND frameWindow) const;
     const wchar_t* EditState(const EditFrame& editFrame) const;
+    bool EnsureEditFrameClass();
+    void SyncEditFrameWindow(EditFrame& editFrame);
+    void PaintEditFrameWindow(HWND frameWindow, HDC dc) const;
     void ReleaseResources();
+    void ApplyDpiChange(UINT newDpi, const RECT* suggestedWindowRect);
     bool EnsureTooltipWindow();
     SIZE MeasureTooltip(const std::wstring& text, const ThemedTooltipOptions& options) const;
     void PaintTooltip(HDC dc) const;
+    static LRESULT CALLBACK EditFrameProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
+    static LRESULT CALLBACK EditChildProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR id, DWORD_PTR data);
     static LRESULT CALLBACK TooltipProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
 
     HINSTANCE instance_ = nullptr;
@@ -124,6 +138,7 @@ private:
     DialogLayoutKind layoutKind_ = DialogLayoutKind::Compact;
     int clientWidth_ = 0;
     int clientHeight_ = 0;
+    UINT dpi_ = USER_DEFAULT_SCREEN_DPI;
     mutable HFONT font_ = nullptr;
     mutable bool ownsFont_ = false;
     HBRUSH backgroundBrush_ = nullptr;

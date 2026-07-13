@@ -81,6 +81,7 @@
 !/tests/HttpServerConfigAcceptance.cpp
 !/tests/HttpServerRuntimeAcceptance.cpp
 !/tests/SettingsHttpButtonsAcceptance.cpp
+!/tests/UiScreenshotAcceptance.cpp
 !/tests/TodoBackupJsonCompatibility.cpp
 !/tests/fixtures/
 !/tests/fixtures/todo-backup-v1.json

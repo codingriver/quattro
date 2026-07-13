@@ -11,6 +11,7 @@
 #include "MainHotKey.h"
 #include "Storage.h"
 #include "ThemedControls.h"
+#include "ThemedFormLayout.h"
 #include "ThemedUi.h"
 #include "ThemedWindowUi.h"
 #include "TodoSchedule.h"
@@ -77,6 +78,7 @@ constexpr int ID_SETTINGS_APPLY = 430;
 constexpr int ID_HTTP_ADDRESS = 431;
 constexpr int ID_LOGGING_ENABLED = 432;
 constexpr int ID_MESSAGE_TEXT = 501;
+constexpr int ID_HOTKEY_CONFLICT_IGNORE = 502;
 constexpr int ID_MAIN_HOTKEY_PROBE = 0x5148;
 constexpr UINT WM_SETTINGS_WEBDAV_DONE = WM_APP + 0x81;
 
@@ -1506,6 +1508,152 @@ private:
     bool done_ = false;
 };
 
+class HotKeyConflictDialog {
+public:
+    HotKeyConflictDialog(
+        HWND owner,
+        HINSTANCE instance,
+        const Theme& theme,
+        std::wstring message,
+        bool& ignoreFutureWarnings)
+        : owner_(owner),
+          instance_(instance),
+          theme_(theme),
+          message_(std::move(message)),
+          ignoreFutureWarnings_(ignoreFutureWarnings) {}
+
+    bool Run() {
+        HICON icon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_QUATTRO_APP_ICON));
+        ThemedWindowCreateOptions options = ThemedWindowUi::DialogOptions(
+            instance_,
+            owner_,
+            L"QuattroHotKeyConflictDialog",
+            L"热键冲突",
+            HotKeyConflictDialog::Proc,
+            this,
+            icon,
+            icon);
+        hwnd_ = ThemedWindowUi::CreateWindowHandle(options);
+        if (!hwnd_) {
+            return false;
+        }
+        if (windowUi_) {
+            windowUi_->ShowModal();
+        }
+        UpdateWindow(hwnd_);
+
+        MSG message{};
+        while (!done_ && GetMessageW(&message, nullptr, 0, 0) > 0) {
+            if (!ThemedUi::PreTranslateMessage(message) && !IsDialogMessageW(hwnd_, &message)) {
+                TranslateMessage(&message);
+                DispatchMessageW(&message);
+            }
+        }
+        if (windowUi_) {
+            windowUi_->RestoreModalOwner();
+        }
+        return accepted_;
+    }
+
+private:
+    static LRESULT CALLBACK Proc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
+        HotKeyConflictDialog* dialog = nullptr;
+        if (message == WM_NCCREATE) {
+            auto* create = reinterpret_cast<CREATESTRUCTW*>(lParam);
+            dialog = static_cast<HotKeyConflictDialog*>(create->lpCreateParams);
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(dialog));
+            dialog->hwnd_ = hwnd;
+        } else {
+            dialog = reinterpret_cast<HotKeyConflictDialog*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+        }
+        return dialog ? dialog->Handle(message, wParam, lParam) : DefWindowProcW(hwnd, message, wParam, lParam);
+    }
+
+    void Close(bool accepted) {
+        accepted_ = accepted;
+        if (ignoreToggle_) {
+            ignoreFutureWarnings_ = ThemedUi::IsChecked(ignoreToggle_);
+        }
+        done_ = true;
+        if (windowUi_) {
+            windowUi_->RestoreModalOwner();
+        }
+        DestroyWindow(hwnd_);
+    }
+
+    LRESULT Handle(UINT message, WPARAM wParam, LPARAM lParam) {
+        LRESULT commonResult = 0;
+        if (ThemedWindowUi::HandleCommonMessage(windowUi_, message, wParam, lParam, commonResult)) {
+            return commonResult;
+        }
+
+        switch (message) {
+        case WM_CREATE: {
+            windowUi_ = std::make_unique<ThemedWindowUi>(
+                instance_,
+                owner_,
+                hwnd_,
+                theme_,
+                kThemedDialogLayoutKind,
+                kThemedDialogClientWidth,
+                kThemedDialogClientHeight);
+            const ThemedUi ui = windowUi_->ui();
+            const ThemedFormLayout form(ui);
+            int y = ui.contentTop();
+
+            ThemedLabelOptions messageOptions{};
+            messageOptions.lines = ThemedLabelLines::Three;
+            const auto messageRow = form.row(y, ThemedRowAlign::Left, {form.item(ui.contentWidth(), ui.labelHeight() * 3)});
+            ui.Label(message_, messageRow[0].left, messageRow[0].top, messageRow[0].right - messageRow[0].left, messageOptions);
+
+            y = form.nextRowY(y, {form.item(ui.contentWidth(), ui.labelHeight() * 3)});
+            ThemedToggleOptions toggleOptions{};
+            toggleOptions.checked = ignoreFutureWarnings_;
+            const auto toggleRow = form.row(y, ThemedRowAlign::Left, {form.item(ui.contentWidth(), ThemedControls::CheckBoxHeight(theme_))});
+            ignoreToggle_ = ui.Toggle(
+                ID_HOTKEY_CONFLICT_IGNORE,
+                L"以后忽略启动时的热键冲突提示",
+                toggleRow[0].left,
+                toggleRow[0].top,
+                toggleRow[0].right - toggleRow[0].left,
+                toggleOptions);
+
+            ui.FooterButton(IDOK, L"知道了", 0, 1, true, true);
+            return 0;
+        }
+        case WM_COMMAND:
+            switch (LOWORD(wParam)) {
+            case IDOK:
+                Close(true);
+                return 0;
+            case IDCANCEL:
+                Close(false);
+                return 0;
+            default:
+                break;
+            }
+            break;
+        case WM_CLOSE:
+            Close(false);
+            return 0;
+        default:
+            break;
+        }
+        return DefWindowProcW(hwnd_, message, wParam, lParam);
+    }
+
+    HWND owner_ = nullptr;
+    HINSTANCE instance_ = nullptr;
+    const Theme& theme_;
+    std::wstring message_;
+    bool& ignoreFutureWarnings_;
+    HWND hwnd_ = nullptr;
+    HWND ignoreToggle_ = nullptr;
+    std::unique_ptr<ThemedWindowUi> windowUi_;
+    bool accepted_ = false;
+    bool done_ = false;
+};
+
 class WebDavBackupSelectionDialog {
 public:
     WebDavBackupSelectionDialog(
@@ -1800,60 +1948,32 @@ public:
           applyCallback_(std::move(applyCallback)) {}
 
     bool Run() {
-        WNDCLASSEXW wc{};
-        wc.cbSize = sizeof(wc);
-        wc.lpfnWndProc = SettingsDialog::Proc;
-        wc.hInstance = instance_;
-        wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-        wc.hIcon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_QUATTRO_APP_ICON));
-        wc.hIconSm = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_QUATTRO_APP_ICON));
-        wc.hbrBackground = nullptr;
-        wc.lpszClassName = L"QuattroSettingsDialog";
-        if (!RegisterClassExW(&wc)) {
-            const DWORD error = GetLastError();
-            if (error != ERROR_CLASS_ALREADY_EXISTS) {
-                WriteAppLog(L"设置窗口类注册失败: " + FormatLastError(error));
-                return false;
-            }
-        }
-
-        const int settingsWidth = 560;
-        const int settingsHeight = 480;
-        const POINT position = OffsetWindowFromOwnerOnMonitor(owner_, settingsWidth, settingsHeight, 60, 70);
-        hwnd_ = CreateWindowExW(
-            WS_EX_DLGMODALFRAME | WS_EX_WINDOWEDGE,
-            wc.lpszClassName,
-            L"设置",
-            WS_CAPTION | WS_SYSMENU | WS_POPUP | WS_CLIPCHILDREN,
-            position.x,
-            position.y,
-            settingsWidth,
-            settingsHeight,
-            owner_,
-            nullptr,
-            instance_,
-            this);
+        HICON icon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_QUATTRO_APP_ICON));
+        ThemedWindowCreateOptions options = ThemedWindowUi::DialogOptions(
+            instance_, owner_, L"QuattroSettingsDialog", L"设置", SettingsDialog::Proc, this, icon, icon);
+        options.clientWidth = 544;
+        options.clientHeight = 441;
+        options.placement = ThemedWindowPlacement::OffsetOwner;
+        options.offsetX = 60;
+        options.offsetY = 70;
+        std::wstring error;
+        hwnd_ = ThemedWindowUi::CreateWindowHandle(options, &error);
         if (!hwnd_) {
-            WriteAppLog(L"设置窗口创建失败: " + FormatLastError(GetLastError()));
+            WriteAppLog(L"设置窗口创建失败: " + error);
             return false;
         }
-        ownerWasEnabled_ = ShowModalWindow(owner_, hwnd_);
+        windowUi_->ShowModal();
         UpdateWindow(hwnd_);
         MSG message{};
         while (!done_ && GetMessageW(&message, nullptr, 0, 0) > 0) {
-            if (message.message == WM_KEYDOWN &&
-                message.wParam == VK_TAB &&
-                (GetKeyState(VK_CONTROL) & 0x8000) != 0) {
-                const bool reverse = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
-                ShowTab((currentTab_ + (reverse ? TabCount - 1 : 1)) % TabCount);
-                continue;
-            }
             if (!ThemedUi::PreTranslateMessage(message) && !IsDialogMessageW(hwnd_, &message)) {
                 TranslateMessage(&message);
                 DispatchMessageW(&message);
             }
         }
-        RestoreModalOwner(owner_, ownerWasEnabled_, ownerRestored_);
+        if (windowUi_) {
+            windowUi_->RestoreModalOwner();
+        }
         return accepted_;
     }
 
@@ -1879,18 +1999,6 @@ private:
         int tab = 0;
     };
 
-    struct FieldFrame {
-        RECT rect{};
-        HWND child = nullptr;
-        int tab = 0;
-        bool readOnly = false;
-    };
-
-    struct SectionFrame {
-        HWND hwnd = nullptr;
-        int tab = 0;
-    };
-
     static LRESULT CALLBACK Proc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
         SettingsDialog* dialog = nullptr;
         if (message == WM_NCCREATE) {
@@ -1911,23 +2019,12 @@ private:
         tabChildren_.push_back(TabChild{hwnd, tab});
     }
 
-    void UsePanelBackground(HWND hwnd) {
-        if (!hwnd) {
-            return;
-        }
-        panelBackgroundChildren_.push_back(hwnd);
-        wchar_t className[32]{};
-        if (GetClassNameW(hwnd, className, static_cast<int>(std::size(className))) && std::wcscmp(className, L"Button") == 0) {
-            ThemedControls::SetControlBackgroundComponent(hwnd, L"panel");
-        }
-    }
-
     int ContentY(int y) const {
         return y + tabContentOffsetY_;
     }
 
-    HWND Label(int tab, const wchar_t* text, int x, int y, int width = 110) {
-        HWND hwnd = MakeUi().Label(text, x, ContentY(y), width);
+    HWND Label(int tab, const wchar_t* text, int x, int y, int width = 110, ThemedLabelOptions options = {}) {
+        HWND hwnd = MakeUi().Label(text, x, ContentY(y), width, options);
         AddTabChild(hwnd, tab);
         return hwnd;
     }
@@ -1946,16 +2043,6 @@ private:
         return hwnd;
     }
 
-    HWND MultiLineCheckBox(int tab, int id, const wchar_t* text, int x, int y, bool checked, int width, int height) {
-        (void)height;
-        ThemedCheckBoxOptions options{};
-        options.checked = checked;
-        options.size = ThemedCheckBoxSize::TwoLines;
-        HWND hwnd = MakeUi().CheckBox(id, text, x, ContentY(y), width, options);
-        AddTabChild(hwnd, tab);
-        return hwnd;
-    }
-
     HWND Toggle(int tab, int id, const wchar_t* text, int x, int y, bool checked, int width) {
         ThemedToggleOptions options{};
         options.checked = checked;
@@ -1965,12 +2052,7 @@ private:
     }
 
     ThemedUi MakeUi() const {
-        RECT client{};
-        GetClientRect(hwnd_, &client);
-        return ThemedUi(
-            instance_, hwnd_, theme_, font_, DialogLayoutKind::Standard,
-            client.right - client.left, client.bottom - client.top,
-            const_cast<ThemedEditFrameCollection*>(&editFrameCollection_));
+        return windowUi_->ui();
     }
 
     HWND Button(int tab, int id, const wchar_t* text, int x, int y, int width) {
@@ -1979,35 +2061,30 @@ private:
         return hwnd;
     }
 
-    HWND FramedEdit(int tab, int id, int x, int y, int width, const std::wstring& text, DWORD extraStyle = ES_AUTOHSCROLL) {
-        const int fieldHeight = ThemedControls::EditFrameHeight(theme_);
+    HWND FramedEdit(int tab, int id, int x, int y, int width, const std::wstring& text, ThemedEditOptions options = {}) {
+        const ThemedUi ui = MakeUi();
+        const int fieldHeight = ui.editHeight();
         y = ContentY(y);
         const RECT frame{x, y, x + width, y + fieldHeight};
-        ThemedEditOptions options{};
-        options.readOnly = (extraStyle & ES_READONLY) != 0;
-        options.content = (extraStyle & ES_PASSWORD) != 0
-            ? ThemedEditContent::Password
-            : ((extraStyle & ES_NUMBER) != 0 ? ThemedEditContent::Integer : ThemedEditContent::Text);
-        HWND hwnd = MakeUi().Edit(id, frame, text, options);
+        HWND hwnd = ui.Edit(id, frame, text, options);
         AddTabChild(hwnd, tab);
-        fieldFrames_.push_back(FieldFrame{frame, hwnd, tab, false});
         return hwnd;
     }
 
     HWND FramedStatic(int tab, int x, int y, int width, const std::wstring& text) {
-        const int fieldHeight = ThemedControls::EditFrameHeight(theme_);
+        const ThemedUi ui = MakeUi();
+        const int fieldHeight = ui.editHeight();
         y = ContentY(y);
         const RECT frame{x, y, x + width, y + fieldHeight};
-        ThemedEditOptions options{};
-        options.readOnly = true;
-        HWND hwnd = MakeUi().Edit(nextGeneratedControlId_++, frame, text, options);
+        HWND hwnd = ui.FramedStatic(text, frame);
         AddTabChild(hwnd, tab);
-        fieldFrames_.push_back(FieldFrame{frame, hwnd, tab, true});
         return hwnd;
     }
 
     HWND NumberEdit(int tab, int id, int x, int y, int width, int value) {
-        return FramedEdit(tab, id, x, y, width, std::to_wstring(value), ES_NUMBER);
+        ThemedEditOptions options{};
+        options.content = ThemedEditContent::Integer;
+        return FramedEdit(tab, id, x, y, width, std::to_wstring(value), options);
     }
 
     int ClampNumber(HWND edit, int minValue, int maxValue, int fallback) const {
@@ -2037,53 +2114,31 @@ private:
         }
     }
 
-    int TextWidth(const wchar_t* text) const {
-        HDC dc = hwnd_ ? GetDC(hwnd_) : nullptr;
-        if (!dc) {
-            return static_cast<int>(std::wcslen(text)) * 14;
-        }
-        HFONT oldFont = reinterpret_cast<HFONT>(SelectObject(dc, font_ ? font_ : GetStockObject(DEFAULT_GUI_FONT)));
-        SIZE size{};
-        GetTextExtentPoint32W(dc, text, static_cast<int>(std::wcslen(text)), &size);
-        if (oldFont) {
-            SelectObject(dc, oldFont);
-        }
-        ReleaseDC(hwnd_, dc);
-        return size.cx;
-    }
-
-    int SettingsTabWidth(const wchar_t* title) const {
-        const int minWidth = static_cast<int>(theme_.metric(L"tabButton", L"groupItemWidth", 58.0f));
-        const int paddingX = static_cast<int>(theme_.metric(L"tabButton", L"paddingX", 12.0f));
-        return std::max(minWidth, TextWidth(title) + paddingX * 2 + 4);
-    }
-
     void CreateTabs() {
         const wchar_t* titles[] = {L"显示", L"行为", L"交互", L"热键", L"链接", L"WebDAV", L"HTTP", L"备份"};
         RECT client{};
         GetClientRect(hwnd_, &client);
         const int clientWidth = std::max(1, static_cast<int>(client.right - client.left));
-        const DialogLayoutMetrics layout = GetDialogLayoutMetrics(theme_, DialogLayoutKind::Compact);
-        const int startY = 15;
+        const ThemedUi ui = MakeUi();
+        const DialogLayoutMetrics& layout = ui.layout();
+        const int startY = layout.contentInsetY;
         std::vector<ThemedTabItem> items;
         items.reserve(TabCount);
         for (int i = 0; i < TabCount; ++i) {
             items.push_back(ThemedTabItem{ID_SETTINGS_TAB_BASE + i, titles[i], true});
         }
-        const int itemHeight = ThemedControls::TabButtonHeight(theme_);
+        const int itemHeight = ui.tabButtonHeight();
         tabStripRect_ = RECT{
             layout.contentInsetX,
             startY,
             clientWidth - layout.contentInsetX,
-            startY + itemHeight + 8};
+            startY + itemHeight + layout.rowGap};
         ThemedTabControlOptions options{};
         options.activeIndex = TabDisplay;
         options.equalWidth = false;
         settingsTabs_ = MakeUi().TabControl(ID_SETTINGS_TAB_CONTROL, tabStripRect_, items, options);
         tabContentOffsetY_ = 0;
     }
-
-    void PaintTabs(HDC) {}
 
     void BindTabPages() {
         if (!settingsTabs_) return;
@@ -2128,67 +2183,38 @@ private:
         if (currentTab_ == TabHttp) {
             UpdateHttpButtons();
         }
-        InvalidateRect(hwnd_, &tabStripRect_, FALSE);
     }
 
-    bool IsFieldChild(HWND hwnd) const {
-        for (const auto& frame : fieldFrames_) {
-            if (frame.child == hwnd) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    bool IsPanelBackgroundChild(HWND hwnd) const {
-        return std::find(panelBackgroundChildren_.begin(), panelBackgroundChildren_.end(), hwnd) != panelBackgroundChildren_.end();
-    }
-
-    void InvalidateField(HWND hwnd) {
-        for (const auto& frame : fieldFrames_) {
-            if (frame.child == hwnd) {
-                InvalidateRect(hwnd_, &frame.rect, TRUE);
-                return;
-            }
-        }
-    }
-
-    void AddSectionFrame(int tab, RECT rect) {
+    HWND AddSectionFrame(int tab, const std::wstring& title, RECT rect) {
         rect.top = ContentY(rect.top);
         rect.bottom = ContentY(rect.bottom);
-        HWND group = MakeUi().GroupBox(nextGeneratedControlId_++, L"", rect);
+        HWND group = MakeUi().GroupBox(nextGeneratedControlId_++, title, rect);
         AddTabChild(group, tab);
-        sectionFrames_.push_back(SectionFrame{group, tab});
-    }
-
-    void PaintSectionFrames(HDC) {}
-
-    void PaintFields(HDC dc) {
-        editFrameCollection_.Draw(theme_, dc);
+        return group;
     }
 
     void ReadDraft() {
-        draft_.showTitle = SendMessageW(showTitle_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-        draft_.showGroup = SendMessageW(showGroup_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-        draft_.showTag = SendMessageW(showTag_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-        draft_.autoDock = SendMessageW(autoDock_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-        draft_.hideWhenInactive = SendMessageW(hideInactive_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-        draft_.hideAfterLink = SendMessageW(hideAfterLink_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-        draft_.hideOnStart = SendMessageW(hideOnStart_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-        draft_.doubleClickToRun = SendMessageW(doubleClick_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        draft_.showTitle = ThemedUi::IsChecked(showTitle_);
+        draft_.showGroup = ThemedUi::IsChecked(showGroup_);
+        draft_.showTag = ThemedUi::IsChecked(showTag_);
+        draft_.autoDock = ThemedUi::IsChecked(autoDock_);
+        draft_.hideWhenInactive = ThemedUi::IsChecked(hideInactive_);
+        draft_.hideAfterLink = ThemedUi::IsChecked(hideAfterLink_);
+        draft_.hideOnStart = ThemedUi::IsChecked(hideOnStart_);
+        draft_.doubleClickToRun = ThemedUi::IsChecked(doubleClick_);
         draft_.hideNotifyIcon = false;
-        draft_.deleteConfirm = SendMessageW(deleteConfirm_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-        draft_.saveRunCount = SendMessageW(saveRunCount_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-        draft_.showToolboxButton = SendMessageW(showToolboxButton_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-        draft_.showSkinButton = SendMessageW(showSkinButton_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-        draft_.autoRun = SendMessageW(autoRun_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-        draft_.loggingEnabled = SendMessageW(loggingEnabled_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-        draft_.linkNameSingleLine = SendMessageW(linkNameSingleLine_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-        draft_.showTooltip = SendMessageW(showTooltip_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-        draft_.groupRight = SendMessageW(groupRight_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-        draft_.tagRight = SendMessageW(tagRight_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-        draft_.mouseEnterActiveGroup = SendMessageW(enterActiveGroup_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-        draft_.mouseEnterActiveTag = SendMessageW(enterActiveTag_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        draft_.deleteConfirm = ThemedUi::IsChecked(deleteConfirm_);
+        draft_.saveRunCount = ThemedUi::IsChecked(saveRunCount_);
+        draft_.showToolboxButton = ThemedUi::IsChecked(showToolboxButton_);
+        draft_.showSkinButton = ThemedUi::IsChecked(showSkinButton_);
+        draft_.autoRun = ThemedUi::IsChecked(autoRun_);
+        draft_.loggingEnabled = ThemedUi::IsChecked(loggingEnabled_);
+        draft_.linkNameSingleLine = ThemedUi::IsChecked(linkNameSingleLine_);
+        draft_.showTooltip = ThemedUi::IsChecked(showTooltip_);
+        draft_.groupRight = ThemedUi::IsChecked(groupRight_);
+        draft_.tagRight = ThemedUi::IsChecked(tagRight_);
+        draft_.mouseEnterActiveGroup = ThemedUi::IsChecked(enterActiveGroup_);
+        draft_.mouseEnterActiveTag = ThemedUi::IsChecked(enterActiveTag_);
         draft_.tagAlign = tagAlignIndex_ == 0 ? L"left" : (tagAlignIndex_ == 2 ? L"right" : L"center");
         auto alpha = ParseInt(GetText(alphaEdit_));
         draft_.alpha = alpha ? std::max(64, std::min(255, *alpha)) : 255;
@@ -2202,7 +2228,7 @@ private:
         draft_.updateUrl = GetText(updateUrlEdit_);
         draft_.faqUrl = GetText(faqUrlEdit_);
         draft_.rewardUrl = GetText(rewardUrlEdit_);
-        draft_.webDavEnabled = SendMessageW(webDavEnabled_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        draft_.webDavEnabled = ThemedUi::IsChecked(webDavEnabled_);
         draft_.webDavUrl = GetText(webDavUrlEdit_);
         draft_.webDavRemotePath = GetText(webDavRemotePathEdit_);
         draft_.webDavUserName = GetText(webDavUserNameEdit_);
@@ -2211,7 +2237,7 @@ private:
             draft_.webDavRemotePath = L"/Quattro/backups/";
         }
         draft_.httpServerEnabled = httpServer_ && httpServer_->IsRunning();
-        draft_.httpServerAutoStart = httpServerAutoStart_ && SendMessageW(httpServerAutoStart_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        draft_.httpServerAutoStart = httpServerAutoStart_ && ThemedUi::IsChecked(httpServerAutoStart_);
         draft_.httpServerLanAccess = true;
         draft_.httpServerPort = ParseHttpPortText(GetText(httpServerAddressEdit_), draft_.httpServerPort);
         draft_.httpServerRootPath = GetText(httpServerRootEdit_);
@@ -2302,7 +2328,7 @@ private:
 
     AppConfig ReadWebDavDraftFromControls() {
         AppConfig value = draft_;
-        value.webDavEnabled = SendMessageW(webDavEnabled_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        value.webDavEnabled = ThemedUi::IsChecked(webDavEnabled_);
         value.webDavUrl = GetText(webDavUrlEdit_);
         value.webDavRemotePath = GetText(webDavRemotePathEdit_);
         value.webDavUserName = GetText(webDavUserNameEdit_);
@@ -2350,30 +2376,31 @@ private:
 
     void SetWebDavBusy(bool busy, SettingsWebDavOperation operation = SettingsWebDavOperation::Test) {
         webDavBusy_ = busy;
+        const ThemedUi ui = MakeUi();
         if (webDavUploadButton_) {
-            EnableWindow(webDavUploadButton_, !busy);
+            ui.SetEnabled(webDavUploadButton_, !busy);
             SetWindowTextW(webDavUploadButton_, busy && operation == SettingsWebDavOperation::Upload ? L"上传中..." : L"上传到云端");
         }
         if (webDavDownloadButton_) {
-            EnableWindow(webDavDownloadButton_, !busy);
+            ui.SetEnabled(webDavDownloadButton_, !busy);
             const bool downloadBusy = operation == SettingsWebDavOperation::List || operation == SettingsWebDavOperation::Download;
             SetWindowTextW(webDavDownloadButton_, busy && downloadBusy ? L"处理中..." : L"从云端下载");
         }
         if (webDavTestButton_) {
-            EnableWindow(webDavTestButton_, !busy);
+            ui.SetEnabled(webDavTestButton_, !busy);
             SetWindowTextW(webDavTestButton_, busy && operation == SettingsWebDavOperation::Test ? L"测试中..." : L"测试连接");
         }
         if (webDavClearPasswordButton_) {
-            EnableWindow(webDavClearPasswordButton_, !busy);
+            ui.SetEnabled(webDavClearPasswordButton_, !busy);
         }
         if (okButton_) {
-            EnableWindow(okButton_, !busy);
+            ui.SetEnabled(okButton_, !busy);
         }
         if (cancelButton_) {
-            EnableWindow(cancelButton_, !busy);
+            ui.SetEnabled(cancelButton_, !busy);
         }
         if (applyButton_) {
-            EnableWindow(applyButton_, !busy);
+            ui.SetEnabled(applyButton_, !busy);
         }
     }
 
@@ -2595,9 +2622,9 @@ private:
         StorageService storage(appDirectory_);
         const AppModel model = storage.Load();
         TodoExportOptions options;
-        options.includeCompleted = !todoIncludeCompleted_ || SendMessageW(todoIncludeCompleted_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-        options.includeDisabled = !todoIncludeDisabled_ || SendMessageW(todoIncludeDisabled_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-        options.onlyFuture = todoOnlyFuture_ && SendMessageW(todoOnlyFuture_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        options.includeCompleted = !todoIncludeCompleted_ || ThemedUi::IsChecked(todoIncludeCompleted_);
+        options.includeDisabled = !todoIncludeDisabled_ || ThemedUi::IsChecked(todoIncludeDisabled_);
+        options.onlyFuture = todoOnlyFuture_ && ThemedUi::IsChecked(todoOnlyFuture_);
         std::wstring targetPath;
         if (!SelectSavePath(hwnd_,
                 (appDirectory_ / TodoJsonFileName()).wstring(),
@@ -2642,7 +2669,7 @@ private:
     AppConfig ReadHttpDraftFromControls() {
         AppConfig value = draft_;
         value.httpServerEnabled = httpServer_ && httpServer_->IsRunning();
-        value.httpServerAutoStart = httpServerAutoStart_ && SendMessageW(httpServerAutoStart_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        value.httpServerAutoStart = httpServerAutoStart_ && ThemedUi::IsChecked(httpServerAutoStart_);
         value.httpServerLanAccess = true;
         value.httpServerPort = ParseHttpPortText(GetText(httpServerAddressEdit_), value.httpServerPort);
         value.httpServerRootPath = GetText(httpServerRootEdit_);
@@ -2666,28 +2693,21 @@ private:
 
     void UpdateHttpButtons() {
         const bool running = httpServer_ && httpServer_->IsRunning();
+        const ThemedUi ui = MakeUi();
         if (httpStartButton_) {
-            EnableWindow(httpStartButton_, running ? FALSE : TRUE);
-            InvalidateRect(httpStartButton_, nullptr, TRUE);
+            ui.SetEnabled(httpStartButton_, !running);
         }
         if (httpStopButton_) {
-            EnableWindow(httpStopButton_, running ? TRUE : FALSE);
-            InvalidateRect(httpStopButton_, nullptr, TRUE);
-        }
-        if (httpRestartButton_) {
-            InvalidateRect(httpRestartButton_, nullptr, TRUE);
+            ui.SetEnabled(httpStopButton_, running);
         }
         if (httpServerAddressEdit_) {
-            EnableWindow(httpServerAddressEdit_, running ? FALSE : TRUE);
-            InvalidateField(httpServerAddressEdit_);
+            windowUi_->SetEditEnabled(httpServerAddressEdit_, !running);
         }
         if (httpServerRootEdit_) {
-            EnableWindow(httpServerRootEdit_, running ? FALSE : TRUE);
-            InvalidateField(httpServerRootEdit_);
+            windowUi_->SetEditEnabled(httpServerRootEdit_, !running);
         }
         if (httpBrowseRootButton_) {
-            EnableWindow(httpBrowseRootButton_, running ? FALSE : TRUE);
-            InvalidateRect(httpBrowseRootButton_, nullptr, TRUE);
+            ui.SetEnabled(httpBrowseRootButton_, !running);
         }
     }
 
@@ -2716,8 +2736,6 @@ private:
         MakeUi().SetStatusBadgeRole(
             httpServerStatusTag_, running ? ThemedStatusRole::Success : ThemedStatusRole::Danger);
         SetWindowTextW(httpServerStatusDetail_, detail.c_str());
-        InvalidateRect(httpServerStatusTag_, nullptr, TRUE);
-        InvalidateRect(httpServerStatusDetail_, nullptr, TRUE);
         UpdateHttpButtons();
     }
 
@@ -2855,286 +2873,359 @@ private:
     }
 
     LRESULT Handle(UINT message, WPARAM wParam, LPARAM lParam) {
+        LRESULT commonResult = 0;
+        if (ThemedWindowUi::HandleCommonMessage(windowUi_, message, wParam, lParam, commonResult)) {
+            return commonResult;
+        }
         switch (message) {
         case WM_CREATE: {
-            font_ = ThemedControls::CreateDialogFont();
-            if (!font_) {
-                font_ = reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
-            } else {
-                ownsFont_ = true;
-            }
-            editFont_ = ThemedControls::CreateEditFont(theme_);
-            backgroundBrush_ = CreateSolidBrush(ToColorRef(theme_.color(L"dialog", L"normal", L"bg")));
-            fieldBrush_ = CreateSolidBrush(ToColorRef(theme_.color(L"edit", L"normal", L"bg")));
-            readOnlyFieldBrush_ = CreateSolidBrush(ToColorRef(theme_.color(L"field", L"readonly", L"bg")));
-            panelBrush_ = CreateSolidBrush(ToColorRef(theme_.color(L"panel", L"normal", L"bg")));
+            RECT client{};
+            GetClientRect(hwnd_, &client);
+            windowUi_ = std::make_unique<ThemedWindowUi>(
+                instance_, owner_, hwnd_, theme_, DialogLayoutKind::Compact,
+                client.right - client.left, client.bottom - client.top);
             CreateTabs();
+            const ThemedUi settingsUi = MakeUi();
+            const DialogLayoutMetrics& behaviorLayout = settingsUi.layout();
+            const ThemedFormLayout behaviorForm(settingsUi);
+            const int settingsClientWidth = settingsUi.clientWidth();
+            const int pageLeft = behaviorLayout.contentInsetX;
+            const int pageWidth = settingsClientWidth - behaviorLayout.contentInsetX * 2;
+            const int pageColumnGap = behaviorLayout.controlGapX * 2;
+            const int pageColumnWidth = (pageWidth - pageColumnGap) / 2;
+            const int pageRightColumn = pageLeft + pageColumnWidth + pageColumnGap;
+            const int pageTop = tabStripRect_.bottom + behaviorLayout.sectionGap;
+            const int checkRowStep = behaviorLayout.RowStep(settingsUi.checkBoxHeight());
+            const int fieldRowStep = behaviorLayout.RowStep(settingsUi.editHeight());
 
-            showTitle_ = CheckBox(TabDisplay, 101, L"显示标题栏", 34, 64, draft_.showTitle);
-            showGroup_ = CheckBox(TabDisplay, 102, L"显示分组栏", 282, 64, draft_.showGroup);
-            showTag_ = CheckBox(TabDisplay, 103, L"显示标签栏", 34, 94, draft_.showTag);
-            showToolboxButton_ = CheckBox(TabDisplay, 115, L"显示工具箱按钮", 282, 124, draft_.showToolboxButton);
-            showSkinButton_ = CheckBox(TabDisplay, 121, L"显示主题按钮", 34, 124, draft_.showSkinButton);
-            linkNameSingleLine_ = CheckBox(TabDisplay, 118, L"启动项名称单行", 282, 154, draft_.linkNameSingleLine);
-            showTooltip_ = CheckBox(TabDisplay, 119, L"显示提示", 34, 154, draft_.showTooltip);
-            groupRight_ = CheckBox(TabDisplay, 120, L"分组栏在右侧", 282, 184, draft_.groupRight);
-            tagRight_ = CheckBox(TabDisplay, 122, L"标签栏在右侧", 34, 184, draft_.tagRight);
+            int displayY = pageTop;
+            showTitle_ = CheckBox(TabDisplay, 101, L"显示标题栏", pageLeft, displayY, draft_.showTitle, pageColumnWidth);
+            showGroup_ = CheckBox(TabDisplay, 102, L"显示分组栏", pageRightColumn, displayY, draft_.showGroup, pageColumnWidth);
+            displayY += checkRowStep;
+            showTag_ = CheckBox(TabDisplay, 103, L"显示标签栏", pageLeft, displayY, draft_.showTag, pageColumnWidth);
+            showToolboxButton_ = CheckBox(TabDisplay, 115, L"显示工具箱按钮", pageRightColumn, displayY, draft_.showToolboxButton, pageColumnWidth);
+            displayY += checkRowStep;
+            showSkinButton_ = CheckBox(TabDisplay, 121, L"显示主题按钮", pageLeft, displayY, draft_.showSkinButton, pageColumnWidth);
+            linkNameSingleLine_ = CheckBox(TabDisplay, 118, L"启动项名称单行", pageRightColumn, displayY, draft_.linkNameSingleLine, pageColumnWidth);
+            displayY += checkRowStep;
+            showTooltip_ = CheckBox(TabDisplay, 119, L"显示提示", pageLeft, displayY, draft_.showTooltip, pageColumnWidth);
+            groupRight_ = CheckBox(TabDisplay, 120, L"分组栏在右侧", pageRightColumn, displayY, draft_.groupRight, pageColumnWidth);
+            displayY += checkRowStep;
+            tagRight_ = CheckBox(TabDisplay, 122, L"标签栏在右侧", pageLeft, displayY, draft_.tagRight, pageColumnWidth);
+            displayY += checkRowStep + behaviorLayout.sectionGap;
 
-            Label(TabDisplay, L"透明度", 34, 260, 76);
-            alphaEdit_ = NumberEdit(TabDisplay, 201, 118, 254, 78, draft_.alpha);
-            Label(TabDisplay, L"标签文字", 282, 260, 72);
-            const ThemedUi tagAlignUi = MakeUi();
-            tagAlignLeft_ = tagAlignUi.TabButton(ID_TAG_ALIGN_LEFT, L"左", 364, ContentY(255), 36, false);
-            tagAlignCenter_ = tagAlignUi.TabButton(ID_TAG_ALIGN_CENTER, L"中", 404, ContentY(255), 36, true);
-            tagAlignRight_ = tagAlignUi.TabButton(ID_TAG_ALIGN_RIGHT, L"右", 444, ContentY(255), 36, false);
+            const int displayLabelWidth = behaviorForm.labelWidthForTexts({L"透明度", L"标签文字", L"分组宽度", L"标签宽度"});
+            const int displayFieldWidth = pageColumnWidth - displayLabelWidth - behaviorLayout.labelGap;
+            Label(TabDisplay, L"透明度", pageLeft, displayY, displayLabelWidth);
+            alphaEdit_ = NumberEdit(TabDisplay, 201, pageLeft + displayLabelWidth + behaviorLayout.labelGap, displayY, displayFieldWidth, draft_.alpha);
+            Label(TabDisplay, L"标签文字", pageRightColumn, displayY, displayLabelWidth);
+            const int alignButtonWidth = settingsUi.tabButtonWidth(L"左");
+            const int alignX = pageRightColumn + displayLabelWidth + behaviorLayout.labelGap;
+            tagAlignLeft_ = settingsUi.TabButton(ID_TAG_ALIGN_LEFT, L"左", alignX, ContentY(displayY), alignButtonWidth, false);
+            tagAlignCenter_ = settingsUi.TabButton(ID_TAG_ALIGN_CENTER, L"中", alignX + alignButtonWidth, ContentY(displayY), alignButtonWidth, true);
+            tagAlignRight_ = settingsUi.TabButton(ID_TAG_ALIGN_RIGHT, L"右", alignX + alignButtonWidth * 2, ContentY(displayY), alignButtonWidth, false);
             AddTabChild(tagAlignLeft_, TabDisplay);
             AddTabChild(tagAlignCenter_, TabDisplay);
             AddTabChild(tagAlignRight_, TabDisplay);
             SelectTagAlign();
-
-            Label(TabDisplay, L"分组宽度", 34, 314, 76);
-            groupWidthEdit_ = NumberEdit(TabDisplay, ID_GROUP_WIDTH, 118, 308, 78, draft_.groupWidth);
-            Label(TabDisplay, L"标签宽度", 282, 314, 72);
-            tagWidthEdit_ = NumberEdit(TabDisplay, ID_TAG_WIDTH, 364, 308, 78, draft_.tagWidth);
-
-            const DialogLayoutMetrics behaviorLayout = GetDialogLayoutMetrics(theme_, DialogLayoutKind::Compact);
-            RECT settingsClient{};
-            GetClientRect(hwnd_, &settingsClient);
-            const int settingsClientWidth = static_cast<int>(settingsClient.right - settingsClient.left);
-            const int behaviorCheckWidth = 148;
-            const int behaviorFieldWidth = 88;
-            const int behaviorDelayLabelWidth = 76;
-            const int behaviorUnitWidth = 32;
-            const int behaviorColumnGap = std::max(behaviorLayout.controlGapX * 3, 30);
-            const int behaviorColumnWidth = std::max(
-                behaviorCheckWidth,
-                behaviorDelayLabelWidth + behaviorLayout.labelGap + behaviorFieldWidth + behaviorLayout.controlGapX + behaviorUnitWidth);
-            const int behaviorLeft = behaviorLayout.CenteredGroupX(settingsClientWidth, behaviorColumnWidth * 2 + behaviorColumnGap);
-            const int behaviorRight = behaviorLeft + behaviorColumnWidth + behaviorColumnGap;
-            const int behaviorRowStep = std::max(28, ThemedControls::CheckBoxHeight(theme_) + std::max(4, behaviorLayout.rowGap - 2));
-            const int behaviorPanelPaddingX = static_cast<int>(theme_.metric(L"panel", L"paddingX", 10.0f));
-            const int behaviorPanelPaddingY = static_cast<int>(theme_.metric(L"panel", L"paddingY", 8.0f));
-            const int behaviorTitleGap = ThemedControls::LabelHeight(theme_) + std::max(3, behaviorLayout.rowGap - 3);
-            const int behaviorFrameGap = std::max(10, behaviorLayout.sectionGap - 2);
-            const int behaviorHeadingWidth = 128;
-            const int behaviorFrameLeft = behaviorLeft - behaviorPanelPaddingX;
-            const int behaviorFrameRight = behaviorRight + behaviorColumnWidth + behaviorPanelPaddingX;
-            const int behaviorWindowFrameTop = 44 + behaviorLayout.sectionGap;
-            const int behaviorWindowHeadingY = behaviorWindowFrameTop + behaviorPanelPaddingY;
-            const int behaviorWindowRowY = behaviorWindowHeadingY + behaviorTitleGap;
-            const int behaviorWindowFrameBottom = behaviorWindowRowY + behaviorRowStep * 2 + behaviorPanelPaddingY;
-            AddSectionFrame(TabBehavior, RECT{behaviorFrameLeft, behaviorWindowFrameTop, behaviorFrameRight, behaviorWindowFrameBottom});
-            UsePanelBackground(Label(TabBehavior, L"窗口行为", behaviorLeft, behaviorWindowHeadingY, behaviorHeadingWidth));
-            autoDock_ = CheckBox(TabBehavior, 105, L"贴边自动隐藏", behaviorLeft, behaviorWindowRowY, draft_.autoDock, behaviorCheckWidth);
-            UsePanelBackground(autoDock_);
-            UsePanelBackground(Label(TabBehavior, L"停靠延迟", behaviorRight, behaviorWindowRowY + 6, behaviorDelayLabelWidth));
+            displayY += fieldRowStep;
+            Label(TabDisplay, L"分组宽度", pageLeft, displayY, displayLabelWidth);
+            groupWidthEdit_ = NumberEdit(TabDisplay, ID_GROUP_WIDTH, pageLeft + displayLabelWidth + behaviorLayout.labelGap, displayY, displayFieldWidth, draft_.groupWidth);
+            Label(TabDisplay, L"标签宽度", pageRightColumn, displayY, displayLabelWidth);
+            tagWidthEdit_ = NumberEdit(TabDisplay, ID_TAG_WIDTH, pageRightColumn + displayLabelWidth + behaviorLayout.labelGap, displayY, displayFieldWidth, draft_.tagWidth);
+            const int behaviorFrameLeft = behaviorLayout.contentInsetX;
+            const int behaviorFrameRight = settingsClientWidth - behaviorLayout.contentInsetX;
+            const ThemedContentInsets groupInsets = settingsUi.groupBoxInsets();
+            const int behaviorFrameGap = behaviorLayout.sectionGap;
+            const int behaviorFrameWidth = behaviorFrameRight - behaviorFrameLeft;
+            const int behaviorCheckHeight = settingsUi.checkBoxHeight();
+            const int behaviorContentLeft = behaviorFrameLeft + groupInsets.left;
+            const int behaviorContentWidth = behaviorFrameRight - behaviorFrameLeft - groupInsets.left - groupInsets.right;
+            const int behaviorColumnGap = behaviorLayout.controlGapX * 2;
+            const int behaviorColumnWidth = (behaviorContentWidth - behaviorColumnGap) / 2;
+            const int behaviorLeft = behaviorContentLeft;
+            const int behaviorRight = behaviorContentLeft + behaviorColumnWidth + behaviorColumnGap;
+            const int behaviorCheckWidth = behaviorColumnWidth;
+            const int behaviorDelayLabelWidth = behaviorForm.labelWidthForText(L"停靠延迟");
+            const int behaviorUnitWidth = behaviorForm.labelWidthForText(L"ms");
+            const int behaviorFieldWidth = behaviorColumnWidth - behaviorDelayLabelWidth - behaviorLayout.labelGap
+                - behaviorLayout.controlGapX - behaviorUnitWidth;
+            const int behaviorWindowFrameTop = tabStripRect_.bottom + behaviorLayout.sectionGap;
+            const ThemedSectionGeometry behaviorWindowSection = behaviorForm.section(
+                behaviorFrameLeft, behaviorWindowFrameTop, behaviorFrameWidth,
+                {behaviorForm.sectionRow({ThemedSectionItemKind::CheckBox, ThemedSectionItemKind::Label, ThemedSectionItemKind::Edit}),
+                 behaviorForm.sectionRow({ThemedSectionItemKind::CheckBox})});
+            HWND behaviorWindowGroup = AddSectionFrame(TabBehavior, L"窗口行为", behaviorWindowSection.frame);
+            const int behaviorWindowCheckY = behaviorForm.sectionItemY(behaviorWindowSection, 0, behaviorCheckHeight);
+            const int behaviorWindowLabelY = behaviorForm.sectionItemY(behaviorWindowSection, 0, settingsUi.labelHeight());
+            const int behaviorWindowEditY = behaviorForm.sectionItemY(behaviorWindowSection, 0, settingsUi.editHeight());
+            autoDock_ = CheckBox(TabBehavior, 105, L"贴边自动隐藏", behaviorLeft, behaviorWindowCheckY, draft_.autoDock, behaviorCheckWidth);
+            HWND dockDelayLabel = Label(TabBehavior, L"停靠延迟", behaviorRight, behaviorWindowLabelY, behaviorDelayLabelWidth);
             dockDelayEdit_ = NumberEdit(
                 TabBehavior,
                 ID_DOCK_DELAY,
                 behaviorRight + behaviorDelayLabelWidth + behaviorLayout.labelGap,
-                behaviorWindowRowY,
+                behaviorWindowEditY,
                 behaviorFieldWidth,
                 draft_.dockDelay);
-            UsePanelBackground(Label(
+            HWND dockDelayUnit = Label(
                 TabBehavior,
                 L"ms",
                 behaviorRight + behaviorDelayLabelWidth + behaviorLayout.labelGap + behaviorFieldWidth + behaviorLayout.controlGapX,
-                behaviorWindowRowY + 6,
-                behaviorUnitWidth));
-            hideInactive_ = CheckBox(TabBehavior, 106, L"失焦隐藏", behaviorLeft, behaviorWindowRowY + behaviorRowStep, draft_.hideWhenInactive, behaviorCheckWidth);
-            UsePanelBackground(hideInactive_);
+                behaviorWindowLabelY,
+                behaviorUnitWidth);
+            hideInactive_ = CheckBox(
+                TabBehavior, 106, L"失焦隐藏", behaviorLeft,
+                behaviorForm.sectionItemY(behaviorWindowSection, 1, behaviorCheckHeight),
+                draft_.hideWhenInactive, behaviorCheckWidth);
+            ThemedUi::BindGroupChildren(behaviorWindowGroup, {autoDock_, dockDelayLabel, dockDelayEdit_, dockDelayUnit, hideInactive_});
 
-            const int behaviorRunFrameTop = behaviorWindowFrameBottom + behaviorFrameGap;
-            const int behaviorRunHeadingY = behaviorRunFrameTop + behaviorPanelPaddingY;
-            const int behaviorRunRowY = behaviorRunHeadingY + behaviorTitleGap;
-            const int behaviorRunFrameBottom = behaviorRunRowY + behaviorRowStep * 2 + behaviorPanelPaddingY;
-            AddSectionFrame(TabBehavior, RECT{behaviorFrameLeft, behaviorRunFrameTop, behaviorFrameRight, behaviorRunFrameBottom});
-            UsePanelBackground(Label(TabBehavior, L"运行与数据", behaviorLeft, behaviorRunHeadingY, behaviorHeadingWidth));
-            hideAfterLink_ = CheckBox(TabBehavior, 107, L"启动项运行后隐藏", behaviorLeft, behaviorRunRowY, draft_.hideAfterLink, behaviorCheckWidth);
-            saveRunCount_ = CheckBox(TabBehavior, 112, L"记录运行次数", behaviorRight, behaviorRunRowY, draft_.saveRunCount, behaviorCheckWidth);
-            deleteConfirm_ = CheckBox(TabBehavior, 111, L"删除前确认", behaviorLeft, behaviorRunRowY + behaviorRowStep, draft_.deleteConfirm, behaviorCheckWidth);
-            UsePanelBackground(hideAfterLink_);
-            UsePanelBackground(saveRunCount_);
-            UsePanelBackground(deleteConfirm_);
+            const int behaviorRunFrameTop = behaviorWindowSection.frame.bottom + behaviorFrameGap;
+            const ThemedSectionGeometry behaviorRunSection = behaviorForm.section(
+                behaviorFrameLeft, behaviorRunFrameTop, behaviorFrameWidth,
+                {behaviorForm.sectionRow({ThemedSectionItemKind::CheckBox}),
+                 behaviorForm.sectionRow({ThemedSectionItemKind::CheckBox})});
+            HWND behaviorRunGroup = AddSectionFrame(TabBehavior, L"运行与数据", behaviorRunSection.frame);
+            const int behaviorRunFirstY = behaviorForm.sectionItemY(behaviorRunSection, 0, behaviorCheckHeight);
+            const int behaviorRunSecondY = behaviorForm.sectionItemY(behaviorRunSection, 1, behaviorCheckHeight);
+            hideAfterLink_ = CheckBox(TabBehavior, 107, L"启动项运行后隐藏", behaviorLeft, behaviorRunFirstY, draft_.hideAfterLink, behaviorCheckWidth);
+            saveRunCount_ = CheckBox(TabBehavior, 112, L"记录运行次数", behaviorRight, behaviorRunFirstY, draft_.saveRunCount, behaviorCheckWidth);
+            deleteConfirm_ = CheckBox(TabBehavior, 111, L"删除前确认", behaviorLeft, behaviorRunSecondY, draft_.deleteConfirm, behaviorCheckWidth);
+            ThemedUi::BindGroupChildren(behaviorRunGroup, {hideAfterLink_, saveRunCount_, deleteConfirm_});
 
-            const int behaviorSystemFrameTop = behaviorRunFrameBottom + behaviorFrameGap;
-            const int behaviorSystemHeadingY = behaviorSystemFrameTop + behaviorPanelPaddingY;
-            const int behaviorSystemRowY = behaviorSystemHeadingY + behaviorTitleGap;
-            const int behaviorSystemFrameBottom = behaviorSystemRowY + behaviorRowStep * 2 + behaviorPanelPaddingY;
-            AddSectionFrame(TabBehavior, RECT{behaviorFrameLeft, behaviorSystemFrameTop, behaviorFrameRight, behaviorSystemFrameBottom});
-            UsePanelBackground(Label(TabBehavior, L"系统集成", behaviorLeft, behaviorSystemHeadingY, behaviorHeadingWidth));
-            hideOnStart_ = CheckBox(TabBehavior, 116, L"启动后隐藏", behaviorLeft, behaviorSystemRowY, draft_.hideOnStart, behaviorCheckWidth);
-            autoRun_ = CheckBox(TabBehavior, 117, L"开机启动", behaviorRight, behaviorSystemRowY, draft_.autoRun, behaviorCheckWidth);
-            loggingEnabled_ = CheckBox(TabBehavior, ID_LOGGING_ENABLED, L"启用日志", behaviorLeft, behaviorSystemRowY + behaviorRowStep, draft_.loggingEnabled, behaviorCheckWidth);
-            UsePanelBackground(hideOnStart_);
-            UsePanelBackground(autoRun_);
-            UsePanelBackground(loggingEnabled_);
+            const int behaviorSystemFrameTop = behaviorRunSection.frame.bottom + behaviorFrameGap;
+            const ThemedSectionGeometry behaviorSystemSection = behaviorForm.section(
+                behaviorFrameLeft, behaviorSystemFrameTop, behaviorFrameWidth,
+                {behaviorForm.sectionRow({ThemedSectionItemKind::CheckBox}),
+                 behaviorForm.sectionRow({ThemedSectionItemKind::CheckBox})});
+            HWND behaviorSystemGroup = AddSectionFrame(TabBehavior, L"系统集成", behaviorSystemSection.frame);
+            const int behaviorSystemFirstY = behaviorForm.sectionItemY(behaviorSystemSection, 0, behaviorCheckHeight);
+            const int behaviorSystemSecondY = behaviorForm.sectionItemY(behaviorSystemSection, 1, behaviorCheckHeight);
+            hideOnStart_ = CheckBox(TabBehavior, 116, L"启动后隐藏", behaviorLeft, behaviorSystemFirstY, draft_.hideOnStart, behaviorCheckWidth);
+            autoRun_ = CheckBox(TabBehavior, 117, L"开机启动", behaviorRight, behaviorSystemFirstY, draft_.autoRun, behaviorCheckWidth);
+            loggingEnabled_ = CheckBox(TabBehavior, ID_LOGGING_ENABLED, L"启用日志", behaviorLeft, behaviorSystemSecondY, draft_.loggingEnabled, behaviorCheckWidth);
+            ThemedUi::BindGroupChildren(behaviorSystemGroup, {hideOnStart_, autoRun_, loggingEnabled_});
 
-            doubleClick_ = CheckBox(TabInteraction, 109, L"双击运行", 34, 64, draft_.doubleClickToRun);
-            enterActiveGroup_ = CheckBox(TabInteraction, 124, L"鼠标进入激活分组", 34, 94, draft_.mouseEnterActiveGroup);
-            enterActiveTag_ = CheckBox(TabInteraction, 125, L"鼠标进入激活标签", 282, 94, draft_.mouseEnterActiveTag);
-            Label(TabInteraction, L"分组激活延迟", 34, 154, 100);
-            groupDelayEdit_ = NumberEdit(TabInteraction, ID_GROUP_DELAY, 144, 148, 88, draft_.activeGroupDelay);
-            Label(TabInteraction, L"ms", 240, 154, 32);
-            Label(TabInteraction, L"标签激活延迟", 282, 154, 100);
-            tagDelayEdit_ = NumberEdit(TabInteraction, ID_TAG_DELAY, 392, 148, 88, draft_.activeTagDelay);
-            Label(TabInteraction, L"ms", 488, 154, 32);
+            int interactionY = pageTop;
+            doubleClick_ = CheckBox(TabInteraction, 109, L"双击运行", pageLeft, interactionY, draft_.doubleClickToRun, pageColumnWidth);
+            interactionY += checkRowStep;
+            enterActiveGroup_ = CheckBox(TabInteraction, 124, L"鼠标进入激活分组", pageLeft, interactionY, draft_.mouseEnterActiveGroup, pageColumnWidth);
+            enterActiveTag_ = CheckBox(TabInteraction, 125, L"鼠标进入激活标签", pageRightColumn, interactionY, draft_.mouseEnterActiveTag, pageColumnWidth);
+            interactionY += checkRowStep + behaviorLayout.sectionGap;
+            const int delayLabelWidth = behaviorForm.labelWidthForTexts({L"分组激活延迟", L"标签激活延迟"});
+            const int unitWidth = behaviorForm.labelWidthForText(L"ms");
+            const int delayFieldWidth = pageColumnWidth - delayLabelWidth - behaviorLayout.labelGap - behaviorLayout.controlGapX - unitWidth;
+            Label(TabInteraction, L"分组激活延迟", pageLeft, interactionY, delayLabelWidth);
+            groupDelayEdit_ = NumberEdit(TabInteraction, ID_GROUP_DELAY, pageLeft + delayLabelWidth + behaviorLayout.labelGap, interactionY, delayFieldWidth, draft_.activeGroupDelay);
+            Label(TabInteraction, L"ms", pageLeft + pageColumnWidth - unitWidth, interactionY, unitWidth);
+            Label(TabInteraction, L"标签激活延迟", pageRightColumn, interactionY, delayLabelWidth);
+            tagDelayEdit_ = NumberEdit(TabInteraction, ID_TAG_DELAY, pageRightColumn + delayLabelWidth + behaviorLayout.labelGap, interactionY, delayFieldWidth, draft_.activeTagDelay);
+            Label(TabInteraction, L"ms", pageRightColumn + pageColumnWidth - unitWidth, interactionY, unitWidth);
 
-            const DialogLayoutMetrics hotKeyLayout = GetDialogLayoutMetrics(theme_, DialogLayoutKind::Compact);
-            const int hotKeyLeft = 34;
-            const int hotKeyRight = 526;
-            const int hotKeyWidth = hotKeyRight - hotKeyLeft;
-            const int hotKeyButtonWidth = 56;
-            const int hotKeyHeaderY = 108;
-            const int hotKeyRowStep = 40;
-            const int hotKeyNameWidth = 170;
-            const int hotKeyActionX = hotKeyRight - hotKeyButtonWidth;
-            const int hotKeyValueX = hotKeyLeft + hotKeyNameWidth + hotKeyLayout.controlGapX;
-            const int hotKeyValueWidth = hotKeyActionX - hotKeyValueX - hotKeyLayout.controlGapX;
+            const int hotKeyButtonWidth = settingsUi.buttonWidth(
+                L"录入", ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Text);
+            const int hotKeyNameWidth = pageWidth / 3;
+            const int hotKeyValueX = pageLeft + hotKeyNameWidth + behaviorLayout.controlGapX;
+            const int hotKeyActionX = pageLeft + pageWidth - hotKeyButtonWidth;
+            const int hotKeyValueWidth = hotKeyActionX - behaviorLayout.controlGapX - hotKeyValueX;
+            int hotKeyY = pageTop;
             globalHotKeysEnabled_ = Toggle(
-                TabHotKeys, ID_GLOBAL_HOTKEYS_ENABLED, L"启用全局快捷键", hotKeyLeft, 62, draft_.globalHotKeysEnabled, 180);
-            Label(TabHotKeys, L"功能", hotKeyLeft, hotKeyHeaderY, hotKeyNameWidth);
-            Label(TabHotKeys, L"快捷键", hotKeyValueX, hotKeyHeaderY, hotKeyValueWidth);
-            Label(TabHotKeys, L"操作", hotKeyActionX, hotKeyHeaderY, hotKeyButtonWidth);
-
-            const int mainHotKeyRowY = hotKeyHeaderY + 30;
-            Label(TabHotKeys, L"主窗口显隐", hotKeyLeft, mainHotKeyRowY + 6, hotKeyNameWidth);
-            mainHotKeyText_ = FramedStatic(TabHotKeys, hotKeyValueX, mainHotKeyRowY, hotKeyValueWidth, FormatMainHotKeyText(draft_.mainHotKey));
-            Button(TabHotKeys, ID_MAIN_HOTKEY_CAPTURE, L"录入", hotKeyActionX, mainHotKeyRowY + 2, hotKeyButtonWidth);
-
-            const int processHotKeyRowY = mainHotKeyRowY + hotKeyRowStep;
-            Label(TabHotKeys, L"进程定位器", hotKeyLeft, processHotKeyRowY + 6, hotKeyNameWidth);
+                TabHotKeys, ID_GLOBAL_HOTKEYS_ENABLED, L"启用全局快捷键", pageLeft, hotKeyY, draft_.globalHotKeysEnabled, pageWidth);
+            hotKeyY += behaviorLayout.RowStep(settingsUi.buttonHeight(ThemedButtonRole::Normal, ThemedButtonSize::Compact));
+            Label(TabHotKeys, L"功能", pageLeft, hotKeyY, hotKeyNameWidth);
+            Label(TabHotKeys, L"快捷键", hotKeyValueX, hotKeyY, hotKeyValueWidth);
+            Label(TabHotKeys, L"操作", hotKeyActionX, hotKeyY, hotKeyButtonWidth);
+            hotKeyY += behaviorLayout.RowStep(settingsUi.labelHeight());
+            Label(TabHotKeys, L"主窗口显隐", pageLeft, hotKeyY, hotKeyNameWidth);
+            mainHotKeyText_ = FramedStatic(TabHotKeys, hotKeyValueX, hotKeyY, hotKeyValueWidth, FormatMainHotKeyText(draft_.mainHotKey));
+            Button(TabHotKeys, ID_MAIN_HOTKEY_CAPTURE, L"录入", hotKeyActionX, hotKeyY, hotKeyButtonWidth);
+            hotKeyY += fieldRowStep;
+            Label(TabHotKeys, L"进程定位器", pageLeft, hotKeyY, hotKeyNameWidth);
             processLocatorHotKeyText_ = FramedStatic(
-                TabHotKeys, hotKeyValueX, processHotKeyRowY, hotKeyValueWidth, FormatGlobalHotKeyText(draft_.processLocatorHotKey));
-            Button(TabHotKeys, ID_PROCESS_LOCATOR_HOTKEY_CAPTURE, L"录入", hotKeyActionX, processHotKeyRowY + 2, hotKeyButtonWidth);
-
-            mainHotKeyStatus_ = Label(TabHotKeys, L"", hotKeyLeft, processHotKeyRowY + hotKeyRowStep + 8, hotKeyWidth);
+                TabHotKeys, hotKeyValueX, hotKeyY, hotKeyValueWidth, FormatGlobalHotKeyText(draft_.processLocatorHotKey));
+            Button(TabHotKeys, ID_PROCESS_LOCATOR_HOTKEY_CAPTURE, L"录入", hotKeyActionX, hotKeyY, hotKeyButtonWidth);
+            hotKeyY += fieldRowStep;
+            mainHotKeyStatus_ = Label(TabHotKeys, L"", pageLeft, hotKeyY, pageWidth);
             UpdateHotKeyLabels();
 
-            Label(TabLinks, L"打开目录命令", 34, 68, 110);
-            openDirEdit_ = FramedEdit(TabLinks, 202, 34, 92, 446, draft_.openDirCommand);
-            Label(TabLinks, L"帮助链接", 34, 136, 110);
-            helpUrlEdit_ = FramedEdit(TabLinks, 203, 34, 160, 446, draft_.helpUrl);
-            Label(TabLinks, L"更新链接", 34, 204, 110);
-            updateUrlEdit_ = FramedEdit(TabLinks, 204, 34, 228, 446, draft_.updateUrl);
-            Label(TabLinks, L"FAQ 链接", 34, 272, 110);
-            faqUrlEdit_ = FramedEdit(TabLinks, 205, 34, 296, 206, draft_.faqUrl);
-            Label(TabLinks, L"赞助链接", 282, 272, 110);
-            rewardUrlEdit_ = FramedEdit(TabLinks, 206, 282, 296, 198, draft_.rewardUrl);
+            int linksY = pageTop;
+            Label(TabLinks, L"打开目录命令", pageLeft, linksY, pageWidth);
+            linksY += behaviorLayout.RowStep(settingsUi.labelHeight());
+            openDirEdit_ = FramedEdit(TabLinks, 202, pageLeft, linksY, pageWidth, draft_.openDirCommand);
+            linksY += fieldRowStep;
+            Label(TabLinks, L"帮助链接", pageLeft, linksY, pageWidth);
+            linksY += behaviorLayout.RowStep(settingsUi.labelHeight());
+            helpUrlEdit_ = FramedEdit(TabLinks, 203, pageLeft, linksY, pageWidth, draft_.helpUrl);
+            linksY += fieldRowStep;
+            Label(TabLinks, L"更新链接", pageLeft, linksY, pageWidth);
+            linksY += behaviorLayout.RowStep(settingsUi.labelHeight());
+            updateUrlEdit_ = FramedEdit(TabLinks, 204, pageLeft, linksY, pageWidth, draft_.updateUrl);
+            linksY += fieldRowStep;
+            Label(TabLinks, L"FAQ 链接", pageLeft, linksY, pageColumnWidth);
+            Label(TabLinks, L"赞助链接", pageRightColumn, linksY, pageColumnWidth);
+            linksY += behaviorLayout.RowStep(settingsUi.labelHeight());
+            faqUrlEdit_ = FramedEdit(TabLinks, 205, pageLeft, linksY, pageColumnWidth, draft_.faqUrl);
+            rewardUrlEdit_ = FramedEdit(TabLinks, 206, pageRightColumn, linksY, pageColumnWidth, draft_.rewardUrl);
 
-            webDavEnabled_ = CheckBox(TabWebDav, 208, L"启用 WebDAV 备份", 34, 64, draft_.webDavEnabled, 220);
-            Label(TabWebDav, L"服务器地址", 34, 112, 110);
-            webDavUrlEdit_ = FramedEdit(TabWebDav, 209, 34, 136, 446, draft_.webDavUrl);
-            Label(TabWebDav, L"远端目录", 34, 184, 110);
-            webDavRemotePathEdit_ = FramedEdit(TabWebDav, 210, 34, 208, 206, draft_.webDavRemotePath);
-            Label(TabWebDav, L"保留数量", 282, 184, 110);
-            webDavKeepCountEdit_ = NumberEdit(TabWebDav, 211, 282, 208, 90, draft_.webDavKeepCount);
-            Label(TabWebDav, L"用户名", 34, 256, 110);
-            webDavUserNameEdit_ = FramedEdit(TabWebDav, 212, 34, 280, 206, draft_.webDavUserName);
-            Label(TabWebDav, L"密码/应用密码", 282, 256, 130);
-            webDavPasswordEdit_ = FramedEdit(TabWebDav, 213, 282, 280, 198, L"", ES_AUTOHSCROLL | ES_PASSWORD);
-            webDavUploadButton_ = Button(TabWebDav, ID_WEBDAV_UPLOAD, L"上传到云端", 34, 340, 104);
-            webDavDownloadButton_ = Button(TabWebDav, ID_WEBDAV_DOWNLOAD, L"从云端下载", 150, 340, 104);
-            webDavTestButton_ = Button(TabWebDav, ID_WEBDAV_TEST, L"测试连接", 286, 340, 92);
-            webDavClearPasswordButton_ = Button(TabWebDav, ID_WEBDAV_CLEAR_PASSWORD, L"清除密码", 390, 340, 90);
+            int webDavY = pageTop;
+            webDavEnabled_ = CheckBox(TabWebDav, 208, L"启用 WebDAV 备份", pageLeft, webDavY, draft_.webDavEnabled, pageWidth);
+            webDavY += checkRowStep;
+            Label(TabWebDav, L"服务器地址", pageLeft, webDavY, pageWidth);
+            webDavY += behaviorLayout.RowStep(settingsUi.labelHeight());
+            webDavUrlEdit_ = FramedEdit(TabWebDav, 209, pageLeft, webDavY, pageWidth, draft_.webDavUrl);
+            webDavY += fieldRowStep;
+            Label(TabWebDav, L"远端目录", pageLeft, webDavY, pageColumnWidth);
+            Label(TabWebDav, L"保留数量", pageRightColumn, webDavY, pageColumnWidth);
+            webDavY += behaviorLayout.RowStep(settingsUi.labelHeight());
+            webDavRemotePathEdit_ = FramedEdit(TabWebDav, 210, pageLeft, webDavY, pageColumnWidth, draft_.webDavRemotePath);
+            webDavKeepCountEdit_ = NumberEdit(TabWebDav, 211, pageRightColumn, webDavY, pageColumnWidth, draft_.webDavKeepCount);
+            webDavY += fieldRowStep;
+            Label(TabWebDav, L"用户名", pageLeft, webDavY, pageColumnWidth);
+            Label(TabWebDav, L"密码/应用密码", pageRightColumn, webDavY, pageColumnWidth);
+            webDavY += behaviorLayout.RowStep(settingsUi.labelHeight());
+            webDavUserNameEdit_ = FramedEdit(TabWebDav, 212, pageLeft, webDavY, pageColumnWidth, draft_.webDavUserName);
+            ThemedEditOptions passwordOptions{};
+            passwordOptions.content = ThemedEditContent::Password;
+            webDavPasswordEdit_ = FramedEdit(TabWebDav, 213, pageRightColumn, webDavY, pageColumnWidth, L"", passwordOptions);
+            webDavY += fieldRowStep + behaviorLayout.sectionGap;
+            const int uploadWidth = settingsUi.buttonWidth(L"上传到云端", ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Text);
+            const int downloadWidth = settingsUi.buttonWidth(L"从云端下载", ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Text);
+            const int testWidth = settingsUi.buttonWidth(L"测试连接", ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Text);
+            const int clearWidth = settingsUi.buttonWidth(L"清除密码", ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Text);
+            int webDavButtonX = pageLeft;
+            webDavUploadButton_ = Button(TabWebDav, ID_WEBDAV_UPLOAD, L"上传到云端", webDavButtonX, webDavY, uploadWidth);
+            webDavButtonX += uploadWidth + behaviorLayout.controlGapX;
+            webDavDownloadButton_ = Button(TabWebDav, ID_WEBDAV_DOWNLOAD, L"从云端下载", webDavButtonX, webDavY, downloadWidth);
+            webDavButtonX += downloadWidth + behaviorLayout.controlGapX;
+            webDavTestButton_ = Button(TabWebDav, ID_WEBDAV_TEST, L"测试连接", webDavButtonX, webDavY, testWidth);
+            webDavButtonX += testWidth + behaviorLayout.controlGapX;
+            webDavClearPasswordButton_ = Button(TabWebDav, ID_WEBDAV_CLEAR_PASSWORD, L"清除密码", webDavButtonX, webDavY, clearWidth);
 
-            const DialogLayoutMetrics httpLayout = GetDialogLayoutMetrics(theme_, DialogLayoutKind::Compact);
-            const int httpPanelPaddingX = static_cast<int>(theme_.metric(L"panel", L"paddingX", 10.0f));
-            const int httpPanelPaddingY = static_cast<int>(theme_.metric(L"panel", L"paddingY", 8.0f));
-            const int httpFrameWidth = 482;
-            const int httpFrameLeft = httpLayout.CenteredGroupX(settingsClientWidth, httpFrameWidth);
-            const int httpFrameRight = httpFrameLeft + httpFrameWidth;
+            const DialogLayoutMetrics& httpLayout = settingsUi.layout();
+            const int httpPanelPaddingX = groupInsets.left;
+            const int httpFrameLeft = pageLeft;
+            const int httpFrameRight = pageLeft + pageWidth;
             const int httpContentLeft = httpFrameLeft + httpPanelPaddingX;
             const int httpContentRight = httpFrameRight - httpPanelPaddingX;
-            const int httpHeadingWidth = 128;
-            const int httpLabelWidth = 92;
+            const int httpLabelWidth = behaviorForm.labelWidthForTexts({L"站点网址", L"绑定磁盘路径"});
             const int httpFieldX = httpContentLeft + httpLabelWidth + httpLayout.labelGap;
-            const int httpRowStep = httpLayout.RowStep(ThemedControls::CheckBoxHeight(theme_));
-            const int httpFieldRowStep = httpLayout.RowStep(ThemedControls::EditFrameHeight(theme_));
-            const int httpLabelRowStep = httpLayout.RowStep(ThemedControls::LabelHeight(theme_));
-            const int httpButtonRowStep = httpLayout.RowStep(ThemedControls::CompactButtonHeight(theme_));
-            const int httpTitleGap = ThemedControls::LabelHeight(theme_) + std::max(3, httpLayout.rowGap - 3);
-            const int httpFrameGap = httpLayout.sectionGap;
+            const int httpFrameGap = httpLayout.rowGap;
+            const int httpFrameWidth = httpFrameRight - httpFrameLeft;
+            const int httpCheckHeight = settingsUi.checkBoxHeight();
+            const int httpEditHeight = settingsUi.editHeight();
+            const int httpLabelHeight = settingsUi.labelHeight();
+            const int httpButtonHeight = settingsUi.compactButtonHeight();
 
-            const int httpOptionsFrameTop = 44 + httpLayout.sectionGap;
-            const int httpOptionsHeadingY = httpOptionsFrameTop + httpPanelPaddingY;
-            const int httpOptionsRowY = httpOptionsHeadingY + httpTitleGap;
-            const int httpOptionsFrameBottom = httpOptionsRowY + httpRowStep + httpPanelPaddingY;
-            AddSectionFrame(TabHttp, RECT{httpFrameLeft, httpOptionsFrameTop, httpFrameRight, httpOptionsFrameBottom});
-            UsePanelBackground(Label(TabHttp, L"服务选项", httpContentLeft, httpOptionsHeadingY, httpHeadingWidth));
-            httpServerAutoStart_ = CheckBox(TabHttp, 215, L"随应用启动", httpContentLeft, httpOptionsRowY, draft_.httpServerAutoStart, 220);
-            UsePanelBackground(httpServerAutoStart_);
+            const int httpOptionsFrameTop = tabStripRect_.bottom + httpLayout.sectionGap;
+            const ThemedSectionGeometry httpOptionsSection = behaviorForm.section(
+                httpFrameLeft, httpOptionsFrameTop, httpFrameWidth,
+                {behaviorForm.sectionRow({ThemedSectionItemKind::CheckBox})});
+            HWND httpOptionsGroup = AddSectionFrame(TabHttp, L"服务选项", httpOptionsSection.frame);
+            const int httpOptionsRowY = behaviorForm.sectionItemY(httpOptionsSection, 0, httpCheckHeight);
+            httpServerAutoStart_ = CheckBox(TabHttp, 215, L"随应用启动", httpContentLeft, httpOptionsRowY, draft_.httpServerAutoStart, httpContentRight - httpContentLeft);
+            ThemedUi::BindGroupChildren(httpOptionsGroup, {httpServerAutoStart_});
 
-            const int httpBindingFrameTop = httpOptionsFrameBottom + httpFrameGap;
-            const int httpBindingHeadingY = httpBindingFrameTop + httpPanelPaddingY;
-            const int httpBindingRowY = httpBindingHeadingY + httpTitleGap;
-            const int httpBindingFrameBottom = httpBindingRowY + httpFieldRowStep + ThemedControls::EditFrameHeight(theme_) + httpPanelPaddingY;
-            AddSectionFrame(TabHttp, RECT{httpFrameLeft, httpBindingFrameTop, httpFrameRight, httpBindingFrameBottom});
-            UsePanelBackground(Label(TabHttp, L"站点绑定", httpContentLeft, httpBindingHeadingY, httpHeadingWidth));
-            UsePanelBackground(Label(TabHttp, L"站点网址", httpContentLeft, httpBindingRowY + 6, httpLabelWidth));
+            const int httpBindingFrameTop = httpOptionsSection.frame.bottom + httpFrameGap;
+            const ThemedSectionGeometry httpBindingSection = behaviorForm.section(
+                httpFrameLeft, httpBindingFrameTop, httpFrameWidth,
+                {behaviorForm.sectionRow({ThemedSectionItemKind::Label, ThemedSectionItemKind::Edit}),
+                 behaviorForm.sectionRow({ThemedSectionItemKind::Label, ThemedSectionItemKind::Edit, ThemedSectionItemKind::CompactButton})});
+            HWND httpBindingGroup = AddSectionFrame(TabHttp, L"站点绑定", httpBindingSection.frame);
+            const int httpBrowseWidth = settingsUi.buttonWidth(L"选择", ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Text);
+            const int httpOpenRootWidth = settingsUi.buttonWidth(L"打开目录", ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Text);
+            const int httpFieldWidth = httpContentRight - httpFieldX - httpLayout.controlGapX * 2 - httpBrowseWidth - httpOpenRootWidth;
+            const int httpAddressLabelY = behaviorForm.sectionItemY(httpBindingSection, 0, httpLabelHeight);
+            const int httpAddressEditY = behaviorForm.sectionItemY(httpBindingSection, 0, httpEditHeight);
+            const int httpRootLabelY = behaviorForm.sectionItemY(httpBindingSection, 1, httpLabelHeight);
+            const int httpRootEditY = behaviorForm.sectionItemY(httpBindingSection, 1, httpEditHeight);
+            const int httpRootButtonY = behaviorForm.sectionItemY(httpBindingSection, 1, httpButtonHeight);
+            HWND httpAddressLabel = Label(TabHttp, L"站点网址", httpContentLeft, httpAddressLabelY, httpLabelWidth);
             httpServerAddressEdit_ = FramedEdit(
                 TabHttp,
                 ID_HTTP_ADDRESS,
                 httpFieldX,
-                httpBindingRowY,
-                206,
+                httpAddressEditY,
+                httpFieldWidth,
                 HttpAddressText(true, draft_.httpServerPort, false));
-            UsePanelBackground(Label(TabHttp, L"绑定磁盘路径", httpContentLeft, httpBindingRowY + httpFieldRowStep + 6, httpLabelWidth));
+            HWND httpRootLabel = Label(TabHttp, L"绑定磁盘路径", httpContentLeft, httpRootLabelY, httpLabelWidth);
             httpServerRootEdit_ = FramedEdit(
                 TabHttp,
                 218,
                 httpFieldX,
-                httpBindingRowY + httpFieldRowStep,
-                206,
+                httpRootEditY,
+                httpFieldWidth,
                 Trim(draft_.httpServerRootPath).empty() ? LocalHttpServerService::DefaultRootPath(httpRootBaseDirectory_).wstring() : draft_.httpServerRootPath);
-            const int httpBrowseX = httpFieldX + 206 + httpLayout.controlGapX;
-            httpBrowseRootButton_ = Button(TabHttp, ID_HTTP_BROWSE_ROOT, L"选择", httpBrowseX, httpBindingRowY + httpFieldRowStep + 1, 54);
-            Button(TabHttp, ID_HTTP_OPEN_ROOT, L"打开目录", httpBrowseX + 54 + httpLayout.controlGapX, httpBindingRowY + httpFieldRowStep + 1, 84);
+            const int httpBrowseX = httpFieldX + httpFieldWidth + httpLayout.controlGapX;
+            httpBrowseRootButton_ = Button(TabHttp, ID_HTTP_BROWSE_ROOT, L"选择", httpBrowseX, httpRootButtonY, httpBrowseWidth);
+            HWND httpOpenRootButton = Button(TabHttp, ID_HTTP_OPEN_ROOT, L"打开目录", httpBrowseX + httpBrowseWidth + httpLayout.controlGapX, httpRootButtonY, httpOpenRootWidth);
+            ThemedUi::BindGroupChildren(httpBindingGroup, {httpAddressLabel, httpServerAddressEdit_, httpRootLabel, httpServerRootEdit_, httpBrowseRootButton_, httpOpenRootButton});
 
-            const int httpControlFrameTop = httpBindingFrameBottom + httpFrameGap;
-            const int httpControlHeadingY = httpControlFrameTop + httpPanelPaddingY;
-            const int httpStatusY = httpControlHeadingY + httpTitleGap;
-            const int httpButtonY = httpStatusY + httpLabelRowStep;
-            const int httpConfigY = httpButtonY + httpButtonRowStep;
-            const int httpControlFrameBottom = httpConfigY + ThemedControls::CompactButtonHeight(theme_) + httpPanelPaddingY;
-            AddSectionFrame(TabHttp, RECT{httpFrameLeft, httpControlFrameTop, httpFrameRight, httpControlFrameBottom});
-            UsePanelBackground(Label(TabHttp, L"运行控制", httpContentLeft, httpControlHeadingY, httpHeadingWidth));
-            UsePanelBackground(Label(TabHttp, L"状态", httpContentLeft, httpStatusY + 4, 34));
+            const int httpControlFrameTop = httpBindingSection.frame.bottom + httpFrameGap;
+            const ThemedSectionGeometry httpControlSection = behaviorForm.section(
+                httpFrameLeft, httpControlFrameTop, httpFrameWidth,
+                {behaviorForm.sectionRow({ThemedSectionItemKind::Label, ThemedSectionItemKind::StatusBadge, ThemedSectionItemKind::Text}),
+                 behaviorForm.sectionRow({ThemedSectionItemKind::CompactButton}),
+                 behaviorForm.sectionRow({ThemedSectionItemKind::CompactButton, ThemedSectionItemKind::Text})});
+            HWND httpControlGroup = AddSectionFrame(TabHttp, L"运行控制", httpControlSection.frame);
+            const int httpStatusY = behaviorForm.sectionItemY(httpControlSection, 0, httpLabelHeight);
+            const int httpButtonY = behaviorForm.sectionItemY(httpControlSection, 1, httpButtonHeight);
+            const int httpConfigY = behaviorForm.sectionItemY(httpControlSection, 2, httpButtonHeight);
+            const int httpStatusLabelWidth = behaviorForm.labelWidthForText(L"状态");
+            HWND httpStatusLabel = Label(TabHttp, L"状态", httpContentLeft, httpStatusY, httpStatusLabelWidth);
             httpServerStatusTag_ = StatusBadge(
-                TabHttp, L"", httpContentLeft + 42, httpStatusY + 4, 64, ThemedStatusRole::Danger);
-            httpServerStatusDetail_ = Label(TabHttp, L"", httpContentLeft + 112, httpStatusY + 4, httpContentRight - httpContentLeft - 112);
-            UsePanelBackground(httpServerStatusTag_);
-            ThemedControls::SetControlBackgroundComponent(httpServerStatusTag_, L"panel");
-            UsePanelBackground(httpServerStatusDetail_);
-            httpStartButton_ = Button(TabHttp, ID_HTTP_START, L"启动", httpContentLeft, httpButtonY, 72);
-            httpStopButton_ = Button(TabHttp, ID_HTTP_STOP, L"停止", httpContentLeft + 82, httpButtonY, 72);
-            httpRestartButton_ = Button(TabHttp, ID_HTTP_RESTART, L"重启", httpContentLeft + 164, httpButtonY, 72);
-            Button(TabHttp, ID_HTTP_OPEN_HOME, L"打开网站", httpContentLeft + 248, httpButtonY, 84);
-            Button(TabHttp, ID_HTTP_COPY_URL, L"复制地址", httpContentLeft + 342, httpButtonY, 84);
-            Button(TabHttp, ID_HTTP_OPEN_CONFIG_DIR, L"配置目录", httpContentLeft, httpConfigY, 92);
-            UsePanelBackground(Label(TabHttp, L"详细权限、账号密码、上传、MIME 与下载策略请在配置目录的 http-server.ini 中修改；重启 HTTP 服务后生效。", httpContentLeft + 108, httpConfigY + 4, httpContentRight - httpContentLeft - 108));
+                TabHttp, L"", httpContentLeft + httpStatusLabelWidth + httpLayout.controlGapX, httpStatusY, settingsUi.textWidth(L"未运行") + httpLayout.controlGapX * 2, ThemedStatusRole::Danger);
+            const int httpStatusDetailX = httpContentLeft + httpStatusLabelWidth + httpLayout.controlGapX * 2 + settingsUi.textWidth(L"未运行") + httpLayout.controlGapX * 2;
+            httpServerStatusDetail_ = Label(TabHttp, L"", httpStatusDetailX, httpStatusY, httpContentRight - httpStatusDetailX);
+            const int httpStartWidth = settingsUi.buttonWidth(L"启动", ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Text);
+            const int httpStopWidth = settingsUi.buttonWidth(L"停止", ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Text);
+            const int httpRestartWidth = settingsUi.buttonWidth(L"重启", ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Text);
+            const int httpHomeWidth = settingsUi.buttonWidth(L"打开网站", ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Text);
+            const int httpCopyWidth = settingsUi.buttonWidth(L"复制地址", ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Text);
+            int httpButtonX = httpContentLeft;
+            httpStartButton_ = Button(TabHttp, ID_HTTP_START, L"启动", httpButtonX, httpButtonY, httpStartWidth);
+            httpButtonX += httpStartWidth + httpLayout.controlGapX;
+            httpStopButton_ = Button(TabHttp, ID_HTTP_STOP, L"停止", httpButtonX, httpButtonY, httpStopWidth);
+            httpButtonX += httpStopWidth + httpLayout.controlGapX;
+            httpRestartButton_ = Button(TabHttp, ID_HTTP_RESTART, L"重启", httpButtonX, httpButtonY, httpRestartWidth);
+            httpButtonX += httpRestartWidth + httpLayout.controlGapX;
+            HWND httpHomeButton = Button(TabHttp, ID_HTTP_OPEN_HOME, L"打开网站", httpButtonX, httpButtonY, httpHomeWidth);
+            httpButtonX += httpHomeWidth + httpLayout.controlGapX;
+            HWND httpCopyButton = Button(TabHttp, ID_HTTP_COPY_URL, L"复制地址", httpButtonX, httpButtonY, httpCopyWidth);
+            const int httpConfigWidth = settingsUi.buttonWidth(L"配置目录", ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Text);
+            HWND httpConfigButton = Button(TabHttp, ID_HTTP_OPEN_CONFIG_DIR, L"配置目录", httpContentLeft, httpConfigY, httpConfigWidth);
+            HWND httpConfigNote = Label(TabHttp, L"详细权限、账号密码、上传、MIME 与下载策略请在配置目录的 http-server.ini 中修改；重启 HTTP 服务后生效。", httpContentLeft + httpConfigWidth + httpLayout.controlGapX, httpConfigY, httpContentRight - httpContentLeft - httpConfigWidth - httpLayout.controlGapX);
+            ThemedUi::BindGroupChildren(httpControlGroup, {
+                httpStatusLabel, httpServerStatusTag_, httpServerStatusDetail_, httpStartButton_, httpStopButton_,
+                httpRestartButton_, httpHomeButton, httpCopyButton, httpConfigButton, httpConfigNote});
             UpdateHttpStatusLabel();
 
-            const DialogLayoutMetrics backupLayout = GetDialogLayoutMetrics(theme_, DialogLayoutKind::Compact);
-            const int backupButtonWidth = 118;
-            const int backupRowWidth = backupButtonWidth * 2 + backupLayout.controlGapX;
-            const int backupGroupX = backupLayout.CenteredGroupX(560, backupRowWidth);
-            const int backupNoteWidth = 360;
-            const int backupNoteX = backupLayout.CenteredGroupX(560, backupNoteWidth);
-            Label(TabBackup, L"配置包", backupGroupX, 92, 120);
-            Button(TabBackup, ID_CONFIG_EXPORT, L"导出配置包", backupGroupX, 124, backupButtonWidth);
-            Button(TabBackup, ID_CONFIG_IMPORT, L"导入配置包", backupGroupX + backupButtonWidth + backupLayout.controlGapX, 124, backupButtonWidth);
-            Label(TabBackup, L"待办事项单独备份（JSON 格式）", backupNoteX, 210, backupNoteWidth);
-            Button(TabBackup, ID_TODO_EXPORT, L"导出", backupGroupX, 242, backupButtonWidth);
-            Button(TabBackup, ID_TODO_IMPORT, L"导入", backupGroupX + backupButtonWidth + backupLayout.controlGapX, 242, backupButtonWidth);
-            todoIncludeCompleted_ = CheckBox(TabBackup, ID_TODO_INCLUDE_COMPLETED, L"含已完成", backupNoteX, 280, true, 112);
-            todoIncludeDisabled_ = CheckBox(TabBackup, ID_TODO_INCLUDE_DISABLED, L"含已禁用", backupNoteX + 120, 280, true, 112);
-            todoOnlyFuture_ = CheckBox(TabBackup, ID_TODO_ONLY_FUTURE, L"仅未来", backupNoteX + 240, 280, false, 104);
-            Label(TabBackup, L"待办事项备份可用于 Quattro 恢复，也可通过 Apple 快捷指令导入提醒事项。", backupNoteX, 326, backupNoteWidth);
+            int backupY = pageTop;
+            const int configExportWidth = settingsUi.buttonWidth(L"导出配置包", ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Text);
+            const int configImportWidth = settingsUi.buttonWidth(L"导入配置包", ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Text);
+            const int configButtonsWidth = configExportWidth + behaviorLayout.controlGapX + configImportWidth;
+            const int configButtonsX = settingsUi.centeredGroupX(configButtonsWidth);
+            Label(TabBackup, L"配置包", pageLeft, backupY, pageWidth, ThemedLabelOptions{ThemedTextAlign::Center});
+            backupY += behaviorLayout.RowStep(settingsUi.labelHeight());
+            Button(TabBackup, ID_CONFIG_EXPORT, L"导出配置包", configButtonsX, backupY, configExportWidth);
+            Button(TabBackup, ID_CONFIG_IMPORT, L"导入配置包", configButtonsX + configExportWidth + behaviorLayout.controlGapX, backupY, configImportWidth);
+            backupY += behaviorLayout.RowStep(settingsUi.compactButtonHeight()) + behaviorLayout.sectionGap;
+            Label(TabBackup, L"待办事项单独备份（JSON 格式）", pageLeft, backupY, pageWidth, ThemedLabelOptions{ThemedTextAlign::Center});
+            backupY += behaviorLayout.RowStep(settingsUi.labelHeight());
+            const int todoExportWidth = settingsUi.buttonWidth(L"导出", ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Text);
+            const int todoImportWidth = settingsUi.buttonWidth(L"导入", ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Text);
+            const int todoButtonsWidth = todoExportWidth + behaviorLayout.controlGapX + todoImportWidth;
+            const int todoButtonsX = settingsUi.centeredGroupX(todoButtonsWidth);
+            Button(TabBackup, ID_TODO_EXPORT, L"导出", todoButtonsX, backupY, todoExportWidth);
+            Button(TabBackup, ID_TODO_IMPORT, L"导入", todoButtonsX + todoExportWidth + behaviorLayout.controlGapX, backupY, todoImportWidth);
+            backupY += behaviorLayout.RowStep(settingsUi.compactButtonHeight());
+            const int backupCheckWidth = pageWidth / 3;
+            todoIncludeCompleted_ = CheckBox(TabBackup, ID_TODO_INCLUDE_COMPLETED, L"含已完成", pageLeft, backupY, true, backupCheckWidth);
+            todoIncludeDisabled_ = CheckBox(TabBackup, ID_TODO_INCLUDE_DISABLED, L"含已禁用", pageLeft + backupCheckWidth, backupY, true, backupCheckWidth);
+            todoOnlyFuture_ = CheckBox(TabBackup, ID_TODO_ONLY_FUTURE, L"仅未来", pageLeft + backupCheckWidth * 2, backupY, false, pageWidth - backupCheckWidth * 2);
+            backupY += checkRowStep + behaviorLayout.sectionGap;
+            Label(TabBackup, L"待办事项备份可用于 Quattro 恢复，也可通过 Apple 快捷指令导入提醒事项。", pageLeft, backupY, pageWidth, ThemedLabelOptions{ThemedTextAlign::Center});
 
-            RECT client{};
-            GetClientRect(hwnd_, &client);
-            const ThemedUi footerUi(instance_, hwnd_, theme_, font_, DialogLayoutKind::Compact, client.right - client.left, client.bottom - client.top);
+            const ThemedUi footerUi = MakeUi();
             okButton_ = footerUi.FooterButton(IDOK, L"确定", 0, 3, true, true);
             applyButton_ = footerUi.FooterButton(ID_SETTINGS_APPLY, L"应用", 1, 3);
             cancelButton_ = footerUi.FooterButton(IDCANCEL, L"取消", 2, 3);
@@ -3145,57 +3236,15 @@ private:
         case WM_PAINT: {
             PAINTSTRUCT ps{};
             HDC dc = BeginPaint(hwnd_, &ps);
-            RECT rect{};
-            GetClientRect(hwnd_, &rect);
-            FillRect(dc, &rect, backgroundBrush_ ? backgroundBrush_ : reinterpret_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
-            PaintTabs(dc);
-            PaintSectionFrames(dc);
-            PaintFields(dc);
+            windowUi_->FillBackground(dc);
+            windowUi_->DrawRegisteredEditFrames(dc);
             EndPaint(hwnd_, &ps);
             return 0;
         }
-        case WM_ERASEBKGND: {
-            return 1;
-        }
-        case WM_CTLCOLOREDIT: {
-            HDC dc = reinterpret_cast<HDC>(wParam);
-            SetTextColor(dc, ToColorRef(theme_.color(L"edit", L"normal", L"text")));
-            SetBkColor(dc, ToColorRef(theme_.color(L"edit", L"normal", L"bg")));
-            return reinterpret_cast<LRESULT>(fieldBrush_ ? fieldBrush_ : GetStockObject(WHITE_BRUSH));
-        }
-        case WM_CTLCOLORSTATIC:
-        case WM_CTLCOLORBTN: {
-            HDC dc = reinterpret_cast<HDC>(wParam);
-            SetBkMode(dc, TRANSPARENT);
-            HWND child = reinterpret_cast<HWND>(lParam);
-            const bool fieldChild = IsFieldChild(child);
-            SetTextColor(dc, ToColorRef(fieldChild ? theme_.color(L"field", L"readonly", L"text") : theme_.color(L"label", L"normal", L"text")));
-            if (fieldChild && readOnlyFieldBrush_) {
-                return reinterpret_cast<LRESULT>(readOnlyFieldBrush_);
-            }
-            if (IsPanelBackgroundChild(child) && panelBrush_) {
-                return reinterpret_cast<LRESULT>(panelBrush_);
-            }
-            return reinterpret_cast<LRESULT>(backgroundBrush_ ? backgroundBrush_ : GetStockObject(WHITE_BRUSH));
-        }
-        case WM_CTLCOLORLISTBOX: {
-            HDC dc = reinterpret_cast<HDC>(wParam);
-            SetBkMode(dc, TRANSPARENT);
-            SetTextColor(dc, ToColorRef(theme_.color(L"label", L"normal", L"text")));
-            return reinterpret_cast<LRESULT>(backgroundBrush_ ? backgroundBrush_ : GetStockObject(WHITE_BRUSH));
-        }
-        case WM_DRAWITEM:
-            if (ThemedControls::Draw(theme_, reinterpret_cast<const DRAWITEMSTRUCT*>(lParam))) {
-                return TRUE;
-            }
-            return 0;
         case WM_SETTINGS_WEBDAV_DONE:
             HandleWebDavResult(std::unique_ptr<SettingsWebDavResult>(reinterpret_cast<SettingsWebDavResult*>(lParam)));
             return 0;
         case WM_COMMAND:
-            if (HIWORD(wParam) == EN_SETFOCUS || HIWORD(wParam) == EN_KILLFOCUS) {
-                InvalidateField(reinterpret_cast<HWND>(lParam));
-            }
             if (LOWORD(wParam) == ID_SETTINGS_TAB_CONTROL && HIWORD(wParam) == CBN_SELCHANGE) {
                 ShowTab(ThemedUi::ActiveTab(settingsTabs_));
                 return 0;
@@ -3325,31 +3374,6 @@ private:
             return 0;
         case WM_DESTROY:
             done_ = true;
-            RestoreModalOwner(owner_, ownerWasEnabled_, ownerRestored_);
-            if (editFont_) {
-                DeleteObject(editFont_);
-                editFont_ = nullptr;
-            }
-            if (backgroundBrush_) {
-                DeleteObject(backgroundBrush_);
-                backgroundBrush_ = nullptr;
-            }
-            if (fieldBrush_) {
-                DeleteObject(fieldBrush_);
-                fieldBrush_ = nullptr;
-            }
-            if (readOnlyFieldBrush_) {
-                DeleteObject(readOnlyFieldBrush_);
-                readOnlyFieldBrush_ = nullptr;
-            }
-            if (panelBrush_) {
-                DeleteObject(panelBrush_);
-                panelBrush_ = nullptr;
-            }
-            if (ownsFont_ && font_) {
-                DeleteObject(font_);
-                font_ = nullptr;
-            }
             return 0;
         default:
             return DefWindowProcW(hwnd_, message, wParam, lParam);
@@ -3388,8 +3412,6 @@ private:
     HWND owner_ = nullptr;
     HINSTANCE instance_ = nullptr;
     HWND hwnd_ = nullptr;
-    HFONT font_ = nullptr;
-    HFONT editFont_ = nullptr;
     AppConfig& config_;
     AppConfig draft_;
     const Theme& theme_;
@@ -3398,23 +3420,13 @@ private:
     LocalHttpServerService* httpServer_ = nullptr;
     bool mainHotKeyRegistered_ = false;
     bool processLocatorHotKeyRegistered_ = false;
-    HBRUSH backgroundBrush_ = nullptr;
-    HBRUSH fieldBrush_ = nullptr;
-    HBRUSH readOnlyFieldBrush_ = nullptr;
-    HBRUSH panelBrush_ = nullptr;
-    bool ownsFont_ = false;
-    bool ownerWasEnabled_ = false;
-    bool ownerRestored_ = false;
     int currentTab_ = -1;
     RECT tabStripRect_{};
     int tabContentOffsetY_ = 0;
     HWND settingsTabs_ = nullptr;
     std::vector<TabChild> tabChildren_;
-    std::vector<SectionFrame> sectionFrames_;
-    std::vector<FieldFrame> fieldFrames_;
-    mutable ThemedEditFrameCollection editFrameCollection_;
     int nextGeneratedControlId_ = 6000;
-    std::vector<HWND> panelBackgroundChildren_;
+    std::unique_ptr<ThemedWindowUi> windowUi_;
     HWND showTitle_ = nullptr;
     HWND showGroup_ = nullptr;
     HWND showTag_ = nullptr;
@@ -3494,6 +3506,16 @@ bool ShowTextInputDialog(HWND owner, HINSTANCE instance, const Theme& theme, con
 
 int ShowThemedMessageBox(HWND owner, HINSTANCE instance, const Theme& theme, const std::wstring& message, const std::wstring& title, UINT flags) {
     ThemedMessageDialog dialog(owner, instance, theme, message, title, flags);
+    return dialog.Run();
+}
+
+bool ShowHotKeyConflictDialog(
+    HWND owner,
+    HINSTANCE instance,
+    const Theme& theme,
+    const std::wstring& message,
+    bool& ignoreFutureWarnings) {
+    HotKeyConflictDialog dialog(owner, instance, theme, message, ignoreFutureWarnings);
     return dialog.Run();
 }
 

@@ -691,7 +691,6 @@ void Theme::SetDefaults() {
     PutMetric(L"linkItem", L"compactGapY", 6.0f);
     PutMetric(L"linkItem", L"compactPreferredWidth", 128.0f);
     PutMetric(L"linkItem", L"compactMinWidth", 72.0f);
-    PutMetric(L"linkItem", L"selectedAccentWidth", 4.0f);
     PutMetric(L"linkItem", L"customColorWidth", 3.0f);
     PutMetric(L"linkItem", L"customColorInsetY", 4.0f);
     PutMetric(L"linkItem", L"listIconLeft", 8.0f);
@@ -900,7 +899,9 @@ void Theme::SetDefaults() {
     PutMetric(L"groupBox", L"borderWidth", 1.0f);
     PutMetric(L"groupBox", L"paddingX", 12.0f);
     PutMetric(L"groupBox", L"paddingY", 10.0f);
-    PutMetric(L"groupBox", L"titleHeight", 24.0f);
+    PutMetric(L"groupBox", L"titleHeight", 20.0f);
+    PutMetric(L"groupBox", L"contentGapY", 4.0f);
+    PutMetric(L"groupBox", L"contentRowGap", 4.0f);
     PutMetric(L"groupBox", L"titleInsetX", 10.0f);
     PutMetric(L"groupBox", L"titleGap", 6.0f);
     PutMetric(L"tabControl", L"radius", 7.0f);

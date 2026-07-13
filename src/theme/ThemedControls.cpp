@@ -1213,7 +1213,12 @@ void DrawContainer(const Theme& theme, const DRAWITEMSTRUCT* draw, ControlKind k
     GetTextExtentPoint32W(draw->hDC, title.c_str(), static_cast<int>(title.size()), &size);
     const int inset = static_cast<int>(theme.metric(L"groupBox", L"titleInsetX", 10.0f));
     const int gap = static_cast<int>(theme.metric(L"groupBox", L"titleGap", 6.0f));
-    RECT titleBg{rect.left + inset - gap / 2, rect.top, rect.left + inset + size.cx + gap / 2, rect.top + std::max(size.cy, 20L)};
+    const int titleHeight = static_cast<int>(theme.metric(L"groupBox", L"titleHeight", 20.0f));
+    RECT titleBg{
+        rect.left + inset - gap / 2,
+        rect.top,
+        rect.left + inset + size.cx + gap / 2,
+        rect.top + std::max(size.cy, static_cast<LONG>(titleHeight))};
     HBRUSH background = CreateSolidBrush(ToColorRef(theme.color(L"groupBox", visualState, L"bg")));
     FillRect(draw->hDC, &titleBg, background);
     DeleteObject(background);
@@ -1622,12 +1627,12 @@ RECT FieldTextRect(const Theme& theme, RECT frame) {
     return TextRectFromMetrics(theme, L"field", frame, 20.0f, true);
 }
 
-HFONT CreateDialogFont() {
-    return CreateThemeFontPx(kDialogFontPx);
+HFONT CreateDialogFont(UINT dpi) {
+    return CreateThemeFontPx(MulDiv(kDialogFontPx, static_cast<int>(dpi ? dpi : USER_DEFAULT_SCREEN_DPI), USER_DEFAULT_SCREEN_DPI));
 }
 
-HFONT CreateEditFont(const Theme& theme) {
-    return CreateThemeFontPx(EditFontSizePx(theme));
+HFONT CreateEditFont(const Theme& theme, UINT dpi) {
+    return CreateThemeFontPx(MulDiv(EditFontSizePx(theme), static_cast<int>(dpi ? dpi : USER_DEFAULT_SCREEN_DPI), USER_DEFAULT_SCREEN_DPI));
 }
 
 HWND CreateStaticText(HINSTANCE instance, HWND parent, const wchar_t* text, int x, int y, int width, int height, HFONT font, DWORD style) {
@@ -1948,8 +1953,8 @@ RECT GroupBoxContentRect(HWND hwnd) {
     const Theme& theme = *state->theme;
     rect.left += static_cast<int>(theme.metric(L"groupBox", L"paddingX", 12.0f));
     rect.right -= static_cast<int>(theme.metric(L"groupBox", L"paddingX", 12.0f));
-    rect.top += static_cast<int>(theme.metric(L"groupBox", L"titleHeight", 24.0f))
-        + static_cast<int>(theme.metric(L"groupBox", L"paddingY", 10.0f));
+    rect.top += static_cast<int>(theme.metric(L"groupBox", L"titleHeight", 20.0f))
+        + static_cast<int>(theme.metric(L"groupBox", L"contentGapY", 4.0f));
     rect.bottom -= static_cast<int>(theme.metric(L"groupBox", L"paddingY", 10.0f));
     return rect;
 }
@@ -1987,6 +1992,14 @@ void SetControlBackgroundComponent(HWND hwnd, const wchar_t* component) {
     }
     StateFor(hwnd).backgroundComponent = component ? component : L"";
     InvalidateRect(hwnd, nullptr, TRUE);
+}
+
+const wchar_t* ControlBackgroundComponent(HWND hwnd) {
+    auto state = FindState(hwnd);
+    if (!state || state->backgroundComponent.empty()) {
+        return L"dialog";
+    }
+    return state->backgroundComponent.c_str();
 }
 
 void SetControlMultiline(HWND hwnd, bool multiline) {

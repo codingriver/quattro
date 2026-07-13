@@ -620,7 +620,8 @@ ThemedUi::ThemedUi(
     int clientHeight,
     ThemedEditFrameRegistry* editFrameRegistry,
     ThemedTableFrameRegistry* tableFrameRegistry,
-    ThemedTooltipRegistry* tooltipRegistry)
+    ThemedTooltipRegistry* tooltipRegistry,
+    UINT dpi)
     : instance_(instance),
       parent_(parent),
       theme_(theme),
@@ -630,20 +631,28 @@ ThemedUi::ThemedUi(
       clientHeight_(clientHeight),
       editFrameRegistry_(editFrameRegistry),
       tableFrameRegistry_(tableFrameRegistry),
-      tooltipRegistry_(tooltipRegistry) {}
+      tooltipRegistry_(tooltipRegistry) {
+    dpi_ = dpi ? dpi : (parent_ ? GetDpiForWindow(parent_) : USER_DEFAULT_SCREEN_DPI);
+    if (!dpi_) dpi_ = USER_DEFAULT_SCREEN_DPI;
+    layout_ = ScaleDialogLayoutMetrics(layout_, dpi_);
+}
+
+int ThemedUi::scale(int logicalPixels) const {
+    return ScaleDialogMetric(logicalPixels, dpi_);
+}
 
 // 返回主题定义的单行标签高度。
 // 参数：无。
 // 返回值：当前主题中的标签高度，单位为像素。
 int ThemedUi::labelHeight() const {
-    return ThemedControls::LabelHeight(theme_);
+    return scale(ThemedControls::LabelHeight(theme_));
 }
 
 // 返回主题定义的普通按钮高度。
 // 参数：无。
 // 返回值：当前主题中的按钮高度，单位为像素。
 int ThemedUi::buttonHeight() const {
-    return ThemedControls::ButtonHeight(theme_);
+    return scale(ThemedControls::ButtonHeight(theme_));
 }
 
 // 根据按钮角色和尺寸规格返回按钮高度。
@@ -653,36 +662,63 @@ int ThemedUi::buttonHeight() const {
 // 返回值：匹配角色和尺寸规格的按钮高度，单位为像素。
 int ThemedUi::buttonHeight(ThemedButtonRole role, ThemedButtonSize size) const {
     if (role == ThemedButtonRole::Mini || size == ThemedButtonSize::Mini) {
-        return ThemedControls::MiniButtonHeight(theme_);
+        return scale(ThemedControls::MiniButtonHeight(theme_));
     }
     if (role == ThemedButtonRole::Tab) {
-        return ThemedControls::TabButtonHeight(theme_);
+        return scale(ThemedControls::TabButtonHeight(theme_));
     }
     if (size == ThemedButtonSize::Compact) {
-        return ThemedControls::CompactButtonHeight(theme_);
+        return scale(ThemedControls::CompactButtonHeight(theme_));
     }
-    return ThemedControls::ButtonHeight(theme_);
+    return scale(ThemedControls::ButtonHeight(theme_));
 }
 
 // 返回主题定义的紧凑按钮高度。
 // 参数：无。
 // 返回值：当前主题中的紧凑按钮高度，单位为像素。
 int ThemedUi::compactButtonHeight() const {
-    return ThemedControls::CompactButtonHeight(theme_);
+    return scale(ThemedControls::CompactButtonHeight(theme_));
+}
+
+int ThemedUi::checkBoxHeight(ThemedCheckBoxSize size) const {
+    const int height = scale(ThemedControls::CheckBoxHeight(theme_));
+    return size == ThemedCheckBoxSize::TwoLines ? height * 2 + layout_.rowGap : height;
+}
+
+int ThemedUi::toggleHeight() const {
+    return scale(ThemedControls::ToggleHeight(theme_));
+}
+
+int ThemedUi::tabButtonHeight() const {
+    return scale(ThemedControls::TabButtonHeight(theme_));
+}
+
+int ThemedUi::tabButtonWidth(const std::wstring& text) const {
+    const int minWidth = scale(static_cast<int>(theme_.metric(L"tabButton", L"groupItemWidth", 58.0f)));
+    const int paddingX = scale(static_cast<int>(theme_.metric(L"tabButton", L"paddingX", 12.0f)));
+    return std::max(minWidth, textWidth(text) + paddingX * 2 + scale(4));
+}
+
+ThemedContentInsets ThemedUi::groupBoxInsets() const {
+    const int paddingX = scale(static_cast<int>(theme_.metric(L"groupBox", L"paddingX", 12.0f)));
+    const int paddingY = scale(static_cast<int>(theme_.metric(L"groupBox", L"paddingY", 10.0f)));
+    const int titleHeight = scale(static_cast<int>(theme_.metric(L"groupBox", L"titleHeight", 20.0f)));
+    const int contentGapY = scale(static_cast<int>(theme_.metric(L"groupBox", L"contentGapY", 4.0f)));
+    return ThemedContentInsets{paddingX, titleHeight + contentGapY, paddingX, paddingY};
 }
 
 // 返回主题定义的进度条高度。
 // 参数：无。
 // 返回值：当前主题中的进度条高度，单位为像素。
 int ThemedUi::progressBarHeight() const {
-    return ThemedControls::ProgressBarHeight(theme_);
+    return scale(ThemedControls::ProgressBarHeight(theme_));
 }
 
 int ThemedUi::editHeight(ThemedEditMode mode) const {
     if (mode == ThemedEditMode::MultiLine) {
-        return ThemedControls::EditFrameHeight(theme_) * 2 + layout_.rowGap;
+        return scale(ThemedControls::EditFrameHeight(theme_)) * 2 + layout_.rowGap;
     }
-    return ThemedControls::EditFrameHeight(theme_);
+    return scale(ThemedControls::EditFrameHeight(theme_));
 }
 
 // 根据按钮角色、尺寸规格和宽度策略返回按钮宽度。
@@ -700,24 +736,24 @@ int ThemedUi::buttonWidth(
     ThemedButtonWidthMode widthMode,
     int fixedWidth) const {
     if (role == ThemedButtonRole::Mini || size == ThemedButtonSize::Mini) {
-        return fixedWidth > 0 ? fixedWidth : static_cast<int>(theme_.metric(L"miniButton", L"width", 26.0f));
+        return fixedWidth > 0 ? fixedWidth : scale(static_cast<int>(theme_.metric(L"miniButton", L"width", 26.0f)));
     }
     if (widthMode == ThemedButtonWidthMode::Fixed) {
         if (fixedWidth > 0) {
             return fixedWidth;
         }
         if (role == ThemedButtonRole::Tab) {
-            return static_cast<int>(theme_.metric(L"tabButton", L"groupItemWidth", 58.0f));
+            return scale(static_cast<int>(theme_.metric(L"tabButton", L"groupItemWidth", 58.0f)));
         }
         return layout_.footerButtonWidth;
     }
 
     const wchar_t* component = role == ThemedButtonRole::Tab ? L"tabButton" : L"button";
-    const int paddingX = static_cast<int>(theme_.metric(component, L"paddingX", 12.0f));
+    const int paddingX = scale(static_cast<int>(theme_.metric(component, L"paddingX", 12.0f)));
     const int measured = TextWidth(parent_, font_, text) + paddingX * 2;
     const int minWidth = fixedWidth > 0 ? fixedWidth : buttonHeight(role, size) * 2;
     if (role == ThemedButtonRole::Tab) {
-        const int minTextWidth = static_cast<int>(theme_.metric(L"tabButton", L"minTextWidth", 18.0f));
+        const int minTextWidth = scale(static_cast<int>(theme_.metric(L"tabButton", L"minTextWidth", 18.0f)));
         return std::max({measured, minTextWidth + paddingX * 2, minWidth});
     }
     return std::max(measured, minWidth);
@@ -828,6 +864,22 @@ void ThemedUi::SetEnabled(HWND hwnd, bool enabled) const {
     }
 }
 
+void ThemedUi::SetControlSurface(HWND hwnd, ThemedControlSurface surface) {
+    const wchar_t* component = L"dialog";
+    switch (surface) {
+    case ThemedControlSurface::Panel:
+        component = L"panel";
+        break;
+    case ThemedControlSurface::GroupBox:
+        component = L"groupBox";
+        break;
+    case ThemedControlSurface::Dialog:
+    default:
+        break;
+    }
+    ThemedControls::SetControlBackgroundComponent(hwnd, component);
+}
+
 void ThemedUi::MoveControl(HWND hwnd, int x, int y, int width) const {
     if (!hwnd) {
         return;
@@ -867,6 +919,9 @@ RECT ThemedUi::GroupContentRect(HWND groupBox) {
 void ThemedUi::BindGroupChildren(HWND groupBox, const std::vector<HWND>& children) {
     if (!groupBox) return;
     GroupBoxStates()[groupBox].children = children;
+    for (HWND child : children) {
+        SetControlSurface(child, ThemedControlSurface::GroupBox);
+    }
     SetGroupEnabled(groupBox, IsWindowEnabled(groupBox) != FALSE);
 }
 

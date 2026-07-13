@@ -30,6 +30,27 @@ struct ThemedFormGroup {
     int gapAfter = 0;
 };
 
+struct ThemedSectionGeometry {
+    RECT frame{};
+    RECT content{};
+    std::vector<int> rowTops;
+    std::vector<int> rowHeights;
+};
+
+enum class ThemedSectionItemKind {
+    Label,
+    Text,
+    StatusBadge,
+    Edit,
+    CheckBox,
+    Toggle,
+    CompactButton,
+};
+
+struct ThemedSectionRow {
+    std::vector<ThemedSectionItemKind> items;
+};
+
 class ThemedFormLayout {
 public:
     explicit ThemedFormLayout(const ThemedUi& ui);
@@ -86,12 +107,17 @@ public:
         ThemedRowDistribution distribution,
         std::initializer_list<ThemedFormGroup> groups) const;
     std::vector<std::vector<RECT>> justifiedRowGroups(int y, std::initializer_list<ThemedFormGroup> groups) const;
+    ThemedSectionRow sectionRow(std::initializer_list<ThemedSectionItemKind> items) const;
+    ThemedSectionGeometry section(int left, int top, int width, std::initializer_list<ThemedSectionRow> rows) const;
+    int sectionItemY(const ThemedSectionGeometry& section, int rowIndex, int itemHeight) const;
 
 private:
     int defaultGap() const;
     int defaultGroupGap() const;
     int normalizeGap(int gapAfter) const;
     int normalizeGroupGap(int gapAfter) const;
+    int sectionRowHeight(const ThemedSectionRow& row) const;
+    int sectionRowGap() const;
     std::vector<RECT> groupRects(int x, int y, int rowHeight, const ThemedFormGroup& group) const;
 
     const ThemedUi& ui_;

@@ -47,16 +47,16 @@ ThemedFormItem ThemedFormLayout::text(int width, int gapAfter) const {
 }
 
 ThemedFormItem ThemedFormLayout::field(int width, int height, int gapAfter) const {
-    const int fieldHeight = height > 0 ? height : ThemedControls::FieldFrameHeight(ui_.theme());
+    const int fieldHeight = height > 0 ? height : ui_.editHeight();
     return item(width, fieldHeight, gapAfter);
 }
 
 ThemedFormItem ThemedFormLayout::combo(int width, int gapAfter) const {
-    return item(width, ThemedControls::EditFrameHeight(ui_.theme()), gapAfter);
+    return item(width, ui_.editHeight(), gapAfter);
 }
 
 ThemedFormItem ThemedFormLayout::checkBox(int width, int gapAfter) const {
-    return item(width, ThemedControls::CheckBoxHeight(ui_.theme()), gapAfter);
+    return item(width, ui_.checkBoxHeight(), gapAfter);
 }
 
 ThemedFormItem ThemedFormLayout::progress(int width, int gapAfter) const {
@@ -264,6 +264,82 @@ std::vector<std::vector<RECT>> ThemedFormLayout::rowGroups(
 
 std::vector<std::vector<RECT>> ThemedFormLayout::justifiedRowGroups(int y, std::initializer_list<ThemedFormGroup> groups) const {
     return rowGroups(y, ThemedRowAlign::Left, ThemedRowDistribution::Justify, groups);
+}
+
+ThemedSectionRow ThemedFormLayout::sectionRow(std::initializer_list<ThemedSectionItemKind> items) const {
+    return ThemedSectionRow{std::vector<ThemedSectionItemKind>(items.begin(), items.end())};
+}
+
+ThemedSectionGeometry ThemedFormLayout::section(
+    int left,
+    int top,
+    int width,
+    std::initializer_list<ThemedSectionRow> rows) const {
+    ThemedSectionGeometry geometry{};
+    const ThemedContentInsets insets = ui_.groupBoxInsets();
+    geometry.rowHeights.reserve(rows.size());
+    geometry.rowTops.reserve(rows.size());
+
+    int y = top + insets.top;
+    for (const ThemedSectionRow& row : rows) {
+        const int normalizedHeight = sectionRowHeight(row);
+        geometry.rowTops.push_back(y);
+        geometry.rowHeights.push_back(normalizedHeight);
+        y += normalizedHeight;
+        if (geometry.rowTops.size() < rows.size()) {
+            y += sectionRowGap();
+        }
+    }
+
+    geometry.frame = RECT{left, top, left + std::max(0, width), y + insets.bottom};
+    geometry.content = RECT{
+        geometry.frame.left + insets.left,
+        top + insets.top,
+        geometry.frame.right - insets.right,
+        geometry.frame.bottom - insets.bottom};
+    return geometry;
+}
+
+int ThemedFormLayout::sectionRowHeight(const ThemedSectionRow& row) const {
+    int height = 0;
+    for (ThemedSectionItemKind item : row.items) {
+        switch (item) {
+        case ThemedSectionItemKind::Edit:
+            height = std::max(height, ui_.editHeight());
+            break;
+        case ThemedSectionItemKind::CheckBox:
+            height = std::max(height, ui_.checkBoxHeight());
+            break;
+        case ThemedSectionItemKind::Toggle:
+            height = std::max(height, ui_.toggleHeight());
+            break;
+        case ThemedSectionItemKind::CompactButton:
+            height = std::max(height, ui_.compactButtonHeight());
+            break;
+        case ThemedSectionItemKind::Label:
+        case ThemedSectionItemKind::Text:
+        case ThemedSectionItemKind::StatusBadge:
+        default:
+            height = std::max(height, ui_.labelHeight());
+            break;
+        }
+    }
+    return height;
+}
+
+int ThemedFormLayout::sectionRowGap() const {
+    return ui_.scale(static_cast<int>(ui_.theme().metric(L"groupBox", L"contentRowGap", 4.0f)));
+}
+
+int ThemedFormLayout::sectionItemY(
+    const ThemedSectionGeometry& section,
+    int rowIndex,
+    int itemHeight) const {
+    if (rowIndex < 0 || rowIndex >= static_cast<int>(section.rowTops.size())) {
+        return section.content.top;
+    }
+    return section.rowTops[static_cast<std::size_t>(rowIndex)]
+        + std::max(0, section.rowHeights[static_cast<std::size_t>(rowIndex)] - std::max(0, itemHeight)) / 2;
 }
 
 int ThemedFormLayout::defaultGap() const {

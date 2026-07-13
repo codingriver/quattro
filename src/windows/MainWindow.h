@@ -103,6 +103,23 @@ private:
         Swap,
     };
 
+    enum class NavDragKind {
+        None,
+        Group,
+        Tag,
+    };
+
+    enum class NavDragMode {
+        None,
+        Insert,
+    };
+
+    struct NavItemRect {
+        int id = 0;
+        int index = 0;
+        D2D1_RECT_F rect{};
+    };
+
     struct MenuItemData {
         std::wstring text;
         int icon = 0;
@@ -157,6 +174,7 @@ private:
     void MoveMenuContext(int direction);
     void MoveLinkWithinTag(int linkId, int direction);
     bool ApplyManualLinkOrder(int tagId, const std::vector<int>& orderedLinkIds, const wchar_t* title);
+    bool ApplyManualGroupOrder(int parentGroup, const std::vector<int>& orderedGroupIds, const wchar_t* title);
     void MoveGroupWithinParent(int groupId, int direction);
     void MoveTagToGroup(int tagId, int groupId);
     void MoveLinkToTag(int linkId, int tagId);
@@ -226,6 +244,7 @@ private:
     void ApplyConfigRuntimeChanges(const AppConfig& previous);
     void SyncAutoRun(const AppConfig& previous);
     void RegisterConfiguredHotKeys();
+    void ShowHotKeyConflictWarning(const std::wstring& failures);
     void UnregisterConfiguredHotKeys();
     std::wstring TrayTooltipText() const;
     void UpdateTrayTooltip();
@@ -276,6 +295,7 @@ private:
     void DrawTags(D2D1_RECT_F rect);
     void DrawMajorNavItem(D2D1_RECT_F rect, const std::wstring& text, bool selected, bool hovered, bool vertical);
     void DrawMinorNavItem(D2D1_RECT_F rect, const std::wstring& text, bool selected, bool hovered);
+    void DrawNavInsertIndicator(const std::vector<NavItemRect>& items, int insertIndex, bool vertical, const D2D1_RECT_F& clipRect, const Color& accent);
     void DrawLinks(D2D1_RECT_F rect);
     void DrawContentCard(const D2D1_RECT_F& fullRect);
     D2D1_RECT_F CardRectFor(const D2D1_RECT_F& regionRect) const;
@@ -323,6 +343,11 @@ private:
     void CommitLinkDrag();
     void CancelLinkDrag();
     void UpdateLinkDragTarget(POINT point);
+    void BeginNavDragCandidate(HitKind kind, int groupId, POINT point);
+    void UpdateNavDrag(POINT point);
+    void UpdateNavDragTarget(POINT point);
+    void CommitNavDrag();
+    void CancelNavDrag();
     void MoveLinkSelection(int dx, int dy);
     void MoveTodoSelection(int delta);
     void SelectAdjacentTag(int direction);
@@ -333,6 +358,9 @@ private:
 
     std::vector<Group> MajorGroups() const;
     std::vector<Group> TagsForCurrentGroup() const;
+    std::vector<Group*> GroupsForParent(int parentGroup);
+    std::vector<NavItemRect> MajorGroupItemRects(const D2D1_RECT_F& rect) const;
+    std::vector<NavItemRect> TagItemRects(const D2D1_RECT_F& rect) const;
     std::wstring TagDisplayName(const Group& tag) const;
     std::vector<Link*> OrderedLinksForTag(int tagId);
     std::vector<Link*> LinksForCurrentTag();
@@ -406,10 +434,19 @@ private:
     LinkDragMode linkDragMode_ = LinkDragMode::None;
     int linkDragTargetLinkId_ = 0;
     int linkDragInsertIndex_ = -1;
+    NavDragKind navDragKind_ = NavDragKind::None;
+    int navDragCandidateId_ = 0;
+    int navDragId_ = 0;
+    POINT navDragStartPoint_{};
+    POINT navDragCurrentPoint_{};
+    bool navDragActive_ = false;
+    NavDragMode navDragMode_ = NavDragMode::None;
+    int navDragInsertIndex_ = -1;
     bool trayIconVisible_ = false;
     bool hotKeysRegistered_ = false;
     bool mainHotKeyRegistered_ = false;
     bool processLocatorHotKeyRegistered_ = false;
+    bool hotKeyConflictWarningShown_ = false;
     bool runningAsAdmin_ = false;
     bool exitingForPrivilegeRestart_ = false;
     bool startupFirstPaintLogged_ = false;

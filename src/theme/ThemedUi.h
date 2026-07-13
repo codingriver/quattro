@@ -235,6 +235,13 @@ struct ThemedGroupBoxOptions {
     bool raised = false;
 };
 
+struct ThemedContentInsets {
+    int left = 0;
+    int top = 0;
+    int right = 0;
+    int bottom = 0;
+};
+
 enum class ThemedPanelRole {
     Normal,
     Subtle,
@@ -242,6 +249,12 @@ enum class ThemedPanelRole {
     Inset,
     Warning,
     Danger,
+};
+
+enum class ThemedControlSurface {
+    Dialog,
+    Panel,
+    GroupBox,
 };
 
 struct ThemedPanelOptions {
@@ -390,12 +403,15 @@ public:
         int clientHeight,
         ThemedEditFrameRegistry* editFrameRegistry = nullptr,
         ThemedTableFrameRegistry* tableFrameRegistry = nullptr,
-        ThemedTooltipRegistry* tooltipRegistry = nullptr);
+        ThemedTooltipRegistry* tooltipRegistry = nullptr,
+        UINT dpi = 0);
 
     const DialogLayoutMetrics& layout() const { return layout_; }
     const Theme& theme() const { return theme_; }
     int clientWidth() const { return clientWidth_; }
     int clientHeight() const { return clientHeight_; }
+    UINT dpi() const { return dpi_; }
+    int scale(int logicalPixels) const;
 
     // Layout accessors. They expose the shared dialog metrics instead of
     // letting each window duplicate inset, footer, and row-spacing math.
@@ -408,6 +424,11 @@ public:
     int buttonHeight() const;
     int buttonHeight(ThemedButtonRole role, ThemedButtonSize size) const;
     int compactButtonHeight() const;
+    int checkBoxHeight(ThemedCheckBoxSize size = ThemedCheckBoxSize::Normal) const;
+    int toggleHeight() const;
+    int tabButtonHeight() const;
+    int tabButtonWidth(const std::wstring& text) const;
+    ThemedContentInsets groupBoxInsets() const;
     int progressBarHeight() const;
     int editHeight(ThemedEditMode mode = ThemedEditMode::SingleLine) const;
     int buttonWidth(
@@ -433,6 +454,7 @@ public:
     HWND StatusBadge(const std::wstring& text, int x, int y, int width, ThemedStatusRole role = ThemedStatusRole::Normal) const;
     void SetStatusBadgeRole(HWND hwnd, ThemedStatusRole role) const;
     void SetEnabled(HWND hwnd, bool enabled) const;
+    static void SetControlSurface(HWND hwnd, ThemedControlSurface surface);
     void MoveControl(HWND hwnd, int x, int y, int width) const;
     void MoveComboBox(HWND hwnd, int x, int y, int width) const;
     HWND GroupBox(int id, const std::wstring& title, RECT frame, ThemedGroupBoxOptions options = {}) const;
@@ -562,6 +584,7 @@ private:
     DialogLayoutMetrics layout_{};
     int clientWidth_ = 0;
     int clientHeight_ = 0;
+    UINT dpi_ = USER_DEFAULT_SCREEN_DPI;
     ThemedEditFrameRegistry* editFrameRegistry_ = nullptr;
     ThemedTableFrameRegistry* tableFrameRegistry_ = nullptr;
     ThemedTooltipRegistry* tooltipRegistry_ = nullptr;
