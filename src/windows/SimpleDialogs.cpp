@@ -82,7 +82,7 @@ constexpr int ID_TRACK_SVN_CONTEXT_MENU = 434;
 constexpr int ID_TRACK_VSCODE_CONTEXT_MENU = 435;
 constexpr int ID_TRACK_TERMINAL_CONTEXT_MENU = 436;
 constexpr int ID_TRACK_ARCHIVE_CONTEXT_MENU = 437;
-constexpr int ID_CLEAR_MENU_ICON_CACHE = 438;
+constexpr int ID_RESET_CONTEXT_MENU = 438;
 constexpr int ID_MESSAGE_TEXT = 501;
 constexpr int ID_HOTKEY_CONFLICT_IGNORE = 502;
 constexpr int ID_MAIN_HOTKEY_PROBE = 0x5148;
@@ -1941,7 +1941,7 @@ public:
         bool mainHotKeyRegistered,
         bool processLocatorHotKeyRegistered,
         SettingsApplyCallback applyCallback,
-        SettingsClearMenuIconCacheCallback clearMenuIconCacheCallback)
+        SettingsResetContextMenuCallback resetContextMenuCallback)
         : owner_(owner),
           instance_(instance),
           config_(config),
@@ -1953,7 +1953,7 @@ public:
           mainHotKeyRegistered_(mainHotKeyRegistered),
           processLocatorHotKeyRegistered_(processLocatorHotKeyRegistered),
           applyCallback_(std::move(applyCallback)),
-          clearMenuIconCacheCallback_(std::move(clearMenuIconCacheCallback)) {}
+          resetContextMenuCallback_(std::move(resetContextMenuCallback)) {}
 
     bool Run() {
         HICON icon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_QUATTRO_APP_ICON));
@@ -2389,23 +2389,48 @@ private:
         }
     }
 
-    void ClearMenuIconCache() {
-        if (!clearMenuIconCacheCallback_) {
+    void ResetContextMenu() {
+        if (!resetContextMenuCallback_) {
             ShowThemedMessageBox(
-                hwnd_, instance_, theme_, L"当前无法访问菜单图标缓存。", L"菜单图标缓存", MB_OK | MB_ICONWARNING);
+                hwnd_, instance_, theme_, L"当前无法访问右键菜单缓存。", L"重置右键菜单", MB_OK | MB_ICONWARNING);
             return;
         }
-        if (clearMenuIconCacheCallback_()) {
+        const int answer = ShowThemedMessageBox(
+            hwnd_,
+            instance_,
+            theme_,
+            L"重置后将关闭所有右键菜单跟踪开关，并清除全部启动项缓存的菜单列表、启用状态和菜单图标。是否继续？",
+            L"重置右键菜单",
+            MB_YESNO | MB_ICONWARNING);
+        if (answer != IDYES) {
+            return;
+        }
+        if (resetContextMenuCallback_()) {
+            config_.trackGitContextMenu = false;
+            config_.trackSvnContextMenu = false;
+            config_.trackVsCodeContextMenu = false;
+            config_.trackTerminalContextMenu = false;
+            config_.trackArchiveContextMenu = false;
+            draft_.trackGitContextMenu = false;
+            draft_.trackSvnContextMenu = false;
+            draft_.trackVsCodeContextMenu = false;
+            draft_.trackTerminalContextMenu = false;
+            draft_.trackArchiveContextMenu = false;
+            ThemedUi::SetChecked(trackGitContextMenu_, false);
+            ThemedUi::SetChecked(trackSvnContextMenu_, false);
+            ThemedUi::SetChecked(trackVsCodeContextMenu_, false);
+            ThemedUi::SetChecked(trackTerminalContextMenu_, false);
+            ThemedUi::SetChecked(trackArchiveContextMenu_, false);
             ShowThemedMessageBox(
                 hwnd_,
                 instance_,
                 theme_,
-                L"菜单图标缓存已清理。菜单列表和启用状态已保留；请点击启动项、标签或分组的“刷新”重新获取原生菜单图标。",
-                L"菜单图标缓存",
+                L"右键菜单已重置。所有跟踪开关已恢复为默认关闭状态，菜单列表、状态和图标缓存均已清除。",
+                L"重置右键菜单",
                 MB_OK | MB_ICONINFORMATION);
         } else {
             ShowThemedMessageBox(
-                hwnd_, instance_, theme_, L"菜单图标缓存清理失败，请确认缓存目录可写。", L"菜单图标缓存", MB_OK | MB_ICONWARNING);
+                hwnd_, instance_, theme_, L"右键菜单重置失败，请确认缓存目录可写。", L"重置右键菜单", MB_OK | MB_ICONWARNING);
         }
     }
 
@@ -3291,22 +3316,22 @@ private:
             backupY += behaviorLayout.RowStep(settingsUi.labelHeight()) + behaviorLayout.sectionGap;
             Label(TabBackup, L"缓存维护", pageLeft, backupY, pageWidth, ThemedLabelOptions{ThemedTextAlign::Center});
             backupY += behaviorLayout.RowStep(settingsUi.labelHeight());
-            const int clearMenuIconCacheWidth = settingsUi.buttonWidth(
-                L"清理菜单图标缓存",
+            const int resetContextMenuWidth = settingsUi.buttonWidth(
+                L"重置右键菜单",
                 ThemedButtonRole::Normal,
                 ThemedButtonSize::Compact,
                 ThemedButtonWidthMode::Text);
             Button(
                 TabBackup,
-                ID_CLEAR_MENU_ICON_CACHE,
-                L"清理菜单图标缓存",
-                settingsUi.centeredGroupX(clearMenuIconCacheWidth),
+                ID_RESET_CONTEXT_MENU,
+                L"重置右键菜单",
+                settingsUi.centeredGroupX(resetContextMenuWidth),
                 backupY,
-                clearMenuIconCacheWidth);
+                resetContextMenuWidth);
             backupY += behaviorLayout.RowStep(settingsUi.compactButtonHeight());
             Label(
                 TabBackup,
-                L"仅清理 Git、SVN 等原生菜单图标；菜单列表与启用状态保持不变。",
+                L"恢复跟踪开关默认值，并清除全部菜单列表、状态与图标缓存。",
                 pageLeft,
                 backupY,
                 pageWidth,
@@ -3373,8 +3398,8 @@ private:
                 ClearWebDavPassword();
                 return 0;
             }
-            if (LOWORD(wParam) == ID_CLEAR_MENU_ICON_CACHE) {
-                ClearMenuIconCache();
+            if (LOWORD(wParam) == ID_RESET_CONTEXT_MENU) {
+                ResetContextMenu();
                 return 0;
             }
             if (LOWORD(wParam) == ID_WEBDAV_UPLOAD) {
@@ -3592,7 +3617,7 @@ private:
     bool accepted_ = false;
     bool done_ = false;
     SettingsApplyCallback applyCallback_;
-    SettingsClearMenuIconCacheCallback clearMenuIconCacheCallback_;
+    SettingsResetContextMenuCallback resetContextMenuCallback_;
 };
 }
 
@@ -3638,7 +3663,7 @@ bool ShowSettingsDialog(
     bool mainHotKeyRegistered,
     bool processLocatorHotKeyRegistered,
     SettingsApplyCallback applyCallback,
-    SettingsClearMenuIconCacheCallback clearMenuIconCacheCallback) {
+    SettingsResetContextMenuCallback resetContextMenuCallback) {
     SettingsDialog dialog(
         owner,
         instance,
@@ -3650,7 +3675,7 @@ bool ShowSettingsDialog(
         mainHotKeyRegistered,
         processLocatorHotKeyRegistered,
         std::move(applyCallback),
-        std::move(clearMenuIconCacheCallback));
+        std::move(resetContextMenuCallback));
     const bool accepted = dialog.Run();
     if (importedData) {
         *importedData = dialog.webDavDataImported();

@@ -825,7 +825,7 @@ int wmain() {
         {L"链接", {L"打开目录命令", L"帮助链接", L"更新链接", L"FAQ 链接"}},
         {L"WebDAV", {L"启用 WebDAV 备份", L"服务器地址", L"远端目录", L"上传到云端"}},
         {L"HTTP", {L"服务选项", L"站点绑定", L"运行控制", L"配置目录"}},
-        {L"备份", {L"配置包", L"导出配置包", L"待办事项单独备份", L"含已完成", L"缓存维护", L"清理菜单图标缓存"}},
+        {L"备份", {L"配置包", L"导出配置包", L"待办事项单独备份", L"含已完成", L"缓存维护", L"重置右键菜单"}},
     };
     for (const auto& [page, expected] : settingsPages) {
         Scenario settingsScenario{

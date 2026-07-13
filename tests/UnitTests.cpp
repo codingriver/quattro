@@ -434,24 +434,21 @@ int wmain() {
         Link changedTarget = cachedLink;
         changedTarget.path = L"C:\\Work\\Other";
         Check(shellMenuCache.ItemsFor(changedTarget, allTracking).empty(), "Shell menu cache target invalidation");
-        Check(shellMenuCache.ClearIconPool(), "Shell menu icon pool clear");
-        const auto clearedIcons = shellMenuCache.ItemsFor(cachedLink, allTracking);
-        const auto clearedCode = std::find_if(clearedIcons.begin(), clearedIcons.end(), [](const auto& item) {
-            return item.providerId == ShellContextMenuProviderId::VsCode;
-        });
-        Check(
-            clearedIcons.size() == 4 && clearedCode != clearedIcons.end() && clearedCode->iconPixels.empty(),
-            "Shell menu icon pool clear preserves menu structure");
-        {
-            ShellContextMenuCacheService clearedCache(shellMenuCacheRoot);
-            const auto persistedClearedIcons = clearedCache.ItemsFor(secondCachedLink, allTracking);
-            Check(
-                persistedClearedIcons.size() == 2 && persistedClearedIcons.front().iconPixels.empty(),
-                "Shell menu icon pool clear persistence");
-        }
         shellMenuCache.RemoveProvider(ShellContextMenuProviderId::Git);
         const auto withoutGit = shellMenuCache.ItemsFor(cachedLink, allTracking);
         Check(withoutGit.size() == 3 && withoutGit.front().providerId == ShellContextMenuProviderId::Svn, "Shell menu cache provider removal");
+        Check(shellMenuCache.Reset(), "Shell menu cache reset");
+        Check(
+            shellMenuCache.ItemsFor(cachedLink, allTracking).empty() &&
+            shellMenuCache.ItemsFor(secondCachedLink, allTracking).empty(),
+            "Shell menu cache reset clears menu structure and icons");
+        {
+            ShellContextMenuCacheService resetCache(shellMenuCacheRoot);
+            Check(
+                resetCache.ItemsFor(cachedLink, allTracking).empty() &&
+                resetCache.ItemsFor(secondCachedLink, allTracking).empty(),
+                "Shell menu cache reset persistence");
+        }
         shellMenuCache.Remove(cachedLink.id);
         Check(shellMenuCache.ItemsFor(cachedLink, allTracking).empty(), "Shell menu cache link removal");
     }

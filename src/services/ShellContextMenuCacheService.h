@@ -24,7 +24,7 @@ public:
         const Link& link,
         const ShellContextMenuSnapshot& snapshot,
         const ShellContextMenuTrackingOptions& tracking);
-    bool ClearIconPool();
+    bool Reset();
     void Remove(int linkId);
     void RemoveProvider(const std::wstring& providerId);
 

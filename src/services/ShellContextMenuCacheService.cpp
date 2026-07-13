@@ -298,7 +298,8 @@ void ShellContextMenuCacheService::Update(
     Save();
 }
 
-bool ShellContextMenuCacheService::ClearIconPool() {
+bool ShellContextMenuCacheService::Reset() {
+    entries_.clear();
     iconPool_.clear();
     return Save();
 }

@@ -137,6 +137,18 @@ void CloseHttpMessageBox() {
     }
 }
 
+void ConfirmResetContextMenu() {
+    if (HWND message = WaitForTopWindow(L"QuattroThemedMessageDialog", L"重置右键菜单", 4000)) {
+        PostMessageW(message, WM_COMMAND, IDYES, 0);
+    }
+}
+
+void CloseResetContextMenuMessageBox() {
+    if (HWND message = WaitForTopWindow(L"QuattroThemedMessageDialog", L"重置右键菜单", 4000)) {
+        PostMessageW(message, WM_COMMAND, IDOK, 0);
+    }
+}
+
 std::wstring ClipboardText(HWND owner) {
     if (!OpenClipboard(owner)) {
         return {};
@@ -221,6 +233,11 @@ int wmain() {
     config.processLocatorHotKey = VK_F12;
     config.globalHotKeysEnabled = true;
     config.hideOnStart = false;
+    config.trackGitContextMenu = true;
+    config.trackSvnContextMenu = true;
+    config.trackVsCodeContextMenu = true;
+    config.trackTerminalContextMenu = true;
+    config.trackArchiveContextMenu = true;
     config.httpServerRootPath = root.wstring();
     config.httpServerPort = 45200 + static_cast<int>(GetCurrentProcessId() % 1000);
     config.httpServerLanAccess = false;
@@ -229,6 +246,7 @@ int wmain() {
     std::atomic_bool interactionDone{false};
     std::atomic_bool interactionOk{true};
     std::atomic_bool applyCalled{false};
+    std::atomic_bool resetContextMenuCalled{false};
     std::atomic_bool appliedShowTooltip{true};
     std::atomic_bool appliedHideOnStart{true};
     bool importedData = false;
@@ -279,6 +297,16 @@ int wmain() {
         localOk = Require(!service.IsRunning(), L"Stop button should stop HTTP service") && localOk;
         localOk = Require(FindChildByText(settings, L"未启动") != nullptr, L"Stopped HTTP status tag should return after stop") && localOk;
 
+        localOk = Require(ClickButton(settings, L"备份"), L"Backup tab should be clickable") && localOk;
+        localOk = Require(
+            ClickCommandButton(settings, L"重置右键菜单"),
+            L"Reset context menu button should be clickable") && localOk;
+        ConfirmResetContextMenu();
+        localOk = Require(
+            WaitForFlag(resetContextMenuCalled),
+            L"Reset context menu button should invoke callback") && localOk;
+        CloseResetContextMenuMessageBox();
+
         PostMessageW(settings, WM_CLOSE, 0, 0);
         interactionOk = localOk;
         interactionDone = true;
@@ -290,8 +318,24 @@ int wmain() {
         applyCalled = true;
         return false;
     };
+    auto resetContextMenuCallback = [&]() -> bool {
+        resetContextMenuCalled = true;
+        return true;
+    };
     const std::filesystem::path baseDirectory = std::filesystem::current_path();
-    ShowSettingsDialog(owner, instance, config, theme, baseDirectory, baseDirectory, &importedData, &service, false, false, applyCallback);
+    ShowSettingsDialog(
+        owner,
+        instance,
+        config,
+        theme,
+        baseDirectory,
+        baseDirectory,
+        &importedData,
+        &service,
+        false,
+        false,
+        applyCallback,
+        resetContextMenuCallback);
     if (interactor.joinable()) {
         interactor.join();
     }
@@ -300,7 +344,12 @@ int wmain() {
     std::filesystem::remove_all(userConfig, ec);
     SetEnvironmentVariableW(L"QUATTRO_USER_CONFIG_DIR", nullptr);
 
-    const bool ok = interactionDone && interactionOk;
+    const bool trackingReset = !config.trackGitContextMenu &&
+        !config.trackSvnContextMenu &&
+        !config.trackVsCodeContextMenu &&
+        !config.trackTerminalContextMenu &&
+        !config.trackArchiveContextMenu;
+    const bool ok = interactionDone && interactionOk && trackingReset;
     if (!ok) {
         return 1;
     }

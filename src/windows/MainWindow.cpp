@@ -5112,8 +5112,19 @@ void MainWindow::OpenSettings() {
         next = config_;
         return mainHotKeyRegistered_;
     };
-    auto clearMenuIconCache = [this]() -> bool {
-        return shellContextMenuCache_.ClearIconPool();
+    auto resetContextMenu = [this, &next]() -> bool {
+        if (!shellContextMenuCache_.Reset()) {
+            return false;
+        }
+        AppConfig reset = config_;
+        reset.trackGitContextMenu = false;
+        reset.trackSvnContextMenu = false;
+        reset.trackVsCodeContextMenu = false;
+        reset.trackTerminalContextMenu = false;
+        reset.trackArchiveContextMenu = false;
+        CommitSettingsConfig(reset, false);
+        next = config_;
+        return true;
     };
     if (!ShowSettingsDialog(
             hwnd_,
@@ -5127,7 +5138,7 @@ void MainWindow::OpenSettings() {
             mainHotKeyRegistered_,
             processLocatorHotKeyRegistered_,
             applySettings,
-            clearMenuIconCache)) {
+            resetContextMenu)) {
         if (importedData) {
             model_ = storageService_.Load();
             RestoreLegacyBuiltinSystemFunctionKeys();
