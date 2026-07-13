@@ -187,6 +187,7 @@ add_executable(Quattro WIN32
     src/domain/PluginRegistry.cpp
     src/windows/QuickImportDialog.cpp
     src/services/QuickImportService.cpp
+    src/services/ShellContextMenuCacheService.cpp
     src/services/ShellItemService.cpp
     src/windows/SimpleDialogs.cpp
     src/services/StartupService.cpp
@@ -257,6 +258,7 @@ add_executable(QuattroTests
     src/domain/LinkSorting.cpp
     src/domain/MenuCatalog.cpp
     src/domain/PluginRegistry.cpp
+    src/services/ShellContextMenuCacheService.cpp
     src/services/ShellItemService.cpp
     src/services/Storage.cpp
     src/services/SystemFunctions.cpp
@@ -806,6 +808,7 @@ target_link_libraries(Quattro PRIVATE
     dwrite
     iphlpapi
     mpr
+    msimg32
     ole32
     oleaut32
     rstrtmgr

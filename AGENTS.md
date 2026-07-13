@@ -4,6 +4,18 @@
 
 - 搜索功能暂时不要开发；不要新增、恢复或暴露搜索入口、搜索热键、搜索窗口或与搜索相关的用户可见配置。
 
+## AppLaunchLocker Architecture Rules
+
+- `AppLaunchLocker` 必须作为完全独立的 `AppLaunchLocker.exe` 构建和运行，必须拥有自己的程序入口、进程、主窗口、消息循环和生命周期。禁止将其窗口、扫描、治理、CLI 或提权逻辑实现为 `Quattro.exe` 进程内的 `BuiltinTools` 工具、模态对话框、内嵌页面或同进程插件。
+- Quattro 工具箱只允许提供 `AppLaunchLocker` 的发现、启动、唤起和必要的版本/可用性提示。工具箱入口必须通过独立进程启动接口调用 `AppLaunchLocker.exe`；禁止 Quattro 主进程代为执行扫描、禁用、恢复、服务/计划任务/注册表修改、阻止规则或后台监控。
+- `AppLaunchLocker.exe` 必须能够在未启动 Quattro、不持有 Quattro 主窗口句柄且不读取 Quattro 运行时状态的情况下直接运行全部 GUI、CLI、扫描、备份和恢复功能。首期可与 Quattro 同包发布，但不得把 Quattro 进程、主窗口、配置库或数据库作为运行前置条件。
+- `AppLaunchLocker` 的提权和高权限操作必须限制在自身进程边界内，通过按需自提权或独立的受限辅助执行器完成。禁止为了 `AppLaunchLocker` 而提权 Quattro 主进程，也禁止由 Quattro 传递可任意执行的高权限命令。
+- `AppLaunchLocker` 必须复用 Quattro 的公共界面基础设施，包括 `Theme`、`ThemedUi`、`ThemedWindowUi`、公共布局 helper、公共组件 facade、默认主题资源与对应 lint/测试，以保持与 Quattro 一致的界面、DPI 和交互规则。禁止为 `AppLaunchLocker` 复制一套私有主题类、控件 facade、布局常量或 owner-draw 实现。
+- 为 `AppLaunchLocker` 共享的界面代码必须保持为可独立链接、可独立初始化的公共层，不得反向依赖 `MainWindow`、`BuiltinTools`、`PluginRegistry`、Quattro 业务模型、Quattro 单例状态或主窗口消息。若现有主题代码无法被独立 EXE 安全复用，必须先将其抽取为公共 UI 库或无 Quattro 业务依赖的共享模块，再开发 `AppLaunchLocker` 界面。
+- `AppLaunchLocker` 的领域与系统治理逻辑必须与 UI 分离，并收敛到不依赖 Quattro 窗口和业务状态的独立 core 模块。GUI、CLI、提权执行器和后续 Service 必须复用同一套操作、安全校验、备份、恢复与审计接口，禁止在各入口重复实现系统修改逻辑。
+- Quattro 与 `AppLaunchLocker` 之间只允许使用有版本的命令行协议或明确定义的 IPC 协议传递启动意图和必要的业务数据。禁止跨进程传递内部指针、操作对方内部子控件、依赖未文档化的私有窗口消息，或共享无版本的内存/数据库结构。
+- 必须分别验证 `AppLaunchLocker.exe` 直接启动和从 Quattro 工具箱启动两条路径；关闭、崩溃、提权取消或升级 `AppLaunchLocker` 不得导致 Quattro 退出、卡死、被提权或丢失主窗口状态。新增功能验收时必须检查这一进程隔离边界。
+
 ## Theme Rules
 
 - `src/theme/ThemedUi.h` 是应用界面公共控件接口、语义 options 和状态方法的唯一权威清单。新增或修改界面前必须先检查 `ThemedUi`、`ThemedWindowUi` 是否已有对应能力；`AGENTS.md` 只定义选型和约束，不复制可能与头文件失配的完整函数签名或默认参数。
@@ -14,6 +26,31 @@
 - 主题只支持公共组件分类，不支持某个页面、某个窗口、某个具体控件的单独配置。
 - 新增界面或调整界面时，布局必须优先采用紧凑方案，减少不必要的留白、重复容器和装饰性层级，保证信息密度和操作路径清晰。
 - 紧凑工具窗口布局必须优先将同一行内容作为整体分组居中对齐；需要居中时必须使用公共布局 helper（例如 `DialogLayoutMetrics::CenteredGroupX`），禁止在单个工具界面内散落手写居中坐标。
+
+### Window Layout Rules
+
+- 所有窗口采用 96-DPI 逻辑像素和 4px 基准网格。界面设计必须先确定文本行高、控件模板高度和布局间距三种独立语义，禁止把字体高度、控件高度和行间距混为一个数值，也禁止通过增加控件高度代替行间距。
+- 公共文本行高只允许使用三档：辅助说明/次要状态使用 16，普通正文、Label、输入内容、列表正文和按钮文字使用 20，窗口内标题、分组标题和强调文本使用 24。普通多行正文行高为 20，Tooltip 等紧密多行文本的行间附加间距使用 4；禁止窗口自行设置 `textHeight`、字体像素高度或多行行距。
+- 公共控件高度必须收敛到语义模板：Small 为 24，Medium 为 28，Large 为 32；纯文本行保留 20，ProgressBar 保留 16。禁止新增 22、26、30、34 等中间控件高度，也禁止业务窗口向公共控件传入高度。
+- Small 24 用于 CheckBox、RadioButton、Toggle、Slider、MiniButton、CompactButton 等紧凑控件；Medium 28 用于普通 Edit、HotKeyCapture、ComboBox、Button、TabButton、ListItem、TableHeader、MenuItem、MinorNavItem 和普通 framed field；Large 32 用于 FooterButton、主要/强调操作、MajorNavItem、标题区域和需要强调的导航项。双行结果列表项使用公共 `listItem.twoLineHeight`，默认 48，禁止使用 `max(40, itemHeight + 14)` 等手写公式。
+- Footer 操作必须使用 `ThemedUi::FooterButton` 或公共 Large 按钮规格，高度统一为 32；普通行内按钮使用 Medium 28，紧凑工具按钮使用 Small 24。不得因为主按钮使用强调色就默认改变其高度，按钮高度由所在布局角色决定。
+- 垂直布局间距只允许使用五档非零语义值：denseGap=4、compactRowGap=6、standardRowGap=8、sectionGap=12、majorSectionGap=16。0 仅用于明确无间距或相邻分段控件。禁止把 2、5、7、10、14、18、20 等数值作为新的行间距、控件间距或分组间距；图标笔画、命中区域、内部视觉偏移等非布局参数不受此条限制。
+- denseGap 4 用于图标与文字、同一控件内部元素、紧密子选项、Tooltip 行间距和列表项之间；compactRowGap 6 用于高密度工具窗口和频繁操作区域；standardRowGap 8 用于普通表单字段和普通对话框行；sectionGap 12 用于字段组、标题与内容、正文与次级操作区；majorSectionGap 16 用于独立功能区、正文与 Footer、主窗口大区块之间。
+- “所有界面间距一致”指相同语义必须取得相同数值，不要求不同语义全部使用同一个数值。普通对话框默认使用 standardRowGap=8，紧凑工具窗口默认使用 compactRowGap=6；任何偏离必须先形成可跨界面复用的公共布局语义，禁止在单个窗口中增加例外值。
+- 新增布局必须从 `ThemedWindowUi::ui()` 取得已经按 DPI 缩放的 `DialogLayoutMetrics` 和控件高度访问器，使用实际 `clientWidth()`/`clientHeight()`、`contentRect()`、`RowStep()`、`FooterButtonX/Y()`、`CenteredGroupX()`、`nextRowY()` 等公共结果排布。禁止业务窗口重新调用 `GetDialogLayoutMetrics` 获取未缩放值后与实际客户区混用，也禁止用固定对话框宽度计算右对齐、居中或 Footer 坐标。
+- 窗口内所有位置和尺寸必须来自公共 layout metric、公共控件模板、文本测量结果、业务数据尺寸或可用客户区。业务窗口出现确有必要的 96-DPI 逻辑宽高时，必须通过 `ThemedUi::scale(...)` 或更具体的公共 helper 转换；禁止保存缩放后常量、手写比例或让一部分坐标缩放而另一部分保持未缩放。
+- 普通表单采用稳定的“Label 列 + 字段列”结构：Label 使用 `dialog.labelMinWidth` 和公共测量/helper 得到统一列宽，字段从 `layout.fieldX` 开始并延伸到内容区右边界；同一字段行内的 Label、Edit、ComboBox、Button 必须按该行最高公共模板垂直居中。禁止每行使用不同 Label 起点、字段起点或临时 Y 偏移修正视觉误差。
+- 同一行包含多个控件时，必须先计算整组宽度，再使用 `controlGapX` 和 `CenteredGroupX`/公共对齐 helper 放置；同组控件之间使用同一种水平 gap。禁止散落 `+1`、`+4`、固定绝对 X 坐标或逐个控件试凑居中。文本测量、自适应宽度和可用剩余宽度必须通过 `ThemedUi`/公共布局 helper 计算。
+- 相邻字段行使用 `RowStep(该行最高控件高度)` 推进；最后一行之后不得额外追加 rowGap。进入下一分组时只追加 sectionGap 或 majorSectionGap，禁止同时叠加“上一行 rowGap + 新分组 sectionGap”造成重复留白，除非公共 helper 明确定义组合规则。
+- GroupBox/Panel 内部排布必须从其公共内容区域和 insets 开始；GroupBox 标题高度、标题与内容间距、内容行距使用公共 `groupBox` metric 或 `ThemedFormLayout`。禁止把容器边框、标题高度或 padding 当作业务窗口常量重复计算。普通内容不应为了视觉分层重复嵌套 Panel/GroupBox。
+- Footer 必须与正文形成独立操作区：正文结束到 Footer 使用公共 `footerGap`/majorSectionGap，Footer 到客户区底部使用 `footerInsetY`，按钮组由公共 helper 右对齐或整体居中。对话框内不得手写 Footer Y、按钮间距或用普通按钮高度替代 Footer 高度。
+- 多行 Label、说明文字和错误信息必须按公共行高计算占用高度；条件错误行隐藏时不得保留空白行。多行 Edit 的高度必须由公共 `editHeight(ThemedEditMode::MultiLine)` 或公共可复用规格决定，禁止使用“单行高度 + 文本高度 + 临时间距”的页面公式。
+- 列表、表格和结果区应优先占用剩余可用高度，顶部工具行和底部状态/Footer 固定由公共布局计算；内容超出时使用公共 Panel/List/Table 滚动能力。禁止通过增大窗口固定高度、裁切控件、隐藏操作或使用负间距解决溢出。
+- MainWindow 等非对话框布局也必须遵循相同语义：列表项高度 28、双行结果项 48、列表项间距 4、网格间距 4 或 8、主要导航高度 32、次要导航高度 28、独立功能区间距 16。不同显示模式可以使用不同公共语义，但不得各自引入一套私有高度和 gap。
+- 日历、图表、画布等用户数据本身属于视觉内容时，可以保留专用单元格结构，但其标题行、操作行、正文行和区块间距仍应优先映射到 24/28/32 高度模板及 4/6/8/12/16 间距体系，并通过公共 DPI helper 缩放。命中测试与绘制必须消费同一组公共计算结果，禁止绘制尺寸与点击区域分别维护常量。
+- 新增或改造界面必须验证 100%、125%、150% DPI 下：Label 与字段对齐、ComboBox 与 Edit 等高、Footer 不越界、按钮组不重叠、内容区可滚动、文本不裁切。涉及公共尺寸或间距变更时，必须同步更新 `theme/default.xml`、`Theme.cpp` fallback、主题 lint、单元测试和 UI 截图验收。
+- 设计评审顺序固定为：先确认信息层级和操作路径，再选择 Standard/Compact 等公共布局种类，再确定行/分组语义，最后选择公共控件；禁止先画固定坐标再倒推窗口大小。优先减少无业务价值的标题、边框、重复说明和空白，确保主操作可见、次操作就近、危险操作有明确语义状态。
+
 - 新增或修改主题参数时，必须优先映射到共享组件分类，例如 `text`、`label`、`panel`、`field`、`edit`、`button`、`iconButton`、`checkbox`、`toggle`、`radio`、`comboBox`、`tabButton`、`list`、`listItem`、`scrollbar`、`slider`、`dialog`、`menuItem`、`linkItem`、`majorNavItem`、`minorNavItem`、`tooltip`、`separator`。
 - 禁止新增页面级、窗口级、控件实例级主题组件名，例如 `settings.searchInput`、`linkEdit.nameField`、`searchDialog.keywordEdit`、`newGroup.nameEdit`。
 - 只有当一个主题组件代表跨界面复用的组件类型时，才允许新增公共分类。

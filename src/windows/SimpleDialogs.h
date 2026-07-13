@@ -13,6 +13,7 @@
 class LocalHttpServerService;
 struct WebDavRemoteFile;
 using SettingsApplyCallback = std::function<bool(const AppConfig&, bool)>;
+using SettingsClearMenuIconCacheCallback = std::function<bool()>;
 
 bool ShowTextInputDialog(HWND owner, HINSTANCE instance, const Theme& theme, const std::wstring& title, const std::wstring& label, std::wstring& value);
 int ShowThemedMessageBox(HWND owner, HINSTANCE instance, const Theme& theme, const std::wstring& message, const std::wstring& title, UINT flags);
@@ -39,4 +40,5 @@ bool ShowSettingsDialog(
     LocalHttpServerService* httpServer = nullptr,
     bool mainHotKeyRegistered = false,
     bool processLocatorHotKeyRegistered = false,
-    SettingsApplyCallback applyCallback = {});
+    SettingsApplyCallback applyCallback = {},
+    SettingsClearMenuIconCacheCallback clearMenuIconCacheCallback = {});

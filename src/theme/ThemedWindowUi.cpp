@@ -24,6 +24,14 @@ const wchar_t* TooltipState(ThemedTooltipRole role) {
     default: return L"normal";
     }
 }
+
+bool SameTooltipOptions(const ThemedTooltipOptions& left, const ThemedTooltipOptions& right) {
+    return left.placement == right.placement &&
+           left.role == right.role &&
+           left.multiline == right.multiline &&
+           left.enabled == right.enabled &&
+           left.maxWidth == right.maxWidth;
+}
 }
 
 ThemedWindowUi::ThemedWindowUi(
@@ -529,9 +537,17 @@ void ThemedWindowUi::ShowTooltip(
         HideTooltip();
         return;
     }
+
+    const bool contentChanged = tooltipText_ != text;
+    const bool optionsChanged = !SameTooltipOptions(tooltipOptions_, options);
+    const bool layoutChanged = !tooltipLayoutValid_ || contentChanged || optionsChanged;
     tooltipText_ = text;
     tooltipOptions_ = options;
-    const SIZE size = MeasureTooltip(text, options);
+    if (layoutChanged) {
+        tooltipSize_ = MeasureTooltip(text, options);
+        tooltipLayoutValid_ = true;
+    }
+    const SIZE size = tooltipSize_;
     const int offsetX = static_cast<int>(theme_.metric(L"tooltip", L"cursorOffsetX", 14.0f));
     const int offsetY = static_cast<int>(theme_.metric(L"tooltip", L"cursorOffsetY", 18.0f));
     int x = screenPoint.x + offsetX;
@@ -548,20 +564,31 @@ void ThemedWindowUi::ShowTooltip(
         x = std::max(static_cast<int>(info.rcWork.left), x);
         y = std::max(static_cast<int>(info.rcWork.top), y);
     }
-    SetWindowTextW(tooltip_, tooltipText_.c_str());
-    SetWindowPos(tooltip_, HWND_TOPMOST, x, y, size.cx, size.cy, SWP_NOACTIVATE);
-    const int radius = static_cast<int>(theme_.metric(L"tooltip", L"radius", 6.0f));
-    HRGN region = CreateRoundRectRgn(0, 0, size.cx + 1, size.cy + 1, radius * 2, radius * 2);
-    if (!region || SetWindowRgn(tooltip_, region, TRUE) == 0) {
-        if (region) DeleteObject(region);
+
+    if (contentChanged) {
+        SetWindowTextW(tooltip_, tooltipText_.c_str());
     }
-    ShowWindow(tooltip_, SW_SHOWNA);
-    InvalidateRect(tooltip_, nullptr, TRUE);
+    const UINT positionFlags = SWP_NOACTIVATE | (layoutChanged ? 0 : SWP_NOSIZE);
+    SetWindowPos(tooltip_, HWND_TOPMOST, x, y, size.cx, size.cy, positionFlags);
+    if (layoutChanged) {
+        const int radius = static_cast<int>(theme_.metric(L"tooltip", L"radius", 6.0f));
+        HRGN region = CreateRoundRectRgn(0, 0, size.cx + 1, size.cy + 1, radius * 2, radius * 2);
+        if (!region || SetWindowRgn(tooltip_, region, FALSE) == 0) {
+            if (region) DeleteObject(region);
+        }
+    }
+    if (!IsWindowVisible(tooltip_)) {
+        ShowWindow(tooltip_, SW_SHOWNA);
+    }
+    if (layoutChanged) {
+        InvalidateRect(tooltip_, nullptr, FALSE);
+    }
 }
 
 void ThemedWindowUi::HideTooltip() {
     if (tooltip_) ShowWindow(tooltip_, SW_HIDE);
     tooltipText_.clear();
+    tooltipLayoutValid_ = false;
 }
 
 void ThemedWindowUi::PaintTooltip(HDC dc) const {
@@ -601,6 +628,8 @@ LRESULT CALLBACK ThemedWindowUi::TooltipProc(HWND hwnd, UINT message, WPARAM wPa
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(ui));
     }
     switch (message) {
+    case WM_NCHITTEST:
+        return HTTRANSPARENT;
     case WM_ERASEBKGND:
         return 1;
     case WM_PAINT:
@@ -613,7 +642,10 @@ LRESULT CALLBACK ThemedWindowUi::TooltipProc(HWND hwnd, UINT message, WPARAM wPa
         }
         break;
     case WM_NCDESTROY:
-        if (ui && ui->tooltip_ == hwnd) ui->tooltip_ = nullptr;
+        if (ui && ui->tooltip_ == hwnd) {
+            ui->tooltip_ = nullptr;
+            ui->tooltipLayoutValid_ = false;
+        }
         break;
     default:
         break;

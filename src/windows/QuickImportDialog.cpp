@@ -271,25 +271,25 @@ private:
     }
 
     void CreateControls() {
-        layout_ = GetDialogLayoutMetrics(theme_, DialogLayoutKind::Compact);
+        layout_ = windowUi_->ui().layout();
         RECT client{};
         GetClientRect(hwnd_, &client);
         const int clientWidth = client.right - client.left;
         const int clientHeight = client.bottom - client.top;
         const ThemedUi ui = windowUi_->ui();
-        const int labelHeight = ThemedControls::LabelHeight(theme_);
-        const int fieldHeight = ThemedControls::ComboBoxHeight(theme_);
-        const int buttonHeight = ThemedControls::ButtonHeight(theme_);
-        const int tabHeight = ThemedControls::TabButtonHeight(theme_);
+        const int labelHeight = ui.labelHeight();
+        const int fieldHeight = ui.comboBoxHeight();
+        const int buttonHeight = ui.footerButtonHeight();
+        const int tabHeight = ui.tabButtonHeight();
         const int topY = layout_.contentInsetY;
         const int labelOffset = std::max(0, (fieldHeight - labelHeight) / 2);
-        const int sourceWidth = 150;
-        const int directoryWidth = 250;
-        const int pickDirectoryWidth = 86;
-        const int scanWidth = 86;
-        const int selectAllWidth = 64;
-        const int selectNoneWidth = 64;
-        const int viewButtonWidth = 52;
+        const int sourceWidth = ui.scale(150);
+        const int directoryWidth = ui.scale(250);
+        const int pickDirectoryWidth = ui.scale(86);
+        const int scanWidth = ui.scale(86);
+        const int selectAllWidth = ui.scale(64);
+        const int selectNoneWidth = ui.scale(64);
+        const int viewButtonWidth = ui.scale(52);
         const int toolbarWidth =
             layout_.labelWidth +
             layout_.labelGap +
@@ -363,8 +363,8 @@ private:
         const int footerY = layout_.FooterButtonY(clientHeight, buttonHeight);
         const int buttonGroupWidth = layout_.footerButtonWidth * 2 + layout_.footerButtonGap;
         const int buttonX = layout_.CenteredGroupX(clientWidth, buttonGroupWidth);
-        ui.Button(IdImport, L"导入选中", buttonX, footerY, ThemedButtonRole::Primary, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, layout_.footerButtonWidth, true);
-        ui.Button(IdCancel, L"取消", buttonX + layout_.footerButtonWidth + layout_.footerButtonGap, footerY, ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, layout_.footerButtonWidth);
+        ui.Button(IdImport, L"导入选中", buttonX, footerY, ThemedButtonRole::Primary, ThemedButtonSize::Large, ThemedButtonWidthMode::Fixed, layout_.footerButtonWidth, true);
+        ui.Button(IdCancel, L"取消", buttonX + layout_.footerButtonWidth + layout_.footerButtonGap, footerY, ThemedButtonRole::Normal, ThemedButtonSize::Large, ThemedButtonWidthMode::Fixed, layout_.footerButtonWidth);
 
         UpdateSourceControls();
         ApplyViewMode();
@@ -374,14 +374,15 @@ private:
         RECT client{};
         GetClientRect(hwnd_, &client);
         const int clientWidth = client.right - client.left;
-        const int labelHeight = ThemedControls::LabelHeight(theme_);
-        const int fieldHeight = ThemedControls::ComboBoxHeight(theme_);
+        const ThemedUi ui = windowUi_->ui();
+        const int labelHeight = ui.labelHeight();
+        const int fieldHeight = ui.comboBoxHeight();
         const int topY = layout_.contentInsetY;
         const int labelOffset = std::max(0, (fieldHeight - labelHeight) / 2);
-        const int sourceWidth = 150;
-        const int directoryWidth = 250;
-        const int pickDirectoryWidth = 86;
-        const int scanWidth = 86;
+        const int sourceWidth = ui.scale(150);
+        const int directoryWidth = ui.scale(250);
+        const int pickDirectoryWidth = ui.scale(86);
+        const int scanWidth = ui.scale(86);
         const int directoryPartWidth = directorySource
             ? directoryWidth + layout_.controlGapX + pickDirectoryWidth + layout_.controlGapX
             : 0;
@@ -394,7 +395,6 @@ private:
             scanWidth;
         const int toolbarX = layout_.CenteredGroupX(clientWidth, toolbarWidth);
         const int sourceX = toolbarX + layout_.labelWidth + layout_.labelGap;
-        const ThemedUi ui = windowUi_->ui();
 
         ui.MoveControl(sourceLabel_, toolbarX, topY + labelOffset, layout_.labelWidth);
         ui.MoveComboBox(sourceCombo_, sourceX, topY, sourceWidth);

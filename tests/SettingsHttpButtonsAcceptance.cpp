@@ -217,8 +217,10 @@ int wmain() {
     ShowWindow(owner, SW_SHOWNORMAL);
 
     AppConfig config;
-    config.mainHotKey = 0;
-    config.globalHotKeysEnabled = false;
+    config.mainHotKey = VK_F12;
+    config.processLocatorHotKey = VK_F12;
+    config.globalHotKeysEnabled = true;
+    config.hideOnStart = false;
     config.httpServerRootPath = root.wstring();
     config.httpServerPort = 45200 + static_cast<int>(GetCurrentProcessId() % 1000);
     config.httpServerLanAccess = false;
@@ -228,6 +230,7 @@ int wmain() {
     std::atomic_bool interactionOk{true};
     std::atomic_bool applyCalled{false};
     std::atomic_bool appliedShowTooltip{true};
+    std::atomic_bool appliedHideOnStart{true};
     bool importedData = false;
     const DWORD dialogThreadId = GetCurrentThreadId();
 
@@ -241,10 +244,16 @@ int wmain() {
             PostThreadMessageW(dialogThreadId, WM_QUIT, 0, 0);
             return;
         }
+        localOk = Require(ClickButton(settings, L"行为"), L"Behavior tab should be clickable") && localOk;
+        localOk = Require(ClickButton(settings, L"启动后隐藏"), L"Hide on start checkbox should be clickable") && localOk;
+        localOk = Require(ClickButton(settings, L"显示"), L"Display tab should be clickable") && localOk;
         localOk = Require(ClickButton(settings, L"显示提示"), L"Display tooltip checkbox should be clickable") && localOk;
         localOk = Require(ClickCommandButton(settings, L"应用"), L"Apply button should be clickable") && localOk;
         localOk = Require(WaitForFlag(applyCalled), L"Apply button should invoke settings apply callback") && localOk;
         localOk = Require(!appliedShowTooltip.load(), L"Apply button should publish edited settings") && localOk;
+        localOk = Require(!appliedHideOnStart.load(), L"Apply button should not publish edits from another settings tab") && localOk;
+        localOk = Require(FindTopWindow(L"QuattroThemedMessageDialog", L"热键冲突") == nullptr,
+            L"Applying a non-hotkey tab should not show a hotkey conflict") && localOk;
         localOk = Require(IsWindow(settings), L"Apply button should keep settings dialog open") && localOk;
 
         localOk = Require(ClickButton(settings, L"HTTP"), L"HTTP tab should be clickable") && localOk;
@@ -277,6 +286,7 @@ int wmain() {
 
     auto applyCallback = [&](const AppConfig& applied, bool) -> bool {
         appliedShowTooltip = applied.showTooltip;
+        appliedHideOnStart = applied.hideOnStart;
         applyCalled = true;
         return false;
     };

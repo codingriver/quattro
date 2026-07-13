@@ -1057,10 +1057,10 @@ LinkLayoutMetrics MakeLinkLayout(const Theme& theme, const D2D1_RECT_F& rect, co
         metrics.topInset = Metric(theme, L"linkItem", L"listTopInset", 6.0f);
         metrics.bottomInset = Metric(theme, L"linkItem", L"listBottomInset", 6.0f);
         metrics.gapX = Metric(theme, L"linkItem", L"listGapX", 0.0f);
-        metrics.gapY = Metric(theme, L"linkItem", L"listGapY", 2.0f);
+        metrics.gapY = Metric(theme, L"linkItem", L"listGapY", 4.0f);
         metrics.columns = 1;
         metrics.itemWidth = std::max(1.0f, Width(rect) - metrics.leftInset * 2.0f);
-        metrics.itemHeight = std::max(Metric(theme, L"linkItem", L"listMinHeight", 34.0f), static_cast<float>(metrics.iconSize) + Metric(theme, L"linkItem", L"listHeightExtra", 12.0f));
+        metrics.itemHeight = std::max(Metric(theme, L"linkItem", L"listMinHeight", 32.0f), static_cast<float>(metrics.iconSize) + Metric(theme, L"linkItem", L"listHeightExtra", 12.0f));
         return metrics;
     }
 
@@ -1070,11 +1070,11 @@ LinkLayoutMetrics MakeLinkLayout(const Theme& theme, const D2D1_RECT_F& rect, co
     if (metrics.iconSize <= 24) {
         metrics.compactTile = true;
         metrics.gapX = Metric(theme, L"linkItem", L"compactGapX", 6.0f);
-        metrics.gapY = Metric(theme, L"linkItem", L"compactGapY", 6.0f);
+        metrics.gapY = Metric(theme, L"linkItem", L"compactGapY", 4.0f);
         const float preferredWidth = Metric(theme, L"linkItem", L"compactPreferredWidth", 128.0f);
         metrics.columns = std::max(1, static_cast<int>((available + metrics.gapX) / (preferredWidth + metrics.gapX)));
         metrics.itemWidth = std::max(Metric(theme, L"linkItem", L"compactMinWidth", 72.0f), (available - static_cast<float>(metrics.columns - 1) * metrics.gapX) / static_cast<float>(metrics.columns));
-        metrics.itemHeight = std::max(Metric(theme, L"linkItem", L"listMinHeight", 34.0f), static_cast<float>(metrics.iconSize) + Metric(theme, L"linkItem", L"listHeightExtra", 12.0f));
+        metrics.itemHeight = std::max(Metric(theme, L"linkItem", L"listMinHeight", 32.0f), static_cast<float>(metrics.iconSize) + Metric(theme, L"linkItem", L"listHeightExtra", 12.0f));
         return metrics;
     }
 
@@ -1172,6 +1172,14 @@ bool IsNoteTag(const Group& tag) {
 
 bool IsTodoItemsTag(const Group& tag) {
     return tag.type == 4 || ToLower(tag.content) == L"todoitems";
+}
+
+bool IsOrdinaryTag(const Group& tag) {
+    return tag.parentGroup != 0 &&
+           !IsAllTag(tag) &&
+           !IsTodoTag(tag) &&
+           !IsNoteTag(tag) &&
+           !IsTodoItemsTag(tag);
 }
 
 std::wstring ClipboardPathTextForLink(const Link& link, bool isUrl) {
@@ -1980,6 +1988,69 @@ void DrawMenuIcon(HDC dc, const RECT& rc, int icon, bool disabled, COLORREF colo
     }
 }
 
+HBITMAP CreateTrackedMenuIconBitmap(const ShellContextMenuItem& source) {
+    if (source.iconWidth <= 0 || source.iconHeight <= 0 ||
+        source.iconWidth > 64 || source.iconHeight > 64 ||
+        source.iconPixels.size() != static_cast<std::size_t>(source.iconWidth * source.iconHeight)) {
+        return nullptr;
+    }
+    BITMAPINFO info{};
+    info.bmiHeader.biSize = sizeof(info.bmiHeader);
+    info.bmiHeader.biWidth = source.iconWidth;
+    info.bmiHeader.biHeight = -source.iconHeight;
+    info.bmiHeader.biPlanes = 1;
+    info.bmiHeader.biBitCount = 32;
+    info.bmiHeader.biCompression = BI_RGB;
+    void* pixels = nullptr;
+    HBITMAP bitmap = CreateDIBSection(nullptr, &info, DIB_RGB_COLORS, &pixels, nullptr, 0);
+    if (!bitmap || !pixels) {
+        if (bitmap) {
+            DeleteObject(bitmap);
+        }
+        return nullptr;
+    }
+    std::memcpy(
+        pixels,
+        source.iconPixels.data(),
+        source.iconPixels.size() * sizeof(std::uint32_t));
+    return bitmap;
+}
+
+bool DrawTrackedMenuIcon(HDC dc, const RECT& target, HBITMAP bitmap, bool disabled) {
+    if (!dc || !bitmap) {
+        return false;
+    }
+    BITMAP source{};
+    if (GetObjectW(bitmap, sizeof(source), &source) != sizeof(source) ||
+        source.bmWidth <= 0 || source.bmHeight == 0) {
+        return false;
+    }
+    HDC memoryDc = CreateCompatibleDC(dc);
+    if (!memoryDc) {
+        return false;
+    }
+    HGDIOBJ oldBitmap = SelectObject(memoryDc, bitmap);
+    BLENDFUNCTION blend{};
+    blend.BlendOp = AC_SRC_OVER;
+    blend.SourceConstantAlpha = disabled ? 120 : 255;
+    blend.AlphaFormat = AC_SRC_ALPHA;
+    const BOOL drawn = AlphaBlend(
+        dc,
+        target.left,
+        target.top,
+        target.right - target.left,
+        target.bottom - target.top,
+        memoryDc,
+        0,
+        0,
+        source.bmWidth,
+        std::abs(source.bmHeight),
+        blend);
+    SelectObject(memoryDc, oldBitmap);
+    DeleteDC(memoryDc);
+    return drawn != FALSE;
+}
+
 bool LooksLikeUrlText(const std::wstring& value) {
     const std::wstring lower = ToLower(Trim(value));
     return lower.rfind(L"http://", 0) == 0 ||
@@ -2172,6 +2243,7 @@ MainWindow::MainWindow(
       configService_(configService),
       storageService_(storageService),
       pluginRegistry_(appDirectory_),
+      shellContextMenuCache_(appDirectory_),
       config_(std::move(config)),
       model_(std::move(model)),
       theme_(std::move(theme)),
@@ -2492,7 +2564,7 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         if (bottom) return HTBOTTOM;
 
         const int titleHeight = config_.showTitle
-            ? static_cast<int>(Metric(theme_, L"title", L"height", 34.0f))
+            ? static_cast<int>(Metric(theme_, L"title", L"height", 32.0f))
             : 0;
         const int titleButtonsWidth = static_cast<int>(TitleButtonsReserveWidth() + 0.999f);
         if (clientPoint.y >= 0 && clientPoint.y < titleHeight && clientPoint.x < width - titleButtonsWidth) {
@@ -2536,6 +2608,12 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
     case WM_DISPLAYCHANGE:
         InvalidateRect(hwnd_, nullptr, FALSE);
         return 0;
+    case WM_SETTINGCHANGE:
+    case WM_FONTCHANGE:
+        if (menuFont_) {
+            menuFont_->Reset();
+        }
+        return DefWindowProcW(hwnd_, message, wParam, lParam);
     case WM_ACTIVATEAPP:
         if (!wParam) {
             CancelNavDrag();
@@ -2947,6 +3025,12 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             OpenBuiltinTool(static_cast<std::size_t>(command - ID_MENU_TOOL_BASE));
             return 0;
         }
+        if (command >= ID_MENU_TRACKED_SHELL_ACTION_BASE &&
+            command < ID_MENU_TRACKED_SHELL_ACTION_BASE + ID_MENU_TRACKED_SHELL_ACTION_LIMIT) {
+            ExecuteTrackedShellMenuAction(
+                static_cast<std::size_t>(command - ID_MENU_TRACKED_SHELL_ACTION_BASE));
+            return 0;
+        }
         switch (command) {
         case ID_MENU_QUICK_IMPORT:
             QuickImport();
@@ -3015,15 +3099,10 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             RefreshLinkIcon(CommandLinkId());
             return 0;
         case ID_MENU_REFRESH_PAGE_ICONS:
-            {
-                const int tagId = CommandTagId();
-                for (const auto& link : model_.links) {
-                    if (link.parentGroup == tagId) {
-                        iconService_.RefreshDiskCache(link);
-                    }
-                }
-                InvalidateRect(hwnd_, nullptr, FALSE);
-            }
+            RefreshTagLinks(CommandTagId());
+            return 0;
+        case ID_MENU_REFRESH_GROUP_LINKS:
+            RefreshGroupLinks(CommandGroupId());
             return 0;
         case ID_MENU_REPAIR_LINK:
             if (Link* link = FindLink(CommandLinkId())) {
@@ -4110,7 +4189,11 @@ void MainWindow::EditLink(int linkId) {
         MessageBoxW(hwnd_, storageService_.lastError().c_str(), L"编辑启动项", MB_OK | MB_ICONWARNING);
         return;
     }
+    const bool shellTargetChanged = existing->path != edited.path || existing->type != edited.type;
     *existing = edited;
+    if (shellTargetChanged) {
+        shellContextMenuCache_.Remove(linkId);
+    }
     RegisterConfiguredHotKeys();
     selectedLinkId_ = edited.id;
     currentTagId_ = edited.parentGroup;
@@ -4138,6 +4221,7 @@ void MainWindow::DeleteLink(int linkId) {
         MessageBoxW(hwnd_, storageService_.lastError().c_str(), L"删除启动项", MB_OK | MB_ICONWARNING);
         return;
     }
+    shellContextMenuCache_.Remove(linkId);
     model_.links.erase(std::remove_if(model_.links.begin(), model_.links.end(), [linkId](const Link& item) {
         return item.id == linkId;
     }), model_.links.end());
@@ -4567,13 +4651,50 @@ bool MainWindow::LinkCenterScreenPoint(int linkId, POINT& screenPoint) const {
     return ClientToScreen(hwnd_, &screenPoint) != FALSE;
 }
 
+ShellContextMenuTrackingOptions MainWindow::TrackedShellMenuOptions() const {
+    ShellContextMenuTrackingOptions options;
+    options.git = config_.trackGitContextMenu;
+    options.svn = config_.trackSvnContextMenu;
+    options.vsCode = config_.trackVsCodeContextMenu;
+    options.terminal = config_.trackTerminalContextMenu;
+    options.archive = config_.trackArchiveContextMenu;
+    return options;
+}
+
 void MainWindow::ShowWindowsContextMenu(int linkId, POINT screenPoint) {
     Link* link = FindLink(linkId);
     if (!link) {
         return;
     }
     DockAutoHidePause dockPause(*this);
-    ShellItemService::ShowNativeContextMenu(hwnd_, *link, screenPoint);
+    const ShellContextMenuTrackingOptions tracking = TrackedShellMenuOptions();
+    ShellContextMenuSnapshot snapshot;
+    ShellItemService::ShowNativeContextMenu(
+        hwnd_,
+        *link,
+        screenPoint,
+        tracking,
+        &snapshot);
+    shellContextMenuCache_.Update(*link, snapshot, tracking);
+}
+
+void MainWindow::ExecuteTrackedShellMenuAction(std::size_t index) {
+    if (index >= menuTrackedShellCommands_.size()) {
+        return;
+    }
+    Link* link = FindLink(CommandLinkId());
+    if (!link) {
+        return;
+    }
+    std::wstring error;
+    if (!ShellItemService::InvokeTrackedContextMenuItem(
+            hwnd_, *link, menuTrackedShellCommands_[index], error)) {
+        MessageBoxW(
+            hwnd_,
+            error.empty() ? L"执行原生菜单命令失败。" : error.c_str(),
+            L"右键菜单",
+            MB_OK | MB_ICONWARNING);
+    }
 }
 
 void MainWindow::CreateDesktopShortcut(int linkId) {
@@ -4632,6 +4753,7 @@ void MainWindow::ClearCurrentTagLinks() {
             MessageBoxW(hwnd_, storageService_.lastError().c_str(), L"清空本页应用", MB_OK | MB_ICONWARNING);
             return;
         }
+        shellContextMenuCache_.Remove(id);
     }
     model_.links.erase(std::remove_if(model_.links.begin(), model_.links.end(), [tagId](const Link& link) {
         return link.parentGroup == tagId;
@@ -4990,6 +5112,9 @@ void MainWindow::OpenSettings() {
         next = config_;
         return mainHotKeyRegistered_;
     };
+    auto clearMenuIconCache = [this]() -> bool {
+        return shellContextMenuCache_.ClearIconPool();
+    };
     if (!ShowSettingsDialog(
             hwnd_,
             instance_,
@@ -5001,7 +5126,8 @@ void MainWindow::OpenSettings() {
             &httpServerService_,
             mainHotKeyRegistered_,
             processLocatorHotKeyRegistered_,
-            applySettings)) {
+            applySettings,
+            clearMenuIconCache)) {
         if (importedData) {
             model_ = storageService_.Load();
             RestoreLegacyBuiltinSystemFunctionKeys();
@@ -5019,6 +5145,21 @@ void MainWindow::CommitSettingsConfig(const AppConfig& next, bool importedData) 
     AppConfig previous = config_;
     config_ = next;
     configService_.Save(config_);
+    if (previous.trackGitContextMenu && !config_.trackGitContextMenu) {
+        shellContextMenuCache_.RemoveProvider(ShellContextMenuProviderId::Git);
+    }
+    if (previous.trackSvnContextMenu && !config_.trackSvnContextMenu) {
+        shellContextMenuCache_.RemoveProvider(ShellContextMenuProviderId::Svn);
+    }
+    if (previous.trackVsCodeContextMenu && !config_.trackVsCodeContextMenu) {
+        shellContextMenuCache_.RemoveProvider(ShellContextMenuProviderId::VsCode);
+    }
+    if (previous.trackTerminalContextMenu && !config_.trackTerminalContextMenu) {
+        shellContextMenuCache_.RemoveProvider(ShellContextMenuProviderId::Terminal);
+    }
+    if (previous.trackArchiveContextMenu && !config_.trackArchiveContextMenu) {
+        shellContextMenuCache_.RemoveProvider(ShellContextMenuProviderId::Archive);
+    }
     if (previous.loggingEnabled != config_.loggingEnabled) {
         SetAppLogEnabled(config_.loggingEnabled);
         WriteAppLog(config_.loggingEnabled ? L"日志已启用。" : L"日志已关闭。");
@@ -5137,16 +5278,61 @@ void MainWindow::RefreshAllIcons() {
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
+void MainWindow::RefreshLinkResources(Link& link) {
+    if (IsUrlLink(link)) {
+        shellContextMenuCache_.Remove(link.id);
+        urlIconDownloadService_.RequestManualRefresh(hwnd_, WM_QUATTRO_URL_ICON_DOWNLOADED, link);
+        return;
+    }
+    iconService_.RefreshDiskCache(link);
+    const ShellContextMenuTrackingOptions tracking = TrackedShellMenuOptions();
+    if (!tracking.Any()) {
+        return;
+    }
+    ShellContextMenuSnapshot snapshot;
+    if (ShellItemService::QueryTrackedContextMenu(hwnd_, link, tracking, snapshot)) {
+        shellContextMenuCache_.Update(link, snapshot, tracking);
+    }
+}
+
+void MainWindow::RefreshTagLinks(int tagId) {
+    const Group* tag = FindGroup(tagId);
+    if (!tag || !IsOrdinaryTag(*tag)) {
+        return;
+    }
+    for (auto& link : model_.links) {
+        if (link.parentGroup == tagId && !BuiltinSystemFunctionForLink(link)) {
+            RefreshLinkResources(link);
+        }
+    }
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void MainWindow::RefreshGroupLinks(int groupId) {
+    const Group* group = FindGroup(groupId);
+    if (!group || group->parentGroup != 0) {
+        return;
+    }
+    std::unordered_set<int> ordinaryTagIds;
+    for (const auto& tag : model_.groups) {
+        if (tag.parentGroup == groupId && IsOrdinaryTag(tag)) {
+            ordinaryTagIds.insert(tag.id);
+        }
+    }
+    for (auto& link : model_.links) {
+        if (ordinaryTagIds.contains(link.parentGroup) && !BuiltinSystemFunctionForLink(link)) {
+            RefreshLinkResources(link);
+        }
+    }
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
 void MainWindow::RefreshLinkIcon(int linkId) {
     Link* link = FindLink(linkId);
     if (!link) {
         return;
     }
-    if (IsUrlLink(*link)) {
-        urlIconDownloadService_.RequestManualRefresh(hwnd_, WM_QUATTRO_URL_ICON_DOWNLOADED, *link);
-        return;
-    }
-    iconService_.RefreshDiskCache(*link);
+    RefreshLinkResources(*link);
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
@@ -5346,7 +5532,11 @@ bool MainWindow::TryRepairLinkTarget(Link& link) {
     if (!LinkEditDialog::Show(hwnd_, instance_, theme_, edited, model_.groups, false)) {
         return false;
     }
+    const bool shellTargetChanged = link.path != edited.path || link.type != edited.type;
     link = edited;
+    if (shellTargetChanged) {
+        shellContextMenuCache_.Remove(link.id);
+    }
     selectedLinkId_ = link.id;
     currentTagId_ = link.parentGroup;
     if (Group* tag = FindGroup(currentTagId_); tag && tag->parentGroup != 0) {
@@ -5360,7 +5550,7 @@ bool MainWindow::TryRepairLinkTarget(Link& link) {
 
 void MainWindow::ShowThemeMenu(POINT screenPoint) {
     DockAutoHidePause dockPause(*this);
-    ResetMenuVisuals();
+    ResetMenuVisuals(screenPoint);
     HMENU menu = CreatePopupMenu();
     AppendThemeItemsToMenu(menu);
     ActivateWindow(hwnd_);
@@ -5372,7 +5562,10 @@ void MainWindow::ApplyTheme(const std::wstring& themeName) {
     config_.theme = themeName;
     theme_ = Theme::Load(appDirectory_ / L"theme", config_.theme);
     configService_.Save(config_);
-    ResetMenuVisuals();
+    activeMenuItems_.clear();
+    if (menuFont_) {
+        menuFont_->Reset();
+    }
     if (reminderPanelFont_) {
         if (reminderPanel_) {
             SendMessageW(reminderPanel_, WM_SETFONT, 0, TRUE);
@@ -6184,7 +6377,7 @@ void MainWindow::RemoveTrayIcon() {
 
 void MainWindow::ShowTrayMenu(POINT screenPoint) {
     DockAutoHidePause dockPause(*this, false);
-    ResetMenuVisuals();
+    ResetMenuVisuals(screenPoint);
     menuContextKind_ = HitKind::None;
     menuContextId_ = 0;
     HMENU menu = CreatePopupMenu();
@@ -6207,7 +6400,7 @@ void MainWindow::ShowTrayMenu(POINT screenPoint) {
 
 void MainWindow::ShowMainMenu(POINT screenPoint) {
     DockAutoHidePause dockPause(*this);
-    ResetMenuVisuals();
+    ResetMenuVisuals(screenPoint);
     menuContextKind_ = HitKind::None;
     menuContextId_ = 0;
     HMENU menu = CreatePopupMenu();
@@ -6245,7 +6438,7 @@ void MainWindow::ShowMainMenu(POINT screenPoint) {
 
 void MainWindow::ShowToolMenu(POINT screenPoint) {
     DockAutoHidePause dockPause(*this);
-    ResetMenuVisuals();
+    ResetMenuVisuals(screenPoint);
     HMENU menu = CreatePopupMenu();
     AppendToolItems(menu);
     ActivateWindow(hwnd_);
@@ -6256,7 +6449,8 @@ void MainWindow::ShowToolMenu(POINT screenPoint) {
 void MainWindow::ShowLinkMenu(int linkId, POINT screenPoint) {
     DockAutoHidePause dockPause(*this);
     HideItemTooltip();
-    ResetMenuVisuals();
+    ResetMenuVisuals(screenPoint);
+    menuTrackedShellCommands_.clear();
     HMENU menu = CreatePopupMenu();
     Link* link = FindLink(linkId);
     AppendLinkActionItems(menu, link, true);
@@ -6289,11 +6483,12 @@ void MainWindow::AppendLinkActionItems(HMENU menu, Link* link, bool includeNativ
         AppendThemedMenuItem(menu, MF_STRING, ID_MENU_RUN_ADMIN, L"以管理员身份运行");
         AppendThemedMenuItem(menu, MF_STRING, ID_MENU_COPY_PATH, L"复制路径");
         if (includeNativeMenuItem && link) {
+            AppendTrackedShellMenuItems(menu, *link);
             AppendThemedMenuItem(menu, MF_STRING, ID_MENU_WINDOWS_CONTEXT, L"Windows 原生菜单", false, -1, -1, MenuIconWindows);
         }
     }
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_CREATE_DESKTOP_SHORTCUT, L"创建桌面快捷方式");
-    AppendThemedMenuItem(menu, MF_STRING, ID_MENU_REFRESH_LINK_ICON, L"刷新图标缓存");
+    AppendThemedMenuItem(menu, MF_STRING, ID_MENU_REFRESH_LINK_ICON, L"刷新");
     HMENU moveMenu = CreatePopupMenu();
     HMENU copyMenu = CreatePopupMenu();
     AppendGroupedTagTargetMenu(moveMenu, ID_MENU_MOVE_TO_BASE, menuMoveTargetIds_, link ? link->parentGroup : 0);
@@ -6305,6 +6500,85 @@ void MainWindow::AppendLinkActionItems(HMENU menu, Link* link, bool includeNativ
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_EDIT_LINK, L"编辑");
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_PROPERTIES, L"属性");
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_DELETE_LINK, L"删除");
+}
+
+void MainWindow::AppendTrackedShellMenuItems(HMENU menu, const Link& link) {
+    const auto items = shellContextMenuCache_.ItemsFor(
+        link,
+        TrackedShellMenuOptions());
+    if (items.empty()) {
+        return;
+    }
+    AppendThemedSeparator(menu);
+    std::vector<std::wstring> providerOrder;
+    for (const auto& item : items) {
+        if (!item.providerId.empty() &&
+            std::find(providerOrder.begin(), providerOrder.end(), item.providerId) == providerOrder.end()) {
+            providerOrder.push_back(item.providerId);
+        }
+    }
+    bool firstProvider = true;
+    for (const auto& providerId : providerOrder) {
+        std::vector<ShellContextMenuItem> providerItems;
+        for (const auto& item : items) {
+            if (item.providerId == providerId) {
+                providerItems.push_back(item);
+            }
+        }
+        if (providerItems.empty()) {
+            continue;
+        }
+        if (!firstProvider) {
+            AppendThemedSeparator(menu);
+        }
+        std::vector<std::wstring> path;
+        AppendTrackedShellMenuItems(menu, providerItems, path);
+        firstProvider = false;
+    }
+    AppendThemedSeparator(menu);
+}
+
+void MainWindow::AppendTrackedShellMenuItems(
+    HMENU menu,
+    const std::vector<ShellContextMenuItem>& items,
+    std::vector<std::wstring>& path) {
+    bool lastWasSeparator = true;
+    for (const auto& item : items) {
+        if (item.separator) {
+            if (!lastWasSeparator) {
+                AppendThemedSeparator(menu);
+                lastWasSeparator = true;
+            }
+            continue;
+        }
+        if (item.text.empty()) {
+            continue;
+        }
+        path.push_back(item.text);
+        const UINT disabled = item.enabled ? 0 : MF_GRAYED;
+        if (!item.children.empty()) {
+            HMENU submenu = CreatePopupMenu();
+            AppendTrackedShellMenuItems(submenu, item.children, path);
+            AppendThemedTrackedMenuItem(
+                menu,
+                MF_POPUP | disabled,
+                reinterpret_cast<UINT_PTR>(submenu),
+                item,
+                true);
+            lastWasSeparator = false;
+        } else if (menuTrackedShellCommands_.size() < ID_MENU_TRACKED_SHELL_ACTION_LIMIT) {
+            ShellContextMenuLocator locator;
+            locator.providerId = item.providerId;
+            locator.path = path;
+            locator.verb = item.verb;
+            const UINT command = ID_MENU_TRACKED_SHELL_ACTION_BASE +
+                static_cast<UINT>(menuTrackedShellCommands_.size());
+            menuTrackedShellCommands_.push_back(std::move(locator));
+            AppendThemedTrackedMenuItem(menu, MF_STRING | disabled, command, item, false);
+            lastWasSeparator = false;
+        }
+        path.pop_back();
+    }
 }
 
 void MainWindow::AppendBuiltinSystemContextItems(HMENU menu, const Link& link) {
@@ -6376,7 +6650,7 @@ void MainWindow::ExecuteBuiltinSystemContextAction(int linkId, BuiltinSystemCont
 
 void MainWindow::ShowTodoMenu(int todoId, POINT screenPoint) {
     DockAutoHidePause dockPause(*this);
-    ResetMenuVisuals();
+    ResetMenuVisuals(screenPoint);
     HMENU menu = CreatePopupMenu();
     const TodoItem* item = FindTodoItem(todoId);
     const bool done = item && !item->completedAt.empty();
@@ -6584,11 +6858,13 @@ void MainWindow::UpdateItemTooltip(const HitArea& hit, POINT screenPoint) {
 
 void MainWindow::ShowGroupMenu(int groupId, POINT screenPoint) {
     DockAutoHidePause dockPause(*this);
-    ResetMenuVisuals();
+    ResetMenuVisuals(screenPoint);
     HMENU menu = CreatePopupMenu();
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_ADD_GROUP, L"新建分组");
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_EDIT_GROUP, L"重命名");
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_DELETE_GROUP, L"删除分组");
+    AppendThemedSeparator(menu);
+    AppendThemedMenuItem(menu, MF_STRING, ID_MENU_REFRESH_GROUP_LINKS, L"刷新");
     AppendThemedSeparator(menu);
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_MOVE_UP, L"左移(Shift+←)");
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_MOVE_DOWN, L"右移(Shift+→)");
@@ -6601,7 +6877,7 @@ void MainWindow::ShowGroupMenu(int groupId, POINT screenPoint) {
 
 void MainWindow::ShowGroupBlankMenu(POINT screenPoint) {
     DockAutoHidePause dockPause(*this);
-    ResetMenuVisuals();
+    ResetMenuVisuals(screenPoint);
     HMENU menu = CreatePopupMenu();
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_ADD_GROUP, L"新建分组");
     menuContextKind_ = HitKind::None;
@@ -6613,7 +6889,7 @@ void MainWindow::ShowGroupBlankMenu(POINT screenPoint) {
 
 void MainWindow::ShowTagMenu(int tagId, POINT screenPoint) {
     DockAutoHidePause dockPause(*this);
-    ResetMenuVisuals();
+    ResetMenuVisuals(screenPoint);
     HMENU menu = CreatePopupMenu();
     Group* tag = FindGroup(tagId);
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_ADD_TAG, L"新建普通标签");
@@ -6637,7 +6913,9 @@ void MainWindow::ShowTagMenu(int tagId, POINT screenPoint) {
         AppendThemedSeparator(menu);
         AppendViewOptionItems(menu, tag);
         AppendThemedSeparator(menu);
-        AppendThemedMenuItem(menu, MF_STRING, ID_MENU_REFRESH_PAGE_ICONS, L"刷新本页图标");
+        if (tag && IsOrdinaryTag(*tag)) {
+            AppendThemedMenuItem(menu, MF_STRING, ID_MENU_REFRESH_PAGE_ICONS, L"刷新");
+        }
         AppendThemedMenuItem(menu, MF_STRING, ID_MENU_CLEAR_TAG_LINKS, L"清空本页应用");
     }
     menuContextKind_ = HitKind::Tag;
@@ -6649,7 +6927,7 @@ void MainWindow::ShowTagMenu(int tagId, POINT screenPoint) {
 
 void MainWindow::ShowTagBlankMenu(POINT screenPoint) {
     DockAutoHidePause dockPause(*this);
-    ResetMenuVisuals();
+    ResetMenuVisuals(screenPoint);
     HMENU menu = CreatePopupMenu();
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_ADD_TAG, L"新建普通标签");
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_ADD_NOTE_TAG, L"新建便签");
@@ -6663,7 +6941,7 @@ void MainWindow::ShowTagBlankMenu(POINT screenPoint) {
 
 void MainWindow::ShowBackgroundMenu(POINT screenPoint) {
     DockAutoHidePause dockPause(*this);
-    ResetMenuVisuals();
+    ResetMenuVisuals(screenPoint);
     menuContextKind_ = HitKind::None;
     menuContextId_ = 0;
     HMENU menu = CreatePopupMenu();
@@ -6677,7 +6955,9 @@ void MainWindow::ShowBackgroundMenu(POINT screenPoint) {
         AppendThemedSeparator(menu);
         AppendViewOptionItems(menu, tag);
         AppendThemedSeparator(menu);
-        AppendThemedMenuItem(menu, MF_STRING, ID_MENU_REFRESH_PAGE_ICONS, L"刷新本页图标");
+        if (tag && IsOrdinaryTag(*tag)) {
+            AppendThemedMenuItem(menu, MF_STRING, ID_MENU_REFRESH_PAGE_ICONS, L"刷新");
+        }
         AppendThemedMenuItem(menu, MF_STRING, ID_MENU_CLEAR_TAG_LINKS, L"清空本页应用");
     }
     ActivateWindow(hwnd_);
@@ -7594,7 +7874,7 @@ void MainWindow::DrawEmptyState(const D2D1_RECT_F& contentRect, const std::wstri
     const float shiftY = Metric(theme_, L"content", L"emptyBlockShiftY", -16.0f);
     const float lineHeight = Metric(theme_, L"content", L"emptyTextHeight", 30.0f);
     const float textInsetX = Metric(theme_, L"content", L"emptyTextInsetX", 20.0f);
-    const float buttonHeight = Metric(theme_, L"button", L"height", 30.0f);
+    const float buttonHeight = Metric(theme_, L"button", L"height", 28.0f);
 
     const bool hasHint = !hint.empty();
     const bool hasButton = !buttonLabel.empty();
@@ -7647,7 +7927,7 @@ void MainWindow::DrawEmptyState(const D2D1_RECT_F& contentRect, const std::wstri
 void MainWindow::DrawEmptyAddButton(const D2D1_RECT_F& contentRect, float topY, const std::wstring& label) {
     const bool hovered = IsHover(HitKind::AddButton, 0);
     const float radius = Metric(theme_, L"button", L"radius", 7.0f);
-    const float height = Metric(theme_, L"button", L"height", 30.0f);
+    const float height = Metric(theme_, L"button", L"height", 28.0f);
     const float paddingX = Metric(theme_, L"button", L"paddingX", 12.0f);
     const float plusGap = 8.0f;
     const float plusHalf = 5.0f;
@@ -7711,7 +7991,7 @@ void MainWindow::DrawTodoItems(D2D1_RECT_F rect, const Group&) {
     const float paddingX = Metric(theme_, L"linkItem", L"viewportPaddingX", 16.0f);
     const float paddingY = Metric(theme_, L"list", L"paddingY", 6.0f);
     const float rowHeight = std::max(64.0f, Metric(theme_, L"listItem", L"height", 28.0f) + 36.0f);
-    const float rowGap = std::max(4.0f, Metric(theme_, L"linkItem", L"listGapY", 2.0f));
+    const float rowGap = Metric(theme_, L"linkItem", L"listGapY", 4.0f);
     const float contentInsetX = std::max(14.0f, Metric(theme_, L"listItem", L"paddingX", 8.0f));
     const float dotRadius = 4.0f;
     const float dotRightInset = 16.0f;
@@ -8036,8 +8316,12 @@ void MainWindow::DrawLinkName(const std::wstring& text, IDWriteTextFormat* forma
     }
 }
 
-void MainWindow::ResetMenuVisuals() {
+void MainWindow::ResetMenuVisuals(POINT screenPoint) {
     activeMenuItems_.clear();
+    if (!menuFont_) {
+        menuFont_ = std::make_unique<ThemedMenuFontCache>();
+    }
+    menuFont_->FontForScreenPoint(screenPoint, hwnd_);
 }
 
 void MainWindow::AppendThemedMenuItem(HMENU menu, UINT flags, UINT_PTR id, const std::wstring& text, bool submenu, int systemImageIndex, int stockIcon, int menuIcon) {
@@ -8074,6 +8358,22 @@ void MainWindow::AppendThemedStateMenuItem(HMENU menu, UINT flags, UINT_PTR id, 
     AppendMenuW(menu, (flags | MF_OWNERDRAW) & ~(MF_STRING | MF_CHECKED), id, reinterpret_cast<LPCWSTR>(raw));
 }
 
+void MainWindow::AppendThemedTrackedMenuItem(
+    HMENU menu,
+    UINT flags,
+    UINT_PTR id,
+    const ShellContextMenuItem& source,
+    bool submenu) {
+    if (source.checked) {
+        AppendThemedStateMenuItem(menu, flags, id, source.text, true, MenuIconNone, submenu);
+    } else {
+        AppendThemedMenuItem(menu, flags, id, source.text, submenu);
+    }
+    if (!activeMenuItems_.empty()) {
+        activeMenuItems_.back()->nativeIconBitmap = CreateTrackedMenuIconBitmap(source);
+    }
+}
+
 void MainWindow::AppendThemedSeparator(HMENU menu) {
     auto item = std::make_unique<MenuItemData>();
     item->separator = true;
@@ -8103,19 +8403,27 @@ bool MainWindow::MeasureThemedMenuItem(MEASUREITEMSTRUCT* measure) {
     if (!item) {
         return false;
     }
+    if (!menuFont_) {
+        return false;
+    }
+    const auto scaledMetric = [this](const wchar_t* component, const wchar_t* name, float fallback) {
+        return menuFont_->Scale(static_cast<int>(std::lround(Metric(theme_, component, name, fallback))));
+    };
     if (item->separator) {
-        const int thickness = static_cast<int>(std::max(1.0f, Metric(theme_, L"separator", L"thickness", 1.0f)));
-        measure->itemHeight = static_cast<UINT>(std::max(5, thickness + 8));
-        measure->itemWidth = static_cast<UINT>(Metric(theme_, L"menuItem", L"widthBase", 54.0f) + Metric(theme_, L"menuItem", L"minTextWidth", 64.0f));
+        const int thickness = std::max(1, scaledMetric(L"separator", L"thickness", 1.0f));
+        measure->itemHeight = static_cast<UINT>(std::max(menuFont_->Scale(5), thickness + menuFont_->Scale(8)));
+        measure->itemWidth = static_cast<UINT>(
+            scaledMetric(L"menuItem", L"widthBase", 54.0f) +
+            scaledMetric(L"menuItem", L"minTextWidth", 64.0f));
         return true;
     }
-    const int textLength = static_cast<int>(item->text.size());
-    measure->itemHeight = static_cast<UINT>(Metric(theme_, L"menuItem", L"height", 30.0f));
-    const int minTextWidth = static_cast<int>(Metric(theme_, L"menuItem", L"minTextWidth", 64.0f));
-    const int maxTextWidth = static_cast<int>(Metric(theme_, L"menuItem", L"maxTextWidth", 360.0f));
-    const int widthBase = static_cast<int>(Metric(theme_, L"menuItem", L"widthBase", 54.0f));
-    const int charWidth = static_cast<int>(Metric(theme_, L"menuItem", L"charWidth", 13.0f));
-    measure->itemWidth = static_cast<UINT>(widthBase + std::min(maxTextWidth, std::max(minTextWidth, textLength * charWidth)));
+    const SIZE textSize = menuFont_->MeasureText(hwnd_, item->text);
+    const int minTextWidth = scaledMetric(L"menuItem", L"minTextWidth", 64.0f);
+    const int maxTextWidth = scaledMetric(L"menuItem", L"maxTextWidth", 360.0f);
+    const int widthBase = scaledMetric(L"menuItem", L"widthBase", 54.0f);
+    measure->itemHeight = static_cast<UINT>(scaledMetric(L"menuItem", L"height", 28.0f));
+    measure->itemWidth = static_cast<UINT>(
+        widthBase + std::min(maxTextWidth, std::max(minTextWidth, static_cast<int>(textSize.cx))));
     return true;
 }
 
@@ -8125,9 +8433,12 @@ bool MainWindow::DrawThemedMenuItem(const DRAWITEMSTRUCT* draw) {
     }
 
     const auto* item = ThemedMenuItemFromData(draw->itemData);
-    if (!item) {
+    if (!item || !menuFont_) {
         return false;
     }
+    const auto scaledMetric = [this](const wchar_t* component, const wchar_t* name, float fallback) {
+        return menuFont_->Scale(static_cast<int>(std::lround(Metric(theme_, component, name, fallback))));
+    };
     RECT rc = draw->rcItem;
     HDC dc = draw->hDC;
     const Color background = theme_.color(L"menu", L"normal", L"bg");
@@ -8137,8 +8448,8 @@ bool MainWindow::DrawThemedMenuItem(const DRAWITEMSTRUCT* draw) {
         ::FillRect(dc, &rc, backgroundBrush);
         DeleteObject(backgroundBrush);
 
-        const int inset = static_cast<int>(std::max(0.0f, Metric(theme_, L"separator", L"inset", 0.0f)));
-        const int thickness = static_cast<int>(std::max(1.0f, Metric(theme_, L"separator", L"thickness", 1.0f)));
+        const int inset = std::max(0, scaledMetric(L"separator", L"inset", 0.0f));
+        const int thickness = std::max(1, scaledMetric(L"separator", L"thickness", 1.0f));
         RECT lineRect{
             rc.left + inset,
             rc.top + ((rc.bottom - rc.top) - thickness) / 2,
@@ -8159,15 +8470,15 @@ bool MainWindow::DrawThemedMenuItem(const DRAWITEMSTRUCT* draw) {
 
     if (selected) {
         RECT hotRect = rc;
-        InflateRect(&hotRect, -static_cast<int>(Metric(theme_, L"menuItem", L"hoverInsetX", 4.0f)), -static_cast<int>(Metric(theme_, L"menuItem", L"hoverInsetY", 3.0f)));
+        InflateRect(&hotRect, -scaledMetric(L"menuItem", L"hoverInsetX", 4.0f), -scaledMetric(L"menuItem", L"hoverInsetY", 3.0f));
         HBRUSH hotBrush = CreateSolidBrush(ToColorRef(theme_.color(L"menuItem", L"hover", L"bg")));
         ::FillRect(dc, &hotRect, hotBrush);
         DeleteObject(hotBrush);
     }
 
-    const int iconLeft = static_cast<int>(Metric(theme_, L"menuItem", L"iconLeft", 8.0f));
-    const int iconTopInset = static_cast<int>(Metric(theme_, L"menuItem", L"iconInsetY", 6.0f));
-    const int iconSize = static_cast<int>(Metric(theme_, L"menuItem", L"iconSize", 16.0f));
+    const int iconLeft = scaledMetric(L"menuItem", L"iconLeft", 8.0f);
+    const int iconTopInset = scaledMetric(L"menuItem", L"iconInsetY", 6.0f);
+    const int iconSize = scaledMetric(L"menuItem", L"iconSize", 16.0f);
     const RECT iconRect{rc.left + iconLeft, rc.top + iconTopInset, rc.left + iconLeft + iconSize, rc.bottom - iconTopInset};
     COLORREF iconColorRef = CLR_INVALID;
     if (item->iconTone == MenuIconTone::Active) {
@@ -8183,7 +8494,9 @@ bool MainWindow::DrawThemedMenuItem(const DRAWITEMSTRUCT* draw) {
     iconPalette.muted = ToColorRef(theme_.color(L"menuItem", L"normal", L"icon"));
     iconPalette.disabled = ToColorRef(theme_.color(L"menuItem", L"disabled", L"icon"));
     iconPalette.neutral = ToColorRef(theme_.color(L"menu", L"normal", L"bg"));
-    if (item->stockIcon >= 0) {
+    if (item->nativeIconBitmap && DrawTrackedMenuIcon(dc, iconRect, item->nativeIconBitmap, item->disabled)) {
+        // The cached bitmap is copied from the Windows native menu.
+    } else if (item->stockIcon >= 0) {
         if (!DrawStockMenuIcon(dc, iconRect, static_cast<SHSTOCKICONID>(item->stockIcon)) &&
             !DrawSystemImageListIcon(dc, iconRect, item->systemImageIndex, item->disabled)) {
             DrawMenuIcon(dc, iconRect, item->icon, item->disabled, iconColorRef, iconPalette, appDirectory_);
@@ -8197,20 +8510,21 @@ bool MainWindow::DrawThemedMenuItem(const DRAWITEMSTRUCT* draw) {
     }
 
     RECT textRect = rc;
-    textRect.left += static_cast<int>(Metric(theme_, L"menuItem", L"textLeft", 34.0f));
-    textRect.right -= item->submenu ? static_cast<int>(Metric(theme_, L"menuItem", L"submenuRight", 22.0f)) : static_cast<int>(Metric(theme_, L"menuItem", L"textRight", 8.0f));
+    textRect.left += scaledMetric(L"menuItem", L"textLeft", 34.0f);
+    textRect.right -= item->submenu
+        ? scaledMetric(L"menuItem", L"submenuRight", 22.0f)
+        : scaledMetric(L"menuItem", L"textRight", 8.0f);
     SetBkMode(dc, TRANSPARENT);
     SetTextColor(dc, ToColorRef(theme_.color(L"menuItem", item->disabled ? L"disabled" : L"normal", L"text")));
-    HFONT font = reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
-    HGDIOBJ oldFont = SelectObject(dc, font);
+    HGDIOBJ oldFont = SelectObject(dc, menuFont_->FontForDpi(menuFont_->dpi()));
     DrawTextW(dc, item->text.c_str(), static_cast<int>(item->text.size()), &textRect, DT_SINGLELINE | DT_VCENTER | DT_LEFT | DT_END_ELLIPSIS);
     SelectObject(dc, oldFont);
 
     if (item->submenu) {
         const COLORREF arrowColor = ToColorRef(theme_.color(L"menuItem", item->disabled ? L"disabled" : (selected ? L"hover" : L"normal"), L"text"));
         const int midY = (rc.top + rc.bottom) / 2;
-        const int arrowRight = static_cast<int>(Metric(theme_, L"menuItem", L"arrowRight", 9.0f));
-        const int arrowIconSize = static_cast<int>(Metric(theme_, L"menuItem", L"iconSize", 16.0f));
+        const int arrowRight = scaledMetric(L"menuItem", L"arrowRight", 9.0f);
+        const int arrowIconSize = scaledMetric(L"menuItem", L"iconSize", 16.0f);
         const RECT arrowRect{
             rc.right - arrowRight - arrowIconSize,
             midY - arrowIconSize / 2,
@@ -8219,8 +8533,8 @@ bool MainWindow::DrawThemedMenuItem(const DRAWITEMSTRUCT* draw) {
         if (!DrawMenuChevronRight(dc, arrowRect, arrowColor, appDirectory_)) {
             HPEN pen = CreatePen(PS_SOLID, 1, arrowColor);
             HGDIOBJ oldPen = SelectObject(dc, pen);
-            const int arrowWidth = static_cast<int>(Metric(theme_, L"menuItem", L"arrowWidth", 5.0f));
-            const int arrowHalfHeight = static_cast<int>(Metric(theme_, L"menuItem", L"arrowHalfHeight", 4.0f));
+            const int arrowWidth = scaledMetric(L"menuItem", L"arrowWidth", 5.0f);
+            const int arrowHalfHeight = scaledMetric(L"menuItem", L"arrowHalfHeight", 4.0f);
             const int arrowTip = rc.right - arrowRight;
             POINT points[] = {
                 {arrowTip - arrowWidth, midY - arrowHalfHeight},
@@ -8323,7 +8637,7 @@ float MainWindow::MaxTagScrollOffset(const D2D1_RECT_F& rect) const {
     const D2D1_RECT_F content = CardContentRectFor(rect);
     const float topInset = Metric(theme_, L"minorNavItem", L"topInset", 2.0f);
     const float bottomInset = Metric(theme_, L"minorNavItem", L"bottomInset", 2.0f);
-    const float itemHeight = Metric(theme_, L"tabButton", L"height", Metric(theme_, L"minorNavItem", L"height", 32.0f));
+    const float itemHeight = Metric(theme_, L"tabButton", L"height", Metric(theme_, L"minorNavItem", L"height", 28.0f));
     const float itemGap = Metric(theme_, L"minorNavItem", L"gap", 2.0f);
     const float contentHeight = topInset + bottomInset + static_cast<float>(tags.size()) * itemHeight
         + static_cast<float>(tags.empty() ? 0 : tags.size() - 1) * itemGap;
@@ -8367,7 +8681,7 @@ float MainWindow::TodoContentHeight(const D2D1_RECT_F&) const {
     }
     const float paddingY = Metric(theme_, L"list", L"paddingY", 6.0f);
     const float itemHeight = std::max(64.0f, Metric(theme_, L"listItem", L"height", 28.0f) + 36.0f);
-    const float itemGap = std::max(4.0f, Metric(theme_, L"linkItem", L"listGapY", 2.0f));
+    const float itemGap = Metric(theme_, L"linkItem", L"listGapY", 4.0f);
     return paddingY * 2.0f + static_cast<float>(count) * itemHeight + static_cast<float>(count - 1) * itemGap;
 }
 
@@ -8430,7 +8744,7 @@ void MainWindow::EnsureTagVisible(int tagId) {
     BuildLayout(static_cast<float>(client.right - client.left), static_cast<float>(client.bottom - client.top), title, groupsRect, tagsRect, linksRect);
     const D2D1_RECT_F content = CardContentRectFor(tagsRect);
     const float topInset = Metric(theme_, L"minorNavItem", L"topInset", 2.0f);
-    const float itemHeight = Metric(theme_, L"tabButton", L"height", Metric(theme_, L"minorNavItem", L"height", 32.0f));
+    const float itemHeight = Metric(theme_, L"tabButton", L"height", Metric(theme_, L"minorNavItem", L"height", 28.0f));
     const float itemGap = Metric(theme_, L"minorNavItem", L"gap", 2.0f);
     const float visibilityPadding = Metric(theme_, L"minorNavItem", L"visibilityPadding", 8.0f);
     float y = content.top + topInset;
@@ -8504,7 +8818,7 @@ void MainWindow::EnsureTodoVisible(int todoId) {
     const int index = static_cast<int>(std::distance(items.begin(), it));
     const float paddingY = Metric(theme_, L"list", L"paddingY", 6.0f);
     const float rowHeight = std::max(64.0f, Metric(theme_, L"listItem", L"height", 28.0f) + 36.0f);
-    const float rowGap = std::max(4.0f, Metric(theme_, L"linkItem", L"listGapY", 2.0f));
+    const float rowGap = Metric(theme_, L"linkItem", L"listGapY", 4.0f);
     const float itemTop = linksRect.top + paddingY + static_cast<float>(index) * (rowHeight + rowGap);
     const float itemBottom = itemTop + rowHeight;
 
@@ -9232,7 +9546,7 @@ std::vector<MainWindow::NavItemRect> MainWindow::MajorGroupItemRects(const D2D1_
         return items;
     }
 
-    const float itemHeight = Metric(theme_, L"tabButton", L"height", 30.0f);
+    const float itemHeight = Metric(theme_, L"tabButton", L"height", 28.0f);
     const float y = rect.top + std::max(0.0f, (Height(rect) - itemHeight) * 0.5f);
     const float itemGap = Metric(theme_, L"tabButton", L"groupGap", 0.0f);
     float x = rect.left + groupPadding - groupScrollOffset_;
@@ -9256,7 +9570,7 @@ std::vector<MainWindow::NavItemRect> MainWindow::TagItemRects(const D2D1_RECT_F&
     items.reserve(tags.size());
     const D2D1_RECT_F content = CardContentRectFor(rect);
     const float topInset = Metric(theme_, L"minorNavItem", L"topInset", 2.0f);
-    const float itemHeight = Metric(theme_, L"tabButton", L"height", Metric(theme_, L"minorNavItem", L"height", 32.0f));
+    const float itemHeight = Metric(theme_, L"tabButton", L"height", Metric(theme_, L"minorNavItem", L"height", 28.0f));
     const float itemGap = Metric(theme_, L"minorNavItem", L"gap", 2.0f);
     float y = content.top + topInset - tagScrollOffset_;
     for (int index = 0; index < static_cast<int>(tags.size()); ++index) {
@@ -9508,7 +9822,7 @@ int MainWindow::LinkIdFromHotKeyId(int hotKeyId) const {
 }
 
 void MainWindow::BuildLayout(float width, float height, D2D1_RECT_F& title, D2D1_RECT_F& groups, D2D1_RECT_F& tags, D2D1_RECT_F& links) const {
-    const float titleHeight = config_.showTitle ? Metric(theme_, L"title", L"height", 34.0f) : 0.0f;
+    const float titleHeight = config_.showTitle ? Metric(theme_, L"title", L"height", 32.0f) : 0.0f;
     title = D2D1::RectF(0, 0, width, titleHeight);
 
     float left = 0.0f;
@@ -9524,9 +9838,9 @@ void MainWindow::BuildLayout(float width, float height, D2D1_RECT_F& title, D2D1
             groups = D2D1::RectF(std::max(left, right - groupWidth), top, right, bottom);
             right = groups.left;
         } else {
-            const float tabGroupHeight = Metric(theme_, L"tabButton", L"height", 30.0f)
+            const float tabGroupHeight = Metric(theme_, L"tabButton", L"height", 28.0f)
                 + Metric(theme_, L"tabButton", L"groupPadding", 3.0f) * 2.0f;
-            const float groupHeight = std::max(Metric(theme_, L"majorNav", L"height", 34.0f), tabGroupHeight);
+            const float groupHeight = std::max(Metric(theme_, L"majorNav", L"height", 32.0f), tabGroupHeight);
             groups = D2D1::RectF(0.0f, top, width, std::min(bottom, top + groupHeight));
             top = groups.bottom;
         }

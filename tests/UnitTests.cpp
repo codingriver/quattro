@@ -4,6 +4,7 @@
 #include "../src/services/Launcher.h"
 #include "../src/domain/MenuCatalog.h"
 #include "../src/domain/PluginRegistry.h"
+#include "../src/services/ShellContextMenuCacheService.h"
 #include "../src/services/ShellItemService.h"
 #include "../src/services/Storage.h"
 #include "../src/services/SystemFunctions.h"
@@ -87,6 +88,40 @@ int wmain() {
     Check(FormatVersionForDisplay(L" 0.1.0 ") == L"v0.1.0", "Version display trims whitespace");
     Check(FormatVersionForDisplay(L"").empty(), "Version display preserves empty value");
     Check(QuattroUserConfigDirectory() == unitUserConfigRoot, "User config env override");
+    {
+        ThemedMenuFontCache menuFont;
+        HFONT font96 = menuFont.FontForDpi(96);
+        LOGFONTW actual{};
+        NONCLIENTMETRICSW expected{};
+        expected.cbSize = sizeof(expected);
+        const bool hasExpected = SystemParametersInfoForDpi(
+            SPI_GETNONCLIENTMETRICS, sizeof(expected), &expected, 0, 96) != FALSE;
+        Check(font96 != nullptr, "System menu font creates");
+        Check(menuFont.FontForDpi(96) == font96, "System menu font caches by DPI");
+        Check(GetObjectW(font96, sizeof(actual), &actual) == sizeof(actual), "System menu font exposes LOGFONT");
+        if (hasExpected) {
+            Check(std::wstring(actual.lfFaceName) == expected.lfMenuFont.lfFaceName, "System menu font matches face");
+            Check(actual.lfHeight == expected.lfMenuFont.lfHeight, "System menu font matches height");
+            Check(actual.lfWeight == expected.lfMenuFont.lfWeight, "System menu font matches weight");
+        }
+        const SIZE measured = menuFont.MeasureText(nullptr, L"打开文件位置");
+        Check(measured.cx > 0 && measured.cy > 0, "System menu font measures text");
+        Check(menuFont.Scale(28) == 28, "System menu metrics preserve 96 DPI");
+        HFONT font144 = menuFont.FontForDpi(144);
+        NONCLIENTMETRICSW expected144{};
+        expected144.cbSize = sizeof(expected144);
+        LOGFONTW actual144{};
+        const bool hasExpected144 = SystemParametersInfoForDpi(
+            SPI_GETNONCLIENTMETRICS, sizeof(expected144), &expected144, 0, 144) != FALSE;
+        Check(font144 != nullptr, "System menu font creates at 150 percent DPI");
+        Check(GetObjectW(font144, sizeof(actual144), &actual144) == sizeof(actual144),
+            "System menu font exposes 150 percent DPI LOGFONT");
+        if (hasExpected144) {
+            Check(actual144.lfHeight == expected144.lfMenuFont.lfHeight,
+                "System menu font matches 150 percent DPI height");
+        }
+        Check(menuFont.Scale(28) == 42, "System menu metrics scale at 150 percent DPI");
+    }
     Check(HasUrlScheme(L"https://example.com"), "HasUrlScheme");
     Check(NormalizeUrl(L"example.com") == L"https://example.com", "NormalizeUrl");
     Check(ParseInt(L"42").value_or(0) == 42, "ParseInt valid");
@@ -251,6 +286,11 @@ int wmain() {
     Check(!config.hideOnStart, "Config default hide on start");
     Check(!config.autoRun, "Config default auto run");
     Check(config.loggingEnabled, "Config default logging enabled");
+    Check(!config.trackGitContextMenu, "Config default Git context menu tracking disabled");
+    Check(!config.trackSvnContextMenu, "Config default SVN context menu tracking disabled");
+    Check(!config.trackVsCodeContextMenu, "Config default VS Code context menu tracking disabled");
+    Check(!config.trackTerminalContextMenu, "Config default terminal context menu tracking disabled");
+    Check(!config.trackArchiveContextMenu, "Config default archive context menu tracking disabled");
     Check(!config.hideNotifyIcon, "Config default tray visible");
     Check(config.width == 400, "Config default width fits three link columns");
     config.width = 500;
@@ -264,6 +304,11 @@ int wmain() {
     config.webDavUserName = L"unit";
     config.webDavKeepCount = 7;
     config.loggingEnabled = false;
+    config.trackGitContextMenu = true;
+    config.trackSvnContextMenu = true;
+    config.trackVsCodeContextMenu = true;
+    config.trackTerminalContextMenu = true;
+    config.trackArchiveContextMenu = true;
     config.httpServerEnabled = true;
     config.httpServerAutoStart = true;
     config.httpServerLanAccess = false;
@@ -283,6 +328,11 @@ int wmain() {
     Check(loaded.webDavUserName == L"unit", "Config webdav user");
     Check(loaded.webDavKeepCount == 7, "Config webdav keep count");
     Check(!loaded.loggingEnabled, "Config logging enabled");
+    Check(loaded.trackGitContextMenu, "Config Git context menu tracking");
+    Check(loaded.trackSvnContextMenu, "Config SVN context menu tracking");
+    Check(loaded.trackVsCodeContextMenu, "Config VS Code context menu tracking");
+    Check(loaded.trackTerminalContextMenu, "Config terminal context menu tracking");
+    Check(loaded.trackArchiveContextMenu, "Config archive context menu tracking");
     Check(loaded.httpServerEnabled, "Config http enabled");
     Check(loaded.httpServerAutoStart, "Config http autostart");
     Check(!loaded.httpServerLanAccess, "Config http LAN access");
@@ -295,6 +345,117 @@ int wmain() {
     Check(savedConfigText.find(L"HttpServerPort") == std::wstring::npos, "Config removes legacy http fields");
     Check(savedConfigText.find(L"password") == std::wstring::npos && savedConfigText.find(L"Password") == std::wstring::npos, "Config does not persist webdav password");
     std::filesystem::remove(temp, ec);
+
+    const std::filesystem::path shellMenuCacheRoot = std::filesystem::temp_directory_path() /
+        (L"quattro_unit_shell_menu_cache_" + std::to_wstring(GetCurrentProcessId()));
+    std::filesystem::remove_all(shellMenuCacheRoot, ec);
+    Link cachedLink;
+    cachedLink.id = 701;
+    cachedLink.path = L"C:\\Work\\Project";
+    ShellContextMenuSnapshot shellSnapshot;
+    shellSnapshot.complete = true;
+    ShellContextMenuItem gitItem;
+    gitItem.providerId = ShellContextMenuProviderId::Git;
+    gitItem.text = L"Git Bash Here";
+    gitItem.verb = L"git_shell";
+    ShellContextMenuItem svnItem;
+    svnItem.providerId = ShellContextMenuProviderId::Svn;
+    svnItem.text = L"SVN Checkout...";
+    svnItem.verb = L"svn_checkout";
+    ShellContextMenuItem codeItem;
+    codeItem.providerId = ShellContextMenuProviderId::VsCode;
+    codeItem.text = L"Open with Code";
+    codeItem.verb = L"openwithcode";
+    codeItem.iconWidth = 2;
+    codeItem.iconHeight = 2;
+    codeItem.iconPixels = {0xFFFF0000u, 0xFF00FF00u, 0xFF0000FFu, 0xFFFFFFFFu};
+    ShellContextMenuItem archiveItem;
+    archiveItem.providerId = ShellContextMenuProviderId::Archive;
+    archiveItem.text = L"添加到 \"Project.rar\"";
+    archiveItem.iconWidth = 1;
+    archiveItem.iconHeight = 1;
+    archiveItem.iconPixels = {0xFF112233u};
+    shellSnapshot.items = {gitItem, svnItem, codeItem, archiveItem};
+    ShellContextMenuTrackingOptions allTracking;
+    allTracking.git = true;
+    allTracking.svn = true;
+    allTracking.vsCode = true;
+    allTracking.terminal = true;
+    allTracking.archive = true;
+    Link secondCachedLink = cachedLink;
+    secondCachedLink.id = 702;
+    secondCachedLink.path = L"C:\\Work\\SecondProject";
+    ShellContextMenuSnapshot secondSnapshot;
+    secondSnapshot.complete = true;
+    ShellContextMenuItem secondCodeItem = codeItem;
+    secondCodeItem.iconWidth = 0;
+    secondCodeItem.iconHeight = 0;
+    secondCodeItem.iconPixels.clear();
+    ShellContextMenuItem secondArchiveItem = archiveItem;
+    secondArchiveItem.text = L"添加到 \"SecondProject.rar\"";
+    secondArchiveItem.iconWidth = 0;
+    secondArchiveItem.iconHeight = 0;
+    secondArchiveItem.iconPixels.clear();
+    secondSnapshot.items = {secondCodeItem, secondArchiveItem};
+    {
+        ShellContextMenuCacheService shellMenuCache(shellMenuCacheRoot);
+        shellMenuCache.Update(cachedLink, shellSnapshot, allTracking);
+        shellMenuCache.Update(secondCachedLink, secondSnapshot, allTracking);
+        Check(shellMenuCache.ItemsFor(cachedLink, allTracking).size() == 4, "Shell menu cache update");
+        const auto sharedCodeItems = shellMenuCache.ItemsFor(secondCachedLink, allTracking);
+        const auto sharedArchive = std::find_if(sharedCodeItems.begin(), sharedCodeItems.end(), [](const auto& item) {
+            return item.providerId == ShellContextMenuProviderId::Archive;
+        });
+        Check(
+            sharedCodeItems.size() == 2 && sharedCodeItems.front().iconPixels == codeItem.iconPixels,
+            "Shell menu cache shares icons across links");
+        Check(
+            sharedArchive != sharedCodeItems.end() && sharedArchive->iconPixels == archiveItem.iconPixels,
+            "Shell menu cache normalizes dynamic archive labels");
+        ShellContextMenuTrackingOptions gitOnly;
+        gitOnly.git = true;
+        Check(shellMenuCache.ItemsFor(cachedLink, gitOnly).size() == 1, "Shell menu cache provider filter");
+    }
+    {
+        ShellContextMenuCacheService shellMenuCache(shellMenuCacheRoot);
+        const auto persistedItems = shellMenuCache.ItemsFor(cachedLink, allTracking);
+        Check(persistedItems.size() == 4, "Shell menu cache persistence");
+        const auto persistedCode = std::find_if(persistedItems.begin(), persistedItems.end(), [](const auto& item) {
+            return item.providerId == ShellContextMenuProviderId::VsCode;
+        });
+        Check(
+            persistedCode != persistedItems.end() && persistedCode->iconWidth == 2 &&
+            persistedCode->iconHeight == 2 && persistedCode->iconPixels == codeItem.iconPixels,
+            "Shell menu cache native icon persistence");
+        const auto persistedSharedCode = shellMenuCache.ItemsFor(secondCachedLink, allTracking);
+        Check(
+            persistedSharedCode.size() == 2 && persistedSharedCode.front().iconPixels == codeItem.iconPixels,
+            "Shell menu shared icon pool persistence");
+        Link changedTarget = cachedLink;
+        changedTarget.path = L"C:\\Work\\Other";
+        Check(shellMenuCache.ItemsFor(changedTarget, allTracking).empty(), "Shell menu cache target invalidation");
+        Check(shellMenuCache.ClearIconPool(), "Shell menu icon pool clear");
+        const auto clearedIcons = shellMenuCache.ItemsFor(cachedLink, allTracking);
+        const auto clearedCode = std::find_if(clearedIcons.begin(), clearedIcons.end(), [](const auto& item) {
+            return item.providerId == ShellContextMenuProviderId::VsCode;
+        });
+        Check(
+            clearedIcons.size() == 4 && clearedCode != clearedIcons.end() && clearedCode->iconPixels.empty(),
+            "Shell menu icon pool clear preserves menu structure");
+        {
+            ShellContextMenuCacheService clearedCache(shellMenuCacheRoot);
+            const auto persistedClearedIcons = clearedCache.ItemsFor(secondCachedLink, allTracking);
+            Check(
+                persistedClearedIcons.size() == 2 && persistedClearedIcons.front().iconPixels.empty(),
+                "Shell menu icon pool clear persistence");
+        }
+        shellMenuCache.RemoveProvider(ShellContextMenuProviderId::Git);
+        const auto withoutGit = shellMenuCache.ItemsFor(cachedLink, allTracking);
+        Check(withoutGit.size() == 3 && withoutGit.front().providerId == ShellContextMenuProviderId::Svn, "Shell menu cache provider removal");
+        shellMenuCache.Remove(cachedLink.id);
+        Check(shellMenuCache.ItemsFor(cachedLink, allTracking).empty(), "Shell menu cache link removal");
+    }
+    std::filesystem::remove_all(shellMenuCacheRoot, ec);
 
     const std::filesystem::path legacyTrayPath = std::filesystem::temp_directory_path() / L"quattro_unit_legacy_tray.ini";
     std::filesystem::remove(legacyTrayPath, ec);
@@ -394,7 +555,7 @@ int wmain() {
     Check(fallbackTheme.color(L"comboBox", L"selected", L"itemBg").a > 0.9f, "Theme default combo selected");
     Check(fallbackTheme.color(L"label", L"normal", L"text").a > 0.9f, "Theme default label");
     Check(fallbackTheme.color(L"list", L"normal", L"bg").a > 0.9f, "Theme default list");
-    Check(Near(fallbackTheme.metric(L"toggle", L"height", 0.0f), 22.0f), "Theme default toggle metric");
+    Check(Near(fallbackTheme.metric(L"toggle", L"height", 0.0f), 24.0f), "Theme default toggle metric");
     Check(Near(fallbackTheme.metric(L"slider", L"thumbSize", 0.0f), 14.0f), "Theme default slider metric");
     Check(Near(fallbackTheme.metric(L"progressBar", L"height", 0.0f), 16.0f), "Theme default progress bar metric");
     Check(fallbackTheme.color(L"progressBar", L"normal", L"fill").a > 0.9f, "Theme default progress bar color");
@@ -408,13 +569,26 @@ int wmain() {
     Check(fallbackTheme.color(L"groupBox", L"normal", L"border").a > 0.9f, "Theme default group box border");
     Check(fallbackTheme.color(L"tabControl", L"normal", L"bg").a > 0.9f, "Theme default tab control background");
     Check(Near(fallbackTheme.metric(L"toolbar", L"itemGap", 0.0f), 4.0f), "Theme default toolbar gap");
-    Check(Near(fallbackTheme.metric(L"global", L"fieldHeight", 0.0f), 32.0f), "Theme default global metric");
+    Check(Near(fallbackTheme.metric(L"global", L"fieldHeight", 0.0f), 28.0f), "Theme default global metric");
+    Check(Near(fallbackTheme.metric(L"global", L"captionLineHeight", 0.0f), 16.0f), "Theme caption line height scale");
+    Check(Near(fallbackTheme.metric(L"global", L"bodyLineHeight", 0.0f), 20.0f), "Theme body line height scale");
+    Check(Near(fallbackTheme.metric(L"global", L"titleLineHeight", 0.0f), 24.0f), "Theme title line height scale");
+    Check(Near(fallbackTheme.metric(L"global", L"smallControlHeight", 0.0f), 24.0f), "Theme small control height scale");
+    Check(Near(fallbackTheme.metric(L"global", L"mediumControlHeight", 0.0f), 28.0f), "Theme medium control height scale");
+    Check(Near(fallbackTheme.metric(L"global", L"largeControlHeight", 0.0f), 32.0f), "Theme large control height scale");
     Check(Near(fallbackTheme.metric(L"dialog", L"contentInsetX", 0.0f), 28.0f), "Theme default dialog standard inset");
     Check(Near(fallbackTheme.metric(L"dialog", L"labelMinWidth", 0.0f), 20.0f), "Theme default dialog label min width");
     Check(Near(fallbackTheme.metric(L"dialog", L"compactRowGap", 0.0f), 6.0f), "Theme default dialog compact row gap");
-    Check(Near(fallbackTheme.metric(L"dialog", L"miniFooterInsetY", 0.0f), 18.0f), "Theme default dialog mini footer inset");
+    Check(Near(fallbackTheme.metric(L"dialog", L"miniFooterInsetY", 0.0f), 16.0f), "Theme default dialog mini footer inset");
     Check(Near(fallbackTheme.metric(L"dialog", L"miniFooterButtonWidth", 0.0f), 72.0f), "Theme default dialog mini footer button");
-    Check(Near(fallbackTheme.metric(L"dialog", L"overlaySectionGap", 0.0f), 14.0f), "Theme default dialog overlay section gap");
+    Check(Near(fallbackTheme.metric(L"dialog", L"overlaySectionGap", 0.0f), 12.0f), "Theme default dialog overlay section gap");
+    Check(Near(fallbackTheme.metric(L"button", L"height", 0.0f), 28.0f), "Theme medium button height");
+    Check(Near(fallbackTheme.metric(L"button", L"largeHeight", 0.0f), 32.0f), "Theme footer button height");
+    Check(Near(fallbackTheme.metric(L"edit", L"height", 0.0f), 28.0f), "Theme edit height");
+    Check(Near(fallbackTheme.metric(L"edit", L"textHeight", 0.0f), 20.0f), "Theme edit body line height");
+    Check(Near(fallbackTheme.metric(L"comboBox", L"itemHeight", 0.0f), 28.0f), "Theme combo item height");
+    Check(Near(fallbackTheme.metric(L"tabButton", L"height", 0.0f), 28.0f), "Theme tab height");
+    Check(Near(fallbackTheme.metric(L"listItem", L"twoLineHeight", 0.0f), 48.0f), "Theme two-line result row height");
     Check(Near(fallbackTheme.metric(L"miniButton", L"height", 0.0f), 24.0f), "Theme default mini button metric");
     Check(fallbackTheme.color(L"miniButton", L"hover", L"icon").a > 0.9f, "Theme default mini button hover");
     Check(Near(fallbackTheme.metric(L"tabButton", L"minTextWidth", 0.0f), 18.0f), "Theme default tab button min text width");
@@ -517,6 +691,14 @@ int wmain() {
             "Themed UI scales dialog metrics at 125 percent DPI");
         Check(dpi150Ui.checkBoxHeight() == ThemedWindowUi::ScaleForDpi(controlUi.checkBoxHeight(), 144),
             "Themed UI scales component templates at 150 percent DPI");
+        Check(controlUi.comboBoxHeight() == controlUi.editHeight(),
+            "Themed UI aligns combo and edit template heights");
+        Check(controlUi.listItemHeight(true) == controlUi.scale(48),
+            "Themed UI exposes the shared two-line result row height");
+        Check(controlUi.footerButtonHeight() == controlUi.scale(32),
+            "Themed UI exposes the large footer button template");
+        Check(dpi125Ui.footerButtonHeight() == ThemedWindowUi::ScaleForDpi(controlUi.footerButtonHeight(), 120),
+            "Themed UI scales footer buttons at 125 percent DPI");
         const ThemedFormLayout sectionLayout(controlUi);
         const ThemedContentInsets sectionInsets = controlUi.groupBoxInsets();
         Check(sectionInsets.top == controlUi.scale(24),
@@ -654,6 +836,11 @@ int wmain() {
     shellLink.path = L"shell:Downloads";
     Check(Launcher::IsShellTarget(shellLink), "Launcher shell target");
     Check(ShellItemService::IsShellParseName(shellLink.path), "Shell parse name");
+    Check(ShellItemService::DetectTrackedContextMenuProvider(L"Open with Code") == ShellContextMenuProviderId::VsCode, "Shell menu detects VS Code");
+    Check(ShellItemService::DetectTrackedContextMenuProvider(L"在终端中打开") == ShellContextMenuProviderId::Terminal, "Shell menu detects terminal");
+    Check(ShellItemService::DetectTrackedContextMenuProvider(L"7-Zip") == ShellContextMenuProviderId::Archive, "Shell menu detects archive tool");
+    Check(ShellItemService::DetectTrackedContextMenuProvider(L"Git Bash Here") == ShellContextMenuProviderId::Git, "Shell menu keeps Git Bash in Git provider");
+    Check(ShellItemService::DetectTrackedContextMenuProvider(L"普通菜单").empty(), "Shell menu ignores unknown provider");
     Check(ShellItemService::IsPidlBlobPlausible(std::vector<std::uint8_t>{0, 0}), "PIDL terminator blob");
     Check(!ShellItemService::IsPidlBlobPlausible(std::vector<std::uint8_t>{4, 0, 1}), "PIDL malformed blob");
 
@@ -766,6 +953,7 @@ int wmain() {
     Check(MenuIconFor(ID_MENU_CUT_LINK, L"剪切") == MenuIconCut, "Cut command icon");
     Check(MenuIconFor(ID_MENU_PASTE_LINK, L"粘贴") == MenuIconPaste, "Paste command icon");
     Check(MenuIconFor(ID_MENU_COPY_PATH, L"复制路径") == MenuIconCopy, "Copy path command icon");
+    Check(MenuIconFor(ID_MENU_REFRESH_GROUP_LINKS, L"刷新") == MenuIconRefresh, "Group refresh command icon");
     Check(MenuIconFor(ID_MENU_ADD_NOTE_TAG, L"新建便签") == MenuIconNotebook, "Note tag command icon");
     Check(MenuIconFor(ID_MENU_ADD_TODO_ITEM, L"新增待办事项") == MenuIconList, "Todo item command icon");
     Check(MenuIconFor(ID_MENU_TOGGLE_TODO_ENABLED, L"禁用待办事项") == MenuIconEyeOff, "Todo disable command icon");

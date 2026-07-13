@@ -52,6 +52,11 @@ struct AppConfig {
 #else
         true;
 #endif
+    bool trackGitContextMenu = false;
+    bool trackSvnContextMenu = false;
+    bool trackVsCodeContextMenu = false;
+    bool trackTerminalContextMenu = false;
+    bool trackArchiveContextMenu = false;
 
     bool mouseEnterActiveGroup = false;
     bool mouseEnterActiveTag = false;

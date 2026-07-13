@@ -799,7 +799,7 @@ std::wstring OpenProcessLocation(const std::wstring& path) {
 
 int VisibleProcessRowCount(const Theme& theme, RECT frame) {
     const int padding = 8;
-    const int rowHeight = std::max(40, ThemedControls::ListBoxItemHeight(theme) + 14);
+    const int rowHeight = ThemedControls::ListBoxTwoLineItemHeight(theme);
     const int availableHeight = static_cast<int>(frame.bottom - frame.top) - padding * 2;
     return std::max(1, availableHeight / rowHeight);
 }
@@ -824,7 +824,7 @@ void DrawProcessRows(
         return;
     }
 
-    const int rowHeight = std::max(40, ThemedControls::ListBoxItemHeight(theme) + 14);
+    const int rowHeight = ThemedControls::ListBoxTwoLineItemHeight(theme);
     const int visibleCount = std::min<int>(static_cast<int>(rows.size()), VisibleProcessRowCount(theme, frame));
     HFONT oldFont = reinterpret_cast<HFONT>(SelectObject(dc, font));
     SetBkMode(dc, TRANSPARENT);
@@ -1391,7 +1391,7 @@ protected:
         ClearRowButtons();
         const int visibleCount = std::min<int>(static_cast<int>(rows_.size()), VisibleProcessRowCount(theme_, resultsFrame_));
         const int padding = 8;
-        const int rowHeight = std::max(40, ThemedControls::ListBoxItemHeight(theme_) + 14);
+        const int rowHeight = ThemedControls::ListBoxTwoLineItemHeight(theme_);
         const int buttonWidth = 62;
         const int buttonHeight = ThemedControls::CompactButtonHeight(theme_);
         for (int i = 0; i < visibleCount; ++i) {
@@ -1756,7 +1756,7 @@ private:
         const ThemedUi ui = windowUi_->ui();
         const int visibleCount = std::min<int>(static_cast<int>(rows_.size()), VisibleProcessRowCount(theme_, resultsFrame_));
         const int padding = 8;
-        const int rowHeight = std::max(40, ThemedControls::ListBoxItemHeight(theme_) + 14);
+        const int rowHeight = ThemedControls::ListBoxTwoLineItemHeight(theme_);
         const int buttonWidth = 62;
         const int buttonHeight = ThemedControls::CompactButtonHeight(theme_);
         for (int i = 0; i < visibleCount; ++i) {

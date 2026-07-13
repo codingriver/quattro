@@ -77,6 +77,12 @@ constexpr int ID_HTTP_OPEN_ROOT = 429;
 constexpr int ID_SETTINGS_APPLY = 430;
 constexpr int ID_HTTP_ADDRESS = 431;
 constexpr int ID_LOGGING_ENABLED = 432;
+constexpr int ID_TRACK_GIT_CONTEXT_MENU = 433;
+constexpr int ID_TRACK_SVN_CONTEXT_MENU = 434;
+constexpr int ID_TRACK_VSCODE_CONTEXT_MENU = 435;
+constexpr int ID_TRACK_TERMINAL_CONTEXT_MENU = 436;
+constexpr int ID_TRACK_ARCHIVE_CONTEXT_MENU = 437;
+constexpr int ID_CLEAR_MENU_ICON_CACHE = 438;
 constexpr int ID_MESSAGE_TEXT = 501;
 constexpr int ID_HOTKEY_CONFLICT_IGNORE = 502;
 constexpr int ID_MAIN_HOTKEY_PROBE = 0x5148;
@@ -1934,7 +1940,8 @@ public:
         LocalHttpServerService* httpServer,
         bool mainHotKeyRegistered,
         bool processLocatorHotKeyRegistered,
-        SettingsApplyCallback applyCallback)
+        SettingsApplyCallback applyCallback,
+        SettingsClearMenuIconCacheCallback clearMenuIconCacheCallback)
         : owner_(owner),
           instance_(instance),
           config_(config),
@@ -1945,7 +1952,8 @@ public:
           httpServer_(httpServer),
           mainHotKeyRegistered_(mainHotKeyRegistered),
           processLocatorHotKeyRegistered_(processLocatorHotKeyRegistered),
-          applyCallback_(std::move(applyCallback)) {}
+          applyCallback_(std::move(applyCallback)),
+          clearMenuIconCacheCallback_(std::move(clearMenuIconCacheCallback)) {}
 
     bool Run() {
         HICON icon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_QUATTRO_APP_ICON));
@@ -2193,58 +2201,73 @@ private:
         return group;
     }
 
-    void ReadDraft() {
-        draft_.showTitle = ThemedUi::IsChecked(showTitle_);
-        draft_.showGroup = ThemedUi::IsChecked(showGroup_);
-        draft_.showTag = ThemedUi::IsChecked(showTag_);
-        draft_.autoDock = ThemedUi::IsChecked(autoDock_);
-        draft_.hideWhenInactive = ThemedUi::IsChecked(hideInactive_);
-        draft_.hideAfterLink = ThemedUi::IsChecked(hideAfterLink_);
-        draft_.hideOnStart = ThemedUi::IsChecked(hideOnStart_);
-        draft_.doubleClickToRun = ThemedUi::IsChecked(doubleClick_);
-        draft_.hideNotifyIcon = false;
-        draft_.deleteConfirm = ThemedUi::IsChecked(deleteConfirm_);
-        draft_.saveRunCount = ThemedUi::IsChecked(saveRunCount_);
-        draft_.showToolboxButton = ThemedUi::IsChecked(showToolboxButton_);
-        draft_.showSkinButton = ThemedUi::IsChecked(showSkinButton_);
-        draft_.autoRun = ThemedUi::IsChecked(autoRun_);
-        draft_.loggingEnabled = ThemedUi::IsChecked(loggingEnabled_);
-        draft_.linkNameSingleLine = ThemedUi::IsChecked(linkNameSingleLine_);
-        draft_.showTooltip = ThemedUi::IsChecked(showTooltip_);
-        draft_.groupRight = ThemedUi::IsChecked(groupRight_);
-        draft_.tagRight = ThemedUi::IsChecked(tagRight_);
-        draft_.mouseEnterActiveGroup = ThemedUi::IsChecked(enterActiveGroup_);
-        draft_.mouseEnterActiveTag = ThemedUi::IsChecked(enterActiveTag_);
-        draft_.tagAlign = tagAlignIndex_ == 0 ? L"left" : (tagAlignIndex_ == 2 ? L"right" : L"center");
-        auto alpha = ParseInt(GetText(alphaEdit_));
-        draft_.alpha = alpha ? std::max(64, std::min(255, *alpha)) : 255;
-        draft_.groupWidth = ClampNumber(groupWidthEdit_, 40, 240, draft_.groupWidth);
-        draft_.tagWidth = ClampNumber(tagWidthEdit_, 40, 240, draft_.tagWidth);
-        draft_.dockDelay = ClampNumber(dockDelayEdit_, 0, 5000, draft_.dockDelay);
-        draft_.activeGroupDelay = ClampNumber(groupDelayEdit_, 0, 5000, draft_.activeGroupDelay);
-        draft_.activeTagDelay = ClampNumber(tagDelayEdit_, 0, 5000, draft_.activeTagDelay);
-        draft_.openDirCommand = GetText(openDirEdit_);
-        draft_.helpUrl = GetText(helpUrlEdit_);
-        draft_.updateUrl = GetText(updateUrlEdit_);
-        draft_.faqUrl = GetText(faqUrlEdit_);
-        draft_.rewardUrl = GetText(rewardUrlEdit_);
-        draft_.webDavEnabled = ThemedUi::IsChecked(webDavEnabled_);
-        draft_.webDavUrl = GetText(webDavUrlEdit_);
-        draft_.webDavRemotePath = GetText(webDavRemotePathEdit_);
-        draft_.webDavUserName = GetText(webDavUserNameEdit_);
-        draft_.webDavKeepCount = ClampNumber(webDavKeepCountEdit_, 1, 100, draft_.webDavKeepCount);
-        if (Trim(draft_.webDavRemotePath).empty()) {
-            draft_.webDavRemotePath = L"/Quattro/backups/";
+    AppConfig ReadCurrentTabDraft() {
+        AppConfig value = config_;
+        switch (currentTab_) {
+        case TabDisplay: {
+            value.showTitle = ThemedUi::IsChecked(showTitle_);
+            value.showGroup = ThemedUi::IsChecked(showGroup_);
+            value.showTag = ThemedUi::IsChecked(showTag_);
+            value.showToolboxButton = ThemedUi::IsChecked(showToolboxButton_);
+            value.showSkinButton = ThemedUi::IsChecked(showSkinButton_);
+            value.linkNameSingleLine = ThemedUi::IsChecked(linkNameSingleLine_);
+            value.showTooltip = ThemedUi::IsChecked(showTooltip_);
+            value.groupRight = ThemedUi::IsChecked(groupRight_);
+            value.tagRight = ThemedUi::IsChecked(tagRight_);
+            value.tagAlign = tagAlignIndex_ == 0 ? L"left" : (tagAlignIndex_ == 2 ? L"right" : L"center");
+            auto alpha = ParseInt(GetText(alphaEdit_));
+            value.alpha = alpha ? std::max(64, std::min(255, *alpha)) : 255;
+            value.groupWidth = ClampNumber(groupWidthEdit_, 40, 240, value.groupWidth);
+            value.tagWidth = ClampNumber(tagWidthEdit_, 40, 240, value.tagWidth);
+            break;
         }
-        draft_.httpServerEnabled = httpServer_ && httpServer_->IsRunning();
-        draft_.httpServerAutoStart = httpServerAutoStart_ && ThemedUi::IsChecked(httpServerAutoStart_);
-        draft_.httpServerLanAccess = true;
-        draft_.httpServerPort = ParseHttpPortText(GetText(httpServerAddressEdit_), draft_.httpServerPort);
-        draft_.httpServerRootPath = GetText(httpServerRootEdit_);
-        if (Trim(draft_.httpServerRootPath).empty()) {
-            draft_.httpServerRootPath = LocalHttpServerService::DefaultRootPath(httpRootBaseDirectory_).wstring();
+        case TabBehavior:
+            value.autoDock = ThemedUi::IsChecked(autoDock_);
+            value.hideWhenInactive = ThemedUi::IsChecked(hideInactive_);
+            value.hideAfterLink = ThemedUi::IsChecked(hideAfterLink_);
+            value.hideOnStart = ThemedUi::IsChecked(hideOnStart_);
+            value.hideNotifyIcon = false;
+            value.deleteConfirm = ThemedUi::IsChecked(deleteConfirm_);
+            value.saveRunCount = ThemedUi::IsChecked(saveRunCount_);
+            value.autoRun = ThemedUi::IsChecked(autoRun_);
+            value.loggingEnabled = ThemedUi::IsChecked(loggingEnabled_);
+            value.trackGitContextMenu = ThemedUi::IsChecked(trackGitContextMenu_);
+            value.trackSvnContextMenu = ThemedUi::IsChecked(trackSvnContextMenu_);
+            value.trackVsCodeContextMenu = ThemedUi::IsChecked(trackVsCodeContextMenu_);
+            value.trackTerminalContextMenu = ThemedUi::IsChecked(trackTerminalContextMenu_);
+            value.trackArchiveContextMenu = ThemedUi::IsChecked(trackArchiveContextMenu_);
+            value.dockDelay = ClampNumber(dockDelayEdit_, 0, 5000, value.dockDelay);
+            break;
+        case TabInteraction:
+            value.doubleClickToRun = ThemedUi::IsChecked(doubleClick_);
+            value.mouseEnterActiveGroup = ThemedUi::IsChecked(enterActiveGroup_);
+            value.mouseEnterActiveTag = ThemedUi::IsChecked(enterActiveTag_);
+            value.activeGroupDelay = ClampNumber(groupDelayEdit_, 0, 5000, value.activeGroupDelay);
+            value.activeTagDelay = ClampNumber(tagDelayEdit_, 0, 5000, value.activeTagDelay);
+            break;
+        case TabHotKeys:
+            value.globalHotKeysEnabled = ThemedUi::IsChecked(globalHotKeysEnabled_);
+            value.mainHotKey = draft_.mainHotKey;
+            value.processLocatorHotKey = draft_.processLocatorHotKey;
+            break;
+        case TabLinks:
+            value.openDirCommand = GetText(openDirEdit_);
+            value.helpUrl = GetText(helpUrlEdit_);
+            value.updateUrl = GetText(updateUrlEdit_);
+            value.faqUrl = GetText(faqUrlEdit_);
+            value.rewardUrl = GetText(rewardUrlEdit_);
+            break;
+        case TabWebDav:
+            value = ReadWebDavDraftFromControls();
+            break;
+        case TabHttp:
+            value = ReadHttpDraftFromControls();
+            break;
+        case TabBackup:
+        default:
+            break;
         }
-        draft_.globalHotKeysEnabled = ThemedUi::IsChecked(globalHotKeysEnabled_);
+        return value;
     }
 
     bool TrySetMainHotKey(int key) {
@@ -2327,7 +2350,7 @@ private:
     }
 
     AppConfig ReadWebDavDraftFromControls() {
-        AppConfig value = draft_;
+        AppConfig value = config_;
         value.webDavEnabled = ThemedUi::IsChecked(webDavEnabled_);
         value.webDavUrl = GetText(webDavUrlEdit_);
         value.webDavRemotePath = GetText(webDavRemotePathEdit_);
@@ -2339,13 +2362,13 @@ private:
         return value;
     }
 
-    bool SaveWebDavPasswordIfNeeded() {
+    bool SaveWebDavPasswordIfNeeded(const AppConfig& value) {
         const std::wstring password = GetText(webDavPasswordEdit_);
         if (password.empty()) {
             return true;
         }
         std::wstring error;
-        if (!WebDavCredentialService::SavePassword(draft_, password, error)) {
+        if (!WebDavCredentialService::SavePassword(value, password, error)) {
             ShowThemedMessageBox(hwnd_, instance_, theme_, error, L"WebDAV 备份", MB_OK | MB_ICONWARNING);
             return false;
         }
@@ -2366,9 +2389,29 @@ private:
         }
     }
 
-    bool PrepareWebDavOperation() {
-        ReadDraft();
-        if (!SaveWebDavPasswordIfNeeded()) {
+    void ClearMenuIconCache() {
+        if (!clearMenuIconCacheCallback_) {
+            ShowThemedMessageBox(
+                hwnd_, instance_, theme_, L"当前无法访问菜单图标缓存。", L"菜单图标缓存", MB_OK | MB_ICONWARNING);
+            return;
+        }
+        if (clearMenuIconCacheCallback_()) {
+            ShowThemedMessageBox(
+                hwnd_,
+                instance_,
+                theme_,
+                L"菜单图标缓存已清理。菜单列表和启用状态已保留；请点击启动项、标签或分组的“刷新”重新获取原生菜单图标。",
+                L"菜单图标缓存",
+                MB_OK | MB_ICONINFORMATION);
+        } else {
+            ShowThemedMessageBox(
+                hwnd_, instance_, theme_, L"菜单图标缓存清理失败，请确认缓存目录可写。", L"菜单图标缓存", MB_OK | MB_ICONWARNING);
+        }
+    }
+
+    bool PrepareWebDavOperation(AppConfig& value) {
+        value = ReadWebDavDraftFromControls();
+        if (!SaveWebDavPasswordIfNeeded(value)) {
             return false;
         }
         return true;
@@ -2416,13 +2459,13 @@ private:
         if (!EnsureWebDavIdle()) {
             return;
         }
-        if (!PrepareWebDavOperation()) {
+        AppConfig config;
+        if (!PrepareWebDavOperation(config)) {
             return;
         }
         SetWebDavBusy(true, SettingsWebDavOperation::Upload);
         const HWND target = hwnd_;
         const std::filesystem::path appDirectory = appDirectory_;
-        const AppConfig config = draft_;
         std::thread([target, appDirectory, config]() {
             auto result = std::make_unique<SettingsWebDavResult>();
             result->operation = SettingsWebDavOperation::Upload;
@@ -2441,13 +2484,13 @@ private:
         if (!EnsureWebDavIdle()) {
             return;
         }
-        if (!PrepareWebDavOperation()) {
+        AppConfig config;
+        if (!PrepareWebDavOperation(config)) {
             return;
         }
         SetWebDavBusy(true, SettingsWebDavOperation::List);
         const HWND target = hwnd_;
         const std::filesystem::path appDirectory = appDirectory_;
-        const AppConfig config = draft_;
         std::thread([target, appDirectory, config]() {
             auto result = std::make_unique<SettingsWebDavResult>();
             result->operation = SettingsWebDavOperation::List;
@@ -2667,7 +2710,7 @@ private:
     }
 
     AppConfig ReadHttpDraftFromControls() {
-        AppConfig value = draft_;
+        AppConfig value = config_;
         value.httpServerEnabled = httpServer_ && httpServer_->IsRunning();
         value.httpServerAutoStart = httpServerAutoStart_ && ThemedUi::IsChecked(httpServerAutoStart_);
         value.httpServerLanAccess = true;
@@ -2827,7 +2870,6 @@ private:
         }
         AppConfig value = ReadHttpDraftFromControls();
         value.httpServerEnabled = true;
-        draft_ = value;
         std::wstring error;
         const auto options = LocalHttpServerService::OptionsFromConfig(value, httpRootBaseDirectory_);
         const bool ok = restart ? httpServer_->Restart(options, error) : httpServer_->Start(options, error);
@@ -2840,8 +2882,6 @@ private:
             return;
         }
         httpServer_->Stop();
-        draft_ = ReadHttpDraftFromControls();
-        draft_.httpServerEnabled = false;
         UpdateHttpStatusLabel();
         ShowThemedMessageBox(hwnd_, instance_, theme_, L"HTTP 服务已停止。", L"HTTP 服务", MB_OK | MB_ICONINFORMATION);
     }
@@ -2851,20 +2891,22 @@ private:
             ShowThemedMessageBox(hwnd_, instance_, theme_, L"WebDAV 操作正在进行，请稍候完成。", L"WebDAV 备份", MB_OK | MB_ICONINFORMATION);
             return false;
         }
-        ReadDraft();
-        if (!ValidateHotKeysBeforeSave()) {
+        AppConfig next = ReadCurrentTabDraft();
+        if (currentTab_ == TabHotKeys) {
+            draft_.globalHotKeysEnabled = next.globalHotKeysEnabled;
+        }
+        if (currentTab_ == TabHotKeys && !ValidateHotKeysBeforeSave()) {
             return false;
         }
-        if (!SaveWebDavPasswordIfNeeded()) {
+        if (currentTab_ == TabWebDav && !SaveWebDavPasswordIfNeeded(next)) {
             return false;
         }
 
-        config_ = draft_;
+        config_ = next;
         if (!closeAfterCommit && applyCallback_) {
             mainHotKeyRegistered_ = applyCallback_(config_, importedData_);
             processLocatorHotKeyRegistered_ = config_.globalHotKeysEnabled && config_.processLocatorHotKey != 0;
             importedData_ = false;
-            draft_ = config_;
             UpdateHotKeyLabels();
             UpdateHttpStatusLabel();
         }
@@ -2997,14 +3039,36 @@ private:
             const ThemedSectionGeometry behaviorSystemSection = behaviorForm.section(
                 behaviorFrameLeft, behaviorSystemFrameTop, behaviorFrameWidth,
                 {behaviorForm.sectionRow({ThemedSectionItemKind::CheckBox}),
+                 behaviorForm.sectionRow({ThemedSectionItemKind::CheckBox}),
+                 behaviorForm.sectionRow({ThemedSectionItemKind::CheckBox}),
                  behaviorForm.sectionRow({ThemedSectionItemKind::CheckBox})});
             HWND behaviorSystemGroup = AddSectionFrame(TabBehavior, L"系统集成", behaviorSystemSection.frame);
             const int behaviorSystemFirstY = behaviorForm.sectionItemY(behaviorSystemSection, 0, behaviorCheckHeight);
             const int behaviorSystemSecondY = behaviorForm.sectionItemY(behaviorSystemSection, 1, behaviorCheckHeight);
+            const int behaviorSystemThirdY = behaviorForm.sectionItemY(behaviorSystemSection, 2, behaviorCheckHeight);
+            const int behaviorSystemFourthY = behaviorForm.sectionItemY(behaviorSystemSection, 3, behaviorCheckHeight);
             hideOnStart_ = CheckBox(TabBehavior, 116, L"启动后隐藏", behaviorLeft, behaviorSystemFirstY, draft_.hideOnStart, behaviorCheckWidth);
             autoRun_ = CheckBox(TabBehavior, 117, L"开机启动", behaviorRight, behaviorSystemFirstY, draft_.autoRun, behaviorCheckWidth);
-            loggingEnabled_ = CheckBox(TabBehavior, ID_LOGGING_ENABLED, L"启用日志", behaviorLeft, behaviorSystemSecondY, draft_.loggingEnabled, behaviorCheckWidth);
-            ThemedUi::BindGroupChildren(behaviorSystemGroup, {hideOnStart_, autoRun_, loggingEnabled_});
+            trackGitContextMenu_ = CheckBox(
+                TabBehavior, ID_TRACK_GIT_CONTEXT_MENU, L"自动跟踪 Git 右键菜单",
+                behaviorLeft, behaviorSystemSecondY, draft_.trackGitContextMenu, behaviorCheckWidth);
+            trackSvnContextMenu_ = CheckBox(
+                TabBehavior, ID_TRACK_SVN_CONTEXT_MENU, L"自动跟踪 SVN 右键菜单",
+                behaviorRight, behaviorSystemSecondY, draft_.trackSvnContextMenu, behaviorCheckWidth);
+            trackVsCodeContextMenu_ = CheckBox(
+                TabBehavior, ID_TRACK_VSCODE_CONTEXT_MENU, L"自动跟踪 VS Code 右键菜单",
+                behaviorLeft, behaviorSystemThirdY, draft_.trackVsCodeContextMenu, behaviorCheckWidth);
+            trackTerminalContextMenu_ = CheckBox(
+                TabBehavior, ID_TRACK_TERMINAL_CONTEXT_MENU, L"自动跟踪终端右键菜单",
+                behaviorRight, behaviorSystemThirdY, draft_.trackTerminalContextMenu, behaviorCheckWidth);
+            trackArchiveContextMenu_ = CheckBox(
+                TabBehavior, ID_TRACK_ARCHIVE_CONTEXT_MENU, L"自动跟踪压缩工具右键菜单",
+                behaviorLeft, behaviorSystemFourthY, draft_.trackArchiveContextMenu, behaviorCheckWidth);
+            loggingEnabled_ = CheckBox(TabBehavior, ID_LOGGING_ENABLED, L"启用日志", behaviorRight, behaviorSystemFourthY, draft_.loggingEnabled, behaviorCheckWidth);
+            ThemedUi::BindGroupChildren(
+                behaviorSystemGroup,
+                {hideOnStart_, autoRun_, trackGitContextMenu_, trackSvnContextMenu_,
+                 trackVsCodeContextMenu_, trackTerminalContextMenu_, trackArchiveContextMenu_, loggingEnabled_});
 
             int interactionY = pageTop;
             doubleClick_ = CheckBox(TabInteraction, 109, L"双击运行", pageLeft, interactionY, draft_.doubleClickToRun, pageColumnWidth);
@@ -3224,6 +3288,29 @@ private:
             todoOnlyFuture_ = CheckBox(TabBackup, ID_TODO_ONLY_FUTURE, L"仅未来", pageLeft + backupCheckWidth * 2, backupY, false, pageWidth - backupCheckWidth * 2);
             backupY += checkRowStep + behaviorLayout.sectionGap;
             Label(TabBackup, L"待办事项备份可用于 Quattro 恢复，也可通过 Apple 快捷指令导入提醒事项。", pageLeft, backupY, pageWidth, ThemedLabelOptions{ThemedTextAlign::Center});
+            backupY += behaviorLayout.RowStep(settingsUi.labelHeight()) + behaviorLayout.sectionGap;
+            Label(TabBackup, L"缓存维护", pageLeft, backupY, pageWidth, ThemedLabelOptions{ThemedTextAlign::Center});
+            backupY += behaviorLayout.RowStep(settingsUi.labelHeight());
+            const int clearMenuIconCacheWidth = settingsUi.buttonWidth(
+                L"清理菜单图标缓存",
+                ThemedButtonRole::Normal,
+                ThemedButtonSize::Compact,
+                ThemedButtonWidthMode::Text);
+            Button(
+                TabBackup,
+                ID_CLEAR_MENU_ICON_CACHE,
+                L"清理菜单图标缓存",
+                settingsUi.centeredGroupX(clearMenuIconCacheWidth),
+                backupY,
+                clearMenuIconCacheWidth);
+            backupY += behaviorLayout.RowStep(settingsUi.compactButtonHeight());
+            Label(
+                TabBackup,
+                L"仅清理 Git、SVN 等原生菜单图标；菜单列表与启用状态保持不变。",
+                pageLeft,
+                backupY,
+                pageWidth,
+                ThemedLabelOptions{ThemedTextAlign::Center});
 
             const ThemedUi footerUi = MakeUi();
             okButton_ = footerUi.FooterButton(IDOK, L"确定", 0, 3, true, true);
@@ -3284,6 +3371,10 @@ private:
             }
             if (LOWORD(wParam) == ID_WEBDAV_CLEAR_PASSWORD) {
                 ClearWebDavPassword();
+                return 0;
+            }
+            if (LOWORD(wParam) == ID_CLEAR_MENU_ICON_CACHE) {
+                ClearMenuIconCache();
                 return 0;
             }
             if (LOWORD(wParam) == ID_WEBDAV_UPLOAD) {
@@ -3441,6 +3532,11 @@ private:
     HWND showSkinButton_ = nullptr;
     HWND autoRun_ = nullptr;
     HWND loggingEnabled_ = nullptr;
+    HWND trackGitContextMenu_ = nullptr;
+    HWND trackSvnContextMenu_ = nullptr;
+    HWND trackVsCodeContextMenu_ = nullptr;
+    HWND trackTerminalContextMenu_ = nullptr;
+    HWND trackArchiveContextMenu_ = nullptr;
     HWND linkNameSingleLine_ = nullptr;
     HWND showTooltip_ = nullptr;
     HWND groupRight_ = nullptr;
@@ -3496,6 +3592,7 @@ private:
     bool accepted_ = false;
     bool done_ = false;
     SettingsApplyCallback applyCallback_;
+    SettingsClearMenuIconCacheCallback clearMenuIconCacheCallback_;
 };
 }
 
@@ -3540,7 +3637,8 @@ bool ShowSettingsDialog(
     LocalHttpServerService* httpServer,
     bool mainHotKeyRegistered,
     bool processLocatorHotKeyRegistered,
-    SettingsApplyCallback applyCallback) {
+    SettingsApplyCallback applyCallback,
+    SettingsClearMenuIconCacheCallback clearMenuIconCacheCallback) {
     SettingsDialog dialog(
         owner,
         instance,
@@ -3551,7 +3649,8 @@ bool ShowSettingsDialog(
         httpServer,
         mainHotKeyRegistered,
         processLocatorHotKeyRegistered,
-        std::move(applyCallback));
+        std::move(applyCallback),
+        std::move(clearMenuIconCacheCallback));
     const bool accepted = dialog.Run();
     if (importedData) {
         *importedData = dialog.webDavDataImported();

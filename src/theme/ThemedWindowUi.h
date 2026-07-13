@@ -154,4 +154,6 @@ private:
     HWND tooltip_ = nullptr;
     std::wstring tooltipText_;
     ThemedTooltipOptions tooltipOptions_{};
+    SIZE tooltipSize_{};
+    bool tooltipLayoutValid_ = false;
 };

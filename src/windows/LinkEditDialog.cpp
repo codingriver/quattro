@@ -257,10 +257,11 @@ private:
 
     void CreateControls() {
         const bool isUrl = LooksLikeUrl(link_);
-        const DialogLayoutMetrics layout = GetDialogLayoutMetrics(theme_, DialogLayoutKind::Standard);
-        const int rowStep = layout.RowStep(FieldHeight());
-        const int fieldWidth = kDialogWidth - layout.fieldX - layout.contentInsetX;
-        const int browseButtonWidth = 32;
+        const ThemedUi ui = MakeUi();
+        const DialogLayoutMetrics& layout = ui.layout();
+        const int rowStep = layout.RowStep(ui.editHeight());
+        const int fieldWidth = ui.clientWidth() - layout.fieldX - layout.contentInsetX;
+        const int browseButtonWidth = ui.scale(32);
         const int browseFieldWidth = fieldWidth - browseButtonWidth - layout.controlGapX;
         const int browseButtonX = layout.fieldX + browseFieldWidth + layout.controlGapX;
         int y = layout.contentInsetY;
@@ -270,12 +271,12 @@ private:
         y += rowStep;
         Label(isUrl ? L"网址 *" : L"路径 *", layout.contentInsetX, y, layout.labelWidth);
         pathEdit_ = Edit(IdPath, layout.fieldX, y, browseFieldWidth, link_.path);
-        Button(IdBrowseFile, L"...", browseButtonX, y + 1, browseButtonWidth);
+        Button(IdBrowseFile, L"...", browseButtonX, y + ui.scale(1), browseButtonWidth);
 
         y += rowStep;
         Label(L"图标", layout.contentInsetX, y, layout.labelWidth);
         iconEdit_ = Edit(IdIcon, layout.fieldX, y, browseFieldWidth, link_.icon.empty() ? (isUrl ? L"#url" : L"默认系统缓存图标") : link_.icon);
-        Button(IdBrowseFolder, L"...", browseButtonX, y + 1, browseButtonWidth);
+        Button(IdBrowseFolder, L"...", browseButtonX, y + ui.scale(1), browseButtonWidth);
 
         y += rowStep;
         Label(L"参数", layout.contentInsetX, y, layout.labelWidth);
@@ -290,21 +291,21 @@ private:
         adminOptions.checked = link_.isAdmin;
         adminCheck_ = MakeUi().CheckBox(
             IdAdmin, isUrl ? L"以隐私模式运行" : L"以管理员身份运行",
-            layout.fieldX, y + 4, 220, adminOptions);
+            layout.fieldX, y + ui.scale(4), ui.scale(220), adminOptions);
 
         y += rowStep;
         Label(L"颜色", layout.contentInsetX, y, layout.labelWidth);
         std::wstring colorText = link_.isCustomColor && !link_.customColor.empty() ? link_.customColor : L"#ff000000";
         customColorEdit_ = Edit(IdCustomColorEdit, layout.fieldX, y, browseFieldWidth, colorText);
-        Button(IdPickColor, L"...", browseButtonX, y + 1, browseButtonWidth);
+        Button(IdPickColor, L"...", browseButtonX, y + ui.scale(1), browseButtonWidth);
 
         y += rowStep;
         Label(L"快捷键", layout.contentInsetX, y, layout.labelWidth);
         const int hotKeyClearWidth = layout.footerButtonWidth;
         const int hotKeyWidth = fieldWidth - hotKeyClearWidth - layout.controlGapX;
         hotKeyText_ = MakeUi().Button(IdHotKeyCapture, LinkHotKeyText(capturedHotKey_).c_str(),
-                                      layout.fieldX, y + 1, ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, hotKeyWidth);
-        Button(IdHotKeyClear, L"清除", layout.fieldX + hotKeyWidth + layout.controlGapX, y + 1, hotKeyClearWidth);
+                                      layout.fieldX, y + ui.scale(1), ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, hotKeyWidth);
+        Button(IdHotKeyClear, L"清除", layout.fieldX + hotKeyWidth + layout.controlGapX, y + ui.scale(1), hotKeyClearWidth);
 
         y += rowStep;
         Label(L"备注", layout.contentInsetX, y, layout.labelWidth);
@@ -315,20 +316,12 @@ private:
         remarkEdit_ = MakeUi().Edit(IdRemark, remarkFrame, link_.remark, remarkOptions);
 
         const int footerY = layout.FooterY(remarkFrame.bottom);
-        Button(IdOk, L"确定", layout.FooterButtonX(kDialogWidth, 0, 2), footerY, layout.footerButtonWidth);
-        Button(IdCancel, L"取消", layout.FooterButtonX(kDialogWidth, 1, 2), footerY, layout.footerButtonWidth);
-    }
-
-    int FieldHeight() const {
-        return ThemedControls::EditFrameHeight(theme_);
-    }
-
-    int ButtonHeight() const {
-        return ThemedControls::ButtonHeight(theme_);
-    }
-
-    int RowStep() const {
-        return FieldHeight() + static_cast<int>(theme_.metric(L"global", L"itemGap", 8.0f));
+        ui.Button(IdOk, L"确定", layout.FooterButtonX(ui.clientWidth(), 0, 2), footerY,
+                        ThemedButtonRole::Primary, ThemedButtonSize::Large,
+                        ThemedButtonWidthMode::Fixed, layout.footerButtonWidth, true);
+        ui.Button(IdCancel, L"取消", layout.FooterButtonX(ui.clientWidth(), 1, 2), footerY,
+                        ThemedButtonRole::Normal, ThemedButtonSize::Large,
+                        ThemedButtonWidthMode::Fixed, layout.footerButtonWidth);
     }
 
     void AddType(const wchar_t* text, int type) {

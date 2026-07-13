@@ -168,10 +168,10 @@ private:
     }
 
     void CreateControls() {
-        const DialogLayoutMetrics layout = GetDialogLayoutMetrics(theme_, DialogLayoutKind::Standard);
         const ThemedUi ui = windowUi_->ui();
-        const int rowStep = layout.RowStep(FieldHeight());
-        const int fieldWidth = kDialogWidth - layout.fieldX - layout.contentInsetX;
+        const DialogLayoutMetrics& layout = ui.layout();
+        const int rowStep = layout.RowStep(ui.editHeight());
+        const int fieldWidth = ui.clientWidth() - layout.fieldX - layout.contentInsetX;
         int y = layout.contentInsetY;
         Label(L"名称", layout.contentInsetX, y, layout.labelWidth);
         nameEdit_ = Edit(IdName, layout.fieldX, y, fieldWidth, link_.name);
@@ -185,14 +185,10 @@ private:
         remarkEdit_ = Edit(IdRemark, layout.fieldX, y, fieldWidth, link_.remark, ThemedEditMode::MultiLine);
 
         const int footerY = layout.FooterY(y + ui.editHeight(ThemedEditMode::MultiLine));
-        ui.Button(IdOk, L"确定", layout.FooterButtonX(kDialogWidth, 0, 2), footerY,
-                  ThemedButtonRole::Primary, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, layout.footerButtonWidth, true);
-        ui.Button(IdCancel, L"取消", layout.FooterButtonX(kDialogWidth, 1, 2), footerY,
-                  ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, layout.footerButtonWidth);
-    }
-
-    int FieldHeight() const {
-        return ThemedControls::EditFrameHeight(theme_);
+        ui.Button(IdOk, L"确定", layout.FooterButtonX(ui.clientWidth(), 0, 2), footerY,
+                  ThemedButtonRole::Primary, ThemedButtonSize::Large, ThemedButtonWidthMode::Fixed, layout.footerButtonWidth, true);
+        ui.Button(IdCancel, L"取消", layout.FooterButtonX(ui.clientWidth(), 1, 2), footerY,
+                  ThemedButtonRole::Normal, ThemedButtonSize::Large, ThemedButtonWidthMode::Fixed, layout.footerButtonWidth);
     }
 
     void Accept() {

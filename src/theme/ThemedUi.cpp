@@ -44,7 +44,99 @@ const wchar_t* LinkState(ThemedLinkRole role) {
     default: return L"normal";
     }
 }
+
+UINT DpiForScreenPoint(POINT screenPoint, HWND fallbackWindow) {
+    const HMONITOR monitor = MonitorFromPoint(screenPoint, MONITOR_DEFAULTTONEAREST);
+    if (fallbackWindow && MonitorFromWindow(fallbackWindow, MONITOR_DEFAULTTONEAREST) == monitor) {
+        const UINT dpi = GetDpiForWindow(fallbackWindow);
+        if (dpi) return dpi;
+    }
+
+    using GetDpiForMonitorFn = HRESULT(WINAPI*)(HMONITOR, int, UINT*, UINT*);
+    static const GetDpiForMonitorFn getDpiForMonitor = []() -> GetDpiForMonitorFn {
+        HMODULE module = GetModuleHandleW(L"Shcore.dll");
+        if (!module) module = LoadLibraryW(L"Shcore.dll");
+        return module
+            ? reinterpret_cast<GetDpiForMonitorFn>(GetProcAddress(module, "GetDpiForMonitor"))
+            : nullptr;
+    }();
+    if (getDpiForMonitor && monitor) {
+        UINT dpiX = 0;
+        UINT dpiY = 0;
+        if (SUCCEEDED(getDpiForMonitor(monitor, 0, &dpiX, &dpiY)) && dpiY) {
+            return dpiY;
+        }
+    }
+
+    const UINT dpi = fallbackWindow ? GetDpiForWindow(fallbackWindow) : GetDpiForSystem();
+    return dpi ? dpi : USER_DEFAULT_SCREEN_DPI;
+}
 } // namespace
+
+ThemedMenuFontCache::~ThemedMenuFontCache() {
+    Reset();
+}
+
+HFONT ThemedMenuFontCache::FontForScreenPoint(POINT screenPoint, HWND fallbackWindow) {
+    return FontForDpi(DpiForScreenPoint(screenPoint, fallbackWindow));
+}
+
+HFONT ThemedMenuFontCache::FontForDpi(UINT dpi) {
+    dpi = dpi ? dpi : USER_DEFAULT_SCREEN_DPI;
+    if (font_ && dpi_ == dpi) {
+        return font_;
+    }
+
+    Reset();
+    dpi_ = dpi;
+
+    NONCLIENTMETRICSW metrics{};
+    metrics.cbSize = sizeof(metrics);
+    if (!SystemParametersInfoForDpi(SPI_GETNONCLIENTMETRICS, sizeof(metrics), &metrics, 0, dpi_)) {
+        metrics = {};
+        metrics.cbSize = sizeof(metrics);
+        if (SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(metrics), &metrics, 0)) {
+            const UINT systemDpi = GetDpiForSystem();
+            const UINT sourceDpi = systemDpi ? systemDpi : USER_DEFAULT_SCREEN_DPI;
+            metrics.lfMenuFont.lfHeight = MulDiv(metrics.lfMenuFont.lfHeight, dpi_, sourceDpi);
+            metrics.lfMenuFont.lfWidth = MulDiv(metrics.lfMenuFont.lfWidth, dpi_, sourceDpi);
+        }
+    }
+    if (metrics.lfMenuFont.lfFaceName[0] != L'\0') {
+        font_ = CreateFontIndirectW(&metrics.lfMenuFont);
+    }
+    if (!font_) {
+        font_ = ThemedControls::CreateDialogFont(dpi_);
+    }
+    return font_;
+}
+
+SIZE ThemedMenuFontCache::MeasureText(HWND owner, const std::wstring& text) const {
+    SIZE size{};
+    if (!font_ || text.empty()) {
+        return size;
+    }
+    HDC dc = GetDC(owner);
+    if (!dc) {
+        return size;
+    }
+    HGDIOBJ oldFont = SelectObject(dc, font_);
+    GetTextExtentPoint32W(dc, text.c_str(), static_cast<int>(text.size()), &size);
+    SelectObject(dc, oldFont);
+    ReleaseDC(owner, dc);
+    return size;
+}
+
+int ThemedMenuFontCache::Scale(int logicalPixels) const {
+    return MulDiv(logicalPixels, static_cast<int>(dpi_), USER_DEFAULT_SCREEN_DPI);
+}
+
+void ThemedMenuFontCache::Reset() {
+    if (font_) {
+        DeleteObject(font_);
+        font_ = nullptr;
+    }
+}
 
 ThemedEditFrameCollection::Entry* ThemedEditFrameCollection::Find(HWND child) {
     auto it = std::find_if(entries_.begin(), entries_.end(), [child](const Entry& entry) {
@@ -670,6 +762,9 @@ int ThemedUi::buttonHeight(ThemedButtonRole role, ThemedButtonSize size) const {
     if (size == ThemedButtonSize::Compact) {
         return scale(ThemedControls::CompactButtonHeight(theme_));
     }
+    if (size == ThemedButtonSize::Large) {
+        return scale(static_cast<int>(theme_.metric(L"button", L"largeHeight", 32.0f)));
+    }
     return scale(ThemedControls::ButtonHeight(theme_));
 }
 
@@ -691,6 +786,16 @@ int ThemedUi::toggleHeight() const {
 
 int ThemedUi::tabButtonHeight() const {
     return scale(ThemedControls::TabButtonHeight(theme_));
+}
+
+int ThemedUi::comboBoxHeight() const {
+    return scale(ThemedControls::ComboBoxHeight(theme_));
+}
+
+int ThemedUi::listItemHeight(bool twoLines) const {
+    return scale(twoLines
+        ? ThemedControls::ListBoxTwoLineItemHeight(theme_)
+        : ThemedControls::ListBoxItemHeight(theme_));
 }
 
 int ThemedUi::tabButtonWidth(const std::wstring& text) const {
@@ -1514,7 +1619,7 @@ HWND ThemedUi::PrimaryButton(int id, const std::wstring& text, int x, int y, int
 // 返回值：创建成功时返回底部按钮 HWND，失败时返回 nullptr。
 HWND ThemedUi::FooterButton(int id, const std::wstring& text, int buttonIndex, int buttonCount, bool primary, bool defaultButton) const {
     const ThemedButtonRole role = primary ? ThemedButtonRole::Primary : ThemedButtonRole::Normal;
-    const int height = buttonHeight(role, ThemedButtonSize::Normal);
+    const int height = footerButtonHeight();
     const int x = footerButtonX(buttonIndex, buttonCount);
     const int y = footerButtonY(height);
     return Button(
@@ -1523,7 +1628,7 @@ HWND ThemedUi::FooterButton(int id, const std::wstring& text, int buttonIndex, i
         x,
         y,
         role,
-        ThemedButtonSize::Normal,
+        ThemedButtonSize::Large,
         ThemedButtonWidthMode::Fixed,
         layout_.footerButtonWidth,
         defaultButton);

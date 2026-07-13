@@ -8,6 +8,7 @@
 #include "MenuCatalog.h"
 #include "Models.h"
 #include "PluginRegistry.h"
+#include "ShellContextMenuCacheService.h"
 #include "Storage.h"
 #include "SystemFunctions.h"
 #include "Theme.h"
@@ -29,6 +30,7 @@
 #include <vector>
 
 class ThemedWindowUi;
+class ThemedMenuFontCache;
 
 constexpr UINT WM_QUATTRO_WAKEUP = WM_APP + 0x65;
 constexpr UINT WM_QUATTRO_TRAY = WM_APP + 0x66;
@@ -121,10 +123,16 @@ private:
     };
 
     struct MenuItemData {
+        ~MenuItemData() {
+            if (nativeIconBitmap) {
+                DeleteObject(nativeIconBitmap);
+            }
+        }
         std::wstring text;
         int icon = 0;
         int systemImageIndex = -1;
         int stockIcon = -1;
+        HBITMAP nativeIconBitmap = nullptr;
         bool disabled = false;
         bool submenu = false;
         bool separator = false;
@@ -182,7 +190,9 @@ private:
     void OpenContainingFolder(int linkId);
     void CopyLinkPath(int linkId);
     bool LinkCenterScreenPoint(int linkId, POINT& screenPoint) const;
+    ShellContextMenuTrackingOptions TrackedShellMenuOptions() const;
     void ShowWindowsContextMenu(int linkId, POINT screenPoint);
+    void ExecuteTrackedShellMenuAction(std::size_t index);
     void CreateDesktopShortcut(int linkId);
     void OpenSystemProperties(int linkId);
     void ClearCurrentTagLinks();
@@ -206,6 +216,9 @@ private:
     void ResetLayoutToDefaults();
     void ClearIconCache();
     void RefreshAllIcons();
+    void RefreshTagLinks(int tagId);
+    void RefreshGroupLinks(int groupId);
+    void RefreshLinkResources(Link& link);
     void RefreshLinkIcon(int linkId);
     void RequestInitialUrlIconDownload(const Link& link);
     void OnUrlIconDownloaded(int linkId, bool success);
@@ -255,6 +268,11 @@ private:
     void ShowToolMenu(POINT screenPoint);
     void ShowLinkMenu(int linkId, POINT screenPoint);
     void AppendLinkActionItems(HMENU menu, Link* link, bool includeNativeMenuItem);
+    void AppendTrackedShellMenuItems(HMENU menu, const Link& link);
+    void AppendTrackedShellMenuItems(
+        HMENU menu,
+        const std::vector<ShellContextMenuItem>& items,
+        std::vector<std::wstring>& path);
     void AppendBuiltinSystemContextItems(HMENU menu, const Link& link);
     void ExecuteBuiltinSystemContextAction(int linkId, BuiltinSystemContextAction action);
     void RestoreLegacyBuiltinSystemFunctionKeys();
@@ -319,10 +337,11 @@ private:
     float MeasureTextWidth(const std::wstring& text, IDWriteTextFormat* format, float maxWidth = 1000.0f) const;
     void DrawTextBlock(const std::wstring& text, IDWriteTextFormat* format, const D2D1_RECT_F& rect, const Color& color);
     void DrawLinkName(const std::wstring& text, IDWriteTextFormat* format, const D2D1_RECT_F& rect, const Color& color);
-    void ResetMenuVisuals();
+    void ResetMenuVisuals(POINT screenPoint);
     void AppendThemedMenuItem(HMENU menu, UINT flags, UINT_PTR id, const std::wstring& text, bool submenu = false, int systemImageIndex = -1, int stockIcon = -1, int menuIcon = 0);
     void InsertThemedMenuItem(HMENU menu, UINT position, UINT flags, UINT_PTR id, const std::wstring& text, bool submenu = false, int systemImageIndex = -1, int stockIcon = -1, int menuIcon = 0);
     void AppendThemedStateMenuItem(HMENU menu, UINT flags, UINT_PTR id, const std::wstring& text, bool active, int menuIcon = 0, bool submenu = false);
+    void AppendThemedTrackedMenuItem(HMENU menu, UINT flags, UINT_PTR id, const ShellContextMenuItem& source, bool submenu);
     void AppendThemedSeparator(HMENU menu);
     const MenuItemData* ThemedMenuItemFromData(ULONG_PTR itemData) const;
     bool MeasureThemedMenuItem(MEASUREITEMSTRUCT* measure);
@@ -391,6 +410,7 @@ private:
     ConfigService& configService_;
     StorageService& storageService_;
     PluginRegistry pluginRegistry_;
+    ShellContextMenuCacheService shellContextMenuCache_;
     AppConfig config_;
     AppModel model_;
     Theme theme_;
@@ -416,6 +436,7 @@ private:
     std::vector<int> menuGroupTargetIds_;
     std::vector<std::wstring> menuToolEngines_;
     std::vector<bool> menuToolEnabled_;
+    std::vector<ShellContextMenuLocator> menuTrackedShellCommands_;
     std::vector<std::pair<int, int>> registeredLinkHotKeys_;
     Link clipboardLink_;
     bool hasClipboardLink_ = false;
@@ -486,5 +507,6 @@ private:
     IDWriteTextFormat* navSelectedFormat_ = nullptr;
     IDWriteTextFormat* smallFormat_ = nullptr;
     std::unordered_map<std::wstring, ID2D1Bitmap*> uiBitmapCache_;
+    std::unique_ptr<ThemedMenuFontCache> menuFont_;
     std::vector<std::unique_ptr<MenuItemData>> activeMenuItems_;
 };

@@ -1042,7 +1042,7 @@ void DrawToggle(const Theme& theme, const DRAWITEMSTRUCT* draw) {
     DeleteObject(bg);
 
     const int trackWidth = static_cast<int>(theme.metric(L"toggle", L"width", 38.0f));
-    const int trackHeight = static_cast<int>(theme.metric(L"toggle", L"height", 22.0f));
+    const int trackHeight = static_cast<int>(theme.metric(L"toggle", L"height", 24.0f));
     const int thumbSize = static_cast<int>(theme.metric(L"toggle", L"thumbSize", 18.0f));
     RECT track{rect.left, rect.top + (rect.bottom - rect.top - trackHeight) / 2, rect.left + trackWidth, 0};
     track.bottom = track.top + trackHeight;
@@ -1451,7 +1451,7 @@ RECT TextRectFromMetrics(const Theme& theme, const wchar_t* component, RECT fram
 }
 
 int ButtonHeight(const Theme& theme) {
-    return static_cast<int>(theme.metric(L"button", L"height", 30.0f));
+    return static_cast<int>(theme.metric(L"button", L"height", 28.0f));
 }
 
 int CompactButtonHeight(const Theme& theme) {
@@ -1519,7 +1519,7 @@ int CheckBoxHeight(const Theme& theme) {
 }
 
 int ToggleHeight(const Theme& theme) {
-    return static_cast<int>(theme.metric(L"toggle", L"height", 22.0f));
+    return static_cast<int>(theme.metric(L"toggle", L"height", 24.0f));
 }
 
 int RadioButtonHeight(const Theme& theme) {
@@ -1570,7 +1570,7 @@ RECT TabGroupInnerRect(const Theme& theme, RECT frame) {
 }
 
 int ComboBoxHeight(const Theme& theme) {
-    return std::max(1, EditFrameHeight(theme) - 6);
+    return std::max(1, EditFrameHeight(theme));
 }
 
 int ComboBoxItemHeight(const Theme& theme) {
@@ -1593,6 +1593,10 @@ RECT ComboBoxItemTextRect(const Theme& theme, RECT frame) {
 
 int ListBoxItemHeight(const Theme& theme) {
     return static_cast<int>(theme.metric(L"listItem", L"height", 28.0f));
+}
+
+int ListBoxTwoLineItemHeight(const Theme& theme) {
+    return static_cast<int>(theme.metric(L"listItem", L"twoLineHeight", 48.0f));
 }
 
 RECT ListItemTextRect(const Theme& theme, RECT frame) {
@@ -1620,7 +1624,7 @@ RECT LabelTextRect(const Theme& theme, RECT frame) {
 }
 
 int FieldFrameHeight(const Theme& theme) {
-    return static_cast<int>(theme.metric(L"field", L"height", 32.0f));
+    return static_cast<int>(theme.metric(L"field", L"height", 28.0f));
 }
 
 RECT FieldTextRect(const Theme& theme, RECT frame) {
@@ -2081,7 +2085,7 @@ HWND CreateListBox(HINSTANCE instance, HWND parent, int id, int x, int y, int wi
 }
 
 int EditFrameHeight(const Theme& theme) {
-    return static_cast<int>(theme.metric(L"edit", L"height", 32.0f));
+    return static_cast<int>(theme.metric(L"edit", L"height", 28.0f));
 }
 
 int EditPaddingX(const Theme& theme) {

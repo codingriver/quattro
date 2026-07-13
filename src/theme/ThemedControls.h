@@ -255,6 +255,7 @@ int ComboBoxDropdownHeight(const Theme& theme);
 int ComboBoxContentWidth(const Theme& theme, int textWidth);
 RECT ComboBoxItemTextRect(const Theme& theme, RECT frame);
 int ListBoxItemHeight(const Theme& theme);
+int ListBoxTwoLineItemHeight(const Theme& theme);
 RECT ListItemTextRect(const Theme& theme, RECT frame);
 RECT ListFrameInnerRect(const Theme& theme, RECT frame);
 int LabelHeight(const Theme& theme);

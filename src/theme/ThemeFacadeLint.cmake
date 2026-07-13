@@ -27,6 +27,49 @@ foreach(SOURCE_FILE IN LISTS WINDOW_SOURCES)
     endif()
 endforeach()
 
+# Keep the public 4px-grid scale enforceable. These checks intentionally target
+# the shared theme and known legacy layout formulas instead of banning ordinary
+# business numbers such as IDs, widths, or data-dependent visual content.
+set(DEFAULT_THEME "${SOURCE_DIR}/theme/default.xml")
+if(EXISTS "${DEFAULT_THEME}")
+    file(READ "${DEFAULT_THEME}" DEFAULT_THEME_TEXT)
+    foreach(REQUIRED_METRIC IN ITEMS
+        "captionLineHeight\" value=\"16"
+        "bodyLineHeight\" value=\"20"
+        "titleLineHeight\" value=\"24"
+        "smallControlHeight\" value=\"24"
+        "mediumControlHeight\" value=\"28"
+        "largeControlHeight\" value=\"32"
+        "denseGap\" value=\"4"
+        "compactRowGap\" value=\"6"
+        "standardRowGap\" value=\"8"
+        "sectionGap\" value=\"12"
+        "majorSectionGap\" value=\"16")
+        string(FIND "${DEFAULT_THEME_TEXT}" "${REQUIRED_METRIC}" REQUIRED_METRIC_INDEX)
+        if(REQUIRED_METRIC_INDEX LESS 0)
+            message(FATAL_ERROR "Theme scale violation: missing canonical metric ${REQUIRED_METRIC}")
+        endif()
+    endforeach()
+endif()
+
+set(BUILTIN_TOOLS_SOURCE "${WINDOWS_DIR}/BuiltinTools.cpp")
+if(EXISTS "${BUILTIN_TOOLS_SOURCE}")
+    file(READ "${BUILTIN_TOOLS_SOURCE}" BUILTIN_TOOLS_TEXT)
+    string(FIND "${BUILTIN_TOOLS_TEXT}" "max(40, ThemedControls::ListBoxItemHeight" LEGACY_RESULT_ROW)
+    if(LEGACY_RESULT_ROW GREATER_EQUAL 0)
+        message(FATAL_ERROR "Theme layout violation: BuiltinTools must use the shared two-line list item height.")
+    endif()
+endif()
+
+set(TODO_SOURCE "${WINDOWS_DIR}/TodoEditDialog.cpp")
+if(EXISTS "${TODO_SOURCE}")
+    file(READ "${TODO_SOURCE}" TODO_TEXT)
+    string(FIND "${TODO_TEXT}" "MetricInt(L\"global\", L\"rowGap\"" LEGACY_TODO_ROW_GAP)
+    if(LEGACY_TODO_ROW_GAP GREATER_EQUAL 0)
+        message(FATAL_ERROR "Theme layout violation: TodoEditDialog must use DialogLayoutMetrics row spacing.")
+    endif()
+endif()
+
 set(SETTINGS_SOURCE "${WINDOWS_DIR}/SimpleDialogs.cpp")
 if(EXISTS "${SETTINGS_SOURCE}")
     file(READ "${SETTINGS_SOURCE}" SIMPLE_DIALOGS_TEXT)

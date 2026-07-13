@@ -88,6 +88,7 @@ int MenuIconFor(UINT_PTR id, const std::wstring& text) {
     case ID_MENU_REFRESH_LINK_ICON:
     case ID_MENU_REFRESH_PAGE_ICONS:
     case ID_MENU_REFRESH_ALL_ICONS:
+    case ID_MENU_REFRESH_GROUP_LINKS:
     case ID_MENU_REPAIR_LINK: return MenuIconRefresh;
     case ID_MENU_CLEAR_ICON_CACHE: return MenuIconClear;
     case ID_MENU_MOVE_UP:

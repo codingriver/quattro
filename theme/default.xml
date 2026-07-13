@@ -54,14 +54,25 @@
     </Palette>
 
     <Component name="global">
-        <Metric name="controlHeight" value="30"/>
+        <!-- 4px-grid UI scale: text 16/20/24, controls 24/28/32, gaps 4/6/8/12/16. -->
+        <Metric name="captionLineHeight" value="16"/>
+        <Metric name="bodyLineHeight" value="20"/>
+        <Metric name="titleLineHeight" value="24"/>
+        <Metric name="smallControlHeight" value="24"/>
+        <Metric name="mediumControlHeight" value="28"/>
+        <Metric name="largeControlHeight" value="32"/>
+        <Metric name="denseGap" value="4"/>
+        <Metric name="compactRowGap" value="6"/>
+        <Metric name="standardRowGap" value="8"/>
+        <Metric name="sectionGap" value="12"/>
+        <Metric name="majorSectionGap" value="16"/>
+        <Metric name="controlHeight" value="28"/>
         <Metric name="compactControlHeight" value="24"/>
-        <Metric name="fieldHeight" value="32"/>
+        <Metric name="fieldHeight" value="28"/>
         <Metric name="paddingX" value="10"/>
         <Metric name="paddingY" value="6"/>
         <Metric name="itemGap" value="8"/>
         <Metric name="rowGap" value="6"/>
-        <Metric name="sectionGap" value="16"/>
         <State name="normal" text="@text" bg="@surface"/>
         <State name="success" text="@success" bg="@successSoft"/>
         <State name="warning" text="@warning" bg="@warningSoft"/>
@@ -72,10 +83,10 @@
         <State name="normal" bg="@background" border="@border"/>
     </Component>
     <Component name="title">
-        <Metric name="height" value="34"/>
+        <Metric name="height" value="32"/>
         <Metric name="iconSize" value="20"/>
         <Metric name="iconLeft" value="9"/>
-        <Metric name="iconTop" value="7"/>
+        <Metric name="iconTop" value="6"/>
         <Metric name="textGap" value="7"/>
         <Metric name="textEnd" value="178"/>
         <State name="normal" bg="@surface" text="@accent" subtext="@mutedText" line="@line"/>
@@ -102,7 +113,7 @@
         <State name="hover" bg="@dangerSoft" icon="@danger"/>
     </Component>
     <Component name="majorNav">
-        <Metric name="height" value="34"/>
+        <Metric name="height" value="32"/>
         <State name="normal" bg="@surface" line="@line"/>
     </Component>
     <Component name="majorNavItem">
@@ -140,7 +151,7 @@
     <Component name="minorNavItem">
         <Metric name="topInset" value="2"/>
         <Metric name="bottomInset" value="2"/>
-        <Metric name="height" value="32"/>
+        <Metric name="height" value="28"/>
         <Metric name="gap" value="2"/>
         <Metric name="textInsetX" value="10"/>
         <Metric name="accentWidth" value="3"/>
@@ -243,8 +254,8 @@
         <Metric name="listTopInset" value="6"/>
         <Metric name="listBottomInset" value="6"/>
         <Metric name="listGapX" value="0"/>
-        <Metric name="listGapY" value="2"/>
-        <Metric name="listMinHeight" value="34"/>
+        <Metric name="listGapY" value="4"/>
+        <Metric name="listMinHeight" value="32"/>
         <Metric name="listHeightExtra" value="12"/>
         <Metric name="gridLeftInset" value="8"/>
         <Metric name="gridTopInset" value="8"/>
@@ -252,7 +263,7 @@
         <Metric name="gridGapX" value="4"/>
         <Metric name="gridGapY" value="4"/>
         <Metric name="compactGapX" value="6"/>
-        <Metric name="compactGapY" value="6"/>
+        <Metric name="compactGapY" value="4"/>
         <Metric name="compactPreferredWidth" value="128"/>
         <Metric name="compactMinWidth" value="72"/>
         <Metric name="customColorWidth" value="3"/>
@@ -296,11 +307,10 @@
         <State name="normal" bg="@surface"/>
     </Component>
     <Component name="menuItem">
-        <Metric name="height" value="30"/>
+        <Metric name="height" value="28"/>
         <Metric name="widthBase" value="54"/>
         <Metric name="minTextWidth" value="64"/>
         <Metric name="maxTextWidth" value="360"/>
-        <Metric name="charWidth" value="13"/>
         <Metric name="hoverInsetX" value="4"/>
         <Metric name="hoverInsetY" value="3"/>
         <Metric name="iconLeft" value="8"/>
@@ -356,8 +366,8 @@
         <Metric name="miniLabelGap" value="0"/>
         <Metric name="miniRowGap" value="8"/>
         <Metric name="miniSectionGap" value="12"/>
-        <Metric name="miniFooterGap" value="14"/>
-        <Metric name="miniFooterInsetY" value="18"/>
+        <Metric name="miniFooterGap" value="12"/>
+        <Metric name="miniFooterInsetY" value="16"/>
         <Metric name="miniControlGapX" value="12"/>
         <Metric name="miniFooterButtonWidth" value="72"/>
         <Metric name="miniFooterButtonGap" value="16"/>
@@ -366,7 +376,7 @@
         <Metric name="overlayLabelWidth" value="0"/>
         <Metric name="overlayLabelGap" value="0"/>
         <Metric name="overlayRowGap" value="8"/>
-        <Metric name="overlaySectionGap" value="14"/>
+        <Metric name="overlaySectionGap" value="12"/>
         <Metric name="overlayFooterGap" value="8"/>
         <Metric name="overlayFooterInsetY" value="16"/>
         <Metric name="overlayControlGapX" value="10"/>
@@ -400,12 +410,12 @@
     <Component name="edit">
         <Metric name="radius" value="7"/>
         <Metric name="borderWidth" value="1"/>
-        <Metric name="height" value="32"/>
+        <Metric name="height" value="28"/>
         <Metric name="paddingX" value="9"/>
-        <Metric name="textHeight" value="14"/>
+        <Metric name="textHeight" value="20"/>
         <Metric name="textOffsetY" value="0"/>
         <Metric name="singleLineFontSizePx" value="14"/>
-        <Metric name="singleLineControlHeight" value="24"/>
+        <Metric name="singleLineControlHeight" value="20"/>
         <Metric name="singleLineOffsetY" value="0"/>
         <Metric name="multiLinePaddingTop" value="7"/>
         <Metric name="multiLinePaddingBottom" value="7"/>
@@ -420,7 +430,7 @@
         <Metric name="radius" value="7"/>
         <Metric name="borderWidth" value="1"/>
         <Metric name="paddingX" value="9"/>
-        <Metric name="itemHeight" value="26"/>
+        <Metric name="itemHeight" value="28"/>
         <Metric name="textHeight" value="20"/>
         <Metric name="textOffsetY" value="1"/>
         <Metric name="arrowWidth" value="28"/>
@@ -437,7 +447,7 @@
     <Component name="tabButton">
         <Metric name="radius" value="8"/>
         <Metric name="borderWidth" value="1"/>
-        <Metric name="height" value="30"/>
+        <Metric name="height" value="28"/>
         <Metric name="paddingX" value="12"/>
         <Metric name="minTextWidth" value="18"/>
         <Metric name="textHeight" value="20"/>
@@ -459,8 +469,9 @@
     <Component name="button">
         <Metric name="radius" value="7"/>
         <Metric name="borderWidth" value="1"/>
-        <Metric name="height" value="30"/>
+        <Metric name="height" value="28"/>
         <Metric name="compactHeight" value="24"/>
+        <Metric name="largeHeight" value="32"/>
         <Metric name="paddingX" value="12"/>
         <Metric name="textHeight" value="20"/>
         <Metric name="textOffsetY" value="0"/>
@@ -501,7 +512,7 @@
     </Component>
     <Component name="toggle">
         <Metric name="width" value="38"/>
-        <Metric name="height" value="22"/>
+        <Metric name="height" value="24"/>
         <Metric name="thumbSize" value="18"/>
         <Metric name="gap" value="8"/>
         <Metric name="textHeight" value="20"/>
@@ -532,6 +543,7 @@
     </Component>
     <Component name="listItem">
         <Metric name="height" value="28"/>
+        <Metric name="twoLineHeight" value="48"/>
         <Metric name="paddingX" value="8"/>
         <Metric name="textHeight" value="20"/>
         <Metric name="textOffsetY" value="1"/>

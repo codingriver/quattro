@@ -25,6 +25,7 @@ struct DialogLayoutMetrics {
     int controlGapX = 12;
     int footerButtonWidth = 76;
     int footerButtonGap = 16;
+    int footerButtonHeight = 32;
     int fieldX = 104;
 
     int RowStep(int controlHeight) const {
@@ -72,6 +73,7 @@ inline DialogLayoutMetrics ScaleDialogLayoutMetrics(DialogLayoutMetrics metrics,
     metrics.controlGapX = ScaleDialogMetric(metrics.controlGapX, dpi);
     metrics.footerButtonWidth = ScaleDialogMetric(metrics.footerButtonWidth, dpi);
     metrics.footerButtonGap = ScaleDialogMetric(metrics.footerButtonGap, dpi);
+    metrics.footerButtonHeight = ScaleDialogMetric(metrics.footerButtonHeight, dpi);
     metrics.fieldX = metrics.contentInsetX + metrics.labelWidth + metrics.labelGap;
     return metrics;
 }
@@ -103,8 +105,8 @@ inline DialogLayoutMetrics GetDialogLayoutMetrics(const Theme& theme, DialogLayo
         metrics.labelGap = DialogLayoutMetric(theme, L"miniLabelGap", 0.0f);
         metrics.rowGap = DialogLayoutMetric(theme, L"miniRowGap", 8.0f);
         metrics.sectionGap = DialogLayoutMetric(theme, L"miniSectionGap", 12.0f);
-        metrics.footerGap = DialogLayoutMetric(theme, L"miniFooterGap", 14.0f);
-        metrics.footerInsetY = DialogLayoutMetric(theme, L"miniFooterInsetY", 18.0f);
+        metrics.footerGap = DialogLayoutMetric(theme, L"miniFooterGap", 12.0f);
+        metrics.footerInsetY = DialogLayoutMetric(theme, L"miniFooterInsetY", 16.0f);
         metrics.controlGapX = DialogLayoutMetric(theme, L"miniControlGapX", 12.0f);
         metrics.footerButtonWidth = DialogLayoutMetric(theme, L"miniFooterButtonWidth", 72.0f);
         metrics.footerButtonGap = DialogLayoutMetric(theme, L"miniFooterButtonGap", 16.0f);
@@ -115,7 +117,7 @@ inline DialogLayoutMetrics GetDialogLayoutMetrics(const Theme& theme, DialogLayo
         metrics.labelWidth = DialogLayoutMetric(theme, L"overlayLabelWidth", 0.0f);
         metrics.labelGap = DialogLayoutMetric(theme, L"overlayLabelGap", 0.0f);
         metrics.rowGap = DialogLayoutMetric(theme, L"overlayRowGap", 8.0f);
-        metrics.sectionGap = DialogLayoutMetric(theme, L"overlaySectionGap", 14.0f);
+        metrics.sectionGap = DialogLayoutMetric(theme, L"overlaySectionGap", 12.0f);
         metrics.footerGap = DialogLayoutMetric(theme, L"overlayFooterGap", 8.0f);
         metrics.footerInsetY = DialogLayoutMetric(theme, L"overlayFooterInsetY", 16.0f);
         metrics.controlGapX = DialogLayoutMetric(theme, L"overlayControlGapX", 10.0f);
@@ -138,6 +140,7 @@ inline DialogLayoutMetrics GetDialogLayoutMetrics(const Theme& theme, DialogLayo
         break;
     }
     metrics.labelMinWidth = DialogLayoutMetric(theme, L"labelMinWidth", 20.0f);
+    metrics.footerButtonHeight = static_cast<int>(theme.metric(L"button", L"largeHeight", 32.0f));
     metrics.fieldX = metrics.contentInsetX + metrics.labelWidth + metrics.labelGap;
     return metrics;
 }

@@ -326,18 +326,25 @@ private:
             windowUi_ = std::make_unique<ThemedWindowUi>(
                 instance_, owner_, hwnd_, theme_, DialogLayoutKind::Compact, kDialogWidth, kDialogHeight);
             const ThemedUi ui = windowUi_->ui();
+            const DialogLayoutMetrics& layout = ui.layout();
             ThemedLabelOptions instructionOptions{};
             instructionOptions.lines = ThemedLabelLines::Two;
+            const int instructionY = layout.contentInsetY;
             ui.Label(
                 options_.allowDoubleAlt
                     ? L"输入快捷键，或按一个键录入为 Ctrl+Alt+该键；也可快速按两次 Alt。"
                     : L"输入快捷键，或按一个键录入为 Ctrl+Alt+该键。Backspace 清除，Esc 取消。",
-                20,
-                22,
-                320,
+                layout.contentInsetX,
+                instructionY,
+                ui.contentWidth(),
                 instructionOptions);
 
-            RECT editFrame = ui.editFrame(20, 72, 220);
+            const int editWidth = ui.scale(220);
+            const int buttonWidth = layout.footerButtonWidth;
+            const int groupWidth = editWidth + layout.controlGapX + buttonWidth;
+            const int groupX = ui.centeredGroupX(groupWidth);
+            const int controlY = instructionY + ui.labelHeight() * 2 + layout.rowGap;
+            RECT editFrame = ui.editFrame(groupX, controlY, editWidth);
             ThemedEditOptions editOptions{};
             editOptions.selectAllOnFocus = true;
             initialText_ = DialogHotKeyText(currentKey_, options_);
@@ -345,12 +352,12 @@ private:
             ui.Button(
                 IdOk,
                 L"确定",
-                252,
-                73,
+                groupX + editWidth + layout.controlGapX,
+                controlY,
                 ThemedButtonRole::Primary,
                 ThemedButtonSize::Normal,
                 ThemedButtonWidthMode::Fixed,
-                76,
+                buttonWidth,
                 true);
             if (edit_) {
                 SetWindowSubclass(edit_, HotKeyCapture::EditProc, 1, reinterpret_cast<DWORD_PTR>(this));

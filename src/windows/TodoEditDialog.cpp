@@ -44,19 +44,9 @@ constexpr int IdEndCountValue = 253;
 
 constexpr int kDialogWidth = 560;
 constexpr int kDialogHeight = 640;
-constexpr int kLabelX = 28;
-constexpr int kFieldX = 108;
-constexpr int kFieldWidth = 416;
-constexpr int kContentTop = 18;
 constexpr int kCalendarWidth = 224;
-constexpr int kCalendarHeight = 190;
-constexpr int kCalendarHeaderHeight = 30;
-constexpr int kCalendarWeekdayHeight = 22;
-constexpr int kCalendarCellHeight = 22;
 constexpr int kCalendarMonthCellWidth = 64;
-constexpr int kCalendarMonthCellHeight = 23;
 constexpr int kCalendarYearCellWidth = 80;
-constexpr int kCalendarYearCellHeight = 23;
 
 enum class RepeatRule {
     None,
@@ -383,7 +373,9 @@ private:
     }
 
     int DrawerWidth() const {
-        return kDialogWidth;
+        RECT rect{};
+        GetClientRect(hwnd_, &rect);
+        return rect.right - rect.left;
     }
 
     int HeaderHeight() const {
@@ -395,40 +387,50 @@ private:
     }
 
     int ContentInsetX() const {
-        return kLabelX;
+        return windowUi_->ui().layout().contentInsetX;
     }
 
     int FieldX() const {
-        return kFieldX;
+        return windowUi_->ui().layout().fieldX;
     }
 
     int FieldRight() const {
-        return kFieldX + kFieldWidth;
+        return DrawerWidth() - ContentInsetX();
     }
 
     int FieldWidth() const {
-        return kFieldWidth;
+        return FieldRight() - FieldX();
     }
 
     int SectionGap() const {
-        return MetricInt(L"global", L"sectionGap", 16.0f);
+        return windowUi_->ui().layout().sectionGap;
     }
 
     int RowGap() const {
-        return MetricInt(L"global", L"rowGap", 6.0f);
+        return windowUi_->ui().layout().rowGap;
     }
 
     int ItemGap() const {
-        return MetricInt(L"global", L"itemGap", 8.0f);
+        return windowUi_->ui().scale(MetricInt(L"global", L"itemGap", 8.0f));
     }
 
     int StaticTextHeight() const {
-        return MetricInt(L"text", L"textHeight", 20.0f);
+        return windowUi_->ui().scale(MetricInt(L"text", L"textHeight", 20.0f));
     }
 
     int FooterHeight() const {
-        return ThemedControls::ButtonHeight(theme_) + RowGap() * 2;
+        return windowUi_->ui().footerButtonHeight() + RowGap() * 2;
     }
+
+    int CalendarWidth() const { return windowUi_->ui().scale(kCalendarWidth); }
+    int CalendarHeaderHeight() const { return windowUi_->ui().scale(MetricInt(L"global", L"mediumControlHeight", 28.0f)); }
+    int CalendarWeekdayHeight() const { return windowUi_->ui().scale(MetricInt(L"global", L"smallControlHeight", 24.0f)); }
+    int CalendarCellHeight() const { return windowUi_->ui().scale(MetricInt(L"global", L"smallControlHeight", 24.0f)); }
+    int CalendarHeight() const { return CalendarHeaderHeight() + CalendarWeekdayHeight() + CalendarCellHeight() * 6; }
+    int CalendarMonthCellWidth() const { return windowUi_->ui().scale(kCalendarMonthCellWidth); }
+    int CalendarMonthCellHeight() const { return CalendarCellHeight(); }
+    int CalendarYearCellWidth() const { return windowUi_->ui().scale(kCalendarYearCellWidth); }
+    int CalendarYearCellHeight() const { return CalendarCellHeight(); }
 
     int TextWidth(const std::wstring& text, HFONT font = nullptr) const {
         HDC dc = GetDC(hwnd_);
@@ -444,19 +446,23 @@ private:
     }
 
     int ButtonWidth(const std::wstring& text) const {
-        return TextWidth(text) + ThemedControls::ButtonPaddingX(theme_) * 2;
+        return windowUi_->ui().buttonWidth(
+            text, ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
     }
 
     int TabWidth(const std::wstring& text) const {
-        return TextWidth(text) + MetricInt(L"tabButton", L"paddingX", 12.0f) * 2;
+        return windowUi_->ui().tabButtonWidth(text);
     }
 
     int TextControlWidth(const std::wstring& text) const {
-        return TextWidth(text) + MetricInt(L"global", L"paddingX", 10.0f);
+        return TextWidth(text) + windowUi_->ui().scale(MetricInt(L"global", L"paddingX", 10.0f));
     }
 
     int ComboBoxWidth(const std::wstring& text) const {
-        return ThemedControls::ComboBoxContentWidth(theme_, TextWidth(text));
+        const ThemedUi ui = windowUi_->ui();
+        const int paddingX = ui.scale(MetricInt(L"comboBox", L"paddingX", 9.0f));
+        const int arrowWidth = ui.scale(MetricInt(L"comboBox", L"arrowWidth", 28.0f));
+        return TextWidth(text) + paddingX * 2 + arrowWidth;
     }
 
     int ContentTop() const {
@@ -502,7 +508,7 @@ private:
     }
 
     HWND SingleEdit(int id, int x, int y, int width, const std::wstring& value, DWORD extraStyle = ES_AUTOHSCROLL) {
-        const int height = ThemedControls::EditFrameHeight(theme_);
+        const int height = windowUi_->ui().editHeight();
         RECT frame{x, y, x + width, y + height};
         ThemedEditOptions options{};
         if ((extraStyle & ES_NUMBER) != 0) {
@@ -546,7 +552,7 @@ private:
         if (hwnd) {
             (void)height;
             windowUi_->ui().MoveComboBox(hwnd, x, y - scrollY_, width);
-            ShowWindow(hwnd, IntersectsContentViewport(y, ThemedControls::ComboBoxHeight(theme_)) ? SW_SHOW : SW_HIDE);
+            ShowWindow(hwnd, IntersectsContentViewport(y, windowUi_->ui().comboBoxHeight()) ? SW_SHOW : SW_HIDE);
         }
     }
 
@@ -1041,7 +1047,7 @@ private:
         titleErrorText_ = ErrorText(L"", 0, 0, 1);
 
         contentLabel_ = Label(L"备注说明", 0, 0, TextControlWidth(L"备注说明"));
-        contentEdit_ = MultiEdit(IdContent, 0, 0, 1, ThemedControls::EditFrameHeight(theme_) + StaticTextHeight() + RowGap(), draft_.content);
+        contentEdit_ = MultiEdit(IdContent, 0, 0, 1, ui.editHeight() + StaticTextHeight() + RowGap(), draft_.content);
         SendMessageW(contentEdit_, EM_SETCUEBANNER, FALSE, reinterpret_cast<LPARAM>(L"补充描述、步骤、附件链接..."));
 
         timeLabel_ = Text(L"时间", 0, 0, TextControlWidth(L"时间"), StaticTextHeight());
@@ -1060,10 +1066,10 @@ private:
 
         workdayHint_ = Text(L"默认周一至周五执行", 0, 0, TextControlWidth(L"默认周一至周五执行"), StaticTextHeight());
         monthlyFixedButton_ = ui.TabButton(IdMonthlyFixed, L"每月固定", 0, 0, TabWidth(L"每月固定"), false);
-        monthlyDayEdit_ = SingleEdit(IdMonthlyDay, 0, 0, ThemedControls::EditFrameHeight(theme_) + ThemedControls::EditPaddingX(theme_) * 2, L"1", ES_NUMBER);
+        monthlyDayEdit_ = SingleEdit(IdMonthlyDay, 0, 0, ui.editHeight() + ui.scale(ThemedControls::EditPaddingX(theme_)) * 2, L"1", ES_NUMBER);
         monthlyDayLabel_ = Text(L"号", 0, 0, TextControlWidth(L"号"), StaticTextHeight());
         customPrefix_ = Text(L"每", 0, 0, TextControlWidth(L"每"), StaticTextHeight());
-        customIntervalEdit_ = SingleEdit(IdCustomInterval, 0, 0, ThemedControls::EditFrameHeight(theme_) + ThemedControls::EditPaddingX(theme_) * 2, L"1", ES_NUMBER);
+        customIntervalEdit_ = SingleEdit(IdCustomInterval, 0, 0, ui.editHeight() + ui.scale(ThemedControls::EditPaddingX(theme_)) * 2, L"1", ES_NUMBER);
         customUnitCombo_ = ui.ComboBox(IdCustomUnit, 0, 0, ComboBoxWidth(L"天"));
         customSuffix_ = Text(L"重复", 0, 0, TextControlWidth(L"重复"), StaticTextHeight());
         repeatErrorText_ = ErrorText(L"", 0, 0, 1);
@@ -1071,10 +1077,10 @@ private:
         advancedButton_ = ui.Button(IdAdvancedToggle, L"高级设置 ▼", 0, 0, ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Fixed, ButtonWidth(L"高级设置 ▼"));
         endNeverButton_ = ui.TabButton(IdEndNever, L"永不结束", 0, 0, TabWidth(L"永不结束"), false);
         endCountButton_ = ui.TabButton(IdEndCount, L"完成 N 次", 0, 0, TabWidth(L"完成 N 次"), false);
-        endCountEdit_ = SingleEdit(IdEndCountValue, 0, 0, ThemedControls::EditFrameHeight(theme_) + ThemedControls::EditPaddingX(theme_) * 2, L"1", ES_NUMBER);
+        endCountEdit_ = SingleEdit(IdEndCountValue, 0, 0, ui.editHeight() + ui.scale(ThemedControls::EditPaddingX(theme_)) * 2, L"1", ES_NUMBER);
 
-        okButton_ = ui.Button(IDOK, isNew_ ? L"保存待办" : L"保存", 0, 0, ThemedButtonRole::Primary, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, ButtonWidth(isNew_ ? L"保存待办" : L"保存"), true);
-        cancelButton_ = ui.Button(IDCANCEL, L"取消", 0, 0, ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, ButtonWidth(L"取消"));
+        okButton_ = ui.Button(IDOK, isNew_ ? L"保存待办" : L"保存", 0, 0, ThemedButtonRole::Primary, ThemedButtonSize::Large, ThemedButtonWidthMode::Fixed, ButtonWidth(isNew_ ? L"保存待办" : L"保存"), true);
+        cancelButton_ = ui.Button(IDCANCEL, L"取消", 0, 0, ThemedButtonRole::Normal, ThemedButtonSize::Large, ThemedButtonWidthMode::Fixed, ButtonWidth(L"取消"));
 
         FillCombos();
         LoadInitialState();
@@ -1094,9 +1100,10 @@ private:
             return;
         }
 
-        const int fieldHeight = ThemedControls::EditFrameHeight(theme_);
-        const int labelHeight = ThemedControls::LabelHeight(theme_);
-        const int tabHeight = ThemedControls::TabButtonHeight(theme_);
+        const ThemedUi ui = windowUi_->ui();
+        const int fieldHeight = ui.editHeight();
+        const int labelHeight = ui.labelHeight();
+        const int tabHeight = ui.tabButtonHeight();
         const int insetX = ContentInsetX();
         const int fieldX = FieldX();
         const int contentRight = FieldRight();
@@ -1106,7 +1113,7 @@ private:
         const int textHeight = StaticTextHeight();
         const int multiEditHeight = fieldHeight + textHeight + rowGap;
         const int labelOffsetY = std::max(0, (fieldHeight - labelHeight) / 2);
-        int y = kContentTop;
+        int y = windowUi_->ui().layout().contentInsetY;
 
         MoveStatic(titleLabel_, insetX, y + labelOffsetY, TextControlWidth(L"待办标题 *"), labelHeight);
         SetFrame(titleEdit_, RECT{fieldX, y, contentRight, y + fieldHeight});
@@ -1131,13 +1138,13 @@ private:
             y += textHeight + rowGap;
         }
         y += rowGap;
-        calendarRect_ = RECT{fieldX, y, fieldX + kCalendarWidth, y + kCalendarHeight};
+        calendarRect_ = RECT{fieldX, y, fieldX + CalendarWidth(), y + CalendarHeight()};
         const int sideX = calendarRect_.right + itemGap + rowGap;
         MoveStatic(timeLabel_, sideX, y + labelOffsetY, TextControlWidth(L"时间"), labelHeight);
         SetFrame(timeEdit_, RECT{sideX, y + fieldHeight, sideX + 82, y + fieldHeight * 2});
         SetVisible(timeLabel_, true);
         SetVisible(timeEdit_, true);
-        y += kCalendarHeight + rowGap;
+        y += CalendarHeight() + rowGap;
 
         repeatLabelY_ = y;
         int x = fieldX;
@@ -1244,7 +1251,7 @@ private:
     }
 
     void LayoutFooter() {
-        const int buttonHeight = ThemedControls::ButtonHeight(theme_);
+        const int buttonHeight = windowUi_->ui().footerButtonHeight();
         const int footerHeight = FooterHeight();
         const int insetX = ContentInsetX();
         const int itemGap = ItemGap();
@@ -1353,7 +1360,7 @@ private:
         }
         const int logicalY = point.y + scrollY_;
         if (point.x < calendarRect_.left || point.x >= calendarRect_.right ||
-            logicalY < calendarRect_.top + kCalendarHeaderHeight + kCalendarWeekdayHeight ||
+            logicalY < calendarRect_.top + CalendarHeaderHeight() + CalendarWeekdayHeight() ||
             logicalY >= calendarRect_.bottom) {
             return 0;
         }
@@ -1363,9 +1370,9 @@ private:
         first.wMonth = static_cast<WORD>(calendarMonth_);
         first.wDay = 1;
         const int firstOffset = DayOfWeek(first);
-        const int cellWidth = kCalendarWidth / 7;
+        const int cellWidth = CalendarWidth() / 7;
         const int col = std::max(0, std::min(6, static_cast<int>(point.x - calendarRect_.left) / cellWidth));
-        const int row = std::max(0, std::min(5, static_cast<int>(logicalY - calendarRect_.top - kCalendarHeaderHeight - kCalendarWeekdayHeight) / kCalendarCellHeight));
+        const int row = std::max(0, std::min(5, static_cast<int>(logicalY - calendarRect_.top - CalendarHeaderHeight() - CalendarWeekdayHeight()) / CalendarCellHeight()));
         const int day = row * 7 + col - firstOffset + 1;
         return (day >= 1 && day <= DaysInMonth(calendarYear_, calendarMonth_)) ? day : 0;
     }
@@ -1377,12 +1384,12 @@ private:
         const int logicalY = point.y + scrollY_;
         const int gridLeft = calendarRect_.left + 46;
         const int gridTop = calendarRect_.top + 42;
-        if (point.x < gridLeft || point.x >= gridLeft + kCalendarMonthCellWidth * 2 ||
-            logicalY < gridTop || logicalY >= gridTop + kCalendarMonthCellHeight * 6) {
+        if (point.x < gridLeft || point.x >= gridLeft + CalendarMonthCellWidth() * 2 ||
+            logicalY < gridTop || logicalY >= gridTop + CalendarMonthCellHeight() * 6) {
             return 0;
         }
-        const int col = static_cast<int>(point.x - gridLeft) / kCalendarMonthCellWidth;
-        const int row = static_cast<int>(logicalY - gridTop) / kCalendarMonthCellHeight;
+        const int col = static_cast<int>(point.x - gridLeft) / CalendarMonthCellWidth();
+        const int row = static_cast<int>(logicalY - gridTop) / CalendarMonthCellHeight();
         const int month = row * 2 + col + 1;
         return month >= 1 && month <= 12 ? month : 0;
     }
@@ -1427,12 +1434,12 @@ private:
         const int logicalY = point.y + scrollY_;
         const int gridLeft = calendarRect_.left + 28;
         const int gridTop = calendarRect_.top + 42;
-        if (point.x < gridLeft || point.x >= gridLeft + kCalendarYearCellWidth * 2 ||
-            logicalY < gridTop || logicalY >= gridTop + kCalendarYearCellHeight * 6) {
+        if (point.x < gridLeft || point.x >= gridLeft + CalendarYearCellWidth() * 2 ||
+            logicalY < gridTop || logicalY >= gridTop + CalendarYearCellHeight() * 6) {
             return 0;
         }
-        const int col = static_cast<int>(point.x - gridLeft) / kCalendarYearCellWidth;
-        const int row = static_cast<int>(logicalY - gridTop) / kCalendarYearCellHeight;
+        const int col = static_cast<int>(point.x - gridLeft) / CalendarYearCellWidth();
+        const int row = static_cast<int>(logicalY - gridTop) / CalendarYearCellHeight();
         return calendarYearPageStart_ + row * 2 + col;
     }
 
@@ -1552,10 +1559,10 @@ private:
                 const int row = i / 2;
                 const int col = i % 2;
                 RECT cell{
-                    gridLeft + col * kCalendarYearCellWidth + 6,
-                    gridTop + row * kCalendarYearCellHeight + 3,
-                    gridLeft + (col + 1) * kCalendarYearCellWidth - 6,
-                    gridTop + (row + 1) * kCalendarYearCellHeight - 3,
+                    gridLeft + col * CalendarYearCellWidth() + 6,
+                    gridTop + row * CalendarYearCellHeight() + 3,
+                    gridLeft + (col + 1) * CalendarYearCellWidth() - 6,
+                    gridTop + (row + 1) * CalendarYearCellHeight() - 3,
                 };
                 const bool selected = selectedDate_.wYear == year;
                 if (selected) {
@@ -1585,10 +1592,10 @@ private:
                 const int row = index / 2;
                 const int col = index % 2;
                 RECT cell{
-                    gridLeft + col * kCalendarMonthCellWidth + 4,
-                    gridTop + row * kCalendarMonthCellHeight + 3,
-                    gridLeft + (col + 1) * kCalendarMonthCellWidth - 4,
-                    gridTop + (row + 1) * kCalendarMonthCellHeight - 3,
+                    gridLeft + col * CalendarMonthCellWidth() + 4,
+                    gridTop + row * CalendarMonthCellHeight() + 3,
+                    gridLeft + (col + 1) * CalendarMonthCellWidth() - 4,
+                    gridTop + (row + 1) * CalendarMonthCellHeight() - 3,
                 };
                 const bool selected = selectedDate_.wYear == calendarYear_ && selectedDate_.wMonth == month;
                 if (selected) {
@@ -1599,10 +1606,10 @@ private:
             return;
         }
 
-        const int cellWidth = kCalendarWidth / 7;
-        int y = rect.top + kCalendarHeaderHeight;
+        const int cellWidth = CalendarWidth() / 7;
+        int y = rect.top + CalendarHeaderHeight();
         for (int i = 0; i < 7; ++i) {
-            RECT weekday{rect.left + i * cellWidth, y, rect.left + (i + 1) * cellWidth, y + kCalendarWeekdayHeight};
+            RECT weekday{rect.left + i * cellWidth, y, rect.left + (i + 1) * cellWidth, y + CalendarWeekdayHeight()};
             DrawTextIn(dc, ShortWeekdayText(i), weekday, ColorFor(L"text", L"muted", L"text"), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         }
 
@@ -1615,16 +1622,16 @@ private:
         SYSTEMTIME today{};
         GetLocalTime(&today);
         today = DateOnly(today);
-        y += kCalendarWeekdayHeight;
+        y += CalendarWeekdayHeight();
         for (int day = 1; day <= days; ++day) {
             const int index = firstOffset + day - 1;
             const int row = index / 7;
             const int col = index % 7;
             RECT cell{
                 rect.left + col * cellWidth + 3,
-                y + row * kCalendarCellHeight + 1,
+                y + row * CalendarCellHeight() + 1,
                 rect.left + (col + 1) * cellWidth - 3,
-                y + (row + 1) * kCalendarCellHeight - 1,
+                y + (row + 1) * CalendarCellHeight() - 1,
             };
             const bool selected = selectedDate_.wYear == calendarYear_ && selectedDate_.wMonth == calendarMonth_ && selectedDate_.wDay == day;
             const bool isToday = today.wYear == calendarYear_ && today.wMonth == calendarMonth_ && today.wDay == day;
@@ -1645,7 +1652,7 @@ private:
 
         RECT reminder = Offset(reminderRect_);
         const int textHeight = StaticTextHeight();
-        const int labelOffsetY = std::max(0, (static_cast<int>(reminder.bottom - reminder.top) - ThemedControls::LabelHeight(theme_)) / 2);
+        const int labelOffsetY = std::max(0, (static_cast<int>(reminder.bottom - reminder.top) - windowUi_->ui().labelHeight()) / 2);
         DrawTextIn(dc, L"提醒时间", RECT{ContentInsetX(), reminder.top + labelOffsetY, FieldX(), reminder.bottom}, ColorFor(L"label", L"normal", L"text"), DT_LEFT | DT_SINGLELINE | DT_VCENTER);
         const std::wstring summary = ReminderSummary();
         DrawTextIn(dc, summary, RECT{FieldX(), reminder.top + labelOffsetY, reminder.right, reminder.bottom}, ColorFor(L"text", L"accent", L"text"), DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
@@ -1654,8 +1661,8 @@ private:
         }
 
         DrawCalendar(dc);
-        const int repeatLabelOffsetY = std::max(0, (ThemedControls::TabButtonHeight(theme_) - ThemedControls::LabelHeight(theme_)) / 2);
-        DrawTextIn(dc, L"重复规则", RECT{ContentInsetX(), repeatLabelY_ - scrollY_ + repeatLabelOffsetY, FieldX(), repeatLabelY_ - scrollY_ + ThemedControls::TabButtonHeight(theme_)}, ColorFor(L"label", L"normal", L"text"), DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+        const int repeatLabelOffsetY = std::max(0, (windowUi_->ui().tabButtonHeight() - windowUi_->ui().labelHeight()) / 2);
+        DrawTextIn(dc, L"重复规则", RECT{ContentInsetX(), repeatLabelY_ - scrollY_ + repeatLabelOffsetY, FieldX(), repeatLabelY_ - scrollY_ + windowUi_->ui().tabButtonHeight()}, ColorFor(L"label", L"normal", L"text"), DT_LEFT | DT_SINGLELINE | DT_VCENTER);
 
         RECT footer{0, ClientHeight() - FooterHeight(), client.right, ClientHeight()};
         HBRUSH footerBrush = CreateSolidBrush(ColorFor(L"panel", L"normal", L"bg"));

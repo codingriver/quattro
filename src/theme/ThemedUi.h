@@ -20,6 +20,7 @@ enum class ThemedButtonSize {
     Normal,
     Compact,
     Mini,
+    Large,
 };
 
 enum class ThemedButtonWidthMode {
@@ -379,6 +380,29 @@ private:
     std::vector<Entry> entries_;
 };
 
+// Cached system menu font for owner-draw popup menus. The font is resolved
+// from NONCLIENTMETRICS for the target monitor DPI so measuring and painting
+// use the same Windows menu typography.
+class ThemedMenuFontCache final {
+public:
+    ThemedMenuFontCache() = default;
+    ~ThemedMenuFontCache();
+
+    ThemedMenuFontCache(const ThemedMenuFontCache&) = delete;
+    ThemedMenuFontCache& operator=(const ThemedMenuFontCache&) = delete;
+
+    HFONT FontForScreenPoint(POINT screenPoint, HWND fallbackWindow = nullptr);
+    HFONT FontForDpi(UINT dpi);
+    SIZE MeasureText(HWND owner, const std::wstring& text) const;
+    int Scale(int logicalPixels) const;
+    UINT dpi() const { return dpi_; }
+    void Reset();
+
+private:
+    HFONT font_ = nullptr;
+    UINT dpi_ = USER_DEFAULT_SCREEN_DPI;
+};
+
 // ThemedUi is the preferred facade for dialog/tool-window UI code.
 //
 // It keeps three responsibilities together:
@@ -424,9 +448,12 @@ public:
     int buttonHeight() const;
     int buttonHeight(ThemedButtonRole role, ThemedButtonSize size) const;
     int compactButtonHeight() const;
+    int footerButtonHeight() const { return layout_.footerButtonHeight; }
     int checkBoxHeight(ThemedCheckBoxSize size = ThemedCheckBoxSize::Normal) const;
     int toggleHeight() const;
     int tabButtonHeight() const;
+    int comboBoxHeight() const;
+    int listItemHeight(bool twoLines = false) const;
     int tabButtonWidth(const std::wstring& text) const;
     ThemedContentInsets groupBoxInsets() const;
     int progressBarHeight() const;

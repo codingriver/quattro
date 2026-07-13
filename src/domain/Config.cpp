@@ -44,6 +44,11 @@ AppConfig ConfigService::Load() const {
     config.showToolboxButton = ReadBool(L"bShowBtnToolbox", ReadBool(L"bShowBtnMenu", config.showToolboxButton));
     config.showSkinButton = ReadBool(L"bShowBtnSkin", config.showSkinButton);
     config.loggingEnabled = ReadBool(L"bLoggingEnabled", config.loggingEnabled);
+    config.trackGitContextMenu = ReadBool(L"bTrackGitContextMenu", config.trackGitContextMenu);
+    config.trackSvnContextMenu = ReadBool(L"bTrackSvnContextMenu", config.trackSvnContextMenu);
+    config.trackVsCodeContextMenu = ReadBool(L"bTrackVsCodeContextMenu", config.trackVsCodeContextMenu);
+    config.trackTerminalContextMenu = ReadBool(L"bTrackTerminalContextMenu", config.trackTerminalContextMenu);
+    config.trackArchiveContextMenu = ReadBool(L"bTrackArchiveContextMenu", config.trackArchiveContextMenu);
 
     config.mouseEnterActiveGroup = ReadBool(L"bMouseEnterActiveGroup", config.mouseEnterActiveGroup);
     config.mouseEnterActiveTag = ReadBool(L"bMouseEnterActiveTag", config.mouseEnterActiveTag);
@@ -138,6 +143,11 @@ void ConfigService::SaveWindowState(const AppConfig& config) const {
     WriteString(L"bShowBtnMenu", L"");
     WriteInt(L"bShowBtnSkin", config.showSkinButton ? 1 : 0);
     WriteInt(L"bLoggingEnabled", config.loggingEnabled ? 1 : 0);
+    WriteInt(L"bTrackGitContextMenu", config.trackGitContextMenu ? 1 : 0);
+    WriteInt(L"bTrackSvnContextMenu", config.trackSvnContextMenu ? 1 : 0);
+    WriteInt(L"bTrackVsCodeContextMenu", config.trackVsCodeContextMenu ? 1 : 0);
+    WriteInt(L"bTrackTerminalContextMenu", config.trackTerminalContextMenu ? 1 : 0);
+    WriteInt(L"bTrackArchiveContextMenu", config.trackArchiveContextMenu ? 1 : 0);
     WriteInt(L"bGroupRight", config.groupRight ? 1 : 0);
     WriteInt(L"bTagRight", config.tagRight ? 1 : 0);
     WriteInt(L"nGroupWidth", config.groupWidth);
@@ -182,6 +192,11 @@ void ConfigService::Save(const AppConfig& config) const {
     WriteString(L"bShowBtnMenu", L"");
     WriteInt(L"bShowBtnSkin", config.showSkinButton ? 1 : 0);
     WriteInt(L"bLoggingEnabled", config.loggingEnabled ? 1 : 0);
+    WriteInt(L"bTrackGitContextMenu", config.trackGitContextMenu ? 1 : 0);
+    WriteInt(L"bTrackSvnContextMenu", config.trackSvnContextMenu ? 1 : 0);
+    WriteInt(L"bTrackVsCodeContextMenu", config.trackVsCodeContextMenu ? 1 : 0);
+    WriteInt(L"bTrackTerminalContextMenu", config.trackTerminalContextMenu ? 1 : 0);
+    WriteInt(L"bTrackArchiveContextMenu", config.trackArchiveContextMenu ? 1 : 0);
     WriteInt(L"bGroupRight", config.groupRight ? 1 : 0);
     WriteInt(L"bTagRight", config.tagRight ? 1 : 0);
     WriteInt(L"nGroupWidth", config.groupWidth);
