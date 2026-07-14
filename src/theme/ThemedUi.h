@@ -56,6 +56,7 @@ struct ThemedLabelOptions {
 struct ThemedFramedTextOptions {
     ThemedTextAlign align = ThemedTextAlign::Start;
     bool wrap = false;
+    bool multiline = false;
 };
 
 struct ThemedStatusTextOptions {
@@ -241,6 +242,29 @@ struct ThemedTooltipOptions {
     int maxWidth = 0;
 };
 
+enum class ThemedToastAnchor {
+    OwnerBottomRight,
+    OwnerTopRight,
+    ScreenBottomRight,
+};
+
+enum class ThemedToastRole {
+    Normal,
+    Info,
+    Success,
+    Warning,
+    Danger,
+};
+
+struct ThemedToastOptions {
+    ThemedToastAnchor anchor = ThemedToastAnchor::OwnerBottomRight;
+    ThemedToastRole role = ThemedToastRole::Normal;
+    bool multiline = true;
+    bool enabled = true;
+    int durationMs = 3000;
+    int maxWidth = 0;
+};
+
 struct ThemedGroupBoxOptions {
     bool enabled = true;
     bool raised = false;
@@ -401,6 +425,13 @@ public:
     virtual void HideTooltip() = 0;
 };
 
+class ThemedToastRegistry {
+public:
+    virtual ~ThemedToastRegistry() = default;
+    virtual void ShowToast(const std::wstring& text, const ThemedToastOptions& options) = 0;
+    virtual void HideToast() = 0;
+};
+
 class ThemedEditFrameCollection final : public ThemedEditFrameRegistry {
 public:
     void RegisterEditFrame(HWND child, RECT frame, const ThemedEditOptions& options) override;
@@ -468,6 +499,7 @@ public:
         ThemedEditFrameRegistry* editFrameRegistry = nullptr,
         ThemedTableFrameRegistry* tableFrameRegistry = nullptr,
         ThemedTooltipRegistry* tooltipRegistry = nullptr,
+        ThemedToastRegistry* toastRegistry = nullptr,
         UINT dpi = 0);
 
     const DialogLayoutMetrics& layout() const { return layout_; }
@@ -629,6 +661,8 @@ public:
     static bool DecodeTableEvent(HWND table, LPARAM lParam, ThemedTableEvent& event);
     void ShowTooltip(const std::wstring& text, POINT screenPoint, ThemedTooltipOptions options = {}) const;
     void HideTooltip() const;
+    void ShowToast(const std::wstring& text, ThemedToastOptions options = {}) const;
+    void HideToast() const;
     HWND Edit(int id, RECT frame, const std::wstring& value, ThemedEditOptions options = {}) const;
     HWND FramedStatic(const std::wstring& value, RECT frame, ThemedFramedTextOptions options = {}) const;
     HWND ProgressBar(int id, int x, int y, int width, ThemedProgressBarOptions options = {}) const;
@@ -665,4 +699,5 @@ private:
     ThemedEditFrameRegistry* editFrameRegistry_ = nullptr;
     ThemedTableFrameRegistry* tableFrameRegistry_ = nullptr;
     ThemedTooltipRegistry* tooltipRegistry_ = nullptr;
+    ThemedToastRegistry* toastRegistry_ = nullptr;
 };

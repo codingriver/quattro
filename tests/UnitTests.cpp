@@ -35,6 +35,10 @@
 #include <string>
 #include <vector>
 
+#ifndef HDS_NOSIZING
+#define HDS_NOSIZING 0x0800
+#endif
+
 namespace {
 int failures = 0;
 
@@ -863,7 +867,8 @@ int wmain() {
     ThemedFramedTextOptions framedTextOptions{};
     framedTextOptions.align = ThemedTextAlign::Center;
     framedTextOptions.wrap = true;
-    Check(framedTextOptions.align == ThemedTextAlign::Center && framedTextOptions.wrap, "Themed framed text options compose");
+    framedTextOptions.multiline = true;
+    Check(framedTextOptions.align == ThemedTextAlign::Center && framedTextOptions.wrap && framedTextOptions.multiline, "Themed framed text options compose");
     ThemedStatusTextOptions statusOptions{};
     statusOptions.role = ThemedStatusRole::Warning;
     statusOptions.align = ThemedTextAlign::Start;
@@ -914,9 +919,17 @@ int wmain() {
     tooltipOptions.role = ThemedTooltipRole::Warning;
     tooltipOptions.placement = ThemedTooltipPlacement::Cursor;
     Check(tooltipOptions.role == ThemedTooltipRole::Warning && tooltipOptions.placement == ThemedTooltipPlacement::Cursor, "Themed tooltip options compose");
+    ThemedToastOptions toastOptions{};
+    toastOptions.role = ThemedToastRole::Success;
+    toastOptions.anchor = ThemedToastAnchor::ScreenBottomRight;
+    toastOptions.durationMs = 1500;
+    Check(toastOptions.role == ThemedToastRole::Success && toastOptions.anchor == ThemedToastAnchor::ScreenBottomRight && toastOptions.durationMs == 1500,
+        "Themed toast options compose");
     Check(fallbackTheme.color(L"toggle", L"disabled", L"text").a > 0.9f, "Theme default toggle text state");
     Check(fallbackTheme.color(L"radio", L"hover", L"border").a > 0.9f, "Theme default radio hover state");
     Check(fallbackTheme.color(L"slider", L"disabled", L"thumb").a > 0.9f, "Theme default slider disabled state");
+    Check(fallbackTheme.color(L"toast", L"success", L"border").a > 0.9f, "Theme default toast success state");
+    Check(Near(fallbackTheme.metric(L"toast", L"maxWidth", 0.0f), 360.0f), "Theme default toast max width");
     Check(ThemedWindowUi::ScaleForDpi(544, 120) == 680, "Themed window scales logical width at 125 percent DPI");
     Check(ThemedWindowUi::ScaleForDpi(441, 144) == 662, "Themed window scales logical height at 150 percent DPI");
     Check(ThemedWindowUi::ScaleForDpi(kThemedManagementClientWidth, 120) == 950,
@@ -935,11 +948,11 @@ int wmain() {
         ThemedUi dpi125Ui(
             GetModuleHandleW(nullptr), controlParent, fallbackTheme,
             reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT)),
-            DialogLayoutKind::Compact, 680, 551, nullptr, nullptr, nullptr, 120);
+            DialogLayoutKind::Compact, 680, 551, nullptr, nullptr, nullptr, nullptr, 120);
         ThemedUi dpi150Ui(
             GetModuleHandleW(nullptr), controlParent, fallbackTheme,
             reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT)),
-            DialogLayoutKind::Compact, 816, 662, nullptr, nullptr, nullptr, 144);
+            DialogLayoutKind::Compact, 816, 662, nullptr, nullptr, nullptr, nullptr, 144);
         Check(dpi125Ui.layout().contentInsetX == ThemedWindowUi::ScaleForDpi(controlUi.layout().contentInsetX, 120),
             "Themed UI scales dialog metrics at 125 percent DPI");
         Check(dpi150Ui.checkBoxHeight() == ThemedWindowUi::ScaleForDpi(controlUi.checkBoxHeight(), 144),
@@ -973,6 +986,24 @@ int wmain() {
         Check(sectionLayout.sectionItemY(section, 0, controlUi.labelHeight()) ==
                 section.rowTops[0] + (controlUi.editHeight() - controlUi.labelHeight()) / 2,
             "Themed section vertically centers label in field row");
+        const RECT framedTextFrame{8, 116, 260, 188};
+        HWND runtimeSingleLineFrame = controlUi.FramedStatic(L"one line", framedTextFrame);
+        ThemedFramedTextOptions runtimeFramedTextOptions{};
+        runtimeFramedTextOptions.wrap = true;
+        runtimeFramedTextOptions.multiline = true;
+        HWND runtimeMultilineFrame = controlUi.FramedStatic(L"名称：Item\n来源：注册表\n状态：可禁用", framedTextFrame, runtimeFramedTextOptions);
+        RECT singleLineRect{};
+        RECT multilineRect{};
+        GetWindowRect(runtimeSingleLineFrame, &singleLineRect);
+        GetWindowRect(runtimeMultilineFrame, &multilineRect);
+        MapWindowPoints(HWND_DESKTOP, controlParent, reinterpret_cast<POINT*>(&singleLineRect), 2);
+        MapWindowPoints(HWND_DESKTOP, controlParent, reinterpret_cast<POINT*>(&multilineRect), 2);
+        Check(singleLineRect.bottom - singleLineRect.top == controlUi.scale(20),
+            "Themed framed static keeps existing single-line text height");
+        Check(multilineRect.top < singleLineRect.top && multilineRect.top <= framedTextFrame.top + controlUi.scale(6),
+            "Themed framed static multiline text is top aligned");
+        Check(multilineRect.bottom - multilineRect.top > controlUi.scale(40),
+            "Themed framed static multiline text keeps enough height for detail rows");
         ThemedToggleOptions runtimeToggleOptions{};
         runtimeToggleOptions.checked = true;
         HWND runtimeToggle = controlUi.Toggle(7101, L"toggle", 8, 8, 120, runtimeToggleOptions);
@@ -1019,6 +1050,25 @@ int wmain() {
         ThemedUi::SetTableRows(runtimeTable, {ThemedTableRow{42, {{L"row"}, {L"value"}}, true, true}});
         Check(ThemedUi::TableRowCount(runtimeTable) == 1 && ThemedUi::TableRowKey(runtimeTable, 0) == 42, "Themed table public row model");
         Check(ThemedUi::IsTableChecked(runtimeTable, 0), "Themed table public checked state");
+        HWND noResizeTable = controlUi.Table(
+            7110, RECT{0, 270, 360, 360},
+            {ThemedTableColumn{L"name", L"Name", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, 120},
+             ThemedTableColumn{L"value", L"Value", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Remaining}},
+            ThemedTableOptions{});
+        HWND noResizeHeader = ListView_GetHeader(noResizeTable);
+        Check(noResizeHeader != nullptr, "Themed table creates a native header after columns are inserted");
+        Check(noResizeHeader && ((GetWindowLongPtrW(noResizeHeader, GWL_STYLE) & HDS_NOSIZING) != 0),
+            "Themed table disables header resize by default after column creation");
+        ThemedTableOptions resizeTableOptions{};
+        resizeTableOptions.allowColumnResize = true;
+        HWND resizeTable = controlUi.Table(
+            7111, RECT{370, 270, 730, 360},
+            {ThemedTableColumn{L"name", L"Name", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, 120},
+             ThemedTableColumn{L"value", L"Value", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Remaining}},
+            resizeTableOptions);
+        HWND resizeHeader = ListView_GetHeader(resizeTable);
+        Check(resizeHeader && ((GetWindowLongPtrW(resizeHeader, GWL_STYLE) & HDS_NOSIZING) == 0),
+            "Themed table preserves explicit header resize opt-in");
         HWND groupChild = CreateWindowExW(0, L"STATIC", L"child", WS_CHILD | WS_VISIBLE, 0, 0, 40, 20, controlParent, nullptr, GetModuleHandleW(nullptr), nullptr);
         HWND runtimeGroup = controlUi.GroupBox(512, L"Group", RECT{380, 0, 620, 120});
         const RECT runtimeGroupContent = ThemedUi::GroupContentRect(runtimeGroup);

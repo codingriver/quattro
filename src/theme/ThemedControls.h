@@ -302,7 +302,8 @@ HWND CreateFramedStatic(
     RECT frame,
     const std::wstring& value,
     HFONT font,
-    DWORD style = SS_LEFTNOWORDWRAP);
+    DWORD style = SS_LEFTNOWORDWRAP,
+    bool multiline = false);
 
 HWND CreateProgressBar(
     HINSTANCE instance,
@@ -392,6 +393,7 @@ void SetTableRowEnabledStates(HWND table, const std::vector<bool>& enabled);
 void SetTableCells(HWND table, const std::vector<std::vector<TableCellRuntime>>& cells);
 void RestoreTableDefaultImageList(HWND table);
 bool IsTableRowEnabled(HWND table, int index);
+bool IsTableRowSelected(HWND table, int row);
 bool TableCellAction(HWND table, int row, int column, int& actionId);
 bool Draw(const Theme& theme, const DRAWITEMSTRUCT* draw);
 bool HandleListViewCustomDraw(const Theme& theme, LPARAM lParam, LRESULT& result);

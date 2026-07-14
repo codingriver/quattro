@@ -718,6 +718,7 @@ ThemedUi::ThemedUi(
     ThemedEditFrameRegistry* editFrameRegistry,
     ThemedTableFrameRegistry* tableFrameRegistry,
     ThemedTooltipRegistry* tooltipRegistry,
+    ThemedToastRegistry* toastRegistry,
     UINT dpi)
     : instance_(instance),
       parent_(parent),
@@ -728,7 +729,8 @@ ThemedUi::ThemedUi(
       clientHeight_(clientHeight),
       editFrameRegistry_(editFrameRegistry),
       tableFrameRegistry_(tableFrameRegistry),
-      tooltipRegistry_(tooltipRegistry) {
+      tooltipRegistry_(tooltipRegistry),
+      toastRegistry_(toastRegistry) {
     dpi_ = dpi ? dpi : (parent_ ? GetDpiForWindow(parent_) : USER_DEFAULT_SCREEN_DPI);
     if (!dpi_) dpi_ = USER_DEFAULT_SCREEN_DPI;
     layout_ = ScaleDialogLayoutMetrics(layout_, dpi_);
@@ -1955,6 +1957,9 @@ HWND ThemedUi::Table(int id, RECT frame, const std::vector<ThemedTableColumn>& c
         ListView_InsertColumn(table, static_cast<int>(i), &column);
     }
     ThemedControls::ConfigureTableColumns(table, widthModes);
+    // The native header can be created lazily when columns are inserted, so
+    // apply the resize policy again after column creation.
+    ThemedControls::SetTableColumnResizeEnabled(table, options.allowColumnResize);
     if (tableFrameRegistry_) tableFrameRegistry_->RegisterTableFrame(table, frame);
     return table;
 }
@@ -2131,6 +2136,14 @@ void ThemedUi::HideTooltip() const {
     if (tooltipRegistry_) tooltipRegistry_->HideTooltip();
 }
 
+void ThemedUi::ShowToast(const std::wstring& text, ThemedToastOptions options) const {
+    if (toastRegistry_) toastRegistry_->ShowToast(text, options);
+}
+
+void ThemedUi::HideToast() const {
+    if (toastRegistry_) toastRegistry_->HideToast();
+}
+
 HWND ThemedUi::Edit(int id, RECT frame, const std::wstring& value, ThemedEditOptions options) const {
     const bool multiline = options.mode == ThemedEditMode::MultiLine;
     DWORD style = multiline
@@ -2184,7 +2197,7 @@ HWND ThemedUi::FramedStatic(const std::wstring& value, RECT frame, ThemedFramedT
     if (!options.wrap && options.align == ThemedTextAlign::Start) {
         style = SS_LEFTNOWORDWRAP;
     }
-    return ThemedControls::CreateFramedStatic(instance_, parent_, theme_, frame, value, font_, style);
+    return ThemedControls::CreateFramedStatic(instance_, parent_, theme_, frame, value, font_, style, options.multiline);
 }
 
 // 创建主题进度条。

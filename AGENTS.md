@@ -10,6 +10,8 @@
 - 表现向需求（包括界面、布局、样式、视觉状态、DPI 或交互表现变更）必须进行截图验收，并保留能够证明需求达成的相关界面截图；涉及多个关键状态、窗口或 DPI 档位时，应分别截图验收。
 - 纯功能向需求必须通过相关自动化测试验收；测试应覆盖本次新增或修改的行为及必要的回归边界。
 - 每次公共开发完成后都必须进行相关范围的自动化验收，包括公共组件、公共 helper、公共基础设施、共享模块或公共接口的新增与修改；只需运行与本次公共改动及其直接影响范围相关的自动化测试，无需运行完整冒烟测试。
+- 公共控件的可视行为（如 `Table` 隔行背景、选中态、hover 态、owner-draw 效果）必须在验收进程内直接托管窗口和控件来验证，禁止依赖跨进程读取另一个 EXE 的控件状态。`LVM_GETITEMRECT`、`LVM_GETITEMTEXTW`、`LVM_SETITEMSTATE` 等携带指针参数的 Win32 控件消息不会被系统跨进程 marshaling，跨进程调用只会返回空矩形、空文本或过期状态，无法作为验收依据。共享绘制路径只需在进程内验证一次即可覆盖所有复用该 facade 的界面（例如自启动表格与设置热键表格）。
+- 定位可视缺陷时应尽早在运行期绘制路径打点（记录实际 row、selected、颜色距离等），不要长时间只做静态代码阅读；同时区分“产品缺陷”与“测试用例本身不可靠”，避免因测试断言恒不可达而误判产品未修复。
 
 ## AppLaunchLocker Architecture Rules
 
@@ -64,7 +66,7 @@
 - 新增公共分类时，必须同步更新 `src/theme/Theme.cpp` 的主题白名单、`theme/default.xml`、主题文档和相关测试。
 - 开发或调整任意界面时，布局和组件必须优先使用主题驱动的公共布局 helper 与公共组件 helper；如果现有公共布局或公共组件不支持需求，必须先扩展主题公共分类、公共布局 metric 或公共组件 helper，再接入界面，禁止在界面内部自行处理布局规则或定义控件样式细节参数。
 - 文本自适应 Label 的最小宽度必须由主题公共布局参数 `dialog.labelMinWidth` 统一控制，默认值为 20；禁止在界面或调用处为文本自适应 Label 传入自定义 `minWidth`、`minLabelWidth` 等最小宽度参数。需要多行 Label 对齐时，应先通过公共布局 helper 计算统一固定宽度，再使用固定宽度 Label 接口。
-- 所有使用 `ThemedWindowUi` 的窗口，必须在窗口 `Handle(...)` 开头调用 `ThemedWindowUi::HandleCommonMessage(...)`。公共主题消息、背景绘制、Label 透明背景、owner-draw 控件绘制和资源释放禁止在单个界面内重复处理；如需新增公共消息处理，必须扩展公共处理方法。
+- 所有使用 `ThemedWindowUi` 的窗口，必须在窗口 `Handle(...)`/WndProc 进入后、任何业务 `switch`/`WM_NOTIFY`/`WM_COMMAND` 分支之前，优先调用 `ThemedWindowUi::HandleCommonMessage(...)` 等公共消息处理入口；禁止先由业务分支消费或转发消息后再补调公共处理，避免跳过 Table header、owner-draw、公共主题状态和资源释放等公共逻辑。公共主题消息、背景绘制、Label 透明背景、owner-draw 控件绘制和资源释放禁止在单个界面内重复处理；如需新增公共消息处理，必须扩展公共处理方法。
 - 所有新加界面必须使用 `ThemedWindowUi::DialogOptions(...)` 创建统一窗口参数，并使用 `ThemedWindowUi::HandleCommonMessage(...)` 处理公共消息；禁止新界面自定义窗口尺寸、窗口样式、布局规则、控件样式或特殊界面配置。新增界面内的布局必须使用公共布局 helper，控件必须使用公共组件 helper，并且所有视觉、尺寸、间距、状态、圆角等参数必须来自主题公共组件分类或公共 helper；禁止在新界面内部自定义组件、手写特殊参数或绕过主题公共组件。
 - 新增窗口和改造既有窗口时，窗口类注册、窗口样式组合、客户区到窗口尺寸换算、显示器范围内定位以及窗口句柄创建必须统一通过 `ThemedWindowUi::DialogOptions(...)`、`ThemedWindowUi::CreateWindowHandle(...)` 等公共窗口接口完成；禁止业务窗口直接调用 `RegisterClassExW`、`CreateWindowExW` 或自行实现等价创建流程。公共窗口接口参数或语义能力不足时，必须先扩展 `ThemedWindowCreateOptions`、`ThemedWindowUi` 及其测试，再由业务窗口使用，禁止在业务窗口绕过公共接口补特殊创建逻辑。
 - DPI 缩放必须由 `ThemedWindowUi`、`ThemedUi` 和公共布局/组件 helper 统一处理：窗口与界面只提供 96-DPI 逻辑尺寸，公共层负责目标显示器 DPI 换算、`WM_DPICHANGED`、字体、客户区、公共 layout metric、组件模板和注册 frame 的缩放。禁止业务窗口调用 `GetDpiForWindow`、`MulDiv` 或保存页面级 DPI 比例和缩放后常量；公共 DPI 能力不足时必须先扩展公共接口及 100%/125%/150% 测试。

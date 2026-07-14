@@ -897,6 +897,15 @@ std::wstring FormatBackupModifiedDate(const std::wstring& value) {
     return value;
 }
 
+std::wstring FormatWebDavLastSyncText(const std::wstring& value) {
+    SYSTEMTIME time{};
+    if (!TryParseTodoTimestamp(value, time)) {
+        return {};
+    }
+    const std::wstring formatted = ChineseDateTimeText(time.wYear, time.wMonth, time.wDay, time.wHour, time.wMinute);
+    return formatted.empty() ? std::wstring{} : L"最后同步：" + formatted;
+}
+
 std::wstring FormatBackupListItem(const WebDavRemoteFile& backup) {
     std::wstring text = backup.name;
     if (backup.size > 0) {
@@ -2194,6 +2203,9 @@ private:
         if (currentTab_ == TabHttp) {
             UpdateHttpButtons();
         }
+        if (currentTab_ == TabWebDav) {
+            UpdateWebDavLastSyncLabel();
+        }
     }
 
     HWND AddSectionFrame(int tab, const std::wstring& title, RECT rect) {
@@ -2399,10 +2411,36 @@ private:
         value.webDavRemotePath = GetText(webDavRemotePathEdit_);
         value.webDavUserName = GetText(webDavUserNameEdit_);
         value.webDavKeepCount = ClampNumber(webDavKeepCountEdit_, 1, 100, value.webDavKeepCount);
+        value.webDavLastSyncAt = draft_.webDavLastSyncAt;
         if (Trim(value.webDavRemotePath).empty()) {
             value.webDavRemotePath = L"/Quattro/backups/";
         }
         return value;
+    }
+
+    void UpdateWebDavLastSyncLabel() {
+        if (!webDavLastSyncLabel_) {
+            return;
+        }
+        const std::wstring text = FormatWebDavLastSyncText(draft_.webDavLastSyncAt);
+        SetWindowTextW(webDavLastSyncLabel_, text.c_str());
+        ShowWindow(webDavLastSyncLabel_, text.empty() ? SW_HIDE : SW_SHOW);
+    }
+
+    void MarkWebDavSyncedNow(bool importedData) {
+        AppConfig next = ReadWebDavDraftFromControls();
+        next.webDavLastSyncAt = CurrentTodoTimestamp();
+        draft_ = next;
+        config_ = next;
+        if (importedData) {
+            importedData_ = true;
+        }
+        UpdateWebDavLastSyncLabel();
+        if (applyCallback_) {
+            mainHotKeyRegistered_ = applyCallback_(config_, importedData_);
+            processLocatorHotKeyRegistered_ = config_.globalHotKeysEnabled && config_.processLocatorHotKey != 0;
+            importedData_ = false;
+        }
     }
 
     bool SaveWebDavPasswordIfNeeded(const AppConfig& value) {
@@ -2667,6 +2705,9 @@ private:
             ShowThemedMessageBox(hwnd_, instance_, theme_, result->message, L"WebDAV 备份", MB_OK | (result->ok ? MB_ICONINFORMATION : MB_ICONWARNING));
             return;
         case SettingsWebDavOperation::Upload:
+            if (result->ok) {
+                MarkWebDavSyncedNow(false);
+            }
             ShowThemedMessageBox(hwnd_, instance_, theme_, result->message, L"上传到云端", MB_OK | (result->ok ? MB_ICONINFORMATION : MB_ICONWARNING));
             return;
         case SettingsWebDavOperation::List:
@@ -2674,7 +2715,7 @@ private:
             return;
         case SettingsWebDavOperation::Download:
             if (result->ok) {
-                importedData_ = true;
+                MarkWebDavSyncedNow(true);
             }
             ShowThemedMessageBox(hwnd_, instance_, theme_, result->message, L"从云端下载", MB_OK | (result->ok ? MB_ICONINFORMATION : MB_ICONWARNING));
             return;
@@ -3318,7 +3359,9 @@ private:
                  behaviorForm.sectionRow({ThemedSectionItemKind::Edit}),
                  behaviorForm.sectionRow({ThemedSectionItemKind::CompactButton})});
             HWND webDavGroup = AddSectionFrame(TabWebDav, L"WebDAV 备份", webDavSection.frame);
-            webDavEnabled_ = CheckBox(TabWebDav, 208, L"启用 WebDAV 备份", behaviorLeft, behaviorForm.sectionItemY(webDavSection, 0, behaviorCheckHeight), draft_.webDavEnabled, behaviorContentWidth);
+            webDavEnabled_ = CheckBox(TabWebDav, 208, L"启用 WebDAV 备份", behaviorLeft, behaviorForm.sectionItemY(webDavSection, 0, behaviorCheckHeight), draft_.webDavEnabled, behaviorCheckWidth);
+            webDavLastSyncLabel_ = Label(TabWebDav, L"", behaviorRight, behaviorForm.sectionItemY(webDavSection, 0, settingsUi.labelHeight()), behaviorCheckWidth);
+            UpdateWebDavLastSyncLabel();
             const int webDavServerLabelWidth = behaviorForm.labelWidthForText(L"服务器地址");
             const int webDavServerFieldX = behaviorLeft + webDavServerLabelWidth + behaviorLayout.labelGap;
             HWND webDavUrlLabel = Label(TabWebDav, L"服务器地址", behaviorLeft, behaviorForm.sectionItemY(webDavSection, 1, settingsUi.labelHeight()), webDavServerLabelWidth);
@@ -3343,7 +3386,7 @@ private:
             webDavUploadButton_ = Button(TabWebDav, ID_WEBDAV_UPLOAD, L"上传到云端", webDavButtonsX + testWidth + behaviorLayout.controlGapX + clearWidth + behaviorLayout.controlGapX, webDavButtonsY, uploadWidth);
             webDavDownloadButton_ = Button(TabWebDav, ID_WEBDAV_DOWNLOAD, L"从云端下载", webDavButtonsX + testWidth + behaviorLayout.controlGapX + clearWidth + behaviorLayout.controlGapX + uploadWidth + behaviorLayout.controlGapX, webDavButtonsY, downloadWidth);
             ThemedUi::BindGroupChildren(webDavGroup, {
-                webDavEnabled_, webDavUrlLabel, webDavUrlEdit_, webDavUserLabel,
+                webDavEnabled_, webDavLastSyncLabel_, webDavUrlLabel, webDavUrlEdit_, webDavUserLabel,
                 webDavPasswordLabel, webDavUserNameEdit_, webDavPasswordEdit_, webDavTestButton_,
                 webDavClearPasswordButton_, webDavRemoteLabel, webDavKeepLabel,
                 webDavRemotePathEdit_, webDavKeepCountEdit_, webDavUploadButton_, webDavDownloadButton_});
@@ -3745,6 +3788,7 @@ private:
     HWND webDavDownloadButton_ = nullptr;
     HWND webDavTestButton_ = nullptr;
     HWND webDavClearPasswordButton_ = nullptr;
+    HWND webDavLastSyncLabel_ = nullptr;
     HWND httpServerAutoStart_ = nullptr;
     HWND httpServerAddressEdit_ = nullptr;
     HWND httpServerRootEdit_ = nullptr;

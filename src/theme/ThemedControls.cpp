@@ -75,6 +75,8 @@ struct ControlState {
     double sliderStep = 1.0;
     double sliderValue = 0.0;
     HIMAGELIST tableDefaultSmallImages = nullptr;
+    int tableHotRow = -1;
+    int tableHotColumn = -1;
     bool tableAllowColumnResize = false;
     std::vector<int> tableColumnWidthModes;
     std::vector<bool> tableRowEnabled;
@@ -603,6 +605,20 @@ void DrawMiniButton(const Theme& theme, const DRAWITEMSTRUCT* draw);
 void DrawSlider(HWND hwnd, HDC dc);
 
 LRESULT CALLBACK ThemedControlProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR subclassId, DWORD_PTR) {
+    if (message == WM_NOTIFY && KindFor(hwnd) == ControlKind::Table) {
+        // The table's header (SysHeader32) sends its NM_CUSTOMDRAW notifications
+        // to its parent ListView, not to the host window, so they never reach the
+        // host's WM_NOTIFY handler. Route them into the shared themed-header draw
+        // path here; otherwise the OS default header renders, which paints a
+        // separator at every column edge including the last column's right side.
+        auto* nm = reinterpret_cast<NMHDR*>(lParam);
+        if (auto state = FindState(hwnd); nm && state && state->theme) {
+            LRESULT drawResult = 0;
+            if (ThemedControls::HandleListViewCustomDraw(*state->theme, lParam, drawResult)) {
+                return drawResult;
+            }
+        }
+    }
     switch (message) {
     case WM_SETCURSOR:
         if (KindFor(hwnd) == ControlKind::Link && IsWindowEnabled(hwnd)) {
@@ -816,12 +832,44 @@ LRESULT CALLBACK ThemedControlProc(HWND hwnd, UINT message, WPARAM wParam, LPARA
                 InvalidateParentAround(hwnd);
             }
         } else if (kind == ControlKind::Table) {
-            InvalidateRect(hwnd, nullptr, FALSE);
+            // Only repaint when the hovered cell actually changes. Invalidating the
+            // whole ListView on every WM_MOUSEMOVE repaints all rows dozens of times
+            // per second and makes the list flicker while the cursor moves. Action
+            // cells are the only cells with a hover appearance, so repainting just the
+            // cell the cursor entered/left is enough to keep the button hover correct.
+            auto invalidateCell = [](HWND list, int row, int column) {
+                if (row < 0) {
+                    return;
+                }
+                RECT rect{};
+                if (column <= 0) {
+                    if (ListView_GetItemRect(list, row, &rect, LVIR_BOUNDS)) {
+                        InvalidateRect(list, &rect, FALSE);
+                    }
+                } else if (ListView_GetSubItemRect(list, row, column, LVIR_BOUNDS, &rect)) {
+                    InvalidateRect(list, &rect, FALSE);
+                }
+            };
+            LVHITTESTINFO hit{};
+            hit.pt.x = GET_X_LPARAM(lParam);
+            hit.pt.y = GET_Y_LPARAM(lParam);
+            ListView_SubItemHitTest(hwnd, &hit);
+            ControlState& tableState = StateFor(hwnd);
+            if (hit.iItem != tableState.tableHotRow || hit.iSubItem != tableState.tableHotColumn) {
+                invalidateCell(hwnd, tableState.tableHotRow, tableState.tableHotColumn);
+                tableState.tableHotRow = hit.iItem;
+                tableState.tableHotColumn = hit.iSubItem;
+                invalidateCell(hwnd, hit.iItem, hit.iSubItem);
+            }
         }
         break;
     }
     case WM_MOUSELEAVE:
         StateFor(hwnd).hover = false;
+        if (KindFor(hwnd) == ControlKind::Table) {
+            StateFor(hwnd).tableHotRow = -1;
+            StateFor(hwnd).tableHotColumn = -1;
+        }
         InvalidateRect(hwnd, nullptr, TRUE);
         if (KindFor(hwnd) == ControlKind::Edit) {
             InvalidateParentAround(hwnd);
@@ -1529,12 +1577,13 @@ std::wstring ClassName(HWND hwnd) {
 void DrawHeaderItem(const Theme& theme, HWND header, const NMCUSTOMDRAW* draw) {
     const bool table = KindFor(GetParent(header)) == ControlKind::Table;
     const wchar_t* component = table ? L"tableHeader" : L"list";
+    const int index = static_cast<int>(draw->dwItemSpec);
+    const int itemCount = Header_GetItemCount(header);
     RECT rect = draw->rc;
     HBRUSH brush = CreateSolidBrush(ToColorRef(theme.color(component, L"normal", L"bg")));
     FillRect(draw->hdc, &rect, brush);
     DeleteObject(brush);
 
-    const int index = static_cast<int>(draw->dwItemSpec);
     wchar_t text[256]{};
     HDITEMW item{};
     item.mask = HDI_TEXT | HDI_FORMAT;
@@ -1547,7 +1596,6 @@ void DrawHeaderItem(const Theme& theme, HWND header, const NMCUSTOMDRAW* draw) {
     HGDIOBJ oldPen = SelectObject(draw->hdc, pen);
     MoveToEx(draw->hdc, rect.left, rect.bottom - 1, nullptr);
     LineTo(draw->hdc, rect.right, rect.bottom - 1);
-    const int itemCount = Header_GetItemCount(header);
     if (index >= 0 && index < itemCount - 1) {
         MoveToEx(draw->hdc, rect.right - 1, rect.top, nullptr);
         LineTo(draw->hdc, rect.right - 1, rect.bottom);
@@ -1672,7 +1720,7 @@ void DrawTableActionCell(
     const int column = draw->iSubItem;
     RECT cellRect = TableSubItemRect(table, row, column, draw->nmcd.rc);
     const bool enabled = ThemedControls::IsTableRowEnabled(table, row);
-    const bool selected = (draw->nmcd.uItemState & CDIS_SELECTED) != 0;
+    const bool selected = ThemedControls::IsTableRowSelected(table, row);
     const wchar_t* rowState = TableRowState(row, selected, enabled);
     HBRUSH background = CreateSolidBrush(TableRowBackground(theme, rowState));
     FillRect(draw->nmcd.hdc, &cellRect, background);
@@ -1734,7 +1782,7 @@ void DrawTableTextCell(
     const int column = draw->iSubItem;
     RECT cellRect = TableSubItemRect(table, row, column, draw->nmcd.rc);
     const bool enabled = ThemedControls::IsTableRowEnabled(table, row);
-    const bool selected = (draw->nmcd.uItemState & CDIS_SELECTED) != 0;
+    const bool selected = ThemedControls::IsTableRowSelected(table, row);
     const wchar_t* rowState = TableRowState(row, selected, enabled);
     HBRUSH background = CreateSolidBrush(TableRowBackground(theme, rowState));
     FillRect(draw->nmcd.hdc, &cellRect, background);
@@ -2006,6 +2054,22 @@ int FieldFrameHeight(const Theme& theme) {
 
 RECT FieldTextRect(const Theme& theme, RECT frame) {
     return TextRectFromMetrics(theme, L"field", frame, 20.0f, true);
+}
+
+RECT FieldMultilineTextRect(const Theme& theme, RECT frame) {
+    const int paddingX = static_cast<int>(theme.metric(L"field", L"paddingX", 9.0f));
+    const int fieldHeight = static_cast<int>(theme.metric(L"field", L"height", 28.0f));
+    const int textHeight = static_cast<int>(theme.metric(L"field", L"textHeight", 20.0f));
+    const int offsetY = static_cast<int>(theme.metric(L"field", L"textOffsetY", 1.0f));
+    const int paddingY = std::max(0, (fieldHeight - textHeight) / 2 + offsetY);
+    RECT rect = frame;
+    rect.left += paddingX;
+    rect.right -= paddingX;
+    rect.top += paddingY;
+    rect.bottom -= paddingY;
+    if (rect.bottom < rect.top) rect.bottom = rect.top;
+    if (rect.right < rect.left) rect.right = rect.left;
+    return rect;
 }
 
 HFONT CreateDialogFont(UINT dpi) {
@@ -2604,8 +2668,8 @@ HWND CreateMultiLineEdit(HINSTANCE instance, HWND parent, int id, const Theme& t
     return hwnd;
 }
 
-HWND CreateFramedStatic(HINSTANCE instance, HWND parent, const Theme& theme, RECT frame, const std::wstring& value, HFONT font, DWORD style) {
-    const RECT textRect = FieldTextRect(theme, frame);
+HWND CreateFramedStatic(HINSTANCE instance, HWND parent, const Theme& theme, RECT frame, const std::wstring& value, HFONT font, DWORD style, bool multiline) {
+    const RECT textRect = multiline ? FieldMultilineTextRect(theme, frame) : FieldTextRect(theme, frame);
     return CreateStaticText(
         instance,
         parent,
@@ -2826,6 +2890,18 @@ bool IsTableRowEnabled(HWND table, int index) {
         : true;
 }
 
+// The CDIS_SELECTED bit in NMCUSTOMDRAW::uItemState is unreliable for ListView
+// items under LVS_EX_FULLROWSELECT (it can report selected for rows that are not
+// actually selected), which collapses every row onto the "selected" background
+// and hides the alternating stripe. Query the control's authoritative selection
+// state instead of trusting the custom-draw flag.
+bool IsTableRowSelected(HWND table, int row) {
+    if (!table || row < 0) {
+        return false;
+    }
+    return (ListView_GetItemState(table, row, LVIS_SELECTED) & LVIS_SELECTED) != 0;
+}
+
 bool TableCellAction(HWND table, int row, int column, int& actionId) {
     const auto cell = TableCellAt(table, row, column);
     if (!cell || !IsActionCell(*cell) || !IsTableRowEnabled(table, row)) {
@@ -2959,9 +3035,25 @@ bool HandleListViewCustomDraw(const Theme& theme, LPARAM lParam, LRESULT& result
     if (className == L"SysHeader32") {
         auto* draw = reinterpret_cast<NMCUSTOMDRAW*>(lParam);
         switch (draw->dwDrawStage) {
-        case CDDS_PREPAINT:
+        case CDDS_PREPAINT: {
+            // Erase the whole header background before per-item drawing. The
+            // default header PREPAINT paints themed column separators, including
+            // one at the last column's right edge (the header's right border).
+            // Per-item fills only cover each column's own rect, so that trailing
+            // separator would survive as a stray divider. Filling the entire
+            // client here removes every default separator; our own inter-column
+            // dividers are then redrawn per item.
+            const bool tableHeader = KindFor(GetParent(header->hwndFrom)) == ControlKind::Table;
+            const wchar_t* component = tableHeader ? L"tableHeader" : L"list";
+            RECT client{};
+            if (GetClientRect(header->hwndFrom, &client)) {
+                HBRUSH brush = CreateSolidBrush(ToColorRef(theme.color(component, L"normal", L"bg")));
+                FillRect(draw->hdc, &client, brush);
+                DeleteObject(brush);
+            }
             result = CDRF_NOTIFYITEMDRAW;
             return true;
+        }
         case CDDS_ITEMPREPAINT:
             DrawHeaderItem(theme, header->hwndFrom, draw);
             result = CDRF_SKIPDEFAULT;
@@ -2983,9 +3075,9 @@ bool HandleListViewCustomDraw(const Theme& theme, LPARAM lParam, LRESULT& result
         result = CDRF_NOTIFYITEMDRAW;
         return true;
     case CDDS_ITEMPREPAINT: {
-        const bool selected = (draw->nmcd.uItemState & CDIS_SELECTED) != 0;
-        const bool enabled = IsTableRowEnabled(header->hwndFrom, static_cast<int>(draw->nmcd.dwItemSpec));
         const int row = static_cast<int>(draw->nmcd.dwItemSpec);
+        const bool selected = IsTableRowSelected(header->hwndFrom, row);
+        const bool enabled = IsTableRowEnabled(header->hwndFrom, row);
         const wchar_t* state = TableRowState(row, selected, enabled);
         RECT rowRect{};
         if (ListView_GetItemRect(header->hwndFrom, row, &rowRect, LVIR_BOUNDS)) {

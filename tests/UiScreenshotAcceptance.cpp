@@ -7,6 +7,8 @@
 #include "../src/windows/ConfirmDialog.h"
 #include "../src/windows/UpdateCheckDialog.h"
 #include "../src/theme/Theme.h"
+#include "../src/theme/ThemedUi.h"
+#include "../src/theme/ThemedWindowUi.h"
 #include "../src/windows/TodoEditDialog.h"
 #include "../src/windows/UrlEditDialog.h"
 #include "../src/services/WebDavClient.h"
@@ -781,54 +783,169 @@ HWND WaitForChildClass(HWND parent, const std::wstring& className, DWORD timeout
     return nullptr;
 }
 
+// In-process host window that builds a themed table through the public
+// ThemedWindowUi / ThemedUi facade — the same infrastructure production windows
+// use — so custom-draw (and therefore the alternating-row background) runs
+// exactly as it does in the app. Running in-process is what makes the pixel
+// assertions reliable: LVM_GETITEMRECT and selection state only work within the
+// owning process.
+struct TableHostWindow {
+    HINSTANCE instance_ = nullptr;
+    HWND hwnd_ = nullptr;
+    HWND table_ = nullptr;
+    Theme theme_;
+    std::unique_ptr<ThemedWindowUi> windowUi_;
+
+    static LRESULT CALLBACK Proc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
+        TableHostWindow* self = nullptr;
+        if (message == WM_NCCREATE) {
+            auto* create = reinterpret_cast<CREATESTRUCTW*>(lParam);
+            self = reinterpret_cast<TableHostWindow*>(create->lpCreateParams);
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self));
+            self->hwnd_ = hwnd;
+        } else {
+            self = reinterpret_cast<TableHostWindow*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+        }
+        return self ? self->Handle(message, wParam, lParam) : DefWindowProcW(hwnd, message, wParam, lParam);
+    }
+
+    LRESULT Handle(UINT message, WPARAM wParam, LPARAM lParam) {
+        LRESULT result = 0;
+        if (ThemedWindowUi::HandleCommonMessage(windowUi_, message, wParam, lParam, result)) {
+            return result;
+        }
+        if (message == WM_CREATE) {
+            windowUi_ = std::make_unique<ThemedWindowUi>(
+                instance_, nullptr, hwnd_, theme_, DialogLayoutKind::Compact, 360, 260);
+            const ThemedUi ui = windowUi_->ui();
+            table_ = ui.Table(
+                101,
+                RECT{16, 16, 344, 240},
+                {{L"name", L"名称", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Remaining},
+                 {L"value", L"值", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, 96}},
+                ThemedTableOptions{ThemedTableSelection::Single, ThemedTableView::Details, false, true, true, true, false});
+            ThemedUi::SetTableRows(table_, {
+                {1, {{L"行 0"}, {L"A"}}, false, true},
+                {2, {{L"行 1"}, {L"B"}}, false, true},
+                {3, {{L"行 2"}, {L"C"}}, false, true},
+                {4, {{L"行 3"}, {L"D"}}, false, true},
+            });
+            // Select row 0 only. This is the exact condition that exposed the
+            // regression: under LVS_EX_FULLROWSELECT the CDIS_SELECTED draw flag
+            // wrongly reported every row selected, so unselected rows were also
+            // painted with the selected background and the stripe disappeared.
+            ThemedUi::SetTableSelectedIndex(table_, 0);
+            return 0;
+        }
+        return DefWindowProcW(hwnd_, message, wParam, lParam);
+    }
+};
+
+// Map a table item's rect (table client coordinates) into the coordinate space
+// of a bitmap captured from the host top-level window.
+RECT TableRowRectInHostBitmap(HWND host, HWND table, int row) {
+    RECT itemRect{LVIR_BOUNDS, 0, 0, 0};
+    if (!SendMessageW(table, LVM_GETITEMRECT, row, reinterpret_cast<LPARAM>(&itemRect))) {
+        return RECT{0, 0, 0, 0};
+    }
+    POINT topLeft{itemRect.left, itemRect.top};
+    POINT bottomRight{itemRect.right, itemRect.bottom};
+    ClientToScreen(table, &topLeft);
+    ClientToScreen(table, &bottomRight);
+    RECT hostRect{};
+    GetWindowRect(host, &hostRect);
+    return RECT{topLeft.x - hostRect.left, topLeft.y - hostRect.top,
+                bottomRight.x - hostRect.left, bottomRight.y - hostRect.top};
+}
+
+void RunTableAlternatingRowsScenario(const std::filesystem::path& outputDir, TestState& state) {
+    AcceptanceLog(L"begin table-alternating-rows");
+    HINSTANCE instance = GetModuleHandleW(nullptr);
+    TableHostWindow host;
+    host.instance_ = instance;
+    host.theme_ = Theme::Load(std::filesystem::current_path() / L"theme", L"default");
+
+    WNDCLASSEXW wc{};
+    wc.cbSize = sizeof(wc);
+    wc.lpfnWndProc = TableHostWindow::Proc;
+    wc.hInstance = instance;
+    wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    wc.lpszClassName = L"QuattroTableAlternatingRowsHost";
+    RegisterClassExW(&wc);
+
+    HWND hwnd = CreateWindowExW(0, wc.lpszClassName, L"table alternating rows", WS_OVERLAPPEDWINDOW,
+        120, 120, 400, 320, nullptr, nullptr, instance, &host);
+    if (!hwnd || !host.table_) {
+        state.Check(false, L"table-alternating-rows: host window/table creation failed");
+        return;
+    }
+    ShowWindow(hwnd, SW_SHOW);
+    UpdateWindow(hwnd);
+    SetForegroundWindow(hwnd);
+    RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW | RDW_ALLCHILDREN);
+    Sleep(200);
+
+    // Row layout under TableRowState: row%2==0 -> "alternate", else "normal".
+    // Row 0 is selected. Rows 1 (normal) and 2 (alternate) are unselected and
+    // must differ from each other (the stripe) and neither may equal the
+    // selected background (the regression guard).
+    const RECT selectedRowRect = TableRowRectInHostBitmap(hwnd, host.table_, 0);
+    const RECT normalRowRect = TableRowRectInHostBitmap(hwnd, host.table_, 1);
+    const RECT alternateRowRect = TableRowRectInHostBitmap(hwnd, host.table_, 2);
+
+    BitmapCapture capture = CaptureWindowBitmap(hwnd);
+    state.Check(capture.bitmap != nullptr, L"table-alternating-rows: capture failed");
+    if (capture.bitmap) {
+        const COLORREF selectedColor = AverageBitmapRowColor(capture.bitmap, capture.width, selectedRowRect);
+        const COLORREF normalColor = AverageBitmapRowColor(capture.bitmap, capture.width, normalRowRect);
+        const COLORREF alternateColor = AverageBitmapRowColor(capture.bitmap, capture.width, alternateRowRect);
+
+        const int stripeDistance = ColorDistance(normalColor, alternateColor);
+        const int normalVsSelected = ColorDistance(normalColor, selectedColor);
+        const int alternateVsSelected = ColorDistance(alternateColor, selectedColor);
+
+        AcceptanceLog(L"table-alternating-rows stripe=" + std::to_wstring(stripeDistance) +
+            L" normalVsSel=" + std::to_wstring(normalVsSelected) +
+            L" altVsSel=" + std::to_wstring(alternateVsSelected));
+
+        // Alternate and normal unselected rows must be visibly different.
+        state.Check(stripeDistance >= 8,
+            L"table-alternating-rows: adjacent unselected rows share the same background (zebra striping missing)");
+        // Unselected rows must NOT be painted with the selected background — this
+        // guards the CDIS_SELECTED custom-draw regression directly.
+        state.Check(normalVsSelected >= 8,
+            L"table-alternating-rows: an unselected normal row is painted with the selected background");
+
+        const std::filesystem::path screenshot = outputDir / L"table-alternating-rows.png";
+        SavePng(capture.bitmap, screenshot);
+        DeleteObject(capture.bitmap);
+    }
+
+    DestroyWindow(hwnd);
+    AcceptanceLog(L"end table-alternating-rows");
+}
+
 void ValidateAppLaunchLockerTables(HWND hwnd, TestState& state) {
     const auto children = Children(hwnd);
     bool sawTable = false;
-    bool sawAlternatingRows = false;
     bool sawNoSizingHeader = false;
     for (const auto& child : children) {
         if (child.className != L"SysListView32" || !IsWindowVisible(child.hwnd)) {
             continue;
         }
         sawTable = true;
-        const int rowCount = static_cast<int>(SendMessageW(child.hwnd, LVM_GETITEMCOUNT, 0, 0));
         HWND header = reinterpret_cast<HWND>(SendMessageW(child.hwnd, LVM_GETHEADER, 0, 0));
         if (header && (GetWindowLongPtrW(header, GWL_STYLE) & HDS_NOSIZING) != 0) {
             sawNoSizingHeader = true;
         }
-        if (rowCount < 2) {
-            continue;
-        }
-
-        LVITEMW clearSelection{};
-        clearSelection.stateMask = LVIS_SELECTED | LVIS_FOCUSED;
-        clearSelection.state = 0;
-        SendMessageW(child.hwnd, LVM_SETITEMSTATE, static_cast<WPARAM>(-1), reinterpret_cast<LPARAM>(&clearSelection));
-        RedrawWindow(child.hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW | RDW_ALLCHILDREN);
-
-        RECT row0{LVIR_BOUNDS, 0, 0, 0};
-        RECT row1{LVIR_BOUNDS, 0, 0, 0};
-        const bool hasRow0 = SendMessageW(child.hwnd, LVM_GETITEMRECT, 0, reinterpret_cast<LPARAM>(&row0)) != 0;
-        const bool hasRow1 = SendMessageW(child.hwnd, LVM_GETITEMRECT, 1, reinterpret_cast<LPARAM>(&row1)) != 0;
-        if (!hasRow0 || !hasRow1) {
-            continue;
-        }
-
-        BitmapCapture capture = CaptureWindowBitmap(child.hwnd);
-        if (!capture.bitmap) {
-            continue;
-        }
-        const COLORREF row0Color = AverageBitmapRowColor(capture.bitmap, capture.width, row0);
-        const COLORREF row1Color = AverageBitmapRowColor(capture.bitmap, capture.width, row1);
-        const int distance = ColorDistance(row0Color, row1Color);
-        DeleteObject(capture.bitmap);
-        if (distance >= 18) {
-            sawAlternatingRows = true;
-        }
     }
+    // NOTE: the alternating-row background is verified in-process by
+    // RunTableAlternatingRowsScenario. It cannot be asserted reliably here
+    // because LVM_GETITEMRECT / LVM_SETITEMSTATE carry pointer parameters that
+    // Windows does not marshal across process boundaries, so querying this
+    // separate AppLaunchLocker.exe process returns empty rects and stale state.
     state.Check(sawTable, L"app-launch-locker: table controls not found");
     state.Check(sawNoSizingHeader, L"app-launch-locker: table header does not disable column resizing");
-    state.Check(sawAlternatingRows, L"app-launch-locker: table rows do not show alternating backgrounds");
 }
 
 void RunAppLaunchLockerScenario(const std::filesystem::path& outputDir, TestState& state) {
@@ -867,7 +984,11 @@ void RunAppLaunchLockerScenario(const std::filesystem::path& outputDir, TestStat
         RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
         Sleep(300);
         AcceptanceLog(L"inspect app-launch-locker");
-        Scenario scenario{L"app-launch-locker", L"AppLaunchLockerMainWindow", L"自启动管理", L"app-launch-locker.png", {L"自启动管理", L"扫描", L"当前自启动", L"已禁用"}, {}, 0, 2, false};
+        // Only window-title and standard-control texts are checked here. "当前自启动" and
+        // "已禁用" live inside the category ListView as item rows; LVM_GETITEMTEXTW passes a
+        // pszText pointer that Windows does not marshal across process boundaries, so their
+        // text cannot be read from this separate AppLaunchLocker.exe process.
+        Scenario scenario{L"app-launch-locker", L"AppLaunchLockerMainWindow", L"自启动管理", L"app-launch-locker.png", {L"自启动管理", L"扫描"}, {}, 0, 2, false};
         ValidateAndCapture(hwnd, scenario, outputDir, state);
         ValidateAppLaunchLockerTables(hwnd, state);
         PostMessageW(hwnd, WM_CLOSE, 0, 0);
@@ -941,6 +1062,7 @@ int wmain() {
     config.webDavUserName = L"acceptance-user";
 
     RunMainWindowScenario(outputDir, state);
+    RunTableAlternatingRowsScenario(outputDir, state);
     RunAppLaunchLockerScenario(outputDir, state);
 
     RunDialogScenario(

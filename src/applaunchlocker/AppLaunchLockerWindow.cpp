@@ -203,7 +203,11 @@ private:
             const int footerHeight = ui.footerButtonHeight();
             RECT frame{content.left, content.top, content.right,
                 ui.footerButtonY(footerHeight) - ui.layout().footerGap};
-            ui.FramedStatic(text_, frame, {ThemedTextAlign::Start, true});
+            ThemedFramedTextOptions detailsOptions{};
+            detailsOptions.align = ThemedTextAlign::Start;
+            detailsOptions.wrap = true;
+            detailsOptions.multiline = true;
+            ui.FramedStatic(text_, frame, detailsOptions);
             ui.FooterButton(IDOK, L"关闭", 0, 1, true, true);
             return 0;
         }
@@ -476,6 +480,11 @@ void AppLaunchLockerWindow::CompleteOperation(OperationResult result) {
     }
     else if (!result.message.empty() && result.message != L"操作完成。") {
         ThemedWindowUi::ShowMessageBox(hwnd_, instance_, theme_, result.message, L"自启动管理", MB_OK | MB_ICONINFORMATION);
+    }
+    else if (windowUi_) {
+        ThemedToastOptions toast{};
+        toast.role = ThemedToastRole::Success;
+        windowUi_->ui().ShowToast(L"操作完成。", toast);
     }
     StartScan();
 }

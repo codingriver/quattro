@@ -110,6 +110,9 @@ AppConfig ConfigService::Load() const {
     config.webDavKeepCount = Clamp(hasWebDavConfig
         ? ReadExternalInt(webDavPath, kWebDavSection, L"KeepCount", config.webDavKeepCount)
         : ReadInt(L"WebDavKeepCount", config.webDavKeepCount), 1, 100);
+    config.webDavLastSyncAt = hasWebDavConfig
+        ? ReadExternalString(webDavPath, kWebDavSection, L"LastSyncAt", L"")
+        : ReadString(L"WebDavLastSyncAt", L"");
 
     const std::filesystem::path httpPath = HttpConfigPath();
     const bool hasHttpConfig = FileExists(httpPath);
@@ -266,6 +269,9 @@ AppConfig ConfigService::LoadForSchemaUpgrade(int targetVersion, bool& compatibl
     config.webDavKeepCount = Clamp(hasWebDavConfig
         ? ReadExternalInt(webDavPath, kWebDavSection, L"KeepCount", config.webDavKeepCount)
         : ReadInt(L"WebDavKeepCount", config.webDavKeepCount), 1, 100);
+    config.webDavLastSyncAt = hasWebDavConfig
+        ? ReadExternalString(webDavPath, kWebDavSection, L"LastSyncAt", L"")
+        : ReadString(L"WebDavLastSyncAt", L"");
 
     const std::filesystem::path httpPath = HttpConfigPath();
     const bool hasHttpConfig = FileExists(httpPath);
@@ -512,6 +518,7 @@ void ConfigService::SaveExternalNetworkSettings(const AppConfig& config) const {
     WriteExternalString(webDavPath, kWebDavSection, L"RemotePath", config.webDavRemotePath);
     WriteExternalString(webDavPath, kWebDavSection, L"UserName", config.webDavUserName);
     WriteExternalInt(webDavPath, kWebDavSection, L"KeepCount", config.webDavKeepCount);
+    WriteExternalString(webDavPath, kWebDavSection, L"LastSyncAt", config.webDavLastSyncAt);
 
     const std::filesystem::path httpPath = HttpConfigPath();
     WriteExternalInt(httpPath, kHttpSection, L"Enabled", config.httpServerEnabled ? 1 : 0);
@@ -527,6 +534,7 @@ void ConfigService::DeleteLegacyNetworkSettings() const {
     WriteString(L"WebDavRemotePath", L"");
     WriteString(L"WebDavUserName", L"");
     WriteString(L"WebDavKeepCount", L"");
+    WriteString(L"WebDavLastSyncAt", L"");
     WriteString(L"HttpServerEnabled", L"");
     WriteString(L"HttpServerAutoStart", L"");
     WriteString(L"HttpServerLanAccess", L"");

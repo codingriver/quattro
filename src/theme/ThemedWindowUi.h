@@ -47,7 +47,7 @@ constexpr int kThemedMessageClientWidth = 460;
 constexpr int kThemedMessageClientHeight = 180;
 constexpr DialogLayoutKind kThemedDialogLayoutKind = DialogLayoutKind::Compact;
 
-class ThemedWindowUi : public ThemedEditFrameRegistry, public ThemedTableFrameRegistry, public ThemedTooltipRegistry {
+class ThemedWindowUi : public ThemedEditFrameRegistry, public ThemedTableFrameRegistry, public ThemedTooltipRegistry, public ThemedToastRegistry {
 public:
     ThemedWindowUi(
         HINSTANCE instance,
@@ -112,6 +112,8 @@ public:
     void DrawRegisteredTableFrames(HDC dc) const;
     void ShowTooltip(const std::wstring& text, POINT screenPoint, const ThemedTooltipOptions& options) override;
     void HideTooltip() override;
+    void ShowToast(const std::wstring& text, const ThemedToastOptions& options) override;
+    void HideToast() override;
     void FillBackground(HDC dc) const;
     void InvalidateEditFrame(HWND child) const;
 
@@ -140,9 +142,14 @@ private:
     bool EnsureTooltipWindow();
     SIZE MeasureTooltip(const std::wstring& text, const ThemedTooltipOptions& options) const;
     void PaintTooltip(HDC dc) const;
+    bool EnsureToastWindow();
+    SIZE MeasureToast(const std::wstring& text, const ThemedToastOptions& options) const;
+    void PositionToast();
+    void PaintToast(HDC dc) const;
     static LRESULT CALLBACK EditFrameProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
     static LRESULT CALLBACK EditChildProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR id, DWORD_PTR data);
     static LRESULT CALLBACK TooltipProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
+    static LRESULT CALLBACK ToastProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
 
     HINSTANCE instance_ = nullptr;
     HWND owner_ = nullptr;
@@ -169,4 +176,9 @@ private:
     ThemedTooltipOptions tooltipOptions_{};
     SIZE tooltipSize_{};
     bool tooltipLayoutValid_ = false;
+    HWND toast_ = nullptr;
+    std::wstring toastText_;
+    ThemedToastOptions toastOptions_{};
+    SIZE toastSize_{};
+    bool toastLayoutValid_ = false;
 };

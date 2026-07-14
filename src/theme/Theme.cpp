@@ -76,6 +76,7 @@ bool IsAllowedComponent(const std::wstring& component) {
         L"slider",
         L"progressBar",
         L"tooltip",
+        L"toast",
         L"separator",
     };
     for (const wchar_t* allowed : kAllowedComponents) {
@@ -734,6 +735,21 @@ void Theme::SetDefaults() {
     PutState(L"tooltip", L"danger", L"bg", palette_[L"surfaceRaised"]);
     PutState(L"tooltip", L"danger", L"text", palette_[L"danger"]);
     PutState(L"tooltip", L"danger", L"border", palette_[L"danger"]);
+    PutState(L"toast", L"normal", L"bg", palette_[L"surfaceRaised"]);
+    PutState(L"toast", L"normal", L"text", palette_[L"text"]);
+    PutState(L"toast", L"normal", L"border", palette_[L"border"]);
+    PutState(L"toast", L"info", L"bg", palette_[L"infoSoft"]);
+    PutState(L"toast", L"info", L"text", palette_[L"text"]);
+    PutState(L"toast", L"info", L"border", palette_[L"info"]);
+    PutState(L"toast", L"success", L"bg", palette_[L"successSoft"]);
+    PutState(L"toast", L"success", L"text", palette_[L"success"]);
+    PutState(L"toast", L"success", L"border", palette_[L"success"]);
+    PutState(L"toast", L"warning", L"bg", palette_[L"warningSoft"]);
+    PutState(L"toast", L"warning", L"text", palette_[L"warning"]);
+    PutState(L"toast", L"warning", L"border", palette_[L"warning"]);
+    PutState(L"toast", L"danger", L"bg", palette_[L"dangerSoft"]);
+    PutState(L"toast", L"danger", L"text", palette_[L"danger"]);
+    PutState(L"toast", L"danger", L"border", palette_[L"danger"]);
     PutState(L"separator", L"normal", L"line", palette_[L"line"]);
 
     PutMetric(L"titleButton", L"size", 26.0f);
@@ -1065,6 +1081,13 @@ void Theme::SetDefaults() {
     PutMetric(L"tooltip", L"maxWidth", 420.0f);
     PutMetric(L"tooltip", L"cursorOffsetX", 14.0f);
     PutMetric(L"tooltip", L"cursorOffsetY", 18.0f);
+    PutMetric(L"toast", L"radius", 7.0f);
+    PutMetric(L"toast", L"borderWidth", 1.0f);
+    PutMetric(L"toast", L"paddingX", 12.0f);
+    PutMetric(L"toast", L"paddingY", 9.0f);
+    PutMetric(L"toast", L"maxWidth", 360.0f);
+    PutMetric(L"toast", L"marginX", 16.0f);
+    PutMetric(L"toast", L"marginY", 16.0f);
     PutMetric(L"separator", L"thickness", 1.0f);
     PutMetric(L"separator", L"inset", 0.0f);
 }

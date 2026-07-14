@@ -10,6 +10,7 @@
 namespace {
 constexpr const wchar_t* kEditFrameClassName = L"QuattroThemedEditFrame";
 constexpr UINT_PTR kEditChildSubclassId = 0x51454652;
+constexpr UINT_PTR kToastTimerId = 0x544f4153;
 
 std::wstring LastErrorText(const wchar_t* prefix) {
     return std::wstring(prefix) + L": " + FormatLastError(GetLastError());
@@ -25,11 +26,31 @@ const wchar_t* TooltipState(ThemedTooltipRole role) {
     }
 }
 
+const wchar_t* ToastState(ThemedToastRole role) {
+    switch (role) {
+    case ThemedToastRole::Info: return L"info";
+    case ThemedToastRole::Success: return L"success";
+    case ThemedToastRole::Warning: return L"warning";
+    case ThemedToastRole::Danger: return L"danger";
+    case ThemedToastRole::Normal:
+    default: return L"normal";
+    }
+}
+
 bool SameTooltipOptions(const ThemedTooltipOptions& left, const ThemedTooltipOptions& right) {
     return left.placement == right.placement &&
            left.role == right.role &&
            left.multiline == right.multiline &&
            left.enabled == right.enabled &&
+           left.maxWidth == right.maxWidth;
+}
+
+bool SameToastOptions(const ThemedToastOptions& left, const ThemedToastOptions& right) {
+    return left.anchor == right.anchor &&
+           left.role == right.role &&
+           left.multiline == right.multiline &&
+           left.enabled == right.enabled &&
+           left.durationMs == right.durationMs &&
            left.maxWidth == right.maxWidth;
 }
 }
@@ -203,7 +224,7 @@ ThemedUi ThemedWindowUi::ui() const {
     return ThemedUi(
         instance_, hwnd_, theme_, font(), layoutKind_, clientWidth_, clientHeight_,
         const_cast<ThemedWindowUi*>(this), const_cast<ThemedWindowUi*>(this),
-        const_cast<ThemedWindowUi*>(this), dpi_);
+        const_cast<ThemedWindowUi*>(this), const_cast<ThemedWindowUi*>(this), dpi_);
 }
 
 bool ThemedWindowUi::ShowModal() {
@@ -242,6 +263,13 @@ bool ThemedWindowUi::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam, L
     case WM_COMMAND:
         if (HIWORD(wParam) == EN_SETFOCUS || HIWORD(wParam) == EN_KILLFOCUS || HIWORD(wParam) == EN_CHANGE) {
             InvalidateEditFrame(reinterpret_cast<HWND>(lParam));
+        }
+        break;
+    case WM_TIMER:
+        if (wParam == kToastTimerId) {
+            HideToast();
+            result = 0;
+            return true;
         }
         break;
     case WM_CTLCOLORSTATIC: {
@@ -340,6 +368,11 @@ void ThemedWindowUi::ApplyDpiChange(UINT newDpi, const RECT* suggestedWindowRect
     GetClientRect(hwnd_, &client);
     clientWidth_ = client.right - client.left;
     clientHeight_ = client.bottom - client.top;
+    if (toast_ && IsWindowVisible(toast_)) {
+        toastLayoutValid_ = false;
+        PositionToast();
+        InvalidateRect(toast_, nullptr, FALSE);
+    }
     InvalidateRect(hwnd_, nullptr, TRUE);
 }
 
@@ -653,6 +686,196 @@ LRESULT CALLBACK ThemedWindowUi::TooltipProc(HWND hwnd, UINT message, WPARAM wPa
     return DefWindowProcW(hwnd, message, wParam, lParam);
 }
 
+bool ThemedWindowUi::EnsureToastWindow() {
+    if (toast_) return true;
+    static constexpr const wchar_t* kClassName = L"QuattroThemedToast";
+    WNDCLASSEXW wc{};
+    wc.cbSize = sizeof(wc);
+    wc.lpfnWndProc = ThemedWindowUi::ToastProc;
+    wc.hInstance = instance_;
+    wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    wc.lpszClassName = kClassName;
+    if (!RegisterClassExW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return false;
+    toast_ = CreateWindowExW(
+        WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+        kClassName, L"", WS_POPUP, 0, 0, 0, 0, hwnd_, nullptr, instance_, this);
+    return toast_ != nullptr;
+}
+
+SIZE ThemedWindowUi::MeasureToast(const std::wstring& text, const ThemedToastOptions& options) const {
+    HDC dc = GetDC(nullptr);
+    HFONT oldFont = reinterpret_cast<HFONT>(SelectObject(dc, font()));
+    const int maxWidth = ScaleForDpi(
+        options.maxWidth > 0 ? options.maxWidth : static_cast<int>(theme_.metric(L"toast", L"maxWidth", 360.0f)),
+        dpi_);
+    RECT rect{0, 0, std::max(ScaleForDpi(120, dpi_), maxWidth), 0};
+    UINT format = DT_CALCRECT | DT_NOPREFIX;
+    format |= options.multiline ? DT_WORDBREAK : DT_SINGLELINE;
+    DrawTextW(dc, text.c_str(), static_cast<int>(text.size()), &rect, format);
+    SelectObject(dc, oldFont);
+    ReleaseDC(nullptr, dc);
+    const int paddingX = ScaleForDpi(static_cast<int>(theme_.metric(L"toast", L"paddingX", 12.0f)), dpi_);
+    const int paddingY = ScaleForDpi(static_cast<int>(theme_.metric(L"toast", L"paddingY", 9.0f)), dpi_);
+    return SIZE{
+        std::max(ScaleForDpi(160, dpi_), static_cast<int>(rect.right - rect.left) + paddingX * 2),
+        std::max(ScaleForDpi(32, dpi_), static_cast<int>(rect.bottom - rect.top) + paddingY * 2)};
+}
+
+void ThemedWindowUi::PositionToast() {
+    if (!toast_) return;
+    if (!toastLayoutValid_) {
+        toastSize_ = MeasureToast(toastText_, toastOptions_);
+        toastLayoutValid_ = true;
+    }
+
+    RECT anchorRect{};
+    bool hasAnchor = false;
+    if (toastOptions_.anchor == ThemedToastAnchor::ScreenBottomRight) {
+        POINT point{};
+        if (hwnd_) {
+            RECT ownerRect{};
+            GetWindowRect(hwnd_, &ownerRect);
+            point.x = ownerRect.left + (ownerRect.right - ownerRect.left) / 2;
+            point.y = ownerRect.top + (ownerRect.bottom - ownerRect.top) / 2;
+        }
+        HMONITOR monitor = MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST);
+        MONITORINFO info{};
+        info.cbSize = sizeof(info);
+        if (GetMonitorInfoW(monitor, &info)) {
+            anchorRect = info.rcWork;
+            hasAnchor = true;
+        }
+    } else if (hwnd_) {
+        hasAnchor = GetWindowRect(hwnd_, &anchorRect) != FALSE;
+    }
+    if (!hasAnchor) {
+        HMONITOR monitor = MonitorFromWindow(hwnd_, MONITOR_DEFAULTTONEAREST);
+        MONITORINFO info{};
+        info.cbSize = sizeof(info);
+        if (GetMonitorInfoW(monitor, &info)) {
+            anchorRect = info.rcWork;
+            hasAnchor = true;
+        }
+    }
+    if (!hasAnchor) return;
+
+    const int marginX = ScaleForDpi(static_cast<int>(theme_.metric(L"toast", L"marginX", 16.0f)), dpi_);
+    const int marginY = ScaleForDpi(static_cast<int>(theme_.metric(L"toast", L"marginY", 16.0f)), dpi_);
+    int x = anchorRect.right - toastSize_.cx - marginX;
+    int y = anchorRect.bottom - toastSize_.cy - marginY;
+    if (toastOptions_.anchor == ThemedToastAnchor::OwnerTopRight) {
+        y = anchorRect.top + marginY;
+    }
+
+    HMONITOR monitor = MonitorFromRect(&anchorRect, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO info{};
+    info.cbSize = sizeof(info);
+    if (GetMonitorInfoW(monitor, &info)) {
+        x = std::max<int>(info.rcWork.left + marginX, std::min<int>(x, info.rcWork.right - toastSize_.cx - marginX));
+        y = std::max<int>(info.rcWork.top + marginY, std::min<int>(y, info.rcWork.bottom - toastSize_.cy - marginY));
+    }
+
+    SetWindowPos(toast_, HWND_TOPMOST, x, y, toastSize_.cx, toastSize_.cy, SWP_NOACTIVATE);
+    const int radius = ScaleForDpi(static_cast<int>(theme_.metric(L"toast", L"radius", 7.0f)), dpi_);
+    HRGN region = CreateRoundRectRgn(0, 0, toastSize_.cx + 1, toastSize_.cy + 1, radius * 2, radius * 2);
+    if (!region || SetWindowRgn(toast_, region, FALSE) == 0) {
+        if (region) DeleteObject(region);
+    }
+}
+
+void ThemedWindowUi::ShowToast(const std::wstring& text, const ThemedToastOptions& options) {
+    if (!options.enabled || text.empty() || !EnsureToastWindow()) {
+        HideToast();
+        return;
+    }
+    const bool contentChanged = toastText_ != text;
+    const bool optionsChanged = !SameToastOptions(toastOptions_, options);
+    toastText_ = text;
+    toastOptions_ = options;
+    if (contentChanged || optionsChanged) {
+        toastLayoutValid_ = false;
+        SetWindowTextW(toast_, toastText_.c_str());
+    }
+    PositionToast();
+    if (!IsWindowVisible(toast_)) {
+        ShowWindow(toast_, SW_SHOWNA);
+    }
+    InvalidateRect(toast_, nullptr, FALSE);
+    KillTimer(hwnd_, kToastTimerId);
+    if (options.durationMs > 0) {
+        SetTimer(hwnd_, kToastTimerId, static_cast<UINT>(options.durationMs), nullptr);
+    }
+}
+
+void ThemedWindowUi::HideToast() {
+    KillTimer(hwnd_, kToastTimerId);
+    if (toast_) ShowWindow(toast_, SW_HIDE);
+    toastText_.clear();
+    toastLayoutValid_ = false;
+}
+
+void ThemedWindowUi::PaintToast(HDC dc) const {
+    RECT rect{};
+    GetClientRect(toast_, &rect);
+    const wchar_t* state = ToastState(toastOptions_.role);
+    HBRUSH brush = CreateSolidBrush(ToColorRef(theme_.color(L"toast", state, L"bg")));
+    HPEN pen = CreatePen(
+        PS_SOLID,
+        std::max(1, ScaleForDpi(static_cast<int>(theme_.metric(L"toast", L"borderWidth", 1.0f)), dpi_)),
+        ToColorRef(theme_.color(L"toast", state, L"border")));
+    HGDIOBJ oldBrush = SelectObject(dc, brush);
+    HGDIOBJ oldPen = SelectObject(dc, pen);
+    const int radius = ScaleForDpi(static_cast<int>(theme_.metric(L"toast", L"radius", 7.0f)), dpi_);
+    RoundRect(dc, rect.left, rect.top, rect.right, rect.bottom, radius * 2, radius * 2);
+    SelectObject(dc, oldPen);
+    SelectObject(dc, oldBrush);
+    DeleteObject(pen);
+    DeleteObject(brush);
+
+    const int paddingX = ScaleForDpi(static_cast<int>(theme_.metric(L"toast", L"paddingX", 12.0f)), dpi_);
+    const int paddingY = ScaleForDpi(static_cast<int>(theme_.metric(L"toast", L"paddingY", 9.0f)), dpi_);
+    InflateRect(&rect, -paddingX, -paddingY);
+    SetBkMode(dc, TRANSPARENT);
+    SetTextColor(dc, ToColorRef(theme_.color(L"toast", state, L"text")));
+    HFONT oldFont = reinterpret_cast<HFONT>(SelectObject(dc, font()));
+    UINT format = DT_NOPREFIX | (toastOptions_.multiline ? DT_WORDBREAK : DT_SINGLELINE);
+    DrawTextW(dc, toastText_.c_str(), static_cast<int>(toastText_.size()), &rect, format);
+    SelectObject(dc, oldFont);
+}
+
+LRESULT CALLBACK ThemedWindowUi::ToastProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
+    ThemedWindowUi* ui = reinterpret_cast<ThemedWindowUi*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    if (message == WM_NCCREATE) {
+        auto* create = reinterpret_cast<CREATESTRUCTW*>(lParam);
+        ui = static_cast<ThemedWindowUi*>(create->lpCreateParams);
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(ui));
+    }
+    switch (message) {
+    case WM_NCHITTEST:
+        return HTTRANSPARENT;
+    case WM_ERASEBKGND:
+        return 1;
+    case WM_PAINT:
+        if (ui) {
+            PAINTSTRUCT ps{};
+            HDC dc = BeginPaint(hwnd, &ps);
+            ui->PaintToast(dc);
+            EndPaint(hwnd, &ps);
+            return 0;
+        }
+        break;
+    case WM_NCDESTROY:
+        if (ui && ui->toast_ == hwnd) {
+            ui->toast_ = nullptr;
+            ui->toastLayoutValid_ = false;
+        }
+        break;
+    default:
+        break;
+    }
+    return DefWindowProcW(hwnd, message, wParam, lParam);
+}
+
 void ThemedWindowUi::FillBackground(HDC dc) const {
     if (!dc) {
         return;
@@ -889,6 +1112,11 @@ void ThemedWindowUi::ReleaseResources() {
     if (tooltip_) {
         DestroyWindow(tooltip_);
         tooltip_ = nullptr;
+    }
+    KillTimer(hwnd_, kToastTimerId);
+    if (toast_) {
+        DestroyWindow(toast_);
+        toast_ = nullptr;
     }
     if (font_ && ownsFont_) {
         DeleteObject(font_);

@@ -99,6 +99,7 @@ struct AppConfig {
     std::wstring webDavRemotePath = L"/Quattro/backups/";
     std::wstring webDavUserName;
     int webDavKeepCount = 10;
+    std::wstring webDavLastSyncAt;
 
     bool httpServerEnabled = false;
     bool httpServerAutoStart = false;
