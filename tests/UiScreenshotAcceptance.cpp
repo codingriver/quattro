@@ -758,7 +758,7 @@ int wmain() {
         });
 
     RunDialogScenario(
-        Scenario{L"update-confirm", L"QuattroUpdateCheckDialog", L"检查更新", L"update-confirm.png", {L"发现新版本", L"当前版本", L"v0.0.1", L"最新版本", L"v0.3.0", L"下载更新", L"发布页", L"取消"}, {}, 0, 3, false},
+        Scenario{L"update-confirm", L"QuattroUpdateCheckDialog", L"检查更新", L"update-confirm.png", {L"发现新版本", L"当前版本", L"v0.0.1", L"最新版本", L"v0.3.0", L"Quattro-x64.exe（12.0 MB）", L"下载更新", L"发布页", L"取消"}, {}, 0, 3, false},
         outputDir,
         state,
         [&]() {
@@ -767,6 +767,7 @@ int wmain() {
             info.currentVersion = L"0.0.1";
             info.latestVersion = L"0.3.0";
             info.assetName = L"Quattro-x64.exe";
+            info.assetSizeBytes = 12ull * 1024ull * 1024ull;
             info.releaseNotes = L"修复更新下载进度；统一检查更新窗口布局；优化公共主题组件。";
             ShowUpdateCheckDialog(owner, instance, theme, info);
         });
@@ -818,14 +819,15 @@ int wmain() {
         });
 
     const std::vector<std::pair<std::wstring, std::vector<std::wstring>>> settingsPages{
-        {L"显示", {L"显示标题栏", L"透明度", L"标签文字", L"分组宽度"}},
-        {L"行为", {L"窗口行为", L"系统集成", L"自动跟踪 Git 右键菜单", L"自动跟踪 SVN 右键菜单", L"自动跟踪 VS Code 右键菜单", L"自动跟踪终端右键菜单", L"自动跟踪压缩工具右键菜单"}},
-        {L"交互", {L"双击运行", L"分组激活延迟", L"标签激活延迟"}},
-        {L"热键", {L"启用全局快捷键", L"主窗口显隐", L"进程定位器"}},
-        {L"链接", {L"打开目录命令", L"帮助链接", L"更新链接", L"FAQ 链接"}},
-        {L"WebDAV", {L"启用 WebDAV 备份", L"服务器地址", L"远端目录", L"上传到云端"}},
-        {L"HTTP", {L"服务选项", L"站点绑定", L"运行控制", L"配置目录"}},
-        {L"备份", {L"配置包", L"导出配置包", L"待办事项单独备份", L"含已完成", L"缓存维护", L"重置右键菜单"}},
+        {L"显示", {L"界面元素", L"布局与外观", L"显示标题栏", L"透明度", L"标签文字", L"分组宽度"}},
+        {L"行为", {L"窗口行为", L"运行与数据", L"系统集成", L"启动后隐藏", L"开机启动", L"启用日志"}},
+        {L"右键菜单", {L"自动跟踪", L"自动跟踪 Git 右键菜单", L"自动跟踪 SVN 右键菜单", L"自动跟踪 VS Code 右键菜单", L"显示 CMD/PowerShell/WSL", L"自动跟踪压缩工具右键菜单", L"缓存维护", L"重置右键菜单"}},
+        {L"交互", {L"启动操作", L"悬停激活", L"双击运行", L"分组激活延迟", L"标签激活延迟"}},
+        {L"热键", {L"全局快捷键", L"启用全局快捷键", L"主窗口显隐", L"进程定位器"}},
+        {L"链接", {L"目录命令", L"公共链接", L"打开目录命令", L"帮助链接", L"更新链接", L"FAQ 链接"}},
+        {L"WebDAV", {L"WebDAV 备份", L"启用 WebDAV 备份", L"服务器地址", L"用户名", L"远端目录", L"测试连接", L"上传到云端"}},
+        {L"HTTP", {L"服务配置", L"运行控制", L"高级配置", L"配置目录"}},
+        {L"备份", {L"配置包", L"导出配置包", L"待办事项", L"含已完成"}},
     };
     for (const auto& [page, expected] : settingsPages) {
         Scenario settingsScenario{

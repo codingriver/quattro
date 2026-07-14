@@ -9,6 +9,7 @@
 #include "Models.h"
 #include "PluginRegistry.h"
 #include "ShellContextMenuCacheService.h"
+#include "TerminalContextMenuService.h"
 #include "Storage.h"
 #include "SystemFunctions.h"
 #include "Theme.h"
@@ -218,7 +219,9 @@ private:
     void RefreshAllIcons();
     void RefreshTagLinks(int tagId);
     void RefreshGroupLinks(int groupId);
-    void RefreshLinkResources(Link& link);
+    void RefreshLinkResources(
+        Link& link,
+        const TerminalContextMenuRefreshContext* terminalContext = nullptr);
     void RefreshLinkIcon(int linkId);
     void RequestInitialUrlIconDownload(const Link& link);
     void OnUrlIconDownloaded(int linkId, bool success);

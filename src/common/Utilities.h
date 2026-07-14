@@ -14,6 +14,7 @@ std::filesystem::path QuattroUserConfigDirectory();
 std::wstring Trim(const std::wstring& value);
 std::wstring ToLower(std::wstring value);
 std::wstring FormatVersionForDisplay(const std::wstring& version);
+std::wstring FormatByteSizeForDisplay(std::uint64_t bytes);
 std::wstring FormatLastError(DWORD error);
 std::wstring LoadUtf8File(const std::filesystem::path& path);
 bool FileExists(const std::filesystem::path& path);

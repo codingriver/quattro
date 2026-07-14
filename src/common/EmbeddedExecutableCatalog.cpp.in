@@ -1,0 +1,36 @@
+#include "EmbeddedExecutableCatalog.h"
+#include "EmbeddedExecutableManager.h"
+
+#include <array>
+
+@EMBEDDED_EXECUTABLE_DECLARATIONS@
+namespace {
+const std::array<const EmbeddedExecutableDescriptor*, @EMBEDDED_EXECUTABLE_COUNT@>& Catalog() {
+    static const std::array<const EmbeddedExecutableDescriptor*, @EMBEDDED_EXECUTABLE_COUNT@> catalog{{
+@EMBEDDED_EXECUTABLE_ENTRIES@    }};
+    return catalog;
+}
+}
+
+const EmbeddedExecutableDescriptor* FindEmbeddedExecutable(std::wstring_view id) {
+    for (const EmbeddedExecutableDescriptor* descriptor : Catalog()) {
+        if (descriptor && descriptor->id && id == descriptor->id) return descriptor;
+    }
+    return nullptr;
+}
+
+std::vector<const EmbeddedExecutableDescriptor*> EmbeddedExecutableCatalog() {
+    return {Catalog().begin(), Catalog().end()};
+}
+
+EmbeddedExecutablePrepareResult PrepareEmbeddedExecutable(
+    std::wstring_view id,
+    const EmbeddedExecutablePrepareOptions& options) {
+    const EmbeddedExecutableDescriptor* descriptor = FindEmbeddedExecutable(id);
+    if (!descriptor) {
+        EmbeddedExecutablePrepareResult result;
+        result.message = L"当前构建没有注册请求的内嵌组件。";
+        return result;
+    }
+    return PrepareEmbeddedExecutable(*descriptor, options);
+}

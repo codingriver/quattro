@@ -1,51 +1,14 @@
 #include "UpdateInstaller.h"
 
 #include "AppLog.h"
-#include "EmbeddedUpdater.h"
+#include "EmbeddedExecutableManager.h"
 #include "Utilities.h"
 
 #include <windows.h>
 
-#include <fstream>
 #include <system_error>
 
 namespace {
-std::filesystem::path UpdaterDirectory() {
-    return QuattroUserConfigDirectory() / L"updater";
-}
-
-std::filesystem::path ExtractedUpdaterPath() {
-    return UpdaterDirectory() / L"QuattroUpdater.exe";
-}
-
-bool WriteEmbeddedUpdater(const std::filesystem::path& path, std::wstring& error) {
-    const unsigned char* data = EmbeddedUpdaterData();
-    const std::size_t size = EmbeddedUpdaterSize();
-    if (!data || size == 0) {
-        error = L"当前构建没有嵌入更新器。";
-        return false;
-    }
-
-    std::error_code ec;
-    std::filesystem::create_directories(path.parent_path(), ec);
-    if (ec) {
-        error = L"创建更新器目录失败: " + path.parent_path().wstring();
-        return false;
-    }
-
-    std::ofstream file(path, std::ios::binary | std::ios::trunc);
-    if (!file) {
-        error = L"写入更新器失败: " + path.wstring();
-        return false;
-    }
-    file.write(reinterpret_cast<const char*>(data), static_cast<std::streamsize>(size));
-    if (!file.good()) {
-        error = L"写入更新器失败: " + path.wstring();
-        return false;
-    }
-    return true;
-}
-
 std::filesystem::path AbsolutePath(const std::filesystem::path& path) {
     std::error_code ec;
     std::filesystem::path absolute = std::filesystem::absolute(path, ec);
@@ -97,11 +60,14 @@ bool LaunchEmbeddedUpdater(const UpdateInstallPlan& plan, std::wstring& error) {
         return false;
     }
 
-    const std::filesystem::path updater = ExtractedUpdaterPath();
-    if (!WriteEmbeddedUpdater(updater, error)) {
+    const EmbeddedExecutablePrepareResult prepared = PrepareEmbeddedExecutable(
+        L"quattro-updater", {QuattroEmbeddedExecutableRootDirectory()});
+    if (!prepared.success) {
+        error = prepared.message;
         WriteAppLog(L"启动更新器失败: " + error);
         return false;
     }
+    const std::filesystem::path updater = prepared.path;
 
     std::wstring command = BuildCommandLine(updater, plan);
     WriteAppLog(

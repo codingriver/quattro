@@ -9,7 +9,7 @@
 #include <limits>
 
 namespace {
-constexpr std::array<char, 8> kMagic{{'Q', 'S', 'C', 'M', 'E', 'N', 'U', '5'}};
+constexpr std::array<char, 8> kMagic{{'Q', 'S', 'C', 'M', 'E', 'N', 'U', '6'}};
 constexpr std::uint32_t kMaxEntries = 10000;
 constexpr std::uint32_t kMaxItems = 1000;
 constexpr std::uint32_t kMaxIcons = 10000;
@@ -54,12 +54,17 @@ bool ReadItem(std::istream& stream, ShellContextMenuItem& item, std::uint32_t de
         return false;
     }
     std::uint8_t flags = 0;
+    std::uint8_t actionKind = 0;
     std::uint32_t childCount = 0;
     if (!ReadString(stream, item.providerId) || !ReadValue(stream, flags) ||
         !ReadString(stream, item.text) || !ReadString(stream, item.verb) ||
+        !ReadValue(stream, actionKind) || actionKind > static_cast<std::uint8_t>(ShellContextMenuActionKind::Terminal) ||
+        !ReadString(stream, item.actionId) || !ReadString(stream, item.executable) ||
+        !ReadString(stream, item.arguments) || !ReadString(stream, item.workingDirectory) ||
         !ReadValue(stream, childCount) || childCount > kMaxItems) {
         return false;
     }
+    item.actionKind = static_cast<ShellContextMenuActionKind>(actionKind);
     item.enabled = (flags & 0x01) != 0;
     item.checked = (flags & 0x02) != 0;
     item.separator = (flags & 0x04) != 0;
@@ -81,6 +86,11 @@ void WriteItem(std::ostream& stream, const ShellContextMenuItem& item, std::uint
     WriteValue(stream, flags);
     WriteString(stream, item.text);
     WriteString(stream, item.verb);
+    WriteValue(stream, static_cast<std::uint8_t>(item.actionKind));
+    WriteString(stream, item.actionId);
+    WriteString(stream, item.executable);
+    WriteString(stream, item.arguments);
+    WriteString(stream, item.workingDirectory);
     const auto childCount = depth < 3
         ? static_cast<std::uint32_t>(std::min<std::size_t>(item.children.size(), kMaxItems))
         : 0;
@@ -145,6 +155,10 @@ std::wstring ShellContextMenuCacheService::IconKey(
         return {};
     }
     const std::wstring provider = ToLower(item.providerId);
+    if (item.actionKind == ShellContextMenuActionKind::Terminal && !item.actionId.empty()) {
+        return provider + L"|terminal|" + ToLower(item.actionId) + L"|" +
+            ToLower(std::filesystem::path(item.executable).filename().wstring());
+    }
     const std::wstring verb = ToLower(Trim(item.verb));
     if (!verb.empty()) {
         return provider + L"|verb|" + verb;

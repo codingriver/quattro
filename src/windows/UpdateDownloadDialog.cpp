@@ -12,7 +12,6 @@
 #include <commctrl.h>
 #include <memory>
 #include <mutex>
-#include <sstream>
 #include <thread>
 
 namespace {
@@ -20,25 +19,6 @@ constexpr int ID_PROGRESS = 2701;
 constexpr int ID_CANCEL = 2702;
 constexpr UINT_PTR ID_REFRESH_TIMER = 21;
 constexpr UINT WM_DOWNLOAD_DONE = WM_APP + 0x90;
-
-std::wstring FormatBytes(std::uint64_t bytes) {
-    const wchar_t* units[] = {L"B", L"KB", L"MB", L"GB"};
-    double value = static_cast<double>(bytes);
-    int unit = 0;
-    while (value >= 1024.0 && unit < 3) {
-        value /= 1024.0;
-        ++unit;
-    }
-    std::wstringstream stream;
-    if (unit == 0) {
-        stream << bytes << L" " << units[unit];
-    } else {
-        stream.setf(std::ios::fixed);
-        stream.precision(value >= 10.0 ? 1 : 2);
-        stream << value << L" " << units[unit];
-    }
-    return stream.str();
-}
 
 void SetText(HWND hwnd, const std::wstring& value) {
     if (hwnd) {
@@ -208,8 +188,8 @@ private:
     void RefreshUi() {
         const std::uint64_t downloaded = downloadedBytes_.load();
         const std::uint64_t total = totalBytes_.load();
-        SetText(sizeLabel_, total == 0 ? L"未知" : FormatBytes(total));
-        SetText(downloadedLabel_, FormatBytes(downloaded));
+        SetText(sizeLabel_, total == 0 ? L"未知" : FormatByteSizeForDisplay(total));
+        SetText(downloadedLabel_, FormatByteSizeForDisplay(downloaded));
         if (!cancelRequested_.load()) {
             SetText(statusLabel_, total != 0 && downloaded >= total ? L"正在校验更新包..." : L"正在下载更新包...");
         }

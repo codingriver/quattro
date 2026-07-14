@@ -86,6 +86,24 @@ std::wstring FormatVersionForDisplay(const std::wstring& version) {
     return L"v" + result;
 }
 
+std::wstring FormatByteSizeForDisplay(std::uint64_t bytes) {
+    const wchar_t* units[] = {L"B", L"KB", L"MB", L"GB"};
+    double value = static_cast<double>(bytes);
+    int unit = 0;
+    while (value >= 1024.0 && unit < 3) {
+        value /= 1024.0;
+        ++unit;
+    }
+
+    std::wstringstream stream;
+    if (unit == 0) {
+        stream << bytes << L" " << units[unit];
+    } else {
+        stream << std::fixed << std::setprecision(value >= 10.0 ? 1 : 2) << value << L" " << units[unit];
+    }
+    return stream.str();
+}
+
 std::wstring FormatLastError(DWORD error) {
     if (error == 0) {
         error = GetLastError();

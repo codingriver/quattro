@@ -1,6 +1,7 @@
 #pragma once
 
 #include <d2d1.h>
+#include <windows.h>
 
 #include <filesystem>
 #include <string>
@@ -20,6 +21,11 @@ struct Color {
 class Theme {
 public:
     static Theme Load(const std::filesystem::path& themeDirectory, const std::wstring& themeName);
+    static Theme Load(
+        const std::filesystem::path& themeDirectory,
+        const std::wstring& themeName,
+        HINSTANCE fallbackModule,
+        int fallbackResourceId);
 
     Color color(const std::wstring& component, const std::wstring& state, const std::wstring& role) const;
     float metric(const std::wstring& component, const std::wstring& name, float fallback) const;

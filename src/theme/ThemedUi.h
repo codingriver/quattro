@@ -465,6 +465,10 @@ public:
         ThemedButtonWidthMode widthMode,
         int fixedWidth = 0) const;
     int textWidth(const std::wstring& text) const;
+    int comboBoxWidth(const std::vector<std::wstring>& items) const;
+    int tableColumnWidth(const std::wstring& widestText) const;
+    RECT tabStripRect(RECT bounds) const;
+    int tabPageTop(RECT tabStrip) const;
     int footerButtonX(int buttonIndex, int buttonCount) const;
     int footerButtonY(int buttonHeight) const;
     int centeredGroupX(int groupWidth) const;
@@ -480,6 +484,8 @@ public:
     void SetStatusTextRole(HWND hwnd, ThemedStatusRole role) const;
     HWND StatusBadge(const std::wstring& text, int x, int y, int width, ThemedStatusRole role = ThemedStatusRole::Normal) const;
     void SetStatusBadgeRole(HWND hwnd, ThemedStatusRole role) const;
+    static void SetText(HWND hwnd, const std::wstring& text);
+    static void SetVisible(HWND hwnd, bool visible);
     void SetEnabled(HWND hwnd, bool enabled) const;
     static void SetControlSurface(HWND hwnd, ThemedControlSurface surface);
     void MoveControl(HWND hwnd, int x, int y, int width) const;
@@ -562,6 +568,9 @@ public:
     static void SetTabSelected(HWND hwnd, bool selected);
     static bool IsTabSelected(HWND hwnd);
     HWND ComboBox(int id, int x, int y, int width, ThemedComboBoxOptions options = {}) const;
+    static void SetComboBoxItems(HWND comboBox, const std::vector<std::wstring>& items, int selectedIndex = 0);
+    static void SetComboBoxSelectedIndex(HWND comboBox, int selectedIndex, bool notify = false);
+    static int ComboBoxSelectedIndex(HWND comboBox);
     HWND ListBox(int id, int x, int y, int width, int height, ThemedListBoxOptions options = {}) const;
     HWND Table(int id, RECT frame, const std::vector<ThemedTableColumn>& columns, ThemedTableOptions options = {}) const;
     static void SetTableRows(HWND table, const std::vector<ThemedTableRow>& rows);
@@ -571,6 +580,7 @@ public:
     static bool IsTableRowEnabled(HWND table, int index);
     static int TableRowCount(HWND table);
     static int TableSelectedIndex(HWND table);
+    static void SetTableSelectedIndex(HWND table, int index);
     static std::intptr_t TableRowKey(HWND table, int index);
     static int TableHitTest(HWND table, POINT point, bool fullRow = false, bool* stateIcon = nullptr);
     static void SetTableIconSpacing(HWND table, int x, int y);

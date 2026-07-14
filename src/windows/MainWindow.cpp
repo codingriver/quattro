@@ -3,6 +3,7 @@
 #include "AboutDialog.h"
 #include "AppLog.h"
 #include "BuiltinTools.h"
+#include "EmbeddedExecutableManager.h"
 #include "Elevation.h"
 #include "HotKeyEditor.h"
 #include "LinkEditDialog.h"
@@ -4668,14 +4669,25 @@ void MainWindow::ShowWindowsContextMenu(int linkId, POINT screenPoint) {
     }
     DockAutoHidePause dockPause(*this);
     const ShellContextMenuTrackingOptions tracking = TrackedShellMenuOptions();
+    ShellContextMenuTrackingOptions nativeTracking = tracking;
+    nativeTracking.terminal = false;
     ShellContextMenuSnapshot snapshot;
     ShellItemService::ShowNativeContextMenu(
         hwnd_,
         *link,
         screenPoint,
-        tracking,
+        nativeTracking,
         &snapshot);
-    shellContextMenuCache_.Update(*link, snapshot, tracking);
+    shellContextMenuCache_.Update(*link, snapshot, nativeTracking);
+    if (tracking.terminal) {
+        ShellContextMenuTrackingOptions terminalOnly;
+        terminalOnly.terminal = true;
+        ShellContextMenuSnapshot terminalSnapshot;
+        terminalSnapshot.complete = true;
+        const auto terminalContext = TerminalContextMenuService::DetectAvailablePrograms();
+        terminalSnapshot.items = TerminalContextMenuService::ItemsFor(*link, terminalContext);
+        shellContextMenuCache_.Update(*link, terminalSnapshot, terminalOnly);
+    }
 }
 
 void MainWindow::ExecuteTrackedShellMenuAction(std::size_t index) {
@@ -4686,9 +4698,12 @@ void MainWindow::ExecuteTrackedShellMenuAction(std::size_t index) {
     if (!link) {
         return;
     }
+    const auto& command = menuTrackedShellCommands_[index];
     std::wstring error;
-    if (!ShellItemService::InvokeTrackedContextMenuItem(
-            hwnd_, *link, menuTrackedShellCommands_[index], error)) {
+    const bool invoked = command.actionKind == ShellContextMenuActionKind::Terminal
+        ? TerminalContextMenuService::Invoke(hwnd_, command, error)
+        : ShellItemService::InvokeTrackedContextMenuItem(hwnd_, *link, command, error);
+    if (!invoked) {
         MessageBoxW(
             hwnd_,
             error.empty() ? L"执行原生菜单命令失败。" : error.c_str(),
@@ -5216,6 +5231,29 @@ void MainWindow::OpenBuiltinTool(std::size_t index) {
 }
 
 void MainWindow::OpenBuiltinToolEngine(const std::wstring& engine, bool locateProcessOnOpen) {
+    if (engine == L"app-launch-locker") {
+        const EmbeddedExecutablePrepareResult prepared = PrepareEmbeddedExecutable(
+            L"app-launch-locker", {QuattroEmbeddedExecutableRootDirectory()});
+        if (!prepared.success) {
+            WriteAppLog(L"准备自启动管理工具失败: " + prepared.message);
+            ShowThemedMessageBox(hwnd_, instance_, theme_, prepared.message, L"自启动管理", MB_OK | MB_ICONWARNING);
+            return;
+        }
+        STARTUPINFOW startup{};
+        startup.cb = sizeof(startup);
+        PROCESS_INFORMATION process{};
+        if (!CreateProcessW(
+                prepared.path.c_str(), nullptr, nullptr, nullptr, FALSE, 0, nullptr,
+                prepared.path.parent_path().c_str(), &startup, &process)) {
+            const std::wstring error = L"无法启动自启动管理工具：" + FormatLastError(GetLastError());
+            WriteAppLog(error);
+            ShowThemedMessageBox(hwnd_, instance_, theme_, error, L"自启动管理", MB_OK | MB_ICONWARNING);
+            return;
+        }
+        CloseHandle(process.hThread);
+        CloseHandle(process.hProcess);
+        return;
+    }
     ShowBuiltinTool(hwnd_, instance_, theme_, pluginRegistry_, config_, engine, locateProcessOnOpen);
 }
 
@@ -5289,7 +5327,9 @@ void MainWindow::RefreshAllIcons() {
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
-void MainWindow::RefreshLinkResources(Link& link) {
+void MainWindow::RefreshLinkResources(
+    Link& link,
+    const TerminalContextMenuRefreshContext* terminalContext) {
     if (IsUrlLink(link)) {
         shellContextMenuCache_.Remove(link.id);
         urlIconDownloadService_.RequestManualRefresh(hwnd_, WM_QUATTRO_URL_ICON_DOWNLOADED, link);
@@ -5300,9 +5340,26 @@ void MainWindow::RefreshLinkResources(Link& link) {
     if (!tracking.Any()) {
         return;
     }
-    ShellContextMenuSnapshot snapshot;
-    if (ShellItemService::QueryTrackedContextMenu(hwnd_, link, tracking, snapshot)) {
-        shellContextMenuCache_.Update(link, snapshot, tracking);
+    ShellContextMenuTrackingOptions nativeTracking = tracking;
+    nativeTracking.terminal = false;
+    if (nativeTracking.Any()) {
+        ShellContextMenuSnapshot snapshot;
+        if (ShellItemService::QueryTrackedContextMenu(hwnd_, link, nativeTracking, snapshot)) {
+            shellContextMenuCache_.Update(link, snapshot, nativeTracking);
+        }
+    }
+    if (tracking.terminal) {
+        TerminalContextMenuRefreshContext localContext;
+        if (!terminalContext) {
+            localContext = TerminalContextMenuService::DetectAvailablePrograms();
+            terminalContext = &localContext;
+        }
+        ShellContextMenuTrackingOptions terminalOnly;
+        terminalOnly.terminal = true;
+        ShellContextMenuSnapshot terminalSnapshot;
+        terminalSnapshot.complete = true;
+        terminalSnapshot.items = TerminalContextMenuService::ItemsFor(link, *terminalContext);
+        shellContextMenuCache_.Update(link, terminalSnapshot, terminalOnly);
     }
 }
 
@@ -5311,9 +5368,15 @@ void MainWindow::RefreshTagLinks(int tagId) {
     if (!tag || !IsOrdinaryTag(*tag)) {
         return;
     }
+    TerminalContextMenuRefreshContext terminalContext;
+    const TerminalContextMenuRefreshContext* terminalContextPtr = nullptr;
+    if (config_.trackTerminalContextMenu) {
+        terminalContext = TerminalContextMenuService::DetectAvailablePrograms();
+        terminalContextPtr = &terminalContext;
+    }
     for (auto& link : model_.links) {
         if (link.parentGroup == tagId && !BuiltinSystemFunctionForLink(link)) {
-            RefreshLinkResources(link);
+            RefreshLinkResources(link, terminalContextPtr);
         }
     }
     InvalidateRect(hwnd_, nullptr, FALSE);
@@ -5330,9 +5393,15 @@ void MainWindow::RefreshGroupLinks(int groupId) {
             ordinaryTagIds.insert(tag.id);
         }
     }
+    TerminalContextMenuRefreshContext terminalContext;
+    const TerminalContextMenuRefreshContext* terminalContextPtr = nullptr;
+    if (config_.trackTerminalContextMenu) {
+        terminalContext = TerminalContextMenuService::DetectAvailablePrograms();
+        terminalContextPtr = &terminalContext;
+    }
     for (auto& link : model_.links) {
         if (ordinaryTagIds.contains(link.parentGroup) && !BuiltinSystemFunctionForLink(link)) {
-            RefreshLinkResources(link);
+            RefreshLinkResources(link, terminalContextPtr);
         }
     }
     InvalidateRect(hwnd_, nullptr, FALSE);
@@ -6521,13 +6590,13 @@ void MainWindow::AppendTrackedShellMenuItems(HMENU menu, const Link& link) {
         return;
     }
     AppendThemedSeparator(menu);
-    std::vector<std::wstring> providerOrder;
-    for (const auto& item : items) {
-        if (!item.providerId.empty() &&
-            std::find(providerOrder.begin(), providerOrder.end(), item.providerId) == providerOrder.end()) {
-            providerOrder.push_back(item.providerId);
-        }
-    }
+    const std::array<std::wstring, 5> providerOrder{{
+        ShellContextMenuProviderId::VsCode,
+        ShellContextMenuProviderId::Git,
+        ShellContextMenuProviderId::Svn,
+        ShellContextMenuProviderId::Terminal,
+        ShellContextMenuProviderId::Archive,
+    }};
     bool firstProvider = true;
     for (const auto& providerId : providerOrder) {
         std::vector<ShellContextMenuItem> providerItems;
@@ -6582,6 +6651,11 @@ void MainWindow::AppendTrackedShellMenuItems(
             locator.providerId = item.providerId;
             locator.path = path;
             locator.verb = item.verb;
+            locator.actionKind = item.actionKind;
+            locator.actionId = item.actionId;
+            locator.executable = item.executable;
+            locator.arguments = item.arguments;
+            locator.workingDirectory = item.workingDirectory;
             const UINT command = ID_MENU_TRACKED_SHELL_ACTION_BASE +
                 static_cast<UINT>(menuTrackedShellCommands_.size());
             menuTrackedShellCommands_.push_back(std::move(locator));

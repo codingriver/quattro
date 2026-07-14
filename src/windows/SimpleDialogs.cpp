@@ -46,6 +46,7 @@ constexpr int ID_GLOBAL_HOTKEYS_ENABLED = 300;
 constexpr int ID_MAIN_HOTKEY_CAPTURE = 301;
 constexpr int ID_MAIN_HOTKEY_CLEAR = 302;
 constexpr int ID_PROCESS_LOCATOR_HOTKEY_CAPTURE = 303;
+constexpr int ID_HOTKEY_TABLE = 304;
 constexpr int ID_GROUP_WIDTH = 401;
 constexpr int ID_TAG_WIDTH = 402;
 constexpr int ID_DOCK_DELAY = 403;
@@ -1959,7 +1960,7 @@ public:
         HICON icon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_QUATTRO_APP_ICON));
         ThemedWindowCreateOptions options = ThemedWindowUi::DialogOptions(
             instance_, owner_, L"QuattroSettingsDialog", L"设置", SettingsDialog::Proc, this, icon, icon);
-        options.clientWidth = 544;
+        options.clientWidth = 656;
         options.clientHeight = 441;
         options.placement = ThemedWindowPlacement::OffsetOwner;
         options.offsetX = 60;
@@ -1993,13 +1994,14 @@ private:
     enum TabIndex {
         TabDisplay = 0,
         TabBehavior = 1,
-        TabInteraction = 2,
-        TabHotKeys = 3,
-        TabLinks = 4,
-        TabWebDav = 5,
-        TabHttp = 6,
-        TabBackup = 7,
-        TabCount = 8,
+        TabContextMenu = 2,
+        TabInteraction = 3,
+        TabHotKeys = 4,
+        TabLinks = 5,
+        TabWebDav = 6,
+        TabHttp = 7,
+        TabBackup = 8,
+        TabCount = 9,
     };
 
     struct TabChild {
@@ -2123,7 +2125,7 @@ private:
     }
 
     void CreateTabs() {
-        const wchar_t* titles[] = {L"显示", L"行为", L"交互", L"热键", L"链接", L"WebDAV", L"HTTP", L"备份"};
+        const wchar_t* titles[] = {L"显示", L"行为", L"右键菜单", L"交互", L"热键", L"链接", L"WebDAV", L"HTTP", L"备份"};
         RECT client{};
         GetClientRect(hwnd_, &client);
         const int clientWidth = std::max(1, static_cast<int>(client.right - client.left));
@@ -2201,6 +2203,45 @@ private:
         return group;
     }
 
+    void AddHotKeyTableRows() {
+        if (!hotKeyTable_) return;
+        ThemedUi::SetTableRows(hotKeyTable_, {
+            ThemedTableRow{
+                ID_MAIN_HOTKEY_CAPTURE,
+                {
+                    ThemedTableCell{L"主窗口显隐"},
+                    ThemedTableCell{FormatMainHotKeyText(draft_.mainHotKey)},
+                    ThemedTableCell{L"录入"},
+                },
+            },
+            ThemedTableRow{
+                ID_PROCESS_LOCATOR_HOTKEY_CAPTURE,
+                {
+                    ThemedTableCell{L"进程定位器"},
+                    ThemedTableCell{FormatGlobalHotKeyText(draft_.processLocatorHotKey)},
+                    ThemedTableCell{L"录入"},
+                },
+            },
+        });
+    }
+
+    bool HandleHotKeyTableEvent(LPARAM lParam) {
+        ThemedTableEvent event{};
+        if (!ThemedUi::DecodeTableEvent(hotKeyTable_, lParam, event)) {
+            return false;
+        }
+        if (event.kind != ThemedTableEventKind::Activated &&
+            (event.kind != ThemedTableEventKind::Click || event.column != 2)) {
+            return true;
+        }
+        if (event.rowKey == ID_MAIN_HOTKEY_CAPTURE) {
+            TrySetMainHotKey(ShowHotKeyCaptureDialog(hwnd_, instance_, theme_, draft_.mainHotKey));
+        } else if (event.rowKey == ID_PROCESS_LOCATOR_HOTKEY_CAPTURE) {
+            TrySetProcessLocatorHotKey(ShowHotKeyCaptureDialog(hwnd_, instance_, theme_, draft_.processLocatorHotKey));
+        }
+        return true;
+    }
+
     AppConfig ReadCurrentTabDraft() {
         AppConfig value = config_;
         switch (currentTab_) {
@@ -2231,12 +2272,14 @@ private:
             value.saveRunCount = ThemedUi::IsChecked(saveRunCount_);
             value.autoRun = ThemedUi::IsChecked(autoRun_);
             value.loggingEnabled = ThemedUi::IsChecked(loggingEnabled_);
+            value.dockDelay = ClampNumber(dockDelayEdit_, 0, 5000, value.dockDelay);
+            break;
+        case TabContextMenu:
             value.trackGitContextMenu = ThemedUi::IsChecked(trackGitContextMenu_);
             value.trackSvnContextMenu = ThemedUi::IsChecked(trackSvnContextMenu_);
             value.trackVsCodeContextMenu = ThemedUi::IsChecked(trackVsCodeContextMenu_);
             value.trackTerminalContextMenu = ThemedUi::IsChecked(trackTerminalContextMenu_);
             value.trackArchiveContextMenu = ThemedUi::IsChecked(trackArchiveContextMenu_);
-            value.dockDelay = ClampNumber(dockDelayEdit_, 0, 5000, value.dockDelay);
             break;
         case TabInteraction:
             value.doubleClickToRun = ThemedUi::IsChecked(doubleClick_);
@@ -2958,48 +3001,8 @@ private:
             const int settingsClientWidth = settingsUi.clientWidth();
             const int pageLeft = behaviorLayout.contentInsetX;
             const int pageWidth = settingsClientWidth - behaviorLayout.contentInsetX * 2;
-            const int pageColumnGap = behaviorLayout.controlGapX * 2;
-            const int pageColumnWidth = (pageWidth - pageColumnGap) / 2;
-            const int pageRightColumn = pageLeft + pageColumnWidth + pageColumnGap;
             const int pageTop = tabStripRect_.bottom + behaviorLayout.sectionGap;
-            const int checkRowStep = behaviorLayout.RowStep(settingsUi.checkBoxHeight());
-            const int fieldRowStep = behaviorLayout.RowStep(settingsUi.editHeight());
 
-            int displayY = pageTop;
-            showTitle_ = CheckBox(TabDisplay, 101, L"显示标题栏", pageLeft, displayY, draft_.showTitle, pageColumnWidth);
-            showGroup_ = CheckBox(TabDisplay, 102, L"显示分组栏", pageRightColumn, displayY, draft_.showGroup, pageColumnWidth);
-            displayY += checkRowStep;
-            showTag_ = CheckBox(TabDisplay, 103, L"显示标签栏", pageLeft, displayY, draft_.showTag, pageColumnWidth);
-            showToolboxButton_ = CheckBox(TabDisplay, 115, L"显示工具箱按钮", pageRightColumn, displayY, draft_.showToolboxButton, pageColumnWidth);
-            displayY += checkRowStep;
-            showSkinButton_ = CheckBox(TabDisplay, 121, L"显示主题按钮", pageLeft, displayY, draft_.showSkinButton, pageColumnWidth);
-            linkNameSingleLine_ = CheckBox(TabDisplay, 118, L"启动项名称单行", pageRightColumn, displayY, draft_.linkNameSingleLine, pageColumnWidth);
-            displayY += checkRowStep;
-            showTooltip_ = CheckBox(TabDisplay, 119, L"显示提示", pageLeft, displayY, draft_.showTooltip, pageColumnWidth);
-            groupRight_ = CheckBox(TabDisplay, 120, L"分组栏在右侧", pageRightColumn, displayY, draft_.groupRight, pageColumnWidth);
-            displayY += checkRowStep;
-            tagRight_ = CheckBox(TabDisplay, 122, L"标签栏在右侧", pageLeft, displayY, draft_.tagRight, pageColumnWidth);
-            displayY += checkRowStep + behaviorLayout.sectionGap;
-
-            const int displayLabelWidth = behaviorForm.labelWidthForTexts({L"透明度", L"标签文字", L"分组宽度", L"标签宽度"});
-            const int displayFieldWidth = pageColumnWidth - displayLabelWidth - behaviorLayout.labelGap;
-            Label(TabDisplay, L"透明度", pageLeft, displayY, displayLabelWidth);
-            alphaEdit_ = NumberEdit(TabDisplay, 201, pageLeft + displayLabelWidth + behaviorLayout.labelGap, displayY, displayFieldWidth, draft_.alpha);
-            Label(TabDisplay, L"标签文字", pageRightColumn, displayY, displayLabelWidth);
-            const int alignButtonWidth = settingsUi.tabButtonWidth(L"左");
-            const int alignX = pageRightColumn + displayLabelWidth + behaviorLayout.labelGap;
-            tagAlignLeft_ = settingsUi.TabButton(ID_TAG_ALIGN_LEFT, L"左", alignX, ContentY(displayY), alignButtonWidth, false);
-            tagAlignCenter_ = settingsUi.TabButton(ID_TAG_ALIGN_CENTER, L"中", alignX + alignButtonWidth, ContentY(displayY), alignButtonWidth, true);
-            tagAlignRight_ = settingsUi.TabButton(ID_TAG_ALIGN_RIGHT, L"右", alignX + alignButtonWidth * 2, ContentY(displayY), alignButtonWidth, false);
-            AddTabChild(tagAlignLeft_, TabDisplay);
-            AddTabChild(tagAlignCenter_, TabDisplay);
-            AddTabChild(tagAlignRight_, TabDisplay);
-            SelectTagAlign();
-            displayY += fieldRowStep;
-            Label(TabDisplay, L"分组宽度", pageLeft, displayY, displayLabelWidth);
-            groupWidthEdit_ = NumberEdit(TabDisplay, ID_GROUP_WIDTH, pageLeft + displayLabelWidth + behaviorLayout.labelGap, displayY, displayFieldWidth, draft_.groupWidth);
-            Label(TabDisplay, L"标签宽度", pageRightColumn, displayY, displayLabelWidth);
-            tagWidthEdit_ = NumberEdit(TabDisplay, ID_TAG_WIDTH, pageRightColumn + displayLabelWidth + behaviorLayout.labelGap, displayY, displayFieldWidth, draft_.tagWidth);
             const int behaviorFrameLeft = behaviorLayout.contentInsetX;
             const int behaviorFrameRight = settingsClientWidth - behaviorLayout.contentInsetX;
             const ThemedContentInsets groupInsets = settingsUi.groupBoxInsets();
@@ -3013,6 +3016,63 @@ private:
             const int behaviorLeft = behaviorContentLeft;
             const int behaviorRight = behaviorContentLeft + behaviorColumnWidth + behaviorColumnGap;
             const int behaviorCheckWidth = behaviorColumnWidth;
+
+            const ThemedSectionGeometry displayElementsSection = behaviorForm.section(
+                behaviorFrameLeft, pageTop, behaviorFrameWidth,
+                {behaviorForm.sectionRow({ThemedSectionItemKind::CheckBox}),
+                 behaviorForm.sectionRow({ThemedSectionItemKind::CheckBox}),
+                 behaviorForm.sectionRow({ThemedSectionItemKind::CheckBox})});
+            HWND displayElementsGroup = AddSectionFrame(TabDisplay, L"界面元素", displayElementsSection.frame);
+            const int displayElementsFirstY = behaviorForm.sectionItemY(displayElementsSection, 0, behaviorCheckHeight);
+            const int displayElementsSecondY = behaviorForm.sectionItemY(displayElementsSection, 1, behaviorCheckHeight);
+            const int displayElementsThirdY = behaviorForm.sectionItemY(displayElementsSection, 2, behaviorCheckHeight);
+            showTitle_ = CheckBox(TabDisplay, 101, L"显示标题栏", behaviorLeft, displayElementsFirstY, draft_.showTitle, behaviorCheckWidth);
+            showGroup_ = CheckBox(TabDisplay, 102, L"显示分组栏", behaviorRight, displayElementsFirstY, draft_.showGroup, behaviorCheckWidth);
+            showTag_ = CheckBox(TabDisplay, 103, L"显示标签栏", behaviorLeft, displayElementsSecondY, draft_.showTag, behaviorCheckWidth);
+            showToolboxButton_ = CheckBox(TabDisplay, 115, L"显示工具箱按钮", behaviorRight, displayElementsSecondY, draft_.showToolboxButton, behaviorCheckWidth);
+            showSkinButton_ = CheckBox(TabDisplay, 121, L"显示主题按钮", behaviorLeft, displayElementsThirdY, draft_.showSkinButton, behaviorCheckWidth);
+            showTooltip_ = CheckBox(TabDisplay, 119, L"显示提示", behaviorRight, displayElementsThirdY, draft_.showTooltip, behaviorCheckWidth);
+            ThemedUi::BindGroupChildren(displayElementsGroup, {showTitle_, showGroup_, showTag_, showToolboxButton_, showSkinButton_, showTooltip_});
+
+            const ThemedSectionGeometry displayLayoutSection = behaviorForm.section(
+                behaviorFrameLeft, displayElementsSection.frame.bottom + behaviorFrameGap, behaviorFrameWidth,
+                {behaviorForm.sectionRow({ThemedSectionItemKind::CheckBox}),
+                 behaviorForm.sectionRow({ThemedSectionItemKind::CheckBox}),
+                 behaviorForm.sectionRow({ThemedSectionItemKind::Label, ThemedSectionItemKind::Edit}),
+                 behaviorForm.sectionRow({ThemedSectionItemKind::Label, ThemedSectionItemKind::Edit})});
+            HWND displayLayoutGroup = AddSectionFrame(TabDisplay, L"布局与外观", displayLayoutSection.frame);
+            const int displayLayoutFirstY = behaviorForm.sectionItemY(displayLayoutSection, 0, behaviorCheckHeight);
+            const int displayLayoutSecondY = behaviorForm.sectionItemY(displayLayoutSection, 1, behaviorCheckHeight);
+            linkNameSingleLine_ = CheckBox(TabDisplay, 118, L"启动项名称单行", behaviorLeft, displayLayoutFirstY, draft_.linkNameSingleLine, behaviorCheckWidth);
+            groupRight_ = CheckBox(TabDisplay, 120, L"分组栏在右侧", behaviorRight, displayLayoutFirstY, draft_.groupRight, behaviorCheckWidth);
+            tagRight_ = CheckBox(TabDisplay, 122, L"标签栏在右侧", behaviorLeft, displayLayoutSecondY, draft_.tagRight, behaviorCheckWidth);
+
+            const int displayLabelWidth = behaviorForm.labelWidthForTexts({L"透明度", L"标签文字", L"分组宽度", L"标签宽度"});
+            const int displayFieldWidth = behaviorColumnWidth - displayLabelWidth - behaviorLayout.labelGap;
+            const int displayThirdLabelY = behaviorForm.sectionItemY(displayLayoutSection, 2, settingsUi.labelHeight());
+            const int displayThirdFieldY = behaviorForm.sectionItemY(displayLayoutSection, 2, settingsUi.editHeight());
+            HWND alphaLabel = Label(TabDisplay, L"透明度", behaviorLeft, displayThirdLabelY, displayLabelWidth);
+            alphaEdit_ = NumberEdit(TabDisplay, 201, behaviorLeft + displayLabelWidth + behaviorLayout.labelGap, displayThirdFieldY, displayFieldWidth, draft_.alpha);
+            HWND tagAlignLabel = Label(TabDisplay, L"标签文字", behaviorRight, displayThirdLabelY, displayLabelWidth);
+            const int alignButtonWidth = settingsUi.tabButtonWidth(L"左");
+            const int alignX = behaviorRight + displayLabelWidth + behaviorLayout.labelGap;
+            tagAlignLeft_ = settingsUi.TabButton(ID_TAG_ALIGN_LEFT, L"左", alignX, ContentY(displayThirdFieldY), alignButtonWidth, false);
+            tagAlignCenter_ = settingsUi.TabButton(ID_TAG_ALIGN_CENTER, L"中", alignX + alignButtonWidth, ContentY(displayThirdFieldY), alignButtonWidth, true);
+            tagAlignRight_ = settingsUi.TabButton(ID_TAG_ALIGN_RIGHT, L"右", alignX + alignButtonWidth * 2, ContentY(displayThirdFieldY), alignButtonWidth, false);
+            AddTabChild(tagAlignLeft_, TabDisplay);
+            AddTabChild(tagAlignCenter_, TabDisplay);
+            AddTabChild(tagAlignRight_, TabDisplay);
+            SelectTagAlign();
+            const int displayFourthLabelY = behaviorForm.sectionItemY(displayLayoutSection, 3, settingsUi.labelHeight());
+            const int displayFourthFieldY = behaviorForm.sectionItemY(displayLayoutSection, 3, settingsUi.editHeight());
+            HWND groupWidthLabel = Label(TabDisplay, L"分组宽度", behaviorLeft, displayFourthLabelY, displayLabelWidth);
+            groupWidthEdit_ = NumberEdit(TabDisplay, ID_GROUP_WIDTH, behaviorLeft + displayLabelWidth + behaviorLayout.labelGap, displayFourthFieldY, displayFieldWidth, draft_.groupWidth);
+            HWND tagWidthLabel = Label(TabDisplay, L"标签宽度", behaviorRight, displayFourthLabelY, displayLabelWidth);
+            tagWidthEdit_ = NumberEdit(TabDisplay, ID_TAG_WIDTH, behaviorRight + displayLabelWidth + behaviorLayout.labelGap, displayFourthFieldY, displayFieldWidth, draft_.tagWidth);
+            ThemedUi::BindGroupChildren(displayLayoutGroup, {
+                linkNameSingleLine_, groupRight_, tagRight_, alphaLabel, alphaEdit_, tagAlignLabel,
+                tagAlignLeft_, tagAlignCenter_, tagAlignRight_, groupWidthLabel, groupWidthEdit_, tagWidthLabel, tagWidthEdit_});
+
             const int behaviorDelayLabelWidth = behaviorForm.labelWidthForText(L"停靠延迟");
             const int behaviorUnitWidth = behaviorForm.labelWidthForText(L"ms");
             const int behaviorFieldWidth = behaviorColumnWidth - behaviorDelayLabelWidth - behaviorLayout.labelGap
@@ -3050,145 +3110,238 @@ private:
             const int behaviorRunFrameTop = behaviorWindowSection.frame.bottom + behaviorFrameGap;
             const ThemedSectionGeometry behaviorRunSection = behaviorForm.section(
                 behaviorFrameLeft, behaviorRunFrameTop, behaviorFrameWidth,
-                {behaviorForm.sectionRow({ThemedSectionItemKind::CheckBox}),
-                 behaviorForm.sectionRow({ThemedSectionItemKind::CheckBox})});
+                {behaviorForm.sectionRow({ThemedSectionItemKind::CheckBox})});
             HWND behaviorRunGroup = AddSectionFrame(TabBehavior, L"运行与数据", behaviorRunSection.frame);
             const int behaviorRunFirstY = behaviorForm.sectionItemY(behaviorRunSection, 0, behaviorCheckHeight);
-            const int behaviorRunSecondY = behaviorForm.sectionItemY(behaviorRunSection, 1, behaviorCheckHeight);
-            hideAfterLink_ = CheckBox(TabBehavior, 107, L"启动项运行后隐藏", behaviorLeft, behaviorRunFirstY, draft_.hideAfterLink, behaviorCheckWidth);
-            saveRunCount_ = CheckBox(TabBehavior, 112, L"记录运行次数", behaviorRight, behaviorRunFirstY, draft_.saveRunCount, behaviorCheckWidth);
-            deleteConfirm_ = CheckBox(TabBehavior, 111, L"删除前确认", behaviorLeft, behaviorRunSecondY, draft_.deleteConfirm, behaviorCheckWidth);
+            const int behaviorRunColumnWidth = behaviorContentWidth / 3;
+            hideAfterLink_ = CheckBox(TabBehavior, 107, L"启动项运行后隐藏", behaviorLeft, behaviorRunFirstY, draft_.hideAfterLink, behaviorRunColumnWidth);
+            saveRunCount_ = CheckBox(TabBehavior, 112, L"记录运行次数", behaviorLeft + behaviorRunColumnWidth, behaviorRunFirstY, draft_.saveRunCount, behaviorRunColumnWidth);
+            deleteConfirm_ = CheckBox(TabBehavior, 111, L"删除前确认", behaviorLeft + behaviorRunColumnWidth * 2, behaviorRunFirstY, draft_.deleteConfirm, behaviorContentWidth - behaviorRunColumnWidth * 2);
             ThemedUi::BindGroupChildren(behaviorRunGroup, {hideAfterLink_, saveRunCount_, deleteConfirm_});
 
             const int behaviorSystemFrameTop = behaviorRunSection.frame.bottom + behaviorFrameGap;
             const ThemedSectionGeometry behaviorSystemSection = behaviorForm.section(
                 behaviorFrameLeft, behaviorSystemFrameTop, behaviorFrameWidth,
-                {behaviorForm.sectionRow({ThemedSectionItemKind::CheckBox}),
-                 behaviorForm.sectionRow({ThemedSectionItemKind::CheckBox}),
-                 behaviorForm.sectionRow({ThemedSectionItemKind::CheckBox}),
-                 behaviorForm.sectionRow({ThemedSectionItemKind::CheckBox})});
+                {behaviorForm.sectionRow({ThemedSectionItemKind::CheckBox})});
             HWND behaviorSystemGroup = AddSectionFrame(TabBehavior, L"系统集成", behaviorSystemSection.frame);
             const int behaviorSystemFirstY = behaviorForm.sectionItemY(behaviorSystemSection, 0, behaviorCheckHeight);
-            const int behaviorSystemSecondY = behaviorForm.sectionItemY(behaviorSystemSection, 1, behaviorCheckHeight);
-            const int behaviorSystemThirdY = behaviorForm.sectionItemY(behaviorSystemSection, 2, behaviorCheckHeight);
-            const int behaviorSystemFourthY = behaviorForm.sectionItemY(behaviorSystemSection, 3, behaviorCheckHeight);
-            hideOnStart_ = CheckBox(TabBehavior, 116, L"启动后隐藏", behaviorLeft, behaviorSystemFirstY, draft_.hideOnStart, behaviorCheckWidth);
-            autoRun_ = CheckBox(TabBehavior, 117, L"开机启动", behaviorRight, behaviorSystemFirstY, draft_.autoRun, behaviorCheckWidth);
-            trackGitContextMenu_ = CheckBox(
-                TabBehavior, ID_TRACK_GIT_CONTEXT_MENU, L"自动跟踪 Git 右键菜单",
-                behaviorLeft, behaviorSystemSecondY, draft_.trackGitContextMenu, behaviorCheckWidth);
-            trackSvnContextMenu_ = CheckBox(
-                TabBehavior, ID_TRACK_SVN_CONTEXT_MENU, L"自动跟踪 SVN 右键菜单",
-                behaviorRight, behaviorSystemSecondY, draft_.trackSvnContextMenu, behaviorCheckWidth);
-            trackVsCodeContextMenu_ = CheckBox(
-                TabBehavior, ID_TRACK_VSCODE_CONTEXT_MENU, L"自动跟踪 VS Code 右键菜单",
-                behaviorLeft, behaviorSystemThirdY, draft_.trackVsCodeContextMenu, behaviorCheckWidth);
-            trackTerminalContextMenu_ = CheckBox(
-                TabBehavior, ID_TRACK_TERMINAL_CONTEXT_MENU, L"自动跟踪终端右键菜单",
-                behaviorRight, behaviorSystemThirdY, draft_.trackTerminalContextMenu, behaviorCheckWidth);
-            trackArchiveContextMenu_ = CheckBox(
-                TabBehavior, ID_TRACK_ARCHIVE_CONTEXT_MENU, L"自动跟踪压缩工具右键菜单",
-                behaviorLeft, behaviorSystemFourthY, draft_.trackArchiveContextMenu, behaviorCheckWidth);
-            loggingEnabled_ = CheckBox(TabBehavior, ID_LOGGING_ENABLED, L"启用日志", behaviorRight, behaviorSystemFourthY, draft_.loggingEnabled, behaviorCheckWidth);
-            ThemedUi::BindGroupChildren(
-                behaviorSystemGroup,
-                {hideOnStart_, autoRun_, trackGitContextMenu_, trackSvnContextMenu_,
-                 trackVsCodeContextMenu_, trackTerminalContextMenu_, trackArchiveContextMenu_, loggingEnabled_});
+            hideOnStart_ = CheckBox(TabBehavior, 116, L"启动后隐藏", behaviorLeft, behaviorSystemFirstY, draft_.hideOnStart, behaviorRunColumnWidth);
+            autoRun_ = CheckBox(TabBehavior, 117, L"开机启动", behaviorLeft + behaviorRunColumnWidth, behaviorSystemFirstY, draft_.autoRun, behaviorRunColumnWidth);
+            loggingEnabled_ = CheckBox(TabBehavior, ID_LOGGING_ENABLED, L"启用日志", behaviorLeft + behaviorRunColumnWidth * 2, behaviorSystemFirstY, draft_.loggingEnabled, behaviorContentWidth - behaviorRunColumnWidth * 2);
+            ThemedUi::BindGroupChildren(behaviorSystemGroup, {hideOnStart_, autoRun_, loggingEnabled_});
 
-            int interactionY = pageTop;
-            doubleClick_ = CheckBox(TabInteraction, 109, L"双击运行", pageLeft, interactionY, draft_.doubleClickToRun, pageColumnWidth);
-            interactionY += checkRowStep;
-            enterActiveGroup_ = CheckBox(TabInteraction, 124, L"鼠标进入激活分组", pageLeft, interactionY, draft_.mouseEnterActiveGroup, pageColumnWidth);
-            enterActiveTag_ = CheckBox(TabInteraction, 125, L"鼠标进入激活标签", pageRightColumn, interactionY, draft_.mouseEnterActiveTag, pageColumnWidth);
-            interactionY += checkRowStep + behaviorLayout.sectionGap;
+            const ThemedSectionGeometry contextMenuTrackingSection = behaviorForm.section(
+                behaviorFrameLeft, pageTop, behaviorFrameWidth,
+                {behaviorForm.sectionRow({ThemedSectionItemKind::CheckBox}),
+                 behaviorForm.sectionRow({ThemedSectionItemKind::CheckBox}),
+                 behaviorForm.sectionRow({ThemedSectionItemKind::CheckBox})});
+            HWND contextMenuTrackingGroup = AddSectionFrame(TabContextMenu, L"自动跟踪", contextMenuTrackingSection.frame);
+            const int contextMenuTrackingFirstY = behaviorForm.sectionItemY(contextMenuTrackingSection, 0, behaviorCheckHeight);
+            const int contextMenuTrackingSecondY = behaviorForm.sectionItemY(contextMenuTrackingSection, 1, behaviorCheckHeight);
+            const int contextMenuTrackingThirdY = behaviorForm.sectionItemY(contextMenuTrackingSection, 2, behaviorCheckHeight);
+            trackGitContextMenu_ = CheckBox(
+                TabContextMenu, ID_TRACK_GIT_CONTEXT_MENU, L"自动跟踪 Git 右键菜单",
+                behaviorLeft, contextMenuTrackingFirstY, draft_.trackGitContextMenu, behaviorCheckWidth);
+            trackSvnContextMenu_ = CheckBox(
+                TabContextMenu, ID_TRACK_SVN_CONTEXT_MENU, L"自动跟踪 SVN 右键菜单",
+                behaviorRight, contextMenuTrackingFirstY, draft_.trackSvnContextMenu, behaviorCheckWidth);
+            trackVsCodeContextMenu_ = CheckBox(
+                TabContextMenu, ID_TRACK_VSCODE_CONTEXT_MENU, L"自动跟踪 VS Code 右键菜单",
+                behaviorLeft, contextMenuTrackingSecondY, draft_.trackVsCodeContextMenu, behaviorCheckWidth);
+            trackTerminalContextMenu_ = CheckBox(
+                TabContextMenu, ID_TRACK_TERMINAL_CONTEXT_MENU, L"显示 CMD/PowerShell/WSL",
+                behaviorRight, contextMenuTrackingSecondY, draft_.trackTerminalContextMenu, behaviorCheckWidth);
+            trackArchiveContextMenu_ = CheckBox(
+                TabContextMenu, ID_TRACK_ARCHIVE_CONTEXT_MENU, L"自动跟踪压缩工具右键菜单",
+                behaviorLeft, contextMenuTrackingThirdY, draft_.trackArchiveContextMenu, behaviorContentWidth);
+            ThemedUi::BindGroupChildren(
+                contextMenuTrackingGroup,
+                {trackGitContextMenu_, trackSvnContextMenu_, trackVsCodeContextMenu_,
+                 trackTerminalContextMenu_, trackArchiveContextMenu_});
+
+            const int resetContextMenuWidth = settingsUi.buttonWidth(
+                L"重置右键菜单",
+                ThemedButtonRole::Normal,
+                ThemedButtonSize::Compact,
+                ThemedButtonWidthMode::Text);
+            const ThemedSectionGeometry contextMenuMaintenanceSection = behaviorForm.section(
+                behaviorFrameLeft, contextMenuTrackingSection.frame.bottom + behaviorFrameGap, behaviorFrameWidth,
+                {behaviorForm.sectionRow({ThemedSectionItemKind::CompactButton}),
+                 behaviorForm.sectionRow({ThemedSectionItemKind::Label})});
+            HWND contextMenuMaintenanceGroup = AddSectionFrame(TabContextMenu, L"缓存维护", contextMenuMaintenanceSection.frame);
+            HWND resetContextMenuButton = Button(
+                TabContextMenu,
+                ID_RESET_CONTEXT_MENU,
+                L"重置右键菜单",
+                behaviorLeft,
+                behaviorForm.sectionItemY(contextMenuMaintenanceSection, 0, settingsUi.compactButtonHeight()),
+                resetContextMenuWidth);
+            HWND contextMenuMaintenanceNote = Label(
+                TabContextMenu,
+                L"恢复跟踪开关默认值，并清除全部菜单列表、状态与图标缓存。",
+                behaviorLeft,
+                behaviorForm.sectionItemY(contextMenuMaintenanceSection, 1, settingsUi.labelHeight()),
+                behaviorContentWidth);
+            ThemedUi::BindGroupChildren(contextMenuMaintenanceGroup, {resetContextMenuButton, contextMenuMaintenanceNote});
+
+            const ThemedSectionGeometry interactionLaunchSection = behaviorForm.section(
+                behaviorFrameLeft, pageTop, behaviorFrameWidth,
+                {behaviorForm.sectionRow({ThemedSectionItemKind::CheckBox})});
+            HWND interactionLaunchGroup = AddSectionFrame(TabInteraction, L"启动操作", interactionLaunchSection.frame);
+            doubleClick_ = CheckBox(
+                TabInteraction, 109, L"双击运行", behaviorLeft,
+                behaviorForm.sectionItemY(interactionLaunchSection, 0, behaviorCheckHeight),
+                draft_.doubleClickToRun, behaviorContentWidth);
+            ThemedUi::BindGroupChildren(interactionLaunchGroup, {doubleClick_});
+
+            const ThemedSectionGeometry interactionHoverSection = behaviorForm.section(
+                behaviorFrameLeft, interactionLaunchSection.frame.bottom + behaviorFrameGap, behaviorFrameWidth,
+                {behaviorForm.sectionRow({ThemedSectionItemKind::CheckBox}),
+                 behaviorForm.sectionRow({ThemedSectionItemKind::Label, ThemedSectionItemKind::Edit})});
+            HWND interactionHoverGroup = AddSectionFrame(TabInteraction, L"悬停激活", interactionHoverSection.frame);
+            const int interactionHoverCheckY = behaviorForm.sectionItemY(interactionHoverSection, 0, behaviorCheckHeight);
+            enterActiveGroup_ = CheckBox(TabInteraction, 124, L"鼠标进入激活分组", behaviorLeft, interactionHoverCheckY, draft_.mouseEnterActiveGroup, behaviorCheckWidth);
+            enterActiveTag_ = CheckBox(TabInteraction, 125, L"鼠标进入激活标签", behaviorRight, interactionHoverCheckY, draft_.mouseEnterActiveTag, behaviorCheckWidth);
             const int delayLabelWidth = behaviorForm.labelWidthForTexts({L"分组激活延迟", L"标签激活延迟"});
             const int unitWidth = behaviorForm.labelWidthForText(L"ms");
-            const int delayFieldWidth = pageColumnWidth - delayLabelWidth - behaviorLayout.labelGap - behaviorLayout.controlGapX - unitWidth;
-            Label(TabInteraction, L"分组激活延迟", pageLeft, interactionY, delayLabelWidth);
-            groupDelayEdit_ = NumberEdit(TabInteraction, ID_GROUP_DELAY, pageLeft + delayLabelWidth + behaviorLayout.labelGap, interactionY, delayFieldWidth, draft_.activeGroupDelay);
-            Label(TabInteraction, L"ms", pageLeft + pageColumnWidth - unitWidth, interactionY, unitWidth);
-            Label(TabInteraction, L"标签激活延迟", pageRightColumn, interactionY, delayLabelWidth);
-            tagDelayEdit_ = NumberEdit(TabInteraction, ID_TAG_DELAY, pageRightColumn + delayLabelWidth + behaviorLayout.labelGap, interactionY, delayFieldWidth, draft_.activeTagDelay);
-            Label(TabInteraction, L"ms", pageRightColumn + pageColumnWidth - unitWidth, interactionY, unitWidth);
+            const int delayFieldWidth = behaviorColumnWidth - delayLabelWidth - behaviorLayout.labelGap - behaviorLayout.controlGapX - unitWidth;
+            const int interactionDelayLabelY = behaviorForm.sectionItemY(interactionHoverSection, 1, settingsUi.labelHeight());
+            const int interactionDelayEditY = behaviorForm.sectionItemY(interactionHoverSection, 1, settingsUi.editHeight());
+            HWND groupDelayLabel = Label(TabInteraction, L"分组激活延迟", behaviorLeft, interactionDelayLabelY, delayLabelWidth);
+            groupDelayEdit_ = NumberEdit(TabInteraction, ID_GROUP_DELAY, behaviorLeft + delayLabelWidth + behaviorLayout.labelGap, interactionDelayEditY, delayFieldWidth, draft_.activeGroupDelay);
+            HWND groupDelayUnit = Label(TabInteraction, L"ms", behaviorLeft + behaviorColumnWidth - unitWidth, interactionDelayLabelY, unitWidth);
+            HWND tagDelayLabel = Label(TabInteraction, L"标签激活延迟", behaviorRight, interactionDelayLabelY, delayLabelWidth);
+            tagDelayEdit_ = NumberEdit(TabInteraction, ID_TAG_DELAY, behaviorRight + delayLabelWidth + behaviorLayout.labelGap, interactionDelayEditY, delayFieldWidth, draft_.activeTagDelay);
+            HWND tagDelayUnit = Label(TabInteraction, L"ms", behaviorRight + behaviorColumnWidth - unitWidth, interactionDelayLabelY, unitWidth);
+            ThemedUi::BindGroupChildren(interactionHoverGroup, {
+                enterActiveGroup_, enterActiveTag_, groupDelayLabel, groupDelayEdit_, groupDelayUnit,
+                tagDelayLabel, tagDelayEdit_, tagDelayUnit});
 
-            const int hotKeyButtonWidth = settingsUi.buttonWidth(
-                L"录入", ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Text);
-            const int hotKeyNameWidth = pageWidth / 3;
-            const int hotKeyValueX = pageLeft + hotKeyNameWidth + behaviorLayout.controlGapX;
-            const int hotKeyActionX = pageLeft + pageWidth - hotKeyButtonWidth;
-            const int hotKeyValueWidth = hotKeyActionX - behaviorLayout.controlGapX - hotKeyValueX;
-            int hotKeyY = pageTop;
+            const ThemedSectionGeometry hotKeySection = behaviorForm.section(
+                behaviorFrameLeft, pageTop, behaviorFrameWidth,
+                {behaviorForm.sectionRow({ThemedSectionItemKind::Toggle}),
+                 behaviorForm.sectionRow({ThemedSectionItemKind::Label}),
+                 behaviorForm.sectionRow({ThemedSectionItemKind::Label, ThemedSectionItemKind::Edit, ThemedSectionItemKind::CompactButton}),
+                 behaviorForm.sectionRow({ThemedSectionItemKind::Label, ThemedSectionItemKind::Edit, ThemedSectionItemKind::CompactButton}),
+                 behaviorForm.sectionRow({ThemedSectionItemKind::Label})});
+            HWND hotKeyGroup = AddSectionFrame(TabHotKeys, L"全局快捷键", hotKeySection.frame);
             globalHotKeysEnabled_ = Toggle(
-                TabHotKeys, ID_GLOBAL_HOTKEYS_ENABLED, L"启用全局快捷键", pageLeft, hotKeyY, draft_.globalHotKeysEnabled, pageWidth);
-            hotKeyY += behaviorLayout.RowStep(settingsUi.buttonHeight(ThemedButtonRole::Normal, ThemedButtonSize::Compact));
-            Label(TabHotKeys, L"功能", pageLeft, hotKeyY, hotKeyNameWidth);
-            Label(TabHotKeys, L"快捷键", hotKeyValueX, hotKeyY, hotKeyValueWidth);
-            Label(TabHotKeys, L"操作", hotKeyActionX, hotKeyY, hotKeyButtonWidth);
-            hotKeyY += behaviorLayout.RowStep(settingsUi.labelHeight());
-            Label(TabHotKeys, L"主窗口显隐", pageLeft, hotKeyY, hotKeyNameWidth);
-            mainHotKeyText_ = FramedStatic(TabHotKeys, hotKeyValueX, hotKeyY, hotKeyValueWidth, FormatMainHotKeyText(draft_.mainHotKey));
-            Button(TabHotKeys, ID_MAIN_HOTKEY_CAPTURE, L"录入", hotKeyActionX, hotKeyY, hotKeyButtonWidth);
-            hotKeyY += fieldRowStep;
-            Label(TabHotKeys, L"进程定位器", pageLeft, hotKeyY, hotKeyNameWidth);
-            processLocatorHotKeyText_ = FramedStatic(
-                TabHotKeys, hotKeyValueX, hotKeyY, hotKeyValueWidth, FormatGlobalHotKeyText(draft_.processLocatorHotKey));
-            Button(TabHotKeys, ID_PROCESS_LOCATOR_HOTKEY_CAPTURE, L"录入", hotKeyActionX, hotKeyY, hotKeyButtonWidth);
-            hotKeyY += fieldRowStep;
-            mainHotKeyStatus_ = Label(TabHotKeys, L"", pageLeft, hotKeyY, pageWidth);
+                TabHotKeys, ID_GLOBAL_HOTKEYS_ENABLED, L"启用全局快捷键", behaviorLeft,
+                behaviorForm.sectionItemY(hotKeySection, 0, settingsUi.toggleHeight()), draft_.globalHotKeysEnabled, behaviorContentWidth);
+            const int hotKeyTableTop = hotKeySection.rowTops[1];
+            const int hotKeyTableBottom = hotKeySection.rowTops[3] + hotKeySection.rowHeights[3];
+            RECT hotKeyTableFrame{
+                behaviorLeft,
+                ContentY(hotKeyTableTop),
+                behaviorLeft + behaviorContentWidth,
+                ContentY(hotKeyTableBottom),
+            };
+            hotKeyTable_ = MakeUi().Table(
+                ID_HOTKEY_TABLE,
+                hotKeyTableFrame,
+                {
+                    ThemedTableColumn{
+                        L"function",
+                        L"功能",
+                        ThemedTableColumnAlign::Start,
+                        ThemedTableColumnWidth::Fixed,
+                        settingsUi.tableColumnWidth(L"进程定位器")},
+                    ThemedTableColumn{
+                        L"hotkey",
+                        L"快捷键",
+                        ThemedTableColumnAlign::Start,
+                        ThemedTableColumnWidth::Remaining},
+                    ThemedTableColumn{
+                        L"action",
+                        L"操作",
+                        ThemedTableColumnAlign::Start,
+                        ThemedTableColumnWidth::Fixed,
+                        settingsUi.tableColumnWidth(L"操作")},
+                });
+            AddTabChild(hotKeyTable_, TabHotKeys);
+            mainHotKeyStatus_ = Label(
+                TabHotKeys, L"", behaviorLeft,
+                behaviorForm.sectionItemY(hotKeySection, 4, settingsUi.labelHeight()), behaviorContentWidth);
+            ThemedUi::BindGroupChildren(hotKeyGroup, {
+                globalHotKeysEnabled_, hotKeyTable_, mainHotKeyStatus_});
             UpdateHotKeyLabels();
 
-            int linksY = pageTop;
-            Label(TabLinks, L"打开目录命令", pageLeft, linksY, pageWidth);
-            linksY += behaviorLayout.RowStep(settingsUi.labelHeight());
-            openDirEdit_ = FramedEdit(TabLinks, 202, pageLeft, linksY, pageWidth, draft_.openDirCommand);
-            linksY += fieldRowStep;
-            Label(TabLinks, L"帮助链接", pageLeft, linksY, pageWidth);
-            linksY += behaviorLayout.RowStep(settingsUi.labelHeight());
-            helpUrlEdit_ = FramedEdit(TabLinks, 203, pageLeft, linksY, pageWidth, draft_.helpUrl);
-            linksY += fieldRowStep;
-            Label(TabLinks, L"更新链接", pageLeft, linksY, pageWidth);
-            linksY += behaviorLayout.RowStep(settingsUi.labelHeight());
-            updateUrlEdit_ = FramedEdit(TabLinks, 204, pageLeft, linksY, pageWidth, draft_.updateUrl);
-            linksY += fieldRowStep;
-            Label(TabLinks, L"FAQ 链接", pageLeft, linksY, pageColumnWidth);
-            Label(TabLinks, L"赞助链接", pageRightColumn, linksY, pageColumnWidth);
-            linksY += behaviorLayout.RowStep(settingsUi.labelHeight());
-            faqUrlEdit_ = FramedEdit(TabLinks, 205, pageLeft, linksY, pageColumnWidth, draft_.faqUrl);
-            rewardUrlEdit_ = FramedEdit(TabLinks, 206, pageRightColumn, linksY, pageColumnWidth, draft_.rewardUrl);
+            const ThemedSectionGeometry directoryCommandSection = behaviorForm.section(
+                behaviorFrameLeft, pageTop, behaviorFrameWidth,
+                {behaviorForm.sectionRow({ThemedSectionItemKind::Label}),
+                 behaviorForm.sectionRow({ThemedSectionItemKind::Edit})});
+            HWND directoryCommandGroup = AddSectionFrame(TabLinks, L"目录命令", directoryCommandSection.frame);
+            HWND openDirLabel = Label(
+                TabLinks, L"打开目录命令", behaviorLeft,
+                behaviorForm.sectionItemY(directoryCommandSection, 0, settingsUi.labelHeight()), behaviorContentWidth);
+            openDirEdit_ = FramedEdit(
+                TabLinks, 202, behaviorLeft,
+                behaviorForm.sectionItemY(directoryCommandSection, 1, settingsUi.editHeight()), behaviorContentWidth, draft_.openDirCommand);
+            ThemedUi::BindGroupChildren(directoryCommandGroup, {openDirLabel, openDirEdit_});
 
-            int webDavY = pageTop;
-            webDavEnabled_ = CheckBox(TabWebDav, 208, L"启用 WebDAV 备份", pageLeft, webDavY, draft_.webDavEnabled, pageWidth);
-            webDavY += checkRowStep;
-            Label(TabWebDav, L"服务器地址", pageLeft, webDavY, pageWidth);
-            webDavY += behaviorLayout.RowStep(settingsUi.labelHeight());
-            webDavUrlEdit_ = FramedEdit(TabWebDav, 209, pageLeft, webDavY, pageWidth, draft_.webDavUrl);
-            webDavY += fieldRowStep;
-            Label(TabWebDav, L"远端目录", pageLeft, webDavY, pageColumnWidth);
-            Label(TabWebDav, L"保留数量", pageRightColumn, webDavY, pageColumnWidth);
-            webDavY += behaviorLayout.RowStep(settingsUi.labelHeight());
-            webDavRemotePathEdit_ = FramedEdit(TabWebDav, 210, pageLeft, webDavY, pageColumnWidth, draft_.webDavRemotePath);
-            webDavKeepCountEdit_ = NumberEdit(TabWebDav, 211, pageRightColumn, webDavY, pageColumnWidth, draft_.webDavKeepCount);
-            webDavY += fieldRowStep;
-            Label(TabWebDav, L"用户名", pageLeft, webDavY, pageColumnWidth);
-            Label(TabWebDav, L"密码/应用密码", pageRightColumn, webDavY, pageColumnWidth);
-            webDavY += behaviorLayout.RowStep(settingsUi.labelHeight());
-            webDavUserNameEdit_ = FramedEdit(TabWebDav, 212, pageLeft, webDavY, pageColumnWidth, draft_.webDavUserName);
-            ThemedEditOptions passwordOptions{};
-            passwordOptions.content = ThemedEditContent::Password;
-            webDavPasswordEdit_ = FramedEdit(TabWebDav, 213, pageRightColumn, webDavY, pageColumnWidth, L"", passwordOptions);
-            webDavY += fieldRowStep + behaviorLayout.sectionGap;
+            const ThemedSectionGeometry publicLinksSection = behaviorForm.section(
+                behaviorFrameLeft, directoryCommandSection.frame.bottom + behaviorFrameGap, behaviorFrameWidth,
+                {behaviorForm.sectionRow({ThemedSectionItemKind::Label}),
+                 behaviorForm.sectionRow({ThemedSectionItemKind::Edit}),
+                 behaviorForm.sectionRow({ThemedSectionItemKind::Label}),
+                 behaviorForm.sectionRow({ThemedSectionItemKind::Edit}),
+                 behaviorForm.sectionRow({ThemedSectionItemKind::Label}),
+                 behaviorForm.sectionRow({ThemedSectionItemKind::Edit})});
+            HWND publicLinksGroup = AddSectionFrame(TabLinks, L"公共链接", publicLinksSection.frame);
+            HWND helpUrlLabel = Label(TabLinks, L"帮助链接", behaviorLeft, behaviorForm.sectionItemY(publicLinksSection, 0, settingsUi.labelHeight()), behaviorContentWidth);
+            helpUrlEdit_ = FramedEdit(TabLinks, 203, behaviorLeft, behaviorForm.sectionItemY(publicLinksSection, 1, settingsUi.editHeight()), behaviorContentWidth, draft_.helpUrl);
+            HWND updateUrlLabel = Label(TabLinks, L"更新链接", behaviorLeft, behaviorForm.sectionItemY(publicLinksSection, 2, settingsUi.labelHeight()), behaviorContentWidth);
+            updateUrlEdit_ = FramedEdit(TabLinks, 204, behaviorLeft, behaviorForm.sectionItemY(publicLinksSection, 3, settingsUi.editHeight()), behaviorContentWidth, draft_.updateUrl);
+            HWND faqUrlLabel = Label(TabLinks, L"FAQ 链接", behaviorLeft, behaviorForm.sectionItemY(publicLinksSection, 4, settingsUi.labelHeight()), behaviorCheckWidth);
+            HWND rewardUrlLabel = Label(TabLinks, L"赞助链接", behaviorRight, behaviorForm.sectionItemY(publicLinksSection, 4, settingsUi.labelHeight()), behaviorCheckWidth);
+            faqUrlEdit_ = FramedEdit(TabLinks, 205, behaviorLeft, behaviorForm.sectionItemY(publicLinksSection, 5, settingsUi.editHeight()), behaviorCheckWidth, draft_.faqUrl);
+            rewardUrlEdit_ = FramedEdit(TabLinks, 206, behaviorRight, behaviorForm.sectionItemY(publicLinksSection, 5, settingsUi.editHeight()), behaviorCheckWidth, draft_.rewardUrl);
+            ThemedUi::BindGroupChildren(publicLinksGroup, {
+                helpUrlLabel, helpUrlEdit_, updateUrlLabel, updateUrlEdit_, faqUrlLabel, rewardUrlLabel, faqUrlEdit_, rewardUrlEdit_});
+
             const int uploadWidth = settingsUi.buttonWidth(L"上传到云端", ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Text);
             const int downloadWidth = settingsUi.buttonWidth(L"从云端下载", ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Text);
             const int testWidth = settingsUi.buttonWidth(L"测试连接", ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Text);
             const int clearWidth = settingsUi.buttonWidth(L"清除密码", ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Text);
-            int webDavButtonX = pageLeft;
-            webDavUploadButton_ = Button(TabWebDav, ID_WEBDAV_UPLOAD, L"上传到云端", webDavButtonX, webDavY, uploadWidth);
-            webDavButtonX += uploadWidth + behaviorLayout.controlGapX;
-            webDavDownloadButton_ = Button(TabWebDav, ID_WEBDAV_DOWNLOAD, L"从云端下载", webDavButtonX, webDavY, downloadWidth);
-            webDavButtonX += downloadWidth + behaviorLayout.controlGapX;
-            webDavTestButton_ = Button(TabWebDav, ID_WEBDAV_TEST, L"测试连接", webDavButtonX, webDavY, testWidth);
-            webDavButtonX += testWidth + behaviorLayout.controlGapX;
-            webDavClearPasswordButton_ = Button(TabWebDav, ID_WEBDAV_CLEAR_PASSWORD, L"清除密码", webDavButtonX, webDavY, clearWidth);
+            const ThemedSectionGeometry webDavSection = behaviorForm.section(
+                behaviorFrameLeft, pageTop, behaviorFrameWidth,
+                {behaviorForm.sectionRow({ThemedSectionItemKind::CheckBox}),
+                 behaviorForm.sectionRow({ThemedSectionItemKind::Label, ThemedSectionItemKind::Edit}),
+                 behaviorForm.sectionRow({ThemedSectionItemKind::Label}),
+                 behaviorForm.sectionRow({ThemedSectionItemKind::Edit}),
+                 behaviorForm.sectionRow({ThemedSectionItemKind::Label}),
+                 behaviorForm.sectionRow({ThemedSectionItemKind::Edit}),
+                 behaviorForm.sectionRow({ThemedSectionItemKind::CompactButton})});
+            HWND webDavGroup = AddSectionFrame(TabWebDav, L"WebDAV 备份", webDavSection.frame);
+            webDavEnabled_ = CheckBox(TabWebDav, 208, L"启用 WebDAV 备份", behaviorLeft, behaviorForm.sectionItemY(webDavSection, 0, behaviorCheckHeight), draft_.webDavEnabled, behaviorContentWidth);
+            const int webDavServerLabelWidth = behaviorForm.labelWidthForText(L"服务器地址");
+            const int webDavServerFieldX = behaviorLeft + webDavServerLabelWidth + behaviorLayout.labelGap;
+            HWND webDavUrlLabel = Label(TabWebDav, L"服务器地址", behaviorLeft, behaviorForm.sectionItemY(webDavSection, 1, settingsUi.labelHeight()), webDavServerLabelWidth);
+            webDavUrlEdit_ = FramedEdit(TabWebDav, 209, webDavServerFieldX, behaviorForm.sectionItemY(webDavSection, 1, settingsUi.editHeight()), behaviorContentWidth - webDavServerLabelWidth - behaviorLayout.labelGap, draft_.webDavUrl);
+            HWND webDavUserLabel = Label(TabWebDav, L"用户名", behaviorLeft, behaviorForm.sectionItemY(webDavSection, 2, settingsUi.labelHeight()), behaviorCheckWidth);
+            HWND webDavPasswordLabel = Label(TabWebDav, L"密码/应用密码", behaviorRight, behaviorForm.sectionItemY(webDavSection, 2, settingsUi.labelHeight()), behaviorCheckWidth);
+            webDavUserNameEdit_ = FramedEdit(TabWebDav, 212, behaviorLeft, behaviorForm.sectionItemY(webDavSection, 3, settingsUi.editHeight()), behaviorCheckWidth, draft_.webDavUserName);
+            ThemedEditOptions passwordOptions{};
+            passwordOptions.content = ThemedEditContent::Password;
+            webDavPasswordEdit_ = FramedEdit(TabWebDav, 213, behaviorRight, behaviorForm.sectionItemY(webDavSection, 3, settingsUi.editHeight()), behaviorCheckWidth, L"", passwordOptions);
+            HWND webDavRemoteLabel = Label(TabWebDav, L"远端目录", behaviorLeft, behaviorForm.sectionItemY(webDavSection, 4, settingsUi.labelHeight()), behaviorCheckWidth);
+            HWND webDavKeepLabel = Label(TabWebDav, L"保留数量", behaviorRight, behaviorForm.sectionItemY(webDavSection, 4, settingsUi.labelHeight()), behaviorCheckWidth);
+            webDavRemotePathEdit_ = FramedEdit(TabWebDav, 210, behaviorLeft, behaviorForm.sectionItemY(webDavSection, 5, settingsUi.editHeight()), behaviorCheckWidth, draft_.webDavRemotePath);
+            webDavKeepCountEdit_ = NumberEdit(TabWebDav, 211, behaviorRight, behaviorForm.sectionItemY(webDavSection, 5, settingsUi.editHeight()), behaviorCheckWidth, draft_.webDavKeepCount);
+            const int webDavButtonsWidth =
+                testWidth + behaviorLayout.controlGapX + clearWidth + behaviorLayout.controlGapX
+                + uploadWidth + behaviorLayout.controlGapX + downloadWidth;
+            const int webDavButtonsX = settingsUi.centeredGroupX(webDavButtonsWidth);
+            const int webDavButtonsY = behaviorForm.sectionItemY(webDavSection, 6, settingsUi.compactButtonHeight());
+            webDavTestButton_ = Button(TabWebDav, ID_WEBDAV_TEST, L"测试连接", webDavButtonsX, webDavButtonsY, testWidth);
+            webDavClearPasswordButton_ = Button(TabWebDav, ID_WEBDAV_CLEAR_PASSWORD, L"清除密码", webDavButtonsX + testWidth + behaviorLayout.controlGapX, webDavButtonsY, clearWidth);
+            webDavUploadButton_ = Button(TabWebDav, ID_WEBDAV_UPLOAD, L"上传到云端", webDavButtonsX + testWidth + behaviorLayout.controlGapX + clearWidth + behaviorLayout.controlGapX, webDavButtonsY, uploadWidth);
+            webDavDownloadButton_ = Button(TabWebDav, ID_WEBDAV_DOWNLOAD, L"从云端下载", webDavButtonsX + testWidth + behaviorLayout.controlGapX + clearWidth + behaviorLayout.controlGapX + uploadWidth + behaviorLayout.controlGapX, webDavButtonsY, downloadWidth);
+            ThemedUi::BindGroupChildren(webDavGroup, {
+                webDavEnabled_, webDavUrlLabel, webDavUrlEdit_, webDavUserLabel,
+                webDavPasswordLabel, webDavUserNameEdit_, webDavPasswordEdit_, webDavTestButton_,
+                webDavClearPasswordButton_, webDavRemoteLabel, webDavKeepLabel,
+                webDavRemotePathEdit_, webDavKeepCountEdit_, webDavUploadButton_, webDavDownloadButton_});
 
             const DialogLayoutMetrics& httpLayout = settingsUi.layout();
             const int httpPanelPaddingX = groupInsets.left;
@@ -3198,36 +3351,30 @@ private:
             const int httpContentRight = httpFrameRight - httpPanelPaddingX;
             const int httpLabelWidth = behaviorForm.labelWidthForTexts({L"站点网址", L"绑定磁盘路径"});
             const int httpFieldX = httpContentLeft + httpLabelWidth + httpLayout.labelGap;
-            const int httpFrameGap = httpLayout.rowGap;
+            const int httpFrameGap = httpLayout.sectionGap;
             const int httpFrameWidth = httpFrameRight - httpFrameLeft;
             const int httpCheckHeight = settingsUi.checkBoxHeight();
             const int httpEditHeight = settingsUi.editHeight();
             const int httpLabelHeight = settingsUi.labelHeight();
             const int httpButtonHeight = settingsUi.compactButtonHeight();
 
-            const int httpOptionsFrameTop = tabStripRect_.bottom + httpLayout.sectionGap;
-            const ThemedSectionGeometry httpOptionsSection = behaviorForm.section(
-                httpFrameLeft, httpOptionsFrameTop, httpFrameWidth,
-                {behaviorForm.sectionRow({ThemedSectionItemKind::CheckBox})});
-            HWND httpOptionsGroup = AddSectionFrame(TabHttp, L"服务选项", httpOptionsSection.frame);
-            const int httpOptionsRowY = behaviorForm.sectionItemY(httpOptionsSection, 0, httpCheckHeight);
-            httpServerAutoStart_ = CheckBox(TabHttp, 215, L"随应用启动", httpContentLeft, httpOptionsRowY, draft_.httpServerAutoStart, httpContentRight - httpContentLeft);
-            ThemedUi::BindGroupChildren(httpOptionsGroup, {httpServerAutoStart_});
-
-            const int httpBindingFrameTop = httpOptionsSection.frame.bottom + httpFrameGap;
-            const ThemedSectionGeometry httpBindingSection = behaviorForm.section(
-                httpFrameLeft, httpBindingFrameTop, httpFrameWidth,
-                {behaviorForm.sectionRow({ThemedSectionItemKind::Label, ThemedSectionItemKind::Edit}),
+            const int httpConfigFrameTop = tabStripRect_.bottom + httpLayout.sectionGap;
+            const ThemedSectionGeometry httpServiceSection = behaviorForm.section(
+                httpFrameLeft, httpConfigFrameTop, httpFrameWidth,
+                {behaviorForm.sectionRow({ThemedSectionItemKind::CheckBox}),
+                 behaviorForm.sectionRow({ThemedSectionItemKind::Label, ThemedSectionItemKind::Edit}),
                  behaviorForm.sectionRow({ThemedSectionItemKind::Label, ThemedSectionItemKind::Edit, ThemedSectionItemKind::CompactButton})});
-            HWND httpBindingGroup = AddSectionFrame(TabHttp, L"站点绑定", httpBindingSection.frame);
+            HWND httpServiceGroup = AddSectionFrame(TabHttp, L"服务配置", httpServiceSection.frame);
             const int httpBrowseWidth = settingsUi.buttonWidth(L"选择", ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Text);
             const int httpOpenRootWidth = settingsUi.buttonWidth(L"打开目录", ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Text);
             const int httpFieldWidth = httpContentRight - httpFieldX - httpLayout.controlGapX * 2 - httpBrowseWidth - httpOpenRootWidth;
-            const int httpAddressLabelY = behaviorForm.sectionItemY(httpBindingSection, 0, httpLabelHeight);
-            const int httpAddressEditY = behaviorForm.sectionItemY(httpBindingSection, 0, httpEditHeight);
-            const int httpRootLabelY = behaviorForm.sectionItemY(httpBindingSection, 1, httpLabelHeight);
-            const int httpRootEditY = behaviorForm.sectionItemY(httpBindingSection, 1, httpEditHeight);
-            const int httpRootButtonY = behaviorForm.sectionItemY(httpBindingSection, 1, httpButtonHeight);
+            const int httpAutoStartY = behaviorForm.sectionItemY(httpServiceSection, 0, httpCheckHeight);
+            httpServerAutoStart_ = CheckBox(TabHttp, 215, L"随应用启动", httpContentLeft, httpAutoStartY, draft_.httpServerAutoStart, httpContentRight - httpContentLeft);
+            const int httpAddressLabelY = behaviorForm.sectionItemY(httpServiceSection, 1, httpLabelHeight);
+            const int httpAddressEditY = behaviorForm.sectionItemY(httpServiceSection, 1, httpEditHeight);
+            const int httpRootLabelY = behaviorForm.sectionItemY(httpServiceSection, 2, httpLabelHeight);
+            const int httpRootEditY = behaviorForm.sectionItemY(httpServiceSection, 2, httpEditHeight);
+            const int httpRootButtonY = behaviorForm.sectionItemY(httpServiceSection, 2, httpButtonHeight);
             HWND httpAddressLabel = Label(TabHttp, L"站点网址", httpContentLeft, httpAddressLabelY, httpLabelWidth);
             httpServerAddressEdit_ = FramedEdit(
                 TabHttp,
@@ -3247,18 +3394,18 @@ private:
             const int httpBrowseX = httpFieldX + httpFieldWidth + httpLayout.controlGapX;
             httpBrowseRootButton_ = Button(TabHttp, ID_HTTP_BROWSE_ROOT, L"选择", httpBrowseX, httpRootButtonY, httpBrowseWidth);
             HWND httpOpenRootButton = Button(TabHttp, ID_HTTP_OPEN_ROOT, L"打开目录", httpBrowseX + httpBrowseWidth + httpLayout.controlGapX, httpRootButtonY, httpOpenRootWidth);
-            ThemedUi::BindGroupChildren(httpBindingGroup, {httpAddressLabel, httpServerAddressEdit_, httpRootLabel, httpServerRootEdit_, httpBrowseRootButton_, httpOpenRootButton});
+            ThemedUi::BindGroupChildren(httpServiceGroup, {
+                httpServerAutoStart_, httpAddressLabel, httpServerAddressEdit_, httpRootLabel,
+                httpServerRootEdit_, httpBrowseRootButton_, httpOpenRootButton});
 
-            const int httpControlFrameTop = httpBindingSection.frame.bottom + httpFrameGap;
+            const int httpControlFrameTop = httpServiceSection.frame.bottom + httpFrameGap;
             const ThemedSectionGeometry httpControlSection = behaviorForm.section(
                 httpFrameLeft, httpControlFrameTop, httpFrameWidth,
                 {behaviorForm.sectionRow({ThemedSectionItemKind::Label, ThemedSectionItemKind::StatusBadge, ThemedSectionItemKind::Text}),
-                 behaviorForm.sectionRow({ThemedSectionItemKind::CompactButton}),
-                 behaviorForm.sectionRow({ThemedSectionItemKind::CompactButton, ThemedSectionItemKind::Text})});
+                 behaviorForm.sectionRow({ThemedSectionItemKind::CompactButton})});
             HWND httpControlGroup = AddSectionFrame(TabHttp, L"运行控制", httpControlSection.frame);
             const int httpStatusY = behaviorForm.sectionItemY(httpControlSection, 0, httpLabelHeight);
             const int httpButtonY = behaviorForm.sectionItemY(httpControlSection, 1, httpButtonHeight);
-            const int httpConfigY = behaviorForm.sectionItemY(httpControlSection, 2, httpButtonHeight);
             const int httpStatusLabelWidth = behaviorForm.labelWidthForText(L"状态");
             HWND httpStatusLabel = Label(TabHttp, L"状态", httpContentLeft, httpStatusY, httpStatusLabelWidth);
             httpServerStatusTag_ = StatusBadge(
@@ -3280,62 +3427,58 @@ private:
             HWND httpHomeButton = Button(TabHttp, ID_HTTP_OPEN_HOME, L"打开网站", httpButtonX, httpButtonY, httpHomeWidth);
             httpButtonX += httpHomeWidth + httpLayout.controlGapX;
             HWND httpCopyButton = Button(TabHttp, ID_HTTP_COPY_URL, L"复制地址", httpButtonX, httpButtonY, httpCopyWidth);
-            const int httpConfigWidth = settingsUi.buttonWidth(L"配置目录", ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Text);
-            HWND httpConfigButton = Button(TabHttp, ID_HTTP_OPEN_CONFIG_DIR, L"配置目录", httpContentLeft, httpConfigY, httpConfigWidth);
-            HWND httpConfigNote = Label(TabHttp, L"详细权限、账号密码、上传、MIME 与下载策略请在配置目录的 http-server.ini 中修改；重启 HTTP 服务后生效。", httpContentLeft + httpConfigWidth + httpLayout.controlGapX, httpConfigY, httpContentRight - httpContentLeft - httpConfigWidth - httpLayout.controlGapX);
             ThemedUi::BindGroupChildren(httpControlGroup, {
                 httpStatusLabel, httpServerStatusTag_, httpServerStatusDetail_, httpStartButton_, httpStopButton_,
-                httpRestartButton_, httpHomeButton, httpCopyButton, httpConfigButton, httpConfigNote});
+                httpRestartButton_, httpHomeButton, httpCopyButton});
+
+            const ThemedSectionGeometry httpAdvancedSection = behaviorForm.section(
+                httpFrameLeft, httpControlSection.frame.bottom + httpFrameGap, httpFrameWidth,
+                {behaviorForm.sectionRow({ThemedSectionItemKind::CompactButton, ThemedSectionItemKind::Text})});
+            HWND httpAdvancedGroup = AddSectionFrame(TabHttp, L"高级配置", httpAdvancedSection.frame);
+            const int httpConfigY = behaviorForm.sectionItemY(httpAdvancedSection, 0, httpButtonHeight);
+            const int httpConfigWidth = settingsUi.buttonWidth(L"配置目录", ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Text);
+            HWND httpConfigButton = Button(TabHttp, ID_HTTP_OPEN_CONFIG_DIR, L"配置目录", httpContentLeft, httpConfigY, httpConfigWidth);
+            HWND httpConfigNote = Label(TabHttp, L"权限、账号、MIME 与下载策略在配置目录修改，重启后生效。", httpContentLeft + httpConfigWidth + httpLayout.controlGapX, httpConfigY, httpContentRight - httpContentLeft - httpConfigWidth - httpLayout.controlGapX);
+            ThemedUi::BindGroupChildren(httpAdvancedGroup, {httpConfigButton, httpConfigNote});
             UpdateHttpStatusLabel();
 
-            int backupY = pageTop;
             const int configExportWidth = settingsUi.buttonWidth(L"导出配置包", ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Text);
             const int configImportWidth = settingsUi.buttonWidth(L"导入配置包", ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Text);
-            const int configButtonsWidth = configExportWidth + behaviorLayout.controlGapX + configImportWidth;
-            const int configButtonsX = settingsUi.centeredGroupX(configButtonsWidth);
-            Label(TabBackup, L"配置包", pageLeft, backupY, pageWidth, ThemedLabelOptions{ThemedTextAlign::Center});
-            backupY += behaviorLayout.RowStep(settingsUi.labelHeight());
-            Button(TabBackup, ID_CONFIG_EXPORT, L"导出配置包", configButtonsX, backupY, configExportWidth);
-            Button(TabBackup, ID_CONFIG_IMPORT, L"导入配置包", configButtonsX + configExportWidth + behaviorLayout.controlGapX, backupY, configImportWidth);
-            backupY += behaviorLayout.RowStep(settingsUi.compactButtonHeight()) + behaviorLayout.sectionGap;
-            Label(TabBackup, L"待办事项单独备份（JSON 格式）", pageLeft, backupY, pageWidth, ThemedLabelOptions{ThemedTextAlign::Center});
-            backupY += behaviorLayout.RowStep(settingsUi.labelHeight());
+            const int configButtonsX = behaviorLeft;
+            const ThemedSectionGeometry configBackupSection = behaviorForm.section(
+                behaviorFrameLeft, pageTop, behaviorFrameWidth,
+                {behaviorForm.sectionRow({ThemedSectionItemKind::CompactButton})});
+            HWND configBackupGroup = AddSectionFrame(TabBackup, L"配置包", configBackupSection.frame);
+            const int configButtonsY = behaviorForm.sectionItemY(configBackupSection, 0, settingsUi.compactButtonHeight());
+            HWND configExportButton = Button(TabBackup, ID_CONFIG_EXPORT, L"导出配置包", configButtonsX, configButtonsY, configExportWidth);
+            HWND configImportButton = Button(TabBackup, ID_CONFIG_IMPORT, L"导入配置包", configButtonsX + configExportWidth + behaviorLayout.controlGapX, configButtonsY, configImportWidth);
+            ThemedUi::BindGroupChildren(configBackupGroup, {configExportButton, configImportButton});
+
             const int todoExportWidth = settingsUi.buttonWidth(L"导出", ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Text);
             const int todoImportWidth = settingsUi.buttonWidth(L"导入", ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Text);
-            const int todoButtonsWidth = todoExportWidth + behaviorLayout.controlGapX + todoImportWidth;
-            const int todoButtonsX = settingsUi.centeredGroupX(todoButtonsWidth);
-            Button(TabBackup, ID_TODO_EXPORT, L"导出", todoButtonsX, backupY, todoExportWidth);
-            Button(TabBackup, ID_TODO_IMPORT, L"导入", todoButtonsX + todoExportWidth + behaviorLayout.controlGapX, backupY, todoImportWidth);
-            backupY += behaviorLayout.RowStep(settingsUi.compactButtonHeight());
-            const int backupCheckWidth = pageWidth / 3;
-            todoIncludeCompleted_ = CheckBox(TabBackup, ID_TODO_INCLUDE_COMPLETED, L"含已完成", pageLeft, backupY, true, backupCheckWidth);
-            todoIncludeDisabled_ = CheckBox(TabBackup, ID_TODO_INCLUDE_DISABLED, L"含已禁用", pageLeft + backupCheckWidth, backupY, true, backupCheckWidth);
-            todoOnlyFuture_ = CheckBox(TabBackup, ID_TODO_ONLY_FUTURE, L"仅未来", pageLeft + backupCheckWidth * 2, backupY, false, pageWidth - backupCheckWidth * 2);
-            backupY += checkRowStep + behaviorLayout.sectionGap;
-            Label(TabBackup, L"待办事项备份可用于 Quattro 恢复，也可通过 Apple 快捷指令导入提醒事项。", pageLeft, backupY, pageWidth, ThemedLabelOptions{ThemedTextAlign::Center});
-            backupY += behaviorLayout.RowStep(settingsUi.labelHeight()) + behaviorLayout.sectionGap;
-            Label(TabBackup, L"缓存维护", pageLeft, backupY, pageWidth, ThemedLabelOptions{ThemedTextAlign::Center});
-            backupY += behaviorLayout.RowStep(settingsUi.labelHeight());
-            const int resetContextMenuWidth = settingsUi.buttonWidth(
-                L"重置右键菜单",
-                ThemedButtonRole::Normal,
-                ThemedButtonSize::Compact,
-                ThemedButtonWidthMode::Text);
-            Button(
+            const int todoButtonsX = behaviorLeft;
+            const ThemedSectionGeometry todoBackupSection = behaviorForm.section(
+                behaviorFrameLeft, configBackupSection.frame.bottom + behaviorFrameGap, behaviorFrameWidth,
+                {behaviorForm.sectionRow({ThemedSectionItemKind::CompactButton}),
+                 behaviorForm.sectionRow({ThemedSectionItemKind::CheckBox}),
+                 behaviorForm.sectionRow({ThemedSectionItemKind::Label})});
+            HWND todoBackupGroup = AddSectionFrame(TabBackup, L"待办事项", todoBackupSection.frame);
+            const int todoButtonsY = behaviorForm.sectionItemY(todoBackupSection, 0, settingsUi.compactButtonHeight());
+            HWND todoExportButton = Button(TabBackup, ID_TODO_EXPORT, L"导出", todoButtonsX, todoButtonsY, todoExportWidth);
+            HWND todoImportButton = Button(TabBackup, ID_TODO_IMPORT, L"导入", todoButtonsX + todoExportWidth + behaviorLayout.controlGapX, todoButtonsY, todoImportWidth);
+            const int backupCheckWidth = behaviorContentWidth / 3;
+            const int backupCheckY = behaviorForm.sectionItemY(todoBackupSection, 1, behaviorCheckHeight);
+            todoIncludeCompleted_ = CheckBox(TabBackup, ID_TODO_INCLUDE_COMPLETED, L"含已完成", behaviorLeft, backupCheckY, true, backupCheckWidth);
+            todoIncludeDisabled_ = CheckBox(TabBackup, ID_TODO_INCLUDE_DISABLED, L"含已禁用", behaviorLeft + backupCheckWidth, backupCheckY, true, backupCheckWidth);
+            todoOnlyFuture_ = CheckBox(TabBackup, ID_TODO_ONLY_FUTURE, L"仅未来", behaviorLeft + backupCheckWidth * 2, backupCheckY, false, behaviorContentWidth - backupCheckWidth * 2);
+            HWND todoBackupNote = Label(
                 TabBackup,
-                ID_RESET_CONTEXT_MENU,
-                L"重置右键菜单",
-                settingsUi.centeredGroupX(resetContextMenuWidth),
-                backupY,
-                resetContextMenuWidth);
-            backupY += behaviorLayout.RowStep(settingsUi.compactButtonHeight());
-            Label(
-                TabBackup,
-                L"恢复跟踪开关默认值，并清除全部菜单列表、状态与图标缓存。",
-                pageLeft,
-                backupY,
-                pageWidth,
-                ThemedLabelOptions{ThemedTextAlign::Center});
+                L"待办事项备份可用于 Quattro 恢复，也可通过 Apple 快捷指令导入提醒事项。",
+                behaviorLeft,
+                behaviorForm.sectionItemY(todoBackupSection, 2, settingsUi.labelHeight()),
+                behaviorContentWidth);
+            ThemedUi::BindGroupChildren(todoBackupGroup, {
+                todoExportButton, todoImportButton, todoIncludeCompleted_, todoIncludeDisabled_, todoOnlyFuture_, todoBackupNote});
 
             const ThemedUi footerUi = MakeUi();
             okButton_ = footerUi.FooterButton(IDOK, L"确定", 0, 3, true, true);
@@ -3350,12 +3493,18 @@ private:
             HDC dc = BeginPaint(hwnd_, &ps);
             windowUi_->FillBackground(dc);
             windowUi_->DrawRegisteredEditFrames(dc);
+            windowUi_->DrawRegisteredTableFrames(dc);
             EndPaint(hwnd_, &ps);
             return 0;
         }
         case WM_SETTINGS_WEBDAV_DONE:
             HandleWebDavResult(std::unique_ptr<SettingsWebDavResult>(reinterpret_cast<SettingsWebDavResult*>(lParam)));
             return 0;
+        case WM_NOTIFY:
+            if (HandleHotKeyTableEvent(lParam)) {
+                return 0;
+            }
+            return DefWindowProcW(hwnd_, message, wParam, lParam);
         case WM_COMMAND:
             if (LOWORD(wParam) == ID_SETTINGS_TAB_CONTROL && HIWORD(wParam) == CBN_SELCHANGE) {
                 ShowTab(ThemedUi::ActiveTab(settingsTabs_));
@@ -3497,12 +3646,7 @@ private:
     }
 
     void UpdateHotKeyLabels() {
-        if (mainHotKeyText_) {
-            SetWindowTextW(mainHotKeyText_, FormatMainHotKeyText(draft_.mainHotKey).c_str());
-        }
-        if (processLocatorHotKeyText_) {
-            SetWindowTextW(processLocatorHotKeyText_, FormatGlobalHotKeyText(draft_.processLocatorHotKey).c_str());
-        }
+        AddHotKeyTableRows();
         if (mainHotKeyStatus_) {
             if (!draft_.globalHotKeysEnabled) {
                 SetWindowTextW(mainHotKeyStatus_, L"全局快捷键已关闭。");
@@ -3579,8 +3723,7 @@ private:
     HWND tagAlignCenter_ = nullptr;
     HWND tagAlignRight_ = nullptr;
     HWND globalHotKeysEnabled_ = nullptr;
-    HWND mainHotKeyText_ = nullptr;
-    HWND processLocatorHotKeyText_ = nullptr;
+    HWND hotKeyTable_ = nullptr;
     HWND mainHotKeyStatus_ = nullptr;
     HWND openDirEdit_ = nullptr;
     HWND helpUrlEdit_ = nullptr;

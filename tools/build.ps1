@@ -324,6 +324,25 @@ function Invoke-UpxCompress {
     "upx: $ExePath ($before -> $after bytes, saved $percent%)"
 }
 
+function Test-FilesHaveSameContent {
+    param(
+        [string]$First,
+        [string]$Second
+    )
+
+    if (!(Test-Path -LiteralPath $First) -or !(Test-Path -LiteralPath $Second)) {
+        return $false
+    }
+    $firstItem = Get-Item -LiteralPath $First
+    $secondItem = Get-Item -LiteralPath $Second
+    if ($firstItem.Length -ne $secondItem.Length) {
+        return $false
+    }
+    $firstHash = (Get-FileHash -LiteralPath $First -Algorithm SHA256).Hash
+    $secondHash = (Get-FileHash -LiteralPath $Second -Algorithm SHA256).Hash
+    return $firstHash -eq $secondHash
+}
+
 function ConvertTo-JsonStringLiteral {
     param([string]$Value)
 
@@ -404,11 +423,14 @@ function Publish-Package {
     $dist = Join-Path $distRoot $DistName
 
     Remove-LegacyBuildOutputs -OutputDir $source
-    if (!(Test-Path (Join-Path $source "Quattro.exe"))) {
+    $sourceQuattro = Join-Path $source "Quattro.exe"
+    if (!(Test-Path $sourceQuattro)) {
         Invoke-PackageBuild -BuildDir $BuildDir
         Remove-LegacyBuildOutputs -OutputDir $source
     }
-
+    if (!(Test-Path $sourceQuattro)) {
+        throw "Quattro executable not found after build: $sourceQuattro"
+    }
     if ($SingleExe) {
         if ([string]::IsNullOrWhiteSpace($SingleExeDirectory)) {
             $singleExeDirectoryPath = $distRoot
@@ -419,19 +441,24 @@ function Publish-Package {
         }
         New-Item -ItemType Directory -Force -Path $singleExeDirectoryPath | Out-Null
         $singleExePath = Join-Path $singleExeDirectoryPath $SingleExeFileName
-        if (Test-Path $singleExePath) {
-            Remove-FileRobust -Path $singleExePath -Purpose "single-exe package"
+        $reuseExisting = !$Upx -and (Test-FilesHaveSameContent -First $sourceQuattro -Second $singleExePath)
+        if ($reuseExisting) {
+            "single-exe unchanged: $singleExePath"
+        } else {
+            if (Test-Path $singleExePath) {
+                Remove-FileRobust -Path $singleExePath -Purpose "single-exe package"
+            }
+            Copy-Item -LiteralPath $sourceQuattro -Destination $singleExePath -Force
+            Invoke-UpxCompress -ExePath $singleExePath
+            "single-exe: $singleExePath"
         }
-        Copy-Item -LiteralPath (Join-Path $source "Quattro.exe") -Destination $singleExePath -Force
-        Invoke-UpxCompress -ExePath $singleExePath
-        "single-exe: $singleExePath"
     } else {
         if (Test-Path $dist) {
             Remove-DirectoryRobust -Path $dist
         }
 
         New-Item -ItemType Directory -Force -Path $dist | Out-Null
-        Copy-Item -LiteralPath (Join-Path $source "Quattro.exe") -Destination $dist
+        Copy-Item -LiteralPath $sourceQuattro -Destination $dist
         Invoke-UpxCompress -ExePath (Join-Path $dist "Quattro.exe")
         Copy-Item -LiteralPath (Join-Path $source "db") -Destination $dist -Recurse -ErrorAction SilentlyContinue
         Copy-Item -LiteralPath (Join-Path $source "theme") -Destination $dist -Recurse -ErrorAction SilentlyContinue
@@ -486,6 +513,9 @@ if (($architectures | Where-Object { $_.Name -eq "x64" }) -and -not [System.Envi
 
 $distRoot = Join-Path $root "dist"
 New-Item -ItemType Directory -Force -Path $distRoot | Out-Null
+Get-ChildItem -LiteralPath $distRoot -Filter "AppLaunchLocker*.exe" -File -ErrorAction SilentlyContinue | ForEach-Object {
+    Remove-FileRobust -Path $_.FullName -Purpose "obsolete external AppLaunchLocker package"
+}
 
 $packageStartTime = Get-Date
 "package date: $($packageStartTime.ToString("yyyy-MM-dd"))"

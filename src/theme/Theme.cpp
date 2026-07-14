@@ -13,6 +13,24 @@ namespace {
 constexpr const wchar_t* kGlobalComponent = L"global";
 constexpr const wchar_t* kNormalState = L"normal";
 
+std::wstring LoadUtf8Resource(HINSTANCE module, int resourceId) {
+    if (!module || resourceId <= 0) return {};
+    HRSRC resource = FindResourceW(module, MAKEINTRESOURCEW(resourceId), RT_RCDATA);
+    if (!resource) return {};
+    HGLOBAL loaded = LoadResource(module, resource);
+    const DWORD size = SizeofResource(module, resource);
+    const char* bytes = loaded ? static_cast<const char*>(LockResource(loaded)) : nullptr;
+    if (!bytes || size == 0) return {};
+    int offset = size >= 3 && static_cast<unsigned char>(bytes[0]) == 0xEF &&
+        static_cast<unsigned char>(bytes[1]) == 0xBB && static_cast<unsigned char>(bytes[2]) == 0xBF ? 3 : 0;
+    const int sourceSize = static_cast<int>(size) - offset;
+    const int length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, bytes + offset, sourceSize, nullptr, 0);
+    if (length <= 0) return {};
+    std::wstring text(static_cast<std::size_t>(length), L'\0');
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, bytes + offset, sourceSize, text.data(), length) != length) return {};
+    return text;
+}
+
 bool IsAllowedComponent(const std::wstring& component) {
     // Theme rules allow shared categories only, not page/control-instance overrides.
     static constexpr const wchar_t* kAllowedComponents[] = {
@@ -215,6 +233,14 @@ std::wstring FindBlock(const std::wstring& xml, const std::wstring& name) {
 }
 
 Theme Theme::Load(const std::filesystem::path& themeDirectory, const std::wstring& themeName) {
+    return Load(themeDirectory, themeName, nullptr, 0);
+}
+
+Theme Theme::Load(
+    const std::filesystem::path& themeDirectory,
+    const std::wstring& themeName,
+    HINSTANCE fallbackModule,
+    int fallbackResourceId) {
     Theme theme;
     theme.SetDefaults();
 
@@ -223,7 +249,8 @@ Theme Theme::Load(const std::filesystem::path& themeDirectory, const std::wstrin
         path = themeDirectory / L"default.xml";
     }
 
-    const std::wstring xml = LoadUtf8File(path);
+    std::wstring xml = LoadUtf8File(path);
+    if (xml.empty()) xml = LoadUtf8Resource(fallbackModule, fallbackResourceId);
     if (!xml.empty()) {
         theme.ParseXml(xml);
         for (const auto& [name, raw] : theme.rawPalette_) {
@@ -522,7 +549,7 @@ void Theme::SetDefaults() {
     PutState(L"toggle", L"checked", L"track", palette_[L"accent"]);
     PutState(L"toggle", L"checked", L"thumb", palette_[L"surface"]);
     PutState(L"toggle", L"checked", L"text", palette_[L"text"]);
-    PutState(L"toggle", L"hover", L"track", palette_[L"focus"]);
+    PutState(L"toggle", L"hover", L"track", palette_[L"border"]);
     PutState(L"toggle", L"hover", L"thumb", palette_[L"surface"]);
     PutState(L"toggle", L"hover", L"text", palette_[L"text"]);
     PutState(L"toggle", L"disabled", L"track", palette_[L"line"]);
@@ -911,6 +938,7 @@ void Theme::SetDefaults() {
     PutMetric(L"groupBox", L"paddingX", 12.0f);
     PutMetric(L"groupBox", L"paddingY", 10.0f);
     PutMetric(L"groupBox", L"titleHeight", 20.0f);
+    PutMetric(L"groupBox", L"titleInsetY", 4.0f);
     PutMetric(L"groupBox", L"contentGapY", 4.0f);
     PutMetric(L"groupBox", L"contentRowGap", 4.0f);
     PutMetric(L"groupBox", L"titleInsetX", 10.0f);

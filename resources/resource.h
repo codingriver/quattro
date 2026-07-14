@@ -1,3 +1,4 @@
 #pragma once
 
 #define IDI_QUATTRO_APP_ICON 101
+#define IDR_QUATTRO_DEFAULT_THEME 102

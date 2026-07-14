@@ -769,7 +769,8 @@ std::vector<ShellContextMenuItem> CollectTrackedItems(
     for (int position = 0; position < count && result.size() < 100; ++position) {
         MENUITEMINFOW info{};
         info.cbSize = sizeof(info);
-        info.fMask = MIIM_FTYPE | MIIM_STATE | MIIM_ID | MIIM_SUBMENU | MIIM_BITMAP | MIIM_DATA;
+        info.fMask = MIIM_FTYPE | MIIM_STATE | MIIM_ID | MIIM_SUBMENU |
+            MIIM_BITMAP | MIIM_CHECKMARKS | MIIM_DATA;
         if (!GetMenuItemInfoW(menu, static_cast<UINT>(position), TRUE, &info)) {
             continue;
         }
@@ -793,6 +794,16 @@ std::vector<ShellContextMenuItem> CollectTrackedItems(
         item.enabled = (info.fState & (MFS_DISABLED | MFS_GRAYED)) == 0;
         item.checked = (info.fState & MFS_CHECKED) != 0;
         CaptureMenuBitmap(info.hbmpItem, item, 3);
+        if (item.iconPixels.empty()) {
+            // Older shell extensions, including WinRAR, use the menu's
+            // unchecked/checked bitmap slots as the icon column instead of
+            // MIIM_BITMAP. Windows Explorer renders these as ordinary command
+            // icons even when the menu item itself is not a checkable option.
+            CaptureMenuBitmap(item.checked ? info.hbmpChecked : info.hbmpUnchecked, item, 3);
+        }
+        if (item.iconPixels.empty()) {
+            CaptureMenuBitmap(item.checked ? info.hbmpUnchecked : info.hbmpChecked, item, 3);
+        }
         if (item.iconPixels.empty() &&
             (info.hbmpItem == HBMMENU_CALLBACK || (info.fType & MFT_OWNERDRAW) != 0)) {
             CaptureOwnerDrawMenuIcon(session, menu, info, item);
@@ -934,6 +945,23 @@ std::wstring ShellItemService::DetectTrackedContextMenuProvider(
     const std::wstring& text,
     const std::wstring& verb) {
     return DetectProviderId(text, verb);
+}
+
+bool ShellItemService::LoadExecutableMenuIcon(
+    const std::wstring& executable,
+    ShellContextMenuItem& item) {
+    if (Trim(executable).empty()) {
+        return false;
+    }
+    HICON largeIcon = nullptr;
+    HICON smallIcon = nullptr;
+    if (ExtractIconExW(executable.c_str(), 0, &largeIcon, &smallIcon, 1) == 0) {
+        return false;
+    }
+    CaptureIconHandle(smallIcon ? smallIcon : largeIcon, item, 1);
+    if (smallIcon) DestroyIcon(smallIcon);
+    if (largeIcon) DestroyIcon(largeIcon);
+    return !item.iconPixels.empty();
 }
 
 bool ShellItemService::IsShellParseName(const std::wstring& value) {

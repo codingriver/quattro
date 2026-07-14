@@ -131,6 +131,12 @@ COLORREF ToColorRef(Color color) {
     return RGB(byte(color.r), byte(color.g), byte(color.b));
 }
 
+int ScaledMetric(HWND hwnd, const Theme& theme, const wchar_t* component, const wchar_t* name, float fallback) {
+    const int logicalPixels = static_cast<int>(theme.metric(component, name, fallback));
+    const UINT dpi = hwnd ? GetDpiForWindow(hwnd) : USER_DEFAULT_SCREEN_DPI;
+    return MulDiv(logicalPixels, static_cast<int>(dpi ? dpi : USER_DEFAULT_SCREEN_DPI), USER_DEFAULT_SCREEN_DPI);
+}
+
 std::wstring WindowText(HWND hwnd) {
     const int length = GetWindowTextLengthW(hwnd);
     std::wstring text(static_cast<std::size_t>(length) + 1, L'\0');
@@ -1211,20 +1217,22 @@ void DrawContainer(const Theme& theme, const DRAWITEMSTRUCT* draw, ControlKind k
     HGDIOBJ oldFont = font ? SelectObject(draw->hDC, font) : nullptr;
     SIZE size{};
     GetTextExtentPoint32W(draw->hDC, title.c_str(), static_cast<int>(title.size()), &size);
-    const int inset = static_cast<int>(theme.metric(L"groupBox", L"titleInsetX", 10.0f));
-    const int gap = static_cast<int>(theme.metric(L"groupBox", L"titleGap", 6.0f));
-    const int titleHeight = static_cast<int>(theme.metric(L"groupBox", L"titleHeight", 20.0f));
+    const int inset = ScaledMetric(draw->hwndItem, theme, L"groupBox", L"titleInsetX", 10.0f);
+    const int gap = ScaledMetric(draw->hwndItem, theme, L"groupBox", L"titleGap", 6.0f);
+    const int titleHeight = ScaledMetric(draw->hwndItem, theme, L"groupBox", L"titleHeight", 20.0f);
+    const int titleInsetY = ScaledMetric(draw->hwndItem, theme, L"groupBox", L"titleInsetY", 4.0f);
+    const LONG titleTop = rect.top + titleInsetY;
     RECT titleBg{
         rect.left + inset - gap / 2,
-        rect.top,
+        titleTop,
         rect.left + inset + size.cx + gap / 2,
-        rect.top + std::max(size.cy, static_cast<LONG>(titleHeight))};
+        titleTop + std::max(size.cy, static_cast<LONG>(titleHeight))};
     HBRUSH background = CreateSolidBrush(ToColorRef(theme.color(L"groupBox", visualState, L"bg")));
     FillRect(draw->hDC, &titleBg, background);
     DeleteObject(background);
     SetBkMode(draw->hDC, TRANSPARENT);
     SetTextColor(draw->hDC, ToColorRef(theme.color(L"groupBox", visualState, L"text")));
-    RECT titleRect{rect.left + inset, rect.top, rect.right - inset, titleBg.bottom};
+    RECT titleRect{rect.left + inset, titleTop, rect.right - inset, titleBg.bottom};
     DrawTextW(draw->hDC, title.c_str(), static_cast<int>(title.size()), &titleRect, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS);
     if (oldFont) SelectObject(draw->hDC, oldFont);
 }
@@ -1764,6 +1772,7 @@ void SetControlTheme(HWND hwnd, const Theme& theme) {
         auto state = FindState(hwnd);
         const ControlKind kind = state ? state->kind : ControlKind::None;
         if (kind == ControlKind::ComboBox || kind == ControlKind::Edit || kind == ControlKind::ProgressBar || kind == ControlKind::Slider
+            || kind == ControlKind::GroupBox
             || kind == ControlKind::Toggle || kind == ControlKind::Radio || kind == ControlKind::StatusBadge || kind == ControlKind::StatusText) {
             StateFor(hwnd).theme = &theme;
         } else {
@@ -1955,11 +1964,13 @@ RECT GroupBoxContentRect(HWND hwnd) {
     const auto state = FindState(hwnd);
     if (!state || !state->theme) return rect;
     const Theme& theme = *state->theme;
-    rect.left += static_cast<int>(theme.metric(L"groupBox", L"paddingX", 12.0f));
-    rect.right -= static_cast<int>(theme.metric(L"groupBox", L"paddingX", 12.0f));
-    rect.top += static_cast<int>(theme.metric(L"groupBox", L"titleHeight", 20.0f))
-        + static_cast<int>(theme.metric(L"groupBox", L"contentGapY", 4.0f));
-    rect.bottom -= static_cast<int>(theme.metric(L"groupBox", L"paddingY", 10.0f));
+    const int paddingX = ScaledMetric(hwnd, theme, L"groupBox", L"paddingX", 12.0f);
+    rect.left += paddingX;
+    rect.right -= paddingX;
+    rect.top += ScaledMetric(hwnd, theme, L"groupBox", L"titleInsetY", 4.0f)
+        + ScaledMetric(hwnd, theme, L"groupBox", L"titleHeight", 20.0f)
+        + ScaledMetric(hwnd, theme, L"groupBox", L"contentGapY", 4.0f);
+    rect.bottom -= ScaledMetric(hwnd, theme, L"groupBox", L"paddingY", 10.0f);
     return rect;
 }
 

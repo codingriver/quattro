@@ -518,7 +518,7 @@
         <Metric name="textHeight" value="20"/>
         <State name="normal" track="@border" thumb="@surface" text="@text"/>
         <State name="checked" track="@accent" thumb="@surface" text="@text"/>
-        <State name="hover" track="@focus" thumb="@surface" text="@text"/>
+        <State name="hover" track="@border" thumb="@surface" text="@text"/>
         <State name="disabled" track="@line" thumb="@surfaceRaised" text="@disabledText"/>
     </Component>
     <Component name="radio">
@@ -569,6 +569,7 @@
         <Metric name="paddingX" value="12"/>
         <Metric name="paddingY" value="10"/>
         <Metric name="titleHeight" value="20"/>
+        <Metric name="titleInsetY" value="4"/>
         <Metric name="contentGapY" value="4"/>
         <Metric name="contentRowGap" value="4"/>
         <Metric name="titleInsetX" value="10"/>

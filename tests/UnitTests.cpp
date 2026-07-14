@@ -1,4 +1,6 @@
 #include "../src/domain/Config.h"
+#include "../src/domain/ConfigVersion.h"
+#include "../src/common/EmbeddedAssetInstaller.h"
 #include "../src/domain/LinkSorting.h"
 #include "../src/services/ConfigPackageService.h"
 #include "../src/services/Launcher.h"
@@ -6,6 +8,7 @@
 #include "../src/domain/PluginRegistry.h"
 #include "../src/services/ShellContextMenuCacheService.h"
 #include "../src/services/ShellItemService.h"
+#include "../src/services/TerminalContextMenuService.h"
 #include "../src/services/Storage.h"
 #include "../src/services/SystemFunctions.h"
 #include "../src/services/UpdateCheckService.h"
@@ -15,6 +18,7 @@
 #include "../src/theme/ThemedWindowUi.h"
 #include "../src/domain/TodoSchedule.h"
 #include "../src/common/Utilities.h"
+#include "../src/common/EmbeddedExecutableManager.h"
 #include "../src/services/WebDavClient.h"
 #include "../src/services/WebDavCredentialService.h"
 #include "../src/services/WebDavRecoveryService.h"
@@ -87,7 +91,42 @@ int wmain() {
     Check(FormatVersionForDisplay(L"V0.1.0") == L"v0.1.0", "Version display normalizes prefix");
     Check(FormatVersionForDisplay(L" 0.1.0 ") == L"v0.1.0", "Version display trims whitespace");
     Check(FormatVersionForDisplay(L"").empty(), "Version display preserves empty value");
+    Check(FormatByteSizeForDisplay(0) == L"0 B", "Byte size display zero");
+    Check(FormatByteSizeForDisplay(1024) == L"1.00 KB", "Byte size display kilobytes");
+    Check(FormatByteSizeForDisplay(12ull * 1024ull * 1024ull) == L"12.0 MB", "Byte size display megabytes");
     Check(QuattroUserConfigDirectory() == unitUserConfigRoot, "User config env override");
+    Check(QuattroEmbeddedExecutableRootDirectory() == unitUserConfigRoot / L"tools",
+        "Embedded executable root follows user config override");
+    {
+        static const unsigned char bytes[] = {'a', 'b', 'c'};
+        const EmbeddedExecutableDescriptor descriptor{
+            L"unit-tool",
+            L"UnitTool.exe",
+            L"1.2.3",
+            L"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+            bytes,
+            sizeof(bytes),
+        };
+        const std::filesystem::path embeddedRoot = unitUserConfigRoot / L"embedded-test";
+        EmbeddedExecutablePrepareResult first = PrepareEmbeddedExecutable(descriptor, {embeddedRoot});
+        Check(first.success && first.written && !first.updated, "Embedded executable first prepare writes file");
+        Check(first.path == embeddedRoot / L"unit-tool" / L"1.2.3" / L"UnitTool.exe",
+            "Embedded executable uses id and version directories");
+        Check(LoadUtf8File(first.path) == L"abc", "Embedded executable writes exact bytes");
+        EmbeddedExecutablePrepareResult second = PrepareEmbeddedExecutable(descriptor, {embeddedRoot});
+        Check(second.success && !second.written && !second.updated, "Embedded executable reuses matching file");
+        {
+            std::ofstream corrupt(first.path, std::ios::binary | std::ios::trunc);
+            corrupt << "damaged";
+        }
+        EmbeddedExecutablePrepareResult repaired = PrepareEmbeddedExecutable(descriptor, {embeddedRoot});
+        Check(repaired.success && repaired.updated, "Embedded executable repairs mismatched file");
+        Check(LoadUtf8File(repaired.path) == L"abc", "Embedded executable repair restores exact bytes");
+        EmbeddedExecutableDescriptor invalid = descriptor;
+        invalid.id = L"..";
+        Check(!PrepareEmbeddedExecutable(invalid, {embeddedRoot}).success,
+            "Embedded executable rejects unsafe path components");
+    }
     {
         ThemedMenuFontCache menuFont;
         HFONT font96 = menuFont.FontForDpi(96);
@@ -252,6 +291,7 @@ int wmain() {
         Check(manifestInfo.latestVersion == L"99.0.0", "Update static manifest version");
         Check(manifestInfo.updateAvailable, "Update static manifest update available");
         Check(manifestInfo.assetName == expectedAsset, "Update static manifest picks architecture asset");
+        Check(manifestInfo.assetSizeBytes == (expectedAsset == L"Quattro-x64.exe" ? 123ull : 456ull), "Update static manifest asset size");
         Check(!manifestInfo.expectedSha256.empty(), "Update static manifest sha256");
         Check(manifestInfo.checksumDownloadUrl.find(L"SHA256SUMS.txt") != std::wstring::npos, "Update static manifest checksum url");
 
@@ -270,6 +310,7 @@ int wmain() {
         Check(UpdateCheckService::ParseReleaseInfoJson(githubApiJson, apiInfo, apiError), "Update GitHub API parse");
         Check(apiInfo.latestVersion == L"v99.1.0", "Update GitHub API version");
         Check(apiInfo.assetName == expectedAsset, "Update GitHub API picks architecture asset");
+        Check(apiInfo.assetSizeBytes == (expectedAsset == L"Quattro-x64.exe" ? 111ull : 222ull), "Update GitHub API asset size");
         Check(apiInfo.expectedSha256.empty(), "Update GitHub API no inline sha256");
         Check(apiInfo.checksumDownloadUrl.find(L"SHA256SUMS.txt") != std::wstring::npos, "Update GitHub API checksum url");
     }
@@ -346,6 +387,58 @@ int wmain() {
     Check(savedConfigText.find(L"password") == std::wstring::npos && savedConfigText.find(L"Password") == std::wstring::npos, "Config does not persist webdav password");
     std::filesystem::remove(temp, ec);
 
+    const std::filesystem::path migrateConfigPath = std::filesystem::temp_directory_path() / L"quattro_unit_conf_migrate.ini";
+    std::filesystem::remove(migrateConfigPath, ec);
+    WritePrivateProfileStringW(L"main", L"nVersion", L"0", migrateConfigPath.c_str());
+    WritePrivateProfileStringW(L"main", L"bTopMost", L"0", migrateConfigPath.c_str());
+    WritePrivateProfileStringW(L"main", L"nWidth", L"777", migrateConfigPath.c_str());
+    WritePrivateProfileStringW(L"main", L"nHeight", L"99999", migrateConfigPath.c_str());
+    WritePrivateProfileStringW(L"main", L"bShowBtnSkin", L"2", migrateConfigPath.c_str());
+    WritePrivateProfileStringW(L"main", L"TagAlign", L"sideways", migrateConfigPath.c_str());
+    WritePrivateProfileStringW(L"main", L"Theme", L"customTheme", migrateConfigPath.c_str());
+    ConfigService migrateService(migrateConfigPath);
+    Check(!migrateService.UpgradeToSchemaVersion(kCurrentConfigSchemaVersion), "Config migration reports incompatible fields");
+    AppConfig migratedConfig = migrateService.Load();
+    Check(migratedConfig.version == kCurrentConfigSchemaVersion, "Config migration writes current schema version");
+    Check(!migratedConfig.topMost, "Config migration preserves valid bool field");
+    Check(migratedConfig.width == 777, "Config migration preserves valid integer field");
+    Check(migratedConfig.height == AppConfig{}.height, "Config migration resets invalid clamped integer");
+    Check(migratedConfig.showSkinButton == AppConfig{}.showSkinButton, "Config migration resets invalid bool");
+    Check(migratedConfig.tagAlign == AppConfig{}.tagAlign, "Config migration resets invalid enum text");
+    Check(migratedConfig.theme == L"customTheme", "Config migration preserves valid theme name");
+    std::filesystem::remove(migrateConfigPath, ec);
+
+    {
+        const std::filesystem::path assetModuleRoot = std::filesystem::temp_directory_path() /
+            (L"quattro_unit_asset_module_" + std::to_wstring(GetCurrentProcessId()));
+        std::filesystem::remove_all(assetModuleRoot, ec);
+        std::filesystem::remove_all(unitUserConfigRoot, ec);
+        std::filesystem::create_directories(assetModuleRoot, ec);
+        EmbeddedAssetInstallResult firstInstall = PrepareEmbeddedAssets(assetModuleRoot);
+        const std::filesystem::path defaultThemePath = firstInstall.appDirectory / L"theme" / L"default.xml";
+        const std::filesystem::path customThemePath = firstInstall.appDirectory / L"theme" / L"custom.xml";
+        const std::wstring embeddedDefaultTheme = LoadUtf8File(defaultThemePath);
+        Check(FileExists(defaultThemePath) && embeddedDefaultTheme.find(L"version=\"2\"") != std::wstring::npos,
+            "Embedded assets install default theme");
+        {
+            std::ofstream theme(defaultThemePath, std::ios::binary | std::ios::trunc);
+            theme << "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                  << "<Theme id=\"default\" displayName=\"default\" version=\"2\"><Palette>"
+                  << "<Color name=\"unit-mutated\" value=\"rgb(1,2,3)\"/>"
+                  << "</Palette></Theme>\n";
+        }
+        {
+            std::ofstream custom(customThemePath, std::ios::binary | std::ios::trunc);
+            custom << "<Theme id=\"custom\" displayName=\"custom\" version=\"1\"/>\n";
+        }
+        EmbeddedAssetInstallResult secondInstall = PrepareEmbeddedAssets(assetModuleRoot);
+        Check(secondInstall.filesUpdated > 0, "Embedded assets overwrite same-version modified default theme");
+        const std::wstring restoredDefaultTheme = LoadUtf8File(defaultThemePath);
+        Check(restoredDefaultTheme == embeddedDefaultTheme, "Embedded assets restore default theme by exact content");
+        Check(FileExists(customThemePath), "Embedded assets keep custom theme files");
+        std::filesystem::remove_all(assetModuleRoot, ec);
+    }
+
     const std::filesystem::path shellMenuCacheRoot = std::filesystem::temp_directory_path() /
         (L"quattro_unit_shell_menu_cache_" + std::to_wstring(GetCurrentProcessId()));
     std::filesystem::remove_all(shellMenuCacheRoot, ec);
@@ -396,7 +489,16 @@ int wmain() {
     secondArchiveItem.iconWidth = 0;
     secondArchiveItem.iconHeight = 0;
     secondArchiveItem.iconPixels.clear();
-    secondSnapshot.items = {secondCodeItem, secondArchiveItem};
+    ShellContextMenuItem terminalItem;
+    terminalItem.providerId = ShellContextMenuProviderId::Terminal;
+    terminalItem.text = L"此处打开 CMD 窗口";
+    terminalItem.verb = L"cmd";
+    terminalItem.actionKind = ShellContextMenuActionKind::Terminal;
+    terminalItem.actionId = L"cmd";
+    terminalItem.executable = L"C:\\Windows\\System32\\cmd.exe";
+    terminalItem.arguments = L"/K";
+    terminalItem.workingDirectory = secondCachedLink.path;
+    secondSnapshot.items = {secondCodeItem, secondArchiveItem, terminalItem};
     {
         ShellContextMenuCacheService shellMenuCache(shellMenuCacheRoot);
         shellMenuCache.Update(cachedLink, shellSnapshot, allTracking);
@@ -407,7 +509,7 @@ int wmain() {
             return item.providerId == ShellContextMenuProviderId::Archive;
         });
         Check(
-            sharedCodeItems.size() == 2 && sharedCodeItems.front().iconPixels == codeItem.iconPixels,
+            sharedCodeItems.size() == 3 && sharedCodeItems.front().iconPixels == codeItem.iconPixels,
             "Shell menu cache shares icons across links");
         Check(
             sharedArchive != sharedCodeItems.end() && sharedArchive->iconPixels == archiveItem.iconPixels,
@@ -429,8 +531,16 @@ int wmain() {
             "Shell menu cache native icon persistence");
         const auto persistedSharedCode = shellMenuCache.ItemsFor(secondCachedLink, allTracking);
         Check(
-            persistedSharedCode.size() == 2 && persistedSharedCode.front().iconPixels == codeItem.iconPixels,
+            persistedSharedCode.size() == 3 && persistedSharedCode.front().iconPixels == codeItem.iconPixels,
             "Shell menu shared icon pool persistence");
+        const auto persistedTerminal = std::find_if(persistedSharedCode.begin(), persistedSharedCode.end(), [](const auto& item) {
+            return item.actionKind == ShellContextMenuActionKind::Terminal;
+        });
+        Check(
+            persistedTerminal != persistedSharedCode.end() && persistedTerminal->actionId == L"cmd" &&
+            persistedTerminal->executable == terminalItem.executable &&
+            persistedTerminal->workingDirectory == terminalItem.workingDirectory,
+            "Shell menu terminal action persistence");
         Link changedTarget = cachedLink;
         changedTarget.path = L"C:\\Work\\Other";
         Check(shellMenuCache.ItemsFor(changedTarget, allTracking).empty(), "Shell menu cache target invalidation");
@@ -453,6 +563,60 @@ int wmain() {
         Check(shellMenuCache.ItemsFor(cachedLink, allTracking).empty(), "Shell menu cache link removal");
     }
     std::filesystem::remove_all(shellMenuCacheRoot, ec);
+
+    const std::filesystem::path terminalTargetRoot = std::filesystem::temp_directory_path() /
+        (L"quattro_unit_terminal_menu_" + std::to_wstring(GetCurrentProcessId()));
+    std::filesystem::remove_all(terminalTargetRoot, ec);
+    std::filesystem::create_directories(terminalTargetRoot, ec);
+    const std::filesystem::path terminalTargetFile = terminalTargetRoot / L"sample.txt";
+    {
+        std::ofstream file(terminalTargetFile, std::ios::binary | std::ios::trunc);
+        file << "terminal";
+    }
+    Link terminalDirectoryLink;
+    terminalDirectoryLink.id = 710;
+    terminalDirectoryLink.path = terminalTargetRoot.wstring();
+    Link terminalFileLink;
+    terminalFileLink.id = 711;
+    terminalFileLink.path = terminalTargetFile.wstring();
+    const auto directoryWorkingPath = TerminalContextMenuService::WorkingDirectoryFor(terminalDirectoryLink);
+    const auto fileWorkingPath = TerminalContextMenuService::WorkingDirectoryFor(terminalFileLink);
+    Check(
+        directoryWorkingPath && fileWorkingPath &&
+        std::filesystem::equivalent(*directoryWorkingPath, terminalTargetRoot, ec) &&
+        std::filesystem::equivalent(*fileWorkingPath, terminalTargetRoot, ec),
+        "Terminal menu resolves file and directory working paths");
+    Link terminalUrlLink;
+    terminalUrlLink.type = 2;
+    terminalUrlLink.path = L"https://example.com";
+    Check(!TerminalContextMenuService::WorkingDirectoryFor(terminalUrlLink), "Terminal menu ignores URL targets");
+    const auto terminalPrograms = TerminalContextMenuService::DetectAvailablePrograms();
+    Check(
+        !terminalPrograms.programs.empty() && terminalPrograms.programs.front().id == L"cmd",
+        "Terminal menu detects CMD first");
+    Check(
+        std::none_of(terminalPrograms.programs.begin(), terminalPrograms.programs.end(), [](const auto& program) {
+            return program.id == L"windowsterminal" || program.id == L"wt";
+        }),
+        "Terminal menu excludes Windows Terminal");
+    const auto terminalDirectoryItems = TerminalContextMenuService::ItemsFor(terminalDirectoryLink, terminalPrograms);
+    Check(
+        !terminalDirectoryItems.empty() &&
+        terminalDirectoryItems.front().actionKind == ShellContextMenuActionKind::Terminal &&
+        terminalDirectoryItems.front().actionId == L"cmd" &&
+        terminalDirectoryItems.front().workingDirectory == directoryWorkingPath->wstring(),
+        "Terminal menu builds cached commands without execution-time probing");
+    ShellContextMenuLocator invalidTerminalCommand;
+    invalidTerminalCommand.actionKind = ShellContextMenuActionKind::Terminal;
+    invalidTerminalCommand.actionId = L"cmd";
+    invalidTerminalCommand.executable = L"C:\\Windows\\System32\\notepad.exe";
+    invalidTerminalCommand.workingDirectory = terminalTargetRoot.wstring();
+    std::wstring invalidTerminalError;
+    Check(
+        !TerminalContextMenuService::Invoke(nullptr, invalidTerminalCommand, invalidTerminalError) &&
+        !invalidTerminalError.empty(),
+        "Terminal menu rejects a cached executable that does not match its adapter");
+    std::filesystem::remove_all(terminalTargetRoot, ec);
 
     const std::filesystem::path legacyTrayPath = std::filesystem::temp_directory_path() / L"quattro_unit_legacy_tray.ini";
     std::filesystem::remove(legacyTrayPath, ec);
@@ -667,6 +831,10 @@ int wmain() {
     Check(fallbackTheme.color(L"slider", L"disabled", L"thumb").a > 0.9f, "Theme default slider disabled state");
     Check(ThemedWindowUi::ScaleForDpi(544, 120) == 680, "Themed window scales logical width at 125 percent DPI");
     Check(ThemedWindowUi::ScaleForDpi(441, 144) == 662, "Themed window scales logical height at 150 percent DPI");
+    Check(ThemedWindowUi::ScaleForDpi(kThemedManagementClientWidth, 120) == 950,
+        "Management window scales logical width at 125 percent DPI");
+    Check(ThemedWindowUi::ScaleForDpi(kThemedManagementClientHeight, 144) == 780,
+        "Management window scales logical height at 150 percent DPI");
     HWND controlParent = CreateWindowExW(
         0, L"STATIC", L"", WS_POPUP,
         0, 0, 320, 200, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
@@ -698,8 +866,12 @@ int wmain() {
             "Themed UI scales footer buttons at 125 percent DPI");
         const ThemedFormLayout sectionLayout(controlUi);
         const ThemedContentInsets sectionInsets = controlUi.groupBoxInsets();
-        Check(sectionInsets.top == controlUi.scale(24),
-            "Themed group box separates title height from content gap");
+        Check(Near(fallbackTheme.metric(L"groupBox", L"titleInsetY", 0.0f), 4.0f),
+            "Theme default group box title top inset");
+        Check(sectionInsets.top == controlUi.scale(28),
+            "Themed group box combines title top inset, title height, and content gap");
+        Check(dpi125Ui.groupBoxInsets().top == ThemedWindowUi::ScaleForDpi(sectionInsets.top, 120),
+            "Themed group box top inset scales at 125 percent DPI");
         const ThemedSectionGeometry section = sectionLayout.section(
             10, 20, 280,
             {sectionLayout.sectionRow({ThemedSectionItemKind::Label, ThemedSectionItemKind::Edit}),
@@ -737,6 +909,16 @@ int wmain() {
         HWND runtimeSlider = controlUi.Slider(7104, 8, 72, 220, runtimeSliderOptions);
         ThemedUi::SetSliderValue(runtimeSlider, 3.7);
         Check(Near(static_cast<float>(ThemedUi::SliderValue(runtimeSlider)), 4.0f), "Themed slider applies public step");
+        HWND runtimeCombo = controlUi.ComboBox(7105, 240, 72, controlUi.comboBoxWidth({L"Short", L"Long option"}));
+        ThemedUi::SetComboBoxItems(runtimeCombo, {L"Short", L"Long option"}, 1);
+        Check(ThemedUi::ComboBoxSelectedIndex(runtimeCombo) == 1, "Themed combo public item and selection state");
+        ThemedUi::SetComboBoxSelectedIndex(runtimeCombo, 0);
+        Check(ThemedUi::ComboBoxSelectedIndex(runtimeCombo) == 0, "Themed combo public selection update");
+        Check(controlUi.tableColumnWidth(L"column") > controlUi.textWidth(L"column"),
+            "Themed table column width includes public cell padding");
+        const RECT publicTabStrip = controlUi.tabStripRect(RECT{10, 10, 300, 300});
+        Check(publicTabStrip.bottom < 300 && controlUi.tabPageTop(publicTabStrip) > publicTabStrip.bottom,
+            "Themed tab layout separates strip and page content");
         HWND runtimeLink = controlUi.LinkText(510, L"link", 0, 100, 120, linkOptions);
         Check(runtimeLink != nullptr, "Themed link public factory");
         ThemedUi::SetLinkVisited(runtimeLink, false);
@@ -751,6 +933,13 @@ int wmain() {
         Check(ThemedUi::IsTableChecked(runtimeTable, 0), "Themed table public checked state");
         HWND groupChild = CreateWindowExW(0, L"STATIC", L"child", WS_CHILD | WS_VISIBLE, 0, 0, 40, 20, controlParent, nullptr, GetModuleHandleW(nullptr), nullptr);
         HWND runtimeGroup = controlUi.GroupBox(512, L"Group", RECT{380, 0, 620, 120});
+        const RECT runtimeGroupContent = ThemedUi::GroupContentRect(runtimeGroup);
+        const UINT runtimeGroupDpi = GetDpiForWindow(runtimeGroup);
+        const int runtimeGroupContentTop = ThemedWindowUi::ScaleForDpi(4, runtimeGroupDpi)
+            + ThemedWindowUi::ScaleForDpi(20, runtimeGroupDpi)
+            + ThemedWindowUi::ScaleForDpi(4, runtimeGroupDpi);
+        Check(runtimeGroupContent.top == runtimeGroupContentTop,
+            "Themed group box public content rect includes the scaled title top inset");
         ThemedUi::BindGroupChildren(runtimeGroup, {groupChild});
         ThemedUi::SetGroupEnabled(runtimeGroup, false);
         Check(!IsWindowEnabled(groupChild), "Themed group box propagates enabled state");
@@ -977,6 +1166,7 @@ int wmain() {
     Check(plugins.size() >= 3, "Plugin registry builtin count");
     bool hasAutoClickerName = false;
     bool hasProcessLocator = false;
+    bool hasAppLaunchLocker = false;
     for (const auto& plugin : plugins) {
         if (plugin.id == L"quattro.builtin.clicker" && plugin.name == L"连点器") {
             hasAutoClickerName = true;
@@ -986,12 +1176,19 @@ int wmain() {
             plugin.engine == L"process-locator") {
             hasProcessLocator = true;
         }
+        if (plugin.id == L"quattro.builtin.app-launch-locker" &&
+            plugin.name == L"自启动管理" &&
+            plugin.engine == L"app-launch-locker") {
+            hasAppLaunchLocker = true;
+        }
     }
     Check(hasAutoClickerName, "Plugin clicker display name");
     Check(hasProcessLocator, "Plugin process locator registration");
+    Check(hasAppLaunchLocker, "Plugin AppLaunchLocker external tool registration");
     Check(pluginRegistry.IsEnabled(L"quattro.builtin.clicker"), "Plugin clicker enabled by default");
     Check(pluginRegistry.IsEnabled(L"quattro.builtin.timer"), "Plugin timer enabled by default");
     Check(pluginRegistry.IsEnabled(L"quattro.builtin.process-locator"), "Plugin process locator enabled by default");
+    Check(pluginRegistry.IsEnabled(L"quattro.builtin.app-launch-locker"), "Plugin AppLaunchLocker enabled by default");
     Check(pluginRegistry.SetEnabled(L"quattro.builtin.clicker", false), "Plugin builtin disable");
     Check(!pluginRegistry.IsEnabled(L"quattro.builtin.clicker"), "Plugin builtin can be disabled");
     Check(pluginRegistry.SetSetting(L"quattro.builtin.clicker", L"interval", L"250"), "Plugin setting save");

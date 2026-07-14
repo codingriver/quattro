@@ -1,4 +1,5 @@
 #include "Config.h"
+#include "ConfigVersion.h"
 #include "AppLog.h"
 #include "EmbeddedAssetInstaller.h"
 #include "Elevation.h"
@@ -21,8 +22,6 @@
 #include <vector>
 
 namespace {
-constexpr int kCurrentConfigVersion = 1;
-
 struct Runtime {
     HANDLE mutex = nullptr;
     HANDLE sharedMemory = nullptr;
@@ -588,14 +587,15 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     if (updateRestart) {
         WriteAppLog(L"检测到更新后重启参数。pid=" + CurrentPidText());
     }
-    if (config.version < kCurrentConfigVersion) {
+    if (config.version != kCurrentConfigSchemaVersion) {
         const int previousVersion = config.version;
         if (BackupConfigForMigration(appDirectory, configService.path())) {
-            config.version = kCurrentConfigVersion;
-            configService.Save(config);
+            const bool compatible = configService.UpgradeToSchemaVersion(kCurrentConfigSchemaVersion);
+            config = configService.Load();
             WriteAppLog(
                 L"配置已迁移: " + std::to_wstring(previousVersion) +
-                L" -> " + std::to_wstring(kCurrentConfigVersion));
+                L" -> " + std::to_wstring(kCurrentConfigSchemaVersion) +
+                L"，兼容结果=" + BoolText(compatible));
         } else {
             WriteAppLog(L"配置迁移已跳过：备份失败。");
         }

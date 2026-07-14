@@ -1,5 +1,6 @@
 #include "Config.h"
 
+#include "ConfigVersion.h"
 #include "Utilities.h"
 
 #include <algorithm>
@@ -11,6 +12,10 @@ constexpr const wchar_t* kHttpSection = L"http";
 
 int Clamp(int value, int minValue, int maxValue) {
     return std::max(minValue, std::min(maxValue, value));
+}
+
+bool IsBoolValue(int value) {
+    return value == 0 || value == 1;
 }
 }
 
@@ -126,6 +131,176 @@ AppConfig ConfigService::Load() const {
     return config;
 }
 
+AppConfig ConfigService::LoadForSchemaUpgrade(int targetVersion, bool& compatible) const {
+    compatible = true;
+    AppConfig config;
+    config.version = targetVersion;
+
+    auto readBool = [&](const wchar_t* key, bool& field) {
+        bool value = false;
+        if (!TryReadBool(key, value)) {
+            if (HasKey(key)) compatible = false;
+            return;
+        }
+        field = value;
+    };
+    auto readBoolLegacy = [&](const wchar_t* key, const wchar_t* legacyKey, bool& field) {
+        bool value = false;
+        if (TryReadBool(key, value)) {
+            field = value;
+            return;
+        }
+        if (HasKey(key)) compatible = false;
+        if (TryReadBool(legacyKey, value)) {
+            field = value;
+            return;
+        }
+        if (HasKey(legacyKey)) compatible = false;
+    };
+    auto readInt = [&](const wchar_t* key, int& field) {
+        int value = 0;
+        if (!TryReadInt(key, value)) {
+            if (HasKey(key)) compatible = false;
+            return;
+        }
+        field = value;
+    };
+    auto readClampedInt = [&](const wchar_t* key, int& field, int minValue, int maxValue) {
+        int value = 0;
+        if (!TryReadInt(key, value)) {
+            if (HasKey(key)) compatible = false;
+            return;
+        }
+        if (value < minValue || value > maxValue) {
+            compatible = false;
+            return;
+        }
+        field = value;
+    };
+    auto readString = [&](const wchar_t* key, std::wstring& field) {
+        std::wstring value;
+        if (TryReadString(key, value)) {
+            field = value;
+        }
+    };
+
+    readBool(L"bAutoRun", config.autoRun);
+    readBool(L"bShowTitle", config.showTitle);
+    readBool(L"bShowGroup", config.showGroup);
+    readBool(L"bShowTag", config.showTag);
+    readBool(L"bLnkNameSingleline", config.linkNameSingleLine);
+    readBool(L"bShowTooltip", config.showTooltip);
+    readBoolLegacy(L"bAutoDock", L"bAutoDick", config.autoDock);
+    readInt(L"bDockCorner", config.dockCorner);
+    readInt(L"nDockDelay", config.dockDelay);
+    readBool(L"bHideOnStart", config.hideOnStart);
+    readBool(L"bTopMost", config.topMost);
+    readBool(L"bHideAfterLink", config.hideAfterLink);
+    readBool(L"bHideUnhot", config.hideWhenInactive);
+    readBool(L"bDoubleClick", config.doubleClickToRun);
+    readBool(L"bDelConfirm", config.deleteConfirm);
+    readBool(L"bSaveRunCount", config.saveRunCount);
+    readBool(L"bRunCount", config.showRunCount);
+    readBool(L"bPreferAdminRun", config.preferAdminRun);
+    readBoolLegacy(L"bShowBtnToolbox", L"bShowBtnMenu", config.showToolboxButton);
+    readBool(L"bShowBtnSkin", config.showSkinButton);
+    readBool(L"bLoggingEnabled", config.loggingEnabled);
+    readBool(L"bTrackGitContextMenu", config.trackGitContextMenu);
+    readBool(L"bTrackSvnContextMenu", config.trackSvnContextMenu);
+    readBool(L"bTrackVsCodeContextMenu", config.trackVsCodeContextMenu);
+    readBool(L"bTrackTerminalContextMenu", config.trackTerminalContextMenu);
+    readBool(L"bTrackArchiveContextMenu", config.trackArchiveContextMenu);
+    readBool(L"bMouseEnterActiveGroup", config.mouseEnterActiveGroup);
+    readBool(L"bMouseEnterActiveTag", config.mouseEnterActiveTag);
+    readInt(L"nActiveGroupDelay", config.activeGroupDelay);
+    readInt(L"nActiveTagDelay", config.activeTagDelay);
+    readInt(L"nCurGroup", config.currentGroupId);
+    readInt(L"nCurTag", config.currentTagId);
+    readBool(L"bGlobalHotKeysEnabled", config.globalHotKeysEnabled);
+    readInt(L"nMainHotKey", config.mainHotKey);
+    readInt(L"nProcessLocatorHotKey", config.processLocatorHotKey);
+    readBool(L"bIgnoreHotKeyConflictWarning", config.ignoreHotKeyConflictWarning);
+    readClampedInt(L"nWidth", config.width, 260, 1800);
+    readClampedInt(L"nHeight", config.height, 320, 1600);
+    readInt(L"nPosX", config.posX);
+    readInt(L"nPosY", config.posY);
+    readClampedInt(L"nGroupWidth", config.groupWidth, 40, 240);
+    readBool(L"bAutoGroupWidth", config.autoGroupWidth);
+    readClampedInt(L"nTagWidth", config.tagWidth, 40, 240);
+    readBool(L"bAutoTagHeight", config.autoTagHeight);
+    readInt(L"nAttrWidth", config.attrWidth);
+    readInt(L"nAttrHeight", config.attrHeight);
+    readClampedInt(L"nAlpha", config.alpha, 64, 255);
+    readBool(L"bGroupRight", config.groupRight);
+    readBool(L"bTagRight", config.tagRight);
+    readString(L"TagAlign", config.tagAlign);
+    if (config.tagAlign != L"left" && config.tagAlign != L"center" && config.tagAlign != L"right") {
+        compatible = false;
+        config.tagAlign = AppConfig{}.tagAlign;
+    }
+    readString(L"Theme", config.theme);
+    if (Trim(config.theme).empty()) {
+        compatible = false;
+        config.theme = AppConfig{}.theme;
+    }
+    readString(L"OpenDirCmd", config.openDirCommand);
+    readString(L"HelpUrl", config.helpUrl);
+    readString(L"UpdateUrl", config.updateUrl);
+    readString(L"FaqUrl", config.faqUrl);
+    readString(L"RewardUrl", config.rewardUrl);
+
+    const std::filesystem::path webDavPath = WebDavConfigPath();
+    const bool hasWebDavConfig = FileExists(webDavPath);
+    config.webDavEnabled = hasWebDavConfig
+        ? ReadExternalBool(webDavPath, kWebDavSection, L"Enabled", config.webDavEnabled)
+        : ReadBool(L"WebDavEnabled", config.webDavEnabled);
+    config.webDavUrl = hasWebDavConfig
+        ? ReadExternalString(webDavPath, kWebDavSection, L"Url", L"")
+        : ReadString(L"WebDavUrl", L"");
+    config.webDavRemotePath = hasWebDavConfig
+        ? ReadExternalString(webDavPath, kWebDavSection, L"RemotePath", L"/Quattro/backups/")
+        : ReadString(L"WebDavRemotePath", L"/Quattro/backups/");
+    config.webDavUserName = hasWebDavConfig
+        ? ReadExternalString(webDavPath, kWebDavSection, L"UserName", L"")
+        : ReadString(L"WebDavUserName", L"");
+    config.webDavKeepCount = Clamp(hasWebDavConfig
+        ? ReadExternalInt(webDavPath, kWebDavSection, L"KeepCount", config.webDavKeepCount)
+        : ReadInt(L"WebDavKeepCount", config.webDavKeepCount), 1, 100);
+
+    const std::filesystem::path httpPath = HttpConfigPath();
+    const bool hasHttpConfig = FileExists(httpPath);
+    config.httpServerEnabled = hasHttpConfig
+        ? ReadExternalBool(httpPath, kHttpSection, L"Enabled", config.httpServerEnabled)
+        : ReadBool(L"HttpServerEnabled", config.httpServerEnabled);
+    config.httpServerAutoStart = hasHttpConfig
+        ? ReadExternalBool(httpPath, kHttpSection, L"AutoStart", config.httpServerAutoStart)
+        : ReadBool(L"HttpServerAutoStart", config.httpServerAutoStart);
+    config.httpServerLanAccess = hasHttpConfig
+        ? ReadExternalBool(httpPath, kHttpSection, L"LanAccess", config.httpServerLanAccess)
+        : ReadBool(L"HttpServerLanAccess", config.httpServerLanAccess);
+    config.httpServerPort = Clamp(hasHttpConfig
+        ? ReadExternalInt(httpPath, kHttpSection, L"Port", config.httpServerPort)
+        : ReadInt(L"HttpServerPort", config.httpServerPort), 1, 65535);
+    config.httpServerRootPath = hasHttpConfig
+        ? ReadExternalString(httpPath, kHttpSection, L"RootPath", L"")
+        : ReadString(L"HttpServerRootPath", L"");
+    return config;
+}
+
+bool ConfigService::UpgradeToSchemaVersion(int targetVersion) const {
+    bool compatible = true;
+    AppConfig config = LoadForSchemaUpgrade(targetVersion, compatible);
+    config.version = targetVersion;
+    Save(config);
+    if (Load().version != targetVersion) {
+        AppConfig fallback;
+        fallback.version = targetVersion;
+        Save(fallback);
+        return false;
+    }
+    return compatible;
+}
+
 void ConfigService::SaveWindowState(const AppConfig& config) const {
     WriteInt(L"nVersion", config.version);
     WriteInt(L"bShowTitle", config.showTitle ? 1 : 0);
@@ -218,6 +393,48 @@ void ConfigService::Save(const AppConfig& config) const {
     WriteString(L"RewardUrl", config.rewardUrl);
     SaveExternalNetworkSettings(config);
     DeleteLegacyNetworkSettings();
+}
+
+bool ConfigService::HasKey(const wchar_t* key) const {
+    constexpr const wchar_t* missing = L"__QUATTRO_CONFIG_KEY_MISSING__";
+    std::wstring buffer(64, L'\0');
+    DWORD copied = GetPrivateProfileStringW(kSection, key, missing, buffer.data(), static_cast<DWORD>(buffer.size()), configPath_.c_str());
+    while (copied == buffer.size() - 1) {
+        buffer.resize(buffer.size() * 2);
+        copied = GetPrivateProfileStringW(kSection, key, missing, buffer.data(), static_cast<DWORD>(buffer.size()), configPath_.c_str());
+    }
+    buffer.resize(copied);
+    return buffer != missing;
+}
+
+bool ConfigService::TryReadInt(const wchar_t* key, int& value) const {
+    std::wstring text;
+    if (!TryReadString(key, text)) {
+        return false;
+    }
+    auto parsed = ParseInt(text);
+    if (!parsed) {
+        return false;
+    }
+    value = *parsed;
+    return true;
+}
+
+bool ConfigService::TryReadBool(const wchar_t* key, bool& value) const {
+    int parsed = 0;
+    if (!TryReadInt(key, parsed) || !IsBoolValue(parsed)) {
+        return false;
+    }
+    value = parsed != 0;
+    return true;
+}
+
+bool ConfigService::TryReadString(const wchar_t* key, std::wstring& value) const {
+    if (!HasKey(key)) {
+        return false;
+    }
+    value = ReadString(key, L"");
+    return true;
 }
 
 int ConfigService::ReadInt(const wchar_t* key, int fallback) const {

@@ -20,6 +20,13 @@ std::wstring TruncatedReleaseNotes(const std::wstring& notes) {
     return notes.size() > 160 ? notes.substr(0, 160) + L"..." : notes;
 }
 
+std::wstring UpdatePackageText(const UpdateReleaseInfo& info) {
+    if (info.assetSizeBytes == 0) {
+        return info.assetName;
+    }
+    return info.assetName + L"（" + FormatByteSizeForDisplay(info.assetSizeBytes) + L"）";
+}
+
 class UpdateCheckDialog {
 public:
     UpdateCheckDialog(HWND owner, HINSTANCE instance, const Theme& theme, const UpdateReleaseInfo& info)
@@ -136,7 +143,7 @@ private:
             const int labelWidth = form.labelWidthForTexts({L"当前版本：", L"最新版本：", L"更新包：", L"发布说明："});
             CreateLabelValueRow(ui, form, y, labelWidth, L"当前版本：", FormatVersionForDisplay(info_.currentVersion));
             CreateLabelValueRow(ui, form, y, labelWidth, L"最新版本：", FormatVersionForDisplay(info_.latestVersion));
-            CreateLabelValueRow(ui, form, y, labelWidth, L"更新包：", info_.assetName);
+            CreateLabelValueRow(ui, form, y, labelWidth, L"更新包：", UpdatePackageText(info_));
 
             const int valueWidth = ui.contentWidth() - labelWidth - ui.layout().labelGap;
             auto notesGroup = form.group({form.fixedLabel(labelWidth), form.field(valueWidth, kNotesHeight)});

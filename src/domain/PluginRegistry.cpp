@@ -148,6 +148,22 @@ std::vector<PluginRecord> PluginRegistry::BuiltinPlugins() {
     fileLockInspector.enabled = true;
     fileLockInspector.installed = true;
 
+    PluginRecord appLaunchLocker;
+    appLaunchLocker.id = L"quattro.builtin.app-launch-locker";
+    appLaunchLocker.name = L"自启动管理";
+    appLaunchLocker.version = L"1.0.0";
+    appLaunchLocker.category = L"builtin-tools";
+    appLaunchLocker.kind = L"builtin-tool";
+    appLaunchLocker.engine = L"app-launch-locker";
+    appLaunchLocker.description = L"查看、禁用和恢复 Windows 自启动项目。";
+    appLaunchLocker.permissions = L"自启动查询, 按需管理员权限";
+    appLaunchLocker.author = L"Quattro快速启动器";
+    appLaunchLocker.license = L"Built-in";
+    appLaunchLocker.builtin = true;
+    appLaunchLocker.deletable = false;
+    appLaunchLocker.enabled = true;
+    appLaunchLocker.installed = true;
+
     return {
         clicker,
         timer,
@@ -156,6 +172,7 @@ std::vector<PluginRecord> PluginRegistry::BuiltinPlugins() {
         processInspector,
         processLocator,
         fileLockInspector,
+        appLaunchLocker,
     };
 }
 

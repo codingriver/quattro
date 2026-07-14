@@ -17,10 +17,10 @@
 /icons/menu/*
 !/icons/menu/tabler/
 !/icons/menu/tabler/**
-/docs/
-!/docs/
+/docs/*
 !/docs/Quattro/
-!/docs/Quattro/**
+/docs/Quattro/*
+!/docs/Quattro/AppLaunchLocker自启动治理开发方案.md
 
 /screenshots/acceptance
 /screenshots/sort-acceptance/**
@@ -29,8 +29,6 @@
 /resources/icons/quattro-app-icon-transparent.png
 /resources/icons/quattro-app-icon-size-preview.png
 
-
-/docs/
 # CMake local/generated files
 /CMakeCache.txt
 /CMakeUserPresets.json
@@ -67,6 +65,7 @@
 *.dll
 *.manifest
 !/resources/app.manifest
+!/resources/AppLaunchLocker.manifest
 *.res
 
 # Logs and temporary files
@@ -83,6 +82,7 @@
 !/tests/SettingsHttpButtonsAcceptance.cpp
 !/tests/UiScreenshotAcceptance.cpp
 !/tests/TodoBackupJsonCompatibility.cpp
+!/tests/AppLaunchLockerTests.cpp
 !/tests/fixtures/
 !/tests/fixtures/todo-backup-v1.json
 !/tests/fixtures/todo-backup-v2.json

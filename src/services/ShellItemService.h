@@ -18,6 +18,11 @@ inline constexpr wchar_t Terminal[] = L"terminal";
 inline constexpr wchar_t Archive[] = L"archive";
 }
 
+enum class ShellContextMenuActionKind : std::uint8_t {
+    NativeShell = 0,
+    Terminal = 1,
+};
+
 struct ShellContextMenuTrackingOptions {
     bool git = false;
     bool svn = false;
@@ -33,6 +38,11 @@ struct ShellContextMenuItem {
     std::wstring providerId;
     std::wstring text;
     std::wstring verb;
+    ShellContextMenuActionKind actionKind = ShellContextMenuActionKind::NativeShell;
+    std::wstring actionId;
+    std::wstring executable;
+    std::wstring arguments;
+    std::wstring workingDirectory;
     bool enabled = true;
     bool checked = false;
     bool separator = false;
@@ -52,6 +62,11 @@ struct ShellContextMenuLocator {
     std::wstring providerId;
     std::vector<std::wstring> path;
     std::wstring verb;
+    ShellContextMenuActionKind actionKind = ShellContextMenuActionKind::NativeShell;
+    std::wstring actionId;
+    std::wstring executable;
+    std::wstring arguments;
+    std::wstring workingDirectory;
 };
 
 struct ShellItemRef {
@@ -74,6 +89,9 @@ public:
     static std::optional<ShellItemRef> FromPathOrParseName(const std::wstring& value);
     static std::optional<ShellItemRef> FromPidlBlob(const std::vector<std::uint8_t>& blob);
     static bool RefreshLinkShellData(Link& link, bool clearOnFailure);
+    static bool LoadExecutableMenuIcon(
+        const std::wstring& executable,
+        ShellContextMenuItem& item);
     static bool OpenShellTarget(HWND owner, const Link& link, int showCmd, std::wstring& errorMessage);
     static bool OpenContainingLocation(HWND owner, const Link& link, std::wstring& errorMessage);
     static bool QueryTrackedContextMenu(

@@ -1,5 +1,7 @@
 set(WINDOWS_DIR "${SOURCE_DIR}/src/windows")
 file(GLOB WINDOW_SOURCES "${WINDOWS_DIR}/*.cpp")
+file(GLOB APP_LAUNCH_LOCKER_UI_SOURCES "${SOURCE_DIR}/src/applaunchlocker/*Window.cpp")
+list(APPEND WINDOW_SOURCES ${APP_LAUNCH_LOCKER_UI_SOURCES})
 
 set(FORBIDDEN_PATTERN
     "ThemedControls::Create(SingleLineEdit|MultiLineEdit|CheckBox|ComboBox|ListBox|StaticText|LabelText|ProgressBar|LinkText|GroupBox|TabControlFrame|ToolBarFrame)|ThemedControls::Draw(FieldFrame|PanelFrame|TabGroupFrame)|ThemedControls::ApplyListViewTheme|ThemedControls::RegisterTable|WC_LISTVIEW|ListView_|LVS_|LVCOLUMN|LVITEM|WC_TABCONTROL|TabCtrl_|TCM_|TOOLBARCLASSNAME|BS_GROUPBOX")
@@ -27,6 +29,16 @@ foreach(SOURCE_FILE IN LISTS WINDOW_SOURCES)
     endif()
 endforeach()
 
+foreach(SOURCE_FILE IN LISTS APP_LAUNCH_LOCKER_UI_SOURCES)
+    file(READ "${SOURCE_FILE}" APP_LAUNCH_LOCKER_UI_TEXT)
+    string(REGEX MATCH "CB_(ADDSTRING|RESETCONTENT|SETCURSEL|GETCURSEL)|MessageBoxW[(]" APP_LAUNCH_LOCKER_BYPASS "${APP_LAUNCH_LOCKER_UI_TEXT}")
+    if(APP_LAUNCH_LOCKER_BYPASS)
+        get_filename_component(FILE_NAME "${SOURCE_FILE}" NAME)
+        message(FATAL_ERROR
+            "Theme facade violation: ${FILE_NAME} bypasses AppLaunchLocker common UI state/dialog APIs: ${APP_LAUNCH_LOCKER_BYPASS}")
+    endif()
+endforeach()
+
 # Keep the public 4px-grid scale enforceable. These checks intentionally target
 # the shared theme and known legacy layout formulas instead of banning ordinary
 # business numbers such as IDs, widths, or data-dependent visual content.
@@ -41,6 +53,7 @@ if(EXISTS "${DEFAULT_THEME}")
         "mediumControlHeight\" value=\"28"
         "largeControlHeight\" value=\"32"
         "denseGap\" value=\"4"
+        "titleInsetY\" value=\"4"
         "compactRowGap\" value=\"6"
         "standardRowGap\" value=\"8"
         "sectionGap\" value=\"12"

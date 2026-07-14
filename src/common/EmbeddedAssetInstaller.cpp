@@ -6,6 +6,7 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <cstring>
 #include <fstream>
 #include <iterator>
 #include <string>
@@ -111,6 +112,50 @@ bool IsManagedAsset(const wchar_t* relativePath) {
            path.rfind(L"icons\\menu\\", 0) == 0;
 }
 
+bool IsBuiltInDefaultTheme(const wchar_t* relativePath) {
+    return NormalizeRelativePath(relativePath) == L"theme\\default.xml";
+}
+
+std::wstring WideFromUtf8Bytes(const unsigned char* data, std::size_t size) {
+    if (!data || size == 0) {
+        return {};
+    }
+    const char* bytes = reinterpret_cast<const char*>(data);
+    const int length = MultiByteToWideChar(CP_UTF8, 0, bytes, static_cast<int>(size), nullptr, 0);
+    if (length <= 0) {
+        return {};
+    }
+    std::wstring text(length, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, bytes, static_cast<int>(size), text.data(), length);
+    return text;
+}
+
+std::wstring XmlAttributeValue(const std::wstring& tag, const std::wstring& name) {
+    const std::wstring pattern = name + L"=\"";
+    std::size_t begin = tag.find(pattern);
+    if (begin == std::wstring::npos) {
+        return {};
+    }
+    begin += pattern.size();
+    const std::size_t end = tag.find(L'"', begin);
+    if (end == std::wstring::npos) {
+        return {};
+    }
+    return tag.substr(begin, end - begin);
+}
+
+std::wstring ThemeVersionFromXml(const std::wstring& xml) {
+    const std::size_t begin = xml.find(L"<Theme");
+    if (begin == std::wstring::npos) {
+        return {};
+    }
+    const std::size_t end = xml.find(L">", begin);
+    if (end == std::wstring::npos) {
+        return {};
+    }
+    return XmlAttributeValue(xml.substr(begin, end - begin + 1), L"version");
+}
+
 std::vector<unsigned char> ReadBinaryFile(const std::filesystem::path& path) {
     std::ifstream file(path, std::ios::binary);
     if (!file) {
@@ -121,10 +166,30 @@ std::vector<unsigned char> ReadBinaryFile(const std::filesystem::path& path) {
         std::istreambuf_iterator<char>());
 }
 
-bool SameContent(const std::filesystem::path& target, const EmbeddedAsset& asset) {
-    const std::vector<unsigned char> bytes = ReadBinaryFile(target);
+bool SameContent(const std::vector<unsigned char>& bytes, const EmbeddedAsset& asset) {
     return bytes.size() == asset.size &&
-           (bytes.empty() || std::equal(bytes.begin(), bytes.end(), asset.data));
+           (bytes.empty() || std::memcmp(bytes.data(), asset.data, asset.size) == 0);
+}
+
+bool ShouldInstallAsset(const std::filesystem::path& target, const EmbeddedAsset& asset, bool exists, bool managed) {
+    if (!exists) {
+        return true;
+    }
+    if (!managed) {
+        return false;
+    }
+
+    const std::vector<unsigned char> currentBytes = ReadBinaryFile(target);
+    if (!IsBuiltInDefaultTheme(asset.relativePath)) {
+        return !SameContent(currentBytes, asset);
+    }
+
+    const std::wstring embeddedVersion = ThemeVersionFromXml(WideFromUtf8Bytes(asset.data, asset.size));
+    const std::wstring currentVersion = ThemeVersionFromXml(WideFromUtf8Bytes(currentBytes.data(), currentBytes.size()));
+    if (embeddedVersion.empty() || currentVersion.empty() || embeddedVersion != currentVersion) {
+        return true;
+    }
+    return !SameContent(currentBytes, asset);
 }
 
 bool WriteAsset(const std::filesystem::path& target, const EmbeddedAsset& asset) {
@@ -182,7 +247,7 @@ EmbeddedAssetInstallResult PrepareEmbeddedAssets(const std::filesystem::path& mo
         const std::filesystem::path target = result.appDirectory / asset.relativePath;
         const bool exists = FileExists(target);
         const bool managed = IsManagedAsset(asset.relativePath);
-        if (exists && (!managed || SameContent(target, asset))) {
+        if (!ShouldInstallAsset(target, asset, exists, managed)) {
             ++result.filesSkipped;
             continue;
         }

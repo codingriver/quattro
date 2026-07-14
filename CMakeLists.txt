@@ -49,9 +49,68 @@ file(GLOB_RECURSE EMBEDDED_ASSET_DIR_INPUTS CONFIGURE_DEPENDS
 list(APPEND EMBEDDED_ASSET_INPUTS ${EMBEDDED_ASSET_DIR_INPUTS})
 
 set(EMBEDDED_ASSETS_CPP "${CMAKE_CURRENT_BINARY_DIR}/generated/EmbeddedAssets.cpp")
-set(EMBEDDED_UPDATER_CPP "${CMAKE_CURRENT_BINARY_DIR}/generated/EmbeddedUpdater.cpp")
 configure_file("${CMAKE_CURRENT_SOURCE_DIR}/src/Version.h.in" "${CMAKE_CURRENT_BINARY_DIR}/generated/Version.h" @ONLY)
 configure_file("${CMAKE_CURRENT_SOURCE_DIR}/resources/VersionResource.h.in" "${CMAKE_CURRENT_BINARY_DIR}/generated/VersionResource.h" @ONLY)
+
+function(quattro_register_embedded_executable)
+    cmake_parse_arguments(COMPONENT "" "TARGET;SYMBOL;ID;FILE_NAME" "" ${ARGN})
+    foreach(REQUIRED_ARGUMENT TARGET SYMBOL ID FILE_NAME)
+        if(NOT COMPONENT_${REQUIRED_ARGUMENT})
+            message(FATAL_ERROR "quattro_register_embedded_executable requires ${REQUIRED_ARGUMENT}")
+        endif()
+    endforeach()
+    if(NOT TARGET ${COMPONENT_TARGET})
+        message(FATAL_ERROR "Embedded executable target does not exist: ${COMPONENT_TARGET}")
+    endif()
+    if(NOT COMPONENT_SYMBOL MATCHES "^[A-Za-z_][A-Za-z0-9_]*$")
+        message(FATAL_ERROR "Invalid embedded executable symbol: ${COMPONENT_SYMBOL}")
+    endif()
+
+    set(GENERATED_SOURCE "${CMAKE_CURRENT_BINARY_DIR}/generated/Embedded${COMPONENT_SYMBOL}.cpp")
+    add_custom_command(
+        OUTPUT "${GENERATED_SOURCE}"
+        COMMAND powershell -ExecutionPolicy Bypass -File "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate-embedded-executable.ps1"
+                -Executable "$<TARGET_FILE:${COMPONENT_TARGET}>"
+                -Output "${GENERATED_SOURCE}"
+                -Symbol "${COMPONENT_SYMBOL}"
+                -Id "${COMPONENT_ID}"
+                -FileName "${COMPONENT_FILE_NAME}"
+                -ExpectedVersion "${QUATTRO_VERSION}"
+        DEPENDS
+            ${COMPONENT_TARGET}
+            "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate-embedded-executable.ps1"
+        COMMENT "Embedding ${COMPONENT_FILE_NAME}"
+        VERBATIM
+    )
+    set_property(GLOBAL APPEND PROPERTY QUATTRO_EMBEDDED_EXECUTABLE_SOURCES "${GENERATED_SOURCE}")
+    set_property(GLOBAL APPEND PROPERTY QUATTRO_EMBEDDED_EXECUTABLE_SYMBOLS "${COMPONENT_SYMBOL}")
+endfunction()
+
+function(quattro_generate_embedded_executable_catalog OUTPUT_VARIABLE)
+    get_property(EMBEDDED_SOURCES GLOBAL PROPERTY QUATTRO_EMBEDDED_EXECUTABLE_SOURCES)
+    get_property(EMBEDDED_SYMBOLS GLOBAL PROPERTY QUATTRO_EMBEDDED_EXECUTABLE_SYMBOLS)
+    list(LENGTH EMBEDDED_SYMBOLS EMBEDDED_EXECUTABLE_COUNT)
+    if(EMBEDDED_EXECUTABLE_COUNT EQUAL 0)
+        message(FATAL_ERROR "No embedded executables were registered")
+    endif()
+
+    set(EMBEDDED_EXECUTABLE_DECLARATIONS "")
+    set(EMBEDDED_EXECUTABLE_ENTRIES "")
+    foreach(SYMBOL IN LISTS EMBEDDED_SYMBOLS)
+        string(APPEND EMBEDDED_EXECUTABLE_DECLARATIONS
+            "const EmbeddedExecutableDescriptor& EmbeddedExecutable_${SYMBOL}();\n")
+        string(APPEND EMBEDDED_EXECUTABLE_ENTRIES
+            "        &EmbeddedExecutable_${SYMBOL}(),\n")
+    endforeach()
+
+    set(GENERATED_CATALOG "${CMAKE_CURRENT_BINARY_DIR}/generated/EmbeddedExecutableCatalog.cpp")
+    configure_file(
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/common/EmbeddedExecutableCatalog.cpp.in"
+        "${GENERATED_CATALOG}"
+        @ONLY
+    )
+    set(${OUTPUT_VARIABLE} ${EMBEDDED_SOURCES} "${GENERATED_CATALOG}" PARENT_SCOPE)
+endfunction()
 
 set(QUATTRO_SOURCE_INCLUDE_DIRS
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
@@ -66,6 +125,7 @@ set(QUATTRO_SOURCE_INCLUDE_DIRS
 include_directories(${QUATTRO_SOURCE_INCLUDE_DIRS})
 
 add_executable(QuattroUpdater WIN32
+    resources/QuattroUpdater.rc
     src/updater/UpdaterMain.cpp
 )
 
@@ -89,16 +149,11 @@ target_link_options(QuattroUpdater PRIVATE
     $<$<CXX_COMPILER_ID:MSVC>:/MANIFEST:EMBED>
 )
 
-add_custom_command(
-    OUTPUT "${EMBEDDED_UPDATER_CPP}"
-    COMMAND powershell -ExecutionPolicy Bypass -File "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate-embedded-updater.ps1"
-            -Updater "$<TARGET_FILE:QuattroUpdater>"
-            -Output "${EMBEDDED_UPDATER_CPP}"
-    DEPENDS
-        QuattroUpdater
-        "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate-embedded-updater.ps1"
-    COMMENT "Embedding updater executable"
-    VERBATIM
+quattro_register_embedded_executable(
+    TARGET QuattroUpdater
+    SYMBOL QuattroUpdater
+    ID quattro-updater
+    FILE_NAME QuattroUpdater.exe
 )
 
 add_custom_command(
@@ -160,15 +215,115 @@ target_compile_options(pugixml PRIVATE
     $<$<CXX_COMPILER_ID:MSVC>:/W0 /utf-8>
 )
 
+add_library(QuattroThemedUi STATIC
+    src/theme/CatalogDialogLayout.cpp
+    src/theme/Theme.cpp
+    src/theme/ThemedFormLayout.cpp
+    src/theme/ThemedControls.cpp
+    src/theme/ThemedMessageBox.cpp
+    src/theme/ThemedUi.cpp
+    src/theme/ThemedWindowUi.cpp
+    src/common/Utilities.cpp
+)
+
+target_compile_definitions(QuattroThemedUi PUBLIC
+    UNICODE
+    _UNICODE
+    WINVER=0x0A00
+    _WIN32_WINNT=0x0A00
+    NOMINMAX
+)
+
+target_compile_options(QuattroThemedUi PRIVATE
+    $<$<CXX_COMPILER_ID:MSVC>:/W4 /permissive- /EHsc /utf-8>
+)
+
+target_link_libraries(QuattroThemedUi PUBLIC
+    pugixml
+    user32
+    gdi32
+    comctl32
+    msimg32
+    shell32
+    shlwapi
+    uxtheme
+)
+
+add_library(AppLaunchLockerCore STATIC
+    src/applaunchlocker/AppLaunchLockerCore.cpp
+    src/common/JsonValue.cpp
+)
+
+target_compile_definitions(AppLaunchLockerCore PUBLIC
+    UNICODE
+    _UNICODE
+    WINVER=0x0A00
+    _WIN32_WINNT=0x0A00
+    NOMINMAX
+)
+
+target_compile_options(AppLaunchLockerCore PRIVATE
+    $<$<CXX_COMPILER_ID:MSVC>:/W4 /permissive- /EHsc /utf-8>
+)
+
+target_link_libraries(AppLaunchLockerCore PUBLIC
+    advapi32
+    ole32
+    oleaut32
+    shell32
+    taskschd
+    uuid
+    wbemuuid
+)
+
+add_executable(AppLaunchLocker WIN32
+    resources/AppLaunchLocker.rc
+    src/applaunchlocker/AppLaunchLockerMain.cpp
+    src/applaunchlocker/AppLaunchLockerWindow.cpp
+)
+set_property(SOURCE resources/AppLaunchLocker.rc APPEND PROPERTY
+    OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/theme/default.xml")
+
+target_compile_definitions(AppLaunchLocker PRIVATE
+    UNICODE
+    _UNICODE
+    WINVER=0x0A00
+    _WIN32_WINNT=0x0A00
+    NOMINMAX
+)
+
+target_compile_options(AppLaunchLocker PRIVATE
+    $<$<CXX_COMPILER_ID:MSVC>:/W4 /permissive- /EHsc /utf-8>
+)
+
+target_link_libraries(AppLaunchLocker PRIVATE
+    AppLaunchLockerCore
+    QuattroThemedUi
+)
+
+target_link_options(AppLaunchLocker PRIVATE
+    $<$<CXX_COMPILER_ID:MSVC>:/MANIFEST:EMBED>
+    $<$<CXX_COMPILER_ID:MSVC>:/MANIFESTINPUT:${CMAKE_CURRENT_SOURCE_DIR}/resources/AppLaunchLocker.manifest>
+)
+
+quattro_register_embedded_executable(
+    TARGET AppLaunchLocker
+    SYMBOL AppLaunchLocker
+    ID app-launch-locker
+    FILE_NAME AppLaunchLocker.exe
+)
+
+quattro_generate_embedded_executable_catalog(EMBEDDED_EXECUTABLE_SOURCES)
+
 add_executable(Quattro WIN32
     ${EMBEDDED_ASSETS_CPP}
-    ${EMBEDDED_UPDATER_CPP}
+    ${EMBEDDED_EXECUTABLE_SOURCES}
     resources/Quattro.rc
     src/main.cpp
     src/windows/AboutDialog.cpp
     src/common/AppLog.cpp
+    src/common/EmbeddedExecutableManager.cpp
     src/windows/BuiltinTools.cpp
-    src/theme/CatalogDialogLayout.cpp
     src/windows/ConfirmDialog.cpp
     src/domain/Config.cpp
     src/services/ConfigPackageService.cpp
@@ -189,15 +344,11 @@ add_executable(Quattro WIN32
     src/services/QuickImportService.cpp
     src/services/ShellContextMenuCacheService.cpp
     src/services/ShellItemService.cpp
+    src/services/TerminalContextMenuService.cpp
     src/windows/SimpleDialogs.cpp
     src/services/StartupService.cpp
     src/services/Storage.cpp
     src/services/SystemFunctions.cpp
-    src/theme/Theme.cpp
-    src/theme/ThemedFormLayout.cpp
-    src/theme/ThemedControls.cpp
-    src/theme/ThemedUi.cpp
-    src/theme/ThemedWindowUi.cpp
     src/windows/TodoEditDialog.cpp
     src/domain/TodoSchedule.cpp
     src/services/UpdateCheckService.cpp
@@ -206,7 +357,6 @@ add_executable(Quattro WIN32
     src/services/UpdateInstaller.cpp
     src/windows/UrlEditDialog.cpp
     src/services/UrlIconDownloadService.cpp
-    src/common/Utilities.cpp
     src/services/WebDavBackupService.cpp
     src/services/WebDavClient.cpp
     src/services/WebDavCredentialService.cpp
@@ -249,8 +399,11 @@ target_include_directories(Quattro PRIVATE
 
 if(QUATTRO_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/UnitTests.cpp")
 add_executable(QuattroTests
+    ${EMBEDDED_ASSETS_CPP}
     tests/UnitTests.cpp
     src/common/AppLog.cpp
+    src/common/EmbeddedAssetInstaller.cpp
+    src/common/EmbeddedExecutableManager.cpp
     src/domain/Config.cpp
     src/services/ConfigPackageService.cpp
     src/services/Launcher.cpp
@@ -260,6 +413,7 @@ add_executable(QuattroTests
     src/domain/PluginRegistry.cpp
     src/services/ShellContextMenuCacheService.cpp
     src/services/ShellItemService.cpp
+    src/services/TerminalContextMenuService.cpp
     src/services/Storage.cpp
     src/services/SystemFunctions.cpp
     src/theme/Theme.cpp
@@ -799,7 +953,25 @@ if(QUATTRO_WITH_HTTPLIB)
 endif()
 endif()
 
+if(QUATTRO_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/AppLaunchLockerTests.cpp")
+add_executable(AppLaunchLockerTests
+    tests/AppLaunchLockerTests.cpp
+)
+target_link_libraries(AppLaunchLockerTests PRIVATE AppLaunchLockerCore)
+target_compile_definitions(AppLaunchLockerTests PRIVATE
+    UNICODE
+    _UNICODE
+    WINVER=0x0A00
+    _WIN32_WINNT=0x0A00
+    NOMINMAX
+)
+target_compile_options(AppLaunchLockerTests PRIVATE
+    $<$<CXX_COMPILER_ID:MSVC>:/W4 /permissive- /EHsc /utf-8>
+)
+endif()
+
 target_link_libraries(Quattro PRIVATE
+    QuattroThemedUi
     sqlite3
     ccronexpr
     advapi32
@@ -853,7 +1025,14 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/theme")
     )
 endif()
 
-foreach(TARGET_NAME Quattro QuattroTests QuattroUiScreenshotAcceptance)
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/theme")
+    add_custom_command(TARGET AppLaunchLocker POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E rm -rf "$<TARGET_FILE_DIR:AppLaunchLocker>/theme"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/theme" "$<TARGET_FILE_DIR:AppLaunchLocker>/theme"
+    )
+endif()
+
+foreach(TARGET_NAME Quattro AppLaunchLocker QuattroTests QuattroUiScreenshotAcceptance)
     if(TARGET ${TARGET_NAME})
         add_dependencies(${TARGET_NAME} QuattroThemeFacadeLint)
     endif()

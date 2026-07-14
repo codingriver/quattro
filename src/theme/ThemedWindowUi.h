@@ -39,6 +39,12 @@ struct ThemedWindowCreateOptions {
 
 constexpr int kThemedDialogClientWidth = 460;
 constexpr int kThemedDialogClientHeight = 246;
+constexpr int kThemedManagementClientWidth = 760;
+constexpr int kThemedManagementClientHeight = 520;
+constexpr int kThemedDetailsClientWidth = 620;
+constexpr int kThemedDetailsClientHeight = 360;
+constexpr int kThemedMessageClientWidth = 460;
+constexpr int kThemedMessageClientHeight = 180;
 constexpr DialogLayoutKind kThemedDialogLayoutKind = DialogLayoutKind::Compact;
 
 class ThemedWindowUi : public ThemedEditFrameRegistry, public ThemedTableFrameRegistry, public ThemedTooltipRegistry {
@@ -70,6 +76,13 @@ public:
         HICON icon = nullptr,
         HICON smallIcon = nullptr);
     static HWND CreateWindowHandle(const ThemedWindowCreateOptions& options, std::wstring* error = nullptr);
+    static int ShowMessageBox(
+        HWND owner,
+        HINSTANCE instance,
+        const Theme& theme,
+        const std::wstring& message,
+        const std::wstring& title,
+        UINT flags);
     static bool HandleCommonMessage(
         std::unique_ptr<ThemedWindowUi>& windowUi,
         UINT message,

@@ -808,8 +808,9 @@ ThemedContentInsets ThemedUi::groupBoxInsets() const {
     const int paddingX = scale(static_cast<int>(theme_.metric(L"groupBox", L"paddingX", 12.0f)));
     const int paddingY = scale(static_cast<int>(theme_.metric(L"groupBox", L"paddingY", 10.0f)));
     const int titleHeight = scale(static_cast<int>(theme_.metric(L"groupBox", L"titleHeight", 20.0f)));
+    const int titleInsetY = scale(static_cast<int>(theme_.metric(L"groupBox", L"titleInsetY", 4.0f)));
     const int contentGapY = scale(static_cast<int>(theme_.metric(L"groupBox", L"contentGapY", 4.0f)));
-    return ThemedContentInsets{paddingX, titleHeight + contentGapY, paddingX, paddingY};
+    return ThemedContentInsets{paddingX, titleInsetY + titleHeight + contentGapY, paddingX, paddingY};
 }
 
 // 返回主题定义的进度条高度。
@@ -866,6 +867,29 @@ int ThemedUi::buttonWidth(
 
 int ThemedUi::textWidth(const std::wstring& text) const {
     return TextWidth(parent_, font_, text);
+}
+
+int ThemedUi::comboBoxWidth(const std::vector<std::wstring>& items) const {
+    int contentWidth = 0;
+    for (const auto& item : items) contentWidth = std::max(contentWidth, textWidth(item));
+    const int padding = scale(static_cast<int>(theme_.metric(L"comboBox", L"paddingX", 9.0f)));
+    const int arrow = scale(static_cast<int>(theme_.metric(L"comboBox", L"arrowWidth", 28.0f)));
+    return contentWidth + padding * 2 + arrow;
+}
+
+int ThemedUi::tableColumnWidth(const std::wstring& widestText) const {
+    const int padding = scale(static_cast<int>(theme_.metric(L"listItem", L"paddingX", 8.0f)));
+    return textWidth(widestText) + padding * 2;
+}
+
+RECT ThemedUi::tabStripRect(RECT bounds) const {
+    const int padding = scale(static_cast<int>(theme_.metric(L"tabControl", L"paddingX", 4.0f)));
+    bounds.bottom = bounds.top + tabButtonHeight() + padding * 2;
+    return bounds;
+}
+
+int ThemedUi::tabPageTop(RECT tabStrip) const {
+    return tabStrip.bottom + layout_.sectionGap;
 }
 
 // 使用共享对话框参数计算底部按钮的 x 坐标。
@@ -956,6 +980,14 @@ HWND ThemedUi::StatusBadge(const std::wstring& text, int x, int y, int width, Th
 
 void ThemedUi::SetStatusBadgeRole(HWND hwnd, ThemedStatusRole role) const {
     ThemedControls::SetStatusBadgeState(hwnd, StatusState(role));
+}
+
+void ThemedUi::SetText(HWND hwnd, const std::wstring& text) {
+    if (hwnd) SetWindowTextW(hwnd, text.c_str());
+}
+
+void ThemedUi::SetVisible(HWND hwnd, bool visible) {
+    if (hwnd) ShowWindow(hwnd, visible ? SW_SHOWNA : SW_HIDE);
 }
 
 void ThemedUi::SetEnabled(HWND hwnd, bool enabled) const {
@@ -1751,6 +1783,38 @@ HWND ThemedUi::ComboBox(int id, int x, int y, int width, ThemedComboBoxOptions o
     return hwnd;
 }
 
+void ThemedUi::SetComboBoxItems(HWND comboBox, const std::vector<std::wstring>& items, int selectedIndex) {
+    if (!comboBox) return;
+    SendMessageW(comboBox, WM_SETREDRAW, FALSE, 0);
+    SendMessageW(comboBox, CB_RESETCONTENT, 0, 0);
+    for (const auto& item : items) {
+        SendMessageW(comboBox, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(item.c_str()));
+    }
+    const int selection = items.empty() ? -1 : std::clamp(selectedIndex, 0, static_cast<int>(items.size()) - 1);
+    SendMessageW(comboBox, CB_SETCURSEL, selection, 0);
+    SendMessageW(comboBox, WM_SETREDRAW, TRUE, 0);
+    InvalidateRect(comboBox, nullptr, TRUE);
+}
+
+void ThemedUi::SetComboBoxSelectedIndex(HWND comboBox, int selectedIndex, bool notify) {
+    if (!comboBox) return;
+    const int count = static_cast<int>(SendMessageW(comboBox, CB_GETCOUNT, 0, 0));
+    const int selection = count <= 0 ? -1 : std::clamp(selectedIndex, 0, count - 1);
+    SendMessageW(comboBox, CB_SETCURSEL, selection, 0);
+    InvalidateRect(comboBox, nullptr, TRUE);
+    if (notify) {
+        HWND parent = GetParent(comboBox);
+        if (parent) {
+            SendMessageW(parent, WM_COMMAND,
+                MAKEWPARAM(GetDlgCtrlID(comboBox), CBN_SELCHANGE), reinterpret_cast<LPARAM>(comboBox));
+        }
+    }
+}
+
+int ThemedUi::ComboBoxSelectedIndex(HWND comboBox) {
+    return comboBox ? static_cast<int>(SendMessageW(comboBox, CB_GETCURSEL, 0, 0)) : -1;
+}
+
 // 创建主题列表框。
 // 参数：
 // - id：子控件 ID，用于 WM_COMMAND/WM_DRAWITEM。
@@ -1883,6 +1947,16 @@ bool ThemedUi::IsTableChecked(HWND table, int index) { return table && ListView_
 bool ThemedUi::IsTableRowEnabled(HWND table, int index) { return ThemedControls::IsTableRowEnabled(table, index); }
 int ThemedUi::TableRowCount(HWND table) { return table ? ListView_GetItemCount(table) : 0; }
 int ThemedUi::TableSelectedIndex(HWND table) { return table ? ListView_GetNextItem(table, -1, LVNI_SELECTED) : -1; }
+void ThemedUi::SetTableSelectedIndex(HWND table, int index) {
+    if (!table) return;
+    const int count = ListView_GetItemCount(table);
+    for (int row = 0; row < count; ++row) {
+        ListView_SetItemState(table, row, row == index ? LVIS_SELECTED | LVIS_FOCUSED : 0, LVIS_SELECTED | LVIS_FOCUSED);
+    }
+    if (index >= 0 && index < count) {
+        ListView_EnsureVisible(table, index, FALSE);
+    }
+}
 std::intptr_t ThemedUi::TableRowKey(HWND table, int index) {
     if (!table || index < 0) return 0;
     LVITEMW item{};
