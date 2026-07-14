@@ -1,9 +1,1 @@
-settings-dialog-??: child control outside client area, class=Button, text=??
-settings-dialog-??: child control outside client area, class=Button, text=??
-settings-dialog-????: child control outside client area, class=Button, text=??
-settings-dialog-??: child control outside client area, class=Button, text=??
-settings-dialog-??: child control outside client area, class=Button, text=??
-settings-dialog-??: child control outside client area, class=Button, text=??
-settings-dialog-WebDAV: child control outside client area, class=Button, text=??
-settings-dialog-HTTP: child control outside client area, class=Button, text=??
-settings-dialog-??: child control outside client area, class=Button, text=??
+settings-dialog-??: expected visible child text not found: ?????

@@ -1235,6 +1235,9 @@ HWND ThemedUi::TabControl(
         const auto& item = items[index];
         const int itemWidth = itemWidths[index];
         HWND button = nested.TabButton(item.id, item.text, x, padding, itemWidth, false);
+        ThemedControls::SetTabButtonEmphasizedSegment(
+            button,
+            options.appearance == ThemedTabControlAppearance::EmphasizedSegmented);
         ThemedControls::SetControlBackgroundComponent(button, L"tabControl");
         EnableWindow(button, options.enabled && item.enabled ? TRUE : FALSE);
         SetWindowSubclass(button, TabButtonNavigationProc, 2, reinterpret_cast<DWORD_PTR>(tab));
@@ -1875,16 +1878,24 @@ HWND ThemedUi::Table(int id, RECT frame, const std::vector<ThemedTableColumn>& c
         else fixedWidth += std::max(0, column.fixedWidth);
         widthModes.push_back(static_cast<int>(column.widthMode));
     }
-    const int available = std::max(40, static_cast<int>(inner.right - inner.left) - fixedWidth - 4);
+    const int available = std::max(40, static_cast<int>(inner.right - inner.left) - fixedWidth);
+    int assignedRemainingWidth = 0;
+    int remainingIndex = 0;
     for (std::size_t i = 0; i < columns.size(); ++i) {
         const auto& source = columns[i];
         LVCOLUMNW column{};
         column.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM | LVCF_FMT;
         column.pszText = const_cast<wchar_t*>(source.title.c_str());
         column.iSubItem = static_cast<int>(i);
-        column.cx = source.widthMode == ThemedTableColumnWidth::Remaining
-            ? available / std::max(1, remainingCount)
-            : std::max(24, source.fixedWidth);
+        if (source.widthMode == ThemedTableColumnWidth::Remaining) {
+            ++remainingIndex;
+            column.cx = remainingIndex == remainingCount
+                ? std::max(24, available - assignedRemainingWidth)
+                : std::max(24, available / std::max(1, remainingCount));
+            assignedRemainingWidth += column.cx;
+        } else {
+            column.cx = std::max(24, source.fixedWidth);
+        }
         column.fmt = source.align == ThemedTableColumnAlign::Center ? LVCFMT_CENTER
             : (source.align == ThemedTableColumnAlign::End ? LVCFMT_RIGHT : LVCFMT_LEFT);
         ListView_InsertColumn(table, static_cast<int>(i), &column);
@@ -1898,9 +1909,22 @@ void ThemedUi::SetTableRows(HWND table, const std::vector<ThemedTableRow>& rows)
     if (!table) return;
     ListView_DeleteAllItems(table);
     std::vector<bool> enabledStates;
+    std::vector<std::vector<ThemedControls::TableCellRuntime>> cellStates;
     enabledStates.reserve(rows.size());
+    cellStates.reserve(rows.size());
     for (const auto& row : rows) enabledStates.push_back(row.enabled);
+    for (const auto& row : rows) {
+        std::vector<ThemedControls::TableCellRuntime> cells;
+        cells.reserve(row.cells.size());
+        for (const auto& cell : row.cells) {
+            cells.push_back(ThemedControls::TableCellRuntime{
+                static_cast<int>(cell.role),
+                cell.actionId});
+        }
+        cellStates.push_back(std::move(cells));
+    }
     ThemedControls::SetTableRowEnabledStates(table, enabledStates);
+    ThemedControls::SetTableCells(table, cellStates);
     for (std::size_t index = 0; index < rows.size(); ++index) {
         const auto& source = rows[index];
         const std::wstring first = source.cells.empty() ? L"" : source.cells.front().text;
@@ -1987,7 +2011,12 @@ int ThemedUi::TableHitTest(HWND table, POINT point, bool fullRow, bool* stateIco
     return -1;
 }
 void ThemedUi::SetTableIconSpacing(HWND table, int x, int y) { if (table) ListView_SetIconSpacing(table, x, y); }
-void ThemedUi::ClearTable(HWND table) { if (table) ListView_DeleteAllItems(table); }
+void ThemedUi::ClearTable(HWND table) {
+    if (!table) return;
+    ListView_DeleteAllItems(table);
+    ThemedControls::SetTableRowEnabledStates(table, {});
+    ThemedControls::SetTableCells(table, {});
+}
 void ThemedUi::SetTableImageLists(HWND table, HIMAGELIST smallImages, HIMAGELIST largeImages) {
     if (!table) return;
     ListView_SetImageList(table, smallImages, LVSIL_SMALL);
@@ -2004,6 +2033,11 @@ bool ThemedUi::DecodeTableEvent(HWND table, LPARAM lParam, ThemedTableEvent& eve
         event.column = activate->iSubItem;
         event.point = activate->ptAction;
         event.rowKey = TableRowKey(table, event.row);
+        int actionId = 0;
+        if (header->code == NM_CLICK && ThemedControls::TableCellAction(table, event.row, event.column, actionId)) {
+            event.kind = ThemedTableEventKind::ActionInvoked;
+            event.actionId = actionId;
+        }
         return true;
     }
     if (header->code == LVN_COLUMNCLICK) {

@@ -38,7 +38,7 @@
 /CTestTestfile.cmake
 /Testing/
 /generated/
-
+/output/
 # Visual Studio and MSBuild local files
 /.vs/
 *.suo

@@ -2146,6 +2146,7 @@ private:
         ThemedTabControlOptions options{};
         options.activeIndex = TabDisplay;
         options.equalWidth = false;
+        options.appearance = ThemedTabControlAppearance::EmphasizedSegmented;
         settingsTabs_ = MakeUi().TabControl(ID_SETTINGS_TAB_CONTROL, tabStripRect_, items, options);
         tabContentOffsetY_ = 0;
     }
@@ -2211,7 +2212,7 @@ private:
                 {
                     ThemedTableCell{L"主窗口显隐"},
                     ThemedTableCell{FormatMainHotKeyText(draft_.mainHotKey)},
-                    ThemedTableCell{L"录入"},
+                    ThemedTableCell{L"录入", -1, ThemedTableCellRole::Action, ID_MAIN_HOTKEY_CAPTURE},
                 },
             },
             ThemedTableRow{
@@ -2219,7 +2220,7 @@ private:
                 {
                     ThemedTableCell{L"进程定位器"},
                     ThemedTableCell{FormatGlobalHotKeyText(draft_.processLocatorHotKey)},
-                    ThemedTableCell{L"录入"},
+                    ThemedTableCell{L"录入", -1, ThemedTableCellRole::Action, ID_PROCESS_LOCATOR_HOTKEY_CAPTURE},
                 },
             },
         });
@@ -2230,13 +2231,12 @@ private:
         if (!ThemedUi::DecodeTableEvent(hotKeyTable_, lParam, event)) {
             return false;
         }
-        if (event.kind != ThemedTableEventKind::Activated &&
-            (event.kind != ThemedTableEventKind::Click || event.column != 2)) {
+        if (event.kind != ThemedTableEventKind::ActionInvoked) {
             return true;
         }
-        if (event.rowKey == ID_MAIN_HOTKEY_CAPTURE) {
+        if (event.actionId == ID_MAIN_HOTKEY_CAPTURE) {
             TrySetMainHotKey(ShowHotKeyCaptureDialog(hwnd_, instance_, theme_, draft_.mainHotKey));
-        } else if (event.rowKey == ID_PROCESS_LOCATOR_HOTKEY_CAPTURE) {
+        } else if (event.actionId == ID_PROCESS_LOCATOR_HOTKEY_CAPTURE) {
             TrySetProcessLocatorHotKey(ShowHotKeyCaptureDialog(hwnd_, instance_, theme_, draft_.processLocatorHotKey));
         }
         return true;
@@ -3256,7 +3256,11 @@ private:
                         L"操作",
                         ThemedTableColumnAlign::Start,
                         ThemedTableColumnWidth::Fixed,
-                        settingsUi.tableColumnWidth(L"操作")},
+                        settingsUi.buttonWidth(
+                            L"录入",
+                            ThemedButtonRole::Normal,
+                            ThemedButtonSize::Compact,
+                            ThemedButtonWidthMode::Text) + behaviorLayout.controlGapX},
                 });
             AddTabChild(hotKeyTable_, TabHotKeys);
             mainHotKeyStatus_ = Label(

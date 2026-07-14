@@ -749,6 +749,8 @@ int wmain() {
     Check(Near(fallbackTheme.metric(L"edit", L"textHeight", 0.0f), 20.0f), "Theme edit body line height");
     Check(Near(fallbackTheme.metric(L"comboBox", L"itemHeight", 0.0f), 28.0f), "Theme combo item height");
     Check(Near(fallbackTheme.metric(L"tabButton", L"height", 0.0f), 28.0f), "Theme tab height");
+    Check(fallbackTheme.color(L"tabButton", L"emphasizedSelected", L"text").r > 0.9f,
+        "Theme emphasized tab selected text");
     Check(Near(fallbackTheme.metric(L"listItem", L"twoLineHeight", 0.0f), 48.0f), "Theme two-line result row height");
     Check(Near(fallbackTheme.metric(L"miniButton", L"height", 0.0f), 24.0f), "Theme default mini button metric");
     Check(fallbackTheme.color(L"miniButton", L"hover", L"icon").a > 0.9f, "Theme default mini button hover");
@@ -945,9 +947,11 @@ int wmain() {
         Check(!IsWindowEnabled(groupChild), "Themed group box propagates enabled state");
         HWND page0 = CreateWindowExW(0, L"STATIC", L"page0", WS_CHILD | WS_VISIBLE, 0, 0, 40, 20, controlParent, nullptr, GetModuleHandleW(nullptr), nullptr);
         HWND page1 = CreateWindowExW(0, L"STATIC", L"page1", WS_CHILD | WS_VISIBLE, 0, 0, 40, 20, controlParent, nullptr, GetModuleHandleW(nullptr), nullptr);
+        ThemedTabControlOptions runtimeTabOptions{};
+        runtimeTabOptions.appearance = ThemedTabControlAppearance::EmphasizedSegmented;
         HWND runtimeTabs = controlUi.TabControl(
             513, RECT{380, 130, 700, 190},
-            {{601, L"One", true}, {602, L"Two", true}});
+            {{601, L"One", true}, {602, L"Two", true}}, runtimeTabOptions);
         ThemedUi::BindTabPage(runtimeTabs, 0, {page0});
         ThemedUi::BindTabPage(runtimeTabs, 1, {page1});
         ThemedUi::SetActiveTab(runtimeTabs, 1);

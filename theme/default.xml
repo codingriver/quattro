@@ -465,6 +465,15 @@
         <State name="selectedHover" bg="@selected" text="@accent" border="@accent"/>
         <State name="focused" border="@focus"/>
         <State name="disabled" bg="@background" text="@disabledText" border="@line"/>
+        <!-- Reusable high-contrast segmented navigation appearance. It is
+             selected through ThemedTabControlOptions rather than by a
+             window-specific theme component. -->
+        <State name="emphasizedNormal" bg="@surfaceRaised" text="@text" border="@surfaceRaised"/>
+        <State name="emphasizedHover" bg="@hover" text="@text" border="@hover"/>
+        <State name="emphasizedFocused" bg="@surfaceRaised" text="@accent" border="@focus"/>
+        <State name="emphasizedSelected" bg="@accent" text="@checkMark" border="@accent"/>
+        <State name="emphasizedSelectedHover" bg="rgb(31,91,235)" text="@checkMark" border="rgb(31,91,235)"/>
+        <State name="emphasizedDisabled" bg="@surfaceRaised" text="@disabledText" border="@surfaceRaised"/>
     </Component>
     <Component name="button">
         <Metric name="radius" value="7"/>
@@ -548,6 +557,7 @@
         <Metric name="textHeight" value="20"/>
         <Metric name="textOffsetY" value="1"/>
         <State name="normal" bg="@surface" text="@text"/>
+        <State name="alternate" bg="@hover" text="@text"/>
         <State name="hover" bg="@hover" text="@text"/>
         <State name="selected" bg="@selected" text="@text"/>
         <State name="disabled" text="@disabledText"/>

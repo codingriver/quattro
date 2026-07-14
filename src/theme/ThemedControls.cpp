@@ -51,6 +51,7 @@ struct ControlState {
     bool hover = false;
     bool checked = false;
     bool selected = false;
+    bool emphasizedSegment = false;
     bool multiline = false;
     bool selectAllOnFocus = false;
     int radioGroup = 0;
@@ -62,6 +63,7 @@ struct ControlState {
     double sliderValue = 0.0;
     std::vector<int> tableColumnWidthModes;
     std::vector<bool> tableRowEnabled;
+    std::vector<std::vector<ThemedControls::TableCellRuntime>> tableCells;
 };
 
 std::mutex& StateMutex() {
@@ -773,11 +775,12 @@ LRESULT CALLBACK ThemedControlProc(HWND hwnd, UINT message, WPARAM wParam, LPARA
         }
         return result;
     }
-    case WM_MOUSEMOVE:
+    case WM_MOUSEMOVE: {
         if (KindFor(hwnd) == ControlKind::Slider && GetCapture() == hwnd) {
             SetSliderFromClientX(hwnd, GET_X_LPARAM(lParam), true);
             return 0;
         }
+        const ControlKind kind = KindFor(hwnd);
         if (!IsHover(hwnd)) {
             StateFor(hwnd).hover = true;
             TRACKMOUSEEVENT event{};
@@ -786,11 +789,14 @@ LRESULT CALLBACK ThemedControlProc(HWND hwnd, UINT message, WPARAM wParam, LPARA
             event.hwndTrack = hwnd;
             TrackMouseEvent(&event);
             InvalidateRect(hwnd, nullptr, TRUE);
-            if (KindFor(hwnd) == ControlKind::Edit) {
+            if (kind == ControlKind::Edit) {
                 InvalidateParentAround(hwnd);
             }
+        } else if (kind == ControlKind::Table) {
+            InvalidateRect(hwnd, nullptr, FALSE);
         }
         break;
+    }
     case WM_MOUSELEAVE:
         StateFor(hwnd).hover = false;
         InvalidateRect(hwnd, nullptr, TRUE);
@@ -1261,9 +1267,21 @@ void DrawSeparator(const Theme& theme, const DRAWITEMSTRUCT* draw) {
 
 void DrawTabButton(const Theme& theme, const DRAWITEMSTRUCT* draw) {
     const bool disabled = (draw->itemState & ODS_DISABLED) != 0;
-    const bool selected = [&] { auto s = FindState(draw->hwndItem); return s && s->selected; }();
+    const auto controlState = FindState(draw->hwndItem);
+    const bool selected = controlState && controlState->selected;
+    const bool emphasized = controlState && controlState->emphasizedSegment;
     const bool hover = IsHover(draw->hwndItem);
-    const wchar_t* state = disabled ? L"disabled" : (selected ? (hover ? L"selectedHover" : L"selected") : (hover ? L"hover" : L"normal"));
+    const bool focused = (draw->itemState & ODS_FOCUS) != 0;
+    const wchar_t* state = nullptr;
+    if (emphasized) {
+        state = disabled ? L"emphasizedDisabled"
+            : (selected ? (hover ? L"emphasizedSelectedHover" : L"emphasizedSelected")
+            : (hover ? L"emphasizedHover" : (focused ? L"emphasizedFocused" : L"emphasizedNormal")));
+    } else {
+        state = disabled ? L"disabled"
+            : (selected ? (hover ? L"selectedHover" : L"selected")
+            : (hover ? L"hover" : L"normal"));
+    }
 
     RECT rect = draw->rcItem;
     const int radius = static_cast<int>(theme.metric(L"tabButton", L"radius", 7.0f));
@@ -1396,8 +1414,12 @@ void DrawHeaderItem(const Theme& theme, HWND header, const NMCUSTOMDRAW* draw) {
     HGDIOBJ oldPen = SelectObject(draw->hdc, pen);
     MoveToEx(draw->hdc, rect.left, rect.bottom - 1, nullptr);
     LineTo(draw->hdc, rect.right, rect.bottom - 1);
-    MoveToEx(draw->hdc, rect.right - 1, rect.top, nullptr);
-    LineTo(draw->hdc, rect.right - 1, rect.bottom);
+    RECT headerClient{};
+    GetClientRect(header, &headerClient);
+    if (rect.right < headerClient.right - 1) {
+        MoveToEx(draw->hdc, rect.right - 1, rect.top, nullptr);
+        LineTo(draw->hdc, rect.right - 1, rect.bottom);
+    }
     SelectObject(draw->hdc, oldPen);
     DeleteObject(pen);
 
@@ -1419,6 +1441,144 @@ void DrawHeaderItem(const Theme& theme, HWND header, const NMCUSTOMDRAW* draw) {
     DrawTextW(draw->hdc, text, -1, &textRect, format);
     if (oldFont) {
         SelectObject(draw->hdc, oldFont);
+    }
+}
+
+std::optional<ThemedControls::TableCellRuntime> TableCellAt(HWND table, int row, int column) {
+    auto state = FindState(table);
+    if (!state || row < 0 || column < 0) {
+        return std::nullopt;
+    }
+    const std::size_t rowIndex = static_cast<std::size_t>(row);
+    const std::size_t columnIndex = static_cast<std::size_t>(column);
+    if (rowIndex >= state->tableCells.size() || columnIndex >= state->tableCells[rowIndex].size()) {
+        return std::nullopt;
+    }
+    return state->tableCells[rowIndex][columnIndex];
+}
+
+bool IsActionCell(const ThemedControls::TableCellRuntime& cell) {
+    return cell.role == 1 || cell.role == 2;
+}
+
+const wchar_t* TableRowState(int row, bool selected, bool focused, bool enabled) {
+    if (!enabled) {
+        return L"disabled";
+    }
+    if (selected) {
+        return L"selected";
+    }
+    if (focused) {
+        return L"focused";
+    }
+    return (row % 2) == 0 ? L"alternate" : L"normal";
+}
+
+COLORREF TableRowBackground(const Theme& theme, const wchar_t* state) {
+    if (std::wcscmp(state, L"disabled") == 0) {
+        return ToColorRef(theme.color(L"table", L"disabled", L"bg"));
+    }
+    if (std::wcscmp(state, L"focused") == 0) {
+        return ToColorRef(theme.color(L"listItem", L"selected", L"bg"));
+    }
+    return ToColorRef(theme.color(L"listItem", state, L"bg"));
+}
+
+std::wstring ListViewCellText(HWND table, int row, int column) {
+    wchar_t buffer[512]{};
+    ListView_GetItemText(table, row, column, buffer, static_cast<int>(sizeof(buffer) / sizeof(buffer[0])));
+    return buffer;
+}
+
+RECT TableSubItemRect(HWND table, int row, int column, RECT fallback) {
+    RECT rect = fallback;
+    if (column <= 0) {
+        ListView_GetItemRect(table, row, &rect, LVIR_BOUNDS);
+        RECT headerRect{};
+        if (HWND header = ListView_GetHeader(table); header && Header_GetItemRect(header, 0, &headerRect)) {
+            rect.right = rect.left + (headerRect.right - headerRect.left);
+        }
+        return rect;
+    }
+    RECT subItem{LVIR_BOUNDS, column, 0, 0};
+    return ListView_GetSubItemRect(table, row, column, LVIR_BOUNDS, &subItem) ? subItem : rect;
+}
+
+bool CursorInTableCell(HWND table, int row, int column) {
+    POINT point{};
+    if (!GetCursorPos(&point)) {
+        return false;
+    }
+    ScreenToClient(table, &point);
+    LVHITTESTINFO hit{};
+    hit.pt = point;
+    if (ListView_SubItemHitTest(table, &hit) < 0) {
+        return false;
+    }
+    return hit.iItem == row && hit.iSubItem == column;
+}
+
+void DrawTableActionCell(
+    const Theme& theme,
+    HWND table,
+    const NMLVCUSTOMDRAW* draw,
+    const ThemedControls::TableCellRuntime& cell) {
+    const int row = static_cast<int>(draw->nmcd.dwItemSpec);
+    const int column = draw->iSubItem;
+    RECT cellRect = TableSubItemRect(table, row, column, draw->nmcd.rc);
+    const bool enabled = ThemedControls::IsTableRowEnabled(table, row);
+    const bool selected = (draw->nmcd.uItemState & CDIS_SELECTED) != 0;
+    const bool rowFocused = (draw->nmcd.uItemState & CDIS_FOCUS) != 0;
+    const wchar_t* rowState = TableRowState(row, selected, rowFocused, enabled);
+    HBRUSH background = CreateSolidBrush(TableRowBackground(theme, rowState));
+    FillRect(draw->nmcd.hdc, &cellRect, background);
+    DeleteObject(background);
+
+    const std::wstring text = ListViewCellText(table, row, column);
+    SIZE textSize{};
+    HFONT font = reinterpret_cast<HFONT>(SendMessageW(table, WM_GETFONT, 0, 0));
+    HGDIOBJ oldFont = font ? SelectObject(draw->nmcd.hdc, font) : nullptr;
+    if (!text.empty()) {
+        GetTextExtentPoint32W(draw->nmcd.hdc, text.c_str(), static_cast<int>(text.size()), &textSize);
+    }
+
+    const int paddingX = ThemedControls::ButtonPaddingX(theme);
+    const int cellWidth = static_cast<int>(cellRect.right - cellRect.left);
+    const int cellHeight = static_cast<int>(cellRect.bottom - cellRect.top);
+    const int textWidth = static_cast<int>(textSize.cx);
+    const int buttonHeight = std::min(
+        std::max(1, cellHeight - 4),
+        ThemedControls::CompactButtonHeight(theme));
+    const int desiredWidth = std::max(
+        static_cast<int>(theme.metric(L"button", L"minWidth", 64.0f)),
+        textWidth + paddingX * 2);
+    const int buttonWidth = std::min(std::max(1, cellWidth - 4), desiredWidth);
+    RECT buttonRect{
+        cellRect.left + std::max(0, (cellWidth - buttonWidth) / 2),
+        cellRect.top + std::max(0, (cellHeight - buttonHeight) / 2),
+        0,
+        0};
+    buttonRect.right = buttonRect.left + buttonWidth;
+    buttonRect.bottom = buttonRect.top + buttonHeight;
+
+    const bool hot = enabled && CursorInTableCell(table, row, column);
+    const bool pressed = hot && (GetKeyState(VK_LBUTTON) & 0x8000) != 0;
+    const bool buttonFocused = enabled && GetFocus() == table && selected;
+    const wchar_t* component = cell.role == 2 ? L"primaryButton" : L"button";
+    DrawButtonFrame(theme, draw->nmcd.hdc, buttonRect, component, hot, pressed, buttonFocused, !enabled);
+
+    SetBkMode(draw->nmcd.hdc, TRANSPARENT);
+    const wchar_t* buttonState = ButtonState(hot, pressed, !enabled);
+    SetTextColor(draw->nmcd.hdc, ToColorRef(theme.color(component, buttonState, L"text")));
+    RECT textRect = ThemedControls::ButtonTextRect(theme, buttonRect, pressed);
+    DrawTextW(
+        draw->nmcd.hdc,
+        text.c_str(),
+        static_cast<int>(text.size()),
+        &textRect,
+        DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    if (oldFont) {
+        SelectObject(draw->nmcd.hdc, oldFont);
     }
 }
 }
@@ -2054,6 +2214,19 @@ bool IsTabButtonSelected(HWND hwnd) {
     return state && state->selected;
 }
 
+void SetTabButtonEmphasizedSegment(HWND hwnd, bool emphasized) {
+    if (!hwnd) {
+        return;
+    }
+    StateFor(hwnd).emphasizedSegment = emphasized;
+    InvalidateRect(hwnd, nullptr, FALSE);
+}
+
+bool IsTabButtonEmphasizedSegment(HWND hwnd) {
+    auto state = FindState(hwnd);
+    return state && state->emphasizedSegment;
+}
+
 HWND CreateComboBox(HINSTANCE instance, HWND parent, int id, int x, int y, int width, int height, HFONT font, const Theme& theme) {
     HWND hwnd = CreateWindowExW(0, WC_COMBOBOXW, nullptr,
                                 WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST | CBS_OWNERDRAWFIXED | CBS_HASSTRINGS | WS_VSCROLL,
@@ -2403,11 +2576,26 @@ void SetTableRowEnabledStates(HWND table, const std::vector<bool>& enabled) {
     StateFor(table).tableRowEnabled = enabled;
 }
 
+void SetTableCells(HWND table, const std::vector<std::vector<TableCellRuntime>>& cells) {
+    if (!table) return;
+    StateFor(table).tableCells = cells;
+}
+
 bool IsTableRowEnabled(HWND table, int index) {
     const auto state = FindState(table);
     return state && index >= 0 && static_cast<std::size_t>(index) < state->tableRowEnabled.size()
         ? state->tableRowEnabled[static_cast<std::size_t>(index)]
         : true;
+}
+
+bool TableCellAction(HWND table, int row, int column, int& actionId) {
+    const auto cell = TableCellAt(table, row, column);
+    if (!cell || !IsActionCell(*cell) || !IsTableRowEnabled(table, row)) {
+        actionId = 0;
+        return false;
+    }
+    actionId = cell->actionId;
+    return true;
 }
 
 void DrawTabGroupFrame(const Theme& theme, HDC dc, RECT rect) {
@@ -2532,9 +2720,28 @@ bool HandleListViewCustomDraw(const Theme& theme, LPARAM lParam, LRESULT& result
         const bool selected = (draw->nmcd.uItemState & CDIS_SELECTED) != 0;
         const bool focused = (draw->nmcd.uItemState & CDIS_FOCUS) != 0;
         const bool enabled = IsTableRowEnabled(header->hwndFrom, static_cast<int>(draw->nmcd.dwItemSpec));
-        const wchar_t* state = !enabled ? L"disabled" : (selected ? L"selected" : (focused ? L"focused" : L"normal"));
-        draw->clrText = ToColorRef(theme.color((selected && enabled) ? L"listItem" : L"listItem", state, L"text"));
-        draw->clrTextBk = ToColorRef(theme.color((selected && enabled) ? L"listItem" : L"list", state, L"bg"));
+        const int row = static_cast<int>(draw->nmcd.dwItemSpec);
+        const wchar_t* state = TableRowState(row, selected, focused, enabled);
+        draw->clrText = ToColorRef(theme.color(L"listItem", enabled ? L"normal" : L"disabled", L"text"));
+        draw->clrTextBk = TableRowBackground(theme, state);
+        result = CDRF_NOTIFYSUBITEMDRAW;
+        return true;
+    }
+    case CDDS_ITEMPREPAINT | CDDS_SUBITEM: {
+        const int row = static_cast<int>(draw->nmcd.dwItemSpec);
+        const int column = draw->iSubItem;
+        const auto cell = TableCellAt(header->hwndFrom, row, column);
+        if (cell && IsActionCell(*cell)) {
+            DrawTableActionCell(theme, header->hwndFrom, draw, *cell);
+            result = CDRF_SKIPDEFAULT;
+            return true;
+        }
+        const bool selected = (draw->nmcd.uItemState & CDIS_SELECTED) != 0;
+        const bool focused = (draw->nmcd.uItemState & CDIS_FOCUS) != 0;
+        const bool enabled = IsTableRowEnabled(header->hwndFrom, row);
+        const wchar_t* state = TableRowState(row, selected, focused, enabled);
+        draw->clrText = ToColorRef(theme.color(L"listItem", enabled ? L"normal" : L"disabled", L"text"));
+        draw->clrTextBk = TableRowBackground(theme, state);
         result = CDRF_DODEFAULT;
         return true;
     }

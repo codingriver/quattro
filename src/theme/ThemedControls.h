@@ -142,6 +142,8 @@ HWND CreateTabButton(
 
 void SetTabButtonSelected(HWND hwnd, bool selected);
 bool IsTabButtonSelected(HWND hwnd);
+void SetTabButtonEmphasizedSegment(HWND hwnd, bool emphasized);
+bool IsTabButtonEmphasizedSegment(HWND hwnd);
 
 HWND CreateComboBox(
     HINSTANCE instance,
@@ -376,10 +378,16 @@ RECT PanelContentRect(HWND hwnd);
 void SetPanelRole(HWND hwnd, const wchar_t* role);
 
 void ApplyListViewTheme(HWND list, const Theme& theme);
+struct TableCellRuntime {
+    int role = 0;
+    int actionId = 0;
+};
 void RegisterTable(HWND table, const Theme& theme);
 void ConfigureTableColumns(HWND table, const std::vector<int>& widthModes);
 void SetTableRowEnabledStates(HWND table, const std::vector<bool>& enabled);
+void SetTableCells(HWND table, const std::vector<std::vector<TableCellRuntime>>& cells);
 bool IsTableRowEnabled(HWND table, int index);
+bool TableCellAction(HWND table, int row, int column, int& actionId);
 bool Draw(const Theme& theme, const DRAWITEMSTRUCT* draw);
 bool HandleListViewCustomDraw(const Theme& theme, LPARAM lParam, LRESULT& result);
 

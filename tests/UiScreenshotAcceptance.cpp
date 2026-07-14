@@ -80,6 +80,24 @@ bool Contains(const std::wstring& text, const std::wstring& needle) {
     return text.find(needle) != std::wstring::npos;
 }
 
+bool ListViewContainsText(HWND listView, const std::wstring& expected) {
+    const int count = static_cast<int>(SendMessageW(listView, LVM_GETITEMCOUNT, 0, 0));
+    for (int row = 0; row < count && row < 20; ++row) {
+        for (int column = 0; column < 8; ++column) {
+            wchar_t buffer[512]{};
+            LVITEMW item{};
+            item.iSubItem = column;
+            item.cchTextMax = static_cast<int>(std::size(buffer));
+            item.pszText = buffer;
+            SendMessageW(listView, LVM_GETITEMTEXTW, static_cast<WPARAM>(row), reinterpret_cast<LPARAM>(&item));
+            if (buffer[0] != L'\0' && Contains(buffer, expected)) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 std::string NarrowDiagnostic(const std::wstring& text) {
     std::string out;
     out.reserve(text.size());
@@ -469,6 +487,16 @@ void ValidateAndCapture(HWND hwnd, const Scenario& scenario, const std::filesyst
                         scenario.name + L": visible child is behind its group container: " + expected);
                 }
                 break;
+            }
+        }
+        if (!found) {
+            for (const auto& child : children) {
+                if (IsWindowVisible(child.hwnd) &&
+                    child.className == L"SysListView32" &&
+                    ListViewContainsText(child.hwnd, expected)) {
+                    found = true;
+                    break;
+                }
             }
         }
         state.Check(found, scenario.name + L": expected visible child text not found: " + expected);

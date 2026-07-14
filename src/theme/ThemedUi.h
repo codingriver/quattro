@@ -180,9 +180,17 @@ struct ThemedTableOptions {
     bool allowColumnResize = true;
 };
 
+enum class ThemedTableCellRole {
+    Text,
+    Action,
+    DestructiveAction,
+};
+
 struct ThemedTableCell {
     std::wstring text;
     int image = -1;
+    ThemedTableCellRole role = ThemedTableCellRole::Text;
+    int actionId = 0;
 };
 
 struct ThemedTableRow {
@@ -198,6 +206,7 @@ enum class ThemedTableEventKind {
     SelectionChanged,
     CheckChanged,
     SortRequested,
+    ActionInvoked,
 };
 
 struct ThemedTableEvent {
@@ -207,6 +216,7 @@ struct ThemedTableEvent {
     POINT point{};
     bool checked = false;
     std::intptr_t rowKey = 0;
+    int actionId = 0;
 };
 
 enum class ThemedTooltipPlacement {
@@ -271,10 +281,16 @@ struct ThemedTabItem {
     bool enabled = true;
 };
 
+enum class ThemedTabControlAppearance {
+    Standard,
+    EmphasizedSegmented,
+};
+
 struct ThemedTabControlOptions {
     int activeIndex = 0;
     bool enabled = true;
     bool equalWidth = false;
+    ThemedTabControlAppearance appearance = ThemedTabControlAppearance::Standard;
 };
 
 enum class ThemedToolItemKind {
