@@ -3221,15 +3221,16 @@ private:
                 behaviorFrameLeft, pageTop, behaviorFrameWidth,
                 {behaviorForm.sectionRow({ThemedSectionItemKind::Toggle}),
                  behaviorForm.sectionRow({ThemedSectionItemKind::Label}),
-                 behaviorForm.sectionRow({ThemedSectionItemKind::Label, ThemedSectionItemKind::Edit, ThemedSectionItemKind::CompactButton}),
-                 behaviorForm.sectionRow({ThemedSectionItemKind::Label, ThemedSectionItemKind::Edit, ThemedSectionItemKind::CompactButton}),
+                 behaviorForm.sectionRow({ThemedSectionItemKind::Label}),
+                 behaviorForm.sectionRow({ThemedSectionItemKind::Label}),
+                 behaviorForm.sectionRow({ThemedSectionItemKind::Label}),
                  behaviorForm.sectionRow({ThemedSectionItemKind::Label})});
             HWND hotKeyGroup = AddSectionFrame(TabHotKeys, L"全局快捷键", hotKeySection.frame);
             globalHotKeysEnabled_ = Toggle(
                 TabHotKeys, ID_GLOBAL_HOTKEYS_ENABLED, L"启用全局快捷键", behaviorLeft,
                 behaviorForm.sectionItemY(hotKeySection, 0, settingsUi.toggleHeight()), draft_.globalHotKeysEnabled, behaviorContentWidth);
             const int hotKeyTableTop = hotKeySection.rowTops[1];
-            const int hotKeyTableBottom = hotKeySection.rowTops[3] + hotKeySection.rowHeights[3];
+            const int hotKeyTableBottom = hotKeySection.rowTops[4] + hotKeySection.rowHeights[4];
             RECT hotKeyTableFrame{
                 behaviorLeft,
                 ContentY(hotKeyTableTop),
@@ -3265,7 +3266,7 @@ private:
             AddTabChild(hotKeyTable_, TabHotKeys);
             mainHotKeyStatus_ = Label(
                 TabHotKeys, L"", behaviorLeft,
-                behaviorForm.sectionItemY(hotKeySection, 4, settingsUi.labelHeight()), behaviorContentWidth);
+                behaviorForm.sectionItemY(hotKeySection, 5, settingsUi.labelHeight()), behaviorContentWidth);
             ThemedUi::BindGroupChildren(hotKeyGroup, {
                 globalHotKeysEnabled_, hotKeyTable_, mainHotKeyStatus_});
             UpdateHotKeyLabels();

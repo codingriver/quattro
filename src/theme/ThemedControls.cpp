@@ -12,7 +12,19 @@
 #include <unordered_map>
 #include <vector>
 
+#ifndef HDS_NOSIZING
+#define HDS_NOSIZING 0x0800
+#endif
+
 namespace {
+constexpr int kTabAppearanceStandard = 0;
+constexpr int kTabAppearanceEmphasizedSegmented = 1;
+constexpr int kTabAppearanceMinimalUnderline = 2;
+constexpr int kTabAppearanceSoftPill = 3;
+constexpr int kTabAppearanceConnectedTabs = 4;
+constexpr int kTabOrientationHorizontal = 0;
+constexpr int kTabOrientationVertical = 1;
+
 enum class ControlKind {
     None,
     Button,
@@ -51,7 +63,8 @@ struct ControlState {
     bool hover = false;
     bool checked = false;
     bool selected = false;
-    bool emphasizedSegment = false;
+    int tabAppearance = 0;
+    int tabOrientation = 0;
     bool multiline = false;
     bool selectAllOnFocus = false;
     int radioGroup = 0;
@@ -61,6 +74,8 @@ struct ControlState {
     double sliderMaximum = 100.0;
     double sliderStep = 1.0;
     double sliderValue = 0.0;
+    HIMAGELIST tableDefaultSmallImages = nullptr;
+    bool tableAllowColumnResize = false;
     std::vector<int> tableColumnWidthModes;
     std::vector<bool> tableRowEnabled;
     std::vector<std::vector<ThemedControls::TableCellRuntime>> tableCells;
@@ -102,7 +117,15 @@ ControlKind KindFor(HWND hwnd) {
 
 void EraseState(HWND hwnd) {
     std::lock_guard<std::mutex> lock(StateMutex());
-    StateMap().erase(hwnd);
+    auto& map = StateMap();
+    auto it = map.find(hwnd);
+    if (it != map.end()) {
+        if (it->second.tableDefaultSmallImages) {
+            ImageList_Destroy(it->second.tableDefaultSmallImages);
+            it->second.tableDefaultSmallImages = nullptr;
+        }
+        map.erase(it);
+    }
 }
 
 bool IsOwnerDrawButtonKind(ControlKind kind) {
@@ -1205,9 +1228,38 @@ void DrawContainer(const Theme& theme, const DRAWITEMSTRUCT* draw, ControlKind k
 
     const bool disabled = (draw->itemState & ODS_DISABLED) != 0;
     const auto state = FindState(draw->hwndItem);
+    const int tabAppearance = kind == ControlKind::TabControl && state ? state->tabAppearance : 0;
+    const bool verticalTabs = kind == ControlKind::TabControl && state && state->tabOrientation == kTabOrientationVertical;
+    if (kind == ControlKind::TabControl && tabAppearance == kTabAppearanceMinimalUnderline) {
+        const wchar_t* visualState = disabled ? L"disabled" : L"minimalUnderline";
+        HBRUSH background = CreateSolidBrush(ToColorRef(theme.color(L"tabControl", visualState, L"bg")));
+        FillRect(draw->hDC, &rect, background);
+        DeleteObject(background);
+        const int lineWidth = std::max(1, ScaledMetric(draw->hwndItem, theme, L"tabControl", L"underlineBorderWidth", 1.0f));
+        HPEN pen = CreatePen(PS_SOLID, lineWidth, ToColorRef(theme.color(L"tabControl", visualState, L"border")));
+        HGDIOBJ oldPen = SelectObject(draw->hDC, pen);
+        if (verticalTabs) {
+            MoveToEx(draw->hDC, rect.right - lineWidth, rect.top, nullptr);
+            LineTo(draw->hDC, rect.right - lineWidth, rect.bottom);
+        } else {
+            MoveToEx(draw->hDC, rect.left, rect.bottom - lineWidth, nullptr);
+            LineTo(draw->hDC, rect.right, rect.bottom - lineWidth);
+        }
+        SelectObject(draw->hDC, oldPen);
+        DeleteObject(pen);
+        return;
+    }
+    if (kind == ControlKind::TabControl && tabAppearance == kTabAppearanceSoftPill) {
+        const wchar_t* visualState = disabled ? L"disabled" : L"softPill";
+        HBRUSH background = CreateSolidBrush(ToColorRef(theme.color(L"tabControl", visualState, L"bg")));
+        FillRect(draw->hDC, &rect, background);
+        DeleteObject(background);
+        return;
+    }
     const wchar_t* visualState = disabled ? L"disabled"
         : (kind == ControlKind::Panel && state && !state->statusState.empty() ? state->statusState.c_str()
-        : ((kind == ControlKind::GroupBox && state && state->checked) ? L"raised" : L"normal"));
+        : ((kind == ControlKind::GroupBox && state && state->checked) ? L"raised"
+        : (kind == ControlKind::TabControl && tabAppearance == kTabAppearanceConnectedTabs ? L"connected" : L"normal")));
     const int radius = static_cast<int>(theme.metric(component, L"radius", 7.0f));
     const int borderWidth = static_cast<int>(theme.metric(component, L"borderWidth", 1.0f));
     FillRoundRect(
@@ -1269,14 +1321,27 @@ void DrawTabButton(const Theme& theme, const DRAWITEMSTRUCT* draw) {
     const bool disabled = (draw->itemState & ODS_DISABLED) != 0;
     const auto controlState = FindState(draw->hwndItem);
     const bool selected = controlState && controlState->selected;
-    const bool emphasized = controlState && controlState->emphasizedSegment;
+    const int appearance = controlState ? controlState->tabAppearance : 0;
+    const bool vertical = controlState && controlState->tabOrientation == kTabOrientationVertical;
     const bool hover = IsHover(draw->hwndItem);
     const bool focused = (draw->itemState & ODS_FOCUS) != 0;
     const wchar_t* state = nullptr;
-    if (emphasized) {
+    if (appearance == kTabAppearanceEmphasizedSegmented) {
         state = disabled ? L"emphasizedDisabled"
             : (selected ? (hover ? L"emphasizedSelectedHover" : L"emphasizedSelected")
             : (hover ? L"emphasizedHover" : (focused ? L"emphasizedFocused" : L"emphasizedNormal")));
+    } else if (appearance == kTabAppearanceMinimalUnderline) {
+        state = disabled ? L"minimalDisabled"
+            : (selected ? (hover ? L"minimalSelectedHover" : L"minimalSelected")
+            : (hover ? L"minimalHover" : (focused ? L"minimalFocused" : L"minimalNormal")));
+    } else if (appearance == kTabAppearanceSoftPill) {
+        state = disabled ? L"softPillDisabled"
+            : (selected ? (hover ? L"softPillSelectedHover" : L"softPillSelected")
+            : (hover ? L"softPillHover" : (focused ? L"softPillFocused" : L"softPillNormal")));
+    } else if (appearance == kTabAppearanceConnectedTabs) {
+        state = disabled ? L"connectedDisabled"
+            : (selected ? (hover ? L"connectedSelectedHover" : L"connectedSelected")
+            : (hover ? L"connectedHover" : (focused ? L"connectedFocused" : L"connectedNormal")));
     } else {
         state = disabled ? L"disabled"
             : (selected ? (hover ? L"selectedHover" : L"selected")
@@ -1284,15 +1349,63 @@ void DrawTabButton(const Theme& theme, const DRAWITEMSTRUCT* draw) {
     }
 
     RECT rect = draw->rcItem;
-    const int radius = static_cast<int>(theme.metric(L"tabButton", L"radius", 7.0f));
-    const int borderWidth = static_cast<int>(theme.metric(L"tabButton", L"borderWidth", 1.0f));
-    if (theme.metric(L"tabButton", L"segmented", 0.0f) > 0.5f) {
-        HBRUSH bg = CreateSolidBrush(ToColorRef(theme.color(L"tabButton", L"normal", L"bg")));
-        FillRect(draw->hDC, &rect, bg);
-        DeleteObject(bg);
+    const int radius = appearance == kTabAppearanceSoftPill
+        ? ScaledMetric(draw->hwndItem, theme, L"tabButton", L"softPillRadius", 14.0f)
+        : ScaledMetric(draw->hwndItem, theme, L"tabButton", L"radius", 7.0f);
+    const int borderWidth = ScaledMetric(draw->hwndItem, theme, L"tabButton", L"borderWidth", 1.0f);
+    const wchar_t* containerState = appearance == kTabAppearanceMinimalUnderline ? L"minimalUnderline"
+        : (appearance == kTabAppearanceSoftPill ? L"softPill"
+        : (appearance == kTabAppearanceConnectedTabs ? L"connected" : L"normal"));
+    const Color baseColor = appearance == kTabAppearanceStandard || appearance == kTabAppearanceEmphasizedSegmented
+        ? theme.color(L"tabButton", L"normal", L"bg")
+        : theme.color(L"tabControl", containerState, L"bg");
+    HBRUSH bg = CreateSolidBrush(ToColorRef(baseColor));
+    FillRect(draw->hDC, &rect, bg);
+    DeleteObject(bg);
 
+    if (appearance == kTabAppearanceMinimalUnderline) {
+        if (hover || focused) {
+            RECT hoverRect = rect;
+            const int hoverInsetY = ScaledMetric(draw->hwndItem, theme, L"tabButton", L"minimalHoverInsetY", 2.0f);
+            InflateRect(&hoverRect, 0, -hoverInsetY);
+            FillRoundRect(
+                draw->hDC,
+                hoverRect,
+                ScaledMetric(draw->hwndItem, theme, L"tabButton", L"minimalHoverRadius", 6.0f),
+                ToColorRef(theme.color(L"tabButton", state, L"bg")),
+                ToColorRef(theme.color(L"tabButton", state, L"border")),
+                borderWidth);
+        }
+        if (selected) {
+            const int thickness = std::max(1, ScaledMetric(draw->hwndItem, theme, L"tabButton", L"underlineThickness", 3.0f));
+            const int indicatorInset = vertical
+                ? ScaledMetric(draw->hwndItem, theme, L"tabButton", L"verticalUnderlineInset", 6.0f)
+                : ScaledMetric(draw->hwndItem, theme, L"tabButton", L"underlineInset", 11.0f);
+            RECT underline{};
+            if (vertical) {
+                underline = RECT{
+                    rect.right - thickness,
+                    rect.top + indicatorInset,
+                    rect.right,
+                    rect.bottom - indicatorInset};
+            } else {
+                underline = RECT{
+                    rect.left + indicatorInset,
+                    rect.bottom - thickness,
+                    rect.right - indicatorInset,
+                    rect.bottom};
+            }
+            FillRoundRect(
+                draw->hDC,
+                underline,
+                std::max(1, thickness / 2),
+                ToColorRef(theme.color(L"tabButton", state, L"underline")),
+                ToColorRef(theme.color(L"tabButton", state, L"underline")),
+                0);
+        }
+    } else if (theme.metric(L"tabButton", L"segmented", 0.0f) > 0.5f) {
         RECT segmentRect = rect;
-        const int inset = static_cast<int>(theme.metric(L"tabButton", L"segmentInset", 2.0f) + 0.5f);
+        const int inset = std::max(1, ScaledMetric(draw->hwndItem, theme, L"tabButton", L"segmentInset", 1.0f));
         InflateRect(&segmentRect, -inset, -inset);
         FillRoundRect(
             draw->hDC,
@@ -1301,6 +1414,26 @@ void DrawTabButton(const Theme& theme, const DRAWITEMSTRUCT* draw) {
             ToColorRef(theme.color(L"tabButton", state, L"bg")),
             ToColorRef(theme.color(L"tabButton", state, L"border")),
             borderWidth);
+        if (appearance == kTabAppearanceConnectedTabs && selected) {
+            const int openExtent = ScaledMetric(draw->hwndItem, theme, L"tabButton", L"connectedOpenExtent", 5.0f);
+            RECT opening{};
+            if (vertical) {
+                opening = RECT{
+                    std::max(segmentRect.left, segmentRect.right - openExtent),
+                    segmentRect.top + borderWidth,
+                    rect.right,
+                    segmentRect.bottom - borderWidth};
+            } else {
+                opening = RECT{
+                    segmentRect.left + borderWidth,
+                    std::max(segmentRect.top, segmentRect.bottom - openExtent),
+                    segmentRect.right - borderWidth,
+                    rect.bottom};
+            }
+            HBRUSH openingBrush = CreateSolidBrush(ToColorRef(theme.color(L"tabButton", state, L"bg")));
+            FillRect(draw->hDC, &opening, openingBrush);
+            DeleteObject(openingBrush);
+        }
     } else {
         FillRoundRect(
             draw->hDC,
@@ -1414,9 +1547,8 @@ void DrawHeaderItem(const Theme& theme, HWND header, const NMCUSTOMDRAW* draw) {
     HGDIOBJ oldPen = SelectObject(draw->hdc, pen);
     MoveToEx(draw->hdc, rect.left, rect.bottom - 1, nullptr);
     LineTo(draw->hdc, rect.right, rect.bottom - 1);
-    RECT headerClient{};
-    GetClientRect(header, &headerClient);
-    if (rect.right < headerClient.right - 1) {
+    const int itemCount = Header_GetItemCount(header);
+    if (index >= 0 && index < itemCount - 1) {
         MoveToEx(draw->hdc, rect.right - 1, rect.top, nullptr);
         LineTo(draw->hdc, rect.right - 1, rect.bottom);
     }
@@ -1461,15 +1593,28 @@ bool IsActionCell(const ThemedControls::TableCellRuntime& cell) {
     return cell.role == 1 || cell.role == 2;
 }
 
-const wchar_t* TableRowState(int row, bool selected, bool focused, bool enabled) {
+bool UsesNativeTableCellDrawing(HWND table, int column, const ThemedControls::TableCellRuntime* cell) {
+    if (column != 0) {
+        return false;
+    }
+    const DWORD extended = ListView_GetExtendedListViewStyle(table);
+    if ((extended & LVS_EX_CHECKBOXES) != 0) {
+        return true;
+    }
+    return cell && cell->hasImage;
+}
+
+bool UsesNativeTableRowDrawing(HWND table, int row) {
+    const auto firstCell = TableCellAt(table, row, 0);
+    return UsesNativeTableCellDrawing(table, 0, firstCell ? &*firstCell : nullptr);
+}
+
+const wchar_t* TableRowState(int row, bool selected, bool enabled) {
     if (!enabled) {
         return L"disabled";
     }
     if (selected) {
         return L"selected";
-    }
-    if (focused) {
-        return L"focused";
     }
     return (row % 2) == 0 ? L"alternate" : L"normal";
 }
@@ -1528,8 +1673,7 @@ void DrawTableActionCell(
     RECT cellRect = TableSubItemRect(table, row, column, draw->nmcd.rc);
     const bool enabled = ThemedControls::IsTableRowEnabled(table, row);
     const bool selected = (draw->nmcd.uItemState & CDIS_SELECTED) != 0;
-    const bool rowFocused = (draw->nmcd.uItemState & CDIS_FOCUS) != 0;
-    const wchar_t* rowState = TableRowState(row, selected, rowFocused, enabled);
+    const wchar_t* rowState = TableRowState(row, selected, enabled);
     HBRUSH background = CreateSolidBrush(TableRowBackground(theme, rowState));
     FillRect(draw->nmcd.hdc, &cellRect, background);
     DeleteObject(background);
@@ -1579,6 +1723,71 @@ void DrawTableActionCell(
         DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
     if (oldFont) {
         SelectObject(draw->nmcd.hdc, oldFont);
+    }
+}
+
+void DrawTableTextCell(
+    const Theme& theme,
+    HWND table,
+    const NMLVCUSTOMDRAW* draw) {
+    const int row = static_cast<int>(draw->nmcd.dwItemSpec);
+    const int column = draw->iSubItem;
+    RECT cellRect = TableSubItemRect(table, row, column, draw->nmcd.rc);
+    const bool enabled = ThemedControls::IsTableRowEnabled(table, row);
+    const bool selected = (draw->nmcd.uItemState & CDIS_SELECTED) != 0;
+    const wchar_t* rowState = TableRowState(row, selected, enabled);
+    HBRUSH background = CreateSolidBrush(TableRowBackground(theme, rowState));
+    FillRect(draw->nmcd.hdc, &cellRect, background);
+    DeleteObject(background);
+
+    const int paddingX = static_cast<int>(theme.metric(L"listItem", L"paddingX", 8.0f));
+    RECT textRect = cellRect;
+    textRect.left += paddingX;
+    textRect.right -= paddingX;
+
+    LVCOLUMNW columnInfo{};
+    columnInfo.mask = LVCF_FMT;
+    ListView_GetColumn(table, column, &columnInfo);
+    UINT format = DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS;
+    if ((columnInfo.fmt & LVCFMT_CENTER) == LVCFMT_CENTER) {
+        format = (format & ~DT_LEFT) | DT_CENTER;
+    } else if ((columnInfo.fmt & LVCFMT_RIGHT) == LVCFMT_RIGHT) {
+        format = (format & ~DT_LEFT) | DT_RIGHT;
+    }
+
+    const std::wstring text = ListViewCellText(table, row, column);
+    HFONT font = reinterpret_cast<HFONT>(SendMessageW(table, WM_GETFONT, 0, 0));
+    HGDIOBJ oldFont = font ? SelectObject(draw->nmcd.hdc, font) : nullptr;
+    SetBkMode(draw->nmcd.hdc, TRANSPARENT);
+    const wchar_t* textState = enabled ? rowState : L"disabled";
+    SetTextColor(draw->nmcd.hdc, ToColorRef(theme.color(L"listItem", textState, L"text")));
+    DrawTextW(
+        draw->nmcd.hdc,
+        text.c_str(),
+        static_cast<int>(text.size()),
+        &textRect,
+        format);
+    if (oldFont) {
+        SelectObject(draw->nmcd.hdc, oldFont);
+    }
+}
+
+void DrawTableRowCells(
+    const Theme& theme,
+    HWND table,
+    const NMLVCUSTOMDRAW* draw) {
+    HWND header = ListView_GetHeader(table);
+    const int columnCount = header ? Header_GetItemCount(header) : 0;
+    for (int column = 0; column < columnCount; ++column) {
+        NMLVCUSTOMDRAW cellDraw = *draw;
+        cellDraw.iSubItem = column;
+        const int row = static_cast<int>(draw->nmcd.dwItemSpec);
+        const auto cell = TableCellAt(table, row, column);
+        if (cell && IsActionCell(*cell)) {
+            DrawTableActionCell(theme, table, &cellDraw, *cell);
+        } else {
+            DrawTableTextCell(theme, table, &cellDraw);
+        }
     }
 }
 }
@@ -2214,17 +2423,30 @@ bool IsTabButtonSelected(HWND hwnd) {
     return state && state->selected;
 }
 
-void SetTabButtonEmphasizedSegment(HWND hwnd, bool emphasized) {
+void SetTabAppearance(HWND hwnd, int appearance) {
     if (!hwnd) {
         return;
     }
-    StateFor(hwnd).emphasizedSegment = emphasized;
+    StateFor(hwnd).tabAppearance = std::clamp(appearance, kTabAppearanceStandard, kTabAppearanceConnectedTabs);
     InvalidateRect(hwnd, nullptr, FALSE);
 }
 
-bool IsTabButtonEmphasizedSegment(HWND hwnd) {
+int TabAppearance(HWND hwnd) {
     auto state = FindState(hwnd);
-    return state && state->emphasizedSegment;
+    return state ? state->tabAppearance : 0;
+}
+
+void SetTabOrientation(HWND hwnd, int orientation) {
+    if (!hwnd) {
+        return;
+    }
+    StateFor(hwnd).tabOrientation = std::clamp(orientation, kTabOrientationHorizontal, kTabOrientationVertical);
+    InvalidateRect(hwnd, nullptr, FALSE);
+}
+
+int TabOrientation(HWND hwnd) {
+    auto state = FindState(hwnd);
+    return state ? state->tabOrientation : kTabOrientationHorizontal;
 }
 
 HWND CreateComboBox(HINSTANCE instance, HWND parent, int id, int x, int y, int width, int height, HFONT font, const Theme& theme) {
@@ -2564,11 +2786,27 @@ void RegisterTable(HWND table, const Theme& theme) {
     state.theme = &theme;
     AttachThemedBehavior(table);
     ApplyListViewTheme(table, theme);
+    ThemedControls::RestoreTableDefaultImageList(table);
 }
 
 void ConfigureTableColumns(HWND table, const std::vector<int>& widthModes) {
     if (!table) return;
     StateFor(table).tableColumnWidthModes = widthModes;
+}
+
+void SetTableColumnResizeEnabled(HWND table, bool enabled) {
+    if (!table) return;
+    StateFor(table).tableAllowColumnResize = enabled;
+    HWND header = ListView_GetHeader(table);
+    if (!header) return;
+    LONG_PTR style = GetWindowLongPtrW(header, GWL_STYLE);
+    if (enabled) {
+        style &= ~static_cast<LONG_PTR>(HDS_NOSIZING);
+    } else {
+        style |= HDS_NOSIZING;
+    }
+    SetWindowLongPtrW(header, GWL_STYLE, style);
+    SetWindowPos(header, nullptr, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
 }
 
 void SetTableRowEnabledStates(HWND table, const std::vector<bool>& enabled) {
@@ -2596,6 +2834,19 @@ bool TableCellAction(HWND table, int row, int column, int& actionId) {
     }
     actionId = cell->actionId;
     return true;
+}
+
+void RestoreTableDefaultImageList(HWND table) {
+    if (!table) return;
+    auto& state = StateFor(table);
+    if (!state.theme) return;
+    if (!state.tableDefaultSmallImages) {
+        const int rowHeight = ScaledMetric(table, *state.theme, L"listItem", L"height", 28.0f);
+        state.tableDefaultSmallImages = ImageList_Create(1, std::max(1, rowHeight), ILC_COLOR32, 1, 1);
+    }
+    if (state.tableDefaultSmallImages) {
+        ListView_SetImageList(table, state.tableDefaultSmallImages, LVSIL_SMALL);
+    }
 }
 
 void DrawTabGroupFrame(const Theme& theme, HDC dc, RECT rect) {
@@ -2685,11 +2936,26 @@ bool Draw(const Theme& theme, const DRAWITEMSTRUCT* draw) {
 
 bool HandleListViewCustomDraw(const Theme& theme, LPARAM lParam, LRESULT& result) {
     auto* header = reinterpret_cast<NMHDR*>(lParam);
-    if (!header || header->code != NM_CUSTOMDRAW) {
+    if (!header) {
         return false;
     }
 
     const std::wstring className = ClassName(header->hwndFrom);
+    if (className == L"SysHeader32" &&
+        (header->code == HDN_BEGINTRACKW || header->code == HDN_BEGINTRACKA)) {
+        HWND table = GetParent(header->hwndFrom);
+        const auto state = FindState(table);
+        if (state && state->kind == ControlKind::Table && !state->tableAllowColumnResize) {
+            result = TRUE;
+            return true;
+        }
+        return false;
+    }
+
+    if (header->code != NM_CUSTOMDRAW) {
+        return false;
+    }
+
     if (className == L"SysHeader32") {
         auto* draw = reinterpret_cast<NMCUSTOMDRAW*>(lParam);
         switch (draw->dwDrawStage) {
@@ -2718,12 +2984,22 @@ bool HandleListViewCustomDraw(const Theme& theme, LPARAM lParam, LRESULT& result
         return true;
     case CDDS_ITEMPREPAINT: {
         const bool selected = (draw->nmcd.uItemState & CDIS_SELECTED) != 0;
-        const bool focused = (draw->nmcd.uItemState & CDIS_FOCUS) != 0;
         const bool enabled = IsTableRowEnabled(header->hwndFrom, static_cast<int>(draw->nmcd.dwItemSpec));
         const int row = static_cast<int>(draw->nmcd.dwItemSpec);
-        const wchar_t* state = TableRowState(row, selected, focused, enabled);
+        const wchar_t* state = TableRowState(row, selected, enabled);
+        RECT rowRect{};
+        if (ListView_GetItemRect(header->hwndFrom, row, &rowRect, LVIR_BOUNDS)) {
+            HBRUSH background = CreateSolidBrush(TableRowBackground(theme, state));
+            FillRect(draw->nmcd.hdc, &rowRect, background);
+            DeleteObject(background);
+        }
+        if (!UsesNativeTableRowDrawing(header->hwndFrom, row)) {
+            DrawTableRowCells(theme, header->hwndFrom, draw);
+            result = CDRF_SKIPDEFAULT;
+            return true;
+        }
         draw->clrText = ToColorRef(theme.color(L"listItem", enabled ? L"normal" : L"disabled", L"text"));
-        draw->clrTextBk = TableRowBackground(theme, state);
+        draw->clrTextBk = CLR_NONE;
         result = CDRF_NOTIFYSUBITEMDRAW;
         return true;
     }
@@ -2736,13 +3012,15 @@ bool HandleListViewCustomDraw(const Theme& theme, LPARAM lParam, LRESULT& result
             result = CDRF_SKIPDEFAULT;
             return true;
         }
-        const bool selected = (draw->nmcd.uItemState & CDIS_SELECTED) != 0;
-        const bool focused = (draw->nmcd.uItemState & CDIS_FOCUS) != 0;
+        if (!UsesNativeTableCellDrawing(header->hwndFrom, column, cell ? &*cell : nullptr)) {
+            DrawTableTextCell(theme, header->hwndFrom, draw);
+            result = CDRF_SKIPDEFAULT;
+            return true;
+        }
         const bool enabled = IsTableRowEnabled(header->hwndFrom, row);
-        const wchar_t* state = TableRowState(row, selected, focused, enabled);
         draw->clrText = ToColorRef(theme.color(L"listItem", enabled ? L"normal" : L"disabled", L"text"));
-        draw->clrTextBk = TableRowBackground(theme, state);
-        result = CDRF_DODEFAULT;
+        draw->clrTextBk = CLR_NONE;
+        result = CDRF_NEWFONT;
         return true;
     }
     default:

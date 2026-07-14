@@ -404,37 +404,62 @@ bool ShellContextMenuCacheService::Save() const {
     if (ec) {
         return false;
     }
-    std::ofstream stream(cachePath_, std::ios::binary | std::ios::trunc);
-    if (!stream) {
-        return false;
-    }
-    stream.write(kMagic.data(), kMagic.size());
-    const auto entryCount = static_cast<std::uint32_t>(std::min<std::size_t>(entries_.size(), kMaxEntries));
-    WriteValue(stream, entryCount);
-    std::uint32_t written = 0;
-    for (const auto& [linkId, entry] : entries_) {
-        if (written++ >= entryCount) {
-            break;
+    // Write to a sibling temp file and atomically replace the cache so a crash
+    // or partial write can never leave the on-disk cache truncated (which Load()
+    // rejects wholesale, discarding every cached menu and icon).
+    std::filesystem::path tempPath = cachePath_;
+    tempPath += L".tmp";
+    {
+        std::ofstream stream(tempPath, std::ios::binary | std::ios::trunc);
+        if (!stream) {
+            return false;
         }
-        const auto storedLinkId = static_cast<std::int32_t>(linkId);
-        WriteValue(stream, storedLinkId);
-        WriteString(stream, entry.target);
-        const auto itemCount = static_cast<std::uint32_t>(std::min<std::size_t>(entry.items.size(), kMaxItems));
-        WriteValue(stream, itemCount);
-        for (std::uint32_t index = 0; index < itemCount; ++index) {
-            WriteItem(stream, entry.items[index], 0);
+        stream.write(kMagic.data(), kMagic.size());
+        const auto entryCount = static_cast<std::uint32_t>(std::min<std::size_t>(entries_.size(), kMaxEntries));
+        WriteValue(stream, entryCount);
+        std::uint32_t written = 0;
+        for (const auto& [linkId, entry] : entries_) {
+            if (written++ >= entryCount) {
+                break;
+            }
+            const auto storedLinkId = static_cast<std::int32_t>(linkId);
+            WriteValue(stream, storedLinkId);
+            WriteString(stream, entry.target);
+            const auto itemCount = static_cast<std::uint32_t>(std::min<std::size_t>(entry.items.size(), kMaxItems));
+            WriteValue(stream, itemCount);
+            for (std::uint32_t index = 0; index < itemCount; ++index) {
+                WriteItem(stream, entry.items[index], 0);
+            }
+        }
+        const auto iconCount = static_cast<std::uint32_t>(std::min<std::size_t>(iconPool_.size(), kMaxIcons));
+        WriteValue(stream, iconCount);
+        written = 0;
+        for (const auto& [key, icon] : iconPool_) {
+            if (written++ >= iconCount) {
+                break;
+            }
+            WriteString(stream, key);
+            WriteIcon(stream, icon);
+        }
+        stream.flush();
+        if (!stream.good()) {
+            stream.close();
+            std::filesystem::remove(tempPath, ec);
+            return false;
         }
     }
-    const auto iconCount = static_cast<std::uint32_t>(std::min<std::size_t>(iconPool_.size(), kMaxIcons));
-    WriteValue(stream, iconCount);
-    written = 0;
-    for (const auto& [key, icon] : iconPool_) {
-        if (written++ >= iconCount) {
-            break;
+    std::filesystem::rename(tempPath, cachePath_, ec);
+    if (ec) {
+        // rename can fail across some filesystems or if the destination is
+        // locked; fall back to an overwriting copy and clean up the temp file.
+        ec.clear();
+        std::filesystem::copy_file(
+            tempPath, cachePath_, std::filesystem::copy_options::overwrite_existing, ec);
+        std::error_code removeEc;
+        std::filesystem::remove(tempPath, removeEc);
+        if (ec) {
+            return false;
         }
-        WriteString(stream, key);
-        WriteIcon(stream, icon);
     }
-    stream.flush();
-    return stream.good();
+    return true;
 }

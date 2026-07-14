@@ -16,6 +16,10 @@
 #include <gdiplus.h>
 #include <windows.h>
 
+#ifndef HDS_NOSIZING
+#define HDS_NOSIZING 0x0800
+#endif
+
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -333,6 +337,55 @@ double NearBlackPixelRatio(HBITMAP bitmap, int width, int height) {
         }
     }
     return sampled == 0 ? 1.0 : static_cast<double>(nearBlack) / static_cast<double>(sampled);
+}
+
+COLORREF BitmapPixel(HBITMAP bitmap, int x, int y) {
+    HDC dc = CreateCompatibleDC(nullptr);
+    HGDIOBJ old = SelectObject(dc, bitmap);
+    const COLORREF color = GetPixel(dc, x, y);
+    SelectObject(dc, old);
+    DeleteDC(dc);
+    return color;
+}
+
+COLORREF AverageBitmapRowColor(HBITMAP bitmap, int width, RECT row) {
+    const int rowLeft = static_cast<int>(row.left);
+    const int rowTop = static_cast<int>(row.top);
+    const int rowRight = static_cast<int>(row.right);
+    const int rowBottom = static_cast<int>(row.bottom);
+    const int maxX = std::max(0, width - 1);
+    const int maxY = std::max(0, rowBottom - 1);
+    const int y = std::clamp((rowTop + rowBottom) / 2, 0, maxY);
+    const int left = std::clamp(rowLeft + std::max(8, (rowRight - rowLeft) / 3), 0, maxX);
+    const int right = std::clamp(rowRight - 12, left, maxX);
+    int r = 0;
+    int g = 0;
+    int b = 0;
+    int samples = 0;
+    for (int i = 0; i < 9; ++i) {
+        const int x = left + ((right - left) * i) / 8;
+        const COLORREF color = BitmapPixel(bitmap, x, y);
+        if (color == CLR_INVALID) {
+            continue;
+        }
+        r += GetRValue(color);
+        g += GetGValue(color);
+        b += GetBValue(color);
+        ++samples;
+    }
+    if (samples == 0) {
+        return CLR_INVALID;
+    }
+    return RGB(r / samples, g / samples, b / samples);
+}
+
+int ColorDistance(COLORREF a, COLORREF b) {
+    if (a == CLR_INVALID || b == CLR_INVALID) {
+        return 0;
+    }
+    return std::abs(static_cast<int>(GetRValue(a)) - static_cast<int>(GetRValue(b))) +
+        std::abs(static_cast<int>(GetGValue(a)) - static_cast<int>(GetGValue(b))) +
+        std::abs(static_cast<int>(GetBValue(a)) - static_cast<int>(GetBValue(b)));
 }
 
 struct ChildInfo {
@@ -702,6 +755,135 @@ void RunMainWindowScenario(const std::filesystem::path& outputDir, TestState& st
     AcceptanceLog(L"end main-window");
 }
 
+bool WaitForListViewRows(HWND listView, int minimumRows, DWORD timeoutMs = 6000) {
+    const auto begin = GetTickCount64();
+    while (GetTickCount64() - begin < timeoutMs) {
+        const int count = static_cast<int>(SendMessageW(listView, LVM_GETITEMCOUNT, 0, 0));
+        if (count >= minimumRows) {
+            return true;
+        }
+        Sleep(50);
+    }
+    return false;
+}
+
+HWND WaitForChildClass(HWND parent, const std::wstring& className, DWORD timeoutMs = 6000) {
+    const auto begin = GetTickCount64();
+    while (GetTickCount64() - begin < timeoutMs) {
+        const auto children = Children(parent);
+        for (const auto& child : children) {
+            if (child.className == className && IsWindowVisible(child.hwnd)) {
+                return child.hwnd;
+            }
+        }
+        Sleep(50);
+    }
+    return nullptr;
+}
+
+void ValidateAppLaunchLockerTables(HWND hwnd, TestState& state) {
+    const auto children = Children(hwnd);
+    bool sawTable = false;
+    bool sawAlternatingRows = false;
+    bool sawNoSizingHeader = false;
+    for (const auto& child : children) {
+        if (child.className != L"SysListView32" || !IsWindowVisible(child.hwnd)) {
+            continue;
+        }
+        sawTable = true;
+        const int rowCount = static_cast<int>(SendMessageW(child.hwnd, LVM_GETITEMCOUNT, 0, 0));
+        HWND header = reinterpret_cast<HWND>(SendMessageW(child.hwnd, LVM_GETHEADER, 0, 0));
+        if (header && (GetWindowLongPtrW(header, GWL_STYLE) & HDS_NOSIZING) != 0) {
+            sawNoSizingHeader = true;
+        }
+        if (rowCount < 2) {
+            continue;
+        }
+
+        LVITEMW clearSelection{};
+        clearSelection.stateMask = LVIS_SELECTED | LVIS_FOCUSED;
+        clearSelection.state = 0;
+        SendMessageW(child.hwnd, LVM_SETITEMSTATE, static_cast<WPARAM>(-1), reinterpret_cast<LPARAM>(&clearSelection));
+        RedrawWindow(child.hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW | RDW_ALLCHILDREN);
+
+        RECT row0{LVIR_BOUNDS, 0, 0, 0};
+        RECT row1{LVIR_BOUNDS, 0, 0, 0};
+        const bool hasRow0 = SendMessageW(child.hwnd, LVM_GETITEMRECT, 0, reinterpret_cast<LPARAM>(&row0)) != 0;
+        const bool hasRow1 = SendMessageW(child.hwnd, LVM_GETITEMRECT, 1, reinterpret_cast<LPARAM>(&row1)) != 0;
+        if (!hasRow0 || !hasRow1) {
+            continue;
+        }
+
+        BitmapCapture capture = CaptureWindowBitmap(child.hwnd);
+        if (!capture.bitmap) {
+            continue;
+        }
+        const COLORREF row0Color = AverageBitmapRowColor(capture.bitmap, capture.width, row0);
+        const COLORREF row1Color = AverageBitmapRowColor(capture.bitmap, capture.width, row1);
+        const int distance = ColorDistance(row0Color, row1Color);
+        DeleteObject(capture.bitmap);
+        if (distance >= 18) {
+            sawAlternatingRows = true;
+        }
+    }
+    state.Check(sawTable, L"app-launch-locker: table controls not found");
+    state.Check(sawNoSizingHeader, L"app-launch-locker: table header does not disable column resizing");
+    state.Check(sawAlternatingRows, L"app-launch-locker: table rows do not show alternating backgrounds");
+}
+
+void RunAppLaunchLockerScenario(const std::filesystem::path& outputDir, TestState& state) {
+    AcceptanceLog(L"begin app-launch-locker");
+    const std::filesystem::path exe = ModuleDirectory() / L"AppLaunchLocker.exe";
+    if (!std::filesystem::exists(exe)) {
+        state.Check(false, L"app-launch-locker: AppLaunchLocker.exe not found beside acceptance executable");
+        AcceptanceLog(L"missing app-launch-locker exe");
+        return;
+    }
+
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    PROCESS_INFORMATION process{};
+    std::wstring command = L"\"" + exe.wstring() + L"\"";
+    if (!CreateProcessW(exe.c_str(), command.data(), nullptr, nullptr, FALSE, 0, nullptr, ModuleDirectory().c_str(), &startup, &process)) {
+        state.Check(false, L"app-launch-locker: CreateProcess failed");
+        AcceptanceLog(L"create app-launch-locker failed");
+        return;
+    }
+
+    WaitForInputIdle(process.hProcess, 10000);
+    AcceptanceLog(L"wait app-launch-locker");
+    HWND hwnd = WaitForTopWindow(FindWindowRequest{L"AppLaunchLockerMainWindow", L"自启动管理", process.dwProcessId}, 10000);
+    if (hwnd) {
+        ShowWindow(hwnd, SW_SHOWNORMAL);
+        SetForegroundWindow(hwnd);
+        UpdateWindow(hwnd);
+        AcceptanceLog(L"wait app-launch-locker table");
+        HWND listView = WaitForChildClass(hwnd, L"SysListView32", 10000);
+        if (!listView) {
+            state.Check(false, L"app-launch-locker: table controls not found before capture");
+        } else {
+            WaitForListViewRows(listView, 2, 10000);
+        }
+        RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+        Sleep(300);
+        AcceptanceLog(L"inspect app-launch-locker");
+        Scenario scenario{L"app-launch-locker", L"AppLaunchLockerMainWindow", L"自启动管理", L"app-launch-locker.png", {L"自启动管理", L"扫描", L"当前自启动", L"已禁用"}, {}, 0, 2, false};
+        ValidateAndCapture(hwnd, scenario, outputDir, state);
+        ValidateAppLaunchLockerTables(hwnd, state);
+        PostMessageW(hwnd, WM_CLOSE, 0, 0);
+    } else {
+        state.Check(false, L"app-launch-locker: window did not appear");
+        AcceptanceLog(L"missing app-launch-locker window");
+    }
+
+    if (WaitForSingleObject(process.hProcess, 5000) == WAIT_TIMEOUT) {
+        TerminateProcess(process.hProcess, 2);
+    }
+    CloseHandle(process.hThread);
+    CloseHandle(process.hProcess);
+    AcceptanceLog(L"end app-launch-locker");
+}
+
 AppModel SampleModel() {
     AppModel model;
     Group group;
@@ -759,6 +941,7 @@ int wmain() {
     config.webDavUserName = L"acceptance-user";
 
     RunMainWindowScenario(outputDir, state);
+    RunAppLaunchLockerScenario(outputDir, state);
 
     RunDialogScenario(
         Scenario{L"message-dialog", L"QuattroThemedMessageDialog", L"验收消息", L"message-dialog.png", {L"验收消息"}, {}, 0, 1, false},

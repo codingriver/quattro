@@ -4,6 +4,13 @@
 
 - 搜索功能暂时不要开发；不要新增、恢复或暴露搜索入口、搜索热键、搜索窗口或与搜索相关的用户可见配置。
 
+## Acceptance Rules
+
+- 每次新增需求完成后，只验收与本次需求直接相关的功能和受影响范围，不要求运行完整冒烟测试。
+- 表现向需求（包括界面、布局、样式、视觉状态、DPI 或交互表现变更）必须进行截图验收，并保留能够证明需求达成的相关界面截图；涉及多个关键状态、窗口或 DPI 档位时，应分别截图验收。
+- 纯功能向需求必须通过相关自动化测试验收；测试应覆盖本次新增或修改的行为及必要的回归边界。
+- 每次公共开发完成后都必须进行相关范围的自动化验收，包括公共组件、公共 helper、公共基础设施、共享模块或公共接口的新增与修改；只需运行与本次公共改动及其直接影响范围相关的自动化测试，无需运行完整冒烟测试。
+
 ## AppLaunchLocker Architecture Rules
 
 - `AppLaunchLocker` 必须作为完全独立的 `AppLaunchLocker.exe` 构建和运行，必须拥有自己的程序入口、进程、主窗口、消息循环和生命周期。禁止将其窗口、扫描、治理、CLI 或提权逻辑实现为 `Quattro.exe` 进程内的 `BuiltinTools` 工具、模态对话框、内嵌页面或同进程插件。
@@ -70,6 +77,14 @@
 - Toggle、RadioButton、Slider 必须分别使用 `ThemedToggleOptions`、`ThemedRadioButtonOptions`、`ThemedSliderOptions` 和 `ThemedUi` 公共接口；Radio 分组只能使用公共 `group` 语义，Slider 范围、步长和值只能通过公共 options 与 `SetSliderValue`/`SliderValue` 管理。禁止界面自行绘制轨道、thumb、圆点或直接使用 Trackbar style/message。
 - Table 必须使用 `ThemedUi::Table`、`ThemedTableColumn`、`ThemedTableRow` 和公共状态接口；禁止窗口直接使用 `WC_LISTVIEW`、`LVS_*`、`LVCOLUMN`、`LVITEM` 或 `ListView_*` 创建和维护表格。Link 文本必须使用 `ThemedUi::LinkText` 与 `ThemedLinkOptions`，禁止页面自行定义链接颜色、下划线、hover 或 hand cursor。Tooltip 必须通过 `ThemedUi::ShowTooltip/HideTooltip` 及 `ThemedTooltipOptions` 托管，禁止页面自行计算 tooltip 字体、padding、圆角、边框、尺寸和显示器避让。
 - TabControl、ToolBar、GroupBox 必须分别通过 `ThemedUi::TabControl`、`ThemedUi::ToolBar`、`ThemedUi::GroupBox` 创建，并使用公共页面绑定、工具项状态和分组子控件接口；禁止应用界面直接使用 `WC_TABCONTROL`、`TCM_*`、`TabCtrl_*`、`TOOLBARCLASSNAME`、`TB_*`、`BS_GROUPBOX`，也禁止界面用 `DrawTabGroupFrame`/`DrawPanelFrame` 或散落 Button 手工模拟这些公共组件。读取操作系统已有 Toolbar（例如系统托盘检查）属于系统集成例外，但不得用于创建应用界面。
+- 新增或改造标签组时必须先按功能语义选择一种公共 `ThemedTabControlAppearance`，并显式设置横向或纵向方向；禁止仅凭个人视觉偏好选择样式，也禁止在窗口层混合、覆写或手绘第五种之外的页面私有标签样式。同一种功能语义在不同界面应保持相同样式；确因空间结构需要改变方向时可以保留样式，仅切换公共 orientation。
+- `Standard` 用于表单内部、局部设置或紧凑工具区域中的互斥选项组，强调每一项均可点击，但不承担窗口主导航；例如重复规则、对齐方式、局部模式选择。不得用 `Standard` 模拟主要页面导航或内容容器标题栏。
+- `EmphasizedSegmented` 用于窗口或功能模块的主要页面导航，需要让当前页面具有最强识别度的场景；例如设置窗口的一级分类。若标签只是筛选条件、视图模式或次级内容切换，不得使用该高强调样式。
+- `MinimalUnderline` 用于信息密度较高的次级页面导航或内容分类，要求减少边框和背景噪声、主要依靠文字与指示线表达当前位置的场景。横向时指示线位于底部，纵向时位于右侧；不得用于需要明显按钮可点击感的操作型选项组。
+- `SoftPill` 用于筛选范围、显示模式、内容视图、轻量分类等弱导航或状态切换，要求界面友好、低压且各项彼此独立的场景。不得作为危险操作、主要窗口导航或必须高对比确认当前位置的页面入口。
+- `ConnectedTabs` 仅用于标签条与其对应内容容器直接相邻、需要明确表达“当前标签打开当前内容面板”的传统页签结构；横向标签向下连接内容，纵向标签向右连接内容。标签条与内容之间存在独立区块间距、无共同容器或切换不控制紧邻内容时，禁止使用该样式。
+- 标签组方向必须服从信息结构：顶部单行导航、少量并列分类和横向空间充足时使用 `Horizontal`；类别较多、名称长度较稳定、界面具有左侧导航栏或横向空间不足时使用 `Vertical`。纵向标签必须为导航栏提供足够高度，不得压缩 28px 公共标签高度；横向标签不得通过裁切文字、减小 padding 或手写宽度解决溢出，应改用纵向布局、减少层级或调整公共容器结构。
+- 横向 `equalWidth` 仅用于数量少、语义地位相同且文本长度接近的标签；纵向标签由公共组件统一填充导航栏可用宽度，不得在业务窗口逐项指定不同宽度。标签方向键、`Ctrl+Tab`、选中状态、disabled/hidden 状态和页面绑定必须继续由 `ThemedUi` 公共接口托管。
 - ToolBar 图标项必须通过 `ThemedToolItem::icon`、`display` 和 `iconOwnership` 传递，图标尺寸、图文间距与溢出按钮尺寸由公共主题控制；禁止界面自行绘制图标工具项或计算工具项宽度。工具栏空间不足时必须使用公共自动溢出能力，禁止窗口手工隐藏工具项或另建视觉参数不同的备用按钮。TabControl 页内 `Ctrl+Tab` 导航必须由 `BindTabPage` 或 `BindTabPageRoot` 公共绑定提供，禁止各页面重复注册同类快捷键。
 - `ThemedToolItem::iconOwnership` 为 `Borrowed` 时调用方必须保证图标在 ToolBar 使用期间有效且 ToolBar 不负责释放；为 `Transfer` 时所有权交给 ToolBar，调用方不得再次释放。多个工具项连续变化时必须使用 `BeginToolBarUpdate`/`EndToolBarUpdate`，单项和集合变化必须使用 `SetTool*`、`InsertTool`、`RemoveTool`、`MoveTool`、`SetTools`、`ClearTools`，禁止通过 `GetDlgItem` 查找或修改 ToolBar 内部按钮。
 - 普通无标题容器必须通过 `ThemedUi::Panel` 创建，并通过公共内容区域、子控件绑定、状态传播和滚动接口管理；禁止界面直接创建 `STATIC` 容器、调用 `DrawPanelFrame`、设置圆角区域或手写 Panel padding。ToolBar 运行时变化必须使用公共动态查询、修改、插入、删除、重排和批量更新接口，禁止窗口直接操作内部按钮。Tab 页包含容器或多层后代控件时必须使用 `BindTabPageRoot`，所有消息循环必须先调用 `ThemedUi::PreTranslateMessage`。

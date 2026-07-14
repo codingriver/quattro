@@ -618,6 +618,84 @@ int wmain() {
         "Terminal menu rejects a cached executable that does not match its adapter");
     std::filesystem::remove_all(terminalTargetRoot, ec);
 
+    // Executable menu icons must resolve even when the target exposes no icon at
+    // resource index 0 (launcher stubs such as Cmder.exe). cmd.exe always has an
+    // embedded icon, and the shell-association fallback covers the stub case.
+    ShellContextMenuItem cmdIconItem;
+    Check(
+        ShellItemService::LoadExecutableMenuIcon(L"C:\\Windows\\System32\\cmd.exe", cmdIconItem) &&
+        !cmdIconItem.iconPixels.empty() && cmdIconItem.iconWidth > 0 && cmdIconItem.iconHeight > 0,
+        "Executable menu icon loads for a normal executable");
+    {
+        // A single miss is invisible to a user but a real regression: the GDI
+        // handle produced by CreateDIBSection can legitimately have its high bit
+        // set, so any signed-handle validity check drops icons at random. Loop to
+        // catch that class of flake deterministically.
+        bool iconStable = true;
+        for (int repeat = 0; repeat < 200 && iconStable; ++repeat) {
+            ShellContextMenuItem probe;
+            iconStable = ShellItemService::LoadExecutableMenuIcon(
+                             L"C:\\Windows\\System32\\cmd.exe", probe) &&
+                         !probe.iconPixels.empty();
+        }
+        Check(iconStable, "Executable menu icon loads consistently across repeats");
+    }
+    ShellContextMenuItem missingIconItem;
+    Check(
+        !ShellItemService::LoadExecutableMenuIcon(L"C:\\does-not-exist\\nope.exe", missingIconItem) &&
+        missingIconItem.iconPixels.empty(),
+        "Executable menu icon reports failure for a missing target");
+
+    // Save() must be atomic: a successful update leaves no stray temp file, and a
+    // leftover temp file from a previous crash must not corrupt the real cache.
+    const std::filesystem::path atomicCacheRoot = std::filesystem::temp_directory_path() /
+        (L"quattro_unit_shell_menu_atomic_" + std::to_wstring(GetCurrentProcessId()));
+    std::filesystem::remove_all(atomicCacheRoot, ec);
+    const std::filesystem::path atomicCacheFile = atomicCacheRoot / L"cache" / L"shell-context-menu.bin";
+    const std::filesystem::path atomicCacheTemp = std::filesystem::path(atomicCacheFile).concat(L".tmp");
+    Link atomicLink;
+    atomicLink.id = 720;
+    atomicLink.path = L"C:\\Work\\Atomic";
+    ShellContextMenuSnapshot atomicSnapshot;
+    atomicSnapshot.complete = true;
+    ShellContextMenuItem atomicItem;
+    atomicItem.providerId = ShellContextMenuProviderId::Git;
+    atomicItem.text = L"Git Bash Here";
+    atomicItem.verb = L"git_shell";
+    atomicSnapshot.items = {atomicItem};
+    ShellContextMenuTrackingOptions atomicTracking;
+    atomicTracking.git = true;
+    {
+        ShellContextMenuCacheService atomicCache(atomicCacheRoot);
+        atomicCache.Update(atomicLink, atomicSnapshot, atomicTracking);
+        Check(
+            std::filesystem::exists(atomicCacheFile) && !std::filesystem::exists(atomicCacheTemp),
+            "Shell menu cache save is atomic and leaves no temp file");
+    }
+    {
+        // Simulate a stale temp file from an interrupted write; the next save must
+        // overwrite it and the reload must still see the persisted entry.
+        std::ofstream staleTemp(atomicCacheTemp, std::ios::binary | std::ios::trunc);
+        staleTemp << "garbage";
+        staleTemp.close();
+        ShellContextMenuCacheService atomicCache(atomicCacheRoot);
+        Check(
+            atomicCache.ItemsFor(atomicLink, atomicTracking).size() == 1,
+            "Shell menu cache ignores stale temp file on load");
+        Link atomicSecond = atomicLink;
+        atomicSecond.id = 721;
+        atomicSecond.path = L"C:\\Work\\AtomicSecond";
+        atomicCache.Update(atomicSecond, atomicSnapshot, atomicTracking);
+        Check(!std::filesystem::exists(atomicCacheTemp), "Shell menu cache save replaces stale temp file");
+    }
+    {
+        ShellContextMenuCacheService atomicCache(atomicCacheRoot);
+        Check(
+            atomicCache.ItemsFor(atomicLink, atomicTracking).size() == 1,
+            "Shell menu cache survives atomic save cycle");
+    }
+    std::filesystem::remove_all(atomicCacheRoot, ec);
+
     const std::filesystem::path legacyTrayPath = std::filesystem::temp_directory_path() / L"quattro_unit_legacy_tray.ini";
     std::filesystem::remove(legacyTrayPath, ec);
     {
@@ -751,6 +829,14 @@ int wmain() {
     Check(Near(fallbackTheme.metric(L"tabButton", L"height", 0.0f), 28.0f), "Theme tab height");
     Check(fallbackTheme.color(L"tabButton", L"emphasizedSelected", L"text").r > 0.9f,
         "Theme emphasized tab selected text");
+    Check(fallbackTheme.color(L"tabButton", L"minimalSelected", L"underline").b > 0.8f,
+        "Theme minimal tab underline");
+    Check(fallbackTheme.color(L"tabButton", L"softPillSelected", L"bg").a > 0.9f,
+        "Theme soft pill tab selected background");
+    Check(fallbackTheme.color(L"tabButton", L"connectedSelected", L"border").a > 0.9f,
+        "Theme connected tab selected border");
+    Check(Near(fallbackTheme.metric(L"tabButton", L"softPillRadius", 0.0f), 14.0f),
+        "Theme soft pill tab radius");
     Check(Near(fallbackTheme.metric(L"listItem", L"twoLineHeight", 0.0f), 48.0f), "Theme two-line result row height");
     Check(Near(fallbackTheme.metric(L"miniButton", L"height", 0.0f), 24.0f), "Theme default mini button metric");
     Check(fallbackTheme.color(L"miniButton", L"hover", L"icon").a > 0.9f, "Theme default mini button hover");
@@ -958,6 +1044,63 @@ int wmain() {
         const bool page0Visible = (GetWindowLongW(page0, GWL_STYLE) & WS_VISIBLE) != 0;
         const bool page1Visible = (GetWindowLongW(page1, GWL_STYLE) & WS_VISIBLE) != 0;
         Check(ThemedUi::ActiveTab(runtimeTabs) == 1 && !page0Visible && page1Visible, "Themed tab control binds page visibility");
+        ThemedTabControlOptions minimalTabOptions{};
+        minimalTabOptions.appearance = ThemedTabControlAppearance::MinimalUnderline;
+        ThemedTabControlOptions softPillTabOptions{};
+        softPillTabOptions.appearance = ThemedTabControlAppearance::SoftPill;
+        ThemedTabControlOptions connectedTabOptions{};
+        connectedTabOptions.appearance = ThemedTabControlAppearance::ConnectedTabs;
+        Check(controlUi.TabControl(517, RECT{0, 400, 300, 434}, {{711, L"One"}, {712, L"Two"}}, minimalTabOptions) != nullptr,
+            "Themed minimal underline tab control factory");
+        Check(controlUi.TabControl(518, RECT{0, 440, 300, 474}, {{721, L"One"}, {722, L"Two"}}, softPillTabOptions) != nullptr,
+            "Themed soft pill tab control factory");
+        Check(controlUi.TabControl(519, RECT{0, 480, 300, 514}, {{731, L"One"}, {732, L"Two"}}, connectedTabOptions) != nullptr,
+            "Themed connected tab control factory");
+        const std::vector<ThemedTabControlAppearance> verticalAppearances{
+            ThemedTabControlAppearance::Standard,
+            ThemedTabControlAppearance::EmphasizedSegmented,
+            ThemedTabControlAppearance::MinimalUnderline,
+            ThemedTabControlAppearance::SoftPill,
+            ThemedTabControlAppearance::ConnectedTabs,
+        };
+        const LONG controlParentStyle = GetWindowLongW(controlParent, GWL_STYLE);
+        SetWindowLongW(controlParent, GWL_STYLE, controlParentStyle | WS_VISIBLE);
+        for (std::size_t index = 0; index < verticalAppearances.size(); ++index) {
+            const int tabId = 530 + static_cast<int>(index);
+            const int firstId = 800 + static_cast<int>(index) * 2;
+            const int secondId = firstId + 1;
+            ThemedTabControlOptions verticalOptions{};
+            verticalOptions.appearance = verticalAppearances[index];
+            verticalOptions.orientation = ThemedTabControlOrientation::Vertical;
+            HWND verticalTabs = controlUi.TabControl(
+                tabId,
+                RECT{0, 0, 140, 96},
+                {{firstId, L"One"}, {secondId, L"Two"}},
+                verticalOptions);
+            HWND firstButton = verticalTabs ? GetDlgItem(verticalTabs, firstId) : nullptr;
+            HWND secondButton = verticalTabs ? GetDlgItem(verticalTabs, secondId) : nullptr;
+            RECT firstRect{};
+            RECT secondRect{};
+            if (firstButton) GetWindowRect(firstButton, &firstRect);
+            if (secondButton) GetWindowRect(secondButton, &secondRect);
+            if (verticalTabs) {
+                MapWindowPoints(HWND_DESKTOP, verticalTabs, reinterpret_cast<POINT*>(&firstRect), 2);
+                MapWindowPoints(HWND_DESKTOP, verticalTabs, reinterpret_cast<POINT*>(&secondRect), 2);
+            }
+            Check(verticalTabs && firstButton && secondButton &&
+                    firstRect.left == secondRect.left && secondRect.top > firstRect.top &&
+                    (firstRect.right - firstRect.left) == (secondRect.right - secondRect.left),
+                "Themed tab appearance supports vertical layout");
+            if (firstButton) {
+                SendMessageW(firstButton, WM_KEYDOWN, VK_RIGHT, 0);
+                Check(ThemedUi::ActiveTab(verticalTabs) == 0,
+                    "Vertical themed tabs ignore horizontal navigation keys");
+                SendMessageW(firstButton, WM_KEYDOWN, VK_DOWN, 0);
+                Check(ThemedUi::ActiveTab(verticalTabs) == 1,
+                    "Vertical themed tabs use vertical navigation keys");
+            }
+        }
+        SetWindowLongW(controlParent, GWL_STYLE, controlParentStyle);
         ThemedUi::BindTabPageRoot(runtimeTabs, 1, page1);
         HWND panelChild = CreateWindowExW(0, L"STATIC", L"panel child", WS_CHILD | WS_VISIBLE, 400, 310, 80, 20, controlParent, nullptr, GetModuleHandleW(nullptr), nullptr);
         ThemedPanelOptions panelOptions{};

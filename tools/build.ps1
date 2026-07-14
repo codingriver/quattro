@@ -254,6 +254,42 @@ function Format-ProcessList {
     return ($items | ForEach-Object { "$($_.Name) pid=$($_.ProcessId)" }) -join ", "
 }
 
+function Stop-ProcessesByExecutablePath {
+    param(
+        [string]$Path,
+        [string]$Purpose = "file"
+    )
+
+    $processes = @(Get-ProcessesByExecutablePath -Path $Path)
+    if ($processes.Count -eq 0) {
+        return
+    }
+
+    $processList = Format-ProcessList -Processes $processes
+    "stopping running $Purpose`: $processList"
+    foreach ($process in $processes) {
+        try {
+            Stop-Process -Id $process.ProcessId -Force -ErrorAction Stop
+        } catch {
+            $remaining = @(Get-ProcessesByExecutablePath -Path $Path)
+            if ($remaining.Count -gt 0) {
+                throw "Cannot stop running $Purpose`: $Path ($(Format-ProcessList -Processes $remaining)). $($_.Exception.Message)"
+            }
+        }
+    }
+
+    $deadline = [DateTime]::UtcNow.AddSeconds(5)
+    do {
+        $remaining = @(Get-ProcessesByExecutablePath -Path $Path)
+        if ($remaining.Count -eq 0) {
+            return
+        }
+        Start-Sleep -Milliseconds 100
+    } while ([DateTime]::UtcNow -lt $deadline)
+
+    throw "Cannot stop running $Purpose`: $Path ($(Format-ProcessList -Processes $remaining))."
+}
+
 function Remove-FileRobust {
     param(
         [string]$Path,
@@ -263,6 +299,8 @@ function Remove-FileRobust {
     if (!(Test-Path $Path)) {
         return
     }
+
+    Stop-ProcessesByExecutablePath -Path $Path -Purpose $Purpose
 
     try {
         (Get-Item -LiteralPath $Path -Force).Attributes = [System.IO.FileAttributes]::Normal
@@ -282,7 +320,7 @@ function Remove-FileRobust {
 
     $processList = Format-ProcessList -Processes (Get-ProcessesByExecutablePath -Path $Path)
     if (![string]::IsNullOrWhiteSpace($processList)) {
-        throw "Cannot replace $Purpose because it is running: $Path ($processList). Close Quattro from the tray or stop these processes, then run the package command again."
+        throw "Cannot replace $Purpose because it is still running: $Path ($processList)."
     }
 
     throw "Cannot remove $Purpose`: $Path. $($lastError.Exception.Message)"

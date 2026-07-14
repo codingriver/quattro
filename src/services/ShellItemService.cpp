@@ -358,7 +358,13 @@ std::wstring CommandVerb(IContextMenu* contextMenu, UINT commandId) {
 }
 
 void CaptureMenuBitmap(HBITMAP bitmap, ShellContextMenuItem& item, int quality) {
-    if (!bitmap || reinterpret_cast<INT_PTR>(bitmap) <= 0) {
+    // hbmpItem/hbmpChecked slots may hold HBMMENU_* sentinels (HBMMENU_CALLBACK
+    // is (HBITMAP)-1, the rest are the small values 1..8) rather than a real
+    // bitmap. Reject only that sentinel range: a genuine 64-bit GDI handle can
+    // have its high bit set, so an INT_PTR "<= 0" test would wrongly discard
+    // valid CreateDIBSection handles and drop the icon at random.
+    const INT_PTR handleValue = reinterpret_cast<INT_PTR>(bitmap);
+    if (!bitmap || (handleValue >= -1 && handleValue <= 16)) {
         return;
     }
     BITMAP source{};
@@ -522,12 +528,39 @@ void CaptureIconHandle(HICON icon, ShellContextMenuItem& item, int quality) {
     }
     HGDIOBJ oldBitmap = SelectObject(dc, bitmap);
     std::fill_n(static_cast<std::uint32_t*>(pixels), size * size, 0);
-    if (DrawIconEx(dc, 0, 0, icon, size, size, 0, nullptr, DI_NORMAL)) {
+    const BOOL drew = DrawIconEx(dc, 0, 0, icon, size, size, 0, nullptr, DI_NORMAL);
+    // GetDIBits (inside CaptureMenuBitmap) requires the bitmap to be deselected
+    // from every DC, and the drawing batch must be flushed first; otherwise the
+    // read intermittently returns nothing and the icon silently disappears.
+    SelectObject(dc, oldBitmap);
+    if (drew) {
+        GdiFlush();
         CaptureMenuBitmap(bitmap, item, quality);
     }
-    SelectObject(dc, oldBitmap);
     DeleteDC(dc);
     DeleteObject(bitmap);
+}
+
+bool CaptureShellFileIcon(const std::wstring& path, ShellContextMenuItem& item, int quality) {
+    if (Trim(path).empty() || !item.iconPixels.empty()) {
+        return false;
+    }
+    SHFILEINFOW fileInfo{};
+    // SHGetFileInfoW resolves the association-based icon (including launcher
+    // stubs such as Cmder.exe that carry no icon at resource index 0, which is
+    // what ExtractIconExW reads) and installer/registry-provided icons.
+    const DWORD_PTR result = SHGetFileInfoW(
+        path.c_str(),
+        0,
+        &fileInfo,
+        sizeof(fileInfo),
+        SHGFI_ICON | SHGFI_LARGEICON);
+    if (result == 0 || !fileInfo.hIcon) {
+        return false;
+    }
+    CaptureIconHandle(fileInfo.hIcon, item, quality);
+    DestroyIcon(fileInfo.hIcon);
+    return !item.iconPixels.empty();
 }
 
 void CaptureRegisteredMenuIcon(const std::wstring& verb, ShellContextMenuItem& item) {
@@ -563,12 +596,17 @@ void CaptureRegisteredMenuIcon(const std::wstring& verb, ShellContextMenuItem& i
     }
     HICON largeIcon = nullptr;
     HICON smallIcon = nullptr;
-    if (ExtractIconExW(iconPath.c_str(), iconIndex, &largeIcon, &smallIcon, 1) == 0) {
-        return;
+    if (ExtractIconExW(iconPath.c_str(), iconIndex, &largeIcon, &smallIcon, 1) != 0) {
+        CaptureIconHandle(smallIcon ? smallIcon : largeIcon, item, 1);
+        if (smallIcon) DestroyIcon(smallIcon);
+        if (largeIcon) DestroyIcon(largeIcon);
     }
-    CaptureIconHandle(smallIcon ? smallIcon : largeIcon, item, 1);
-    if (smallIcon) DestroyIcon(smallIcon);
-    if (largeIcon) DestroyIcon(largeIcon);
+    if (item.iconPixels.empty()) {
+        // The registered handler may resolve to a launcher stub or an installer
+        // path without an icon at the requested index; the association icon is
+        // the same glyph Explorer paints, so use it as a last resort.
+        CaptureShellFileIcon(iconPath, item, 1);
+    }
 }
 
 std::wstring DetectProviderId(const std::wstring& text, const std::wstring& verb) {
@@ -711,6 +749,10 @@ void CaptureOwnerDrawMenuIcon(
         if (!rendered) {
             continue;
         }
+        // Flush the drawing batch before reading the DIB-section memory that the
+        // extension just painted into; without this the scan can race the GPU/GDI
+        // queue and read the untouched background, dropping the icon.
+        GdiFlush();
         const int iconZoneWidth = std::min(width, std::max(24, GetSystemMetrics(SM_CXMENUCHECK) + 10));
         int minX = iconZoneWidth;
         int minY = height;
@@ -955,12 +997,17 @@ bool ShellItemService::LoadExecutableMenuIcon(
     }
     HICON largeIcon = nullptr;
     HICON smallIcon = nullptr;
-    if (ExtractIconExW(executable.c_str(), 0, &largeIcon, &smallIcon, 1) == 0) {
-        return false;
+    if (ExtractIconExW(executable.c_str(), 0, &largeIcon, &smallIcon, 1) != 0) {
+        CaptureIconHandle(smallIcon ? smallIcon : largeIcon, item, 1);
+        if (smallIcon) DestroyIcon(smallIcon);
+        if (largeIcon) DestroyIcon(largeIcon);
     }
-    CaptureIconHandle(smallIcon ? smallIcon : largeIcon, item, 1);
-    if (smallIcon) DestroyIcon(smallIcon);
-    if (largeIcon) DestroyIcon(largeIcon);
+    if (item.iconPixels.empty()) {
+        // Launcher stubs such as Cmder.exe expose no icon at resource index 0,
+        // so ExtractIconExW returns nothing. Fall back to the shell association
+        // icon, which matches what Explorer shows for the executable.
+        CaptureShellFileIcon(executable, item, 1);
+    }
     return !item.iconPixels.empty();
 }
 

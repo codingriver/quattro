@@ -177,7 +177,7 @@ struct ThemedTableOptions {
     bool fullRowSelect = true;
     bool enabled = true;
     bool showHeader = true;
-    bool allowColumnResize = true;
+    bool allowColumnResize = false;
 };
 
 enum class ThemedTableCellRole {
@@ -282,15 +282,39 @@ struct ThemedTabItem {
 };
 
 enum class ThemedTabControlAppearance {
+    // 默认公共 TabButton 外观：每个标签具有独立浅色背景、边框和圆角，
+    // 选中项使用浅强调色。适合表单内的小型互斥选择组。
     Standard,
+
+    // 方案 A，高对比分段式：标签位于统一容器中，普通项弱化边框，
+    // 选中项使用强调色实心背景和白色文字。适合主要页面导航。
     EmphasizedSegmented,
+
+    // 方案 B，极简指示线式：移除常态按钮边框，以强调色文字和指示线表示选中项；
+    // 横向时指示线位于底部，纵向时位于右侧。适合内容密集的设置页。
+    MinimalUnderline,
+
+    // 方案 C，柔和胶囊式：每个标签为彼此分离的无硬边框胶囊，
+    // 选中项使用浅强调色背景。适合轻量筛选和友好的工具界面。
+    SoftPill,
+
+    // 方案 D，内容连接式：选中标签使用卡片边框并向内容方向开放；
+    // 横向时向下开放，纵向时向右开放。适合强调标签与内容归属关系的布局。
+    ConnectedTabs,
+};
+
+enum class ThemedTabControlOrientation {
+    Horizontal, // 标签从左到右排列，使用 Left/Right 导航。
+    Vertical,   // 标签从上到下排列，使用 Up/Down 导航。
 };
 
 struct ThemedTabControlOptions {
     int activeIndex = 0;
     bool enabled = true;
+    // 仅控制横向标签是否平分可用宽度；纵向标签始终填充导航栏可用宽度。
     bool equalWidth = false;
     ThemedTabControlAppearance appearance = ThemedTabControlAppearance::Standard;
+    ThemedTabControlOrientation orientation = ThemedTabControlOrientation::Horizontal;
 };
 
 enum class ThemedToolItemKind {

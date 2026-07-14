@@ -231,6 +231,7 @@ struct TabControlRuntime {
     std::vector<std::vector<HWND>> pages;
     std::vector<HWND> pageRoots;
     int activeIndex = -1;
+    ThemedTabControlOrientation orientation = ThemedTabControlOrientation::Horizontal;
 };
 
 struct ToolRuntimeItem {
@@ -461,10 +462,14 @@ LRESULT CALLBACK TabButtonNavigationProc(HWND hwnd, UINT message, WPARAM wParam,
         auto it = TabControlStates().find(tabControl);
         if (it != TabControlStates().end()) {
             int direction = 0;
-            if (wParam == VK_LEFT || wParam == VK_UP) direction = -1;
-            else if (wParam == VK_RIGHT || wParam == VK_DOWN) direction = 1;
-            else if (wParam == VK_TAB && (GetKeyState(VK_CONTROL) & 0x8000) != 0) {
+            if (wParam == VK_TAB && (GetKeyState(VK_CONTROL) & 0x8000) != 0) {
                 direction = (GetKeyState(VK_SHIFT) & 0x8000) != 0 ? -1 : 1;
+            } else if (it->second.orientation == ThemedTabControlOrientation::Vertical) {
+                if (wParam == VK_UP) direction = -1;
+                else if (wParam == VK_DOWN) direction = 1;
+            } else {
+                if (wParam == VK_LEFT) direction = -1;
+                else if (wParam == VK_RIGHT) direction = 1;
             }
             if (direction != 0 && NavigateTabControl(tabControl, direction, true)) return 0;
         }
@@ -1182,21 +1187,77 @@ HWND ThemedUi::TabControl(
     RECT frame,
     const std::vector<ThemedTabItem>& items,
     ThemedTabControlOptions options) const {
+    static_assert(static_cast<int>(ThemedTabControlAppearance::Standard) == 0);
+    static_assert(static_cast<int>(ThemedTabControlAppearance::EmphasizedSegmented) == 1);
+    static_assert(static_cast<int>(ThemedTabControlAppearance::MinimalUnderline) == 2);
+    static_assert(static_cast<int>(ThemedTabControlAppearance::SoftPill) == 3);
+    static_assert(static_cast<int>(ThemedTabControlAppearance::ConnectedTabs) == 4);
+    static_assert(static_cast<int>(ThemedTabControlOrientation::Horizontal) == 0);
+    static_assert(static_cast<int>(ThemedTabControlOrientation::Vertical) == 1);
     HWND tab = BindTheme(ThemedControls::CreateTabControlFrame(instance_, parent_, id, frame, font_, theme_));
     if (!tab) return nullptr;
+    const int appearance = static_cast<int>(options.appearance);
+    const int orientation = static_cast<int>(options.orientation);
+    ThemedControls::SetTabAppearance(tab, appearance);
+    ThemedControls::SetTabOrientation(tab, orientation);
     EnableWindow(tab, options.enabled ? TRUE : FALSE);
     auto& runtime = TabControlStates()[tab];
     runtime.owner = parent_;
     runtime.controlId = id;
     runtime.theme = &theme_;
+    runtime.orientation = options.orientation;
     runtime.pages.resize(items.size());
     runtime.pageRoots.resize(items.size());
     SetWindowSubclass(tab, TabContainerProc, 2, 0);
 
     const int width = frame.right - frame.left;
-    const int padding = static_cast<int>(theme_.metric(L"tabControl", L"paddingX", 4.0f));
-    const int gap = static_cast<int>(theme_.metric(L"tabControl", L"itemGap", 2.0f));
+    int padding = static_cast<int>(theme_.metric(L"tabControl", L"paddingX", 4.0f));
+    int gap = static_cast<int>(theme_.metric(L"tabControl", L"itemGap", 2.0f));
+    if (options.appearance == ThemedTabControlAppearance::MinimalUnderline) {
+        padding = static_cast<int>(theme_.metric(L"tabControl", L"minimalPadding", 4.0f));
+        gap = static_cast<int>(theme_.metric(L"tabControl", L"minimalItemGap", 6.0f));
+    } else if (options.appearance == ThemedTabControlAppearance::SoftPill) {
+        padding = static_cast<int>(theme_.metric(L"tabControl", L"softPillPadding", 4.0f));
+        gap = static_cast<int>(theme_.metric(L"tabControl", L"softPillItemGap", 6.0f));
+    } else if (options.appearance == ThemedTabControlAppearance::ConnectedTabs) {
+        padding = static_cast<int>(theme_.metric(L"tabControl", L"connectedPadding", 4.0f));
+        gap = static_cast<int>(theme_.metric(L"tabControl", L"connectedItemGap", 2.0f));
+    }
     const int tabHeight = buttonHeight(ThemedButtonRole::Tab, ThemedButtonSize::Normal);
+    const int frameHeight = std::max(tabHeight, static_cast<int>(frame.bottom - frame.top));
+    ThemedUi nested(instance_, tab, theme_, font_, DialogLayoutKind::Compact, width, frame.bottom - frame.top);
+    auto createTabButton = [&](const ThemedTabItem& item, int x, int y, int itemWidth) {
+        HWND button = nested.TabButton(item.id, item.text, x, y, itemWidth, false);
+        ThemedControls::SetTabAppearance(button, appearance);
+        ThemedControls::SetTabOrientation(button, orientation);
+        ThemedControls::SetControlBackgroundComponent(button, L"tabControl");
+        EnableWindow(button, options.enabled && item.enabled ? TRUE : FALSE);
+        SetWindowSubclass(button, TabButtonNavigationProc, 2, reinterpret_cast<DWORD_PTR>(tab));
+        runtime.buttons.push_back(button);
+    };
+
+    if (options.orientation == ThemedTabControlOrientation::Vertical) {
+        const int buttonX = padding;
+        const int itemWidth = options.appearance == ThemedTabControlAppearance::ConnectedTabs
+            ? std::max(24, width - padding)
+            : std::max(24, width - padding * 2);
+        int y = padding;
+        for (const auto& item : items) {
+            createTabButton(item, buttonX, y, itemWidth);
+            y += tabHeight + gap;
+        }
+        if (!items.empty()) ApplyActiveTab(tab, std::clamp(options.activeIndex, 0, static_cast<int>(items.size()) - 1), false);
+        return tab;
+    }
+
+    int buttonY = padding;
+    if (options.appearance == ThemedTabControlAppearance::MinimalUnderline) {
+        buttonY = std::max(0, frameHeight - tabHeight - 1);
+    } else if (options.appearance == ThemedTabControlAppearance::SoftPill) {
+        buttonY = std::max(0, (frameHeight - tabHeight) / 2);
+    } else if (options.appearance == ThemedTabControlAppearance::ConnectedTabs) {
+        buttonY = std::max(0, frameHeight - tabHeight);
+    }
     int equalWidth = 0;
     std::vector<int> itemWidths;
     itemWidths.reserve(items.size());
@@ -1229,19 +1290,11 @@ HWND ThemedUi::TabControl(
             if (!reduced) break;
         }
     }
-    ThemedUi nested(instance_, tab, theme_, font_, DialogLayoutKind::Compact, width, frame.bottom - frame.top);
     int x = padding;
     for (std::size_t index = 0; index < items.size(); ++index) {
         const auto& item = items[index];
         const int itemWidth = itemWidths[index];
-        HWND button = nested.TabButton(item.id, item.text, x, padding, itemWidth, false);
-        ThemedControls::SetTabButtonEmphasizedSegment(
-            button,
-            options.appearance == ThemedTabControlAppearance::EmphasizedSegmented);
-        ThemedControls::SetControlBackgroundComponent(button, L"tabControl");
-        EnableWindow(button, options.enabled && item.enabled ? TRUE : FALSE);
-        SetWindowSubclass(button, TabButtonNavigationProc, 2, reinterpret_cast<DWORD_PTR>(tab));
-        runtime.buttons.push_back(button);
+        createTabButton(item, x, buttonY, itemWidth);
         x += itemWidth + gap;
     }
     if (!items.empty()) ApplyActiveTab(tab, std::clamp(options.activeIndex, 0, static_cast<int>(items.size()) - 1), false);
@@ -1863,6 +1916,7 @@ HWND ThemedUi::Table(int id, RECT frame, const std::vector<ThemedTableColumn>& c
 
     SendMessageW(table, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
     ThemedControls::RegisterTable(table, theme_);
+    ThemedControls::SetTableColumnResizeEnabled(table, options.allowColumnResize);
     DWORD extended = LVS_EX_DOUBLEBUFFER;
     if (options.checkable) extended |= LVS_EX_CHECKBOXES;
     if (options.fullRowSelect) extended |= LVS_EX_FULLROWSELECT;
@@ -1919,7 +1973,8 @@ void ThemedUi::SetTableRows(HWND table, const std::vector<ThemedTableRow>& rows)
         for (const auto& cell : row.cells) {
             cells.push_back(ThemedControls::TableCellRuntime{
                 static_cast<int>(cell.role),
-                cell.actionId});
+                cell.actionId,
+                cell.image >= 0});
         }
         cellStates.push_back(std::move(cells));
     }
@@ -2019,7 +2074,11 @@ void ThemedUi::ClearTable(HWND table) {
 }
 void ThemedUi::SetTableImageLists(HWND table, HIMAGELIST smallImages, HIMAGELIST largeImages) {
     if (!table) return;
-    ListView_SetImageList(table, smallImages, LVSIL_SMALL);
+    if (smallImages) {
+        ListView_SetImageList(table, smallImages, LVSIL_SMALL);
+    } else {
+        ThemedControls::RestoreTableDefaultImageList(table);
+    }
     ListView_SetImageList(table, largeImages, LVSIL_NORMAL);
 }
 

@@ -31,6 +31,7 @@
         <Color name="line" value="rgb(223,228,236)"/>
         <Color name="hover" value="rgb(237,243,255)"/>
         <Color name="pressed" value="rgb(220,232,255)"/>
+        <Color name="rowAlt" value="rgb(240,245,252)"/>
         <Color name="menuHover" value="rgb(235,240,248)"/>
         <Color name="majorHover" value="rgb(232,240,255)"/>
         <Color name="minorHover" value="rgb(235,240,247)"/>
@@ -474,6 +475,31 @@
         <State name="emphasizedSelected" bg="@accent" text="@checkMark" border="@accent"/>
         <State name="emphasizedSelectedHover" bg="rgb(31,91,235)" text="@checkMark" border="rgb(31,91,235)"/>
         <State name="emphasizedDisabled" bg="@surfaceRaised" text="@disabledText" border="@surfaceRaised"/>
+        <State name="minimalNormal" bg="@surface" text="@text" border="@surface" underline="@accent"/>
+        <State name="minimalHover" bg="@hover" text="@text" border="@hover" underline="@accent"/>
+        <State name="minimalFocused" bg="@surface" text="@accent" border="@focus" underline="@accent"/>
+        <State name="minimalSelected" bg="@surface" text="@accent" border="@surface" underline="@accent"/>
+        <State name="minimalSelectedHover" bg="@hover" text="@accent" border="@hover" underline="@accent"/>
+        <State name="minimalDisabled" bg="@surface" text="@disabledText" border="@surface" underline="@line"/>
+        <State name="softPillNormal" bg="@surfaceRaised" text="@text" border="@surfaceRaised"/>
+        <State name="softPillHover" bg="@hover" text="@text" border="@hover"/>
+        <State name="softPillFocused" bg="@surfaceRaised" text="@accent" border="@focus"/>
+        <State name="softPillSelected" bg="@accentSoft" text="@accent" border="@accentSoft"/>
+        <State name="softPillSelectedHover" bg="@selected" text="@accent" border="@selected"/>
+        <State name="softPillDisabled" bg="@background" text="@disabledText" border="@background"/>
+        <State name="connectedNormal" bg="@background" text="@mutedText" border="@background"/>
+        <State name="connectedHover" bg="@hover" text="@text" border="@hover"/>
+        <State name="connectedFocused" bg="@surface" text="@accent" border="@focus"/>
+        <State name="connectedSelected" bg="@surface" text="@accent" border="@border"/>
+        <State name="connectedSelectedHover" bg="@surface" text="@accent" border="@accent"/>
+        <State name="connectedDisabled" bg="@background" text="@disabledText" border="@background"/>
+        <Metric name="minimalHoverInsetY" value="2"/>
+        <Metric name="minimalHoverRadius" value="6"/>
+        <Metric name="underlineThickness" value="3"/>
+        <Metric name="underlineInset" value="11"/>
+        <Metric name="verticalUnderlineInset" value="6"/>
+        <Metric name="softPillRadius" value="14"/>
+        <Metric name="connectedOpenExtent" value="5"/>
     </Component>
     <Component name="button">
         <Metric name="radius" value="7"/>
@@ -557,7 +583,7 @@
         <Metric name="textHeight" value="20"/>
         <Metric name="textOffsetY" value="1"/>
         <State name="normal" bg="@surface" text="@text"/>
-        <State name="alternate" bg="@hover" text="@text"/>
+        <State name="alternate" bg="@rowAlt" text="@text"/>
         <State name="hover" bg="@hover" text="@text"/>
         <State name="selected" bg="@selected" text="@text"/>
         <State name="disabled" text="@disabledText"/>
@@ -593,7 +619,17 @@
         <Metric name="borderWidth" value="1"/>
         <Metric name="paddingX" value="4"/>
         <Metric name="itemGap" value="2"/>
+        <Metric name="underlineBorderWidth" value="1"/>
+        <Metric name="minimalPadding" value="4"/>
+        <Metric name="minimalItemGap" value="6"/>
+        <Metric name="softPillPadding" value="4"/>
+        <Metric name="softPillItemGap" value="6"/>
+        <Metric name="connectedPadding" value="4"/>
+        <Metric name="connectedItemGap" value="2"/>
         <State name="normal" bg="@surface" border="@border"/>
+        <State name="minimalUnderline" bg="@surface" border="@line"/>
+        <State name="softPill" bg="@background" border="@background"/>
+        <State name="connected" bg="@background" border="@line"/>
         <State name="disabled" bg="@background" border="@line"/>
     </Component>
     <Component name="toolbar">
