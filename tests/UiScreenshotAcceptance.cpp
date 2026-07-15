@@ -851,8 +851,17 @@ struct TableHostWindow {
     HWND table_ = nullptr;
     bool gridLines_ = false;
     bool allowColumnResize_ = false;
+    bool checkable_ = false;
+    bool showHeader_ = true;
+    int visibleRows_ = 0;
+    UINT forcedDpi_ = 0;
+    HFONT forcedFont_ = nullptr;
     Theme theme_;
     std::unique_ptr<ThemedWindowUi> windowUi_;
+
+    ~TableHostWindow() {
+        if (forcedFont_) DeleteObject(forcedFont_);
+    }
 
     static LRESULT CALLBACK Proc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
         TableHostWindow* self = nullptr;
@@ -875,28 +884,55 @@ struct TableHostWindow {
         if (message == WM_CREATE) {
             windowUi_ = std::make_unique<ThemedWindowUi>(
                 instance_, nullptr, hwnd_, theme_, DialogLayoutKind::Compact, 360, 260);
-            const ThemedUi ui = windowUi_->ui();
-            ThemedTableOptions tableOptions{ThemedTableSelection::Single, ThemedTableView::Details, false, true, true, true, false};
+            std::unique_ptr<ThemedUi> forcedUi;
+            if (forcedDpi_) {
+                forcedFont_ = ThemedControls::CreateDialogFont(forcedDpi_);
+                forcedUi = std::make_unique<ThemedUi>(
+                    instance_, hwnd_, theme_, forcedFont_, DialogLayoutKind::Compact,
+                    ThemedWindowUi::ScaleForDpi(360, forcedDpi_),
+                    ThemedWindowUi::ScaleForDpi(260, forcedDpi_),
+                    nullptr, windowUi_.get(), nullptr, nullptr, forcedDpi_);
+            }
+            const ThemedUi ui = forcedUi ? *forcedUi : windowUi_->ui();
+            ThemedTableOptions tableOptions{};
+            tableOptions.selection = ThemedTableSelection::Single;
+            tableOptions.view = ThemedTableView::Details;
+            tableOptions.checkable = checkable_;
+            tableOptions.fullRowSelect = true;
+            tableOptions.showHeader = showHeader_;
             tableOptions.showRowGridLines = gridLines_;
             tableOptions.showColumnGridLines = gridLines_;
             tableOptions.allowColumnResize = allowColumnResize_;
+            tableOptions.reserveScrollBarGutter = checkable_;
+            const int tableBottom = visibleRows_ > 0
+                ? ui.scale(16) + ui.tableHeightForRows(visibleRows_, showHeader_)
+                : ui.scale(240);
             table_ = ui.Table(
                 101,
-                RECT{16, 16, 344, 240},
+                RECT{ui.scale(16), ui.scale(16), ui.scale(344), tableBottom},
                 {{L"name", L"名称", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Remaining},
                  {L"value", L"值", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, 96}},
                 tableOptions);
-            ThemedUi::SetTableRows(table_, {
-                {1, {{L"行 0"}, {L"A"}}, false, true},
-                {2, {{L"行 1"}, {L"B"}}, false, true},
-                {3, {{L"行 2"}, {L"C"}}, false, true},
-                {4, {{L"行 3"}, {L"D"}}, false, true},
-            });
+            if (checkable_) {
+                ThemedUi::SetTableRows(table_, {
+                    {1, {{L"已勾选"}, {L"已安装"}}, true, true},
+                    {2, {{L"未勾选"}, {L"已安装"}}, false, true},
+                    {3, {{L"禁用勾选"}, {L"未安装"}}, true, false},
+                    {4, {{L"禁用未勾选"}, {L"未安装"}}, false, false},
+                });
+            } else {
+                ThemedUi::SetTableRows(table_, {
+                    {1, {{L"行 0"}, {L"A"}}, false, true},
+                    {2, {{L"行 1"}, {L"B"}}, false, true},
+                    {3, {{L"行 2"}, {L"C"}}, false, true},
+                    {4, {{L"行 3"}, {L"D"}}, false, true},
+                });
+            }
             // Select row 0 only. This is the exact condition that exposed the
             // regression: under LVS_EX_FULLROWSELECT the CDIS_SELECTED draw flag
             // wrongly reported every row selected, so unselected rows were also
             // painted with the selected background and the stripe disappeared.
-            ThemedUi::SetTableSelectedIndex(table_, 0);
+            ThemedUi::SetTableSelectedIndex(table_, checkable_ ? 1 : 0);
             return 0;
         }
         if (message == WM_PAINT) {
@@ -1120,6 +1156,122 @@ void RunTableAlternatingRowsScenario(const std::filesystem::path& outputDir, Tes
 
     DestroyWindow(hwnd);
     AcceptanceLog(L"end table-alternating-rows");
+}
+
+void RunCheckableTableScenario(const std::filesystem::path& outputDir, TestState& state, UINT dpi) {
+    AcceptanceLog(L"begin table-checkable-states dpi=" + std::to_wstring(dpi));
+    HINSTANCE instance = GetModuleHandleW(nullptr);
+    TableHostWindow host;
+    host.instance_ = instance;
+    host.checkable_ = true;
+    host.showHeader_ = false;
+    host.visibleRows_ = 4;
+    host.forcedDpi_ = dpi;
+    host.theme_ = Theme::Load(std::filesystem::current_path() / L"theme", L"default");
+
+    WNDCLASSEXW wc{};
+    wc.cbSize = sizeof(wc);
+    wc.lpfnWndProc = TableHostWindow::Proc;
+    wc.hInstance = instance;
+    wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    const std::wstring className = L"QuattroCheckableTableHost" + std::to_wstring(dpi);
+    wc.lpszClassName = className.c_str();
+    RegisterClassExW(&wc);
+
+    HWND hwnd = CreateWindowExW(0, wc.lpszClassName, L"table checkable states", WS_OVERLAPPEDWINDOW,
+        180, 180,
+        ThemedWindowUi::ScaleForDpi(400, dpi),
+        ThemedWindowUi::ScaleForDpi(240, dpi),
+        nullptr, nullptr, instance, &host);
+    if (!hwnd || !host.table_) {
+        state.Check(false, L"table-checkable-states: host window/table creation failed");
+        return;
+    }
+    ShowWindow(hwnd, SW_SHOW);
+    UpdateWindow(hwnd);
+    SetFocus(host.table_);
+    RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW | RDW_ALLCHILDREN);
+    Sleep(150);
+
+    RECT tableClient{};
+    GetClientRect(host.table_, &tableClient);
+    RECT row0{LVIR_BOUNDS, 0, 0, 0};
+    RECT row2{LVIR_BOUNDS, 0, 0, 0};
+    SendMessageW(host.table_, LVM_GETITEMRECT, 0, reinterpret_cast<LPARAM>(&row0));
+    SendMessageW(host.table_, LVM_GETITEMRECT, 2, reinterpret_cast<LPARAM>(&row2));
+    const int rowHeight = row0.bottom - row0.top;
+    AcceptanceLog(L"table-checkable-states clientHeight=" + std::to_wstring(tableClient.bottom - tableClient.top)
+        + L" rowHeight=" + std::to_wstring(rowHeight));
+    state.Check(rowHeight > 0 && tableClient.bottom - tableClient.top == rowHeight * host.visibleRows_,
+        L"table-checkable-states: visible-row helper does not end on an exact row boundary");
+
+    HIMAGELIST stateImages = ListView_GetImageList(host.table_, LVSIL_STATE);
+    int stateImageWidth = 0;
+    int stateImageHeight = 0;
+    if (stateImages) ImageList_GetIconSize(stateImages, &stateImageWidth, &stateImageHeight);
+    AcceptanceLog(L"table-checkable-states stateImage=" + std::to_wstring(stateImageWidth)
+        + L"x" + std::to_wstring(stateImageHeight));
+    state.Check(stateImages && stateImageWidth > 16 && stateImageHeight + 1 == rowHeight,
+        L"table-checkable-states: DPI-aware checkbox state hit area was not created");
+
+    const bool disabledCheckedBefore = ThemedUi::IsTableChecked(host.table_, 2);
+    const LPARAM disabledCheckPoint = MAKELPARAM(row2.left + 10, (row2.top + row2.bottom) / 2);
+    SendMessageW(host.table_, WM_LBUTTONDOWN, MK_LBUTTON, disabledCheckPoint);
+    SendMessageW(host.table_, WM_LBUTTONUP, 0, disabledCheckPoint);
+    state.Check(disabledCheckedBefore && ThemedUi::IsTableChecked(host.table_, 2),
+        L"table-checkable-states: disabled checkbox changed after mouse input");
+
+    BitmapCapture beforeHover = CaptureWindowBitmap(hwnd);
+    state.Check(beforeHover.bitmap != nullptr, L"table-checkable-states: initial capture failed");
+
+    RECT selectedFirst = TableSubItemRectInHostBitmap(hwnd, host.table_, 1, 0);
+    RECT selectedSecond = TableSubItemRectInHostBitmap(hwnd, host.table_, 1, 1);
+    RECT uncheckedFirst = TableSubItemRectInHostBitmap(hwnd, host.table_, 1, 0);
+    RECT hoverFirst = TableSubItemRectInHostBitmap(hwnd, host.table_, 0, 0);
+    if (beforeHover.bitmap) {
+        const int selectedY = (selectedFirst.top + selectedFirst.bottom) / 2;
+        const COLORREF firstSelectedBackground = BitmapPixel(
+            beforeHover.bitmap, selectedFirst.right - 12, selectedY);
+        const COLORREF secondSelectedBackground = BitmapPixel(
+            beforeHover.bitmap, selectedSecond.right - 10, selectedY);
+        state.Check(ColorDistance(firstSelectedBackground, secondSelectedBackground) <= 4,
+            L"table-checkable-states: selected row uses different backgrounds across columns");
+
+        const int boxCenterX = uncheckedFirst.left
+            + ThemedWindowUi::ScaleForDpi(static_cast<int>(host.theme_.metric(L"listItem", L"paddingX", 8.0f)), dpi)
+            + ThemedWindowUi::ScaleForDpi(static_cast<int>(host.theme_.metric(L"checkbox", L"boxSize", 16.0f)), dpi) / 2;
+        const int boxCenterY = (uncheckedFirst.top + uncheckedFirst.bottom) / 2;
+        state.Check(ColorDistance(BitmapPixel(beforeHover.bitmap, boxCenterX, boxCenterY), RGB(0, 0, 0)) >= 80,
+            L"table-checkable-states: unchecked checkbox is rendered as a black block");
+    }
+
+    POINT hoverPoint{row0.right - 12, (row0.top + row0.bottom) / 2};
+    POINT hoverScreen = hoverPoint;
+    ClientToScreen(host.table_, &hoverScreen);
+    SetCursorPos(hoverScreen.x, hoverScreen.y);
+    SendMessageW(host.table_, WM_MOUSEMOVE, 0, MAKELPARAM(hoverPoint.x, hoverPoint.y));
+    UpdateWindow(host.table_);
+    Sleep(80);
+    BitmapCapture hovered = CaptureWindowBitmap(hwnd);
+    state.Check(hovered.bitmap != nullptr, L"table-checkable-states: hover capture failed");
+    if (dpi == 96 && beforeHover.bitmap && hovered.bitmap) {
+        const int hoverX = hoverFirst.right - 12;
+        const int hoverY = (hoverFirst.top + hoverFirst.bottom) / 2;
+        state.Check(ColorDistance(
+                BitmapPixel(beforeHover.bitmap, hoverX, hoverY),
+                BitmapPixel(hovered.bitmap, hoverX, hoverY)) >= 8,
+            L"table-checkable-states: row hover has no visible themed state");
+    }
+
+    const std::wstring screenshotName = dpi == 96
+        ? L"table-checkable-states.png"
+        : (L"table-checkable-states-" + std::to_wstring(dpi * 100 / 96) + L".png");
+    HBITMAP screenshotBitmap = dpi == 96 ? hovered.bitmap : beforeHover.bitmap;
+    if (screenshotBitmap) SavePng(screenshotBitmap, outputDir / screenshotName);
+    if (hovered.bitmap) DeleteObject(hovered.bitmap);
+    if (beforeHover.bitmap) DeleteObject(beforeHover.bitmap);
+    DestroyWindow(hwnd);
+    AcceptanceLog(L"end table-checkable-states dpi=" + std::to_wstring(dpi));
 }
 
 // Count distinct vertical header dividers. A divider spans the header's full
@@ -1556,8 +1708,35 @@ int wmain() {
         return 0;
     }
 
+    wchar_t tableOnly[8]{};
+    if (GetEnvironmentVariableW(
+            L"QUATTRO_UI_ACCEPTANCE_TABLE_ONLY",
+            tableOnly,
+            static_cast<DWORD>(std::size(tableOnly))) > 0) {
+        RunTableAlternatingRowsScenario(outputDir, state);
+        RunCheckableTableScenario(outputDir, state, 96);
+        RunCheckableTableScenario(outputDir, state, 120);
+        RunCheckableTableScenario(outputDir, state, 144);
+        RunTableHoverRepaintScenario(state);
+        DestroyWindow(owner);
+        OleUninitialize();
+        Gdiplus::GdiplusShutdown(gdiplusToken);
+        if (!state.ok) {
+            for (const auto& failure : state.failures) {
+                AcceptanceLog(L"table target failure " + failure);
+                std::wcerr << failure << L"\n";
+            }
+            return 1;
+        }
+        std::wcout << L"ui_table_acceptance=passed screenshots=" << outputDir.wstring() << L"\n";
+        return 0;
+    }
+
     RunMainWindowScenario(outputDir, state);
     RunTableAlternatingRowsScenario(outputDir, state);
+    RunCheckableTableScenario(outputDir, state, 96);
+    RunCheckableTableScenario(outputDir, state, 120);
+    RunCheckableTableScenario(outputDir, state, 144);
     RunTableColumnResizeScenario(outputDir, state);
     RunTableHoverRepaintScenario(state);
     RunTableGridLinesScenario(outputDir, state, false, L"table-grid-lines-default", L"table-grid-lines-default.png");

@@ -498,6 +498,7 @@ add_executable(QuattroUiScreenshotAcceptance
     src/domain/PluginRegistry.cpp
     src/windows/QuickImportDialog.cpp
     src/services/QuickImportService.cpp
+    src/services/ShellContextMenuCacheService.cpp
     src/services/ShellItemService.cpp
     src/domain/TrackedContextMenuProviders.cpp
     src/windows/SimpleDialogs.cpp

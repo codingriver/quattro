@@ -544,6 +544,8 @@ public:
     int textWidth(const std::wstring& text) const;
     int comboBoxWidth(const std::vector<std::wstring>& items) const;
     int tableColumnWidth(const std::wstring& widestText) const;
+    int tableColumnWidth(std::initializer_list<std::wstring_view> candidateTexts) const;
+    int tableHeightForRows(int visibleRows, bool showHeader = true) const;
     RECT tabStripRect(RECT bounds) const;
     int tabPageTop(RECT tabStrip) const;
     int footerButtonX(int buttonIndex, int buttonCount) const;

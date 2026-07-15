@@ -366,6 +366,7 @@ void ThemedWindowUi::ApplyDpiChange(UINT newDpi, const RECT* suggestedWindowRect
             MulDiv(frame.frame.left, newDpi, oldDpi), MulDiv(frame.frame.top, newDpi, oldDpi),
             MulDiv(frame.frame.right, newDpi, oldDpi), MulDiv(frame.frame.bottom, newDpi, oldDpi)};
         SyncTableFrameWindow(frame);
+        ThemedControls::RefreshTableDpiResources(frame.child, newDpi);
     }
     RECT client{};
     GetClientRect(hwnd_, &client);

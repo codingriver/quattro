@@ -75,6 +75,9 @@ struct ControlState {
     double sliderStep = 1.0;
     double sliderValue = 0.0;
     HIMAGELIST tableDefaultSmallImages = nullptr;
+    HIMAGELIST tableCheckBoxStateImages = nullptr;
+    bool tableCheckable = false;
+    UINT tableDpi = USER_DEFAULT_SCREEN_DPI;
     int tableHotRow = -1;
     int tableHotColumn = -1;
     bool tableAllowColumnResize = false;
@@ -128,6 +131,10 @@ void EraseState(HWND hwnd) {
             ImageList_Destroy(it->second.tableDefaultSmallImages);
             it->second.tableDefaultSmallImages = nullptr;
         }
+        if (it->second.tableCheckBoxStateImages) {
+            ImageList_Destroy(it->second.tableCheckBoxStateImages);
+            it->second.tableCheckBoxStateImages = nullptr;
+        }
         map.erase(it);
     }
 }
@@ -164,6 +171,13 @@ int ScaledMetric(HWND hwnd, const Theme& theme, const wchar_t* component, const 
     const int logicalPixels = static_cast<int>(theme.metric(component, name, fallback));
     const UINT dpi = hwnd ? GetDpiForWindow(hwnd) : USER_DEFAULT_SCREEN_DPI;
     return MulDiv(logicalPixels, static_cast<int>(dpi ? dpi : USER_DEFAULT_SCREEN_DPI), USER_DEFAULT_SCREEN_DPI);
+}
+
+int TableScaledMetric(HWND table, const Theme& theme, const wchar_t* component, const wchar_t* name, float fallback) {
+    const auto state = FindState(table);
+    UINT dpi = state && state->tableDpi ? state->tableDpi : (table ? GetDpiForWindow(table) : USER_DEFAULT_SCREEN_DPI);
+    if (!dpi) dpi = USER_DEFAULT_SCREEN_DPI;
+    return MulDiv(static_cast<int>(theme.metric(component, name, fallback)), static_cast<int>(dpi), USER_DEFAULT_SCREEN_DPI);
 }
 
 std::wstring WindowText(HWND hwnd) {
@@ -658,21 +672,22 @@ void RelayoutTableRemainingColumns(HWND table, int draggedIndex, int draggedWidt
     ListView_SetColumnWidth(table, adjustIndex, width);
 }
 
-// Repaint one table cell without erasing the background. Action cells are the
-// only cells whose appearance depends on the cursor, so hover changes never
-// need more than this per cell.
-void InvalidateTableCell(HWND list, int row, int column) {
+void InvalidateTableRow(HWND list, int row) {
     if (row < 0) {
         return;
     }
     RECT rect{};
-    if (column <= 0) {
-        if (ListView_GetItemRect(list, row, &rect, LVIR_BOUNDS)) {
-            InvalidateRect(list, &rect, FALSE);
-        }
-    } else if (ListView_GetSubItemRect(list, row, column, LVIR_BOUNDS, &rect)) {
+    if (ListView_GetItemRect(list, row, &rect, LVIR_BOUNDS)) {
         InvalidateRect(list, &rect, FALSE);
     }
+}
+
+bool IsDisabledTableRowHit(HWND table, LPARAM lParam) {
+    LVHITTESTINFO hit{};
+    hit.pt.x = GET_X_LPARAM(lParam);
+    hit.pt.y = GET_Y_LPARAM(lParam);
+    ListView_SubItemHitTest(table, &hit);
+    return hit.iItem >= 0 && !ThemedControls::IsTableRowEnabled(table, hit.iItem);
 }
 
 LRESULT CALLBACK ThemedControlProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR subclassId, DWORD_PTR) {
@@ -783,6 +798,9 @@ LRESULT CALLBACK ThemedControlProc(HWND hwnd, UINT message, WPARAM wParam, LPARA
         }
         break;
     case WM_LBUTTONUP:
+        if (KindFor(hwnd) == ControlKind::Table && IsDisabledTableRowHit(hwnd, lParam)) {
+            return 0;
+        }
         if ((KindFor(hwnd) == ControlKind::CheckBox || KindFor(hwnd) == ControlKind::Toggle || KindFor(hwnd) == ControlKind::Radio)
             && IsWindowEnabled(hwnd)) {
             POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
@@ -803,6 +821,9 @@ LRESULT CALLBACK ThemedControlProc(HWND hwnd, UINT message, WPARAM wParam, LPARA
         }
         break;
     case WM_LBUTTONDOWN:
+        if (KindFor(hwnd) == ControlKind::Table && IsDisabledTableRowHit(hwnd, lParam)) {
+            return 0;
+        }
         if (KindFor(hwnd) == ControlKind::Slider && IsWindowEnabled(hwnd)) {
             SetFocus(hwnd);
             SetCapture(hwnd);
@@ -822,6 +843,12 @@ LRESULT CALLBACK ThemedControlProc(HWND hwnd, UINT message, WPARAM wParam, LPARA
         break;
     case WM_KEYDOWN:
     case WM_SYSKEYDOWN:
+        if (KindFor(hwnd) == ControlKind::Table && wParam == VK_SPACE) {
+            const int selected = ListView_GetNextItem(hwnd, -1, LVNI_SELECTED);
+            if (selected >= 0 && !ThemedControls::IsTableRowEnabled(hwnd, selected)) {
+                return 0;
+            }
+        }
         if (KindFor(hwnd) == ControlKind::HotKeyCapture) {
             if (wParam != VK_CONTROL && wParam != VK_MENU && wParam != VK_SHIFT
                 && wParam != VK_LWIN && wParam != VK_RWIN) {
@@ -929,21 +956,20 @@ LRESULT CALLBACK ThemedControlProc(HWND hwnd, UINT message, WPARAM wParam, LPARA
             }
         }
         if (kind == ControlKind::Table) {
-            // Only repaint when the hovered cell actually changes. Invalidating the
-            // whole ListView on every WM_MOUSEMOVE repaints all rows dozens of times
-            // per second and makes the list flicker while the cursor moves. Action
-            // cells are the only cells with a hover appearance, so repainting just the
-            // cell the cursor entered/left is enough to keep the button hover correct.
+            // Only repaint when the hovered row/cell actually changes. The row
+            // background consumes hover state, while action cells additionally use
+            // the hot column for their button state.
             LVHITTESTINFO hit{};
             hit.pt.x = GET_X_LPARAM(lParam);
             hit.pt.y = GET_Y_LPARAM(lParam);
             ListView_SubItemHitTest(hwnd, &hit);
             ControlState& tableState = StateFor(hwnd);
             if (hit.iItem != tableState.tableHotRow || hit.iSubItem != tableState.tableHotColumn) {
-                InvalidateTableCell(hwnd, tableState.tableHotRow, tableState.tableHotColumn);
+                const int previousRow = tableState.tableHotRow;
                 tableState.tableHotRow = hit.iItem;
                 tableState.tableHotColumn = hit.iSubItem;
-                InvalidateTableCell(hwnd, hit.iItem, hit.iSubItem);
+                InvalidateTableRow(hwnd, previousRow);
+                InvalidateTableRow(hwnd, hit.iItem);
             }
         }
         break;
@@ -951,21 +977,21 @@ LRESULT CALLBACK ThemedControlProc(HWND hwnd, UINT message, WPARAM wParam, LPARA
     case WM_MOUSELEAVE:
         StateFor(hwnd).hover = false;
         if (KindFor(hwnd) == ControlKind::Table) {
-            // Same as on enter: nothing in the table's paint depends on the
-            // control-level hover flag, so only the cell that was hot needs a
-            // repaint — a full erase here flickered every time the cursor moved
-            // onto the header, the scrollbar, or out of the list.
             ControlState& tableState = StateFor(hwnd);
             const int hotRow = tableState.tableHotRow;
-            const int hotColumn = tableState.tableHotColumn;
             tableState.tableHotRow = -1;
             tableState.tableHotColumn = -1;
-            InvalidateTableCell(hwnd, hotRow, hotColumn);
+            InvalidateTableRow(hwnd, hotRow);
             break;
         }
         InvalidateRect(hwnd, nullptr, TRUE);
         if (KindFor(hwnd) == ControlKind::Edit) {
             InvalidateParentAround(hwnd);
+        }
+        break;
+    case WM_LBUTTONDBLCLK:
+        if (KindFor(hwnd) == ControlKind::Table && IsDisabledTableRowHit(hwnd, lParam)) {
+            return 0;
         }
         break;
     case WM_SETFOCUS:
@@ -1753,7 +1779,9 @@ void DrawHeaderItem(const Theme& theme, HWND header, const NMCUSTOMDRAW* draw) {
         DeleteObject(pen);
     }
 
-    const int paddingX = static_cast<int>(theme.metric(L"listItem", L"paddingX", 8.0f));
+    const int paddingX = table
+        ? TableScaledMetric(tableHwnd, theme, L"listItem", L"paddingX", 8.0f)
+        : ScaledMetric(header, theme, L"listItem", L"paddingX", 8.0f);
     RECT textRect = rect;
     textRect.left += paddingX;
     textRect.right -= paddingX;
@@ -1791,13 +1819,9 @@ bool IsActionCell(const ThemedControls::TableCellRuntime& cell) {
     return cell.role == 1 || cell.role == 2;
 }
 
-bool UsesNativeTableCellDrawing(HWND table, int column, const ThemedControls::TableCellRuntime* cell) {
+bool UsesNativeTableCellDrawing(HWND, int column, const ThemedControls::TableCellRuntime* cell) {
     if (column != 0) {
         return false;
-    }
-    const DWORD extended = ListView_GetExtendedListViewStyle(table);
-    if ((extended & LVS_EX_CHECKBOXES) != 0) {
-        return true;
     }
     return cell && cell->hasImage;
 }
@@ -1807,12 +1831,20 @@ bool UsesNativeTableRowDrawing(HWND table, int row) {
     return UsesNativeTableCellDrawing(table, 0, firstCell ? &*firstCell : nullptr);
 }
 
-const wchar_t* TableRowState(int row, bool selected, bool enabled) {
+bool IsTableRowHovered(HWND table, int row) {
+    const auto state = FindState(table);
+    return state && state->tableHotRow == row;
+}
+
+const wchar_t* TableRowState(int row, bool selected, bool enabled, bool hovered) {
     if (!enabled) {
         return L"disabled";
     }
     if (selected) {
         return L"selected";
+    }
+    if (hovered) {
+        return L"hover";
     }
     return (row % 2) == 0 ? L"alternate" : L"normal";
 }
@@ -1871,7 +1903,8 @@ void DrawTableActionCell(
     RECT cellRect = TableSubItemRect(table, row, column, draw->nmcd.rc);
     const bool enabled = ThemedControls::IsTableRowEnabled(table, row);
     const bool selected = ThemedControls::IsTableRowSelected(table, row);
-    const wchar_t* rowState = TableRowState(row, selected, enabled);
+    const bool hovered = IsTableRowHovered(table, row);
+    const wchar_t* rowState = TableRowState(row, selected, enabled, hovered);
     HBRUSH background = CreateSolidBrush(TableRowBackground(theme, rowState));
     FillRect(draw->nmcd.hdc, &cellRect, background);
     DeleteObject(background);
@@ -1934,15 +1967,54 @@ void DrawTableTextCell(
     RECT cellRect = TableSubItemRect(table, row, column, draw->nmcd.rc);
     const bool enabled = ThemedControls::IsTableRowEnabled(table, row);
     const bool selected = ThemedControls::IsTableRowSelected(table, row);
-    const wchar_t* rowState = TableRowState(row, selected, enabled);
+    const bool hovered = IsTableRowHovered(table, row);
+    const wchar_t* rowState = TableRowState(row, selected, enabled, hovered);
     HBRUSH background = CreateSolidBrush(TableRowBackground(theme, rowState));
     FillRect(draw->nmcd.hdc, &cellRect, background);
     DeleteObject(background);
 
-    const int paddingX = static_cast<int>(theme.metric(L"listItem", L"paddingX", 8.0f));
+    const int paddingX = TableScaledMetric(table, theme, L"listItem", L"paddingX", 8.0f);
     RECT textRect = cellRect;
     textRect.left += paddingX;
     textRect.right -= paddingX;
+
+    if (column == 0 && (ListView_GetExtendedListViewStyle(table) & LVS_EX_CHECKBOXES) != 0) {
+        const bool checked = ListView_GetCheckState(table, row) != FALSE;
+        const bool focused = GetFocus() == table && selected;
+        const wchar_t* checkState = !enabled
+            ? L"disabled"
+            : (checked ? (hovered ? L"checkedHover" : L"checked") : (hovered ? L"hover" : L"normal"));
+        const int boxSize = TableScaledMetric(table, theme, L"checkbox", L"boxSize", 16.0f);
+        const int gap = TableScaledMetric(table, theme, L"checkbox", L"gap", 8.0f);
+        RECT box{
+            textRect.left,
+            cellRect.top + std::max(0, (static_cast<int>(cellRect.bottom - cellRect.top) - boxSize) / 2),
+            0,
+            0};
+        box.right = box.left + boxSize;
+        box.bottom = box.top + boxSize;
+        FillRoundRect(
+            draw->nmcd.hdc,
+            box,
+            TableScaledMetric(table, theme, L"checkbox", L"radius", 4.0f),
+            ToColorRef(theme.color(L"checkbox", checkState, L"boxBg")),
+            ToColorRef(theme.color(L"checkbox", focused ? L"focused" : checkState, L"border")),
+            TableScaledMetric(table, theme, L"checkbox", L"borderWidth", 1.0f));
+        if (checked) {
+            const int markWidth = TableScaledMetric(table, theme, L"checkbox", L"markWidth", 2.0f);
+            HPEN pen = CreatePen(
+                PS_SOLID,
+                std::max(1, markWidth),
+                ToColorRef(theme.color(L"checkbox", L"checked", L"mark")));
+            HGDIOBJ oldPen = SelectObject(draw->nmcd.hdc, pen);
+            MoveToEx(draw->nmcd.hdc, box.left + boxSize / 4, box.top + boxSize / 2, nullptr);
+            LineTo(draw->nmcd.hdc, box.left + boxSize * 7 / 16, box.bottom - boxSize / 4);
+            LineTo(draw->nmcd.hdc, box.right - boxSize / 5, box.top + boxSize / 4);
+            SelectObject(draw->nmcd.hdc, oldPen);
+            DeleteObject(pen);
+        }
+        textRect.left = box.right + gap;
+    }
 
     LVCOLUMNW columnInfo{};
     columnInfo.mask = LVCF_FMT;
@@ -3020,11 +3092,13 @@ void ApplyListViewTheme(HWND list, const Theme& theme) {
     InvalidateRect(list, nullptr, TRUE);
 }
 
-void RegisterTable(HWND table, const Theme& theme) {
+void RegisterTable(HWND table, const Theme& theme, UINT dpi) {
     if (!table) return;
     auto& state = StateFor(table);
     state.kind = ControlKind::Table;
     state.theme = &theme;
+    state.tableDpi = dpi ? dpi : GetDpiForWindow(table);
+    if (!state.tableDpi) state.tableDpi = USER_DEFAULT_SCREEN_DPI;
     AttachThemedBehavior(table);
     ApplyListViewTheme(table, theme);
     ThemedControls::RestoreTableDefaultImageList(table);
@@ -3105,8 +3179,11 @@ void RestoreTableDefaultImageList(HWND table) {
     auto& state = StateFor(table);
     if (!state.theme) return;
     if (!state.tableDefaultSmallImages) {
-        const int rowHeight = ScaledMetric(table, *state.theme, L"listItem", L"height", 28.0f);
-        state.tableDefaultSmallImages = ImageList_Create(1, std::max(1, rowHeight), ILC_COLOR32, 1, 1);
+        const int rowHeight = TableScaledMetric(table, *state.theme, L"listItem", L"height", 28.0f);
+        // Report view adds one physical pixel around the image-list height.
+        // Subtract it here so the native item rect matches the public 28px row
+        // template exactly at every DPI.
+        state.tableDefaultSmallImages = ImageList_Create(1, std::max(1, rowHeight - 1), ILC_COLOR32, 1, 1);
     }
     if (state.tableDefaultSmallImages) {
         ListView_SetImageList(table, state.tableDefaultSmallImages, LVSIL_SMALL);
@@ -3115,52 +3192,70 @@ void RestoreTableDefaultImageList(HWND table) {
 
 void CreateSystemCheckBoxImages(HWND table) {
     if (!table) return;
-
-    // 创建系统风格的复选框状态图像
-    // 图像列表大小应与行高一致，包含3种状态：
-    // 0=未选中, 1=选中, 2=禁用
-    HIMAGELIST hIml = ImageList_Create(16, 16, ILC_COLOR32, 3, 0);
-    if (!hIml) return;
-
-    // 绘制三种复选框状态
-    for (int state = 0; state < 3; ++state) {
-        HDC hdcDC = CreateCompatibleDC(nullptr);
-        if (!hdcDC) continue;
-
-        HBITMAP hbm = CreateCompatibleBitmap(hdcDC, 16, 16);
-        if (!hbm) {
-            DeleteDC(hdcDC);
-            continue;
-        }
-
-        HBITMAP oldBm = static_cast<HBITMAP>(SelectObject(hdcDC, hbm));
-        RECT rc{0, 0, 16, 16};
-
-        // 背景为透明（白色作为掩码颜色）
-        FillRect(hdcDC, &rc, GetSysColorBrush(COLOR_WINDOW));
-
-        // 绘制方框
-        HPEN hpen = CreatePen(PS_SOLID, 1, GetSysColor(COLOR_WINDOWTEXT));
-        HGDIOBJ oldPen = SelectObject(hdcDC, hpen);
-        Rectangle(hdcDC, 1, 1, 15, 15);
-
-        // 如果是选中状态，绘制对勾
-        if (state == 1) {
-            // 绘制对勾标记
-            MoveToEx(hdcDC, 4, 8, nullptr);
-            LineTo(hdcDC, 7, 11);
-            LineTo(hdcDC, 12, 4);
-        }
-
-        SelectObject(hdcDC, oldPen);
-        DeleteObject(hpen);
-        SelectObject(hdcDC, oldBm);
-        ImageList_AddMasked(hIml, hbm, RGB(255, 255, 255));
-        DeleteObject(hbm);
-        DeleteDC(hdcDC);
+    auto& state = StateFor(table);
+    state.tableCheckable = true;
+    if (!state.theme) return;
+    if (state.tableCheckBoxStateImages) {
+        ListView_SetImageList(table, nullptr, LVSIL_STATE);
+        ImageList_Destroy(state.tableCheckBoxStateImages);
+        state.tableCheckBoxStateImages = nullptr;
     }
 
-    ListView_SetImageList(table, hIml, LVSIL_STATE);
+    // ListView still needs a state image list for checkbox state storage and
+    // LVHT_ONITEMSTATEICON hit testing. The visible checkbox is rendered by the
+    // shared owner-draw path, so these images are deliberately transparent.
+    const int width = std::max(1,
+        TableScaledMetric(table, *state.theme, L"listItem", L"paddingX", 8.0f)
+        + TableScaledMetric(table, *state.theme, L"checkbox", L"boxSize", 16.0f)
+        + TableScaledMetric(table, *state.theme, L"checkbox", L"gap", 8.0f));
+    const int height = std::max(1, TableScaledMetric(table, *state.theme, L"listItem", L"height", 28.0f) - 1);
+    HIMAGELIST images = ImageList_Create(width, height, ILC_COLOR32, 2, 0);
+    if (!images) return;
+
+    BITMAPINFO bitmapInfo{};
+    bitmapInfo.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bitmapInfo.bmiHeader.biWidth = width;
+    bitmapInfo.bmiHeader.biHeight = -height;
+    bitmapInfo.bmiHeader.biPlanes = 1;
+    bitmapInfo.bmiHeader.biBitCount = 32;
+    bitmapInfo.bmiHeader.biCompression = BI_RGB;
+    void* bits = nullptr;
+    HBITMAP bitmap = CreateDIBSection(nullptr, &bitmapInfo, DIB_RGB_COLORS, &bits, nullptr, 0);
+    if (!bitmap || !bits) {
+        if (bitmap) DeleteObject(bitmap);
+        ImageList_Destroy(images);
+        return;
+    }
+    ZeroMemory(bits, static_cast<SIZE_T>(width) * static_cast<SIZE_T>(height) * 4);
+    ImageList_Add(images, bitmap, nullptr);
+    ImageList_Add(images, bitmap, nullptr);
+    DeleteObject(bitmap);
+
+    state.tableCheckBoxStateImages = images;
+    ListView_SetImageList(table, images, LVSIL_STATE);
+}
+
+void RefreshTableDpiResources(HWND table, UINT dpi) {
+    if (!table) return;
+    auto& state = StateFor(table);
+    if (state.kind != ControlKind::Table || !state.theme) return;
+    if (dpi) state.tableDpi = dpi;
+    const bool usesDefaultSmallImages = state.tableDefaultSmallImages
+        && ListView_GetImageList(table, LVSIL_SMALL) == state.tableDefaultSmallImages;
+    if (state.tableDefaultSmallImages) {
+        if (usesDefaultSmallImages) {
+            ListView_SetImageList(table, nullptr, LVSIL_SMALL);
+        }
+        ImageList_Destroy(state.tableDefaultSmallImages);
+        state.tableDefaultSmallImages = nullptr;
+    }
+    if (usesDefaultSmallImages) {
+        RestoreTableDefaultImageList(table);
+    }
+    if (state.tableCheckable) {
+        CreateSystemCheckBoxImages(table);
+    }
+    InvalidateRect(table, nullptr, TRUE);
 }
 
 
@@ -3318,7 +3413,8 @@ bool HandleListViewCustomDraw(const Theme& theme, LPARAM lParam, LRESULT& result
         const int row = static_cast<int>(draw->nmcd.dwItemSpec);
         const bool selected = IsTableRowSelected(header->hwndFrom, row);
         const bool enabled = IsTableRowEnabled(header->hwndFrom, row);
-        const wchar_t* state = TableRowState(row, selected, enabled);
+        const bool hovered = IsTableRowHovered(header->hwndFrom, row);
+        const wchar_t* state = TableRowState(row, selected, enabled, hovered);
         RECT rowRect{};
         if (ListView_GetItemRect(header->hwndFrom, row, &rowRect, LVIR_BOUNDS)) {
             HBRUSH background = CreateSolidBrush(TableRowBackground(theme, state));

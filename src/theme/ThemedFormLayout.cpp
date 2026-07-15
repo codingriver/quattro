@@ -308,6 +308,26 @@ ThemedSectionGeometry ThemedFormLayout::section(
     return geometry;
 }
 
+ThemedSectionGeometry ThemedFormLayout::contentSection(
+    int left,
+    int top,
+    int width,
+    int contentHeight) const {
+    const ThemedContentInsets insets = ui_.groupBoxInsets();
+    ThemedSectionGeometry geometry{};
+    geometry.frame = RECT{
+        left,
+        top,
+        left + std::max(0, width),
+        top + insets.top + std::max(0, contentHeight) + insets.bottom};
+    geometry.content = RECT{
+        geometry.frame.left + insets.left,
+        top + insets.top,
+        geometry.frame.right - insets.right,
+        top + insets.top + std::max(0, contentHeight)};
+    return geometry;
+}
+
 int ThemedFormLayout::sectionRowHeight(const ThemedSectionRow& row) const {
     int height = 0;
     for (ThemedSectionItemKind item : row.items) {

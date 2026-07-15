@@ -111,6 +111,8 @@ public:
     ThemedSectionGeometry section(int left, int top, int width, std::initializer_list<ThemedSectionRow> rows) const;
     // 行数在运行期决定（例如由数据表驱动的勾选框分组）时使用。
     ThemedSectionGeometry section(int left, int top, int width, const std::vector<ThemedSectionRow>& rows) const;
+    // 单个连续内容区域（例如 Table/List）使用；内容高度由对应公共控件 helper 提供。
+    ThemedSectionGeometry contentSection(int left, int top, int width, int contentHeight) const;
     int sectionItemY(const ThemedSectionGeometry& section, int rowIndex, int itemHeight) const;
 
 private:

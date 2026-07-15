@@ -1000,6 +1000,12 @@ int wmain() {
             "Themed UI scales dialog metrics at 125 percent DPI");
         Check(dpi150Ui.checkBoxHeight() == ThemedWindowUi::ScaleForDpi(controlUi.checkBoxHeight(), 144),
             "Themed UI scales component templates at 150 percent DPI");
+        Check(dpi125Ui.tableHeightForRows(8, false) - dpi125Ui.tableHeightForRows(7, false)
+                == ThemedWindowUi::ScaleForDpi(28, 120),
+            "Themed table visible-row height scales at 125 percent DPI");
+        Check(dpi150Ui.tableHeightForRows(8, false) - dpi150Ui.tableHeightForRows(7, false)
+                == ThemedWindowUi::ScaleForDpi(28, 144),
+            "Themed table visible-row height scales at 150 percent DPI");
         Check(controlUi.comboBoxHeight() == controlUi.editHeight(),
             "Themed UI aligns combo and edit template heights");
         Check(controlUi.listItemHeight(true) == controlUi.scale(48),
@@ -1095,6 +1101,17 @@ int wmain() {
         Check(ThemedUi::ComboBoxSelectedIndex(runtimeCombo) == 0, "Themed combo public selection update");
         Check(controlUi.tableColumnWidth(L"column") > controlUi.textWidth(L"column"),
             "Themed table column width includes public cell padding");
+        Check(controlUi.tableColumnWidth({L"short", L"a much wider status"})
+                >= controlUi.tableColumnWidth(L"a much wider status"),
+            "Themed table column width measures every public candidate text");
+        Check(controlUi.tableHeightForRows(8, false) - controlUi.tableHeightForRows(7, false)
+                == controlUi.scale(static_cast<int>(fallbackTheme.metric(L"listItem", L"height", 28.0f))),
+            "Themed table visible-row height advances by the public row template");
+        const ThemedFormLayout publicForm(controlUi);
+        const int tableContentHeight = controlUi.tableHeightForRows(7, false);
+        const ThemedSectionGeometry tableSection = publicForm.contentSection(8, 12, 320, tableContentHeight);
+        Check(tableSection.content.bottom - tableSection.content.top == tableContentHeight,
+            "Themed form continuous-content section preserves the public table height");
         const RECT publicTabStrip = controlUi.tabStripRect(RECT{10, 10, 300, 300});
         Check(publicTabStrip.bottom < 300 && controlUi.tabPageTop(publicTabStrip) > publicTabStrip.bottom,
             "Themed tab layout separates strip and page content");
@@ -1107,9 +1124,15 @@ int wmain() {
              ThemedTableColumn{L"value", L"Value", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Remaining}},
             tableOptions);
         Check(runtimeTable != nullptr, "Themed table public factory");
-        ThemedUi::SetTableRows(runtimeTable, {ThemedTableRow{42, {{L"row"}, {L"value"}}, true, true}});
-        Check(ThemedUi::TableRowCount(runtimeTable) == 1 && ThemedUi::TableRowKey(runtimeTable, 0) == 42, "Themed table public row model");
+        ThemedUi::SetTableRows(runtimeTable, {
+            ThemedTableRow{42, {{L"row"}, {L"value"}}, true, true},
+            ThemedTableRow{43, {{L"disabled"}, {L"preserved"}}, true, false},
+        });
+        Check(ThemedUi::TableRowCount(runtimeTable) == 2 && ThemedUi::TableRowKey(runtimeTable, 0) == 42, "Themed table public row model");
         Check(ThemedUi::IsTableChecked(runtimeTable, 0), "Themed table public checked state");
+        Check(ThemedUi::IsTableChecked(runtimeTable, 1), "Themed table preserves disabled checked state");
+        ThemedUi::SetTableChecked(runtimeTable, 1, false);
+        Check(ThemedUi::IsTableChecked(runtimeTable, 1), "Themed table public setter leaves disabled rows unchanged");
         HWND noResizeTable = controlUi.Table(
             7110, RECT{0, 270, 360, 360},
             {ThemedTableColumn{L"name", L"Name", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, 120},

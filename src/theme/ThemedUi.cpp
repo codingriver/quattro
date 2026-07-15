@@ -936,6 +936,27 @@ int ThemedUi::tableColumnWidth(const std::wstring& widestText) const {
     return textWidth(widestText) + padding * 2;
 }
 
+int ThemedUi::tableColumnWidth(std::initializer_list<std::wstring_view> candidateTexts) const {
+    int contentWidth = 0;
+    for (const std::wstring_view text : candidateTexts) {
+        contentWidth = std::max(contentWidth, textWidth(std::wstring(text)));
+    }
+    const int padding = scale(static_cast<int>(theme_.metric(L"listItem", L"paddingX", 8.0f)));
+    return contentWidth + padding * 2;
+}
+
+int ThemedUi::tableHeightForRows(int visibleRows, bool showHeader) const {
+    // TableFrameInnerRect currently consumes the physical public frame inset;
+    // keep the height helper on that same drawing path so the viewport ends on
+    // an exact row boundary at every DPI.
+    const int border = std::max(1, static_cast<int>(theme_.metric(L"table", L"borderWidth", 1.0f)));
+    const int rowHeight = scale(static_cast<int>(theme_.metric(L"listItem", L"height", 28.0f)));
+    const int headerHeight = showHeader
+        ? scale(static_cast<int>(theme_.metric(L"tableHeader", L"height", 28.0f)))
+        : 0;
+    return border * 2 + headerHeight + std::max(0, visibleRows) * rowHeight;
+}
+
 RECT ThemedUi::tabStripRect(RECT bounds) const {
     const int padding = scale(static_cast<int>(theme_.metric(L"tabControl", L"paddingX", 4.0f)));
     bounds.bottom = bounds.top + tabButtonHeight() + padding * 2;
@@ -1975,7 +1996,7 @@ HWND ThemedUi::Table(int id, RECT frame, const std::vector<ThemedTableColumn>& c
     if (options.checkable) extended |= LVS_EX_CHECKBOXES;
     if (options.fullRowSelect) extended |= LVS_EX_FULLROWSELECT;
     ListView_SetExtendedListViewStyle(table, extended);
-    ThemedControls::RegisterTable(table, theme_);
+    ThemedControls::RegisterTable(table, theme_, dpi_);
     if (options.checkable) {
         ThemedControls::CreateSystemCheckBoxImages(table);
     }
@@ -1992,7 +2013,9 @@ HWND ThemedUi::Table(int id, RECT frame, const std::vector<ThemedTableColumn>& c
         else fixedWidth += std::max(0, column.fixedWidth);
         widthModes.push_back(static_cast<int>(column.widthMode));
     }
-    const int scrollBarGutter = options.reserveScrollBarGutter ? GetSystemMetrics(SM_CXVSCROLL) : 0;
+    const int scrollBarGutter = options.reserveScrollBarGutter
+        ? GetSystemMetricsForDpi(SM_CXVSCROLL, dpi_)
+        : 0;
     const int available = std::max(40, static_cast<int>(inner.right - inner.left) - fixedWidth - scrollBarGutter);
     int assignedRemainingWidth = 0;
     int remainingIndex = 0;
@@ -2060,7 +2083,9 @@ void ThemedUi::SetTableRows(HWND table, const std::vector<ThemedTableRow>& rows)
         for (std::size_t cell = 1; cell < source.cells.size(); ++cell) {
             ListView_SetItemText(table, static_cast<int>(index), static_cast<int>(cell), const_cast<wchar_t*>(source.cells[cell].text.c_str()));
         }
-        ListView_SetCheckState(table, static_cast<int>(index), source.checked && source.enabled ? TRUE : FALSE);
+        // Disabled rows remain read-only, but their configured value is still
+        // meaningful and must be visible to the user.
+        ListView_SetCheckState(table, static_cast<int>(index), source.checked ? TRUE : FALSE);
     }
     const int columnCount = Header_GetItemCount(ListView_GetHeader(table));
     for (int column = 0; column < columnCount; ++column) {

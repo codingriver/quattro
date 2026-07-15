@@ -3368,22 +3368,15 @@ private:
             // 表格固定显示 7 行高度，更多 provider 由 ListView 垂直滚动承载，
             // 对话框高度不随 provider 数量增长。
             constexpr int kContextMenuVisibleRows = 7;
-            std::vector<ThemedSectionRow> contextMenuTrackingRows;
-            for (int row = 0; row < kContextMenuVisibleRows; ++row) {
-                contextMenuTrackingRows.push_back(
-                    behaviorForm.sectionRow({ThemedSectionItemKind::Edit}));
-            }
-            const ThemedSectionGeometry contextMenuTrackingSection = behaviorForm.section(
-                behaviorFrameLeft, pageTop, behaviorFrameWidth, contextMenuTrackingRows);
+            const int contextMenuTableHeight = settingsUi.tableHeightForRows(kContextMenuVisibleRows, false);
+            const ThemedSectionGeometry contextMenuTrackingSection = behaviorForm.contentSection(
+                behaviorFrameLeft, pageTop, behaviorFrameWidth, contextMenuTableHeight);
             HWND contextMenuTrackingGroup = AddSectionFrame(TabContextMenu, L"自动跟踪", contextMenuTrackingSection.frame);
-            const int trackingTableTop = contextMenuTrackingSection.rowTops.front();
-            const int trackingTableBottom = contextMenuTrackingSection.rowTops.back()
-                + contextMenuTrackingSection.rowHeights.back();
             RECT contextMenuTableFrame{
-                behaviorLeft,
-                ContentY(trackingTableTop),
-                behaviorLeft + behaviorContentWidth,
-                ContentY(trackingTableBottom),
+                contextMenuTrackingSection.content.left,
+                ContentY(contextMenuTrackingSection.content.top),
+                contextMenuTrackingSection.content.right,
+                ContentY(contextMenuTrackingSection.content.bottom),
             };
             ThemedTableOptions contextMenuTableOptions{};
             contextMenuTableOptions.checkable = true;
@@ -3404,7 +3397,7 @@ private:
                         L"状态",
                         ThemedTableColumnAlign::End,
                         ThemedTableColumnWidth::Fixed,
-                        settingsUi.tableColumnWidth(L"未安装")},
+                        settingsUi.tableColumnWidth({L"已安装(注册表)", L"已安装(菜单)", L"未安装"})},
                 },
                 contextMenuTableOptions);
             AddTabChild(contextMenuTable_, TabContextMenu);
