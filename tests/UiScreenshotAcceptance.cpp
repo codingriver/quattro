@@ -60,6 +60,7 @@ struct Scenario {
     std::wstring actionButtonText;
     DWORD closeDelayMs = 0;
     bool validateHotKeyTableLayout = false;
+    bool validateContextMenuUninstalledRows = false;
 };
 
 struct TestState {
@@ -684,6 +685,45 @@ void ValidateAndCapture(HWND hwnd, const Scenario& scenario, const std::filesyst
                 state.Check(
                     hasLastRowRect && lastRow.bottom <= tableClient.bottom,
                     scenario.name + L": hotkey table rows require vertical scrolling");
+            }
+        }
+    }
+
+    if (scenario.validateContextMenuUninstalledRows) {
+        HWND table = nullptr;
+        for (const auto& child : children) {
+            if (IsWindowVisible(child.hwnd) && child.className == L"SysListView32") {
+                table = child.hwnd;
+                break;
+            }
+        }
+        state.Check(table != nullptr, scenario.name + L": visible context-menu table not found");
+        if (table) {
+            int uninstalledRow = -1;
+            const int rowCount = ListView_GetItemCount(table);
+            for (int row = 0; row < rowCount; ++row) {
+                wchar_t status[64]{};
+                ListView_GetItemText(table, row, 1, status, static_cast<int>(std::size(status)));
+                if (std::wstring(status) == L"未安装") {
+                    uninstalledRow = row;
+                    break;
+                }
+            }
+            state.Check(uninstalledRow >= 0, scenario.name + L": no uninstalled provider row found");
+            if (uninstalledRow >= 0) {
+                state.Check(
+                    ThemedUi::IsTableRowEnabled(table, uninstalledRow),
+                    scenario.name + L": uninstalled provider row is disabled");
+                ThemedUi::SetTableChecked(table, uninstalledRow, false);
+                ThemedUi::SetTableSelectedIndex(table, uninstalledRow);
+                SetFocus(table);
+                SendMessageW(table, WM_KEYDOWN, VK_SPACE, 0);
+                SendMessageW(table, WM_KEYUP, VK_SPACE, 0);
+                state.Check(
+                    ThemedUi::IsTableChecked(table, uninstalledRow),
+                    scenario.name + L": uninstalled provider row cannot be checked");
+                ThemedUi::SetTableSelectedIndex(table, -1);
+                SetFocus(hwnd);
             }
         }
     }
@@ -2098,6 +2138,7 @@ int wmain() {
             settingsScenario.expectedEditTexts = {L"1000"};
         }
         settingsScenario.validateHotKeyTableLayout = page == L"热键";
+        settingsScenario.validateContextMenuUninstalledRows = page == L"右键菜单";
         if (page == L"右键菜单") {
             settingsScenario.unexpectedVisibleChildTexts = {
                 L"恢复跟踪开关默认值，并清除全部菜单列表、状态与图标缓存。",

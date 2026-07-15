@@ -1,2 +1,3 @@
-table-alternating-rows: adjacent unselected rows share the same background (zebra striping missing)
-table-alternating-rows: an unselected normal row is painted with the selected background
+settings-dialog-????: uninstalled provider row cannot be checked
+settings-dialog-????: themed tooltip did not remain visible for the hover session
+settings-dialog-????: tooltip screenshot looks blank or too flat

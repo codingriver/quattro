@@ -2307,8 +2307,6 @@ private:
 
             // 改进: 显示更详细的安装状态
             std::wstring statusText;
-            bool isInstalled = installed[bindingIndex] || installedInNativeShell[bindingIndex];
-
             if (installed[bindingIndex]) {
                 statusText = L"已安装(注册表)";  // Probe key检测到
             } else if (installedInNativeShell[bindingIndex]) {
@@ -2322,8 +2320,9 @@ private:
                 ThemedTableCell{statusText},
             };
             row.checked = draft_.*(provider.configMember);
-            // 改进: 已安装的工具启用行（无论是probe key还是native shell）
-            row.enabled = isInstalled;
+            // 安装状态只用于提示当前能否立即抓取菜单。跟踪配置始终可编辑，
+            // 这样软件后续安装后可在刷新 Windows 菜单时自动开始抓取。
+            row.enabled = true;
             rows.push_back(std::move(row));
         }
         ThemedUi::SetTableRows(contextMenuTable_, rows);
@@ -2333,10 +2332,6 @@ private:
         const auto providers = TrackedContextMenuProviders();
         for (std::size_t rowIndex = 0; rowIndex < contextMenuTableOrder_.size(); ++rowIndex) {
             const auto& provider = providers[contextMenuTableOrder_[rowIndex]];
-            if (!ThemedUi::IsTableRowEnabled(contextMenuTable_, static_cast<int>(rowIndex))) {
-                // 未安装行不可交互，保留原配置值。
-                continue;
-            }
             value.*(provider.configMember) = ThemedUi::IsTableChecked(
                 contextMenuTable_, static_cast<int>(rowIndex));
         }
@@ -2354,9 +2349,6 @@ private:
             return true;
         }
         const auto& provider = TrackedContextMenuProviders()[contextMenuTableOrder_[static_cast<std::size_t>(event.row)]];
-        if (!ThemedUi::IsTableRowEnabled(contextMenuTable_, event.row)) {
-            return true;
-        }
         draft_.*(provider.configMember) = event.checked;
         // 确保整行被选中显示
         ThemedUi::SetTableSelectedIndex(contextMenuTable_, event.row);
