@@ -295,6 +295,32 @@ void ShellContextMenuCacheService::Update(
     if (!snapshot.complete) {
         return;
     }
+    ApplyUpdate(link, snapshot, tracking);
+    Save();
+}
+
+void ShellContextMenuCacheService::UpdateBatch(
+    const std::vector<ShellContextMenuCacheUpdate>& updates) {
+    bool changed = false;
+    for (const auto& update : updates) {
+        if (!update.snapshot.complete) {
+            continue;
+        }
+        ApplyUpdate(update.link, update.snapshot, update.tracking);
+        changed = true;
+    }
+    if (changed) {
+        Save();
+    }
+}
+
+void ShellContextMenuCacheService::ApplyUpdate(
+    const Link& link,
+    const ShellContextMenuSnapshot& snapshot,
+    const ShellContextMenuTrackingOptions& tracking) {
+    if (!snapshot.complete) {
+        return;
+    }
     std::vector<ShellContextMenuItem> snapshotItems = snapshot.items;
     std::vector<std::wstring> path;
     IngestIcons(snapshotItems, path);
@@ -313,7 +339,6 @@ void ShellContextMenuCacheService::Update(
     if (entry.items.empty()) {
         entries_.erase(link.id);
     }
-    Save();
 }
 
 bool ShellContextMenuCacheService::Reset() {

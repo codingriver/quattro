@@ -1,5 +1,6 @@
 #include "AppLaunchLockerCore.h"
 #include "AppLaunchLockerWindow.h"
+#include "AdBlockWindow.h"
 
 #include "Theme.h"
 #include "Version.h"
@@ -135,6 +136,39 @@ std::wstring DisabledJson(const std::vector<DisabledRecord>& records) {
     return output.str();
 }
 
+std::wstring MapField(const std::map<std::wstring, std::wstring>& values, const wchar_t* key) {
+    const auto found = values.find(key);
+    return found == values.end() ? std::wstring{} : found->second;
+}
+
+std::wstring BlockedPlain(const std::vector<DisabledRecord>& records) {
+    std::wostringstream output;
+    for (const auto& record : records) {
+        const std::wstring mode = MapField(record.original, L"blockMode") == L"exact" ? L"精确路径" : L"同名程序";
+        output << record.recordId << L"\t" << record.name << L"\t" << mode
+               << L"\t" << MapField(record.original, L"targetPath") << L"\t" << record.disabledAt << L"\n";
+    }
+    return output.str();
+}
+
+std::wstring BlockedJson(const std::vector<DisabledRecord>& records) {
+    std::wostringstream output;
+    output << L"{\n  \"items\": [";
+    for (std::size_t index = 0; index < records.size(); ++index) {
+        const auto& record = records[index];
+        output << (index == 0 ? L"\n" : L",\n")
+               << L"    {\"recordId\":\"" << EscapeJson(record.recordId)
+               << L"\",\"name\":\"" << EscapeJson(record.name)
+               << L"\",\"mode\":\"" << EscapeJson(MapField(record.original, L"blockMode"))
+               << L"\",\"targetPath\":\"" << EscapeJson(MapField(record.original, L"targetPath"))
+               << L"\",\"imageName\":\"" << EscapeJson(MapField(record.original, L"ifeoImageName"))
+               << L"\",\"disabledAt\":\"" << EscapeJson(record.disabledAt) << L"\"}";
+    }
+    if (!records.empty()) output << L"\n  ";
+    output << L"]\n}\n";
+    return output.str();
+}
+
 int RunCli(const std::vector<std::wstring>& arguments) {
     AttachParentConsole();
     if (arguments.empty()) return 2;
@@ -162,6 +196,42 @@ int RunCli(const std::vector<std::wstring>& arguments) {
         WriteOutput(JsonFormat(arguments) ? DisabledJson(records) : DisabledPlain(records));
         return 0;
     }
+    if (arguments[0] == L"list-blocked") {
+        AdBlockManager adBlock;
+        std::vector<DisabledRecord> records;
+        std::wstring error;
+        if (!adBlock.ListBlocked(records, error)) {
+            AppendAppLaunchLockerLog(error);
+            WriteOutput(error + L"\n", true);
+            return 1;
+        }
+        WriteOutput(JsonFormat(arguments) ? BlockedJson(records) : BlockedPlain(records));
+        return 0;
+    }
+    if (arguments[0] == L"block") {
+        const std::wstring path = ArgumentValue(arguments, L"--path");
+        std::wstring mode = ArgumentValue(arguments, L"--mode");
+        if (mode.empty()) mode = L"exact";
+        if (path.empty()) {
+            WriteOutput(L"缺少 --path。\n", true);
+            return 2;
+        }
+        const OperationResult operation = AdBlockManager().Block(path, mode);
+        WriteOutput(operation.message + L"\n", !operation.success);
+        if (!operation.success) AppendAppLaunchLockerLog(L"拦截失败：" + operation.message);
+        return operation.success ? 0 : 1;
+    }
+    if (arguments[0] == L"unblock") {
+        const std::wstring id = ArgumentValue(arguments, L"--record-id");
+        if (id.empty()) {
+            WriteOutput(L"缺少 --record-id。\n", true);
+            return 2;
+        }
+        const OperationResult operation = AdBlockManager().Unblock(id);
+        WriteOutput(operation.message + L"\n", !operation.success);
+        if (!operation.success) AppendAppLaunchLockerLog(L"解除拦截失败：" + operation.message);
+        return operation.success ? 0 : 1;
+    }
     OperationResult operation;
     if (arguments[0] == L"disable") {
         const std::wstring id = ArgumentValue(arguments, L"--id");
@@ -178,7 +248,7 @@ int RunCli(const std::vector<std::wstring>& arguments) {
         }
         operation = manager.Restore(id);
     } else {
-        WriteOutput(L"未知命令。支持 version、scan、list-disabled、disable、restore。\n", true);
+        WriteOutput(L"未知命令。支持 version、scan、list-disabled、disable、restore、block、unblock、list-blocked。\n", true);
         return 2;
     }
     WriteOutput(operation.message + L"\n", !operation.success);
@@ -190,6 +260,24 @@ int RunCli(const std::vector<std::wstring>& arguments) {
 int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int) {
     int argumentCount = 0;
     LPWSTR* rawArguments = CommandLineToArgvW(GetCommandLineW(), &argumentCount);
+    // IFEO 占位：系统会把被拦截程序改为启动本 exe 的 --ifeo-noop 分支。必须在任何
+    // 窗口/COM/CLI 初始化之前判定并瞬时退出，做到零副作用、零依赖。
+    if (argumentCount == 2 && rawArguments && wcscmp(rawArguments[1], L"--ifeo-noop") == 0) {
+        LocalFree(rawArguments);
+        return 0;
+    }
+    // 广告拦截简化窗口入口：工具箱「广告拦截」以 --ad-block 拉起本 exe。
+    if (argumentCount == 2 && rawArguments && wcscmp(rawArguments[1], L"--ad-block") == 0) {
+        LocalFree(rawArguments);
+        INITCOMMONCONTROLSEX adControls{};
+        adControls.dwSize = sizeof(adControls);
+        adControls.dwICC = ICC_STANDARD_CLASSES | ICC_LISTVIEW_CLASSES | ICC_TAB_CLASSES | ICC_PROGRESS_CLASS;
+        InitCommonControlsEx(&adControls);
+        const Theme adTheme = Theme::Load(
+            ModuleDirectory() / L"theme", L"default", instance, IDR_QUATTRO_DEFAULT_THEME);
+        AdBlockWindow adWindow(instance, adTheme);
+        return adWindow.Run();
+    }
     std::vector<std::wstring> arguments;
     for (int index = 1; rawArguments && index < argumentCount; ++index) arguments.emplace_back(rawArguments[index]);
     if (rawArguments) LocalFree(rawArguments);

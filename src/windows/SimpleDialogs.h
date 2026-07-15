@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Models.h"
+#include "ShellContextMenuRefreshService.h"
 #include "Theme.h"
 
 #include <windows.h>
@@ -14,6 +15,11 @@ class LocalHttpServerService;
 struct WebDavRemoteFile;
 using SettingsApplyCallback = std::function<bool(const AppConfig&, bool)>;
 using SettingsResetContextMenuCallback = std::function<bool()>;
+using SettingsContextMenuRefreshRunner = std::function<ShellContextMenuRefreshResult(
+    const ShellContextMenuRefreshRequest&,
+    std::stop_token)>;
+using SettingsContextMenuRefreshApplyCallback = std::function<void(
+    const ShellContextMenuRefreshResult&)>;
 
 bool ShowTextInputDialog(HWND owner, HINSTANCE instance, const Theme& theme, const std::wstring& title, const std::wstring& label, std::wstring& value);
 int ShowThemedMessageBox(HWND owner, HINSTANCE instance, const Theme& theme, const std::wstring& message, const std::wstring& title, UINT flags);
@@ -40,5 +46,9 @@ bool ShowSettingsDialog(
     LocalHttpServerService* httpServer = nullptr,
     bool mainHotKeyRegistered = false,
     bool processLocatorHotKeyRegistered = false,
+    bool copySelectedPathsHotKeyRegistered = false,
     SettingsApplyCallback applyCallback = {},
-    SettingsResetContextMenuCallback resetContextMenuCallback = {});
+    SettingsResetContextMenuCallback resetContextMenuCallback = {},
+    const std::vector<Link>& contextMenuLinks = {},
+    SettingsContextMenuRefreshRunner contextMenuRefreshRunner = {},
+    SettingsContextMenuRefreshApplyCallback contextMenuRefreshApplyCallback = {});

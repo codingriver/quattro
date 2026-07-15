@@ -32,7 +32,7 @@ struct AppConfig {
 
     bool autoDock = true;
     int dockCorner = 0;
-    int dockDelay = 1500;
+    int dockDelay = 1000;
     bool hideOnStart = false;
     bool topMost =
 #if defined(QUATTRO_DEFAULT_TOP_MOST_ENABLED)
@@ -81,6 +81,7 @@ struct AppConfig {
     bool globalHotKeysEnabled = true;
     int mainHotKey = -1;
     int processLocatorHotKey = L'P';
+    int copySelectedPathsHotKey = L'C';
     bool ignoreHotKeyConflictWarning = false;
 
     int width = 400;

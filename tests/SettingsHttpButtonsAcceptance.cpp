@@ -333,6 +333,7 @@ int wmain() {
         &service,
         false,
         false,
+        false,
         applyCallback,
         resetContextMenuCallback);
     if (interactor.joinable()) {

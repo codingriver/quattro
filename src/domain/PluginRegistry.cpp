@@ -164,6 +164,22 @@ std::vector<PluginRecord> PluginRegistry::BuiltinPlugins() {
     appLaunchLocker.enabled = true;
     appLaunchLocker.installed = true;
 
+    PluginRecord adBlock;
+    adBlock.id = L"quattro.builtin.ad-block";
+    adBlock.name = L"广告拦截";
+    adBlock.version = L"1.0.0";
+    adBlock.category = L"builtin-tools";
+    adBlock.kind = L"builtin-tool";
+    adBlock.engine = L"ad-block";
+    adBlock.description = L"拦截指定文件或文件夹中的程序启动，可随时解除。";
+    adBlock.permissions = L"程序拦截, 按需管理员权限";
+    adBlock.author = L"Quattro快速启动器";
+    adBlock.license = L"Built-in";
+    adBlock.builtin = true;
+    adBlock.deletable = false;
+    adBlock.enabled = true;
+    adBlock.installed = true;
+
     return {
         clicker,
         timer,
@@ -173,6 +189,7 @@ std::vector<PluginRecord> PluginRegistry::BuiltinPlugins() {
         processLocator,
         fileLockInspector,
         appLaunchLocker,
+        adBlock,
     };
 }
 

@@ -5,8 +5,12 @@
 #include <windows.h>
 #include <shlobj.h>
 #include <shobjidl.h>
+#include <shlguid.h>
 #include <taskschd.h>
 #include <wbemidl.h>
+#include <wincrypt.h>
+#include <wintrust.h>
+#include <softpub.h>
 
 #include <algorithm>
 #include <array>
@@ -663,6 +667,9 @@ void ScanIfeoView(ScanResult& result, REGSAM viewFlag, const wchar_t* viewName) 
         std::vector<BYTE> data(bytes + sizeof(wchar_t), 0);
         if (RegQueryValueExW(rawChild, L"Debugger", nullptr, &type, data.data(), &bytes) != ERROR_SUCCESS) continue;
         const std::wstring debugger(reinterpret_cast<const wchar_t*>(data.data()));
+        // 本工具（广告拦截）写入的 IFEO Debugger 指向自身 --ifeo-noop，不作为第三方可疑项展示，
+        // 避免与「广告拦截」的已拦截列表重复。
+        if (Lower(debugger).find(L"--ifeo-noop") != std::wstring::npos) continue;
         const std::wstring location = std::wstring(L"HKLM\\") + keyPath + L"\\" + name + L" (" + viewName + L")";
         AddItem(result, StartupSourceType::Ifeo, name, location, debugger, true, false);
     }
@@ -1298,6 +1305,377 @@ OperationResult ApplyRestore(const DisabledRecord& record) {
     }
 }
 
+// ================= 广告拦截（简化版）：IFEO 禁止运行 =================
+
+std::wstring CurrentExecutablePath() {
+    std::wstring path(MAX_PATH, L'\0');
+    for (;;) {
+        const DWORD copied = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
+        if (!copied) return {};
+        if (copied < path.size() - 1) {
+            path.resize(copied);
+            return path;
+        }
+        path.resize(path.size() * 2);
+    }
+}
+
+std::wstring HashHex(const std::wstring& input) {
+    std::uint64_t hash = 1469598103934665603ull;
+    for (wchar_t ch : input) {
+        hash ^= static_cast<std::uint16_t>(ch);
+        hash *= 1099511628211ull;
+    }
+    return Hex64(hash);
+}
+
+constexpr const wchar_t* kIfeoBase = L"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options";
+
+// 从完整路径取文件名（小写归一化）。
+std::wstring FileNameOf(const std::wstring& path) {
+    const std::size_t slash = path.find_last_of(L"\\/");
+    return Lower(slash == std::wstring::npos ? path : path.substr(slash + 1));
+}
+
+std::wstring ExtensionOf(const std::wstring& fileName) {
+    const std::size_t dot = fileName.find_last_of(L'.');
+    return dot == std::wstring::npos ? std::wstring{} : Lower(fileName.substr(dot));
+}
+
+// 扩展名分类："exe"（可 IFEO 拦截）| "script"（仅提示）| "other"。
+std::wstring ClassifyExtension(const std::wstring& fileName) {
+    const std::wstring ext = ExtensionOf(fileName);
+    if (ext == L".exe" || ext == L".com" || ext == L".scr") return L"exe";
+    if (ext == L".bat" || ext == L".cmd" || ext == L".ps1" || ext == L".vbs" ||
+        ext == L".js" || ext == L".wsf" || ext == L".wsh") return L"script";
+    return L"other";
+}
+
+bool IsStartableCandidate(const std::wstring& fileName) {
+    const std::wstring cls = ClassifyExtension(fileName);
+    return cls == L"exe" || cls == L"script" || ExtensionOf(fileName) == L".lnk";
+}
+
+// 解析 .lnk 目标；需已初始化 COM。
+std::wstring ResolveShortcut(const std::wstring& lnkPath) {
+    IShellLinkW* link = nullptr;
+    if (FAILED(CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER,
+            IID_IShellLinkW, reinterpret_cast<void**>(&link))) || !link) {
+        return {};
+    }
+    std::wstring target;
+    IPersistFile* file = nullptr;
+    if (SUCCEEDED(link->QueryInterface(IID_IPersistFile, reinterpret_cast<void**>(&file))) && file) {
+        if (SUCCEEDED(file->Load(lnkPath.c_str(), STGM_READ))) {
+            wchar_t buffer[MAX_PATH]{};
+            WIN32_FIND_DATAW find{};
+            if (SUCCEEDED(link->GetPath(buffer, MAX_PATH, &find, SLGP_UNCPRIORITY))) target = buffer;
+        }
+        file->Release();
+    }
+    link->Release();
+    return target;
+}
+
+struct LaunchTarget {
+    bool valid = false;
+    std::wstring path;       // 解析后的真实文件全路径
+    std::wstring imageName;  // 文件名（小写归一化）
+    std::wstring category;   // "exe" | "script" | "other"
+};
+
+// 解析一个候选路径为真实启动目标（.lnk 会解析到目标文件），并分类。需已初始化 COM。
+LaunchTarget ResolveLaunchTarget(const std::wstring& inputPath) {
+    LaunchTarget result;
+    std::wstring path = inputPath;
+    if (ExtensionOf(FileNameOf(path)) == L".lnk") {
+        const std::wstring resolved = ResolveShortcut(path);
+        if (resolved.empty()) return result;  // 无法解析快捷方式目标
+        path = resolved;
+    }
+    if (GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES) return result;
+    result.valid = true;
+    result.path = path;
+    result.imageName = FileNameOf(path);
+    result.category = ClassifyExtension(result.imageName);
+    return result;
+}
+
+bool IsSystemPath(const std::wstring& path) {
+    wchar_t systemRoot[MAX_PATH]{};
+    const UINT length = GetWindowsDirectoryW(systemRoot, static_cast<UINT>(std::size(systemRoot)));
+    if (!length) return false;
+    std::wstring root = Lower(std::wstring(systemRoot, length));
+    std::wstring target = Lower(path);
+    if (!root.empty() && root.back() != L'\\') root.push_back(L'\\');
+    return target.compare(0, root.size(), root) == 0;
+}
+
+bool IsCriticalProcessName(const std::wstring& imageName) {
+    static const wchar_t* kCritical[] = {
+        L"explorer.exe", L"svchost.exe", L"winlogon.exe", L"wininit.exe", L"csrss.exe",
+        L"lsass.exe", L"services.exe", L"smss.exe", L"taskmgr.exe", L"regedit.exe",
+        L"cmd.exe", L"powershell.exe", L"wscript.exe", L"cscript.exe", L"rundll32.exe",
+        L"dllhost.exe", L"conhost.exe", L"fontdrvhost.exe", L"dwm.exe", L"spoolsv.exe",
+    };
+    const std::wstring lower = Lower(imageName);
+    for (const wchar_t* name : kCritical) {
+        if (lower == name) return true;
+    }
+    return false;
+}
+
+// Authenticode 链校验（不取主体）。
+bool VerifyAuthenticode(const std::wstring& filePath) {
+    WINTRUST_FILE_INFO fileInfo{};
+    fileInfo.cbStruct = sizeof(fileInfo);
+    fileInfo.pcwszFilePath = filePath.c_str();
+    WINTRUST_DATA data{};
+    data.cbStruct = sizeof(data);
+    data.dwUIChoice = WTD_UI_NONE;
+    data.fdwRevocationChecks = WTD_REVOKE_WHOLECHAIN;
+    data.dwUnionChoice = WTD_CHOICE_FILE;
+    data.pFile = &fileInfo;
+    data.dwStateAction = WTD_STATEACTION_VERIFY;
+    data.dwProvFlags = WTD_SAFER_FLAG | WTD_CACHE_ONLY_URL_RETRIEVAL;
+    GUID action = WINTRUST_ACTION_GENERIC_VERIFY_V2;
+    const LONG status = WinVerifyTrust(static_cast<HWND>(INVALID_HANDLE_VALUE), &action, &data);
+    data.dwStateAction = WTD_STATEACTION_CLOSE;
+    WinVerifyTrust(static_cast<HWND>(INVALID_HANDLE_VALUE), &action, &data);
+    return status == ERROR_SUCCESS;
+}
+
+// 取签名者证书主体 CN/显示名。
+bool ExtractSignerSubject(const std::wstring& filePath, std::wstring& subject) {
+    HCERTSTORE store = nullptr;
+    HCRYPTMSG message = nullptr;
+    if (!CryptQueryObject(CERT_QUERY_OBJECT_FILE, filePath.c_str(),
+            CERT_QUERY_CONTENT_FLAG_PKCS7_SIGNED_EMBED, CERT_QUERY_FORMAT_FLAG_BINARY,
+            0, nullptr, nullptr, nullptr, &store, &message, nullptr)) {
+        return false;
+    }
+    bool ok = false;
+    DWORD signerSize = 0;
+    if (CryptMsgGetParam(message, CMSG_SIGNER_INFO_PARAM, 0, nullptr, &signerSize) && signerSize) {
+        std::vector<BYTE> signerBuffer(signerSize);
+        if (CryptMsgGetParam(message, CMSG_SIGNER_INFO_PARAM, 0, signerBuffer.data(), &signerSize)) {
+            auto* signer = reinterpret_cast<CMSG_SIGNER_INFO*>(signerBuffer.data());
+            CERT_INFO certInfo{};
+            certInfo.Issuer = signer->Issuer;
+            certInfo.SerialNumber = signer->SerialNumber;
+            PCCERT_CONTEXT cert = CertFindCertificateInStore(store, X509_ASN_ENCODING | PKCS_7_ASN_ENCODING, 0,
+                CERT_FIND_SUBJECT_CERT, &certInfo, nullptr);
+            if (cert) {
+                const DWORD nameLength = CertGetNameStringW(cert, CERT_NAME_SIMPLE_DISPLAY_TYPE, 0, nullptr, nullptr, 0);
+                if (nameLength > 1) {
+                    std::wstring name(nameLength, L'\0');
+                    CertGetNameStringW(cert, CERT_NAME_SIMPLE_DISPLAY_TYPE, 0, nullptr, name.data(), nameLength);
+                    name.resize(nameLength - 1);
+                    subject = name;
+                    ok = true;
+                }
+                CertFreeCertificateContext(cert);
+            }
+        }
+    }
+    if (store) CertCloseStore(store, 0);
+    if (message) CryptMsgClose(message);
+    return ok;
+}
+
+bool IsTrustedSubject(const std::wstring& subject) {
+    // 初版可信发布者表：只有 Microsoft 系被豁免；第三方安全厂商走“可拦截但强提示”。
+    static const wchar_t* kTrusted[] = {L"Microsoft Windows", L"Microsoft Corporation", L"Microsoft Windows Publisher"};
+    for (const wchar_t* trusted : kTrusted) {
+        if (subject == trusted) return true;
+    }
+    return false;
+}
+
+struct GuardVerdict {
+    bool allow = false;      // 是否允许拦截（可勾选）
+    bool warn = false;       // 允许但需强提示（无法验证签名）
+    std::wstring reason;     // 拒绝原因或提示文案
+};
+
+// 守卫：信任只来自有效官方签名，绝不依据目录名。见方案 §4。
+GuardVerdict EvaluateGuard(const std::wstring& targetPath, const std::wstring& imageName) {
+    if (IsSystemPath(targetPath)) return {false, false, L"系统目录程序，禁止拦截"};
+    if (IsCriticalProcessName(imageName)) return {false, false, L"系统关键进程名，禁止拦截"};
+    if (VerifyAuthenticode(targetPath)) {
+        std::wstring subject;
+        if (ExtractSignerSubject(targetPath, subject) && IsTrustedSubject(subject)) {
+            return {false, false, L"受信任的官方签名程序（" + subject + L"）"};
+        }
+        return {true, false, {}};  // 有效签名但非豁免主体（含套壳/第三方）：允许拦截
+    }
+    return {true, true, L"无法验证该程序签名，请确认这不是你需要的安全软件"};
+}
+
+// 判断目标 PE 是 32 位还是 64 位映像，决定 IFEO 注册表视图。
+std::wstring DetectIfeoView(const std::wstring& path) {
+    HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) return L"64";
+    std::wstring view = L"64";
+    IMAGE_DOS_HEADER dos{};
+    DWORD read = 0;
+    if (ReadFile(file, &dos, sizeof(dos), &read, nullptr) && read == sizeof(dos) && dos.e_magic == IMAGE_DOS_SIGNATURE) {
+        if (SetFilePointer(file, dos.e_lfanew, nullptr, FILE_BEGIN) != INVALID_SET_FILE_POINTER) {
+            DWORD signature = 0;
+            IMAGE_FILE_HEADER header{};
+            if (ReadFile(file, &signature, sizeof(signature), &read, nullptr) && read == sizeof(signature) &&
+                signature == IMAGE_NT_SIGNATURE &&
+                ReadFile(file, &header, sizeof(header), &read, nullptr) && read == sizeof(header)) {
+                if (header.Machine == IMAGE_FILE_MACHINE_I386) view = L"32";
+            }
+        }
+    }
+    CloseHandle(file);
+    return view;
+}
+
+REGSAM IfeoView(const DisabledRecord& record) {
+    return MapValue(record.original, L"ifeoView") == L"32" ? KEY_WOW64_32KEY : KEY_WOW64_64KEY;
+}
+
+OperationResult WriteRegString(HKEY key, const wchar_t* name, DWORD type, const std::wstring& value) {
+    const LSTATUS status = RegSetValueExW(key, name, 0, type,
+        reinterpret_cast<const BYTE*>(value.c_str()),
+        static_cast<DWORD>((value.size() + 1) * sizeof(wchar_t)));
+    if (status != ERROR_SUCCESS) return {false, std::wstring(L"写入 ") + name + L" 失败：" + LastErrorText(status)};
+    return {true, {}};
+}
+
+// 删除仅由本工具创建、已无任何值和子键的空 IFEO 映像键。
+void RemoveEmptyIfeoKey(const std::wstring& imageName, REGSAM view) {
+    const std::wstring keyPath = std::wstring(kIfeoBase) + L"\\" + imageName;
+    HKEY rawKey = nullptr;
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, keyPath.c_str(), 0, KEY_QUERY_VALUE | view, &rawKey) != ERROR_SUCCESS) return;
+    DWORD subKeys = 0;
+    DWORD values = 0;
+    RegQueryInfoKeyW(rawKey, nullptr, nullptr, nullptr, &subKeys, nullptr, nullptr, &values,
+        nullptr, nullptr, nullptr, nullptr);
+    RegCloseKey(rawKey);
+    if (subKeys != 0 || values != 0) return;
+    HKEY rawParent = nullptr;
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, kIfeoBase, 0, KEY_ENUMERATE_SUB_KEYS | view, &rawParent) == ERROR_SUCCESS) {
+        RegDeleteKeyExW(rawParent, imageName.c_str(), view, 0);
+        RegCloseKey(rawParent);
+    }
+}
+
+// 写入 IFEO 拦截；补充 record.original 的恢复字段。
+OperationResult ApplyIfeoBlock(DisabledRecord& record) {
+    const std::wstring imageName = MapValue(record.original, L"ifeoImageName");
+    if (imageName.empty()) return {false, L"拦截目标无效。"};
+    const std::wstring targetPath = MapValue(record.original, L"targetPath");
+    // 提权子进程内再次复核守卫（防 TOCTOU）。
+    const GuardVerdict guard = EvaluateGuard(targetPath, imageName);
+    if (!guard.allow) return {false, L"该程序不允许拦截：" + guard.reason};
+
+    const REGSAM view = IfeoView(record);
+    const std::wstring debugger = L"\"" + CurrentExecutablePath() + L"\" --ifeo-noop";
+    const std::wstring keyPath = std::wstring(kIfeoBase) + L"\\" + imageName;
+
+    HKEY rawKey = nullptr;
+    LSTATUS status = RegCreateKeyExW(HKEY_LOCAL_MACHINE, keyPath.c_str(), 0, nullptr, 0,
+        KEY_QUERY_VALUE | KEY_SET_VALUE | KEY_CREATE_SUB_KEY | view, nullptr, &rawKey, nullptr);
+    if (status != ERROR_SUCCESS) return {false, L"无法写入 IFEO 键：" + LastErrorText(status)};
+    UniqueRegKey key(rawKey);
+
+    if (MapValue(record.original, L"blockMode") == L"exact") {
+        DWORD useFilter = 1;
+        RegSetValueExW(rawKey, L"UseFilter", 0, REG_DWORD, reinterpret_cast<const BYTE*>(&useFilter), sizeof(useFilter));
+        const std::wstring subName = L"AppLaunchLocker_" + HashHex(Lower(targetPath));
+        HKEY rawSub = nullptr;
+        status = RegCreateKeyExW(rawKey, subName.c_str(), 0, nullptr, 0,
+            KEY_SET_VALUE | view, nullptr, &rawSub, nullptr);
+        if (status != ERROR_SUCCESS) return {false, L"无法写入 IFEO 过滤子键：" + LastErrorText(status)};
+        UniqueRegKey sub(rawSub);
+        OperationResult wrote = WriteRegString(rawSub, L"FilterFullPath", REG_SZ, targetPath);
+        if (!wrote.success) return wrote;
+        wrote = WriteRegString(rawSub, L"Debugger", REG_SZ, debugger);
+        if (!wrote.success) return wrote;
+        record.original[L"ifeoSubKey"] = subName;
+        record.original[L"ifeoHadOriginal"] = L"0";
+    } else {
+        DWORD type = 0;
+        DWORD bytes = 0;
+        const LSTATUS query = RegQueryValueExW(rawKey, L"Debugger", nullptr, &type, nullptr, &bytes);
+        if (query == ERROR_SUCCESS && (type == REG_SZ || type == REG_EXPAND_SZ) && bytes) {
+            std::vector<BYTE> existing(bytes, 0);
+            RegQueryValueExW(rawKey, L"Debugger", nullptr, &type, existing.data(), &bytes);
+            record.original[L"ifeoHadOriginal"] = L"1";
+            record.original[L"ifeoOriginalDebugger"] = BytesToHex(existing);
+            record.original[L"ifeoOriginalType"] = std::to_wstring(type);
+        } else {
+            record.original[L"ifeoHadOriginal"] = L"0";
+        }
+        OperationResult wrote = WriteRegString(rawKey, L"Debugger", REG_SZ, debugger);
+        if (!wrote.success) return wrote;
+    }
+    return {true, L"已拦截。"};
+}
+
+OperationResult RestoreIfeoBlock(const DisabledRecord& record) {
+    const std::wstring imageName = MapValue(record.original, L"ifeoImageName");
+    if (imageName.empty()) return {false, L"记录无效。"};
+    const REGSAM view = IfeoView(record);
+    const std::wstring keyPath = std::wstring(kIfeoBase) + L"\\" + imageName;
+
+    HKEY rawKey = nullptr;
+    const LSTATUS opened = RegOpenKeyExW(HKEY_LOCAL_MACHINE, keyPath.c_str(), 0,
+        KEY_QUERY_VALUE | KEY_SET_VALUE | KEY_ENUMERATE_SUB_KEYS | view, &rawKey);
+    if (opened == ERROR_FILE_NOT_FOUND) return {true, L"已解除拦截。"};
+    if (opened != ERROR_SUCCESS) return {false, L"无法打开 IFEO 键：" + LastErrorText(opened)};
+    {
+        UniqueRegKey key(rawKey);
+        if (MapValue(record.original, L"blockMode") == L"exact") {
+            const std::wstring subName = MapValue(record.original, L"ifeoSubKey");
+            if (!subName.empty()) RegDeleteKeyExW(rawKey, subName.c_str(), view, 0);
+            DWORD subKeys = 0;
+            RegQueryInfoKeyW(rawKey, nullptr, nullptr, nullptr, &subKeys, nullptr, nullptr, nullptr,
+                nullptr, nullptr, nullptr, nullptr);
+            if (subKeys == 0) RegDeleteValueW(rawKey, L"UseFilter");
+        } else if (MapValue(record.original, L"ifeoHadOriginal") == L"1") {
+            const std::vector<BYTE> data = HexToBytes(MapValue(record.original, L"ifeoOriginalDebugger"));
+            DWORD type = REG_SZ;
+            ParseUnsigned(MapValue(record.original, L"ifeoOriginalType"), type);
+            RegSetValueExW(rawKey, L"Debugger", 0, type, data.data(), static_cast<DWORD>(data.size()));
+        } else {
+            RegDeleteValueW(rawKey, L"Debugger");
+        }
+    }
+    RemoveEmptyIfeoKey(imageName, view);
+    return {true, L"已解除拦截。"};
+}
+
+bool VerifyIfeoBlock(const DisabledRecord& record) {
+    const std::wstring imageName = MapValue(record.original, L"ifeoImageName");
+    if (imageName.empty()) return false;
+    const REGSAM view = IfeoView(record);
+    std::wstring keyPath = std::wstring(kIfeoBase) + L"\\" + imageName;
+    if (MapValue(record.original, L"blockMode") == L"exact") {
+        const std::wstring subName = MapValue(record.original, L"ifeoSubKey");
+        if (subName.empty()) return false;
+        keyPath += L"\\" + subName;
+    }
+    HKEY rawKey = nullptr;
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, keyPath.c_str(), 0, KEY_QUERY_VALUE | view, &rawKey) != ERROR_SUCCESS) return false;
+    UniqueRegKey key(rawKey);
+    DWORD type = 0;
+    DWORD bytes = 0;
+    if (RegQueryValueExW(rawKey, L"Debugger", nullptr, &type, nullptr, &bytes) != ERROR_SUCCESS ||
+        (type != REG_SZ && type != REG_EXPAND_SZ) || !bytes) {
+        return false;
+    }
+    std::vector<BYTE> data(bytes + sizeof(wchar_t), 0);
+    if (RegQueryValueExW(rawKey, L"Debugger", nullptr, &type, data.data(), &bytes) != ERROR_SUCCESS) return false;
+    const std::wstring debugger = Lower(std::wstring(reinterpret_cast<const wchar_t*>(data.data())));
+    return debugger.find(L"--ifeo-noop") != std::wstring::npos;
+}
+
 bool InitializeComForScan(bool& uninitialize) {
     const HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     uninitialize = SUCCEEDED(hr);
@@ -1609,4 +1987,170 @@ OperationResult StartupManager::Restore(const std::wstring& recordId) const {
         return {true, L"项目已恢复，但无法清理恢复记录：" + error};
     }
     return operation;
+}
+
+// ================= AdBlockManager（广告拦截简化版） =================
+
+AdBlockManager::AdBlockManager()
+    : store_(AppLaunchLockerDataDirectory() / L"blocked-items.json") {}
+
+AdBlockManager::AdBlockManager(DisabledItemStore store)
+    : store_(std::move(store)) {}
+
+ScanResult AdBlockManager::ScanPath(const std::wstring& fileOrDir) const {
+    ScanResult result;
+    if (fileOrDir.empty()) {
+        result.warnings.push_back(L"未提供路径。");
+        return result;
+    }
+    bool uninitialize = false;
+    if (!InitializeComForScan(uninitialize)) result.warnings.push_back(L"COM 初始化失败，快捷方式可能无法解析。");
+
+    std::vector<std::wstring> candidates;
+    const DWORD attributes = GetFileAttributesW(fileOrDir.c_str());
+    if (attributes == INVALID_FILE_ATTRIBUTES) {
+        result.warnings.push_back(L"路径不存在：" + fileOrDir);
+        if (uninitialize) CoUninitialize();
+        return result;
+    }
+    if (attributes & FILE_ATTRIBUTE_DIRECTORY) {
+        std::wstring pattern = fileOrDir;
+        if (!pattern.empty() && pattern.back() != L'\\') pattern.push_back(L'\\');
+        WIN32_FIND_DATAW find{};
+        HANDLE handle = FindFirstFileW((pattern + L"*").c_str(), &find);
+        if (handle != INVALID_HANDLE_VALUE) {
+            do {
+                if (find.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;  // 不递归子目录
+                const std::wstring fileName = find.cFileName;
+                if (IsStartableCandidate(fileName)) candidates.push_back(pattern + fileName);
+            } while (FindNextFileW(handle, &find));
+            FindClose(handle);
+        }
+    } else {
+        candidates.push_back(fileOrDir);
+    }
+
+    for (const std::wstring& candidate : candidates) {
+        const std::wstring displayName = FileNameOf(candidate);
+        const LaunchTarget target = ResolveLaunchTarget(candidate);
+        if (!target.valid) {
+            // 无法解析（如断链快捷方式）：列出但仅查看。
+            AddItem(result, StartupSourceType::Ifeo, displayName, candidate, L"", true, false,
+                {{L"adBlockStatus", L"unresolved"}});
+            continue;
+        }
+        if (target.category != L"exe") {
+            // 脚本/其它：仅提示，不提供 IFEO（脚本由解释器加载，直接 IFEO 无效）。
+            AddItem(result, StartupSourceType::Ifeo, displayName, candidate, target.path, true, false,
+                {{L"adBlockStatus", target.category == L"script" ? L"script" : L"other"},
+                 {L"targetPath", target.path}});
+            continue;
+        }
+        const GuardVerdict guard = EvaluateGuard(target.path, target.imageName);
+        std::map<std::wstring, std::wstring> original = {
+            {L"targetPath", target.path},
+            {L"ifeoImageName", target.imageName},
+            {L"adBlockStatus", guard.allow ? (guard.warn ? L"blockable-warn" : L"blockable") : L"protected"},
+        };
+        if (!guard.reason.empty()) original[L"guardReason"] = guard.reason;
+        AddItem(result, StartupSourceType::Ifeo, displayName, candidate, target.path,
+            true, guard.allow, std::move(original));
+    }
+
+    if (uninitialize) CoUninitialize();
+    std::sort(result.items.begin(), result.items.end(), [](const StartupItem& left, const StartupItem& right) {
+        if (left.canDisable != right.canDisable) return left.canDisable > right.canDisable;
+        return Lower(left.name) < Lower(right.name);
+    });
+    return result;
+}
+
+OperationResult AdBlockManager::Block(const std::wstring& targetPath, const std::wstring& mode) const {
+    if (mode != L"exact" && mode != L"name") return {false, L"未知拦截模式。"};
+    bool uninitialize = false;
+    InitializeComForScan(uninitialize);
+    const LaunchTarget target = ResolveLaunchTarget(targetPath);
+    if (uninitialize) CoUninitialize();
+    if (!target.valid) return {false, L"目标文件不存在或已发生变化。"};
+    if (target.category != L"exe") return {false, L"仅支持拦截可执行程序（exe）；脚本请从其自启动来源禁用。"};
+
+    const GuardVerdict guard = EvaluateGuard(target.path, target.imageName);
+    if (!guard.allow) return {false, L"该程序不允许拦截：" + guard.reason};
+
+    std::vector<DisabledRecord> records;
+    std::wstring error;
+    if (!store_.Load(records, error)) return {false, error};
+
+    // 去重：按模式+目标判定。
+    const std::wstring imageName = target.imageName;
+    for (const DisabledRecord& existing : records) {
+        if (MapValue(existing.original, L"mechanism") != L"ifeo") continue;
+        if (MapValue(existing.original, L"blockMode") != mode) continue;
+        if (mode == L"exact") {
+            if (Lower(MapValue(existing.original, L"targetPath")) == Lower(target.path)) return {false, L"该程序已被拦截。"};
+        } else {
+            if (MapValue(existing.original, L"ifeoImageName") == imageName) return {false, L"该程序已被拦截。"};
+        }
+    }
+
+    DisabledRecord record;
+    record.itemId = StableId(StartupSourceType::Ifeo, target.path, mode);
+    record.source = StartupSourceType::Ifeo;
+    record.name = FileNameOf(target.path);
+    record.disabledAt = CurrentTimestamp();
+    record.recordId = StableId(StartupSourceType::Ifeo, record.itemId, record.disabledAt);
+    record.requiresAdmin = true;
+    record.original = {
+        {L"mechanism", L"ifeo"},
+        {L"blockMode", mode},
+        {L"ifeoImageName", imageName},
+        {L"ifeoView", DetectIfeoView(target.path)},
+        {L"targetPath", target.path},
+    };
+    if (mode == L"name") record.original[L"filterFullPath"] = L"";
+    else record.original[L"filterFullPath"] = target.path;
+
+    records.push_back(record);
+    if (!store_.Save(records, error)) return {false, error};
+
+    OperationResult applied = ApplyIfeoBlock(records.back());
+    if (!applied.success) {
+        records.pop_back();
+        std::wstring cleanupError;
+        store_.Save(records, cleanupError);
+        return applied;
+    }
+    // ApplyIfeoBlock 补充了恢复字段（原 Debugger / 子键名），再次落盘。
+    if (!store_.Save(records, error)) {
+        RestoreIfeoBlock(records.back());
+        records.pop_back();
+        std::wstring cleanupError;
+        store_.Save(records, cleanupError);
+        return {false, L"无法保存拦截记录，操作已撤销。"};
+    }
+    if (!VerifyIfeoBlock(records.back())) {
+        return {false, L"操作已执行，但未能确认结果；拦截记录已保留。"};
+    }
+    return applied;
+}
+
+OperationResult AdBlockManager::Unblock(const std::wstring& recordId) const {
+    std::vector<DisabledRecord> records;
+    std::wstring error;
+    if (!store_.Load(records, error)) return {false, error};
+    const auto found = std::find_if(records.begin(), records.end(),
+        [&](const DisabledRecord& record) { return record.recordId == recordId; });
+    if (found == records.end()) return {false, L"拦截记录不存在。"};
+    const std::size_t index = static_cast<std::size_t>(std::distance(records.begin(), found));
+    OperationResult operation = RestoreIfeoBlock(*found);
+    if (!operation.success) return operation;
+    records.erase(records.begin() + static_cast<std::ptrdiff_t>(index));
+    if (!store_.Save(records, error)) {
+        return {true, L"已解除拦截，但无法清理记录：" + error};
+    }
+    return operation;
+}
+
+bool AdBlockManager::ListBlocked(std::vector<DisabledRecord>& records, std::wstring& error) const {
+    return store_.Load(records, error);
 }

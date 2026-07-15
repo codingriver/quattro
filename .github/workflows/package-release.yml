@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       platform:
-        description: "打包平台"
+        description: "打包平台（all 为 x86+x64 完整组件包；单平台为精简包）"
         required: true
         default: "all"
         type: choice
@@ -165,6 +165,7 @@ jobs:
             "-Configuration", "${{ steps.options.outputs.configuration }}",
             "-Backend", "vcpkg",
             "-NoZip",
+            "-OfficialBuild",
             "-Version", "${{ steps.options.outputs.version }}",
             "-ReleaseTag", "${{ steps.options.outputs.release_tag }}"
           )

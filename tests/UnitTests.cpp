@@ -7,7 +7,9 @@
 #include "../src/domain/MenuCatalog.h"
 #include "../src/domain/PluginRegistry.h"
 #include "../src/services/ShellContextMenuCacheService.h"
+#include "../src/services/ShellContextMenuRefreshService.h"
 #include "../src/services/ShellItemService.h"
+#include "../src/services/SelectedPathCopyService.h"
 #include "../src/services/TerminalContextMenuService.h"
 #include "../src/services/Storage.h"
 #include "../src/services/SystemFunctions.h"
@@ -23,6 +25,7 @@
 #include "../src/services/WebDavCredentialService.h"
 #include "../src/services/WebDavRecoveryService.h"
 #include "../src/windows/MenuAnchorGeometry.h"
+#include "../src/windows/MainTitleBuildMarkerLayout.h"
 #include "Version.h"
 
 #include <sqlite3.h>
@@ -124,9 +127,50 @@ int wmain() {
     Check(FormatByteSizeForDisplay(0) == L"0 B", "Byte size display zero");
     Check(FormatByteSizeForDisplay(1024) == L"1.00 KB", "Byte size display kilobytes");
     Check(FormatByteSizeForDisplay(12ull * 1024ull * 1024ull) == L"12.0 MB", "Byte size display megabytes");
+    for (const UINT dpi : {96u, 120u, 144u}) {
+        const float scale = static_cast<float>(dpi) / 96.0f;
+        const float textLeft = 36.0f * scale;
+        const float textEnd = 276.0f * scale;
+        const float markerWidth = 78.0f * scale;
+        const float gap = 7.0f * scale;
+        const MainTitleBuildMarkerLayout layout = CalculateMainTitleBuildMarkerLayout(
+            textLeft, textEnd, markerWidth, gap);
+        Check(
+            layout.nameEnd <= layout.markerLeft - gap + 0.01f &&
+                layout.markerLeft >= textLeft && layout.markerLeft + markerWidth <= textEnd + 0.01f,
+            "Main title build marker layout keeps text separated at supported DPI");
+    }
     Check(QuattroUserConfigDirectory() == unitUserConfigRoot, "User config env override");
     Check(QuattroEmbeddedExecutableRootDirectory() == unitUserConfigRoot / L"tools",
         "Embedded executable root follows user config override");
+    Check(
+        SelectedPathCopyService::FormatPaths({L"C:\\资料\\报告.docx", L"D:\\项目", L"\\\\server\\share\\文件.txt"}) ==
+            L"C:\\资料\\报告.docx\r\nD:\\项目\r\n\\\\server\\share\\文件.txt",
+        "Selected paths use CRLF without trailing newline");
+    Check(SelectedPathCopyService::FormatPaths({L"C:\\single.txt"}) == L"C:\\single.txt",
+        "Single selected path has no separator");
+    Check(SelectedPathCopyService::FormatPaths({}).empty(), "Empty selected path list formats empty");
+
+    const std::wstring clipboardPaths = L"C:\\资料\\报告.docx\r\nD:\\项目";
+    std::wstring clipboardError;
+    Check(SelectedPathCopyService::WriteClipboardText(nullptr, clipboardPaths, clipboardError),
+        "Selected paths clipboard write succeeds");
+    std::wstring clipboardRoundTrip;
+    if (OpenClipboard(nullptr)) {
+        HANDLE clipboardHandle = GetClipboardData(CF_UNICODETEXT);
+        if (clipboardHandle) {
+            const wchar_t* clipboardValue = static_cast<const wchar_t*>(GlobalLock(clipboardHandle));
+            if (clipboardValue) {
+                clipboardRoundTrip = clipboardValue;
+                GlobalUnlock(clipboardHandle);
+            }
+        }
+        CloseClipboard();
+    }
+    Check(clipboardRoundTrip == clipboardPaths, "Selected paths clipboard round trip");
+    clipboardError.clear();
+    Check(!SelectedPathCopyService::WriteClipboardText(nullptr, L"", clipboardError) && !clipboardError.empty(),
+        "Empty selected paths do not overwrite clipboard");
     {
         static const unsigned char bytes[] = {'a', 'b', 'c'};
         const EmbeddedExecutableDescriptor descriptor{
@@ -350,7 +394,7 @@ int wmain() {
     ConfigService service(temp);
     AppConfig config;
     Check(config.autoDock, "Config default auto dock");
-    Check(config.dockDelay == 1500, "Config default dock delay");
+    Check(config.dockDelay == 1000, "Config default dock delay");
     Check(!config.topMost, "Local config default is not top most");
     Check(config.hideAfterLink, "Config default hide after link");
     Check(!config.hideWhenInactive, "Config default hide inactive");
@@ -362,6 +406,7 @@ int wmain() {
     }
     Check(!config.hideNotifyIcon, "Config default tray visible");
     Check(config.width == 400, "Config default width fits three link columns");
+    Check(config.copySelectedPathsHotKey == L'C', "Config default copy selected paths hotkey");
     config.width = 500;
     config.height = 700;
     config.theme = L"default";
@@ -381,6 +426,7 @@ int wmain() {
     config.httpServerLanAccess = false;
     config.httpServerPort = 45211;
     config.httpServerRootPath = L"C:\\QuattroWeb";
+    config.copySelectedPathsHotKey = L'X';
     service.Save(config);
 
     AppConfig loaded = service.Load();
@@ -403,6 +449,7 @@ int wmain() {
     Check(!loaded.httpServerLanAccess, "Config http LAN access");
     Check(loaded.httpServerPort == 45211, "Config http port");
     Check(loaded.httpServerRootPath == L"C:\\QuattroWeb", "Config http root");
+    Check(loaded.copySelectedPathsHotKey == L'X', "Config copy selected paths hotkey round trip");
     Check(FileExists(unitUserConfigRoot / L"webdav.ini"), "Config webdav stored in user config directory");
     Check(FileExists(unitUserConfigRoot / L"http.ini"), "Config http stored in user config directory");
     Check(FileExists(unitUserConfigRoot / L"context-menu.ini"), "Context menu settings stored in user config directory");
@@ -612,6 +659,29 @@ int wmain() {
     }
     std::filesystem::remove_all(shellMenuCacheRoot, ec);
 
+    const std::filesystem::path shellMenuBatchRoot = std::filesystem::temp_directory_path() /
+        (L"quattro_unit_shell_menu_batch_" + std::to_wstring(GetCurrentProcessId()));
+    std::filesystem::remove_all(shellMenuBatchRoot, ec);
+    {
+        ShellContextMenuCacheService batchCache(shellMenuBatchRoot);
+        batchCache.UpdateBatch({
+            ShellContextMenuCacheUpdate{cachedLink, shellSnapshot, allTracking},
+            ShellContextMenuCacheUpdate{secondCachedLink, secondSnapshot, allTracking},
+        });
+        Check(
+            batchCache.ItemsFor(cachedLink, allTracking).size() == 6 &&
+            batchCache.ItemsFor(secondCachedLink, allTracking).size() == 3,
+            "Shell menu cache batch update applies every snapshot");
+    }
+    {
+        ShellContextMenuCacheService batchCache(shellMenuBatchRoot);
+        Check(
+            batchCache.ItemsFor(cachedLink, allTracking).size() == 6 &&
+            batchCache.ItemsFor(secondCachedLink, allTracking).size() == 3,
+            "Shell menu cache batch update persists once for all snapshots");
+    }
+    std::filesystem::remove_all(shellMenuBatchRoot, ec);
+
     const std::filesystem::path terminalTargetRoot = std::filesystem::temp_directory_path() /
         (L"quattro_unit_terminal_menu_" + std::to_wstring(GetCurrentProcessId()));
     std::filesystem::remove_all(terminalTargetRoot, ec);
@@ -664,6 +734,52 @@ int wmain() {
         !TerminalContextMenuService::Invoke(nullptr, invalidTerminalCommand, invalidTerminalError) &&
         !invalidTerminalError.empty(),
         "Terminal menu rejects a cached executable that does not match its adapter");
+
+    int refreshQueryCount = 0;
+    bool refreshTrackingWasCombined = true;
+    bool refreshLinksHadPidls = true;
+    ShellContextMenuRefreshService refreshService(
+        [&](HWND, const Link& link, const ShellContextMenuTrackingOptions& tracking, ShellContextMenuSnapshot& snapshot) {
+            ++refreshQueryCount;
+            refreshTrackingWasCombined = refreshTrackingWasCombined && tracking.git && !tracking.terminal;
+            refreshLinksHadPidls = refreshLinksHadPidls && !link.pidl.empty();
+            snapshot.complete = true;
+            ShellContextMenuItem item;
+            item.providerId = ShellContextMenuProviderId::Git;
+            item.text = L"Git test action";
+            snapshot.items = {item};
+            return true;
+        });
+    ShellContextMenuRefreshRequest refreshRequest;
+    refreshRequest.tracking.git = true;
+    Link refreshDirectoryLink = terminalDirectoryLink;
+    refreshDirectoryLink.id = 712;
+    Link refreshFileLink = terminalFileLink;
+    refreshFileLink.id = 713;
+    Link refreshUrlLink = terminalUrlLink;
+    refreshUrlLink.id = 714;
+    Link refreshMissingLink;
+    refreshMissingLink.id = 715;
+    refreshMissingLink.name = L"missing";
+    refreshMissingLink.path = (terminalTargetRoot / L"missing-target").wstring();
+    refreshRequest.links = {
+        refreshDirectoryLink,
+        refreshFileLink,
+        refreshUrlLink,
+        refreshMissingLink,
+    };
+    const ShellContextMenuRefreshResult refreshResult = refreshService.Refresh(refreshRequest);
+    Check(
+        refreshResult.totalLinks == 4 && refreshResult.succeededLinks == 2 &&
+        refreshResult.skippedLinks == 1 && refreshResult.failures.size() == 1,
+        "Shell menu refresh reports real link outcomes");
+    Check(
+        refreshQueryCount == 2 && refreshTrackingWasCombined && refreshLinksHadPidls,
+        "Shell menu refresh queries each eligible real link once with combined tracking");
+    Check(
+        refreshResult.updates.size() == 2 && refreshResult.menuItemCount == 2 &&
+        refreshResult.updates.front().nativeSnapshot.complete,
+        "Shell menu refresh returns cache-ready snapshots");
     std::filesystem::remove_all(terminalTargetRoot, ec);
 
     // Executable menu icons must resolve even when the target exposes no icon at
@@ -1531,6 +1647,7 @@ int wmain() {
     bool hasAutoClickerName = false;
     bool hasProcessLocator = false;
     bool hasAppLaunchLocker = false;
+    bool hasAdBlock = false;
     for (const auto& plugin : plugins) {
         if (plugin.id == L"quattro.builtin.clicker" && plugin.name == L"连点器") {
             hasAutoClickerName = true;
@@ -1545,14 +1662,21 @@ int wmain() {
             plugin.engine == L"app-launch-locker") {
             hasAppLaunchLocker = true;
         }
+        if (plugin.id == L"quattro.builtin.ad-block" &&
+            plugin.name == L"广告拦截" &&
+            plugin.engine == L"ad-block") {
+            hasAdBlock = true;
+        }
     }
     Check(hasAutoClickerName, "Plugin clicker display name");
     Check(hasProcessLocator, "Plugin process locator registration");
     Check(hasAppLaunchLocker, "Plugin AppLaunchLocker external tool registration");
+    Check(hasAdBlock, "Plugin AdBlock external tool registration");
     Check(pluginRegistry.IsEnabled(L"quattro.builtin.clicker"), "Plugin clicker enabled by default");
     Check(pluginRegistry.IsEnabled(L"quattro.builtin.timer"), "Plugin timer enabled by default");
     Check(pluginRegistry.IsEnabled(L"quattro.builtin.process-locator"), "Plugin process locator enabled by default");
     Check(pluginRegistry.IsEnabled(L"quattro.builtin.app-launch-locker"), "Plugin AppLaunchLocker enabled by default");
+    Check(pluginRegistry.IsEnabled(L"quattro.builtin.ad-block"), "Plugin AdBlock enabled by default");
     Check(pluginRegistry.SetEnabled(L"quattro.builtin.clicker", false), "Plugin builtin disable");
     Check(!pluginRegistry.IsEnabled(L"quattro.builtin.clicker"), "Plugin builtin can be disabled");
     Check(pluginRegistry.SetSetting(L"quattro.builtin.clicker", L"interval", L"250"), "Plugin setting save");

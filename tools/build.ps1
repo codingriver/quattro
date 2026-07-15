@@ -11,6 +11,8 @@ param(
     [switch]$FlatPackage,
     [switch]$Upx,
     [string]$UpxPath = "upx",
+    [switch]$PlanOnly,
+    [switch]$OfficialBuild,
     [string]$Version = "",
     [string]$ReleaseRepoUrl = "https://github.com/codingriver/quattro",
     [string]$ReleaseTag = "",
@@ -25,6 +27,9 @@ Set-Location $root
 $effectiveVersion = if ([string]::IsNullOrWhiteSpace($Version)) { "0.1.0" } else { $Version }
 $defaultLoggingEnabled = if ($env:GITHUB_ACTIONS -eq "true") { "OFF" } else { "ON" }
 $defaultTopMostEnabled = if ($env:GITHUB_ACTIONS -eq "true") { "ON" } else { "OFF" }
+$bundleOptionalExecutables = if ($All) { "ON" } else { "OFF" }
+$officialBuildEnabled = if ($OfficialBuild) { "ON" } else { "OFF" }
+$buildMarker = if ($OfficialBuild) { "none" } elseif ($All) { "DEBUG-All" } else { "DEBUG" }
 
 function Show-PackageHelp {
     $scriptName = Split-Path -Leaf $PSCommandPath
@@ -35,12 +40,12 @@ Usage:
   powershell -ExecutionPolicy Bypass -File .\tools\$scriptName [options]
 
 Defaults:
-  Builds and packages x64 Quattro with the vcpkg backend, creates dist\Quattro-x64.exe and Quattro-x64.zip.
+  Builds and packages minimal x64 Quattro with the vcpkg backend, creates dist\Quattro-x64.exe and Quattro-x64.zip.
 
 Options:
-  --all, -All              Build both x86 and x64 packages.
+  --all, -All              Build complete x86 and x64 packages, including AppLaunchLocker and QuattroUpdater.
   --help, -Help            Show this help text.
-  -Platform x86|x64        Build a single platform. Default: x64.
+  -Platform x86|x64        Build a minimal single-platform package. Default: x64.
   -Configuration <name>    Build configuration. Default: Release.
   -Clean                   Remove the selected build directory before configure.
   -Test                    Build local test/helper tools and run unit tests before packaging. Requires local tests/ sources.
@@ -50,6 +55,8 @@ Options:
   -FlatPackage             Run the previous default flat x64 single-exe package flow.
   -Upx                     Compress packaged Quattro.exe with UPX before zipping.
   -UpxPath <path>          UPX executable path. Default: upx.
+  -PlanOnly                Print the resolved architectures and optional-component mode without building.
+  -OfficialBuild           Build an official package without a DEBUG title marker; intended for CI releases.
   -Version <semver>        Override the compiled app version, for example 1.2.3. Default: 0.1.0.
   -ReleaseRepoUrl <url>    GitHub repository URL used in latest.json. Default: https://github.com/codingriver/quattro.
   -ReleaseTag <tag>        Release tag used in latest.json. Default: v<Version>.
@@ -167,12 +174,16 @@ function Ensure-Configured {
         $expectedVersion = "QUATTRO_VERSION:STRING=$effectiveVersion"
         $expectedLogging = "QUATTRO_DEFAULT_LOGGING_ENABLED:BOOL=$defaultLoggingEnabled"
         $expectedTopMost = "QUATTRO_DEFAULT_TOP_MOST_ENABLED:BOOL=$defaultTopMostEnabled"
+        $expectedOptionalExecutables = "QUATTRO_BUNDLE_OPTIONAL_EXECUTABLES:BOOL=$bundleOptionalExecutables"
+        $expectedOfficialBuild = "QUATTRO_OFFICIAL_BUILD:BOOL=$officialBuildEnabled"
         if ($cacheText -notmatch [regex]::Escape($expectedGenerator) -or
             $cacheText -notmatch [regex]::Escape($expected) -or
             $cacheText -notmatch [regex]::Escape($expectedSource) -or
             $cacheText -notmatch [regex]::Escape($expectedVersion) -or
             $cacheText -notmatch [regex]::Escape($expectedLogging) -or
             $cacheText -notmatch [regex]::Escape($expectedTopMost) -or
+            $cacheText -notmatch [regex]::Escape($expectedOptionalExecutables) -or
+            $cacheText -notmatch [regex]::Escape($expectedOfficialBuild) -or
             ($BuildTests -and $cacheText -notmatch [regex]::Escape($expectedTestOption)) -or
             ($UseVcpkg -and ($cacheText -notmatch [regex]::Escape($expectedToolchain) -or
                              $cacheText -notmatch [regex]::Escape($expectedTriplet)))) {
@@ -198,6 +209,8 @@ function Ensure-Configured {
         $configureArgs += "-DQUATTRO_VERSION=$effectiveVersion"
         $configureArgs += "-DQUATTRO_DEFAULT_LOGGING_ENABLED=$defaultLoggingEnabled"
         $configureArgs += "-DQUATTRO_DEFAULT_TOP_MOST_ENABLED=$defaultTopMostEnabled"
+        $configureArgs += "-DQUATTRO_BUNDLE_OPTIONAL_EXECUTABLES=$bundleOptionalExecutables"
+        $configureArgs += "-DQUATTRO_OFFICIAL_BUILD=$officialBuildEnabled"
         Invoke-NativeCommand -Description "CMake configure" -Command "cmake" -Arguments $configureArgs
     }
 }
@@ -551,6 +564,14 @@ if ($FlatPackage -and ($All -or $Platform -ne "x64" -or $FullPackage)) {
 
 if (($architectures | Where-Object { $_.Name -eq "x64" }) -and -not [System.Environment]::Is64BitOperatingSystem) {
     throw "x64 package requires a 64-bit Windows host."
+}
+
+if ($PlanOnly) {
+    "architectures=$((@($architectures | ForEach-Object { $_.Name }) -join ','))"
+    "bundle_optional_executables=$bundleOptionalExecutables"
+    "official_build=$officialBuildEnabled"
+    "build_marker=$buildMarker"
+    return
 }
 
 $distRoot = Join-Path $root "dist"

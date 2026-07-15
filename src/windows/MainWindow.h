@@ -263,6 +263,7 @@ private:
     void RegisterConfiguredHotKeys();
     void ShowHotKeyConflictWarning(const std::wstring& failures);
     void UnregisterConfiguredHotKeys();
+    void CopySelectedPathsFromForeground(HWND foregroundWindow);
     std::wstring TrayTooltipText() const;
     void UpdateTrayTooltip();
     void InitializeTrayIcon();
@@ -472,6 +473,7 @@ private:
     bool hotKeysRegistered_ = false;
     bool mainHotKeyRegistered_ = false;
     bool processLocatorHotKeyRegistered_ = false;
+    bool copySelectedPathsHotKeyRegistered_ = false;
     bool hotKeyConflictWarningShown_ = false;
     bool runningAsAdmin_ = false;
     bool exitingForPrivilegeRestart_ = false;

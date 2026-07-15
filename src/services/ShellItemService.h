@@ -11,9 +11,6 @@
 #include <string>
 #include <vector>
 
-// Forward declarations
-class ShellContextMenuCacheService;
-
 enum class ShellContextMenuActionKind : std::uint8_t {
     NativeShell = 0,
     Terminal = 1,
@@ -104,19 +101,4 @@ public:
     // 从Windows注册表HKCR扫描，检测provider是否在native shell菜单中存在
     static bool IsInstalledInNativeShell(const std::wstring& providerId);
 
-    // 新增: 为特定Provider从native shell查询菜单项
-    static bool QueryTrackedContextMenuForProvider(
-        HWND owner,
-        const Link& link,
-        const std::wstring& targetProviderId,
-        std::vector<ShellContextMenuItem>& outItems,
-        std::wstring& errorMessage);
-
-    // 新增: 批量为所有链接刷新某个Provider的菜单
-    static bool RefreshProviderForAllLinks(
-        HWND owner,
-        const std::vector<Link>& links,
-        const std::wstring& providerId,
-        ShellContextMenuCacheService& cache,
-        std::wstring& errorMessage);
 };

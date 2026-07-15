@@ -13,6 +13,12 @@ struct ShellContextMenuCachedIcon {
     std::vector<std::uint32_t> pixels;
 };
 
+struct ShellContextMenuCacheUpdate {
+    Link link;
+    ShellContextMenuSnapshot snapshot;
+    ShellContextMenuTrackingOptions tracking;
+};
+
 class ShellContextMenuCacheService {
 public:
     ShellContextMenuCacheService();
@@ -25,6 +31,7 @@ public:
         const Link& link,
         const ShellContextMenuSnapshot& snapshot,
         const ShellContextMenuTrackingOptions& tracking);
+    void UpdateBatch(const std::vector<ShellContextMenuCacheUpdate>& updates);
     bool Reset();
     void Remove(int linkId);
     void RemoveProvider(const std::wstring& providerId);
@@ -63,6 +70,10 @@ private:
     void ApplyIcons(
         std::vector<ShellContextMenuItem>& items,
         std::vector<std::wstring>& path) const;
+    void ApplyUpdate(
+        const Link& link,
+        const ShellContextMenuSnapshot& snapshot,
+        const ShellContextMenuTrackingOptions& tracking);
     static void StripIcons(std::vector<ShellContextMenuItem>& items);
     void Load();
     bool Save() const;

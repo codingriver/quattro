@@ -9,9 +9,11 @@
 #include "LinkEditDialog.h"
 #include "LinkSorting.h"
 #include "MainHotKey.h"
+#include "MainTitleBuildMarkerLayout.h"
 #include "MenuAnchorGeometry.h"
 #include "MenuCatalog.h"
 #include "QuickImportDialog.h"
+#include "SelectedPathCopyService.h"
 #include "ShellItemService.h"
 #include "SimpleDialogs.h"
 #include "StartupService.h"
@@ -59,6 +61,7 @@
 namespace {
 constexpr int ID_HOTKEY_MAIN = 1;
 constexpr int ID_HOTKEY_PROCESS_LOCATOR = 2;
+constexpr int ID_HOTKEY_COPY_SELECTED_PATHS = 3;
 constexpr int ID_HOTKEY_LINK_BASE = 1000;
 constexpr int ID_NOTE_EDIT = 2100;
 constexpr int ID_REMINDER_PANEL = 2101;
@@ -77,6 +80,15 @@ constexpr const wchar_t* kDockPeekWindowClass = L"QuattroDockPeekWindow";
 constexpr const wchar_t* kTooltipWindowClass = L"QuattroTooltipWindow";
 constexpr const wchar_t* kAppDisplayName = L"Quattro快速启动器";
 constexpr DWORD kDoubleAltMaxIntervalMs = 450;
+
+std::wstring BuildMarkerDisplayText() {
+    const std::wstring marker = QuattroBuildMarkerText();
+    return marker.empty() ? std::wstring{} : L"（" + marker + L"）";
+}
+
+std::wstring AppWindowTitle() {
+    return std::wstring(kAppDisplayName) + BuildMarkerDisplayText();
+}
 
 HHOOK gDoubleAltHook = nullptr;
 HWND gDoubleAltTarget = nullptr;
@@ -2346,10 +2358,11 @@ bool MainWindow::Create() {
     const DWORD style = WS_POPUP | WS_THICKFRAME | WS_MINIMIZEBOX | WS_CLIPCHILDREN;
     const POINT position = ClampWindowPosition(config_.posX, config_.posY, config_.width, config_.height);
     WriteStartupTiming(L"native main window create begin");
+    const std::wstring windowTitle = AppWindowTitle();
     hwnd_ = CreateWindowExW(
         MainWindowExStyle(config_.alpha),
         wc.lpszClassName,
-        kAppDisplayName,
+        windowTitle.c_str(),
         style,
         position.x,
         position.y,
@@ -2584,6 +2597,10 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         }
         if (wParam == ID_HOTKEY_PROCESS_LOCATOR) {
             OpenBuiltinToolEngine(L"process-locator", true);
+            return 0;
+        }
+        if (wParam == ID_HOTKEY_COPY_SELECTED_PATHS) {
+            CopySelectedPathsFromForeground(GetForegroundWindow());
             return 0;
         }
         if (wParam >= ID_HOTKEY_LINK_BASE) {
@@ -5179,6 +5196,25 @@ void MainWindow::OpenSettings() {
         next = config_;
         return true;
     };
+    auto applyContextMenuRefresh = [this](const ShellContextMenuRefreshResult& result) {
+        ShellContextMenuTrackingOptions nativeTracking = result.tracking;
+        nativeTracking.terminal = false;
+        ShellContextMenuTrackingOptions terminalTracking;
+        terminalTracking.terminal = result.tracking.terminal;
+        std::vector<ShellContextMenuCacheUpdate> cacheUpdates;
+        cacheUpdates.reserve(result.updates.size() * 2);
+        for (const auto& update : result.updates) {
+            if (update.hasNativeSnapshot) {
+                cacheUpdates.push_back(ShellContextMenuCacheUpdate{
+                    update.link, update.nativeSnapshot, nativeTracking});
+            }
+            if (update.hasTerminalSnapshot) {
+                cacheUpdates.push_back(ShellContextMenuCacheUpdate{
+                    update.link, update.terminalSnapshot, terminalTracking});
+            }
+        }
+        shellContextMenuCache_.UpdateBatch(cacheUpdates);
+    };
     if (!ShowSettingsDialog(
             hwnd_,
             instance_,
@@ -5190,8 +5226,12 @@ void MainWindow::OpenSettings() {
             &httpServerService_,
             mainHotKeyRegistered_,
             processLocatorHotKeyRegistered_,
+            copySelectedPathsHotKeyRegistered_,
             applySettings,
-            resetContextMenu)) {
+            resetContextMenu,
+            model_.links,
+            {},
+            applyContextMenuRefresh)) {
         if (importedData) {
             model_ = storageService_.Load();
             RestoreLegacyBuiltinSystemFunctionKeys();
@@ -5276,6 +5316,33 @@ void MainWindow::OpenBuiltinToolEngine(const std::wstring& engine, bool locatePr
             const std::wstring error = L"无法启动自启动管理工具：" + FormatLastError(GetLastError());
             WriteAppLog(error);
             ShowThemedMessageBox(hwnd_, instance_, theme_, error, L"自启动管理", MB_OK | MB_ICONWARNING);
+            return;
+        }
+        CloseHandle(process.hThread);
+        CloseHandle(process.hProcess);
+        return;
+    }
+    if (engine == L"ad-block") {
+        const EmbeddedExecutablePrepareResult prepared = PrepareEmbeddedExecutable(
+            L"app-launch-locker", {QuattroEmbeddedExecutableRootDirectory()});
+        if (!prepared.success) {
+            WriteAppLog(L"准备广告拦截工具失败: " + prepared.message);
+            ShowThemedMessageBox(hwnd_, instance_, theme_, prepared.message, L"广告拦截", MB_OK | MB_ICONWARNING);
+            return;
+        }
+        // CreateProcessW 的命令行参数必须为可写缓冲区。
+        std::wstring commandLine = L"\"" + prepared.path.wstring() + L"\" --ad-block";
+        std::vector<wchar_t> commandBuffer(commandLine.begin(), commandLine.end());
+        commandBuffer.push_back(L'\0');
+        STARTUPINFOW startup{};
+        startup.cb = sizeof(startup);
+        PROCESS_INFORMATION process{};
+        if (!CreateProcessW(
+                prepared.path.c_str(), commandBuffer.data(), nullptr, nullptr, FALSE, 0, nullptr,
+                prepared.path.parent_path().c_str(), &startup, &process)) {
+            const std::wstring error = L"无法启动广告拦截工具：" + FormatLastError(GetLastError());
+            WriteAppLog(error);
+            ShowThemedMessageBox(hwnd_, instance_, theme_, error, L"广告拦截", MB_OK | MB_ICONWARNING);
             return;
         }
         CloseHandle(process.hThread);
@@ -6343,7 +6410,8 @@ void MainWindow::ApplyConfigRuntimeChanges(const AppConfig& previous) {
     }
     if (previous.globalHotKeysEnabled != config_.globalHotKeysEnabled ||
         previous.mainHotKey != config_.mainHotKey ||
-        previous.processLocatorHotKey != config_.processLocatorHotKey) {
+        previous.processLocatorHotKey != config_.processLocatorHotKey ||
+        previous.copySelectedPathsHotKey != config_.copySelectedPathsHotKey) {
         UnregisterConfiguredHotKeys();
         RegisterConfiguredHotKeys();
     }
@@ -6369,6 +6437,34 @@ void MainWindow::SyncAutoRun(const AppConfig& previous) {
     }
     WriteAppLog(config_.autoRun ? L"开机自启动已启用。" : L"开机自启动已关闭。");
     ShowToast(config_.autoRun ? L"开机自启动已启用。" : L"已关闭开机自启动。", ThemedToastRole::Success);
+}
+
+void MainWindow::CopySelectedPathsFromForeground(HWND foregroundWindow) {
+    const SelectedPathCopyResult result = SelectedPathCopyService::CopySelectedPaths(foregroundWindow, hwnd_);
+    switch (result.status) {
+    case SelectedPathCopyStatus::Success:
+        ShowToast(
+            L"已复制 " + std::to_wstring(result.copiedCount) + L" 个选中对象的绝对路径。",
+            ThemedToastRole::Success);
+        return;
+    case SelectedPathCopyStatus::UnsupportedForegroundWindow:
+        ShowToast(L"请先在文件资源管理器或桌面中选择文件或文件夹。", ThemedToastRole::Warning);
+        return;
+    case SelectedPathCopyStatus::NoSelection:
+        ShowToast(L"当前没有选中任何文件或文件夹。", ThemedToastRole::Warning);
+        return;
+    case SelectedPathCopyStatus::NonFileSystemItem:
+        ShowToast(L"选中项包含无法取得绝对路径的系统对象。", ThemedToastRole::Warning);
+        return;
+    case SelectedPathCopyStatus::ClipboardUnavailable:
+        WriteAppLog(L"复制选中项绝对路径失败: 剪贴板不可用 - " + result.detail);
+        ShowToast(L"剪贴板暂时被其他程序占用，请重试。", ThemedToastRole::Warning);
+        return;
+    case SelectedPathCopyStatus::ShellUnavailable:
+        WriteAppLog(L"复制选中项绝对路径失败: 无法读取 Shell 选中项 - " + result.detail);
+        ShowToast(L"无法读取当前资源管理器的选中项。", ThemedToastRole::Warning);
+        return;
+    }
 }
 
 void MainWindow::RegisterConfiguredHotKeys() {
@@ -6400,6 +6496,8 @@ void MainWindow::RegisterConfiguredHotKeys() {
         }
         processLocatorHotKeyRegistered_ = registerHotKey(
             ID_HOTKEY_PROCESS_LOCATOR, config_.processLocatorHotKey, L"进程定位器");
+        copySelectedPathsHotKeyRegistered_ = registerHotKey(
+            ID_HOTKEY_COPY_SELECTED_PATHS, config_.copySelectedPathsHotKey, L"复制选中项绝对路径");
 
         int nextHotKeyId = ID_HOTKEY_LINK_BASE;
         for (const auto& link : model_.links) {
@@ -6449,8 +6547,10 @@ void MainWindow::UnregisterConfiguredHotKeys() {
     UninstallDoubleAltHotKeyHook(hwnd_);
     UnregisterHotKey(hwnd_, ID_HOTKEY_MAIN);
     UnregisterHotKey(hwnd_, ID_HOTKEY_PROCESS_LOCATOR);
+    UnregisterHotKey(hwnd_, ID_HOTKEY_COPY_SELECTED_PATHS);
     mainHotKeyRegistered_ = false;
     processLocatorHotKeyRegistered_ = false;
+    copySelectedPathsHotKeyRegistered_ = false;
     for (const auto& [hotKeyId, _] : registeredLinkHotKeys_) {
         UnregisterHotKey(hwnd_, hotKeyId);
     }
@@ -6468,6 +6568,9 @@ std::wstring MainWindow::TrayTooltipText() const {
     }
     if (processLocatorHotKeyRegistered_ && config_.processLocatorHotKey != 0) {
         text += L"\n进程定位器：" + FormatGlobalHotKeyText(config_.processLocatorHotKey);
+    }
+    if (copySelectedPathsHotKeyRegistered_ && config_.copySelectedPathsHotKey != 0) {
+        text += L"\n复制路径：" + FormatGlobalHotKeyText(config_.copySelectedPathsHotKey);
     }
     return text;
 }
@@ -7558,11 +7661,29 @@ void MainWindow::DrawTitle(D2D1_RECT_F rect) {
     const float buttonReserve = TitleButtonsReserveWidth();
     const float titleTextLeft = appIcon.right + Metric(theme_, L"title", L"textGap", 7.0f);
     const float titleTextMaxEnd = rect.right - buttonReserve - Metric(theme_, L"title", L"textGap", 7.0f);
-    // Let the title use all the space up to the buttons so it is never clipped.
     const float titleTextEnd = std::max(titleTextLeft, titleTextMaxEnd);
-    D2D1_RECT_F nameRect = D2D1::RectF(titleTextLeft, rect.top, titleTextEnd, rect.bottom);
     titleFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
-    DrawTextBlock(kAppDisplayName, titleFormat_, nameRect, theme_.color(L"title", L"normal", L"text"));
+    const std::wstring buildMarker = BuildMarkerDisplayText();
+    if (buildMarker.empty()) {
+        const D2D1_RECT_F nameRect = D2D1::RectF(titleTextLeft, rect.top, titleTextEnd, rect.bottom);
+        DrawTextBlock(kAppDisplayName, titleFormat_, nameRect, theme_.color(L"title", L"normal", L"text"));
+    } else {
+        IDWriteTextFormat* markerFormat = navSelectedFormat_ ? navSelectedFormat_ : titleFormat_;
+        const float markerWidth = MeasureTextWidth(
+            buildMarker,
+            markerFormat,
+            std::max(1.0f, titleTextEnd - titleTextLeft));
+        const float markerGap = Metric(theme_, L"title", L"textGap", 7.0f);
+        const MainTitleBuildMarkerLayout textLayout = CalculateMainTitleBuildMarkerLayout(
+            titleTextLeft,
+            titleTextEnd,
+            markerWidth,
+            markerGap);
+        const D2D1_RECT_F nameRect = D2D1::RectF(titleTextLeft, rect.top, textLayout.nameEnd, rect.bottom);
+        const D2D1_RECT_F markerRect = D2D1::RectF(textLayout.markerLeft, rect.top, titleTextEnd, rect.bottom);
+        DrawTextBlock(kAppDisplayName, titleFormat_, nameRect, theme_.color(L"title", L"normal", L"text"));
+        DrawTextBlock(buildMarker, markerFormat, markerRect, theme_.color(L"global", L"danger", L"text"));
+    }
 
     float buttonRight = rect.right - buttonRightInset;
     for (HitKind kind : buttons) {

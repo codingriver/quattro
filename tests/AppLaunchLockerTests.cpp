@@ -91,6 +91,60 @@ int wmain() {
     }
 
     std::error_code cleanupError;
+    // 广告拦截（AdBlockManager）纯函数用例：仅走扫描与拒绝分支，绝不写入 HKLM。
+    {
+        const std::filesystem::path adDir = directory / L"adblock";
+        std::filesystem::create_directories(adDir, cleanupError);
+        AdBlockManager adBlock(DisabledItemStore(adDir / L"blocked-items.json"));
+
+        // 空存储：列表为空。
+        std::vector<DisabledRecord> blocked;
+        std::wstring blockedError;
+        ok &= Check(adBlock.ListBlocked(blocked, blockedError), L"empty blocked store should load");
+        ok &= Check(blocked.empty(), L"empty blocked store should contain no records");
+
+        // 不存在的路径：只报警告，无条目。
+        const ScanResult missing = adBlock.ScanPath((adDir / L"does-not-exist").wstring());
+        ok &= Check(missing.items.empty(), L"scan of missing path yields no items");
+        ok &= Check(!missing.warnings.empty(), L"scan of missing path reports a warning");
+
+        // 造一个脚本与一个未签名 exe，验证分类与守卫（脚本仅提示，未签名 exe 可拦截并告警）。
+        const std::filesystem::path scriptPath = adDir / L"sample.bat";
+        const std::filesystem::path exePath = adDir / L"sample.exe";
+        { std::ofstream(scriptPath, std::ios::binary) << "@echo off\n"; }
+        { std::ofstream(exePath, std::ios::binary) << "not-a-real-pe"; }
+
+        auto fieldOf = [](const StartupItem& item, const wchar_t* key) -> std::wstring {
+            const auto found = item.original.find(key);
+            return found == item.original.end() ? std::wstring{} : found->second;
+        };
+
+        const ScanResult scanDir = adBlock.ScanPath(adDir.wstring());
+        bool sawScript = false;
+        bool sawExe = false;
+        for (const auto& item : scanDir.items) {
+            if (fieldOf(item, L"adBlockStatus") == L"script") {
+                sawScript = true;
+                ok &= Check(!item.canDisable, L"script entry must not be blockable");
+            }
+            if (item.name == L"sample.exe") {
+                sawExe = true;
+                ok &= Check(fieldOf(item, L"adBlockStatus") == L"blockable-warn", L"unsigned exe should be blockable with warning");
+                ok &= Check(item.canDisable, L"unsigned exe should be blockable");
+            }
+        }
+        ok &= Check(sawScript, L"scan should list the script entry");
+        ok &= Check(sawExe, L"scan should list the exe entry");
+
+        // 拒绝分支：未知模式、路径不存在、脚本目标——均不得写入注册表。
+        ok &= Check(!adBlock.Block(exePath.wstring(), L"bogus").success, L"unknown block mode rejected");
+        ok &= Check(!adBlock.Block((adDir / L"missing.exe").wstring(), L"exact").success, L"missing block target rejected");
+        ok &= Check(!adBlock.Block(scriptPath.wstring(), L"exact").success, L"script block target rejected");
+
+        // 解除不存在的记录：拒绝。
+        ok &= Check(!adBlock.Unblock(L"no-such-record").success, L"unblock of unknown record rejected");
+    }
+
     std::filesystem::remove_all(directory, cleanupError);
     if (ok) std::wcout << L"AppLaunchLocker tests passed\n";
     return ok ? 0 : 1;

@@ -10,6 +10,18 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 option(QUATTRO_BUILD_TESTS "Build local Quattro test tools" OFF)
 option(QUATTRO_DEFAULT_LOGGING_ENABLED "Enable logging by default for new configs" ON)
 option(QUATTRO_DEFAULT_TOP_MOST_ENABLED "Keep the main window topmost by default for new configs" OFF)
+option(QUATTRO_BUNDLE_OPTIONAL_EXECUTABLES "Embed AppLaunchLocker and QuattroUpdater in Quattro" OFF)
+option(QUATTRO_OFFICIAL_BUILD "Build an official package without a development title marker" OFF)
+
+set(QUATTRO_BUILD_MARKER "")
+set(QUATTRO_OFFICIAL_BUILD_VALUE 0)
+if(QUATTRO_OFFICIAL_BUILD)
+    set(QUATTRO_OFFICIAL_BUILD_VALUE 1)
+elseif(QUATTRO_BUNDLE_OPTIONAL_EXECUTABLES)
+    set(QUATTRO_BUILD_MARKER "DEBUG-All")
+else()
+    set(QUATTRO_BUILD_MARKER "DEBUG")
+endif()
 
 find_package(CURL QUIET)
 find_package(httplib CONFIG QUIET)
@@ -91,10 +103,6 @@ function(quattro_generate_embedded_executable_catalog OUTPUT_VARIABLE)
     get_property(EMBEDDED_SOURCES GLOBAL PROPERTY QUATTRO_EMBEDDED_EXECUTABLE_SOURCES)
     get_property(EMBEDDED_SYMBOLS GLOBAL PROPERTY QUATTRO_EMBEDDED_EXECUTABLE_SYMBOLS)
     list(LENGTH EMBEDDED_SYMBOLS EMBEDDED_EXECUTABLE_COUNT)
-    if(EMBEDDED_EXECUTABLE_COUNT EQUAL 0)
-        message(FATAL_ERROR "No embedded executables were registered")
-    endif()
-
     set(EMBEDDED_EXECUTABLE_DECLARATIONS "")
     set(EMBEDDED_EXECUTABLE_ENTRIES "")
     foreach(SYMBOL IN LISTS EMBEDDED_SYMBOLS)
@@ -129,6 +137,9 @@ add_executable(QuattroUpdater WIN32
     resources/QuattroUpdater.rc
     src/updater/UpdaterMain.cpp
 )
+set_target_properties(QuattroUpdater PROPERTIES
+    EXCLUDE_FROM_ALL TRUE
+)
 
 target_compile_definitions(QuattroUpdater PRIVATE
     UNICODE
@@ -150,12 +161,14 @@ target_link_options(QuattroUpdater PRIVATE
     $<$<CXX_COMPILER_ID:MSVC>:/MANIFEST:EMBED>
 )
 
-quattro_register_embedded_executable(
-    TARGET QuattroUpdater
-    SYMBOL QuattroUpdater
-    ID quattro-updater
-    FILE_NAME QuattroUpdater.exe
-)
+if(QUATTRO_BUNDLE_OPTIONAL_EXECUTABLES)
+    quattro_register_embedded_executable(
+        TARGET QuattroUpdater
+        SYMBOL QuattroUpdater
+        ID quattro-updater
+        FILE_NAME QuattroUpdater.exe
+    )
+endif()
 
 add_custom_command(
     OUTPUT "${EMBEDDED_ASSETS_CPP}"
@@ -275,12 +288,18 @@ target_link_libraries(AppLaunchLockerCore PUBLIC
     taskschd
     uuid
     wbemuuid
+    crypt32
+    wintrust
 )
 
 add_executable(AppLaunchLocker WIN32
     resources/AppLaunchLocker.rc
     src/applaunchlocker/AppLaunchLockerMain.cpp
     src/applaunchlocker/AppLaunchLockerWindow.cpp
+    src/applaunchlocker/AdBlockWindow.cpp
+)
+set_target_properties(AppLaunchLocker PROPERTIES
+    EXCLUDE_FROM_ALL TRUE
 )
 set_property(SOURCE resources/AppLaunchLocker.rc APPEND PROPERTY
     OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/theme/default.xml")
@@ -307,14 +326,26 @@ target_link_options(AppLaunchLocker PRIVATE
     $<$<CXX_COMPILER_ID:MSVC>:/MANIFESTINPUT:${CMAKE_CURRENT_SOURCE_DIR}/resources/AppLaunchLocker.manifest>
 )
 
-quattro_register_embedded_executable(
-    TARGET AppLaunchLocker
-    SYMBOL AppLaunchLocker
-    ID app-launch-locker
-    FILE_NAME AppLaunchLocker.exe
-)
+if(QUATTRO_BUNDLE_OPTIONAL_EXECUTABLES)
+    quattro_register_embedded_executable(
+        TARGET AppLaunchLocker
+        SYMBOL AppLaunchLocker
+        ID app-launch-locker
+        FILE_NAME AppLaunchLocker.exe
+    )
+endif()
 
 quattro_generate_embedded_executable_catalog(EMBEDDED_EXECUTABLE_SOURCES)
+
+add_library(QuattroEmbeddedExecutableCatalogProbe OBJECT
+    ${EMBEDDED_EXECUTABLE_SOURCES}
+)
+set_target_properties(QuattroEmbeddedExecutableCatalogProbe PROPERTIES
+    EXCLUDE_FROM_ALL TRUE
+)
+target_compile_options(QuattroEmbeddedExecutableCatalogProbe PRIVATE
+    $<$<CXX_COMPILER_ID:MSVC>:/W4 /permissive- /EHsc /utf-8>
+)
 
 add_executable(Quattro WIN32
     ${EMBEDDED_ASSETS_CPP}
@@ -345,7 +376,9 @@ add_executable(Quattro WIN32
     src/windows/QuickImportDialog.cpp
     src/services/QuickImportService.cpp
     src/services/ShellContextMenuCacheService.cpp
+    src/services/ShellContextMenuRefreshService.cpp
     src/services/ShellItemService.cpp
+    src/services/SelectedPathCopyService.cpp
     src/services/TerminalContextMenuService.cpp
     src/windows/SimpleDialogs.cpp
     src/services/StartupService.cpp
@@ -416,7 +449,9 @@ add_executable(QuattroTests
     src/domain/MenuCatalog.cpp
     src/domain/PluginRegistry.cpp
     src/services/ShellContextMenuCacheService.cpp
+    src/services/ShellContextMenuRefreshService.cpp
     src/services/ShellItemService.cpp
+    src/services/SelectedPathCopyService.cpp
     src/services/TerminalContextMenuService.cpp
     src/services/Storage.cpp
     src/services/SystemFunctions.cpp
@@ -501,7 +536,9 @@ add_executable(QuattroUiScreenshotAcceptance
     src/windows/QuickImportDialog.cpp
     src/services/QuickImportService.cpp
     src/services/ShellContextMenuCacheService.cpp
+    src/services/ShellContextMenuRefreshService.cpp
     src/services/ShellItemService.cpp
+    src/services/TerminalContextMenuService.cpp
     src/domain/TrackedContextMenuProviders.cpp
     src/windows/SimpleDialogs.cpp
     src/services/Storage.cpp
@@ -710,9 +747,11 @@ target_link_libraries(QuattroTests PRIVATE
     comctl32
     gdi32
     ole32
+    oleaut32
     rstrtmgr
     shell32
     shlwapi
+    uuid
     user32
     wininet
 )
@@ -911,7 +950,9 @@ add_executable(QuattroSettingsHttpButtonsAcceptance
     src/domain/PluginRegistry.cpp
     src/windows/QuickImportDialog.cpp
     src/services/QuickImportService.cpp
+    src/services/ShellContextMenuRefreshService.cpp
     src/services/ShellItemService.cpp
+    src/services/TerminalContextMenuService.cpp
     src/domain/TrackedContextMenuProviders.cpp
     src/windows/SimpleDialogs.cpp
     src/services/Storage.cpp

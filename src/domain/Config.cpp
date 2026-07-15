@@ -70,6 +70,7 @@ AppConfig ConfigService::Load() const {
     config.globalHotKeysEnabled = ReadBool(L"bGlobalHotKeysEnabled", config.globalHotKeysEnabled);
     config.mainHotKey = ReadInt(L"nMainHotKey", config.mainHotKey);
     config.processLocatorHotKey = ReadInt(L"nProcessLocatorHotKey", config.processLocatorHotKey);
+    config.copySelectedPathsHotKey = ReadInt(L"nCopySelectedPathsHotKey", config.copySelectedPathsHotKey);
     config.ignoreHotKeyConflictWarning = ReadBool(L"bIgnoreHotKeyConflictWarning", config.ignoreHotKeyConflictWarning);
 
     config.width = Clamp(ReadInt(L"nWidth", config.width), 260, 1800);
@@ -235,6 +236,7 @@ AppConfig ConfigService::LoadForSchemaUpgrade(int targetVersion, bool& compatibl
     readBool(L"bGlobalHotKeysEnabled", config.globalHotKeysEnabled);
     readInt(L"nMainHotKey", config.mainHotKey);
     readInt(L"nProcessLocatorHotKey", config.processLocatorHotKey);
+    readInt(L"nCopySelectedPathsHotKey", config.copySelectedPathsHotKey);
     readBool(L"bIgnoreHotKeyConflictWarning", config.ignoreHotKeyConflictWarning);
     readClampedInt(L"nWidth", config.width, 260, 1800);
     readClampedInt(L"nHeight", config.height, 320, 1600);
@@ -394,6 +396,7 @@ void ConfigService::Save(const AppConfig& config) const {
     WriteInt(L"bGlobalHotKeysEnabled", config.globalHotKeysEnabled ? 1 : 0);
     WriteInt(L"nMainHotKey", config.mainHotKey);
     WriteInt(L"nProcessLocatorHotKey", config.processLocatorHotKey);
+    WriteInt(L"nCopySelectedPathsHotKey", config.copySelectedPathsHotKey);
     WriteInt(L"bIgnoreHotKeyConflictWarning", config.ignoreHotKeyConflictWarning ? 1 : 0);
     WriteString(L"TagAlign", config.tagAlign);
     WriteString(L"Theme", config.theme);

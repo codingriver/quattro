@@ -10,6 +10,7 @@
 #include "LocalHttpServerService.h"
 #include "MainHotKey.h"
 #include "ShellContextMenuCacheService.h"
+#include "ShellContextMenuRefreshService.h"
 #include "ShellItemService.h"
 #include "Storage.h"
 #include "ThemedControls.h"
@@ -37,6 +38,8 @@
 #include <fstream>
 #include <memory>
 #include <map>
+#include <mutex>
+#include <optional>
 #include <sstream>
 #include <thread>
 #include <utility>
@@ -50,6 +53,7 @@ constexpr int ID_MAIN_HOTKEY_CAPTURE = 301;
 constexpr int ID_MAIN_HOTKEY_CLEAR = 302;
 constexpr int ID_PROCESS_LOCATOR_HOTKEY_CAPTURE = 303;
 constexpr int ID_HOTKEY_TABLE = 304;
+constexpr int ID_COPY_SELECTED_PATHS_HOTKEY_CAPTURE = 305;
 constexpr int ID_GROUP_WIDTH = 401;
 constexpr int ID_TAG_WIDTH = 402;
 constexpr int ID_DOCK_DELAY = 403;
@@ -90,7 +94,6 @@ constexpr int ID_HOTKEY_CONFLICT_IGNORE = 502;
 constexpr int ID_MAIN_HOTKEY_PROBE = 0x5148;
 constexpr UINT WM_SETTINGS_WEBDAV_DONE = WM_APP + 0x81;
 constexpr UINT WM_CONTEXT_MENU_REFRESH_DONE = WM_APP + 0x82;
-constexpr UINT WM_CONTEXT_MENU_TABLE_REFRESH = WM_APP + 0x83;
 
 enum class SettingsWebDavOperation {
     Test,
@@ -272,6 +275,16 @@ std::wstring ProcessLocatorHotKeyStatusText(int key, const HotKeyAvailability& a
         return L"当前快捷键可用。";
     }
     return L"进程定位器快捷键 " + FormatGlobalHotKeyText(key) + L" 已被占用。";
+}
+
+std::wstring CopySelectedPathsHotKeyStatusText(int key, const HotKeyAvailability& availability) {
+    if (key <= 0) {
+        return L"复制选中项绝对路径快捷键未设置。";
+    }
+    if (availability.available) {
+        return L"当前快捷键可用。";
+    }
+    return L"复制选中项绝对路径快捷键 " + FormatGlobalHotKeyText(key) + L" 已被占用。";
 }
 
 std::wstring GetText(HWND hwnd) {
@@ -1953,8 +1966,12 @@ public:
         LocalHttpServerService* httpServer,
         bool mainHotKeyRegistered,
         bool processLocatorHotKeyRegistered,
+        bool copySelectedPathsHotKeyRegistered,
         SettingsApplyCallback applyCallback,
-        SettingsResetContextMenuCallback resetContextMenuCallback)
+        SettingsResetContextMenuCallback resetContextMenuCallback,
+        std::vector<Link> contextMenuLinks,
+        SettingsContextMenuRefreshRunner contextMenuRefreshRunner,
+        SettingsContextMenuRefreshApplyCallback contextMenuRefreshApplyCallback)
         : owner_(owner),
           instance_(instance),
           config_(config),
@@ -1965,8 +1982,12 @@ public:
           httpServer_(httpServer),
           mainHotKeyRegistered_(mainHotKeyRegistered),
           processLocatorHotKeyRegistered_(processLocatorHotKeyRegistered),
+          copySelectedPathsHotKeyRegistered_(copySelectedPathsHotKeyRegistered),
           applyCallback_(std::move(applyCallback)),
-          resetContextMenuCallback_(std::move(resetContextMenuCallback)) {}
+          resetContextMenuCallback_(std::move(resetContextMenuCallback)),
+          contextMenuLinks_(std::move(contextMenuLinks)),
+          contextMenuRefreshRunner_(std::move(contextMenuRefreshRunner)),
+          contextMenuRefreshApplyCallback_(std::move(contextMenuRefreshApplyCallback)) {}
 
     bool Run() {
         HICON icon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_QUATTRO_APP_ICON));
@@ -1994,6 +2015,10 @@ public:
         }
         if (windowUi_) {
             windowUi_->RestoreModalOwner();
+        }
+        if (contextMenuRefreshThread_.joinable()) {
+            contextMenuRefreshThread_.request_stop();
+            contextMenuRefreshThread_.join();
         }
         return accepted_;
     }
@@ -2238,6 +2263,14 @@ private:
                     ThemedTableCell{L"录入", -1, ThemedTableCellRole::Action, ID_PROCESS_LOCATOR_HOTKEY_CAPTURE},
                 },
             },
+            ThemedTableRow{
+                ID_COPY_SELECTED_PATHS_HOTKEY_CAPTURE,
+                {
+                    ThemedTableCell{L"复制选中项绝对路径"},
+                    ThemedTableCell{FormatGlobalHotKeyText(draft_.copySelectedPathsHotKey)},
+                    ThemedTableCell{L"录入", -1, ThemedTableCellRole::Action, ID_COPY_SELECTED_PATHS_HOTKEY_CAPTURE},
+                },
+            },
         });
     }
 
@@ -2342,6 +2375,8 @@ private:
             TrySetMainHotKey(ShowHotKeyCaptureDialog(hwnd_, instance_, theme_, draft_.mainHotKey));
         } else if (event.actionId == ID_PROCESS_LOCATOR_HOTKEY_CAPTURE) {
             TrySetProcessLocatorHotKey(ShowHotKeyCaptureDialog(hwnd_, instance_, theme_, draft_.processLocatorHotKey));
+        } else if (event.actionId == ID_COPY_SELECTED_PATHS_HOTKEY_CAPTURE) {
+            TrySetCopySelectedPathsHotKey(ShowHotKeyCaptureDialog(hwnd_, instance_, theme_, draft_.copySelectedPathsHotKey));
         }
         return true;
     }
@@ -2442,6 +2477,10 @@ private:
         return processLocatorHotKeyRegistered_ ? config_.processLocatorHotKey : 0;
     }
 
+    int CurrentRegisteredCopySelectedPathsHotKey() const {
+        return copySelectedPathsHotKeyRegistered_ ? config_.copySelectedPathsHotKey : 0;
+    }
+
     bool TrySetProcessLocatorHotKey(int key) {
         if (key == kMainHotKeyDoubleAlt) {
             key = 0;
@@ -2458,6 +2497,25 @@ private:
         return true;
     }
 
+    bool TrySetCopySelectedPathsHotKey(int key) {
+        if (key == kMainHotKeyDoubleAlt) {
+            key = 0;
+        }
+        const HotKeyAvailability availability = CheckCtrlAltHotKeyAvailability(
+            hwnd_, key, CurrentRegisteredCopySelectedPathsHotKey());
+        if (!availability.available) {
+            draft_.copySelectedPathsHotKey = key;
+            UpdateHotKeyLabels();
+            ShowThemedMessageBox(
+                hwnd_, instance_, theme_, CopySelectedPathsHotKeyStatusText(key, availability),
+                L"热键冲突", MB_OK | MB_ICONWARNING);
+            return false;
+        }
+        draft_.copySelectedPathsHotKey = key;
+        UpdateHotKeyLabels();
+        return true;
+    }
+
     bool ValidateHotKeysBeforeSave() {
         if (!draft_.globalHotKeysEnabled) {
             UpdateHotKeyLabels();
@@ -2468,6 +2526,19 @@ private:
             draft_.mainHotKey == draft_.processLocatorHotKey) {
             UpdateHotKeyLabels();
             ShowThemedMessageBox(hwnd_, instance_, theme_, L"主窗口显隐和进程定位器不能使用同一个快捷键。", L"热键冲突", MB_OK | MB_ICONWARNING);
+            return false;
+        }
+        if (!IsDoubleAltMainHotKey(draft_.mainHotKey) &&
+            draft_.mainHotKey != 0 &&
+            draft_.mainHotKey == draft_.copySelectedPathsHotKey) {
+            UpdateHotKeyLabels();
+            ShowThemedMessageBox(hwnd_, instance_, theme_, L"主窗口显隐和复制选中项绝对路径不能使用同一个快捷键。", L"热键冲突", MB_OK | MB_ICONWARNING);
+            return false;
+        }
+        if (draft_.processLocatorHotKey != 0 &&
+            draft_.processLocatorHotKey == draft_.copySelectedPathsHotKey) {
+            UpdateHotKeyLabels();
+            ShowThemedMessageBox(hwnd_, instance_, theme_, L"进程定位器和复制选中项绝对路径不能使用同一个快捷键。", L"热键冲突", MB_OK | MB_ICONWARNING);
             return false;
         }
         const HotKeyAvailability availability = CheckMainHotKeyAvailability(hwnd_, draft_.mainHotKey, CurrentRegisteredMainHotKey());
@@ -2486,6 +2557,19 @@ private:
                 instance_,
                 theme_,
                 ProcessLocatorHotKeyStatusText(draft_.processLocatorHotKey, locatorAvailability),
+                L"热键冲突",
+                MB_OK | MB_ICONWARNING);
+            return false;
+        }
+        const HotKeyAvailability copyAvailability = CheckCtrlAltHotKeyAvailability(
+            hwnd_, draft_.copySelectedPathsHotKey, CurrentRegisteredCopySelectedPathsHotKey());
+        UpdateHotKeyLabels();
+        if (!copyAvailability.available) {
+            ShowThemedMessageBox(
+                hwnd_,
+                instance_,
+                theme_,
+                CopySelectedPathsHotKeyStatusText(draft_.copySelectedPathsHotKey, copyAvailability),
                 L"热键冲突",
                 MB_OK | MB_ICONWARNING);
             return false;
@@ -2528,6 +2612,7 @@ private:
         if (applyCallback_) {
             mainHotKeyRegistered_ = applyCallback_(config_, importedData_);
             processLocatorHotKeyRegistered_ = config_.globalHotKeysEnabled && config_.processLocatorHotKey != 0;
+            copySelectedPathsHotKeyRegistered_ = config_.globalHotKeysEnabled && config_.copySelectedPathsHotKey != 0;
             importedData_ = false;
         }
     }
@@ -2560,6 +2645,10 @@ private:
     }
 
     void ResetContextMenu() {
+        if (contextMenuRefreshBusy_) {
+            ShowToast(L"Windows 菜单正在刷新，请稍候。", ThemedToastRole::Info);
+            return;
+        }
         if (!resetContextMenuCallback_) {
             ShowThemedMessageBox(
                 hwnd_, instance_, theme_, L"当前无法访问右键菜单缓存。", L"重置右键菜单", MB_OK | MB_ICONWARNING);
@@ -2588,83 +2677,121 @@ private:
         }
     }
 
-    void RefreshContextMenuFromNative() {
-        if (!resetContextMenuCallback_) {
-            ShowThemedMessageBox(
-                hwnd_, instance_, theme_, L"当前无法访问右键菜单缓存。", L"从Windows菜单刷新", MB_OK | MB_ICONWARNING);
-            return;
+    ShellContextMenuTrackingOptions ContextMenuTrackingDraft() const {
+        ShellContextMenuTrackingOptions tracking;
+        for (const auto& provider : TrackedContextMenuProviders()) {
+            tracking.*(provider.trackingMember) = draft_.*(provider.configMember);
         }
-
-        // 后台线程中执行扫描和刷新
-        const HWND target = hwnd_;
-        const AppConfig currentConfig = draft_;
-        std::thread refreshThread([target, currentConfig]() {
-            try {
-                // 初始化缓存服务
-                ShellContextMenuCacheService cache;
-
-                // 获取启用的provider列表
-                const auto& providers = TrackedContextMenuProviders();
-                std::vector<std::wstring> enabledProviderIds;
-
-                for (const auto& provider : providers) {
-                    if (currentConfig.*(provider.configMember)) {
-                        enabledProviderIds.push_back(provider.providerId);
-                    }
-                }
-
-                if (enabledProviderIds.empty()) {
-                    auto* msgPtr = new std::wstring(L"没有启用的工具。");
-                    PostMessage(target, WM_CONTEXT_MENU_REFRESH_DONE, 0, reinterpret_cast<LPARAM>(msgPtr));
-                    return;
-                }
-
-                std::wstring resultMessage = L"";
-                int successCount = 0;
-                int failureCount = 0;
-
-                // 创建虚拟link用于刷新（因为我们在设置对话框中没有实际的links）
-                Link dummyLink;
-                dummyLink.id = 0;
-                dummyLink.name = L"Settings";
-                std::vector<Link> dummyLinks = {dummyLink};
-
-                // 为每个启用的provider刷新菜单
-                for (const auto& providerId : enabledProviderIds) {
-                    std::wstring errorMessage;
-                    if (ShellItemService::RefreshProviderForAllLinks(target, dummyLinks, providerId, cache, errorMessage)) {
-                        successCount++;
-                    } else {
-                        failureCount++;
-                    }
-                }
-
-                if (failureCount > 0) {
-                    resultMessage = L"刷新完成: 成功 " + std::to_wstring(successCount) + L" 个，失败 " + std::to_wstring(failureCount) + L" 个。";
-                    auto* msgPtr = new std::wstring(resultMessage);
-                    PostMessage(target, WM_CONTEXT_MENU_REFRESH_DONE, 1, reinterpret_cast<LPARAM>(msgPtr));
-                } else {
-                    resultMessage = L"已从Windows菜单成功刷新所有工具。";
-                    auto* msgPtr = new std::wstring(resultMessage);
-                    PostMessage(target, WM_CONTEXT_MENU_REFRESH_DONE, 2, reinterpret_cast<LPARAM>(msgPtr));
-                }
-
-                // 刷新表格显示
-                PostMessage(target, WM_CONTEXT_MENU_TABLE_REFRESH, 0, 0);
-            } catch (...) {
-                auto* msgPtr = new std::wstring(L"刷新过程中发生异常。");
-                PostMessage(target, WM_CONTEXT_MENU_REFRESH_DONE, 1, reinterpret_cast<LPARAM>(msgPtr));
-            }
-        });
-        refreshThread.detach();
-
-        ShowToast(L"正在扫描Windows菜单...", ThemedToastRole::Info, 3000);
+        return tracking;
     }
 
-    std::vector<Link> GetAllEnabledLinks() {
-        // 在设置对话框中，我们无法访问主窗口的实际links
-        // 此方法保留用于将来使用，当links通过其他方式可用时
-        return {};
+    void SetContextMenuRefreshBusy(bool busy) {
+        contextMenuRefreshBusy_ = busy;
+        if (refreshContextMenuButton_) {
+            SetWindowTextW(refreshContextMenuButton_, busy ? L"扫描中..." : L"从Windows菜单刷新");
+        }
+    }
+
+    std::wstring ContextMenuRefreshResultText(const ShellContextMenuRefreshResult& result) const {
+        std::wstring message =
+            L"扫描启动项: " + std::to_wstring(result.totalLinks) +
+            L"\n成功: " + std::to_wstring(result.succeededLinks) +
+            L"\n跳过: " + std::to_wstring(result.skippedLinks) +
+            L"\n失败: " + std::to_wstring(result.failures.size()) +
+            L"\n更新菜单项: " + std::to_wstring(result.menuItemCount);
+        const std::size_t detailCount = std::min<std::size_t>(result.failures.size(), 5);
+        for (std::size_t index = 0; index < detailCount; ++index) {
+            const auto& failure = result.failures[index];
+            message += L"\n\n";
+            message += failure.linkName.empty() ? L"刷新服务" : failure.linkName;
+            message += L": " + failure.message;
+        }
+        if (result.failures.size() > detailCount) {
+            message += L"\n\n其余 " + std::to_wstring(result.failures.size() - detailCount) + L" 项请查看日志。";
+        }
+        return message;
+    }
+
+    void CompleteContextMenuRefresh() {
+        std::optional<ShellContextMenuRefreshResult> result;
+        {
+            std::lock_guard lock(contextMenuRefreshMutex_);
+            result = std::move(contextMenuRefreshResult_);
+            contextMenuRefreshResult_.reset();
+        }
+        if (contextMenuRefreshThread_.joinable()) {
+            contextMenuRefreshThread_.join();
+        }
+        SetContextMenuRefreshBusy(false);
+        if (!result) {
+            ShowThemedMessageBox(
+                hwnd_, instance_, theme_, L"刷新线程未返回结果。", L"从Windows菜单刷新", MB_OK | MB_ICONWARNING);
+            return;
+        }
+        if (result->cancelled) {
+            ShowToast(L"已取消 Windows 菜单刷新。", ThemedToastRole::Info);
+            return;
+        }
+        if (result->succeededLinks > 0 && contextMenuRefreshApplyCallback_) {
+            contextMenuRefreshApplyCallback_(*result);
+        }
+        AddContextMenuTableRows();
+        if (result->failures.empty()) {
+            const std::wstring message =
+                L"已刷新 " + std::to_wstring(result->succeededLinks) +
+                L" 个启动项，更新 " + std::to_wstring(result->menuItemCount) + L" 个菜单项。";
+            ShowToast(message, ThemedToastRole::Success, 5000);
+            return;
+        }
+        ShowThemedMessageBox(
+            hwnd_, instance_, theme_, ContextMenuRefreshResultText(*result),
+            L"从Windows菜单刷新", MB_OK | MB_ICONWARNING);
+    }
+
+    void RefreshContextMenuFromNative() {
+        if (contextMenuRefreshBusy_) {
+            ShowToast(L"Windows 菜单正在刷新，请稍候。", ThemedToastRole::Info);
+            return;
+        }
+        const ShellContextMenuTrackingOptions tracking = ContextMenuTrackingDraft();
+        if (!tracking.Any()) {
+            ShowThemedMessageBox(
+                hwnd_, instance_, theme_, L"没有启用需要跟踪的工具。", L"从Windows菜单刷新", MB_OK | MB_ICONINFORMATION);
+            return;
+        }
+        if (contextMenuLinks_.empty()) {
+            ShowThemedMessageBox(
+                hwnd_, instance_, theme_, L"当前没有可刷新的启动项。", L"从Windows菜单刷新", MB_OK | MB_ICONINFORMATION);
+            return;
+        }
+        if (contextMenuRefreshThread_.joinable()) {
+            contextMenuRefreshThread_.join();
+        }
+
+        ShellContextMenuRefreshRequest request{contextMenuLinks_, tracking};
+        const HWND target = hwnd_;
+        const SettingsContextMenuRefreshRunner runner = contextMenuRefreshRunner_;
+        SetContextMenuRefreshBusy(true);
+        ShowToast(L"正在扫描 Windows 原生菜单...", ThemedToastRole::Info, 5000);
+        contextMenuRefreshThread_ = std::jthread(
+            [this, target, request = std::move(request), runner](std::stop_token stopToken) mutable {
+                ShellContextMenuRefreshResult result;
+                try {
+                    result = runner
+                        ? runner(request, stopToken)
+                        : ShellContextMenuRefreshService().Refresh(request, stopToken);
+                } catch (...) {
+                    result.tracking = request.tracking;
+                    result.totalLinks = static_cast<int>(request.links.size());
+                    result.failures.push_back(ShellContextMenuRefreshFailure{
+                        0, L"", L"刷新过程中发生未处理异常。"});
+                }
+                {
+                    std::lock_guard lock(contextMenuRefreshMutex_);
+                    contextMenuRefreshResult_ = std::move(result);
+                }
+                PostMessageW(target, WM_CONTEXT_MENU_REFRESH_DONE, 0, 0);
+            });
     }
 
     bool PrepareWebDavOperation(AppConfig& value) {
@@ -3207,6 +3334,7 @@ private:
         if (!closeAfterCommit && applyCallback_) {
             mainHotKeyRegistered_ = applyCallback_(config_, importedData_);
             processLocatorHotKeyRegistered_ = config_.globalHotKeysEnabled && config_.processLocatorHotKey != 0;
+            copySelectedPathsHotKeyRegistered_ = config_.globalHotKeysEnabled && config_.copySelectedPathsHotKey != 0;
             importedData_ = false;
             UpdateHotKeyLabels();
             UpdateHttpStatusLabel();
@@ -3418,14 +3546,14 @@ private:
                 {behaviorForm.sectionRow({ThemedSectionItemKind::CompactButton, ThemedSectionItemKind::CompactButton})});
             HWND contextMenuMaintenanceGroup = AddSectionFrame(TabContextMenu, L"缓存维护", contextMenuMaintenanceSection.frame);
             const int contextMenuMaintenanceY = behaviorForm.sectionItemY(contextMenuMaintenanceSection, 0, settingsUi.compactButtonHeight());
-            HWND resetContextMenuButton = Button(
+            resetContextMenuButton_ = Button(
                 TabContextMenu,
                 ID_RESET_CONTEXT_MENU,
                 L"重置右键菜单",
                 behaviorLeft,
                 contextMenuMaintenanceY,
                 resetContextMenuWidth);
-            HWND refreshContextMenuButton = Button(
+            refreshContextMenuButton_ = Button(
                 TabContextMenu,
                 ID_REFRESH_CONTEXT_MENU_FROM_NATIVE,
                 L"从Windows菜单刷新",
@@ -3435,16 +3563,16 @@ private:
             ThemedTooltipOptions resetContextMenuTooltipOptions{};
             resetContextMenuTooltipOptions.placement = ThemedTooltipPlacement::Cursor;
             settingsUi.SetTooltip(
-                resetContextMenuButton,
+                resetContextMenuButton_,
                 L"恢复跟踪开关默认值，并清除全部菜单列表、状态与图标缓存。",
                 resetContextMenuTooltipOptions);
             ThemedTooltipOptions refreshContextMenuTooltipOptions{};
             refreshContextMenuTooltipOptions.placement = ThemedTooltipPlacement::Cursor;
             settingsUi.SetTooltip(
-                refreshContextMenuButton,
+                refreshContextMenuButton_,
                 L"扫描Windows原生菜单，增量更新所有启用的工具菜单和图标。",
                 refreshContextMenuTooltipOptions);
-            ThemedUi::BindGroupChildren(contextMenuMaintenanceGroup, {resetContextMenuButton, refreshContextMenuButton});
+            ThemedUi::BindGroupChildren(contextMenuMaintenanceGroup, {resetContextMenuButton_, refreshContextMenuButton_});
 
             const ThemedSectionGeometry interactionLaunchSection = behaviorForm.section(
                 behaviorFrameLeft, pageTop, behaviorFrameWidth,
@@ -3479,20 +3607,27 @@ private:
                 enterActiveGroup_, enterActiveTag_, groupDelayLabel, groupDelayEdit_, groupDelayUnit,
                 tagDelayLabel, tagDelayEdit_, tagDelayUnit});
 
-            const ThemedSectionGeometry hotKeySection = behaviorForm.section(
-                behaviorFrameLeft, pageTop, behaviorFrameWidth,
-                {behaviorForm.sectionRow({ThemedSectionItemKind::Toggle}),
-                 behaviorForm.sectionRow({ThemedSectionItemKind::Label}),
-                 behaviorForm.sectionRow({ThemedSectionItemKind::Label}),
-                 behaviorForm.sectionRow({ThemedSectionItemKind::Label}),
-                 behaviorForm.sectionRow({ThemedSectionItemKind::Label}),
-                 behaviorForm.sectionRow({ThemedSectionItemKind::Label})});
-            HWND hotKeyGroup = AddSectionFrame(TabHotKeys, L"全局快捷键", hotKeySection.frame);
+            const int hotKeyPageBottom = settingsUi.footerButtonY(settingsUi.footerButtonHeight()) - behaviorLayout.footerGap;
+            const RECT hotKeyGroupFrame{
+                behaviorFrameLeft,
+                pageTop,
+                behaviorFrameLeft + behaviorFrameWidth,
+                hotKeyPageBottom,
+            };
+            const RECT hotKeyContent{
+                hotKeyGroupFrame.left + groupInsets.left,
+                hotKeyGroupFrame.top + groupInsets.top,
+                hotKeyGroupFrame.right - groupInsets.right,
+                hotKeyGroupFrame.bottom - groupInsets.bottom,
+            };
+            HWND hotKeyGroup = AddSectionFrame(TabHotKeys, L"全局快捷键", hotKeyGroupFrame);
+            const int hotKeyToggleY = hotKeyContent.top;
             globalHotKeysEnabled_ = Toggle(
                 TabHotKeys, ID_GLOBAL_HOTKEYS_ENABLED, L"启用全局快捷键", behaviorLeft,
-                behaviorForm.sectionItemY(hotKeySection, 0, settingsUi.toggleHeight()), draft_.globalHotKeysEnabled, behaviorContentWidth);
-            const int hotKeyTableTop = hotKeySection.rowTops[1];
-            const int hotKeyTableBottom = hotKeySection.rowTops[4] + hotKeySection.rowHeights[4];
+                hotKeyToggleY, draft_.globalHotKeysEnabled, behaviorContentWidth);
+            const int hotKeyStatusY = hotKeyContent.bottom - settingsUi.labelHeight();
+            const int hotKeyTableTop = hotKeyToggleY + settingsUi.toggleHeight() + behaviorLayout.rowGap;
+            const int hotKeyTableBottom = hotKeyStatusY - behaviorLayout.rowGap;
             RECT hotKeyTableFrame{
                 behaviorLeft,
                 ContentY(hotKeyTableTop),
@@ -3507,13 +3642,13 @@ private:
                         L"function",
                         L"功能",
                         ThemedTableColumnAlign::Start,
-                        ThemedTableColumnWidth::Fixed,
-                        settingsUi.tableColumnWidth(L"进程定位器")},
+                        ThemedTableColumnWidth::Remaining},
                     ThemedTableColumn{
                         L"hotkey",
                         L"快捷键",
                         ThemedTableColumnAlign::Start,
-                        ThemedTableColumnWidth::Remaining},
+                        ThemedTableColumnWidth::Fixed,
+                        settingsUi.tableColumnWidth({L"快捷键", L"Ctrl+Alt+Page Down", L"双击 Alt", L"未设置"})},
                     ThemedTableColumn{
                         L"action",
                         L"操作",
@@ -3528,7 +3663,7 @@ private:
             AddTabChild(hotKeyTable_, TabHotKeys);
             mainHotKeyStatus_ = Label(
                 TabHotKeys, L"", behaviorLeft,
-                behaviorForm.sectionItemY(hotKeySection, 5, settingsUi.labelHeight()), behaviorContentWidth);
+                hotKeyStatusY, behaviorContentWidth);
             ThemedUi::BindGroupChildren(hotKeyGroup, {
                 globalHotKeysEnabled_, hotKeyTable_, mainHotKeyStatus_});
             UpdateHotKeyLabels();
@@ -3769,23 +3904,8 @@ private:
         case WM_SETTINGS_WEBDAV_DONE:
             HandleWebDavResult(std::unique_ptr<SettingsWebDavResult>(reinterpret_cast<SettingsWebDavResult*>(lParam)));
             return 0;
-        case WM_CONTEXT_MENU_REFRESH_DONE: {
-            auto* msgPtr = reinterpret_cast<std::wstring*>(lParam);
-            std::unique_ptr<std::wstring> message(msgPtr);
-            if (wParam == 2) {
-                // Success
-                ShowToast(*message, ThemedToastRole::Success, 5000);
-            } else if (wParam == 1) {
-                // Partial failure
-                ShowThemedMessageBox(hwnd_, instance_, theme_, *message, L"从Windows菜单刷新", MB_OK | MB_ICONWARNING);
-            } else {
-                // No enabled tools
-                ShowThemedMessageBox(hwnd_, instance_, theme_, *message, L"从Windows菜单刷新", MB_OK | MB_ICONINFORMATION);
-            }
-            return 0;
-        }
-        case WM_CONTEXT_MENU_TABLE_REFRESH:
-            AddContextMenuTableRows();
+        case WM_CONTEXT_MENU_REFRESH_DONE:
+            CompleteContextMenuRefresh();
             return 0;
         case WM_NOTIFY:
             if (HandleHotKeyTableEvent(lParam)) {
@@ -3817,6 +3937,10 @@ private:
             }
             if (LOWORD(wParam) == ID_PROCESS_LOCATOR_HOTKEY_CAPTURE) {
                 TrySetProcessLocatorHotKey(ShowHotKeyCaptureDialog(hwnd_, instance_, theme_, draft_.processLocatorHotKey));
+                return 0;
+            }
+            if (LOWORD(wParam) == ID_COPY_SELECTED_PATHS_HOTKEY_CAPTURE) {
+                TrySetCopySelectedPathsHotKey(ShowHotKeyCaptureDialog(hwnd_, instance_, theme_, draft_.copySelectedPathsHotKey));
                 return 0;
             }
             if (LOWORD(wParam) == ID_GLOBAL_HOTKEYS_ENABLED) {
@@ -3902,10 +4026,18 @@ private:
                 return 0;
             }
             if (LOWORD(wParam) == ID_SETTINGS_APPLY) {
+                if (contextMenuRefreshBusy_) {
+                    ShowToast(L"Windows 菜单正在刷新，请稍候。", ThemedToastRole::Info);
+                    return 0;
+                }
                 CommitSettings(false);
                 return 0;
             }
             if (LOWORD(wParam) == IDOK) {
+                if (contextMenuRefreshBusy_) {
+                    ShowToast(L"Windows 菜单正在刷新，请等待完成后关闭设置。", ThemedToastRole::Info);
+                    return 0;
+                }
                 if (!CommitSettings(true)) {
                     return 0;
                 }
@@ -3914,6 +4046,10 @@ private:
                 return 0;
             }
             if (LOWORD(wParam) == IDCANCEL) {
+                if (contextMenuRefreshBusy_) {
+                    ShowToast(L"Windows 菜单正在刷新，请等待完成后关闭设置。", ThemedToastRole::Info);
+                    return 0;
+                }
                 if (webDavBusy_) {
                     ShowToast(L"WebDAV 操作正在进行，请稍候完成。", ThemedToastRole::Warning);
                     return 0;
@@ -3924,6 +4060,10 @@ private:
             }
             return 0;
         case WM_CLOSE:
+            if (contextMenuRefreshBusy_) {
+                ShowToast(L"Windows 菜单正在刷新，请等待完成后关闭设置。", ThemedToastRole::Info);
+                return 0;
+            }
             if (webDavBusy_) {
                 ShowToast(L"WebDAV 操作正在进行，请稍候完成。", ThemedToastRole::Warning);
                 return 0;
@@ -3952,6 +4092,17 @@ private:
                 SetWindowTextW(mainHotKeyStatus_, L"主窗口显隐和进程定位器不能使用同一个快捷键。");
                 return;
             }
+            if (!IsDoubleAltMainHotKey(draft_.mainHotKey) &&
+                draft_.mainHotKey != 0 &&
+                draft_.mainHotKey == draft_.copySelectedPathsHotKey) {
+                SetWindowTextW(mainHotKeyStatus_, L"主窗口显隐和复制选中项绝对路径不能使用同一个快捷键。");
+                return;
+            }
+            if (draft_.processLocatorHotKey != 0 &&
+                draft_.processLocatorHotKey == draft_.copySelectedPathsHotKey) {
+                SetWindowTextW(mainHotKeyStatus_, L"进程定位器和复制选中项绝对路径不能使用同一个快捷键。");
+                return;
+            }
             const HotKeyAvailability mainAvailability = CheckMainHotKeyAvailability(hwnd_, draft_.mainHotKey, CurrentRegisteredMainHotKey());
             if (!mainAvailability.available) {
                 SetWindowTextW(mainHotKeyStatus_, MainHotKeyStatusText(draft_.mainHotKey, mainAvailability).c_str());
@@ -3959,7 +4110,13 @@ private:
             }
             const HotKeyAvailability locatorAvailability = CheckCtrlAltHotKeyAvailability(
                 hwnd_, draft_.processLocatorHotKey, CurrentRegisteredProcessLocatorHotKey());
-            SetWindowTextW(mainHotKeyStatus_, ProcessLocatorHotKeyStatusText(draft_.processLocatorHotKey, locatorAvailability).c_str());
+            if (!locatorAvailability.available) {
+                SetWindowTextW(mainHotKeyStatus_, ProcessLocatorHotKeyStatusText(draft_.processLocatorHotKey, locatorAvailability).c_str());
+                return;
+            }
+            const HotKeyAvailability copyAvailability = CheckCtrlAltHotKeyAvailability(
+                hwnd_, draft_.copySelectedPathsHotKey, CurrentRegisteredCopySelectedPathsHotKey());
+            SetWindowTextW(mainHotKeyStatus_, CopySelectedPathsHotKeyStatusText(draft_.copySelectedPathsHotKey, copyAvailability).c_str());
         }
     }
 
@@ -3974,6 +4131,7 @@ private:
     LocalHttpServerService* httpServer_ = nullptr;
     bool mainHotKeyRegistered_ = false;
     bool processLocatorHotKeyRegistered_ = false;
+    bool copySelectedPathsHotKeyRegistered_ = false;
     int currentTab_ = -1;
     RECT tabStripRect_{};
     int tabContentOffsetY_ = 0;
@@ -3996,6 +4154,8 @@ private:
     HWND autoRun_ = nullptr;
     HWND loggingEnabled_ = nullptr;
     HWND contextMenuTable_ = nullptr;
+    HWND resetContextMenuButton_ = nullptr;
+    HWND refreshContextMenuButton_ = nullptr;
     // 表格行序 → 绑定表下标（已安装在前、未安装沉底）。
     std::vector<std::size_t> contextMenuTableOrder_;
     HWND linkNameSingleLine_ = nullptr;
@@ -4050,10 +4210,17 @@ private:
     HWND todoOnlyFuture_ = nullptr;
     bool importedData_ = false;
     bool webDavBusy_ = false;
+    bool contextMenuRefreshBusy_ = false;
     bool accepted_ = false;
     bool done_ = false;
     SettingsApplyCallback applyCallback_;
     SettingsResetContextMenuCallback resetContextMenuCallback_;
+    std::vector<Link> contextMenuLinks_;
+    SettingsContextMenuRefreshRunner contextMenuRefreshRunner_;
+    SettingsContextMenuRefreshApplyCallback contextMenuRefreshApplyCallback_;
+    std::jthread contextMenuRefreshThread_;
+    std::mutex contextMenuRefreshMutex_;
+    std::optional<ShellContextMenuRefreshResult> contextMenuRefreshResult_;
 };
 }
 
@@ -4098,8 +4265,12 @@ bool ShowSettingsDialog(
     LocalHttpServerService* httpServer,
     bool mainHotKeyRegistered,
     bool processLocatorHotKeyRegistered,
+    bool copySelectedPathsHotKeyRegistered,
     SettingsApplyCallback applyCallback,
-    SettingsResetContextMenuCallback resetContextMenuCallback) {
+    SettingsResetContextMenuCallback resetContextMenuCallback,
+    const std::vector<Link>& contextMenuLinks,
+    SettingsContextMenuRefreshRunner contextMenuRefreshRunner,
+    SettingsContextMenuRefreshApplyCallback contextMenuRefreshApplyCallback) {
     SettingsDialog dialog(
         owner,
         instance,
@@ -4110,8 +4281,12 @@ bool ShowSettingsDialog(
         httpServer,
         mainHotKeyRegistered,
         processLocatorHotKeyRegistered,
+        copySelectedPathsHotKeyRegistered,
         std::move(applyCallback),
-        std::move(resetContextMenuCallback));
+        std::move(resetContextMenuCallback),
+        contextMenuLinks,
+        std::move(contextMenuRefreshRunner),
+        std::move(contextMenuRefreshApplyCallback));
     const bool accepted = dialog.Run();
     if (importedData) {
         *importedData = dialog.webDavDataImported();

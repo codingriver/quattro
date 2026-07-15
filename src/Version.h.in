@@ -4,7 +4,17 @@
 #define QUATTRO_VERSION_MINOR @PROJECT_VERSION_MINOR@
 #define QUATTRO_VERSION_PATCH @PROJECT_VERSION_PATCH@
 #define QUATTRO_VERSION_TEXT L"@PROJECT_VERSION@"
+#define QUATTRO_BUILD_MARKER_TEXT L"@QUATTRO_BUILD_MARKER@"
+#define QUATTRO_OFFICIAL_BUILD @QUATTRO_OFFICIAL_BUILD_VALUE@
 
 inline const wchar_t* QuattroVersionText() {
     return QUATTRO_VERSION_TEXT;
+}
+
+inline const wchar_t* QuattroBuildMarkerText() {
+    return QUATTRO_BUILD_MARKER_TEXT;
+}
+
+inline bool QuattroIsOfficialBuild() {
+    return QUATTRO_OFFICIAL_BUILD != 0;
 }

@@ -13,6 +13,7 @@
 #include "../src/windows/UrlEditDialog.h"
 #include "../src/services/WebDavClient.h"
 #include "../src/domain/PluginRegistry.h"
+#include "Version.h"
 
 #include <commctrl.h>
 #include <gdiplus.h>
@@ -56,6 +57,9 @@ struct Scenario {
     std::wstring hoverButtonText;
     std::wstring expectedTooltipText;
     std::wstring tooltipScreenshotName;
+    std::wstring actionButtonText;
+    DWORD closeDelayMs = 0;
+    bool validateHotKeyTableLayout = false;
 };
 
 struct TestState {
@@ -411,6 +415,28 @@ int ColorDistance(COLORREF a, COLORREF b) {
         std::abs(static_cast<int>(GetBValue(a)) - static_cast<int>(GetBValue(b)));
 }
 
+std::size_t CountPixelsNearColor(
+    HBITMAP bitmap,
+    int width,
+    int height,
+    RECT area,
+    COLORREF target,
+    int maxDistance) {
+    area.left = std::max(0L, area.left);
+    area.top = std::max(0L, area.top);
+    area.right = std::min(static_cast<LONG>(width), area.right);
+    area.bottom = std::min(static_cast<LONG>(height), area.bottom);
+    std::size_t count = 0;
+    for (int y = area.top; y < area.bottom; ++y) {
+        for (int x = area.left; x < area.right; ++x) {
+            if (ColorDistance(BitmapPixel(bitmap, x, y), target) <= maxDistance) {
+                ++count;
+            }
+        }
+    }
+    return count;
+}
+
 struct ChildInfo {
     HWND hwnd = nullptr;
     std::wstring className;
@@ -524,6 +550,18 @@ void ValidateAndCapture(HWND hwnd, const Scenario& scenario, const std::filesyst
             children = Children(hwnd);
         }
     }
+    if (!scenario.actionButtonText.empty()) {
+        auto button = std::find_if(children.begin(), children.end(), [&](const ChildInfo& child) {
+            return child.className == L"Button" && child.text == scenario.actionButtonText;
+        });
+        state.Check(button != children.end(), scenario.name + L": action button not found: " + scenario.actionButtonText);
+        if (button != children.end()) {
+            SendMessageW(button->hwnd, BM_CLICK, 0, 0);
+            Sleep(80);
+            RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+            children = Children(hwnd);
+        }
+    }
     ValidateChildBounds(hwnd, children, state, scenario.name);
 
     const auto texts = CollectTexts(hwnd, children);
@@ -602,6 +640,53 @@ void ValidateAndCapture(HWND hwnd, const Scenario& scenario, const std::filesyst
     }
     state.Check(editCount >= scenario.minEditCount, scenario.name + L": edit count lower than expected");
     state.Check(buttonCount >= scenario.minButtonCount, scenario.name + L": button count lower than expected");
+
+    if (scenario.validateHotKeyTableLayout) {
+        HWND table = nullptr;
+        for (const auto& child : children) {
+            if (IsWindowVisible(child.hwnd) && child.className == L"SysListView32") {
+                table = child.hwnd;
+                break;
+            }
+        }
+        state.Check(table != nullptr, scenario.name + L": visible hotkey table not found");
+        if (table) {
+            RECT tableClient{};
+            GetClientRect(table, &tableClient);
+            const int columnCount = Header_GetItemCount(ListView_GetHeader(table));
+            int columnsWidth = 0;
+            for (int column = 0; column < columnCount; ++column) {
+                columnsWidth += ListView_GetColumnWidth(table, column);
+            }
+            state.Check(columnCount == 3, scenario.name + L": hotkey table column count mismatch");
+            state.Check(
+                columnsWidth <= tableClient.right - tableClient.left,
+                scenario.name + L": hotkey table columns overflow horizontally");
+            if (columnCount == 3) {
+                const int functionWidth = ListView_GetColumnWidth(table, 0);
+                const int hotKeyWidth = ListView_GetColumnWidth(table, 1);
+                const int actionWidth = ListView_GetColumnWidth(table, 2);
+                state.Check(
+                    functionWidth > hotKeyWidth && hotKeyWidth > actionWidth,
+                    scenario.name + L": hotkey table column proportions are not compact");
+            }
+            const int rowCount = ListView_GetItemCount(table);
+            state.Check(rowCount == 3, scenario.name + L": hotkey table row count mismatch");
+            if (rowCount > 0) {
+                RECT lastRow{};
+                lastRow.left = LVIR_BOUNDS;
+                const bool hasLastRowRect = SendMessageW(
+                    table,
+                    LVM_GETITEMRECT,
+                    static_cast<WPARAM>(rowCount - 1),
+                    reinterpret_cast<LPARAM>(&lastRow)) != FALSE;
+                state.Check(hasLastRowRect, scenario.name + L": hotkey table last row bounds unavailable");
+                state.Check(
+                    hasLastRowRect && lastRow.bottom <= tableClient.bottom,
+                    scenario.name + L": hotkey table rows require vertical scrolling");
+            }
+        }
+    }
 
     for (const auto& expected : scenario.expectedEditTexts) {
         bool found = false;
@@ -785,6 +870,9 @@ void RunDialogScenario(const Scenario& scenario, const std::filesystem::path& ou
         AcceptanceLog(L"inspect " + scenario.name);
         ValidateAndCapture(hwnd, scenario, outputDir, state);
         inspected = true;
+        if (scenario.closeDelayMs > 0) {
+            Sleep(scenario.closeDelayMs);
+        }
         if (!scenario.cancelOnly) {
             PostMessageW(hwnd, WM_COMMAND, MAKEWPARAM(IDOK, BN_CLICKED), 0);
         }
@@ -807,7 +895,7 @@ std::filesystem::path ModuleDirectory() {
     return std::filesystem::path(path).parent_path();
 }
 
-void RunMainWindowScenario(const std::filesystem::path& outputDir, TestState& state) {
+void RunMainWindowScenario(const std::filesystem::path& outputDir, const Theme& theme, TestState& state) {
     AcceptanceLog(L"begin main-window");
     const std::filesystem::path exe = ModuleDirectory() / L"Quattro.exe";
     if (!std::filesystem::exists(exe)) {
@@ -830,8 +918,38 @@ void RunMainWindowScenario(const std::filesystem::path& outputDir, TestState& st
     HWND hwnd = WaitForTopWindow(FindWindowRequest{L"QuattroMainWindow", L"", process.dwProcessId}, 10000);
     if (hwnd) {
         AcceptanceLog(L"inspect main-window");
-        Scenario scenario{L"main-window", L"QuattroMainWindow", L"", L"main-window.png", {L"Quattro"}, {}, 0, 0, false};
+        const std::wstring marker = QuattroBuildMarkerText();
+        const std::wstring markerDisplay = marker.empty() ? std::wstring{} : L"（" + marker + L"）";
+        const std::wstring expectedTitle = L"Quattro快速启动器" + markerDisplay;
+        state.Check(WindowText(hwnd) == expectedTitle, L"main-window: native title build marker mismatch");
+        const std::wstring screenshotName = marker.empty()
+            ? L"main-window-official.png"
+            : (marker == L"DEBUG-All" ? L"main-window-debug-all.png" : L"main-window-debug.png");
+        Scenario scenario{L"main-window", L"QuattroMainWindow", L"", screenshotName, {expectedTitle}, {}, 0, 0, false};
         ValidateAndCapture(hwnd, scenario, outputDir, state);
+        BitmapCapture titleCapture = CaptureWindowBitmap(hwnd);
+        state.Check(titleCapture.bitmap != nullptr, L"main-window: title color capture failed");
+        if (titleCapture.bitmap) {
+            const Color danger = theme.color(L"global", L"danger", L"text");
+            const COLORREF dangerColor = RGB(
+                static_cast<BYTE>(std::clamp(danger.r, 0.0f, 1.0f) * 255.0f + 0.5f),
+                static_cast<BYTE>(std::clamp(danger.g, 0.0f, 1.0f) * 255.0f + 0.5f),
+                static_cast<BYTE>(std::clamp(danger.b, 0.0f, 1.0f) * 255.0f + 0.5f));
+            const RECT titleTextArea{32, 0, std::max(32, titleCapture.width - 120), std::min(52, titleCapture.height)};
+            const std::size_t dangerPixels = CountPixelsNearColor(
+                titleCapture.bitmap,
+                titleCapture.width,
+                titleCapture.height,
+                titleTextArea,
+                dangerColor,
+                48);
+            state.Check(
+                marker.empty() ? dangerPixels <= 2 : dangerPixels >= 3,
+                marker.empty()
+                    ? L"main-window: official title unexpectedly contains danger-colored marker pixels"
+                    : L"main-window: development marker is not rendered with the danger semantic color");
+            DeleteObject(titleCapture.bitmap);
+        }
         PostMessageW(hwnd, WM_COMMAND, MAKEWPARAM(ID_MENU_EXIT, 0), 0);
     } else {
         state.Check(false, L"main-window: window did not appear");
@@ -1691,6 +1809,26 @@ int wmain() {
     config.webDavRemotePath = L"/Quattro/backups/";
     config.webDavUserName = L"acceptance-user";
 
+    wchar_t mainWindowOnly[8]{};
+    if (GetEnvironmentVariableW(
+            L"QUATTRO_UI_ACCEPTANCE_MAIN_WINDOW_ONLY",
+            mainWindowOnly,
+            static_cast<DWORD>(std::size(mainWindowOnly))) > 0) {
+        RunMainWindowScenario(outputDir, theme, state);
+        DestroyWindow(owner);
+        OleUninitialize();
+        Gdiplus::GdiplusShutdown(gdiplusToken);
+        if (!state.ok) {
+            for (const auto& failure : state.failures) {
+                AcceptanceLog(L"main-window target failure " + failure);
+                std::wcerr << failure << L"\n";
+            }
+            return 1;
+        }
+        std::wcout << L"ui_main_window_acceptance=passed screenshots=" << outputDir.wstring() << L"\n";
+        return 0;
+    }
+
     wchar_t contextMenuOnly[8]{};
     if (GetEnvironmentVariableW(
             L"QUATTRO_UI_ACCEPTANCE_CONTEXT_MENU_ONLY",
@@ -1726,6 +1864,73 @@ int wmain() {
                 const std::filesystem::path baseDirectory = std::filesystem::current_path();
                 ShowSettingsDialog(owner, instance, config, theme, baseDirectory, baseDirectory, &imported);
             });
+
+        AppConfig refreshConfig = config;
+        refreshConfig.trackGitContextMenu = true;
+        Link refreshLink;
+        refreshLink.id = 9001;
+        refreshLink.name = L"异步刷新验收";
+        refreshLink.path = std::filesystem::current_path().wstring();
+        SettingsContextMenuRefreshRunner delayedRefresh = [](
+            const ShellContextMenuRefreshRequest& request,
+            std::stop_token stopToken) {
+            for (int elapsed = 0; elapsed < 600 && !stopToken.stop_requested(); elapsed += 20) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            }
+            ShellContextMenuRefreshResult result;
+            result.tracking = request.tracking;
+            result.totalLinks = static_cast<int>(request.links.size());
+            result.cancelled = stopToken.stop_requested();
+            if (!result.cancelled) {
+                result.succeededLinks = static_cast<int>(request.links.size());
+            }
+            return result;
+        };
+        Scenario busyScenario{
+            L"settings-context-menu-refresh-busy",
+            L"QuattroSettingsDialog",
+            L"设置",
+            L"settings-context-menu-refresh-busy.png",
+            {L"设置", L"确定", L"取消"},
+            {},
+            0,
+            2,
+            false,
+            false,
+            false,
+            {L"自动跟踪", L"缓存维护", L"扫描中..."},
+            L"右键菜单"};
+        busyScenario.actionButtonText = L"从Windows菜单刷新";
+        busyScenario.closeDelayMs = 700;
+        std::atomic_bool refreshApplied{false};
+        RunDialogScenario(
+            busyScenario,
+            outputDir,
+            state,
+            [&]() {
+                bool imported = false;
+                const std::filesystem::path baseDirectory = std::filesystem::current_path();
+                ShowSettingsDialog(
+                    owner,
+                    instance,
+                    refreshConfig,
+                    theme,
+                    baseDirectory,
+                    baseDirectory,
+                    &imported,
+                    nullptr,
+                    false,
+                    false,
+                    false,
+                    {},
+                    {},
+                    {refreshLink},
+                    delayedRefresh,
+                    [&](const ShellContextMenuRefreshResult&) {
+                        refreshApplied = true;
+                    });
+            });
+        state.Check(refreshApplied.load(), L"settings context menu refresh result was not applied on completion");
 
         DestroyWindow(owner);
         OleUninitialize();
@@ -1765,7 +1970,7 @@ int wmain() {
         return 0;
     }
 
-    RunMainWindowScenario(outputDir, state);
+    RunMainWindowScenario(outputDir, theme, state);
     RunTableAlternatingRowsScenario(outputDir, state);
     RunCheckableTableScenario(outputDir, state, 96);
     RunCheckableTableScenario(outputDir, state, 120);
@@ -1867,7 +2072,7 @@ int wmain() {
         {L"行为", {L"窗口行为", L"运行与数据", L"系统集成", L"启动后隐藏", L"开机启动", L"启用日志"}},
         {L"右键菜单", {L"自动跟踪", L"缓存维护", L"重置右键菜单"}},
         {L"交互", {L"启动操作", L"悬停激活", L"双击运行", L"分组激活延迟", L"标签激活延迟"}},
-        {L"热键", {L"全局快捷键", L"启用全局快捷键", L"主窗口显隐", L"进程定位器"}},
+        {L"热键", {L"全局快捷键", L"启用全局快捷键", L"主窗口显隐", L"进程定位器", L"复制选中项绝对路径"}},
         {L"链接", {L"目录命令", L"公共链接", L"打开目录命令", L"帮助链接", L"更新链接", L"FAQ 链接"}},
         {L"WebDAV", {L"WebDAV 备份", L"启用 WebDAV 备份", L"服务器地址", L"用户名", L"远端目录", L"测试连接", L"上传到云端"}},
         {L"HTTP", {L"服务配置", L"运行控制", L"高级配置", L"配置目录"}},
@@ -1889,6 +2094,10 @@ int wmain() {
             expected,
             page};
         settingsScenario.requireThemedEditFrames = page == L"HTTP";
+        if (page == L"行为") {
+            settingsScenario.expectedEditTexts = {L"1000"};
+        }
+        settingsScenario.validateHotKeyTableLayout = page == L"热键";
         if (page == L"右键菜单") {
             settingsScenario.unexpectedVisibleChildTexts = {
                 L"恢复跟踪开关默认值，并清除全部菜单列表、状态与图标缓存。",

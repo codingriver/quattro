@@ -87,3 +87,21 @@ public:
 private:
     DisabledItemStore store_;
 };
+
+// 广告拦截（简化版）：对文件/文件夹内的可启动程序写 IFEO 禁止运行拦截。
+// 与「自启动管理」独立，使用单独的 blocked-items.json 存储。
+class AdBlockManager {
+public:
+    AdBlockManager();
+    explicit AdBlockManager(DisabledItemStore store);
+
+    // 扫描给定文件或文件夹下的可启动文件（不递归子目录）；每项 canDisable 已由守卫判定。
+    ScanResult ScanPath(const std::wstring& fileOrDir) const;
+    // mode = L"exact"（精确路径）| L"name"（同名程序）。
+    OperationResult Block(const std::wstring& targetPath, const std::wstring& mode) const;
+    OperationResult Unblock(const std::wstring& recordId) const;
+    bool ListBlocked(std::vector<DisabledRecord>& records, std::wstring& error) const;
+
+private:
+    DisabledItemStore store_;
+};
