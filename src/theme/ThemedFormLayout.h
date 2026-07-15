@@ -109,6 +109,8 @@ public:
     std::vector<std::vector<RECT>> justifiedRowGroups(int y, std::initializer_list<ThemedFormGroup> groups) const;
     ThemedSectionRow sectionRow(std::initializer_list<ThemedSectionItemKind> items) const;
     ThemedSectionGeometry section(int left, int top, int width, std::initializer_list<ThemedSectionRow> rows) const;
+    // 行数在运行期决定（例如由数据表驱动的勾选框分组）时使用。
+    ThemedSectionGeometry section(int left, int top, int width, const std::vector<ThemedSectionRow>& rows) const;
     int sectionItemY(const ThemedSectionGeometry& section, int rowIndex, int itemHeight) const;
 
 private:

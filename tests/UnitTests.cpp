@@ -331,13 +331,9 @@ int wmain() {
     Check(!config.hideOnStart, "Config default hide on start");
     Check(!config.autoRun, "Config default auto run");
     Check(config.loggingEnabled, "Config default logging enabled");
-    Check(!config.trackGitContextMenu, "Config default Git context menu tracking disabled");
-    Check(!config.trackSvnContextMenu, "Config default SVN context menu tracking disabled");
-    Check(!config.trackVsCodeContextMenu, "Config default VS Code context menu tracking disabled");
-    Check(!config.trackTerminalContextMenu, "Config default terminal context menu tracking disabled");
-    Check(!config.trackArchiveContextMenu, "Config default archive context menu tracking disabled");
-    Check(!config.trackEverythingContextMenu, "Config default Everything context menu tracking disabled");
-    Check(!config.trackNotepadPlusPlusContextMenu, "Config default Notepad++ context menu tracking disabled");
+    for (const auto& provider : TrackedContextMenuProviders()) {
+        Check(!(config.*(provider.configMember)), "Config default context menu tracking disabled");
+    }
     Check(!config.hideNotifyIcon, "Config default tray visible");
     Check(config.width == 400, "Config default width fits three link columns");
     config.width = 500;
@@ -351,13 +347,9 @@ int wmain() {
     config.webDavUserName = L"unit";
     config.webDavKeepCount = 7;
     config.loggingEnabled = false;
-    config.trackGitContextMenu = true;
-    config.trackSvnContextMenu = true;
-    config.trackVsCodeContextMenu = true;
-    config.trackTerminalContextMenu = true;
-    config.trackArchiveContextMenu = true;
-    config.trackEverythingContextMenu = true;
-    config.trackNotepadPlusPlusContextMenu = true;
+    for (const auto& provider : TrackedContextMenuProviders()) {
+        config.*(provider.configMember) = true;
+    }
     config.httpServerEnabled = true;
     config.httpServerAutoStart = true;
     config.httpServerLanAccess = false;
@@ -377,13 +369,9 @@ int wmain() {
     Check(loaded.webDavUserName == L"unit", "Config webdav user");
     Check(loaded.webDavKeepCount == 7, "Config webdav keep count");
     Check(!loaded.loggingEnabled, "Config logging enabled");
-    Check(loaded.trackGitContextMenu, "Config Git context menu tracking");
-    Check(loaded.trackSvnContextMenu, "Config SVN context menu tracking");
-    Check(loaded.trackVsCodeContextMenu, "Config VS Code context menu tracking");
-    Check(loaded.trackTerminalContextMenu, "Config terminal context menu tracking");
-    Check(loaded.trackArchiveContextMenu, "Config archive context menu tracking");
-    Check(loaded.trackEverythingContextMenu, "Config Everything context menu tracking");
-    Check(loaded.trackNotepadPlusPlusContextMenu, "Config Notepad++ context menu tracking");
+    for (const auto& provider : TrackedContextMenuProviders()) {
+        Check(loaded.*(provider.configMember), "Config context menu tracking round trip");
+    }
     Check(loaded.httpServerEnabled, "Config http enabled");
     Check(loaded.httpServerAutoStart, "Config http autostart");
     Check(!loaded.httpServerLanAccess, "Config http LAN access");
@@ -488,13 +476,9 @@ int wmain() {
     notepadPlusPlusItem.verb = L"notepad++";
     shellSnapshot.items = {gitItem, svnItem, codeItem, archiveItem, everythingItem, notepadPlusPlusItem};
     ShellContextMenuTrackingOptions allTracking;
-    allTracking.git = true;
-    allTracking.svn = true;
-    allTracking.vsCode = true;
-    allTracking.terminal = true;
-    allTracking.archive = true;
-    allTracking.everything = true;
-    allTracking.notepadPlusPlus = true;
+    for (const auto& provider : TrackedContextMenuProviders()) {
+        allTracking.*(provider.trackingMember) = true;
+    }
     Link secondCachedLink = cachedLink;
     secondCachedLink.id = 702;
     secondCachedLink.path = L"C:\\Work\\SecondProject";
@@ -1252,7 +1236,76 @@ int wmain() {
     Check(ShellItemService::DetectTrackedContextMenuProvider(L"在终端中打开") == ShellContextMenuProviderId::Terminal, "Shell menu detects terminal");
     Check(ShellItemService::DetectTrackedContextMenuProvider(L"7-Zip") == ShellContextMenuProviderId::Archive, "Shell menu detects archive tool");
     Check(ShellItemService::DetectTrackedContextMenuProvider(L"Git Bash Here") == ShellContextMenuProviderId::Git, "Shell menu keeps Git Bash in Git provider");
+    Check(ShellItemService::DetectTrackedContextMenuProvider(L"Open with Cursor") == ShellContextMenuProviderId::Cursor, "Shell menu detects Cursor");
+    Check(ShellItemService::DetectTrackedContextMenuProvider(L"通过 Cursor 打开") == ShellContextMenuProviderId::Cursor, "Shell menu detects Cursor Chinese label");
+    Check(ShellItemService::DetectTrackedContextMenuProvider(L"", L"cursor") == ShellContextMenuProviderId::Cursor, "Shell menu detects Cursor verb");
+    Check(ShellItemService::DetectTrackedContextMenuProvider(L"Open with Sublime Text") == ShellContextMenuProviderId::SublimeText, "Shell menu detects Sublime Text");
+    Check(ShellItemService::DetectTrackedContextMenuProvider(L"", L"subl") == ShellContextMenuProviderId::SublimeText, "Shell menu detects Sublime verb");
+    Check(ShellItemService::DetectTrackedContextMenuProvider(L"Open with Windsurf") == ShellContextMenuProviderId::Windsurf, "Shell menu detects Windsurf");
+    Check(ShellItemService::DetectTrackedContextMenuProvider(L"Open with Trae") == ShellContextMenuProviderId::Trae, "Shell menu detects Trae");
+    Check(ShellItemService::DetectTrackedContextMenuProvider(L"Open with Zed") == ShellContextMenuProviderId::Zed, "Shell menu detects Zed");
+    Check(ShellItemService::DetectTrackedContextMenuProvider(L"", L"zed") == ShellContextMenuProviderId::Zed, "Shell menu detects Zed verb");
+    Check(ShellItemService::DetectTrackedContextMenuProvider(L"Edit with Vim") == ShellContextMenuProviderId::Vim, "Shell menu detects Vim");
+    Check(ShellItemService::DetectTrackedContextMenuProvider(L"", L"gvim") == ShellContextMenuProviderId::Vim, "Shell menu detects gVim verb");
+    Check(ShellItemService::DetectTrackedContextMenuProvider(L"Open with VSCodium", L"vscodium") == ShellContextMenuProviderId::VsCode, "Shell menu keeps VSCodium in VS Code provider");
+    Check(ShellItemService::DetectTrackedContextMenuProvider(L"Edit with Notepad3") == ShellContextMenuProviderId::NotepadPlusPlus, "Shell menu keeps Notepad3 in Notepad++ provider");
+    Check(ShellItemService::DetectTrackedContextMenuProvider(L"Pick cursor color").empty(), "Shell menu ignores cursor without open-with anchor");
+    Check(ShellItemService::DetectTrackedContextMenuProvider(L"", L"7zed").empty(), "Shell menu ignores zed substring verbs");
+    Check(ShellItemService::DetectTrackedContextMenuProvider(L"", L"vimeo").empty(), "Shell menu ignores vim substring verbs");
     Check(ShellItemService::DetectTrackedContextMenuProvider(L"普通菜单").empty(), "Shell menu ignores unknown provider");
+
+    {
+        // 设置页表格行序：已安装保持绑定表相对顺序，未安装沉底。
+        std::vector<bool> installed(TrackedContextMenuProviderCount, true);
+        installed[0] = false;
+        installed[3] = false;
+        const auto order = TrackedContextMenuDisplayOrder(installed);
+        Check(order.size() == TrackedContextMenuProviderCount, "Tracked provider display order covers all providers");
+        std::vector<bool> seen(TrackedContextMenuProviderCount, false);
+        bool uniqueIndices = true;
+        for (std::size_t index : order) {
+            if (index >= seen.size() || seen[index]) {
+                uniqueIndices = false;
+                break;
+            }
+            seen[index] = true;
+        }
+        Check(uniqueIndices, "Tracked provider display order has unique indices");
+        Check(order[order.size() - 2] == 0 && order.back() == 3,
+              "Tracked provider display order sinks uninstalled providers keeping table order");
+        bool installedKeepOrder = true;
+        for (std::size_t i = 0; i + 1 < order.size() - 2; ++i) {
+            if (order[i] > order[i + 1]) {
+                installedKeepOrder = false;
+                break;
+            }
+        }
+        Check(installedKeepOrder, "Tracked provider display order keeps installed relative order");
+        const auto allInstalled = TrackedContextMenuDisplayOrder(std::vector<bool>(TrackedContextMenuProviderCount, true));
+        bool identity = allInstalled.size() == TrackedContextMenuProviderCount;
+        for (std::size_t i = 0; identity && i < allInstalled.size(); ++i) {
+            identity = allInstalled[i] == i;
+        }
+        Check(identity, "Tracked provider display order is identity when all installed");
+        // 探测输入短于表长时缺省视为已安装。
+        const auto shortInput = TrackedContextMenuDisplayOrder({});
+        Check(shortInput.size() == TrackedContextMenuProviderCount, "Tracked provider display order tolerates short input");
+    }
+    {
+        // 绑定表自检：providerId/显示名非空且 providerId 唯一，
+        // 表内行序即右键菜单 provider 顺序的唯一来源。
+        std::unordered_set<std::wstring> providerIds;
+        bool bindingsValid = true;
+        for (const auto& provider : TrackedContextMenuProviders()) {
+            if (!provider.providerId || !*provider.providerId ||
+                !provider.displayName || !*provider.displayName ||
+                !providerIds.insert(provider.providerId).second) {
+                bindingsValid = false;
+                break;
+            }
+        }
+        Check(bindingsValid, "Tracked provider bindings have unique ids and display names");
+    }
     Check(ShellItemService::IsPidlBlobPlausible(std::vector<std::uint8_t>{0, 0}), "PIDL terminator blob");
     Check(!ShellItemService::IsPidlBlobPlausible(std::vector<std::uint8_t>{4, 0, 1}), "PIDL malformed blob");
 

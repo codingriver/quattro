@@ -669,7 +669,11 @@ private:
             }
         }
         if (selectedLinks_.empty()) {
-            MessageBoxW(hwnd_, L"请先扫描并勾选要导入的启动项。", L"快速导入", MB_OK | MB_ICONINFORMATION);
+            if (windowUi_) {
+                ThemedToastOptions options{};
+                options.role = ThemedToastRole::Warning;
+                windowUi_->ui().ShowToast(L"请先扫描并勾选要导入的启动项。", options);
+            }
             return;
         }
         Close(true);

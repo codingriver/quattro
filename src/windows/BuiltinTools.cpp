@@ -165,13 +165,14 @@ std::wstring HotKeyName(int key) {
     }
 }
 
-void CopyTextToClipboard(HWND owner, const std::wstring& text) {
+bool CopyTextToClipboard(HWND owner, const std::wstring& text) {
     if (!OpenClipboard(owner)) {
-        return;
+        return false;
     }
     EmptyClipboard();
     const SIZE_T bytes = (text.size() + 1) * sizeof(wchar_t);
     HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, bytes);
+    bool copied = false;
     if (memory) {
         void* data = GlobalLock(memory);
         if (data) {
@@ -179,12 +180,14 @@ void CopyTextToClipboard(HWND owner, const std::wstring& text) {
             GlobalUnlock(memory);
             SetClipboardData(CF_UNICODETEXT, memory);
             memory = nullptr;
+            copied = true;
         }
     }
     if (memory) {
         GlobalFree(memory);
     }
     CloseClipboard();
+    return copied;
 }
 
 std::wstring Utf8ToWide(const std::string& text) {
@@ -990,6 +993,18 @@ protected:
         return windowUi_->ui();
     }
 
+    void ShowToast(const std::wstring& text, ThemedToastRole role, int durationMs = 0) {
+        if (!windowUi_) {
+            return;
+        }
+        ThemedToastOptions options{};
+        options.role = role;
+        if (durationMs > 0) {
+            options.durationMs = durationMs;
+        }
+        windowUi_->ui().ShowToast(text, options);
+    }
+
     HWND CreateEdit(int id, int x, int y, int width, const std::wstring& value, DWORD extraStyle = ES_AUTOHSCROLL) {
         ThemedEditOptions options{};
         options.content = (extraStyle & ES_NUMBER) != 0 ? ThemedEditContent::Integer : ThemedEditContent::Text;
@@ -1208,6 +1223,7 @@ private:
         pickHotKeyRegistered_ = RegisterHotKey(hwnd_, ID_CLICK_PICK_HOTKEY, MOD_NOREPEAT, pickHotKeyCode_) != FALSE;
         if (!toggleHotKeyRegistered_ || !pickHotKeyRegistered_) {
             SetText(status_, L"全局热键注册失败，请换一个 F 键。");
+            ShowToast(L"全局热键注册失败，请换一个 F 键。", ThemedToastRole::Warning);
             return;
         }
         SetText(status_, L"就绪。按 " + HotKeyName(toggleHotKeyCode_) + L" 启动/停止，" + HotKeyName(pickHotKeyCode_) + L" 拾取坐标。");
@@ -2203,7 +2219,11 @@ private:
             return true;
         }
         if (id == ID_SW_COPY) {
-            CopyTextToClipboard(hwnd_, ExportText());
+            if (CopyTextToClipboard(hwnd_, ExportText())) {
+                ShowToast(L"秒表记录已复制到剪贴板。", ThemedToastRole::Success);
+            } else {
+                ShowToast(L"复制失败，剪贴板被其他程序占用。", ThemedToastRole::Danger);
+            }
             return true;
         }
         if (id == ID_SW_EXPORT) {
@@ -2235,7 +2255,11 @@ private:
             AddLap();
             return true;
         case 'C':
-            CopyTextToClipboard(hwnd_, ExportText());
+            if (CopyTextToClipboard(hwnd_, ExportText())) {
+                ShowToast(L"秒表记录已复制到剪贴板。", ThemedToastRole::Success);
+            } else {
+                ShowToast(L"复制失败，剪贴板被其他程序占用。", ThemedToastRole::Danger);
+            }
             return true;
         case 'E':
             ExportToFile();
@@ -2400,7 +2424,9 @@ private:
         file.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
         if (!file.good()) {
             ShowThemedMessageBox(hwnd_, instance_, theme_, L"导出失败。", L"秒表", MB_OK | MB_ICONWARNING);
+            return;
         }
+        ShowToast(L"秒表记录已导出。", ThemedToastRole::Success);
     }
 
     HWND display_ = nullptr;

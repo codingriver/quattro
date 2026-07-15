@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Models.h"
+#include "TrackedContextMenuProviders.h"
 
 #include <shlobj.h>
 #include <windows.h>
@@ -10,32 +11,9 @@
 #include <string>
 #include <vector>
 
-namespace ShellContextMenuProviderId {
-inline constexpr wchar_t Git[] = L"git";
-inline constexpr wchar_t Svn[] = L"svn";
-inline constexpr wchar_t VsCode[] = L"vscode";
-inline constexpr wchar_t Terminal[] = L"terminal";
-inline constexpr wchar_t Archive[] = L"archive";
-inline constexpr wchar_t Everything[] = L"everything";
-inline constexpr wchar_t NotepadPlusPlus[] = L"notepadplusplus";
-}
-
 enum class ShellContextMenuActionKind : std::uint8_t {
     NativeShell = 0,
     Terminal = 1,
-};
-
-struct ShellContextMenuTrackingOptions {
-    bool git = false;
-    bool svn = false;
-    bool vsCode = false;
-    bool terminal = false;
-    bool archive = false;
-    bool everything = false;
-    bool notepadPlusPlus = false;
-
-    bool Includes(const std::wstring& providerId) const;
-    bool Any() const;
 };
 
 struct ShellContextMenuItem {
@@ -87,6 +65,9 @@ public:
     static std::wstring DetectTrackedContextMenuProvider(
         const std::wstring& text,
         const std::wstring& verb = L"");
+    // 按绑定表探测键判断该 provider 对应工具是否在 Explorer 注册了右键菜单；
+    // 探测键为空的表项（如系统终端）恒为已安装。
+    static bool IsTrackedProviderInstalled(const TrackedContextMenuProviderBinding& binding);
     static bool IsShellParseName(const std::wstring& value);
     static bool IsPidlBlobPlausible(const std::vector<std::uint8_t>& blob);
     static std::optional<ShellItemRef> FromAbsolutePidl(PCIDLIST_ABSOLUTE pidl);

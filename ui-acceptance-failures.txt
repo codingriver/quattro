@@ -1,2 +1,2 @@
-settings-dialog-????: expected visible child text not found: ???? Everything ????
-settings-dialog-????: expected visible child text not found: ???? Notepad++ ????
+table-alternating-rows: adjacent unselected rows share the same background (zebra striping missing)
+table-alternating-rows: an unselected normal row is painted with the selected background

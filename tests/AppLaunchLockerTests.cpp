@@ -61,8 +61,10 @@ int wmain() {
     }
 
     for (StartupSourceType source : {StartupSourceType::Registry, StartupSourceType::StartupFolder,
-            StartupSourceType::ScheduledTask, StartupSourceType::Service, StartupSourceType::Driver,
-            StartupSourceType::WmiSubscription, StartupSourceType::Winlogon, StartupSourceType::AppInitDll,
+            StartupSourceType::ScheduledTask, StartupSourceType::Service, StartupSourceType::ActiveSetup,
+            StartupSourceType::Driver, StartupSourceType::WmiSubscription, StartupSourceType::Winlogon,
+            StartupSourceType::WinlogonNotify, StartupSourceType::AppInitDll, StartupSourceType::AppCertDll,
+            StartupSourceType::BootExecute, StartupSourceType::KnownDll, StartupSourceType::ShellExtension,
             StartupSourceType::Ifeo}) {
         StartupSourceType parsed{};
         ok &= Check(StartupSourceFromKey(StartupSourceKey(source), parsed) && parsed == source,
@@ -80,8 +82,10 @@ int wmain() {
     const ScanResult scan = StartupManager(DisabledItemStore(directory / L"unused.json")).ScanAll();
     for (const auto& item : scan.items) {
         if (item.source == StartupSourceType::Driver || item.source == StartupSourceType::WmiSubscription ||
-            item.source == StartupSourceType::Winlogon || item.source == StartupSourceType::AppInitDll ||
-            item.source == StartupSourceType::Ifeo) {
+            item.source == StartupSourceType::Winlogon || item.source == StartupSourceType::WinlogonNotify ||
+            item.source == StartupSourceType::AppInitDll || item.source == StartupSourceType::AppCertDll ||
+            item.source == StartupSourceType::BootExecute || item.source == StartupSourceType::KnownDll ||
+            item.source == StartupSourceType::ShellExtension || item.source == StartupSourceType::Ifeo) {
             ok &= Check(item.readOnly && !item.canDisable, L"sensitive sources must always remain read-only");
         }
     }

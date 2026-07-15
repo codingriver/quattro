@@ -14,7 +14,7 @@ constexpr std::array<MenuVisualRequirement, 27> kTopRightMenuVisuals{{
     {ID_MENU_TOGGLE_TOPMOST, L"置顶", MenuIconPin},
     {ID_MENU_THEME_BASE, L"皮肤", MenuIconTheme},
     {ID_MENU_SETTINGS, L"设置", MenuIconSettings},
-    {ID_MENU_REFRESH_ALL_ICONS, L"重置所有图标", MenuIconRefresh},
+    {ID_MENU_REFRESH_ALL_ICONS, L"刷新", MenuIconRefresh},
     {ID_MENU_CLEAR_ICON_CACHE, L"清理图标缓存", MenuIconClear},
     {ID_MENU_SYSTEM_FUNCTION_BASE, L"系统功能", MenuIconSystem},
     {ID_MENU_TOOL_BASE, L"工具箱", MenuIconTools},

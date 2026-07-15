@@ -24,17 +24,30 @@
 
 | 来源 | 展示 | 禁用/恢复 |
 |---|---:|---:|
-| 注册表 Run、RunOnce、Policies Run、Windows Load/Run | 是 | 是，仅字符串值 |
+| 注册表 Run、RunOnce、RunOnceEx（HKCU/HKLM 及 WOW6432Node 32 位视图） | 是 | 是，仅字符串值 |
+| 注册表 RunServices、RunServicesOnce（HKCU/HKLM） | 是 | 是，仅字符串值 |
+| 注册表 Policies\Explorer\Run（HKCU/HKLM 双 hive） | 是 | 是，仅字符串值 |
+| 注册表 Windows NT\CurrentVersion\Windows 的 Load/Run | 是 | 是，仅字符串值 |
+| Active Setup Installed Components 的 StubPath | 是 | 是，备份并清除 StubPath |
 | 当前用户和公共启动文件夹 | 是 | 是 |
 | 自动触发的计划任务 | 是 | 是，Microsoft Windows 系统任务只读 |
 | 自动启动服务 | 是 | 是，改为手动且不停止服务 |
 | 驱动服务 | 是 | 否 |
 | WMI 永久事件订阅 | 是 | 否 |
-| Winlogon Shell、Userinit | 是 | 否 |
-| AppInit_DLLs | 是 | 否 |
-| 已有 IFEO Debugger 项 | 是 | 否 |
+| Winlogon Shell、Userinit（HKCU/HKLM 双 hive） | 是 | 否 |
+| Winlogon Notify 子键 | 是 | 否 |
+| AppInit_DLLs（64 位与 32 位视图） | 是 | 否 |
+| AppCertDLLs | 是 | 否 |
+| Session Manager BootExecute | 是 | 否 |
+| Session Manager KnownDLLs | 是 | 否 |
+| Shell 扩展（图标叠加、右键菜单等 COM 加载项） | 是 | 否 |
+| 已有 IFEO Debugger 项（64 位与 32 位视图） | 是 | 否 |
 
 应用自身设置中的“开机启动”最终写入上述入口时会被发现。第一版不为浏览器、更新器或具体应用开发专用配置适配器。
+
+扫描 Run、启动文件夹项时会读取 `StartupApproved` 中系统“设置→启动”开关的状态；若某项已被系统标记为禁用，界面显示“已被系统禁用”，本工具不再重复操作。第一版只读取该状态，不写入。
+
+> 边界声明：本版覆盖上述枚举来源，力求涵盖常见持久化/自启动点，但不声称枚举 Windows 全部机制。界面中的“全部项目”指“本工具支持的全部来源”。未列入的高级或罕见机制（如 COM 劫持的全部变体、部分内核级持久化）不在扫描范围内。
 
 ### 2.2 明确不做
 
@@ -44,7 +57,9 @@
 - 实时 kill、后台 Service、实时监控和系统变更通知。
 - 快照差异、独立审计数据库、系统还原点和事务框架。
 - 文件签名、发布者和信誉判断。
-- 驱动、WMI、Winlogon、AppInit 或 IFEO 的修改能力。
+- 驱动、WMI、Winlogon（含 Notify）、AppInit、AppCert、BootExecute、KnownDLLs、Shell 扩展或 IFEO 的修改能力。
+- 向 `StartupApproved` 写入开关状态（第一版只读取用于状态对齐）。
+- WinRT/UWP StartupTask 的枚举与禁用（后续版本处理）。
 
 ## 3. 固定操作规则
 
@@ -53,16 +68,28 @@
 ### 3.1 注册表启动项
 
 - 只操作 `REG_SZ` 和 `REG_EXPAND_SZ`。
-- 禁用前记录 hive、key、value name、value type 和 value data。
-- 禁用时删除原 value。
-- 恢复时如果原位置已经存在同名 value，不覆盖并提示用户。
+- 标准 `Run` 键（含 HKCU/HKLM、64 位与 WOW6432Node 视图）采用系统原生 `StartupApproved` 机制禁用（方案 B1，见 §3.7），不删除原 value。
+- `RunOnce`、`RunOnceEx`、`RunServices`、`RunServicesOnce`、`Policies\Explorer\Run` 及 `Windows` Load/Run 等键仍走删除 value 机制：
+  - 禁用前记录 hive、key、value name、value type 和 value data。
+  - 禁用时删除原 value。
+  - 恢复时如果原位置已经存在同名 value，不覆盖并提示用户。
 
 ### 3.2 启动文件夹
 
 - 支持 `.lnk`、`.url`、`.bat`、`.cmd`、`.ps1`、`.vbs`、`.js` 和 `.exe`。
-- 禁用时移动到 `%LOCALAPPDATA%\AppLaunchLocker\disabled`。
-- 恢复时移动回原位置。
-- 原位置已有文件或备份文件丢失时不覆盖、不猜测恢复。
+- 采用系统原生 `StartupApproved\StartupFolder` 机制禁用（方案 B1，见 §3.7），不移动文件；文件保留在原位置。
+- 恢复时清除 `StartupApproved` 中的禁用标记或写回原始 blob。
+
+### 3.7 StartupApproved 原生禁用机制（方案 B1）
+
+标准 `Run` 键与启动文件夹项复用 Windows「设置→应用→启动」和任务管理器所用的 `StartupApproved` 开关，实现非破坏性、与系统 UI 一致的禁用。
+
+- 目标键：`HKCU/HKLM\...\CurrentVersion\Explorer\StartupApproved\Run`（32 位视图为 `Run32`）与 `...\StartupApproved\StartupFolder`。
+- 存储为 12 字节 `REG_BINARY` blob：字节 0 最低位为 1 表示禁用（0x03/0x07），为 0 表示启用（0x02/0x06）；字节 4-11 为禁用时刻的 `FILETIME`，启用时为全零。
+- 禁用时备份原有 blob 到恢复记录（`saOriginalBlob`/`saHadOriginal` 等字段），写入禁用 blob；原 value 与 `.lnk` 文件保持不变。
+- 恢复时若存在原始 blob 则写回，否则删除该值（等价于启用）。
+- 因原项目未被删除，扫描仍会枚举到它：对已由本工具禁用且系统仍标记为禁用的项目从「当前自启动」中剔除；若用户已在系统设置中重新启用，则保留在「当前自启动」并放弃过期记录（状态漂移处理）。
+- 覆盖边界：仅标准 `Run` 与启动文件夹走此机制；`RunOnce/RunOnceEx/RunServices/Policies/Active Setup` 仍走各自的删除/清空机制，两套禁用机制按项目类型分派并存。
 
 ### 3.3 计划任务
 
@@ -77,6 +104,19 @@
 - Windows 目录中的服务、无明确可执行路径的服务、受保护服务和驱动服务只读。
 - 禁用时只把启动类型从自动改为手动，不停止当前服务。
 - 恢复时写回原启动类型和延迟自动启动状态。
+
+### 3.5 Active Setup
+
+- 来源为 `HKLM\SOFTWARE\Microsoft\Active Setup\Installed Components\<GUID>`（含 WOW6432Node 视图）子键的 `StubPath` 字符串值。
+- 只操作 `REG_SZ` 和 `REG_EXPAND_SZ` 的 `StubPath`，不删除子键、不改动其它值。
+- 禁用前记录 hive、子键路径、`StubPath` 类型和值；禁用时删除 `StubPath` 值。
+- 恢复时如原位置已存在 `StubPath`，不覆盖并提示用户。
+- HKLM 写入按操作触发 UAC。
+
+### 3.6 只读诊断来源
+
+- Winlogon Notify、AppCertDLLs、BootExecute、KnownDLLs 和 Shell 扩展一律只读，只展示名称、路径和命令。
+- 界面显示“仅查看”，不提供禁用或恢复操作，也不写入恢复存储。
 
 ## 4. 简单恢复存储
 

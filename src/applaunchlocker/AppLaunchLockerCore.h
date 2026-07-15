@@ -10,10 +10,16 @@ enum class StartupSourceType {
     StartupFolder,
     ScheduledTask,
     Service,
+    ActiveSetup,
     Driver,
     WmiSubscription,
     Winlogon,
+    WinlogonNotify,
     AppInitDll,
+    AppCertDll,
+    BootExecute,
+    KnownDll,
+    ShellExtension,
     Ifeo,
 };
 

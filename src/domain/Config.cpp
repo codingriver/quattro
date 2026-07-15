@@ -1,6 +1,7 @@
 #include "Config.h"
 
 #include "ConfigVersion.h"
+#include "TrackedContextMenuProviders.h"
 #include "Utilities.h"
 
 #include <algorithm>
@@ -49,13 +50,9 @@ AppConfig ConfigService::Load() const {
     config.showToolboxButton = ReadBool(L"bShowBtnToolbox", ReadBool(L"bShowBtnMenu", config.showToolboxButton));
     config.showSkinButton = ReadBool(L"bShowBtnSkin", config.showSkinButton);
     config.loggingEnabled = ReadBool(L"bLoggingEnabled", config.loggingEnabled);
-    config.trackGitContextMenu = ReadBool(L"bTrackGitContextMenu", config.trackGitContextMenu);
-    config.trackSvnContextMenu = ReadBool(L"bTrackSvnContextMenu", config.trackSvnContextMenu);
-    config.trackVsCodeContextMenu = ReadBool(L"bTrackVsCodeContextMenu", config.trackVsCodeContextMenu);
-    config.trackTerminalContextMenu = ReadBool(L"bTrackTerminalContextMenu", config.trackTerminalContextMenu);
-    config.trackArchiveContextMenu = ReadBool(L"bTrackArchiveContextMenu", config.trackArchiveContextMenu);
-    config.trackEverythingContextMenu = ReadBool(L"bTrackEverythingContextMenu", config.trackEverythingContextMenu);
-    config.trackNotepadPlusPlusContextMenu = ReadBool(L"bTrackNotepadPlusPlusContextMenu", config.trackNotepadPlusPlusContextMenu);
+    for (const auto& provider : TrackedContextMenuProviders()) {
+        config.*(provider.configMember) = ReadBool(provider.configKey, config.*(provider.configMember));
+    }
 
     config.mouseEnterActiveGroup = ReadBool(L"bMouseEnterActiveGroup", config.mouseEnterActiveGroup);
     config.mouseEnterActiveTag = ReadBool(L"bMouseEnterActiveTag", config.mouseEnterActiveTag);
@@ -210,13 +207,9 @@ AppConfig ConfigService::LoadForSchemaUpgrade(int targetVersion, bool& compatibl
     readBoolLegacy(L"bShowBtnToolbox", L"bShowBtnMenu", config.showToolboxButton);
     readBool(L"bShowBtnSkin", config.showSkinButton);
     readBool(L"bLoggingEnabled", config.loggingEnabled);
-    readBool(L"bTrackGitContextMenu", config.trackGitContextMenu);
-    readBool(L"bTrackSvnContextMenu", config.trackSvnContextMenu);
-    readBool(L"bTrackVsCodeContextMenu", config.trackVsCodeContextMenu);
-    readBool(L"bTrackTerminalContextMenu", config.trackTerminalContextMenu);
-    readBool(L"bTrackArchiveContextMenu", config.trackArchiveContextMenu);
-    readBool(L"bTrackEverythingContextMenu", config.trackEverythingContextMenu);
-    readBool(L"bTrackNotepadPlusPlusContextMenu", config.trackNotepadPlusPlusContextMenu);
+    for (const auto& provider : TrackedContextMenuProviders()) {
+        readBool(provider.configKey, config.*(provider.configMember));
+    }
     readBool(L"bMouseEnterActiveGroup", config.mouseEnterActiveGroup);
     readBool(L"bMouseEnterActiveTag", config.mouseEnterActiveTag);
     readInt(L"nActiveGroupDelay", config.activeGroupDelay);
@@ -328,13 +321,9 @@ void ConfigService::SaveWindowState(const AppConfig& config) const {
     WriteString(L"bShowBtnMenu", L"");
     WriteInt(L"bShowBtnSkin", config.showSkinButton ? 1 : 0);
     WriteInt(L"bLoggingEnabled", config.loggingEnabled ? 1 : 0);
-    WriteInt(L"bTrackGitContextMenu", config.trackGitContextMenu ? 1 : 0);
-    WriteInt(L"bTrackSvnContextMenu", config.trackSvnContextMenu ? 1 : 0);
-    WriteInt(L"bTrackVsCodeContextMenu", config.trackVsCodeContextMenu ? 1 : 0);
-    WriteInt(L"bTrackTerminalContextMenu", config.trackTerminalContextMenu ? 1 : 0);
-    WriteInt(L"bTrackArchiveContextMenu", config.trackArchiveContextMenu ? 1 : 0);
-    WriteInt(L"bTrackEverythingContextMenu", config.trackEverythingContextMenu ? 1 : 0);
-    WriteInt(L"bTrackNotepadPlusPlusContextMenu", config.trackNotepadPlusPlusContextMenu ? 1 : 0);
+    for (const auto& provider : TrackedContextMenuProviders()) {
+        WriteInt(provider.configKey, config.*(provider.configMember) ? 1 : 0);
+    }
     WriteInt(L"bGroupRight", config.groupRight ? 1 : 0);
     WriteInt(L"bTagRight", config.tagRight ? 1 : 0);
     WriteInt(L"nGroupWidth", config.groupWidth);
@@ -379,13 +368,9 @@ void ConfigService::Save(const AppConfig& config) const {
     WriteString(L"bShowBtnMenu", L"");
     WriteInt(L"bShowBtnSkin", config.showSkinButton ? 1 : 0);
     WriteInt(L"bLoggingEnabled", config.loggingEnabled ? 1 : 0);
-    WriteInt(L"bTrackGitContextMenu", config.trackGitContextMenu ? 1 : 0);
-    WriteInt(L"bTrackSvnContextMenu", config.trackSvnContextMenu ? 1 : 0);
-    WriteInt(L"bTrackVsCodeContextMenu", config.trackVsCodeContextMenu ? 1 : 0);
-    WriteInt(L"bTrackTerminalContextMenu", config.trackTerminalContextMenu ? 1 : 0);
-    WriteInt(L"bTrackArchiveContextMenu", config.trackArchiveContextMenu ? 1 : 0);
-    WriteInt(L"bTrackEverythingContextMenu", config.trackEverythingContextMenu ? 1 : 0);
-    WriteInt(L"bTrackNotepadPlusPlusContextMenu", config.trackNotepadPlusPlusContextMenu ? 1 : 0);
+    for (const auto& provider : TrackedContextMenuProviders()) {
+        WriteInt(provider.configKey, config.*(provider.configMember) ? 1 : 0);
+    }
     WriteInt(L"bGroupRight", config.groupRight ? 1 : 0);
     WriteInt(L"bTagRight", config.tagRight ? 1 : 0);
     WriteInt(L"nGroupWidth", config.groupWidth);

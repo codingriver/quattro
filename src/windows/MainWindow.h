@@ -32,6 +32,7 @@
 
 class ThemedWindowUi;
 class ThemedMenuFontCache;
+enum class ThemedToastRole;
 
 constexpr UINT WM_QUATTRO_WAKEUP = WM_APP + 0x65;
 constexpr UINT WM_QUATTRO_TRAY = WM_APP + 0x66;
@@ -281,6 +282,7 @@ private:
     void RestoreLegacyBuiltinSystemFunctionKeys();
     void CreateTooltip();
     void ApplyTooltipTheme();
+    void ShowToast(const std::wstring& text, ThemedToastRole role, int durationMs = 0);
     void HideItemTooltip();
     void UpdateItemTooltip(const HitArea& hit, POINT screenPoint);
     std::wstring LinkTooltipText(const Link& link) const;

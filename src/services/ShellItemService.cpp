@@ -624,11 +624,13 @@ std::wstring DetectProviderId(const std::wstring& text, const std::wstring& verb
     }
     if (lowerText.find(L"visual studio code") != std::wstring::npos ||
         lowerText.find(L"open with code") != std::wstring::npos ||
+        lowerText.find(L"vscodium") != std::wstring::npos ||
         lowerText.find(L"通过 code 打开") != std::wstring::npos ||
         lowerText.find(L"使用 code 打开") != std::wstring::npos ||
         lowerText.find(L"用 code 打开") != std::wstring::npos ||
         lowerText.find(L"在 code 中打开") != std::wstring::npos ||
         lowerVerb.find(L"vscode") != std::wstring::npos ||
+        lowerVerb.find(L"vscodium") != std::wstring::npos ||
         lowerVerb.find(L"openwithcode") != std::wstring::npos) {
         return ShellContextMenuProviderId::VsCode;
     }
@@ -662,6 +664,53 @@ std::wstring DetectProviderId(const std::wstring& text, const std::wstring& verb
         lowerVerb.find(L"notepadplusplus") != std::wstring::npos ||
         lowerVerb.find(L"npp") != std::wstring::npos) {
         return ShellContextMenuProviderId::NotepadPlusPlus;
+    }
+    if (lowerText.find(L"sublime text") != std::wstring::npos ||
+        lowerText.find(L"open with sublime") != std::wstring::npos ||
+        lowerText.find(L"用 sublime 打开") != std::wstring::npos ||
+        lowerText.find(L"通过 sublime 打开") != std::wstring::npos ||
+        lowerText.find(L"在 sublime 中打开") != std::wstring::npos ||
+        lowerVerb.find(L"sublime") != std::wstring::npos ||
+        lowerVerb.find(L"subl") != std::wstring::npos) {
+        return ShellContextMenuProviderId::SublimeText;
+    }
+    if (lowerText.find(L"open with cursor") != std::wstring::npos ||
+        lowerText.find(L"用 cursor 打开") != std::wstring::npos ||
+        lowerText.find(L"通过 cursor 打开") != std::wstring::npos ||
+        lowerText.find(L"在 cursor 中打开") != std::wstring::npos ||
+        lowerVerb.find(L"cursor") != std::wstring::npos) {
+        return ShellContextMenuProviderId::Cursor;
+    }
+    if (lowerText.find(L"open with windsurf") != std::wstring::npos ||
+        lowerText.find(L"用 windsurf 打开") != std::wstring::npos ||
+        lowerText.find(L"通过 windsurf 打开") != std::wstring::npos ||
+        lowerText.find(L"在 windsurf 中打开") != std::wstring::npos ||
+        lowerVerb.find(L"windsurf") != std::wstring::npos) {
+        return ShellContextMenuProviderId::Windsurf;
+    }
+    if (lowerText.find(L"open with trae") != std::wstring::npos ||
+        lowerText.find(L"用 trae 打开") != std::wstring::npos ||
+        lowerText.find(L"通过 trae 打开") != std::wstring::npos ||
+        lowerText.find(L"在 trae 中打开") != std::wstring::npos ||
+        lowerVerb.find(L"trae") != std::wstring::npos) {
+        return ShellContextMenuProviderId::Trae;
+    }
+    // “zed”是常见英文片段（7zed、zedge），文本要求 open-with 锚点，verb 要求全词。
+    if (lowerText.find(L"open with zed") != std::wstring::npos ||
+        lowerText.find(L"用 zed 打开") != std::wstring::npos ||
+        lowerText.find(L"通过 zed 打开") != std::wstring::npos ||
+        lowerText.find(L"在 zed 中打开") != std::wstring::npos ||
+        lowerVerb == L"zed") {
+        return ShellContextMenuProviderId::Zed;
+    }
+    // “vim”同理：不匹配裸 vi/vim 文本，verb 仅接受 gvim 或全词 vim。
+    if (lowerText.find(L"edit with vim") != std::wstring::npos ||
+        lowerText.find(L"edit with gvim") != std::wstring::npos ||
+        lowerText.find(L"用 vim 编辑") != std::wstring::npos ||
+        lowerText.find(L"使用 vim 编辑") != std::wstring::npos ||
+        lowerVerb.find(L"gvim") != std::wstring::npos ||
+        lowerVerb == L"vim") {
+        return ShellContextMenuProviderId::Vim;
     }
     if (lowerText.find(L"windows terminal") != std::wstring::npos ||
         lowerText.find(L"open in terminal") != std::wstring::npos ||
@@ -988,24 +1037,28 @@ std::optional<UINT> FindTrackedCommand(
 
 }
 
-bool ShellContextMenuTrackingOptions::Includes(const std::wstring& providerId) const {
-    return (git && providerId == ShellContextMenuProviderId::Git) ||
-           (svn && providerId == ShellContextMenuProviderId::Svn) ||
-           (vsCode && providerId == ShellContextMenuProviderId::VsCode) ||
-           (terminal && providerId == ShellContextMenuProviderId::Terminal) ||
-           (archive && providerId == ShellContextMenuProviderId::Archive) ||
-           (everything && providerId == ShellContextMenuProviderId::Everything) ||
-           (notepadPlusPlus && providerId == ShellContextMenuProviderId::NotepadPlusPlus);
-}
-
-bool ShellContextMenuTrackingOptions::Any() const {
-    return git || svn || vsCode || terminal || archive || everything || notepadPlusPlus;
-}
-
 std::wstring ShellItemService::DetectTrackedContextMenuProvider(
     const std::wstring& text,
     const std::wstring& verb) {
     return DetectProviderId(text, verb);
+}
+
+bool ShellItemService::IsTrackedProviderInstalled(const TrackedContextMenuProviderBinding& binding) {
+    if (!binding.shellProbeKeys[0]) {
+        // 空探测表（如系统终端）恒为已安装。
+        return true;
+    }
+    for (const wchar_t* probeKey : binding.shellProbeKeys) {
+        if (!probeKey) {
+            break;
+        }
+        HKEY key = nullptr;
+        if (RegOpenKeyExW(HKEY_CLASSES_ROOT, probeKey, 0, KEY_READ, &key) == ERROR_SUCCESS) {
+            RegCloseKey(key);
+            return true;
+        }
+    }
+    return false;
 }
 
 bool ShellItemService::LoadExecutableMenuIcon(

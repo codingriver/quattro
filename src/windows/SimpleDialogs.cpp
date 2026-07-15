@@ -9,12 +9,14 @@
 #include "JsonValue.h"
 #include "LocalHttpServerService.h"
 #include "MainHotKey.h"
+#include "ShellItemService.h"
 #include "Storage.h"
 #include "ThemedControls.h"
 #include "ThemedFormLayout.h"
 #include "ThemedUi.h"
 #include "ThemedWindowUi.h"
 #include "TodoSchedule.h"
+#include "TrackedContextMenuProviders.h"
 #include "Utilities.h"
 #include "WebDavBackupService.h"
 #include "WebDavCredentialService.h"
@@ -78,14 +80,9 @@ constexpr int ID_HTTP_OPEN_ROOT = 429;
 constexpr int ID_SETTINGS_APPLY = 430;
 constexpr int ID_HTTP_ADDRESS = 431;
 constexpr int ID_LOGGING_ENABLED = 432;
-constexpr int ID_TRACK_GIT_CONTEXT_MENU = 433;
-constexpr int ID_TRACK_SVN_CONTEXT_MENU = 434;
-constexpr int ID_TRACK_VSCODE_CONTEXT_MENU = 435;
-constexpr int ID_TRACK_TERMINAL_CONTEXT_MENU = 436;
-constexpr int ID_TRACK_ARCHIVE_CONTEXT_MENU = 437;
-constexpr int ID_TRACK_EVERYTHING_CONTEXT_MENU = 438;
-constexpr int ID_TRACK_NOTEPAD_PLUS_PLUS_CONTEXT_MENU = 439;
+// 433-439 与 441-446 由 TrackedContextMenuProviders() 表内的行键占用。
 constexpr int ID_RESET_CONTEXT_MENU = 440;
+constexpr int ID_CONTEXT_MENU_TABLE = 447;
 constexpr int ID_MESSAGE_TEXT = 501;
 constexpr int ID_HOTKEY_CONFLICT_IGNORE = 502;
 constexpr int ID_MAIN_HOTKEY_PROBE = 0x5148;
@@ -2240,6 +2237,66 @@ private:
         });
     }
 
+    void AddContextMenuTableRows() {
+        if (!contextMenuTable_) return;
+        const auto providers = TrackedContextMenuProviders();
+        std::vector<bool> installed;
+        installed.reserve(providers.size());
+        for (const auto& provider : providers) {
+            installed.push_back(ShellItemService::IsTrackedProviderInstalled(provider));
+        }
+        contextMenuTableOrder_ = TrackedContextMenuDisplayOrder(installed);
+        std::vector<ThemedTableRow> rows;
+        rows.reserve(contextMenuTableOrder_.size());
+        for (std::size_t bindingIndex : contextMenuTableOrder_) {
+            const auto& provider = providers[bindingIndex];
+            ThemedTableRow row{};
+            row.key = provider.checkBoxControlId;
+            row.cells = {
+                ThemedTableCell{provider.displayName},
+                ThemedTableCell{installed[bindingIndex] ? L"已安装" : L"未安装"},
+            };
+            row.checked = draft_.*(provider.configMember);
+            // 未安装的工具本就不会产生可跟踪的菜单项，行置灰禁用；
+            // SetTableRows 会同时清除禁用行的勾选显示，配置值仍以 draft_ 为准。
+            row.enabled = installed[bindingIndex];
+            rows.push_back(std::move(row));
+        }
+        ThemedUi::SetTableRows(contextMenuTable_, rows);
+    }
+
+    void ReadContextMenuTableDraft(AppConfig& value) const {
+        const auto providers = TrackedContextMenuProviders();
+        for (std::size_t rowIndex = 0; rowIndex < contextMenuTableOrder_.size(); ++rowIndex) {
+            const auto& provider = providers[contextMenuTableOrder_[rowIndex]];
+            if (!ThemedUi::IsTableRowEnabled(contextMenuTable_, static_cast<int>(rowIndex))) {
+                // 未安装行不可交互，保留原配置值。
+                continue;
+            }
+            value.*(provider.configMember) = ThemedUi::IsTableChecked(
+                contextMenuTable_, static_cast<int>(rowIndex));
+        }
+    }
+
+    bool HandleContextMenuTableEvent(LPARAM lParam) {
+        ThemedTableEvent event{};
+        if (!ThemedUi::DecodeTableEvent(contextMenuTable_, lParam, event)) {
+            return false;
+        }
+        if (event.kind != ThemedTableEventKind::CheckChanged) {
+            return true;
+        }
+        if (event.row < 0 || static_cast<std::size_t>(event.row) >= contextMenuTableOrder_.size()) {
+            return true;
+        }
+        const auto& provider = TrackedContextMenuProviders()[contextMenuTableOrder_[static_cast<std::size_t>(event.row)]];
+        if (!ThemedUi::IsTableRowEnabled(contextMenuTable_, event.row)) {
+            return true;
+        }
+        draft_.*(provider.configMember) = event.checked;
+        return true;
+    }
+
     bool HandleHotKeyTableEvent(LPARAM lParam) {
         ThemedTableEvent event{};
         if (!ThemedUi::DecodeTableEvent(hotKeyTable_, lParam, event)) {
@@ -2288,15 +2345,10 @@ private:
             value.loggingEnabled = ThemedUi::IsChecked(loggingEnabled_);
             value.dockDelay = ClampNumber(dockDelayEdit_, 0, 5000, value.dockDelay);
             break;
-        case TabContextMenu:
-            value.trackGitContextMenu = ThemedUi::IsChecked(trackGitContextMenu_);
-            value.trackSvnContextMenu = ThemedUi::IsChecked(trackSvnContextMenu_);
-            value.trackVsCodeContextMenu = ThemedUi::IsChecked(trackVsCodeContextMenu_);
-            value.trackTerminalContextMenu = ThemedUi::IsChecked(trackTerminalContextMenu_);
-            value.trackArchiveContextMenu = ThemedUi::IsChecked(trackArchiveContextMenu_);
-            value.trackEverythingContextMenu = ThemedUi::IsChecked(trackEverythingContextMenu_);
-            value.trackNotepadPlusPlusContextMenu = ThemedUi::IsChecked(trackNotepadPlusPlusContextMenu_);
+        case TabContextMenu: {
+            ReadContextMenuTableDraft(value);
             break;
+        }
         case TabInteraction:
             value.doubleClickToRun = ThemedUi::IsChecked(doubleClick_);
             value.mouseEnterActiveGroup = ThemedUi::IsChecked(enterActiveGroup_);
@@ -2468,7 +2520,7 @@ private:
         std::wstring error;
         if (WebDavCredentialService::DeletePassword(value, error)) {
             SetWindowTextW(webDavPasswordEdit_, L"");
-            ShowThemedMessageBox(hwnd_, instance_, theme_, L"WebDAV 密码已清除。", L"WebDAV 备份", MB_OK | MB_ICONINFORMATION);
+            ShowToast(L"WebDAV 密码已清除。", ThemedToastRole::Success);
         } else {
             ShowThemedMessageBox(hwnd_, instance_, theme_, error, L"WebDAV 备份", MB_OK | MB_ICONWARNING);
         }
@@ -2491,34 +2543,12 @@ private:
             return;
         }
         if (resetContextMenuCallback_()) {
-            config_.trackGitContextMenu = false;
-            config_.trackSvnContextMenu = false;
-            config_.trackVsCodeContextMenu = false;
-            config_.trackTerminalContextMenu = false;
-            config_.trackArchiveContextMenu = false;
-            config_.trackEverythingContextMenu = false;
-            config_.trackNotepadPlusPlusContextMenu = false;
-            draft_.trackGitContextMenu = false;
-            draft_.trackSvnContextMenu = false;
-            draft_.trackVsCodeContextMenu = false;
-            draft_.trackTerminalContextMenu = false;
-            draft_.trackArchiveContextMenu = false;
-            draft_.trackEverythingContextMenu = false;
-            draft_.trackNotepadPlusPlusContextMenu = false;
-            ThemedUi::SetChecked(trackGitContextMenu_, false);
-            ThemedUi::SetChecked(trackSvnContextMenu_, false);
-            ThemedUi::SetChecked(trackVsCodeContextMenu_, false);
-            ThemedUi::SetChecked(trackTerminalContextMenu_, false);
-            ThemedUi::SetChecked(trackArchiveContextMenu_, false);
-            ThemedUi::SetChecked(trackEverythingContextMenu_, false);
-            ThemedUi::SetChecked(trackNotepadPlusPlusContextMenu_, false);
-            ShowThemedMessageBox(
-                hwnd_,
-                instance_,
-                theme_,
-                L"右键菜单已重置。所有跟踪开关已恢复为默认关闭状态，菜单列表、状态和图标缓存均已清除。",
-                L"重置右键菜单",
-                MB_OK | MB_ICONINFORMATION);
+            for (const auto& provider : TrackedContextMenuProviders()) {
+                config_.*(provider.configMember) = false;
+                draft_.*(provider.configMember) = false;
+            }
+            AddContextMenuTableRows();
+            ShowToast(L"右键菜单已重置，跟踪开关与缓存均已恢复默认。", ThemedToastRole::Success, 5000);
         } else {
             ShowThemedMessageBox(
                 hwnd_, instance_, theme_, L"右键菜单重置失败，请确认缓存目录可写。", L"重置右键菜单", MB_OK | MB_ICONWARNING);
@@ -2712,13 +2742,19 @@ private:
         SetWebDavBusy(false);
         switch (result->operation) {
         case SettingsWebDavOperation::Test:
-            ShowThemedMessageBox(hwnd_, instance_, theme_, result->message, L"WebDAV 备份", MB_OK | (result->ok ? MB_ICONINFORMATION : MB_ICONWARNING));
+            if (result->ok) {
+                ShowToast(result->message, ThemedToastRole::Success);
+            } else {
+                ShowThemedMessageBox(hwnd_, instance_, theme_, result->message, L"WebDAV 备份", MB_OK | MB_ICONWARNING);
+            }
             return;
         case SettingsWebDavOperation::Upload:
             if (result->ok) {
                 MarkWebDavSyncedNow(false);
+                ShowToast(result->message.empty() ? L"已上传到云端。" : result->message, ThemedToastRole::Success);
+            } else {
+                ShowThemedMessageBox(hwnd_, instance_, theme_, result->message, L"上传到云端", MB_OK | MB_ICONWARNING);
             }
-            ShowThemedMessageBox(hwnd_, instance_, theme_, result->message, L"上传到云端", MB_OK | (result->ok ? MB_ICONINFORMATION : MB_ICONWARNING));
             return;
         case SettingsWebDavOperation::List:
             ContinueWebDavDownloadSelection(*result);
@@ -2726,8 +2762,10 @@ private:
         case SettingsWebDavOperation::Download:
             if (result->ok) {
                 MarkWebDavSyncedNow(true);
+                ShowToast(result->message.empty() ? L"已从云端下载并合并。" : result->message, ThemedToastRole::Success);
+            } else {
+                ShowThemedMessageBox(hwnd_, instance_, theme_, result->message, L"从云端下载", MB_OK | MB_ICONWARNING);
             }
-            ShowThemedMessageBox(hwnd_, instance_, theme_, result->message, L"从云端下载", MB_OK | (result->ok ? MB_ICONINFORMATION : MB_ICONWARNING));
             return;
         }
     }
@@ -2747,7 +2785,11 @@ private:
         options.includeUrlIcons = true;
         ConfigPackageService service(appDirectory_);
         const ConfigPackageReport report = service.ExportPackage(targetPath, options);
-        ShowThemedMessageBox(hwnd_, instance_, theme_, FormatConfigPackageReportText(report), L"导出配置包", MB_OK | (report.ok ? MB_ICONINFORMATION : MB_ICONWARNING));
+        if (report.ok) {
+            ShowToast(L"配置包已导出。", ThemedToastRole::Success);
+        } else {
+            ShowThemedMessageBox(hwnd_, instance_, theme_, FormatConfigPackageReportText(report), L"导出配置包", MB_OK | MB_ICONWARNING);
+        }
     }
 
     void ImportConfigPackage() {
@@ -2776,8 +2818,10 @@ private:
         const ConfigPackageReport report = service.ImportPackageMerge(packagePath, options);
         if (report.ok) {
             importedData_ = true;
+            ShowToast(L"配置包已合并导入。", ThemedToastRole::Success);
+        } else {
+            ShowThemedMessageBox(hwnd_, instance_, theme_, FormatConfigPackageReportText(report), L"合并导入配置包", MB_OK | MB_ICONWARNING);
         }
-        ShowThemedMessageBox(hwnd_, instance_, theme_, FormatConfigPackageReportText(report), L"合并导入配置包", MB_OK | (report.ok ? MB_ICONINFORMATION : MB_ICONWARNING));
     }
 
     void ExportTodosJson() {
@@ -2799,7 +2843,7 @@ private:
             ShowThemedMessageBox(hwnd_, instance_, theme_, L"写入待办 JSON 文件失败。", L"导出待办 JSON", MB_OK | MB_ICONWARNING);
             return;
         }
-        ShowThemedMessageBox(hwnd_, instance_, theme_, L"待办 JSON 导出完成。", L"导出待办 JSON", MB_OK | MB_ICONINFORMATION);
+        ShowToast(L"待办 JSON 导出完成。", ThemedToastRole::Success);
     }
 
     void ImportTodosJson() {
@@ -2823,9 +2867,11 @@ private:
         const TodoJsonImportReport report = ImportTodoJsonFile(appDirectory_, jsonPath);
         if (report.ok) {
             importedData_ = true;
+            ShowToast(report.message.empty() ? L"导入完成。" : report.message, ThemedToastRole::Success);
+        } else {
+            ShowThemedMessageBox(hwnd_, instance_, theme_, report.message.empty() ? L"导入失败。" : report.message,
+                L"导入待办 JSON", MB_OK | MB_ICONWARNING);
         }
-        ShowThemedMessageBox(hwnd_, instance_, theme_, report.message.empty() ? (report.ok ? L"导入完成。" : L"导入失败。") : report.message,
-            L"导入待办 JSON", MB_OK | (report.ok ? MB_ICONINFORMATION : MB_ICONWARNING));
     }
 
     AppConfig ReadHttpDraftFromControls() {
@@ -2957,16 +3003,30 @@ private:
         ShellExecuteW(hwnd_, L"open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
     }
 
+    void ShowToast(const std::wstring& text, ThemedToastRole role, int durationMs = 0) {
+        if (!windowUi_) {
+            return;
+        }
+        ThemedToastOptions options{};
+        options.role = role;
+        if (durationMs > 0) {
+            options.durationMs = durationMs;
+        }
+        windowUi_->ui().ShowToast(text, options);
+    }
+
     void CopyHttpUrl() {
         const std::wstring url = httpServer_ && httpServer_->IsRunning()
             ? HttpAddressText(httpServer_->options().lanAccess, httpServer_->options().port, true)
             : CurrentHttpAddress(true);
         if (!OpenClipboard(hwnd_)) {
+            ShowToast(L"复制失败，剪贴板被其他程序占用。", ThemedToastRole::Danger);
             return;
         }
         EmptyClipboard();
         const SIZE_T bytes = (url.size() + 1) * sizeof(wchar_t);
         HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, bytes);
+        bool copied = false;
         if (memory) {
             void* target = GlobalLock(memory);
             if (target) {
@@ -2974,12 +3034,18 @@ private:
                 GlobalUnlock(memory);
                 SetClipboardData(CF_UNICODETEXT, memory);
                 memory = nullptr;
+                copied = true;
             }
         }
         if (memory) {
             GlobalFree(memory);
         }
         CloseClipboard();
+        if (copied) {
+            ShowToast(L"访问地址已复制到剪贴板。", ThemedToastRole::Success);
+        } else {
+            ShowToast(L"复制失败。", ThemedToastRole::Danger);
+        }
     }
 
     void StartHttpServerFromDialog(bool restart) {
@@ -2993,7 +3059,11 @@ private:
         const auto options = LocalHttpServerService::OptionsFromConfig(value, httpRootBaseDirectory_);
         const bool ok = restart ? httpServer_->Restart(options, error) : httpServer_->Start(options, error);
         UpdateHttpStatusLabel();
-        ShowThemedMessageBox(hwnd_, instance_, theme_, ok ? L"HTTP 服务已启动。" : error, L"HTTP 服务", MB_OK | (ok ? MB_ICONINFORMATION : MB_ICONWARNING));
+        if (ok) {
+            ShowToast(L"HTTP 服务已启动。", ThemedToastRole::Success);
+        } else {
+            ShowThemedMessageBox(hwnd_, instance_, theme_, error, L"HTTP 服务", MB_OK | MB_ICONWARNING);
+        }
     }
 
     void StopHttpServerFromDialog() {
@@ -3002,12 +3072,12 @@ private:
         }
         httpServer_->Stop();
         UpdateHttpStatusLabel();
-        ShowThemedMessageBox(hwnd_, instance_, theme_, L"HTTP 服务已停止。", L"HTTP 服务", MB_OK | MB_ICONINFORMATION);
+        ShowToast(L"HTTP 服务已停止。", ThemedToastRole::Info);
     }
 
     bool CommitSettings(bool closeAfterCommit) {
         if (webDavBusy_) {
-            ShowThemedMessageBox(hwnd_, instance_, theme_, L"WebDAV 操作正在进行，请稍候完成。", L"WebDAV 备份", MB_OK | MB_ICONINFORMATION);
+            ShowToast(L"WebDAV 操作正在进行，请稍候完成。", ThemedToastRole::Warning);
             return false;
         }
         AppConfig next = ReadCurrentTabDraft();
@@ -3028,6 +3098,7 @@ private:
             importedData_ = false;
             UpdateHotKeyLabels();
             UpdateHttpStatusLabel();
+            ShowToast(L"设置已应用。", ThemedToastRole::Success);
         }
         accepted_ = true;
         return true;
@@ -3181,43 +3252,50 @@ private:
             loggingEnabled_ = CheckBox(TabBehavior, ID_LOGGING_ENABLED, L"启用日志", behaviorLeft + behaviorRunColumnWidth * 2, behaviorSystemFirstY, draft_.loggingEnabled, behaviorContentWidth - behaviorRunColumnWidth * 2);
             ThemedUi::BindGroupChildren(behaviorSystemGroup, {hideOnStart_, autoRun_, loggingEnabled_});
 
+            // 表格固定显示 7 行高度，更多 provider 由 ListView 垂直滚动承载，
+            // 对话框高度不随 provider 数量增长。
+            constexpr int kContextMenuVisibleRows = 7;
+            std::vector<ThemedSectionRow> contextMenuTrackingRows;
+            for (int row = 0; row < kContextMenuVisibleRows; ++row) {
+                contextMenuTrackingRows.push_back(
+                    behaviorForm.sectionRow({ThemedSectionItemKind::Edit}));
+            }
             const ThemedSectionGeometry contextMenuTrackingSection = behaviorForm.section(
-                behaviorFrameLeft, pageTop, behaviorFrameWidth,
-                {behaviorForm.sectionRow({ThemedSectionItemKind::CheckBox}),
-                 behaviorForm.sectionRow({ThemedSectionItemKind::CheckBox}),
-                 behaviorForm.sectionRow({ThemedSectionItemKind::CheckBox}),
-                 behaviorForm.sectionRow({ThemedSectionItemKind::CheckBox})});
+                behaviorFrameLeft, pageTop, behaviorFrameWidth, contextMenuTrackingRows);
             HWND contextMenuTrackingGroup = AddSectionFrame(TabContextMenu, L"自动跟踪", contextMenuTrackingSection.frame);
-            const int contextMenuTrackingFirstY = behaviorForm.sectionItemY(contextMenuTrackingSection, 0, behaviorCheckHeight);
-            const int contextMenuTrackingSecondY = behaviorForm.sectionItemY(contextMenuTrackingSection, 1, behaviorCheckHeight);
-            const int contextMenuTrackingThirdY = behaviorForm.sectionItemY(contextMenuTrackingSection, 2, behaviorCheckHeight);
-            const int contextMenuTrackingFourthY = behaviorForm.sectionItemY(contextMenuTrackingSection, 3, behaviorCheckHeight);
-            trackGitContextMenu_ = CheckBox(
-                TabContextMenu, ID_TRACK_GIT_CONTEXT_MENU, L"自动跟踪 Git 右键菜单",
-                behaviorLeft, contextMenuTrackingFirstY, draft_.trackGitContextMenu, behaviorCheckWidth);
-            trackSvnContextMenu_ = CheckBox(
-                TabContextMenu, ID_TRACK_SVN_CONTEXT_MENU, L"自动跟踪 SVN 右键菜单",
-                behaviorRight, contextMenuTrackingFirstY, draft_.trackSvnContextMenu, behaviorCheckWidth);
-            trackVsCodeContextMenu_ = CheckBox(
-                TabContextMenu, ID_TRACK_VSCODE_CONTEXT_MENU, L"自动跟踪 VS Code 右键菜单",
-                behaviorLeft, contextMenuTrackingSecondY, draft_.trackVsCodeContextMenu, behaviorCheckWidth);
-            trackTerminalContextMenu_ = CheckBox(
-                TabContextMenu, ID_TRACK_TERMINAL_CONTEXT_MENU, L"显示 CMD/PowerShell/WSL",
-                behaviorRight, contextMenuTrackingSecondY, draft_.trackTerminalContextMenu, behaviorCheckWidth);
-            trackArchiveContextMenu_ = CheckBox(
-                TabContextMenu, ID_TRACK_ARCHIVE_CONTEXT_MENU, L"自动跟踪压缩工具右键菜单",
-                behaviorLeft, contextMenuTrackingThirdY, draft_.trackArchiveContextMenu, behaviorCheckWidth);
-            trackEverythingContextMenu_ = CheckBox(
-                TabContextMenu, ID_TRACK_EVERYTHING_CONTEXT_MENU, L"自动跟踪 Everything 右键菜单",
-                behaviorRight, contextMenuTrackingThirdY, draft_.trackEverythingContextMenu, behaviorCheckWidth);
-            trackNotepadPlusPlusContextMenu_ = CheckBox(
-                TabContextMenu, ID_TRACK_NOTEPAD_PLUS_PLUS_CONTEXT_MENU, L"自动跟踪 Notepad++ 右键菜单",
-                behaviorLeft, contextMenuTrackingFourthY, draft_.trackNotepadPlusPlusContextMenu, behaviorContentWidth);
-            ThemedUi::BindGroupChildren(
-                contextMenuTrackingGroup,
-                {trackGitContextMenu_, trackSvnContextMenu_, trackVsCodeContextMenu_,
-                 trackTerminalContextMenu_, trackArchiveContextMenu_, trackEverythingContextMenu_,
-                 trackNotepadPlusPlusContextMenu_});
+            const int trackingTableTop = contextMenuTrackingSection.rowTops.front();
+            const int trackingTableBottom = contextMenuTrackingSection.rowTops.back()
+                + contextMenuTrackingSection.rowHeights.back();
+            RECT contextMenuTableFrame{
+                behaviorLeft,
+                ContentY(trackingTableTop),
+                behaviorLeft + behaviorContentWidth,
+                ContentY(trackingTableBottom),
+            };
+            ThemedTableOptions contextMenuTableOptions{};
+            contextMenuTableOptions.checkable = true;
+            contextMenuTableOptions.showHeader = false;
+            contextMenuTableOptions.reserveScrollBarGutter = true;
+            contextMenuTable_ = MakeUi().Table(
+                ID_CONTEXT_MENU_TABLE,
+                contextMenuTableFrame,
+                {
+                    ThemedTableColumn{
+                        L"tool",
+                        L"工具",
+                        ThemedTableColumnAlign::Start,
+                        ThemedTableColumnWidth::Remaining},
+                    ThemedTableColumn{
+                        L"status",
+                        L"状态",
+                        ThemedTableColumnAlign::End,
+                        ThemedTableColumnWidth::Fixed,
+                        settingsUi.tableColumnWidth(L"未安装")},
+                },
+                contextMenuTableOptions);
+            AddTabChild(contextMenuTable_, TabContextMenu);
+            AddContextMenuTableRows();
+            ThemedUi::BindGroupChildren(contextMenuTrackingGroup, {contextMenuTable_});
 
             const int resetContextMenuWidth = settingsUi.buttonWidth(
                 L"重置右键菜单",
@@ -3571,6 +3649,9 @@ private:
             if (HandleHotKeyTableEvent(lParam)) {
                 return 0;
             }
+            if (HandleContextMenuTableEvent(lParam)) {
+                return 0;
+            }
             return DefWindowProcW(hwnd_, message, wParam, lParam);
         case WM_COMMAND:
             if (LOWORD(wParam) == ID_SETTINGS_TAB_CONTROL && HIWORD(wParam) == CBN_SELCHANGE) {
@@ -3688,7 +3769,7 @@ private:
             }
             if (LOWORD(wParam) == IDCANCEL) {
                 if (webDavBusy_) {
-                    ShowThemedMessageBox(hwnd_, instance_, theme_, L"WebDAV 操作正在进行，请稍候完成。", L"WebDAV 备份", MB_OK | MB_ICONINFORMATION);
+                    ShowToast(L"WebDAV 操作正在进行，请稍候完成。", ThemedToastRole::Warning);
                     return 0;
                 }
                 done_ = true;
@@ -3698,7 +3779,7 @@ private:
             return 0;
         case WM_CLOSE:
             if (webDavBusy_) {
-                ShowThemedMessageBox(hwnd_, instance_, theme_, L"WebDAV 操作正在进行，请稍候完成。", L"WebDAV 备份", MB_OK | MB_ICONINFORMATION);
+                ShowToast(L"WebDAV 操作正在进行，请稍候完成。", ThemedToastRole::Warning);
                 return 0;
             }
             done_ = true;
@@ -3768,13 +3849,9 @@ private:
     HWND showSkinButton_ = nullptr;
     HWND autoRun_ = nullptr;
     HWND loggingEnabled_ = nullptr;
-    HWND trackGitContextMenu_ = nullptr;
-    HWND trackSvnContextMenu_ = nullptr;
-    HWND trackVsCodeContextMenu_ = nullptr;
-    HWND trackTerminalContextMenu_ = nullptr;
-    HWND trackArchiveContextMenu_ = nullptr;
-    HWND trackEverythingContextMenu_ = nullptr;
-    HWND trackNotepadPlusPlusContextMenu_ = nullptr;
+    HWND contextMenuTable_ = nullptr;
+    // 表格行序 → 绑定表下标（已安装在前、未安装沉底）。
+    std::vector<std::size_t> contextMenuTableOrder_;
     HWND linkNameSingleLine_ = nullptr;
     HWND showTooltip_ = nullptr;
     HWND groupRight_ = nullptr;

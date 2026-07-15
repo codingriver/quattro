@@ -491,13 +491,10 @@ void AppLaunchLockerWindow::CompleteOperation(OperationResult result) {
         AppendAppLaunchLockerLog(L"操作失败：" + result.message);
         ThemedWindowUi::ShowMessageBox(hwnd_, instance_, theme_, result.message, L"自启动管理", MB_OK | MB_ICONWARNING);
     }
-    else if (!result.message.empty() && result.message != L"操作完成。") {
-        ThemedWindowUi::ShowMessageBox(hwnd_, instance_, theme_, result.message, L"自启动管理", MB_OK | MB_ICONINFORMATION);
-    }
     else if (windowUi_) {
         ThemedToastOptions toast{};
         toast.role = ThemedToastRole::Success;
-        windowUi_->ui().ShowToast(L"操作完成。", toast);
+        windowUi_->ui().ShowToast(result.message.empty() ? L"操作完成。" : result.message, toast);
     }
     StartScan();
 }
@@ -508,10 +505,16 @@ void AppLaunchLockerWindow::RebuildCategories() {
         StartupSourceType::StartupFolder,
         StartupSourceType::ScheduledTask,
         StartupSourceType::Service,
+        StartupSourceType::ActiveSetup,
         StartupSourceType::Driver,
         StartupSourceType::WmiSubscription,
         StartupSourceType::Winlogon,
+        StartupSourceType::WinlogonNotify,
         StartupSourceType::AppInitDll,
+        StartupSourceType::AppCertDll,
+        StartupSourceType::BootExecute,
+        StartupSourceType::KnownDll,
+        StartupSourceType::ShellExtension,
         StartupSourceType::Ifeo,
     };
 

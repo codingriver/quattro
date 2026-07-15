@@ -5,6 +5,7 @@
 #endif
 
 #include "../src/common/AppLog.h"
+#include "../src/domain/TrackedContextMenuProviders.h"
 #include "../src/services/LocalHttpServerService.h"
 #include "../src/windows/SimpleDialogs.h"
 #include "../src/theme/Theme.h"
@@ -233,13 +234,9 @@ int wmain() {
     config.processLocatorHotKey = VK_F12;
     config.globalHotKeysEnabled = true;
     config.hideOnStart = false;
-    config.trackGitContextMenu = true;
-    config.trackSvnContextMenu = true;
-    config.trackVsCodeContextMenu = true;
-    config.trackTerminalContextMenu = true;
-    config.trackArchiveContextMenu = true;
-    config.trackEverythingContextMenu = true;
-    config.trackNotepadPlusPlusContextMenu = true;
+    for (const auto& provider : TrackedContextMenuProviders()) {
+        config.*(provider.configMember) = true;
+    }
     config.httpServerRootPath = root.wstring();
     config.httpServerPort = 45200 + static_cast<int>(GetCurrentProcessId() % 1000);
     config.httpServerLanAccess = false;
@@ -346,13 +343,10 @@ int wmain() {
     std::filesystem::remove_all(userConfig, ec);
     SetEnvironmentVariableW(L"QUATTRO_USER_CONFIG_DIR", nullptr);
 
-    const bool trackingReset = !config.trackGitContextMenu &&
-        !config.trackSvnContextMenu &&
-        !config.trackVsCodeContextMenu &&
-        !config.trackTerminalContextMenu &&
-        !config.trackArchiveContextMenu &&
-        !config.trackEverythingContextMenu &&
-        !config.trackNotepadPlusPlusContextMenu;
+    bool trackingReset = true;
+    for (const auto& provider : TrackedContextMenuProviders()) {
+        trackingReset = trackingReset && !(config.*(provider.configMember));
+    }
     const bool ok = interactionDone && interactionOk && trackingReset;
     if (!ok) {
         return 1;

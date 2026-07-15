@@ -1919,13 +1919,18 @@ HWND ThemedUi::Table(int id, RECT frame, const std::vector<ThemedTableColumn>& c
     if (!table) return nullptr;
 
     SendMessageW(table, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
-    ThemedControls::RegisterTable(table, theme_);
-    ThemedControls::SetTableColumnResizeEnabled(table, options.allowColumnResize);
-    ThemedControls::ConfigureTableGridLines(table, options.showRowGridLines, options.showColumnGridLines);
+    // Set LVS_EX_CHECKBOXES before RegisterTable so the ListView creates its
+    // internal LVSIL_STATE image list before RestoreTableDefaultImageList
+    // replaces LVSIL_SMALL with a 1-pixel-wide placeholder. If the state image
+    // list is created after that replacement it inherits the 1-pixel width and
+    // the checkbox icons become invisible.
     DWORD extended = LVS_EX_DOUBLEBUFFER;
     if (options.checkable) extended |= LVS_EX_CHECKBOXES;
     if (options.fullRowSelect) extended |= LVS_EX_FULLROWSELECT;
     ListView_SetExtendedListViewStyle(table, extended);
+    ThemedControls::RegisterTable(table, theme_);
+    ThemedControls::SetTableColumnResizeEnabled(table, options.allowColumnResize);
+    ThemedControls::ConfigureTableGridLines(table, options.showRowGridLines, options.showColumnGridLines);
     EnableWindow(table, options.enabled ? TRUE : FALSE);
 
     int fixedWidth = 0;
@@ -1937,7 +1942,8 @@ HWND ThemedUi::Table(int id, RECT frame, const std::vector<ThemedTableColumn>& c
         else fixedWidth += std::max(0, column.fixedWidth);
         widthModes.push_back(static_cast<int>(column.widthMode));
     }
-    const int available = std::max(40, static_cast<int>(inner.right - inner.left) - fixedWidth);
+    const int scrollBarGutter = options.reserveScrollBarGutter ? GetSystemMetrics(SM_CXVSCROLL) : 0;
+    const int available = std::max(40, static_cast<int>(inner.right - inner.left) - fixedWidth - scrollBarGutter);
     int assignedRemainingWidth = 0;
     int remainingIndex = 0;
     for (std::size_t i = 0; i < columns.size(); ++i) {

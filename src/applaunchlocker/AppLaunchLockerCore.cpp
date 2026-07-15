@@ -190,13 +190,20 @@ struct RegistryLocation {
     bool canDisable;
 };
 
-const std::array<RegistryLocation, 13> kRegistryLocations{{
+const std::array<RegistryLocation, 21> kRegistryLocations{{
     {HKEY_CURRENT_USER, L"HKCU", L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", StartupSourceType::Registry, true},
     {HKEY_CURRENT_USER, L"HKCU", L"Software\\Microsoft\\Windows\\CurrentVersion\\RunOnce", StartupSourceType::Registry, true},
+    {HKEY_CURRENT_USER, L"HKCU", L"Software\\Microsoft\\Windows\\CurrentVersion\\RunOnceEx", StartupSourceType::Registry, true},
     {HKEY_LOCAL_MACHINE, L"HKLM", L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", StartupSourceType::Registry, true},
     {HKEY_LOCAL_MACHINE, L"HKLM", L"Software\\Microsoft\\Windows\\CurrentVersion\\RunOnce", StartupSourceType::Registry, true},
+    {HKEY_LOCAL_MACHINE, L"HKLM", L"Software\\Microsoft\\Windows\\CurrentVersion\\RunOnceEx", StartupSourceType::Registry, true},
     {HKEY_LOCAL_MACHINE, L"HKLM", L"Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Run", StartupSourceType::Registry, true},
     {HKEY_LOCAL_MACHINE, L"HKLM", L"Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\RunOnce", StartupSourceType::Registry, true},
+    {HKEY_LOCAL_MACHINE, L"HKLM", L"Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\RunOnceEx", StartupSourceType::Registry, true},
+    {HKEY_CURRENT_USER, L"HKCU", L"Software\\Microsoft\\Windows\\CurrentVersion\\RunServices", StartupSourceType::Registry, true},
+    {HKEY_CURRENT_USER, L"HKCU", L"Software\\Microsoft\\Windows\\CurrentVersion\\RunServicesOnce", StartupSourceType::Registry, true},
+    {HKEY_LOCAL_MACHINE, L"HKLM", L"Software\\Microsoft\\Windows\\CurrentVersion\\RunServices", StartupSourceType::Registry, true},
+    {HKEY_LOCAL_MACHINE, L"HKLM", L"Software\\Microsoft\\Windows\\CurrentVersion\\RunServicesOnce", StartupSourceType::Registry, true},
     {HKEY_CURRENT_USER, L"HKCU", L"Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer\\Run", StartupSourceType::Registry, true},
     {HKEY_LOCAL_MACHINE, L"HKLM", L"Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer\\Run", StartupSourceType::Registry, true},
     {HKEY_CURRENT_USER, L"HKCU", L"Software\\Microsoft\\Windows NT\\CurrentVersion\\Windows", StartupSourceType::Registry, true},
@@ -204,6 +211,7 @@ const std::array<RegistryLocation, 13> kRegistryLocations{{
     {HKEY_CURRENT_USER, L"HKCU", L"Software\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon", StartupSourceType::Winlogon, false},
     {HKEY_LOCAL_MACHINE, L"HKLM", L"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Windows", StartupSourceType::AppInitDll, false},
     {HKEY_LOCAL_MACHINE, L"HKLM", L"SOFTWARE\\WOW6432Node\\Microsoft\\Windows NT\\CurrentVersion\\Windows", StartupSourceType::AppInitDll, false},
+    {HKEY_CURRENT_USER, L"HKCU", L"Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Run", StartupSourceType::Registry, true},
 }};
 
 bool RelevantNamedValue(const RegistryLocation& location, const std::wstring& valueName) {
@@ -658,11 +666,433 @@ void ScanIfeo(ScanResult& result) {
     ScanIfeoView(result, KEY_WOW64_32KEY, L"32 位");
 }
 
+void ScanActiveSetupView(ScanResult& result, const wchar_t* keyPath, const wchar_t* viewName) {
+    HKEY rawRoot = nullptr;
+    const LSTATUS opened = RegOpenKeyExW(HKEY_LOCAL_MACHINE, keyPath, 0, KEY_ENUMERATE_SUB_KEYS, &rawRoot);
+    if (opened == ERROR_FILE_NOT_FOUND) return;
+    if (opened != ERROR_SUCCESS) {
+        result.warnings.push_back(std::wstring(L"Active Setup ") + viewName + L"：" + LastErrorText(opened));
+        return;
+    }
+    UniqueRegKey root(rawRoot);
+    for (DWORD index = 0;; ++index) {
+        wchar_t name[512]{};
+        DWORD length = static_cast<DWORD>(std::size(name));
+        const LSTATUS enumerated = RegEnumKeyExW(rawRoot, index, name, &length, nullptr, nullptr, nullptr, nullptr);
+        if (enumerated == ERROR_NO_MORE_ITEMS) break;
+        if (enumerated != ERROR_SUCCESS) continue;
+        HKEY rawChild = nullptr;
+        if (RegOpenKeyExW(rawRoot, name, 0, KEY_QUERY_VALUE, &rawChild) != ERROR_SUCCESS) continue;
+        UniqueRegKey child(rawChild);
+        DWORD type = 0;
+        DWORD bytes = 0;
+        if (RegQueryValueExW(rawChild, L"StubPath", nullptr, &type, nullptr, &bytes) != ERROR_SUCCESS ||
+            (type != REG_SZ && type != REG_EXPAND_SZ)) continue;
+        std::vector<BYTE> data(static_cast<std::size_t>(bytes) + sizeof(wchar_t), 0);
+        if (RegQueryValueExW(rawChild, L"StubPath", nullptr, &type, data.data(), &bytes) != ERROR_SUCCESS) continue;
+        const std::wstring stubPath(reinterpret_cast<const wchar_t*>(data.data()));
+        if (stubPath.empty()) continue;
+        const std::wstring subKey = std::wstring(keyPath) + L"\\" + name;
+        const std::wstring location = std::wstring(L"HKLM\\") + subKey + L" (" + viewName + L")";
+        AddItem(result, StartupSourceType::ActiveSetup, name, location, stubPath, true, true,
+            {{L"hive", L"HKLM"}, {L"key", subKey}, {L"valueName", L"StubPath"},
+             {L"valueType", std::to_wstring(type)}, {L"valueData", stubPath}});
+    }
+}
+
+void ScanActiveSetup(ScanResult& result) {
+    ScanActiveSetupView(result, L"SOFTWARE\\Microsoft\\Active Setup\\Installed Components", L"64 位");
+    ScanActiveSetupView(result, L"SOFTWARE\\WOW6432Node\\Microsoft\\Active Setup\\Installed Components", L"32 位");
+}
+
+std::wstring ReadStringValue(HKEY key, const wchar_t* valueName, DWORD& typeOut) {
+    typeOut = 0;
+    DWORD bytes = 0;
+    if (RegQueryValueExW(key, valueName, nullptr, &typeOut, nullptr, &bytes) != ERROR_SUCCESS) return {};
+    std::vector<BYTE> data(static_cast<std::size_t>(bytes) + sizeof(wchar_t), 0);
+    if (RegQueryValueExW(key, valueName, nullptr, &typeOut, data.data(), &bytes) != ERROR_SUCCESS) return {};
+    return std::wstring(reinterpret_cast<const wchar_t*>(data.data()));
+}
+
+std::vector<std::wstring> ReadMultiString(HKEY key, const wchar_t* valueName) {
+    std::vector<std::wstring> values;
+    DWORD type = 0;
+    DWORD bytes = 0;
+    if (RegQueryValueExW(key, valueName, nullptr, &type, nullptr, &bytes) != ERROR_SUCCESS || type != REG_MULTI_SZ) {
+        return values;
+    }
+    std::vector<BYTE> data(static_cast<std::size_t>(bytes) + 2 * sizeof(wchar_t), 0);
+    if (RegQueryValueExW(key, valueName, nullptr, &type, data.data(), &bytes) != ERROR_SUCCESS) return values;
+    const wchar_t* cursor = reinterpret_cast<const wchar_t*>(data.data());
+    while (*cursor) {
+        std::wstring entry(cursor);
+        cursor += entry.size() + 1;
+        if (!entry.empty()) values.push_back(std::move(entry));
+    }
+    return values;
+}
+
+void ScanWinlogonNotify(ScanResult& result) {
+    constexpr const wchar_t* keyPath =
+        L"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon\\Notify";
+    HKEY rawRoot = nullptr;
+    const LSTATUS opened = RegOpenKeyExW(HKEY_LOCAL_MACHINE, keyPath, 0, KEY_ENUMERATE_SUB_KEYS, &rawRoot);
+    if (opened == ERROR_FILE_NOT_FOUND) return;
+    if (opened != ERROR_SUCCESS) {
+        result.warnings.push_back(std::wstring(L"登录通知：") + LastErrorText(opened));
+        return;
+    }
+    UniqueRegKey root(rawRoot);
+    for (DWORD index = 0;; ++index) {
+        wchar_t name[512]{};
+        DWORD length = static_cast<DWORD>(std::size(name));
+        const LSTATUS enumerated = RegEnumKeyExW(rawRoot, index, name, &length, nullptr, nullptr, nullptr, nullptr);
+        if (enumerated == ERROR_NO_MORE_ITEMS) break;
+        if (enumerated != ERROR_SUCCESS) continue;
+        HKEY rawChild = nullptr;
+        if (RegOpenKeyExW(rawRoot, name, 0, KEY_QUERY_VALUE, &rawChild) != ERROR_SUCCESS) continue;
+        UniqueRegKey child(rawChild);
+        DWORD type = 0;
+        const std::wstring dll = ReadStringValue(rawChild, L"DllName", type);
+        if (dll.empty()) continue;
+        const std::wstring location = std::wstring(L"HKLM\\") + keyPath + L"\\" + name;
+        AddItem(result, StartupSourceType::WinlogonNotify, name, location, dll, true, false);
+    }
+}
+
+void ScanSessionManager(ScanResult& result) {
+    constexpr const wchar_t* keyPath = L"SYSTEM\\CurrentControlSet\\Control\\Session Manager";
+    HKEY rawKey = nullptr;
+    const LSTATUS opened = RegOpenKeyExW(HKEY_LOCAL_MACHINE, keyPath, 0, KEY_QUERY_VALUE, &rawKey);
+    if (opened == ERROR_FILE_NOT_FOUND) return;
+    if (opened != ERROR_SUCCESS) {
+        result.warnings.push_back(std::wstring(L"Session Manager：") + LastErrorText(opened));
+        return;
+    }
+    UniqueRegKey key(rawKey);
+    const std::wstring location = std::wstring(L"HKLM\\") + keyPath;
+    for (const std::wstring& entry : ReadMultiString(rawKey, L"BootExecute")) {
+        AddItem(result, StartupSourceType::BootExecute, entry, location + L"\\BootExecute", entry, true, false);
+    }
+    HKEY rawKnown = nullptr;
+    if (RegOpenKeyExW(rawKey, L"KnownDLLs", 0, KEY_QUERY_VALUE, &rawKnown) == ERROR_SUCCESS) {
+        UniqueRegKey known(rawKnown);
+        for (DWORD index = 0;; ++index) {
+            wchar_t name[512]{};
+            DWORD nameLength = static_cast<DWORD>(std::size(name));
+            DWORD type = 0;
+            const LSTATUS status = RegEnumValueW(rawKnown, index, name, &nameLength, nullptr, &type, nullptr, nullptr);
+            if (status == ERROR_NO_MORE_ITEMS) break;
+            if (status != ERROR_SUCCESS) continue;
+            if (type != REG_SZ && type != REG_EXPAND_SZ) continue;
+            DWORD valueType = 0;
+            const std::wstring dll = ReadStringValue(rawKnown, name, valueType);
+            if (dll.empty()) continue;
+            AddItem(result, StartupSourceType::KnownDll, name, location + L"\\KnownDLLs", dll, true, false);
+        }
+    }
+}
+
+void ScanAppCertDlls(ScanResult& result) {
+    constexpr const wchar_t* keyPath =
+        L"SYSTEM\\CurrentControlSet\\Control\\Session Manager\\AppCertDlls";
+    HKEY rawKey = nullptr;
+    const LSTATUS opened = RegOpenKeyExW(HKEY_LOCAL_MACHINE, keyPath, 0, KEY_QUERY_VALUE, &rawKey);
+    if (opened == ERROR_FILE_NOT_FOUND) return;
+    if (opened != ERROR_SUCCESS) {
+        result.warnings.push_back(std::wstring(L"AppCert DLL：") + LastErrorText(opened));
+        return;
+    }
+    UniqueRegKey key(rawKey);
+    const std::wstring location = std::wstring(L"HKLM\\") + keyPath;
+    for (DWORD index = 0;; ++index) {
+        wchar_t name[512]{};
+        DWORD nameLength = static_cast<DWORD>(std::size(name));
+        DWORD type = 0;
+        const LSTATUS status = RegEnumValueW(rawKey, index, name, &nameLength, nullptr, &type, nullptr, nullptr);
+        if (status == ERROR_NO_MORE_ITEMS) break;
+        if (status != ERROR_SUCCESS) continue;
+        if (type != REG_SZ && type != REG_EXPAND_SZ) continue;
+        DWORD valueType = 0;
+        const std::wstring dll = ReadStringValue(rawKey, name, valueType);
+        if (dll.empty()) continue;
+        AddItem(result, StartupSourceType::AppCertDll, name, location, dll, true, false);
+    }
+}
+
+std::wstring ResolveClsidDll(HKEY hive, const std::wstring& clsid) {
+    const std::wstring server = L"Software\\Classes\\CLSID\\" + clsid + L"\\InprocServer32";
+    HKEY rawKey = nullptr;
+    if (RegOpenKeyExW(hive, server.c_str(), 0, KEY_QUERY_VALUE, &rawKey) != ERROR_SUCCESS) return {};
+    UniqueRegKey key(rawKey);
+    DWORD type = 0;
+    return ReadStringValue(rawKey, L"", type);
+}
+
+void ScanShellExtensionKey(ScanResult& result, HKEY hive, const wchar_t* hiveName, const wchar_t* keyPath,
+    const wchar_t* label) {
+    HKEY rawKey = nullptr;
+    const LSTATUS opened = RegOpenKeyExW(hive, keyPath, 0, KEY_ENUMERATE_SUB_KEYS, &rawKey);
+    if (opened == ERROR_FILE_NOT_FOUND) return;
+    if (opened != ERROR_SUCCESS) {
+        result.warnings.push_back(std::wstring(L"Shell 扩展：") + LastErrorText(opened));
+        return;
+    }
+    UniqueRegKey key(rawKey);
+    const std::wstring location = std::wstring(hiveName) + L"\\" + keyPath;
+    for (DWORD index = 0;; ++index) {
+        wchar_t name[512]{};
+        DWORD length = static_cast<DWORD>(std::size(name));
+        const LSTATUS enumerated = RegEnumKeyExW(rawKey, index, name, &length, nullptr, nullptr, nullptr, nullptr);
+        if (enumerated == ERROR_NO_MORE_ITEMS) break;
+        if (enumerated != ERROR_SUCCESS) continue;
+        HKEY rawChild = nullptr;
+        if (RegOpenKeyExW(rawKey, name, 0, KEY_QUERY_VALUE, &rawChild) != ERROR_SUCCESS) continue;
+        UniqueRegKey child(rawChild);
+        DWORD type = 0;
+        std::wstring clsid = ReadStringValue(rawChild, L"", type);
+        if (clsid.empty() || clsid.front() != L'{') clsid = name;
+        std::wstring dll = ResolveClsidDll(hive, clsid);
+        if (dll.empty()) dll = ResolveClsidDll(HKEY_LOCAL_MACHINE, clsid);
+        const std::wstring display = std::wstring(label) + L"：" + name;
+        AddItem(result, StartupSourceType::ShellExtension, display, location, dll.empty() ? clsid : dll, true, false);
+    }
+}
+
+void ScanShellExtensions(ScanResult& result) {
+    ScanShellExtensionKey(result, HKEY_LOCAL_MACHINE, L"HKLM",
+        L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\ShellIconOverlayIdentifiers",
+        L"图标叠加");
+    ScanShellExtensionKey(result, HKEY_CURRENT_USER, L"HKCU",
+        L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\ShellIconOverlayIdentifiers",
+        L"图标叠加");
+}
+
+void CollectStartupApproved(HKEY hive, const wchar_t* keyPath, std::vector<std::wstring>& disabledNames) {
+    HKEY rawKey = nullptr;
+    if (RegOpenKeyExW(hive, keyPath, 0, KEY_QUERY_VALUE, &rawKey) != ERROR_SUCCESS) return;
+    UniqueRegKey key(rawKey);
+    for (DWORD index = 0;; ++index) {
+        wchar_t name[512]{};
+        DWORD nameLength = static_cast<DWORD>(std::size(name));
+        DWORD type = 0;
+        DWORD bytes = 0;
+        LSTATUS status = RegEnumValueW(rawKey, index, name, &nameLength, nullptr, &type, nullptr, &bytes);
+        if (status == ERROR_NO_MORE_ITEMS) break;
+        if (status != ERROR_SUCCESS) continue;
+        if (type != REG_BINARY || bytes == 0) continue;
+        std::vector<BYTE> data(bytes, 0);
+        DWORD readBytes = bytes;
+        if (RegQueryValueExW(rawKey, name, nullptr, &type, data.data(), &readBytes) != ERROR_SUCCESS) continue;
+        // StartupApproved blob: 首字节偶数（02/06）为启用，奇数（03/07）为禁用。
+        if (!data.empty() && (data[0] & 1) != 0) disabledNames.push_back(Lower(std::wstring(name)));
+    }
+}
+
+void AlignStartupApproved(ScanResult& result) {
+    std::vector<std::wstring> disabledRun;
+    std::vector<std::wstring> disabledFolder;
+    CollectStartupApproved(HKEY_CURRENT_USER,
+        L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run", disabledRun);
+    CollectStartupApproved(HKEY_LOCAL_MACHINE,
+        L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run", disabledRun);
+    CollectStartupApproved(HKEY_LOCAL_MACHINE,
+        L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run32", disabledRun);
+    CollectStartupApproved(HKEY_CURRENT_USER,
+        L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\StartupFolder", disabledFolder);
+    CollectStartupApproved(HKEY_LOCAL_MACHINE,
+        L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\StartupFolder", disabledFolder);
+    if (disabledRun.empty() && disabledFolder.empty()) return;
+
+    const auto contains = [](const std::vector<std::wstring>& names, const std::wstring& value) {
+        return std::find(names.begin(), names.end(), Lower(value)) != names.end();
+    };
+    for (StartupItem& item : result.items) {
+        bool systemDisabled = false;
+        if (item.source == StartupSourceType::Registry) {
+            const auto found = item.original.find(L"valueName");
+            const auto keyField = item.original.find(L"key");
+            const bool runKey = keyField != item.original.end() &&
+                Lower(keyField->second).find(L"currentversion\\run") != std::wstring::npos;
+            if (runKey && found != item.original.end()) systemDisabled = contains(disabledRun, found->second);
+        } else if (item.source == StartupSourceType::StartupFolder) {
+            const auto found = item.original.find(L"originalPath");
+            if (found != item.original.end()) {
+                systemDisabled = contains(disabledFolder, std::filesystem::path(found->second).filename().wstring());
+            }
+        }
+        if (systemDisabled) {
+            item.name += L"（已被系统禁用）";
+            item.canDisable = false;
+            item.readOnly = true;
+        }
+    }
+}
+
 HKEY HiveFromText(const std::wstring& value) {
     if (value == L"HKCU") return HKEY_CURRENT_USER;
     if (value == L"HKLM") return HKEY_LOCAL_MACHINE;
     return nullptr;
 }
+
+// ---- StartupApproved（方案 B1）：标准 Run 项与启动文件夹改用系统“启动”开关 ----
+
+std::wstring BytesToHex(const std::vector<BYTE>& bytes) {
+    static const wchar_t digits[] = L"0123456789abcdef";
+    std::wstring text;
+    text.reserve(bytes.size() * 2);
+    for (BYTE b : bytes) {
+        text.push_back(digits[b >> 4]);
+        text.push_back(digits[b & 0x0f]);
+    }
+    return text;
+}
+
+std::vector<BYTE> HexToBytes(const std::wstring& text) {
+    const auto value = [](wchar_t c) -> int {
+        if (c >= L'0' && c <= L'9') return c - L'0';
+        if (c >= L'a' && c <= L'f') return c - L'a' + 10;
+        if (c >= L'A' && c <= L'F') return c - L'A' + 10;
+        return -1;
+    };
+    std::vector<BYTE> bytes;
+    for (std::size_t i = 0; i + 1 < text.size(); i += 2) {
+        const int hi = value(text[i]);
+        const int lo = value(text[i + 1]);
+        if (hi < 0 || lo < 0) return {};
+        bytes.push_back(static_cast<BYTE>((hi << 4) | lo));
+    }
+    return bytes;
+}
+
+std::vector<BYTE> MakeStartupApprovedBlob(bool enabled) {
+    std::vector<BYTE> blob(12, 0);
+    blob[0] = enabled ? 0x02 : 0x03;
+    if (!enabled) {
+        FILETIME now{};
+        GetSystemTimeAsFileTime(&now);
+        CopyMemory(blob.data() + 4, &now, sizeof(now));
+    }
+    return blob;
+}
+
+struct StartupApprovedTarget {
+    bool eligible = false;
+    HKEY hive = nullptr;
+    std::wstring hiveName;
+    std::wstring key;
+    std::wstring valueName;
+};
+
+StartupApprovedTarget ResolveStartupApprovedTarget(const DisabledRecord& record) {
+    StartupApprovedTarget target;
+    constexpr const wchar_t* base =
+        L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\";
+    if (record.source == StartupSourceType::Registry) {
+        const std::wstring key = MapValue(record.original, L"key");
+        const std::wstring lowerKey = Lower(key);
+        // 仅标准 Run 键（排除 RunOnce/RunOnceEx/RunServices/Policies）。
+        if (lowerKey.size() < 4 || lowerKey.substr(lowerKey.size() - 4) != L"\\run") return target;
+        if (lowerKey.find(L"policies") != std::wstring::npos) return target;
+        target.hive = HiveFromText(MapValue(record.original, L"hive"));
+        if (!target.hive) return target;
+        target.hiveName = MapValue(record.original, L"hive");
+        const bool wow = lowerKey.find(L"wow6432node") != std::wstring::npos;
+        target.key = std::wstring(base) + (wow ? L"Run32" : L"Run");
+        target.valueName = MapValue(record.original, L"valueName");
+        target.eligible = !target.valueName.empty();
+        return target;
+    }
+    if (record.source == StartupSourceType::StartupFolder) {
+        const std::wstring path = MapValue(record.original, L"originalPath");
+        if (path.empty()) return target;
+        target.hive = record.requiresAdmin ? HKEY_LOCAL_MACHINE : HKEY_CURRENT_USER;
+        target.hiveName = record.requiresAdmin ? L"HKLM" : L"HKCU";
+        target.key = std::wstring(base) + L"StartupFolder";
+        target.valueName = std::filesystem::path(path).filename().wstring();
+        target.eligible = !target.valueName.empty();
+        return target;
+    }
+    return target;
+}
+
+OperationResult DisableViaStartupApproved(DisabledRecord& record, const StartupApprovedTarget& target) {
+    HKEY rawKey = nullptr;
+    DWORD disposition = 0;
+    const LSTATUS opened = RegCreateKeyExW(target.hive, target.key.c_str(), 0, nullptr, 0,
+        KEY_QUERY_VALUE | KEY_SET_VALUE, nullptr, &rawKey, &disposition);
+    if (opened != ERROR_SUCCESS) return {false, L"无法打开系统启动开关：" + LastErrorText(opened)};
+    UniqueRegKey key(rawKey);
+    bool hadOriginal = false;
+    DWORD type = 0;
+    DWORD bytes = 0;
+    if (RegQueryValueExW(rawKey, target.valueName.c_str(), nullptr, &type, nullptr, &bytes) == ERROR_SUCCESS && bytes > 0) {
+        std::vector<BYTE> existing(bytes, 0);
+        DWORD readBytes = bytes;
+        if (RegQueryValueExW(rawKey, target.valueName.c_str(), nullptr, &type, existing.data(), &readBytes) == ERROR_SUCCESS) {
+            hadOriginal = true;
+            record.original[L"saOriginalBlob"] = BytesToHex(existing);
+        }
+    }
+    record.original[L"saMechanism"] = L"1";
+    record.original[L"saHive"] = target.hiveName;
+    record.original[L"saKey"] = target.key;
+    record.original[L"saValueName"] = target.valueName;
+    record.original[L"saHadOriginal"] = hadOriginal ? L"1" : L"0";
+    const std::vector<BYTE> blob = MakeStartupApprovedBlob(false);
+    const LSTATUS written = RegSetValueExW(rawKey, target.valueName.c_str(), 0, REG_BINARY,
+        blob.data(), static_cast<DWORD>(blob.size()));
+    if (written != ERROR_SUCCESS) return {false, L"写入系统启动开关失败：" + LastErrorText(written)};
+    return {true, L"已通过系统启动开关禁用，可随时恢复。"};
+}
+
+OperationResult RestoreViaStartupApproved(const DisabledRecord& record) {
+    HKEY hive = HiveFromText(MapValue(record.original, L"saHive"));
+    if (!hive) return {false, L"系统启动开关位置无效。"};
+    const std::wstring key = MapValue(record.original, L"saKey");
+    const std::wstring valueName = MapValue(record.original, L"saValueName");
+    HKEY rawKey = nullptr;
+    DWORD disposition = 0;
+    const LSTATUS opened = RegCreateKeyExW(hive, key.c_str(), 0, nullptr, 0,
+        KEY_SET_VALUE, nullptr, &rawKey, &disposition);
+    if (opened != ERROR_SUCCESS) return {false, L"无法打开系统启动开关：" + LastErrorText(opened)};
+    UniqueRegKey guard(rawKey);
+    if (MapValue(record.original, L"saHadOriginal") == L"1") {
+        const std::vector<BYTE> blob = HexToBytes(MapValue(record.original, L"saOriginalBlob"));
+        if (blob.empty()) return {false, L"系统启动开关备份无效。"};
+        const LSTATUS written = RegSetValueExW(rawKey, valueName.c_str(), 0, REG_BINARY,
+            blob.data(), static_cast<DWORD>(blob.size()));
+        if (written != ERROR_SUCCESS) return {false, L"恢复系统启动开关失败：" + LastErrorText(written)};
+        return {true, L"已恢复。"};
+    }
+    // 原本没有开关记录：删除本工具写入的值即可恢复为启用状态。
+    const LSTATUS removed = RegDeleteValueW(rawKey, valueName.c_str());
+    if (removed != ERROR_SUCCESS && removed != ERROR_FILE_NOT_FOUND) {
+        return {false, L"恢复系统启动开关失败：" + LastErrorText(removed)};
+    }
+    return {true, L"已恢复。"};
+}
+
+bool IsStartupApprovedRecordDisabled(const DisabledRecord& record) {
+    HKEY hive = HiveFromText(MapValue(record.original, L"saHive"));
+    if (!hive) return false;
+    HKEY rawKey = nullptr;
+    if (RegOpenKeyExW(hive, MapValue(record.original, L"saKey").c_str(), 0, KEY_QUERY_VALUE, &rawKey) != ERROR_SUCCESS) {
+        return false;
+    }
+    UniqueRegKey key(rawKey);
+    const std::wstring valueName = MapValue(record.original, L"saValueName");
+    DWORD type = 0;
+    DWORD bytes = 0;
+    if (RegQueryValueExW(rawKey, valueName.c_str(), nullptr, &type, nullptr, &bytes) != ERROR_SUCCESS || bytes == 0) {
+        return false;
+    }
+    std::vector<BYTE> data(bytes, 0);
+    DWORD readBytes = bytes;
+    if (RegQueryValueExW(rawKey, valueName.c_str(), nullptr, &type, data.data(), &readBytes) != ERROR_SUCCESS) return false;
+    return !data.empty() && (data[0] & 1) != 0;
+}
+
 
 OperationResult DisableRegistry(const DisabledRecord& record) {
     HKEY hive = HiveFromText(MapValue(record.original, L"hive"));
@@ -798,8 +1228,10 @@ OperationResult SetServiceStart(const DisabledRecord& record, bool restore) {
 }
 
 bool VerifyDisabled(const DisabledRecord& record) {
+    if (MapValue(record.original, L"saMechanism") == L"1") return IsStartupApprovedRecordDisabled(record);
     switch (record.source) {
-    case StartupSourceType::Registry: {
+    case StartupSourceType::Registry:
+    case StartupSourceType::ActiveSetup: {
         HKEY hive = HiveFromText(MapValue(record.original, L"hive"));
         HKEY rawKey = nullptr;
         if (!hive || RegOpenKeyExW(hive, MapValue(record.original, L"key").c_str(), 0, KEY_QUERY_VALUE, &rawKey) != ERROR_SUCCESS) return true;
@@ -833,8 +1265,13 @@ bool VerifyDisabled(const DisabledRecord& record) {
 }
 
 OperationResult ApplyDisable(DisabledRecord& record) {
+    if (record.source == StartupSourceType::Registry || record.source == StartupSourceType::StartupFolder) {
+        const StartupApprovedTarget target = ResolveStartupApprovedTarget(record);
+        if (target.eligible) return DisableViaStartupApproved(record, target);
+    }
     switch (record.source) {
     case StartupSourceType::Registry: return DisableRegistry(record);
+    case StartupSourceType::ActiveSetup: return DisableRegistry(record);
     case StartupSourceType::StartupFolder: return DisableFolder(record);
     case StartupSourceType::ScheduledTask: return SetTaskEnabled(record, false);
     case StartupSourceType::Service: return SetServiceStart(record, false);
@@ -843,8 +1280,10 @@ OperationResult ApplyDisable(DisabledRecord& record) {
 }
 
 OperationResult ApplyRestore(const DisabledRecord& record) {
+    if (MapValue(record.original, L"saMechanism") == L"1") return RestoreViaStartupApproved(record);
     switch (record.source) {
     case StartupSourceType::Registry: return RestoreRegistry(record);
+    case StartupSourceType::ActiveSetup: return RestoreRegistry(record);
     case StartupSourceType::StartupFolder: return RestoreFolder(record);
     case StartupSourceType::ScheduledTask: return SetTaskEnabled(record, MapValue(record.original, L"wasEnabled") != L"0");
     case StartupSourceType::Service: return SetServiceStart(record, true);
@@ -868,10 +1307,16 @@ std::wstring StartupSourceKey(StartupSourceType source) {
     case StartupSourceType::StartupFolder: return L"startup-folder";
     case StartupSourceType::ScheduledTask: return L"scheduled-task";
     case StartupSourceType::Service: return L"service";
+    case StartupSourceType::ActiveSetup: return L"active-setup";
     case StartupSourceType::Driver: return L"driver";
     case StartupSourceType::WmiSubscription: return L"wmi";
     case StartupSourceType::Winlogon: return L"winlogon";
+    case StartupSourceType::WinlogonNotify: return L"winlogon-notify";
     case StartupSourceType::AppInitDll: return L"appinit-dll";
+    case StartupSourceType::AppCertDll: return L"appcert-dll";
+    case StartupSourceType::BootExecute: return L"boot-execute";
+    case StartupSourceType::KnownDll: return L"known-dll";
+    case StartupSourceType::ShellExtension: return L"shell-extension";
     case StartupSourceType::Ifeo: return L"ifeo";
     }
     return L"unknown";
@@ -883,10 +1328,16 @@ std::wstring StartupSourceText(StartupSourceType source) {
     case StartupSourceType::StartupFolder: return L"启动文件夹";
     case StartupSourceType::ScheduledTask: return L"计划任务";
     case StartupSourceType::Service: return L"服务";
+    case StartupSourceType::ActiveSetup: return L"Active Setup";
     case StartupSourceType::Driver: return L"驱动";
     case StartupSourceType::WmiSubscription: return L"WMI";
     case StartupSourceType::Winlogon: return L"登录项";
+    case StartupSourceType::WinlogonNotify: return L"登录通知";
     case StartupSourceType::AppInitDll: return L"AppInit DLL";
+    case StartupSourceType::AppCertDll: return L"AppCert DLL";
+    case StartupSourceType::BootExecute: return L"启动执行";
+    case StartupSourceType::KnownDll: return L"已知 DLL";
+    case StartupSourceType::ShellExtension: return L"Shell 扩展";
     case StartupSourceType::Ifeo: return L"IFEO";
     }
     return L"未知";
@@ -894,8 +1345,10 @@ std::wstring StartupSourceText(StartupSourceType source) {
 
 bool StartupSourceFromKey(const std::wstring& key, StartupSourceType& source) {
     for (StartupSourceType candidate : {StartupSourceType::Registry, StartupSourceType::StartupFolder,
-            StartupSourceType::ScheduledTask, StartupSourceType::Service, StartupSourceType::Driver,
-            StartupSourceType::WmiSubscription, StartupSourceType::Winlogon, StartupSourceType::AppInitDll,
+            StartupSourceType::ScheduledTask, StartupSourceType::Service, StartupSourceType::ActiveSetup,
+            StartupSourceType::Driver, StartupSourceType::WmiSubscription, StartupSourceType::Winlogon,
+            StartupSourceType::WinlogonNotify, StartupSourceType::AppInitDll, StartupSourceType::AppCertDll,
+            StartupSourceType::BootExecute, StartupSourceType::KnownDll, StartupSourceType::ShellExtension,
             StartupSourceType::Ifeo}) {
         if (StartupSourceKey(candidate) == key) {
             source = candidate;
@@ -1053,12 +1506,29 @@ ScanResult StartupManager::ScanAll() const {
     bool uninitialize = false;
     if (!InitializeComForScan(uninitialize)) result.warnings.push_back(L"COM 初始化失败，部分来源无法扫描。");
     ScanRegistry(result);
+    ScanActiveSetup(result);
     ScanStartupFolder(result, FOLDERID_Startup, false);
     ScanStartupFolder(result, FOLDERID_CommonStartup, true);
     ScanScheduledTasks(result);
     ScanServices(result);
     ScanWmi(result);
     ScanIfeo(result);
+    ScanWinlogonNotify(result);
+    ScanSessionManager(result);
+    ScanAppCertDlls(result);
+    ScanShellExtensions(result);
+    AlignStartupApproved(result);
+    // 对账：本工具经 StartupApproved 禁用的项其注册表值/文件仍在，扫描仍会命中；
+    // 若系统侧仍为禁用则从“当前自启动”移除（只留在“已禁用”），若被系统改回启用则保留。
+    std::vector<DisabledRecord> disabledRecords;
+    std::wstring disabledError;
+    if (store_.Load(disabledRecords, disabledError)) {
+        for (const DisabledRecord& rec : disabledRecords) {
+            if (MapValue(rec.original, L"saMechanism") == L"1" && !IsStartupApprovedRecordDisabled(rec)) continue;
+            result.items.erase(std::remove_if(result.items.begin(), result.items.end(),
+                [&](const StartupItem& item) { return item.id == rec.itemId; }), result.items.end());
+        }
+    }
     std::sort(result.items.begin(), result.items.end(), [](const StartupItem& left, const StartupItem& right) {
         if (left.canDisable != right.canDisable) return left.canDisable > right.canDisable;
         const std::wstring leftName = Lower(left.name);
@@ -1098,21 +1568,19 @@ OperationResult StartupManager::Disable(const std::wstring& itemId) const {
     if (!store_.Save(records, error)) return {false, error};
 
     OperationResult operation = ApplyDisable(records.back());
-    if (records.back().source == StartupSourceType::StartupFolder && operation.success) {
-        record = records.back();
-        records.back() = record;
-        if (!store_.Save(records, error)) {
-            ApplyRestore(record);
-            records.pop_back();
-            store_.Save(records, error);
-            return {false, L"无法保存启动文件备份位置，操作已撤销。"};
-        }
-    }
     if (!operation.success) {
         records.pop_back();
         std::wstring cleanupError;
         store_.Save(records, cleanupError);
         return operation;
+    }
+    // ApplyDisable 可能补充恢复信息（启动文件备份路径 / StartupApproved 原始状态），需要再次落盘。
+    if (!store_.Save(records, error)) {
+        ApplyRestore(records.back());
+        records.pop_back();
+        std::wstring cleanupError;
+        store_.Save(records, cleanupError);
+        return {false, L"无法保存恢复信息，操作已撤销。"};
     }
     if (!VerifyDisabled(records.back())) {
         return {false, L"操作已执行，但未能确认结果；恢复记录已保留。"};

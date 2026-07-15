@@ -326,6 +326,7 @@ add_executable(Quattro WIN32
     src/windows/BuiltinTools.cpp
     src/windows/ConfirmDialog.cpp
     src/domain/Config.cpp
+    src/domain/TrackedContextMenuProviders.cpp
     src/services/ConfigPackageService.cpp
     src/common/EmbeddedAssetInstaller.cpp
     src/common/Elevation.cpp
@@ -405,6 +406,7 @@ add_executable(QuattroTests
     src/common/EmbeddedAssetInstaller.cpp
     src/common/EmbeddedExecutableManager.cpp
     src/domain/Config.cpp
+    src/domain/TrackedContextMenuProviders.cpp
     src/services/ConfigPackageService.cpp
     src/services/Launcher.cpp
     src/common/JsonValue.cpp
@@ -434,6 +436,7 @@ add_executable(QuattroNoteTodoAcceptance
     tests/NoteTodoAcceptance.cpp
     src/common/AppLog.cpp
     src/domain/Config.cpp
+    src/domain/TrackedContextMenuProviders.cpp
     src/services/ConfigPackageService.cpp
     src/common/JsonValue.cpp
     src/domain/MenuCatalog.cpp
@@ -474,6 +477,10 @@ add_executable(QuattroThemeStateProbe
     src/common/Utilities.cpp
 )
 
+add_executable(QuattroToastAcceptance
+    tests/ToastAcceptance.cpp
+)
+
 add_executable(QuattroUiScreenshotAcceptance
     tests/UiScreenshotAcceptance.cpp
     src/common/AppLog.cpp
@@ -492,6 +499,7 @@ add_executable(QuattroUiScreenshotAcceptance
     src/windows/QuickImportDialog.cpp
     src/services/QuickImportService.cpp
     src/services/ShellItemService.cpp
+    src/domain/TrackedContextMenuProviders.cpp
     src/windows/SimpleDialogs.cpp
     src/services/Storage.cpp
     src/services/SystemFunctions.cpp
@@ -527,6 +535,7 @@ add_executable(QuattroWebDavAcceptance
     tests/WebDavAcceptance.cpp
     src/common/AppLog.cpp
     src/domain/Config.cpp
+    src/domain/TrackedContextMenuProviders.cpp
     src/services/ConfigPackageService.cpp
     src/services/Storage.cpp
     src/domain/TodoSchedule.cpp
@@ -651,6 +660,10 @@ target_compile_options(QuattroThemeStateProbe PRIVATE
     $<$<CXX_COMPILER_ID:MSVC>:/W4 /permissive- /EHsc /utf-8>
 )
 
+target_compile_options(QuattroToastAcceptance PRIVATE
+    $<$<CXX_COMPILER_ID:MSVC>:/W4 /permissive- /EHsc /utf-8>
+)
+
 target_compile_options(QuattroUiScreenshotAcceptance PRIVATE
     $<$<CXX_COMPILER_ID:MSVC>:/W4 /permissive- /EHsc /utf-8>
 )
@@ -674,6 +687,16 @@ target_include_directories(QuattroTests PRIVATE
 
 target_include_directories(QuattroThemeStateProbe PRIVATE
     src
+)
+
+target_include_directories(QuattroToastAcceptance PRIVATE
+    src/theme
+    src/common
+)
+
+target_link_libraries(QuattroToastAcceptance PRIVATE
+    QuattroThemedUi
+    gdiplus
 )
 
 target_link_libraries(QuattroTests PRIVATE
@@ -886,6 +909,7 @@ add_executable(QuattroSettingsHttpButtonsAcceptance
     src/windows/QuickImportDialog.cpp
     src/services/QuickImportService.cpp
     src/services/ShellItemService.cpp
+    src/domain/TrackedContextMenuProviders.cpp
     src/windows/SimpleDialogs.cpp
     src/services/Storage.cpp
     src/services/SystemFunctions.cpp

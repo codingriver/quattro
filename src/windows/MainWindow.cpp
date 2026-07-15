@@ -2627,6 +2627,12 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         }
         return 0;
     case WM_TIMER:
+        if (embeddedUi_) {
+            LRESULT handled = 0;
+            if (embeddedUi_->HandleMessage(message, wParam, lParam, handled)) {
+                return handled;
+            }
+        }
         if (wParam == ID_TIMER_DOCK) {
             UpdateDockState();
             return 0;
@@ -3236,6 +3242,7 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             return 0;
         case ID_MENU_TOGGLE_TOPMOST:
             ToggleConfigVisibility(&AppConfig::topMost);
+            ShowToast(config_.topMost ? L"已置顶主窗口。" : L"已取消置顶。", ThemedToastRole::Info);
             return 0;
         case ID_MENU_SETTINGS:
             OpenSettings();
@@ -4126,7 +4133,7 @@ void MainWindow::QuickImport() {
     if (!error.empty()) {
         MessageBoxW(hwnd_, (L"已导入 " + std::to_wstring(imported) + L" 项，部分项目失败：\n" + error).c_str(), L"快速导入", MB_OK | MB_ICONWARNING);
     } else {
-        MessageBoxW(hwnd_, (L"已导入 " + std::to_wstring(imported) + L" 项到当前标签页。").c_str(), L"快速导入", MB_OK | MB_ICONINFORMATION);
+        ShowToast(L"已导入 " + std::to_wstring(imported) + L" 项到当前标签页。", ThemedToastRole::Success);
     }
 }
 
@@ -4222,6 +4229,7 @@ void MainWindow::DeleteLink(int linkId) {
         MessageBoxW(hwnd_, storageService_.lastError().c_str(), L"删除启动项", MB_OK | MB_ICONWARNING);
         return;
     }
+    const std::wstring deletedName = link->name;
     shellContextMenuCache_.Remove(linkId);
     model_.links.erase(std::remove_if(model_.links.begin(), model_.links.end(), [linkId](const Link& item) {
         return item.id == linkId;
@@ -4231,6 +4239,7 @@ void MainWindow::DeleteLink(int linkId) {
         selectedLinkId_ = 0;
     }
     InvalidateRect(hwnd_, nullptr, FALSE);
+    ShowToast(L"已删除“" + deletedName + L"”。", ThemedToastRole::Info);
 }
 
 void MainWindow::CopyLinkInternal(int linkId, bool cut) {
@@ -4242,6 +4251,9 @@ void MainWindow::CopyLinkInternal(int linkId, bool cut) {
     clipboardSourceId_ = linkId;
     clipboardCut_ = cut;
     hasClipboardLink_ = true;
+    ShowToast(
+        cut ? (L"已剪切“" + link->name + L"”。") : (L"已复制“" + link->name + L"”，可粘贴到其他标签。"),
+        ThemedToastRole::Info);
 }
 
 void MainWindow::PasteLinkInternal() {
@@ -4259,7 +4271,7 @@ void MainWindow::PasteLinkInternal() {
 
     Group* tag = FindGroup(targetTagId);
     if (!tag || tag->parentGroup == 0) {
-        MessageBoxW(hwnd_, L"请先选择一个标签。", L"粘贴启动项", MB_OK | MB_ICONINFORMATION);
+        ShowToast(L"请先选择一个标签。", ThemedToastRole::Warning);
         return;
     }
 
@@ -4267,7 +4279,7 @@ void MainWindow::PasteLinkInternal() {
         Link* source = FindLink(clipboardSourceId_);
         if (!source) {
             hasClipboardLink_ = false;
-            MessageBoxW(hwnd_, L"原启动项不存在，无法剪切粘贴。", L"粘贴启动项", MB_OK | MB_ICONINFORMATION);
+            ShowToast(L"原启动项已不存在，无法粘贴。", ThemedToastRole::Warning);
             return;
         }
         if (source->parentGroup != targetTagId) {
@@ -4304,6 +4316,7 @@ void MainWindow::PasteLinkInternal() {
     EnsureTagVisible(currentTagId_);
     EnsureLinkVisible(selectedLinkId_);
     InvalidateRect(hwnd_, nullptr, FALSE);
+    ShowToast(L"已粘贴“" + copy.name + L"”。", ThemedToastRole::Success);
 }
 
 void MainWindow::MoveMenuContext(int direction) {
@@ -4346,6 +4359,7 @@ bool MainWindow::ApplyManualLinkOrder(int tagId, const std::vector<int>& ordered
             return false;
         }
         *tag = edited;
+        ShowToast(L"排序方式已切换为手动排序。", ThemedToastRole::Info);
     }
     return true;
 }
@@ -4482,6 +4496,7 @@ void MainWindow::MoveTagToGroup(int tagId, int groupId) {
     EnsureTagVisible(currentTagId_);
     EnsureLinkVisible(selectedLinkId_);
     InvalidateRect(hwnd_, nullptr, FALSE);
+    ShowToast(L"标签已移至“" + targetGroup->name + L"”。", ThemedToastRole::Success);
 }
 
 void MainWindow::MoveLinkToTag(int linkId, int tagId) {
@@ -4509,6 +4524,7 @@ void MainWindow::MoveLinkToTag(int linkId, int tagId) {
     EnsureTagVisible(currentTagId_);
     EnsureLinkVisible(selectedLinkId_);
     InvalidateRect(hwnd_, nullptr, FALSE);
+    ShowToast(L"已移动到“" + tag->name + L"”。", ThemedToastRole::Success);
 }
 
 void MainWindow::CopyLinkToTag(int linkId, int tagId) {
@@ -4540,6 +4556,7 @@ void MainWindow::CopyLinkToTag(int linkId, int tagId) {
     EnsureTagVisible(currentTagId_);
     EnsureLinkVisible(selectedLinkId_);
     InvalidateRect(hwnd_, nullptr, FALSE);
+    ShowToast(L"已复制到“" + tag->name + L"”。", ThemedToastRole::Success);
 }
 
 void MainWindow::RunLink(int linkId) {
@@ -4634,7 +4651,7 @@ void MainWindow::OpenContainingFolder(int linkId) {
     }
     std::wstring error;
     if (!ShellItemService::OpenContainingLocation(hwnd_, *link, error)) {
-        MessageBoxW(hwnd_, error.empty() ? L"无法打开所在位置。" : error.c_str(), L"打开所在目录", MB_OK | MB_ICONINFORMATION);
+        ShowToast(error.empty() ? L"无法打开所在位置。" : error, ThemedToastRole::Warning);
     }
 }
 
@@ -4654,13 +4671,9 @@ bool MainWindow::LinkCenterScreenPoint(int linkId, POINT& screenPoint) const {
 
 ShellContextMenuTrackingOptions MainWindow::TrackedShellMenuOptions() const {
     ShellContextMenuTrackingOptions options;
-    options.git = config_.trackGitContextMenu;
-    options.svn = config_.trackSvnContextMenu;
-    options.vsCode = config_.trackVsCodeContextMenu;
-    options.terminal = config_.trackTerminalContextMenu;
-    options.archive = config_.trackArchiveContextMenu;
-    options.everything = config_.trackEverythingContextMenu;
-    options.notepadPlusPlus = config_.trackNotepadPlusPlusContextMenu;
+    for (const auto& provider : TrackedContextMenuProviders()) {
+        options.*(provider.trackingMember) = config_.*(provider.configMember);
+    }
     return options;
 }
 
@@ -4735,7 +4748,9 @@ void MainWindow::CreateDesktopShortcut(int linkId) {
         : CreateShellShortcutFile(*link, shortcutPath);
     if (!ok) {
         MessageBoxW(hwnd_, L"创建桌面快捷方式失败。", L"创建桌面快捷方式", MB_OK | MB_ICONWARNING);
+        return;
     }
+    ShowToast(L"桌面快捷方式已创建。", ThemedToastRole::Success);
 }
 
 void MainWindow::OpenSystemProperties(int linkId) {
@@ -4873,6 +4888,9 @@ void MainWindow::ToggleTodoDone(int todoId) {
         } else {
             item->completedAt.clear();
             item->nextDueAt = ComputeNextTodoDueAt(*item, now);
+            if (!item->nextDueAt.empty()) {
+                ShowToast(L"本次已完成，下次提醒：" + item->nextDueAt, ThemedToastRole::Info);
+            }
         }
     } else {
         item->completedAt = complete ? now : L"";
@@ -4934,6 +4952,7 @@ void MainWindow::ClearDoneTodos() {
         selectedTodoId_ = 0;
     }
     InvalidateRect(hwnd_, nullptr, FALSE);
+    ShowToast(L"已清空 " + std::to_wstring(doneIds.size()) + L" 项已完成待办。", ThemedToastRole::Success);
 }
 
 void MainWindow::CheckTodoReminders() {
@@ -5078,7 +5097,17 @@ void MainWindow::ShowTodoSystemNotification(const TodoItem& item) {
 }
 
 void MainWindow::ShowClipboardImportNotification(int count, const std::wstring& pathDetail) {
-    if (!EnsureNotificationIcon() || count <= 0) {
+    if (count <= 0) {
+        return;
+    }
+    const std::wstring body = pathDetail.empty()
+        ? (count == 1 ? L"剪贴板内容已添加到当前标签。" : L"已从剪贴板导入多个启动项。")
+        : LimitNotificationText(pathDetail, 255);
+    if (IsWindowVisible(hwnd_)) {
+        ShowToast(body, ThemedToastRole::Success);
+        return;
+    }
+    if (!EnsureNotificationIcon()) {
         return;
     }
 
@@ -5088,10 +5117,7 @@ void MainWindow::ShowClipboardImportNotification(int count, const std::wstring& 
     data.uID = kTrayIconId;
     data.uFlags = NIF_INFO;
     data.dwInfoFlags = NIIF_INFO;
-    const std::wstring title = count == 1 ? L"已添加启动项" : L"已添加启动项";
-    const std::wstring body = pathDetail.empty()
-        ? (count == 1 ? L"剪贴板内容已添加到当前标签。" : L"已从剪贴板导入多个启动项。")
-        : LimitNotificationText(pathDetail, 255);
+    const std::wstring title = L"已添加启动项";
     wcscpy_s(data.szInfoTitle, LimitNotificationText(title, 63).c_str());
     wcscpy_s(data.szInfo, body.c_str());
     Shell_NotifyIconW(NIM_MODIFY, &data);
@@ -5099,13 +5125,19 @@ void MainWindow::ShowClipboardImportNotification(int count, const std::wstring& 
 
 void MainWindow::CopyLinkPath(int linkId) {
     Link* link = FindLink(linkId);
-    if (!link || !OpenClipboard(hwnd_)) {
+    if (!link) {
+        return;
+    }
+    const bool isUrl = IsUrlLink(*link);
+    if (!OpenClipboard(hwnd_)) {
+        ShowToast(L"复制失败，剪贴板被其他程序占用。", ThemedToastRole::Danger);
         return;
     }
     EmptyClipboard();
-    const std::wstring text = ClipboardPathTextForLink(*link, IsUrlLink(*link));
+    const std::wstring text = ClipboardPathTextForLink(*link, isUrl);
     const SIZE_T bytes = (text.size() + 1) * sizeof(wchar_t);
     HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, bytes);
+    bool copied = false;
     if (memory) {
         void* data = GlobalLock(memory);
         if (data) {
@@ -5113,12 +5145,18 @@ void MainWindow::CopyLinkPath(int linkId) {
             GlobalUnlock(memory);
             SetClipboardData(CF_UNICODETEXT, memory);
             memory = nullptr;
+            copied = true;
         }
     }
     if (memory) {
         GlobalFree(memory);
     }
     CloseClipboard();
+    if (copied) {
+        ShowToast(isUrl ? L"网址已复制到剪贴板。" : L"路径已复制到剪贴板。", ThemedToastRole::Success);
+    } else {
+        ShowToast(L"复制失败。", ThemedToastRole::Danger);
+    }
 }
 
 void MainWindow::OpenSettings() {
@@ -5134,13 +5172,9 @@ void MainWindow::OpenSettings() {
             return false;
         }
         AppConfig reset = config_;
-        reset.trackGitContextMenu = false;
-        reset.trackSvnContextMenu = false;
-        reset.trackVsCodeContextMenu = false;
-        reset.trackTerminalContextMenu = false;
-        reset.trackArchiveContextMenu = false;
-        reset.trackEverythingContextMenu = false;
-        reset.trackNotepadPlusPlusContextMenu = false;
+        for (const auto& provider : TrackedContextMenuProviders()) {
+            reset.*(provider.configMember) = false;
+        }
         CommitSettingsConfig(reset, false);
         next = config_;
         return true;
@@ -5175,26 +5209,10 @@ void MainWindow::CommitSettingsConfig(const AppConfig& next, bool importedData) 
     AppConfig previous = config_;
     config_ = next;
     configService_.Save(config_);
-    if (previous.trackGitContextMenu && !config_.trackGitContextMenu) {
-        shellContextMenuCache_.RemoveProvider(ShellContextMenuProviderId::Git);
-    }
-    if (previous.trackSvnContextMenu && !config_.trackSvnContextMenu) {
-        shellContextMenuCache_.RemoveProvider(ShellContextMenuProviderId::Svn);
-    }
-    if (previous.trackVsCodeContextMenu && !config_.trackVsCodeContextMenu) {
-        shellContextMenuCache_.RemoveProvider(ShellContextMenuProviderId::VsCode);
-    }
-    if (previous.trackTerminalContextMenu && !config_.trackTerminalContextMenu) {
-        shellContextMenuCache_.RemoveProvider(ShellContextMenuProviderId::Terminal);
-    }
-    if (previous.trackArchiveContextMenu && !config_.trackArchiveContextMenu) {
-        shellContextMenuCache_.RemoveProvider(ShellContextMenuProviderId::Archive);
-    }
-    if (previous.trackEverythingContextMenu && !config_.trackEverythingContextMenu) {
-        shellContextMenuCache_.RemoveProvider(ShellContextMenuProviderId::Everything);
-    }
-    if (previous.trackNotepadPlusPlusContextMenu && !config_.trackNotepadPlusPlusContextMenu) {
-        shellContextMenuCache_.RemoveProvider(ShellContextMenuProviderId::NotepadPlusPlus);
+    for (const auto& provider : TrackedContextMenuProviders()) {
+        if (previous.*(provider.configMember) && !(config_.*(provider.configMember))) {
+            shellContextMenuCache_.RemoveProvider(provider.providerId);
+        }
     }
     if (previous.loggingEnabled != config_.loggingEnabled) {
         SetAppLogEnabled(config_.loggingEnabled);
@@ -5323,7 +5341,7 @@ void MainWindow::ResetLayoutToDefaults() {
 void MainWindow::ClearIconCache() {
     if (iconService_.ClearDiskCache()) {
         InvalidateRect(hwnd_, nullptr, FALSE);
-        MessageBoxW(hwnd_, L"图标缓存已清理。", L"图标缓存", MB_OK | MB_ICONINFORMATION);
+        ShowToast(L"图标缓存已清理。", ThemedToastRole::Success);
     } else {
         WriteAppLog(L"图标缓存清理失败。");
         MessageBoxW(hwnd_, L"图标缓存清理失败，请确认 icons/cache 目录可写。", L"图标缓存", MB_OK | MB_ICONWARNING);
@@ -5331,10 +5349,25 @@ void MainWindow::ClearIconCache() {
 }
 
 void MainWindow::RefreshAllIcons() {
-    for (const auto& link : model_.links) {
-        iconService_.RefreshDiskCache(link);
+    std::unordered_set<int> ordinaryTagIds;
+    for (const auto& tag : model_.groups) {
+        if (IsOrdinaryTag(tag)) {
+            ordinaryTagIds.insert(tag.id);
+        }
+    }
+    TerminalContextMenuRefreshContext terminalContext;
+    const TerminalContextMenuRefreshContext* terminalContextPtr = nullptr;
+    if (config_.trackTerminalContextMenu) {
+        terminalContext = TerminalContextMenuService::DetectAvailablePrograms();
+        terminalContextPtr = &terminalContext;
+    }
+    for (auto& link : model_.links) {
+        if (ordinaryTagIds.contains(link.parentGroup) && !BuiltinSystemFunctionForLink(link)) {
+            RefreshLinkResources(link, terminalContextPtr);
+        }
     }
     InvalidateRect(hwnd_, nullptr, FALSE);
+    ShowToast(L"已刷新全部图标。", ThemedToastRole::Success);
 }
 
 void MainWindow::RefreshLinkResources(
@@ -5448,7 +5481,7 @@ void MainWindow::ShowAbout() {
 
 void MainWindow::CheckForUpdates() {
     if (updateDownloadActive_) {
-        MessageBoxW(hwnd_, L"更新包正在下载，请等待当前下载完成。", L"检查更新", MB_OK | MB_ICONINFORMATION);
+        ShowToast(L"更新包正在下载，请稍候。", ThemedToastRole::Info);
         return;
     }
 
@@ -5486,10 +5519,9 @@ void MainWindow::CheckForUpdates() {
         L"，release_url=" + (info.releaseUrl.empty() ? L"(none)" : info.releaseUrl));
 
     if (!info.updateAvailable) {
-        const std::wstring message =
-            L"当前已是最新版本。\n\n当前版本：" + FormatVersionForDisplay(info.currentVersion) +
-            L"\n最新版本：" + FormatVersionForDisplay(info.latestVersion);
-        MessageBoxW(hwnd_, message.c_str(), L"检查更新", MB_OK | MB_ICONINFORMATION);
+        ShowToast(
+            L"当前已是最新版本（" + FormatVersionForDisplay(info.currentVersion) + L"）。",
+            ThemedToastRole::Info);
         return;
     }
 
@@ -5559,18 +5591,18 @@ void MainWindow::OpenHelp() {
     if (OpenConfiguredUrl(config_.helpUrl, L"帮助")) {
         return;
     }
-    MessageBoxW(hwnd_, L"帮助链接尚未配置，可在设置窗口填写。", L"帮助", MB_OK | MB_ICONINFORMATION);
+    ShowToast(L"帮助链接尚未配置，可在设置窗口填写。", ThemedToastRole::Info);
 }
 
 void MainWindow::OpenFaq() {
     if (!OpenConfiguredUrl(config_.faqUrl, L"常见问题")) {
-        MessageBoxW(hwnd_, L"常见问题链接尚未配置，可在设置窗口填写。", L"常见问题", MB_OK | MB_ICONINFORMATION);
+        ShowToast(L"常见问题链接尚未配置，可在设置窗口填写。", ThemedToastRole::Info);
     }
 }
 
 void MainWindow::OpenReward() {
     if (!OpenConfiguredUrl(config_.rewardUrl, L"赞助")) {
-        MessageBoxW(hwnd_, L"赞助链接尚未配置，可在设置窗口填写。", L"赞助", MB_OK | MB_ICONINFORMATION);
+        ShowToast(L"赞助链接尚未配置，可在设置窗口填写。", ThemedToastRole::Info);
     }
 }
 
@@ -6037,7 +6069,11 @@ void MainWindow::ExportConfigPackage() {
 
     ConfigPackageService service(appDirectory_);
     const ConfigPackageReport report = service.ExportPackage(buffer.c_str(), options);
-    MessageBoxW(hwnd_, FormatConfigPackageReport(report).c_str(), L"导出配置包", MB_OK | (report.ok ? MB_ICONINFORMATION : MB_ICONWARNING));
+    if (report.ok) {
+        ShowToast(L"配置包已导出。", ThemedToastRole::Success);
+    } else {
+        MessageBoxW(hwnd_, FormatConfigPackageReport(report).c_str(), L"导出配置包", MB_OK | MB_ICONWARNING);
+    }
 }
 
 void MainWindow::ImportConfigPackageMerge() {
@@ -6079,8 +6115,10 @@ void MainWindow::ImportConfigPackageMerge() {
         RegisterConfiguredHotKeys();
         ClearUiBitmaps();
         InvalidateRect(hwnd_, nullptr, FALSE);
+        ShowToast(L"配置包已合并导入。", ThemedToastRole::Success);
+    } else {
+        MessageBoxW(hwnd_, FormatConfigPackageReport(report).c_str(), L"合并导入配置包", MB_OK | MB_ICONWARNING);
     }
-    MessageBoxW(hwnd_, FormatConfigPackageReport(report).c_str(), L"合并导入配置包", MB_OK | (report.ok ? MB_ICONINFORMATION : MB_ICONWARNING));
 }
 
 bool MainWindow::ImportDropData(IDataObject* dataObject) {
@@ -6222,12 +6260,14 @@ bool MainWindow::StartHttpServer(bool showMessage) {
         WriteAppLog(error.empty() ? L"HTTP 服务启动失败。" : (L"HTTP 服务启动失败: " + error));
         if (showMessage) {
             MessageBoxW(hwnd_, error.empty() ? L"HTTP 服务启动失败。" : error.c_str(), L"HTTP 服务", MB_OK | MB_ICONWARNING);
+        } else {
+            ShowToast(error.empty() ? L"HTTP 服务启动失败。" : (L"HTTP 服务启动失败：" + error), ThemedToastRole::Danger, 6000);
         }
         return false;
     }
     WriteAppLog(L"HTTP 服务已启动: " + httpServerService_.BaseUrl(true));
     if (showMessage) {
-        MessageBoxW(hwnd_, (L"HTTP 服务已启动：\n" + httpServerService_.BaseUrl(true)).c_str(), L"HTTP 服务", MB_OK | MB_ICONINFORMATION);
+        ShowToast(L"HTTP 服务已启动：" + httpServerService_.BaseUrl(true), ThemedToastRole::Success, 5000);
     }
     return true;
 }
@@ -6239,7 +6279,7 @@ void MainWindow::StopHttpServer(bool showMessage) {
         WriteAppLog(L"HTTP 服务已停止。");
     }
     if (showMessage) {
-        MessageBoxW(hwnd_, L"HTTP 服务已停止。", L"HTTP 服务", MB_OK | MB_ICONINFORMATION);
+        ShowToast(L"HTTP 服务已停止。", ThemedToastRole::Info);
     }
 }
 
@@ -6251,12 +6291,14 @@ bool MainWindow::RestartHttpServer(bool showMessage) {
         WriteAppLog(error.empty() ? L"HTTP 服务重启失败。" : (L"HTTP 服务重启失败: " + error));
         if (showMessage) {
             MessageBoxW(hwnd_, error.empty() ? L"HTTP 服务重启失败。" : error.c_str(), L"HTTP 服务", MB_OK | MB_ICONWARNING);
+        } else {
+            ShowToast(error.empty() ? L"HTTP 服务重启失败。" : (L"HTTP 服务重启失败：" + error), ThemedToastRole::Danger, 6000);
         }
         return false;
     }
     WriteAppLog(L"HTTP 服务已重启: " + httpServerService_.BaseUrl(true));
     if (showMessage) {
-        MessageBoxW(hwnd_, (L"HTTP 服务已重启：\n" + httpServerService_.BaseUrl(true)).c_str(), L"HTTP 服务", MB_OK | MB_ICONINFORMATION);
+        ShowToast(L"HTTP 服务已重启：" + httpServerService_.BaseUrl(true), ThemedToastRole::Success, 5000);
     }
     return true;
 }
@@ -6326,6 +6368,7 @@ void MainWindow::SyncAutoRun(const AppConfig& previous) {
         return;
     }
     WriteAppLog(config_.autoRun ? L"开机自启动已启用。" : L"开机自启动已关闭。");
+    ShowToast(config_.autoRun ? L"开机自启动已启用。" : L"已关闭开机自启动。", ThemedToastRole::Success);
 }
 
 void MainWindow::RegisterConfiguredHotKeys() {
@@ -6382,7 +6425,11 @@ void MainWindow::RegisterConfiguredHotKeys() {
 }
 
 void MainWindow::ShowHotKeyConflictWarning(const std::wstring& failures) {
-    if (failures.empty() || hotKeyConflictWarningShown_ || config_.ignoreHotKeyConflictWarning) {
+    if (failures.empty()) {
+        return;
+    }
+    if (hotKeyConflictWarningShown_ || config_.ignoreHotKeyConflictWarning) {
+        ShowToast(L"部分热键注册失败，可能被其他程序占用。", ThemedToastRole::Warning, 5000);
         return;
     }
     hotKeyConflictWarningShown_ = true;
@@ -6511,7 +6558,7 @@ void MainWindow::ShowMainMenu(POINT screenPoint) {
     AppendThemedMenuItem(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(themeMenu), L"皮肤", true);
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_SETTINGS, L"设置");
     AppendThemedSeparator(menu);
-    AppendThemedMenuItem(menu, MF_STRING, ID_MENU_REFRESH_ALL_ICONS, L"重置所有图标");
+    AppendThemedMenuItem(menu, MF_STRING, ID_MENU_REFRESH_ALL_ICONS, L"刷新");
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_CLEAR_ICON_CACHE, L"清理图标缓存");
     AppendThemedMenuItem(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(systemMenu), L"系统功能", true);
     AppendThemedMenuItem(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(toolMenu), L"工具箱", true);
@@ -6600,20 +6647,12 @@ void MainWindow::AppendTrackedShellMenuItems(HMENU menu, const Link& link) {
         return;
     }
     AppendThemedSeparator(menu);
-    const std::array<std::wstring, 7> providerOrder{{
-        ShellContextMenuProviderId::VsCode,
-        ShellContextMenuProviderId::NotepadPlusPlus,
-        ShellContextMenuProviderId::Everything,
-        ShellContextMenuProviderId::Git,
-        ShellContextMenuProviderId::Svn,
-        ShellContextMenuProviderId::Terminal,
-        ShellContextMenuProviderId::Archive,
-    }};
+    // 绑定表行序即菜单内 provider 顺序，与设置页「自动跟踪」表格一致。
     bool firstProvider = true;
-    for (const auto& providerId : providerOrder) {
+    for (const auto& provider : TrackedContextMenuProviders()) {
         std::vector<ShellContextMenuItem> providerItems;
         for (const auto& item : items) {
-            if (item.providerId == providerId) {
+            if (item.providerId == provider.providerId) {
                 providerItems.push_back(item);
             }
         }
@@ -6775,6 +6814,19 @@ void MainWindow::CreateTooltip() {
     embeddedUi_ = std::make_unique<ThemedWindowUi>(
         instance_, nullptr, hwnd_, theme_, DialogLayoutKind::Compact, 1, 1);
     tooltipText_.clear();
+}
+
+void MainWindow::ShowToast(const std::wstring& text, ThemedToastRole role, int durationMs) {
+    CreateTooltip();
+    if (!embeddedUi_) {
+        return;
+    }
+    ThemedToastOptions options{};
+    options.role = role;
+    if (durationMs > 0) {
+        options.durationMs = durationMs;
+    }
+    embeddedUi_->ui().ShowToast(text, options);
 }
 
 void MainWindow::ApplyTooltipTheme() {
@@ -9831,6 +9883,7 @@ void MainWindow::SaveCurrentNotePage() {
 
     if (!storageService_.SaveNotePage(tagId, content)) {
         WriteAppLog(L"Save note page failed: " + storageService_.lastError());
+        ShowToast(L"便签保存失败，内容可能丢失，请复制备份便签内容。", ThemedToastRole::Danger, 8000);
         return;
     }
 

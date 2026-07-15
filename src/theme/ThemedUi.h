@@ -181,6 +181,9 @@ struct ThemedTableOptions {
     bool allowColumnResize = false;
     bool showRowGridLines = false;
     bool showColumnGridLines = false;
+    // 行数会超出可见高度、必然出现垂直滚动条时置 true：
+    // 列宽分配预扣滚动条宽度，避免出现横向滚动条。
+    bool reserveScrollBarGutter = false;
 };
 
 enum class ThemedTableCellRole {

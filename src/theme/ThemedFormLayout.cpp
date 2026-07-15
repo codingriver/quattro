@@ -275,6 +275,14 @@ ThemedSectionGeometry ThemedFormLayout::section(
     int top,
     int width,
     std::initializer_list<ThemedSectionRow> rows) const {
+    return section(left, top, width, std::vector<ThemedSectionRow>(rows.begin(), rows.end()));
+}
+
+ThemedSectionGeometry ThemedFormLayout::section(
+    int left,
+    int top,
+    int width,
+    const std::vector<ThemedSectionRow>& rows) const {
     ThemedSectionGeometry geometry{};
     const ThemedContentInsets insets = ui_.groupBoxInsets();
     geometry.rowHeights.reserve(rows.size());
