@@ -664,6 +664,12 @@ public:
     static void ClearTable(HWND table);
     static void SetTableImageLists(HWND table, HIMAGELIST smallImages, HIMAGELIST largeImages);
     static bool DecodeTableEvent(HWND table, LPARAM lParam, ThemedTableEvent& event);
+    // Bind a themed tooltip to any facade-created control. Hover tracking,
+    // placement, drawing, and cleanup remain owned by the public UI layer.
+    void SetTooltip(HWND control, const std::wstring& text, ThemedTooltipOptions options = {}) const;
+    // Infrastructure lifecycle hook used before a tooltip registry is
+    // destroyed, so attached child controls cannot retain a stale callback.
+    static void DetachTooltips(ThemedTooltipRegistry* registry);
     void ShowTooltip(const std::wstring& text, POINT screenPoint, ThemedTooltipOptions options = {}) const;
     void HideTooltip() const;
     void ShowToast(const std::wstring& text, ThemedToastOptions options = {}) const;

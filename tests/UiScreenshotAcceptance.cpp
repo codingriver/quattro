@@ -52,6 +52,10 @@ struct Scenario {
     std::vector<std::wstring> expectedVisibleChildTexts;
     std::wstring activateButtonText;
     bool requireThemedEditFrames = false;
+    std::vector<std::wstring> unexpectedVisibleChildTexts;
+    std::wstring hoverButtonText;
+    std::wstring expectedTooltipText;
+    std::wstring tooltipScreenshotName;
 };
 
 struct TestState {
@@ -557,6 +561,17 @@ void ValidateAndCapture(HWND hwnd, const Scenario& scenario, const std::filesyst
         state.Check(found, scenario.name + L": expected visible child text not found: " + expected);
     }
 
+    for (const auto& unexpected : scenario.unexpectedVisibleChildTexts) {
+        bool found = false;
+        for (const auto& child : children) {
+            if (IsWindowVisible(child.hwnd) && Contains(child.text, unexpected)) {
+                found = true;
+                break;
+            }
+        }
+        state.Check(!found, scenario.name + L": unexpected visible child text found: " + unexpected);
+    }
+
     int editCount = 0;
     int buttonCount = 0;
     std::vector<HWND> edits;
@@ -661,6 +676,47 @@ void ValidateAndCapture(HWND hwnd, const Scenario& scenario, const std::filesyst
         }
         state.Check(SavePng(capture.bitmap, screenshot), scenario.name + L": screenshot save failed: " + screenshot.wstring());
         DeleteObject(capture.bitmap);
+    }
+
+
+    if (!scenario.expectedTooltipText.empty()) {
+        auto button = std::find_if(children.begin(), children.end(), [&](const ChildInfo& child) {
+            return IsWindowVisible(child.hwnd) && child.className == L"Button" && child.text == scenario.hoverButtonText;
+        });
+        state.Check(button != children.end(), scenario.name + L": tooltip button not found: " + scenario.hoverButtonText);
+        if (button != children.end()) {
+            RECT buttonRect{};
+            GetWindowRect(button->hwnd, &buttonRect);
+            const POINT cursorPoint{
+                buttonRect.left + (buttonRect.right - buttonRect.left) / 2,
+                buttonRect.top + (buttonRect.bottom - buttonRect.top) / 2};
+            SetCursorPos(cursorPoint.x, cursorPoint.y);
+            SendMessageW(button->hwnd, WM_MOUSEMOVE, 0, MAKELPARAM(2, 2));
+            HWND tooltip = WaitForTopWindow(
+                FindWindowRequest{L"QuattroThemedTooltip", scenario.expectedTooltipText, GetCurrentProcessId()},
+                2000);
+            state.Check(tooltip != nullptr, scenario.name + L": themed tooltip did not appear");
+            if (tooltip) {
+                state.Check(
+                    Contains(WindowText(tooltip), scenario.expectedTooltipText),
+                    scenario.name + L": themed tooltip text mismatch");
+                BitmapCapture tooltipCapture = CaptureWindowBitmap(tooltip);
+                const std::filesystem::path tooltipScreenshot = outputDir / scenario.tooltipScreenshotName;
+                state.Check(
+                    tooltipCapture.bitmap != nullptr,
+                    scenario.name + L": tooltip screenshot bitmap was not created");
+                if (tooltipCapture.bitmap) {
+                    state.Check(
+                        BitmapHasVisualContent(tooltipCapture.bitmap, tooltipCapture.width, tooltipCapture.height),
+                        scenario.name + L": tooltip screenshot looks blank or too flat");
+                    state.Check(
+                        SavePng(tooltipCapture.bitmap, tooltipScreenshot),
+                        scenario.name + L": tooltip screenshot save failed: " + tooltipScreenshot.wstring());
+                    DeleteObject(tooltipCapture.bitmap);
+                }
+            }
+            SendMessageW(button->hwnd, WM_MOUSELEAVE, 0, 0);
+        }
     }
 }
 
@@ -1450,6 +1506,56 @@ int wmain() {
     config.webDavRemotePath = L"/Quattro/backups/";
     config.webDavUserName = L"acceptance-user";
 
+    wchar_t contextMenuOnly[8]{};
+    if (GetEnvironmentVariableW(
+            L"QUATTRO_UI_ACCEPTANCE_CONTEXT_MENU_ONLY",
+            contextMenuOnly,
+            static_cast<DWORD>(std::size(contextMenuOnly))) > 0) {
+        Scenario settingsScenario{
+            L"settings-dialog-右键菜单",
+            L"QuattroSettingsDialog",
+            L"设置",
+            L"settings-dialog-右键菜单.png",
+            {L"设置", L"确定", L"取消"},
+            {},
+            0,
+            2,
+            false,
+            false,
+            false,
+            {L"自动跟踪", L"缓存维护", L"重置右键菜单"},
+            L"右键菜单"};
+        settingsScenario.unexpectedVisibleChildTexts = {
+            L"恢复跟踪开关默认值，并清除全部菜单列表、状态与图标缓存。",
+        };
+        settingsScenario.hoverButtonText = L"重置右键菜单";
+        settingsScenario.expectedTooltipText =
+            L"恢复跟踪开关默认值，并清除全部菜单列表、状态与图标缓存。";
+        settingsScenario.tooltipScreenshotName = L"settings-dialog-右键菜单-tooltip.png";
+        RunDialogScenario(
+            settingsScenario,
+            outputDir,
+            state,
+            [&]() {
+                bool imported = false;
+                const std::filesystem::path baseDirectory = std::filesystem::current_path();
+                ShowSettingsDialog(owner, instance, config, theme, baseDirectory, baseDirectory, &imported);
+            });
+
+        DestroyWindow(owner);
+        OleUninitialize();
+        Gdiplus::GdiplusShutdown(gdiplusToken);
+        if (!state.ok) {
+            for (const auto& failure : state.failures) {
+                AcceptanceLog(L"target failure " + failure);
+                std::wcerr << failure << L"\n";
+            }
+            return 1;
+        }
+        std::wcout << L"ui_screenshot_acceptance=passed screenshots=" << outputDir.wstring() << L"\n";
+        return 0;
+    }
+
     RunMainWindowScenario(outputDir, state);
     RunTableAlternatingRowsScenario(outputDir, state);
     RunTableColumnResizeScenario(outputDir, state);
@@ -1571,6 +1677,15 @@ int wmain() {
             expected,
             page};
         settingsScenario.requireThemedEditFrames = page == L"HTTP";
+        if (page == L"右键菜单") {
+            settingsScenario.unexpectedVisibleChildTexts = {
+                L"恢复跟踪开关默认值，并清除全部菜单列表、状态与图标缓存。",
+            };
+            settingsScenario.hoverButtonText = L"重置右键菜单";
+            settingsScenario.expectedTooltipText =
+                L"恢复跟踪开关默认值，并清除全部菜单列表、状态与图标缓存。";
+            settingsScenario.tooltipScreenshotName = L"settings-dialog-右键菜单-tooltip.png";
+        }
         RunDialogScenario(
             settingsScenario,
             outputDir,

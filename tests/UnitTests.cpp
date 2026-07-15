@@ -80,6 +80,32 @@ bool ExecSql(sqlite3* db, const char* sql) {
     }
     return true;
 }
+
+class TestTooltipRegistry final : public ThemedTooltipRegistry {
+public:
+    void ShowTooltip(
+        const std::wstring& text,
+        POINT screenPoint,
+        const ThemedTooltipOptions& options) override {
+        shownText = text;
+        shownPoint = screenPoint;
+        shownOptions = options;
+        visible = true;
+        ++showCount;
+    }
+
+    void HideTooltip() override {
+        visible = false;
+        ++hideCount;
+    }
+
+    std::wstring shownText;
+    POINT shownPoint{};
+    ThemedTooltipOptions shownOptions{};
+    bool visible = false;
+    int showCount = 0;
+    int hideCount = 0;
+};
 }
 
 int wmain() {
@@ -956,6 +982,12 @@ int wmain() {
             GetModuleHandleW(nullptr), controlParent, fallbackTheme,
             reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT)),
             DialogLayoutKind::Compact, 320, 200);
+        TestTooltipRegistry tooltipRegistry;
+        ThemedUi tooltipUi(
+            GetModuleHandleW(nullptr), controlParent, fallbackTheme,
+            reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT)),
+            DialogLayoutKind::Compact, 320, 200,
+            nullptr, nullptr, &tooltipRegistry);
         ThemedUi dpi125Ui(
             GetModuleHandleW(nullptr), controlParent, fallbackTheme,
             reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT)),
@@ -1039,6 +1071,23 @@ int wmain() {
         HWND runtimeSlider = controlUi.Slider(7104, 8, 72, 220, runtimeSliderOptions);
         ThemedUi::SetSliderValue(runtimeSlider, 3.7);
         Check(Near(static_cast<float>(ThemedUi::SliderValue(runtimeSlider)), 4.0f), "Themed slider applies public step");
+        HWND runtimeTooltipButton = tooltipUi.Button(
+            7106, L"tooltip", 8, 104,
+            ThemedButtonRole::Normal,
+            ThemedButtonSize::Compact,
+            ThemedButtonWidthMode::Text);
+        ThemedTooltipOptions runtimeTooltipOptions{};
+        runtimeTooltipOptions.placement = ThemedTooltipPlacement::Cursor;
+        tooltipUi.SetTooltip(runtimeTooltipButton, L"button description", runtimeTooltipOptions);
+        SendMessageW(runtimeTooltipButton, WM_MOUSEMOVE, 0, MAKELPARAM(2, 2));
+        Check(
+            tooltipRegistry.visible && tooltipRegistry.showCount > 0 &&
+                tooltipRegistry.shownText == L"button description" &&
+                tooltipRegistry.shownOptions.placement == ThemedTooltipPlacement::Cursor,
+            "Themed control tooltip shows through the public registry");
+        SendMessageW(runtimeTooltipButton, WM_MOUSELEAVE, 0, 0);
+        Check(!tooltipRegistry.visible && tooltipRegistry.hideCount > 0,
+            "Themed control tooltip hides when pointer leaves");
         HWND runtimeCombo = controlUi.ComboBox(7105, 240, 72, controlUi.comboBoxWidth({L"Short", L"Long option"}));
         ThemedUi::SetComboBoxItems(runtimeCombo, {L"Short", L"Long option"}, 1);
         Check(ThemedUi::ComboBoxSelectedIndex(runtimeCombo) == 1, "Themed combo public item and selection state");

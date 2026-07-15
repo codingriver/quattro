@@ -267,9 +267,18 @@ struct ToolBarRuntime {
     std::unordered_map<int, ToolRuntimeItem> items;
 };
 
+struct ControlTooltipRuntime {
+    ThemedTooltipRegistry* registry = nullptr;
+    std::wstring text;
+    ThemedTooltipOptions options{};
+    bool trackingMouseLeave = false;
+};
+
 constexpr int kToolBarOverflowId = 0x7ff0;
+constexpr UINT_PTR kControlTooltipSubclassId = 0x51545450;
 
 LRESULT CALLBACK ToolItemProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR id, DWORD_PTR refData);
+LRESULT CALLBACK ControlTooltipProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR id, DWORD_PTR refData);
 
 std::unordered_map<HWND, GroupBoxRuntime>& GroupBoxStates() {
     static std::unordered_map<HWND, GroupBoxRuntime> states;
@@ -278,6 +287,11 @@ std::unordered_map<HWND, GroupBoxRuntime>& GroupBoxStates() {
 
 std::unordered_map<HWND, PanelRuntime>& PanelStates() {
     static std::unordered_map<HWND, PanelRuntime> states;
+    return states;
+}
+
+std::unordered_map<HWND, ControlTooltipRuntime>& ControlTooltipStates() {
+    static std::unordered_map<HWND, ControlTooltipRuntime> states;
     return states;
 }
 
@@ -693,6 +707,39 @@ LRESULT CALLBACK ToolItemProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPa
         }
     }
     if (message == WM_NCDESTROY) RemoveWindowSubclass(hwnd, ToolItemProc, id);
+    return DefSubclassProc(hwnd, message, wParam, lParam);
+}
+
+LRESULT CALLBACK ControlTooltipProc(
+    HWND hwnd,
+    UINT message,
+    WPARAM wParam,
+    LPARAM lParam,
+    UINT_PTR id,
+    DWORD_PTR) {
+    auto it = ControlTooltipStates().find(hwnd);
+    if (it != ControlTooltipStates().end()) {
+        ControlTooltipRuntime& runtime = it->second;
+        if (message == WM_MOUSEMOVE && runtime.registry && runtime.options.enabled && !runtime.text.empty()) {
+            if (!runtime.trackingMouseLeave) {
+                TRACKMOUSEEVENT track{};
+                track.cbSize = sizeof(track);
+                track.dwFlags = TME_LEAVE;
+                track.hwndTrack = hwnd;
+                runtime.trackingMouseLeave = TrackMouseEvent(&track) != FALSE;
+            }
+            POINT point{};
+            GetCursorPos(&point);
+            runtime.registry->ShowTooltip(runtime.text, point, runtime.options);
+        } else if ((message == WM_MOUSELEAVE || (message == WM_SHOWWINDOW && !wParam)) && runtime.registry) {
+            runtime.trackingMouseLeave = false;
+            runtime.registry->HideTooltip();
+        }
+    }
+    if (message == WM_NCDESTROY) {
+        ControlTooltipStates().erase(hwnd);
+        RemoveWindowSubclass(hwnd, ControlTooltipProc, id);
+    }
     return DefSubclassProc(hwnd, message, wParam, lParam);
 }
 }
@@ -1929,6 +1976,9 @@ HWND ThemedUi::Table(int id, RECT frame, const std::vector<ThemedTableColumn>& c
     if (options.fullRowSelect) extended |= LVS_EX_FULLROWSELECT;
     ListView_SetExtendedListViewStyle(table, extended);
     ThemedControls::RegisterTable(table, theme_);
+    if (options.checkable) {
+        ThemedControls::CreateSystemCheckBoxImages(table);
+    }
     ThemedControls::SetTableColumnResizeEnabled(table, options.allowColumnResize);
     ThemedControls::ConfigureTableGridLines(table, options.showRowGridLines, options.showColumnGridLines);
     EnableWindow(table, options.enabled ? TRUE : FALSE);
@@ -2135,6 +2185,38 @@ bool ThemedUi::DecodeTableEvent(HWND table, LPARAM lParam, ThemedTableEvent& eve
         return true;
     }
     return false;
+}
+
+void ThemedUi::SetTooltip(HWND control, const std::wstring& text, ThemedTooltipOptions options) const {
+    if (!control) return;
+    auto& states = ControlTooltipStates();
+    if (!tooltipRegistry_ || text.empty()) {
+        auto it = states.find(control);
+        if (it != states.end()) {
+            if (it->second.registry) it->second.registry->HideTooltip();
+            states.erase(it);
+        }
+        RemoveWindowSubclass(control, ControlTooltipProc, kControlTooltipSubclassId);
+        return;
+    }
+
+    states[control] = ControlTooltipRuntime{tooltipRegistry_, text, options, false};
+    SetWindowSubclass(control, ControlTooltipProc, kControlTooltipSubclassId, 0);
+}
+
+void ThemedUi::DetachTooltips(ThemedTooltipRegistry* registry) {
+    if (!registry) return;
+    auto& states = ControlTooltipStates();
+    for (auto it = states.begin(); it != states.end();) {
+        if (it->second.registry != registry) {
+            ++it;
+            continue;
+        }
+        if (it->first && IsWindow(it->first)) {
+            RemoveWindowSubclass(it->first, ControlTooltipProc, kControlTooltipSubclassId);
+        }
+        it = states.erase(it);
+    }
 }
 
 void ThemedUi::ShowTooltip(const std::wstring& text, POINT screenPoint, ThemedTooltipOptions options) const {

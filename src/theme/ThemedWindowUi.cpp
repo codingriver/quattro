@@ -1271,6 +1271,7 @@ HBRUSH ThemedWindowUi::ApplyEditColors(HDC dc, HWND child) {
 }
 
 void ThemedWindowUi::ReleaseResources() {
+    ThemedUi::DetachTooltips(this);
     for (auto& editFrame : editFrames_) {
         if (editFrame.child && IsWindow(editFrame.child)) {
             RemoveWindowSubclass(editFrame.child, EditChildProc, kEditChildSubclassId);

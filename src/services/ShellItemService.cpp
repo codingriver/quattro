@@ -1,6 +1,7 @@
 #include "ShellItemService.h"
 
 #include "Utilities.h"
+#include "AppLog.h"
 
 #include <shlobj.h>
 #include <shobjidl.h>
@@ -1355,4 +1356,224 @@ bool ShellItemService::OpenProperties(HWND owner, const Link& link) {
     info.lpFile = target.c_str();
     info.nShow = SW_SHOWNORMAL;
     return ShellExecuteExW(&info) != FALSE;
+}
+
+namespace {
+// Native Shell检测相关的辅助类和函数
+
+class NativeShellScannerVisitor {
+private:
+    std::wstring targetProviderId_;
+    int maxDepth_;
+
+public:
+    explicit NativeShellScannerVisitor(const std::wstring& providerId, int maxDepth = 4)
+        : targetProviderId_(ToLower(providerId)), maxDepth_(maxDepth) {}
+
+    bool FindProvider() {
+        // 扫描所有可能包含shell菜单的注册表位置
+        return ScanScope(L"*\\shell\\") ||
+               ScanScope(L"AllFilesystemObjects\\shell\\") ||
+               ScanScope(L"Directory\\shell\\") ||
+               ScanScope(L"Directory\\Background\\shell\\") ||
+               ScanScope(L"Folder\\shell\\") ||
+               ScanScope(L"Drive\\shell\\");
+    }
+
+private:
+    bool ScanScope(const std::wstring& scope) {
+        HKEY hkey = nullptr;
+        if (RegOpenKeyExW(HKEY_CLASSES_ROOT, scope.c_str(), 0,
+                         KEY_ENUMERATE_SUB_KEYS, &hkey) != ERROR_SUCCESS) {
+            return false;
+        }
+
+        bool found = false;
+        DWORD index = 0;
+        wchar_t subkey[256];
+        DWORD subkeySize;
+
+        while (!found && RegEnumKeyExW(hkey, index++, subkey,
+                                     &(subkeySize = _countof(subkey)),
+                                     nullptr, nullptr, nullptr, nullptr) == ERROR_SUCCESS) {
+            found = CheckMenuItemAndDescendants(scope, subkey, 0);
+        }
+
+        RegCloseKey(hkey);
+        return found;
+    }
+
+    bool CheckMenuItemAndDescendants(const std::wstring& scope,
+                                     const std::wstring& menuText, int depth) {
+        // 检查这个菜单项的文本是否匹配我们要找的provider
+        if (MatchesProvider(menuText)) {
+            return true;
+        }
+
+        // 递归检查cascade子菜单（受深度限制）
+        if (depth < maxDepth_ - 1) {
+            const std::wstring cascadePath = scope + menuText + L"\\shell";
+            if (ScanCascadeSubmenus(cascadePath, depth + 1)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    bool ScanCascadeSubmenus(const std::wstring& fullPath, int depth) {
+        HKEY hkey = nullptr;
+        if (RegOpenKeyExW(HKEY_CLASSES_ROOT, fullPath.c_str(), 0,
+                         KEY_ENUMERATE_SUB_KEYS, &hkey) != ERROR_SUCCESS) {
+            return false;
+        }
+
+        bool found = false;
+        DWORD index = 0;
+        wchar_t childKey[256];
+        DWORD childKeySize;
+
+        while (!found && RegEnumKeyExW(hkey, index++, childKey,
+                                      &(childKeySize = _countof(childKey)),
+                                      nullptr, nullptr, nullptr, nullptr) == ERROR_SUCCESS) {
+            found = CheckMenuItemAndDescendants(fullPath + L"\\", childKey, depth);
+        }
+
+        RegCloseKey(hkey);
+        return found;
+    }
+
+    bool MatchesProvider(const std::wstring& menuText) {
+        // 使用现有的DetectProviderId逻辑来识别provider
+        std::wstring detected = ShellItemService::DetectTrackedContextMenuProvider(menuText);
+        return detected == targetProviderId_;
+    }
+};
+
+} // namespace
+
+// 新增实现: Native Shell检测
+bool ShellItemService::IsInstalledInNativeShell(const std::wstring& providerId) {
+    if (Trim(providerId).empty()) {
+        return false;
+    }
+
+    // 使用扫描器查找该provider
+    NativeShellScannerVisitor scanner(providerId);
+    return scanner.FindProvider();
+}
+
+// 新增实现: 为特定Provider查询菜单项
+bool ShellItemService::QueryTrackedContextMenuForProvider(
+    HWND owner,
+    const Link& link,
+    const std::wstring& targetProviderId,
+    std::vector<ShellContextMenuItem>& outItems,
+    std::wstring& errorMessage) {
+
+    if (Trim(targetProviderId).empty()) {
+        errorMessage = L"Provider ID为空。";
+        return false;
+    }
+
+    // 创建临时tracking选项，仅启用目标provider
+    ShellContextMenuTrackingOptions tracking;
+
+    if (targetProviderId == ShellContextMenuProviderId::Git) tracking.git = true;
+    else if (targetProviderId == ShellContextMenuProviderId::Svn) tracking.svn = true;
+    else if (targetProviderId == ShellContextMenuProviderId::VsCode) tracking.vsCode = true;
+    else if (targetProviderId == ShellContextMenuProviderId::Terminal) tracking.terminal = true;
+    else if (targetProviderId == ShellContextMenuProviderId::Archive) tracking.archive = true;
+    else if (targetProviderId == ShellContextMenuProviderId::Everything) tracking.everything = true;
+    else if (targetProviderId == ShellContextMenuProviderId::NotepadPlusPlus) tracking.notepadPlusPlus = true;
+    else if (targetProviderId == ShellContextMenuProviderId::Cursor) tracking.cursor = true;
+    else if (targetProviderId == ShellContextMenuProviderId::SublimeText) tracking.sublimeText = true;
+    else if (targetProviderId == ShellContextMenuProviderId::Windsurf) tracking.windsurf = true;
+    else if (targetProviderId == ShellContextMenuProviderId::Trae) tracking.trae = true;
+    else if (targetProviderId == ShellContextMenuProviderId::Zed) tracking.zed = true;
+    else if (targetProviderId == ShellContextMenuProviderId::Vim) tracking.vim = true;
+    else {
+        errorMessage = std::wstring(L"未知的Provider ID: ") + targetProviderId;
+        return false;
+    }
+
+    // 从菜单查询快照
+    ShellContextMenuSnapshot snapshot;
+    if (!QueryTrackedContextMenu(owner, link, tracking, snapshot)) {
+        errorMessage = L"无法查询Windows菜单。";
+        return false;
+    }
+
+    if (!snapshot.complete || snapshot.items.empty()) {
+        errorMessage = L"该Provider未在Windows菜单中找到或菜单为空。";
+        return false;
+    }
+
+    // 过滤出目标provider的菜单项
+    outItems.clear();
+    for (const auto& item : snapshot.items) {
+        if (item.providerId == targetProviderId) {
+            outItems.push_back(item);
+        }
+    }
+
+    if (outItems.empty()) {
+        errorMessage = L"未找到匹配的菜单项。";
+        return false;
+    }
+
+    return true;
+}
+
+// 新增实现: 批量为所有链接刷新Provider菜单
+bool ShellItemService::RefreshProviderForAllLinks(
+    HWND owner,
+    const std::vector<Link>& links,
+    const std::wstring& providerId,
+    ShellContextMenuCacheService& cache,  // TODO: Phase 2集成时使用
+    std::wstring& errorMessage) {
+
+    (void)cache;  // 暂时未使用，Phase 2实现时启用
+
+    if (links.empty()) {
+        errorMessage = L"没有要刷新的链接。";
+        return false;
+    }
+
+    int successCount = 0;
+    int failureCount = 0;
+
+    for (const auto& link : links) {
+        std::wstring itemError;
+        std::vector<ShellContextMenuItem> providerItems;
+
+        if (QueryTrackedContextMenuForProvider(owner, link, providerId, providerItems, itemError)) {
+            // 构造snapshot用于缓存更新
+            ShellContextMenuSnapshot snapshot;
+            snapshot.complete = true;
+            snapshot.items = providerItems;
+
+            // 创建tracking选项（仅该provider）
+            ShellContextMenuTrackingOptions tracking;
+            if (providerId == ShellContextMenuProviderId::Git) tracking.git = true;
+            else if (providerId == ShellContextMenuProviderId::Everything) tracking.everything = true;
+            else if (providerId == ShellContextMenuProviderId::VsCode) tracking.vsCode = true;
+            // ... 其他providers
+
+            // 更新缓存（增量模式，后续实现）
+            // cache.UpdateIncremental(link, snapshot, tracking, true);
+            successCount++;
+        } else {
+            failureCount++;
+            WriteAppLog(std::wstring(L"为链接 ") + link.name + L" 刷新Provider失败: " + itemError);
+        }
+    }
+
+    if (failureCount > 0) {
+        errorMessage = std::wstring(L"成功: ") + std::to_wstring(successCount) +
+                      L", 失败: " + std::to_wstring(failureCount);
+        return false;
+    }
+
+    return true;
 }

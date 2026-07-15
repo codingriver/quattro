@@ -3113,6 +3113,58 @@ void RestoreTableDefaultImageList(HWND table) {
     }
 }
 
+void CreateSystemCheckBoxImages(HWND table) {
+    if (!table) return;
+
+    // 创建系统风格的复选框状态图像
+    // 图像列表大小应与行高一致，包含3种状态：
+    // 0=未选中, 1=选中, 2=禁用
+    HIMAGELIST hIml = ImageList_Create(16, 16, ILC_COLOR32, 3, 0);
+    if (!hIml) return;
+
+    // 绘制三种复选框状态
+    for (int state = 0; state < 3; ++state) {
+        HDC hdcDC = CreateCompatibleDC(nullptr);
+        if (!hdcDC) continue;
+
+        HBITMAP hbm = CreateCompatibleBitmap(hdcDC, 16, 16);
+        if (!hbm) {
+            DeleteDC(hdcDC);
+            continue;
+        }
+
+        HBITMAP oldBm = static_cast<HBITMAP>(SelectObject(hdcDC, hbm));
+        RECT rc{0, 0, 16, 16};
+
+        // 背景为透明（白色作为掩码颜色）
+        FillRect(hdcDC, &rc, GetSysColorBrush(COLOR_WINDOW));
+
+        // 绘制方框
+        HPEN hpen = CreatePen(PS_SOLID, 1, GetSysColor(COLOR_WINDOWTEXT));
+        HGDIOBJ oldPen = SelectObject(hdcDC, hpen);
+        Rectangle(hdcDC, 1, 1, 15, 15);
+
+        // 如果是选中状态，绘制对勾
+        if (state == 1) {
+            // 绘制对勾标记
+            MoveToEx(hdcDC, 4, 8, nullptr);
+            LineTo(hdcDC, 7, 11);
+            LineTo(hdcDC, 12, 4);
+        }
+
+        SelectObject(hdcDC, oldPen);
+        DeleteObject(hpen);
+        SelectObject(hdcDC, oldBm);
+        ImageList_AddMasked(hIml, hbm, RGB(255, 255, 255));
+        DeleteObject(hbm);
+        DeleteDC(hdcDC);
+    }
+
+    ListView_SetImageList(table, hIml, LVSIL_STATE);
+}
+
+
+
 void DrawTabGroupFrame(const Theme& theme, HDC dc, RECT rect) {
     FillRoundRect(
         dc,

@@ -399,6 +399,7 @@ void SetTableColumnResizeEnabled(HWND table, bool enabled);
 void SetTableRowEnabledStates(HWND table, const std::vector<bool>& enabled);
 void SetTableCells(HWND table, const std::vector<std::vector<TableCellRuntime>>& cells);
 void RestoreTableDefaultImageList(HWND table);
+void CreateSystemCheckBoxImages(HWND table);
 bool IsTableRowEnabled(HWND table, int index);
 bool IsTableRowSelected(HWND table, int row);
 bool TableCellAction(HWND table, int row, int column, int& actionId);

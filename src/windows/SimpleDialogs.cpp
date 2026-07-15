@@ -9,6 +9,7 @@
 #include "JsonValue.h"
 #include "LocalHttpServerService.h"
 #include "MainHotKey.h"
+#include "ShellContextMenuCacheService.h"
 #include "ShellItemService.h"
 #include "Storage.h"
 #include "ThemedControls.h"
@@ -82,11 +83,14 @@ constexpr int ID_HTTP_ADDRESS = 431;
 constexpr int ID_LOGGING_ENABLED = 432;
 // 433-439 与 441-446 由 TrackedContextMenuProviders() 表内的行键占用。
 constexpr int ID_RESET_CONTEXT_MENU = 440;
+constexpr int ID_REFRESH_CONTEXT_MENU_FROM_NATIVE = 449;
 constexpr int ID_CONTEXT_MENU_TABLE = 447;
 constexpr int ID_MESSAGE_TEXT = 501;
 constexpr int ID_HOTKEY_CONFLICT_IGNORE = 502;
 constexpr int ID_MAIN_HOTKEY_PROBE = 0x5148;
 constexpr UINT WM_SETTINGS_WEBDAV_DONE = WM_APP + 0x81;
+constexpr UINT WM_CONTEXT_MENU_REFRESH_DONE = WM_APP + 0x82;
+constexpr UINT WM_CONTEXT_MENU_TABLE_REFRESH = WM_APP + 0x83;
 
 enum class SettingsWebDavOperation {
     Test,
@@ -2241,25 +2245,52 @@ private:
         if (!contextMenuTable_) return;
         const auto providers = TrackedContextMenuProviders();
         std::vector<bool> installed;
+        std::vector<bool> installedInNativeShell;
         installed.reserve(providers.size());
+        installedInNativeShell.reserve(providers.size());
+
         for (const auto& provider : providers) {
-            installed.push_back(ShellItemService::IsTrackedProviderInstalled(provider));
+            // 原始方式检测 (probe keys)
+            bool isInstalledViaProbeKey = ShellItemService::IsTrackedProviderInstalled(provider);
+            installed.push_back(isInstalledViaProbeKey);
+
+            // 新增: 从Native Shell检测 (Phase 3改进)
+            bool isInstalledInShell = false;
+            if (!isInstalledViaProbeKey) {
+                // 仅在probe key未检测到时才进行native shell扫描
+                isInstalledInShell = ShellItemService::IsInstalledInNativeShell(provider.providerId);
+            }
+            installedInNativeShell.push_back(isInstalledInShell);
         }
+
         contextMenuTableOrder_ = TrackedContextMenuDisplayOrder(installed);
         std::vector<ThemedTableRow> rows;
         rows.reserve(contextMenuTableOrder_.size());
+
         for (std::size_t bindingIndex : contextMenuTableOrder_) {
             const auto& provider = providers[bindingIndex];
             ThemedTableRow row{};
             row.key = provider.checkBoxControlId;
+
+            // 改进: 显示更详细的安装状态
+            std::wstring statusText;
+            bool isInstalled = installed[bindingIndex] || installedInNativeShell[bindingIndex];
+
+            if (installed[bindingIndex]) {
+                statusText = L"已安装(注册表)";  // Probe key检测到
+            } else if (installedInNativeShell[bindingIndex]) {
+                statusText = L"已安装(菜单)";    // Native Shell检测到
+            } else {
+                statusText = L"未安装";
+            }
+
             row.cells = {
                 ThemedTableCell{provider.displayName},
-                ThemedTableCell{installed[bindingIndex] ? L"已安装" : L"未安装"},
+                ThemedTableCell{statusText},
             };
             row.checked = draft_.*(provider.configMember);
-            // 未安装的工具本就不会产生可跟踪的菜单项，行置灰禁用；
-            // SetTableRows 会同时清除禁用行的勾选显示，配置值仍以 draft_ 为准。
-            row.enabled = installed[bindingIndex];
+            // 改进: 已安装的工具启用行（无论是probe key还是native shell）
+            row.enabled = isInstalled;
             rows.push_back(std::move(row));
         }
         ThemedUi::SetTableRows(contextMenuTable_, rows);
@@ -2294,6 +2325,8 @@ private:
             return true;
         }
         draft_.*(provider.configMember) = event.checked;
+        // 确保整行被选中显示
+        ThemedUi::SetTableSelectedIndex(contextMenuTable_, event.row);
         return true;
     }
 
@@ -2553,6 +2586,86 @@ private:
             ShowThemedMessageBox(
                 hwnd_, instance_, theme_, L"右键菜单重置失败，请确认缓存目录可写。", L"重置右键菜单", MB_OK | MB_ICONWARNING);
         }
+    }
+
+    void RefreshContextMenuFromNative() {
+        if (!resetContextMenuCallback_) {
+            ShowThemedMessageBox(
+                hwnd_, instance_, theme_, L"当前无法访问右键菜单缓存。", L"从Windows菜单刷新", MB_OK | MB_ICONWARNING);
+            return;
+        }
+
+        // 后台线程中执行扫描和刷新
+        const HWND target = hwnd_;
+        const std::filesystem::path appDirectory = appDirectory_;
+        const AppConfig currentConfig = draft_;
+        std::thread refreshThread([target, appDirectory, currentConfig]() {
+            try {
+                // 初始化缓存服务
+                ShellContextMenuCacheService cache(appDirectory);
+
+                // 获取启用的provider列表
+                const auto& providers = TrackedContextMenuProviders();
+                std::vector<std::wstring> enabledProviderIds;
+
+                for (const auto& provider : providers) {
+                    if (currentConfig.*(provider.configMember)) {
+                        enabledProviderIds.push_back(provider.providerId);
+                    }
+                }
+
+                if (enabledProviderIds.empty()) {
+                    auto* msgPtr = new std::wstring(L"没有启用的工具。");
+                    PostMessage(target, WM_CONTEXT_MENU_REFRESH_DONE, 0, reinterpret_cast<LPARAM>(msgPtr));
+                    return;
+                }
+
+                std::wstring resultMessage = L"";
+                int successCount = 0;
+                int failureCount = 0;
+
+                // 创建虚拟link用于刷新（因为我们在设置对话框中没有实际的links）
+                Link dummyLink;
+                dummyLink.id = 0;
+                dummyLink.name = L"Settings";
+                std::vector<Link> dummyLinks = {dummyLink};
+
+                // 为每个启用的provider刷新菜单
+                for (const auto& providerId : enabledProviderIds) {
+                    std::wstring errorMessage;
+                    if (ShellItemService::RefreshProviderForAllLinks(target, dummyLinks, providerId, cache, errorMessage)) {
+                        successCount++;
+                    } else {
+                        failureCount++;
+                    }
+                }
+
+                if (failureCount > 0) {
+                    resultMessage = L"刷新完成: 成功 " + std::to_wstring(successCount) + L" 个，失败 " + std::to_wstring(failureCount) + L" 个。";
+                    auto* msgPtr = new std::wstring(resultMessage);
+                    PostMessage(target, WM_CONTEXT_MENU_REFRESH_DONE, 1, reinterpret_cast<LPARAM>(msgPtr));
+                } else {
+                    resultMessage = L"已从Windows菜单成功刷新所有工具。";
+                    auto* msgPtr = new std::wstring(resultMessage);
+                    PostMessage(target, WM_CONTEXT_MENU_REFRESH_DONE, 2, reinterpret_cast<LPARAM>(msgPtr));
+                }
+
+                // 刷新表格显示
+                PostMessage(target, WM_CONTEXT_MENU_TABLE_REFRESH, 0, 0);
+            } catch (...) {
+                auto* msgPtr = new std::wstring(L"刷新过程中发生异常。");
+                PostMessage(target, WM_CONTEXT_MENU_REFRESH_DONE, 1, reinterpret_cast<LPARAM>(msgPtr));
+            }
+        });
+        refreshThread.detach();
+
+        ShowToast(L"正在扫描Windows菜单...", ThemedToastRole::Info, 3000);
+    }
+
+    std::vector<Link> GetAllEnabledLinks() {
+        // 在设置对话框中，我们无法访问主窗口的实际links
+        // 此方法保留用于将来使用，当links通过其他方式可用时
+        return {};
     }
 
     bool PrepareWebDavOperation(AppConfig& value) {
@@ -3276,6 +3389,7 @@ private:
             contextMenuTableOptions.checkable = true;
             contextMenuTableOptions.showHeader = false;
             contextMenuTableOptions.reserveScrollBarGutter = true;
+            contextMenuTableOptions.fullRowSelect = true;
             contextMenuTable_ = MakeUi().Table(
                 ID_CONTEXT_MENU_TABLE,
                 contextMenuTableFrame,
@@ -3302,25 +3416,43 @@ private:
                 ThemedButtonRole::Normal,
                 ThemedButtonSize::Compact,
                 ThemedButtonWidthMode::Text);
+            const int refreshContextMenuWidth = settingsUi.buttonWidth(
+                L"从Windows菜单刷新",
+                ThemedButtonRole::Normal,
+                ThemedButtonSize::Compact,
+                ThemedButtonWidthMode::Text);
             const ThemedSectionGeometry contextMenuMaintenanceSection = behaviorForm.section(
                 behaviorFrameLeft, contextMenuTrackingSection.frame.bottom + behaviorFrameGap, behaviorFrameWidth,
-                {behaviorForm.sectionRow({ThemedSectionItemKind::CompactButton}),
-                 behaviorForm.sectionRow({ThemedSectionItemKind::Label})});
+                {behaviorForm.sectionRow({ThemedSectionItemKind::CompactButton, ThemedSectionItemKind::CompactButton})});
             HWND contextMenuMaintenanceGroup = AddSectionFrame(TabContextMenu, L"缓存维护", contextMenuMaintenanceSection.frame);
+            const int contextMenuMaintenanceY = behaviorForm.sectionItemY(contextMenuMaintenanceSection, 0, settingsUi.compactButtonHeight());
             HWND resetContextMenuButton = Button(
                 TabContextMenu,
                 ID_RESET_CONTEXT_MENU,
                 L"重置右键菜单",
                 behaviorLeft,
-                behaviorForm.sectionItemY(contextMenuMaintenanceSection, 0, settingsUi.compactButtonHeight()),
+                contextMenuMaintenanceY,
                 resetContextMenuWidth);
-            HWND contextMenuMaintenanceNote = Label(
+            HWND refreshContextMenuButton = Button(
                 TabContextMenu,
+                ID_REFRESH_CONTEXT_MENU_FROM_NATIVE,
+                L"从Windows菜单刷新",
+                behaviorLeft + resetContextMenuWidth + behaviorLayout.controlGapX,
+                contextMenuMaintenanceY,
+                refreshContextMenuWidth);
+            ThemedTooltipOptions resetContextMenuTooltipOptions{};
+            resetContextMenuTooltipOptions.placement = ThemedTooltipPlacement::Cursor;
+            settingsUi.SetTooltip(
+                resetContextMenuButton,
                 L"恢复跟踪开关默认值，并清除全部菜单列表、状态与图标缓存。",
-                behaviorLeft,
-                behaviorForm.sectionItemY(contextMenuMaintenanceSection, 1, settingsUi.labelHeight()),
-                behaviorContentWidth);
-            ThemedUi::BindGroupChildren(contextMenuMaintenanceGroup, {resetContextMenuButton, contextMenuMaintenanceNote});
+                resetContextMenuTooltipOptions);
+            ThemedTooltipOptions refreshContextMenuTooltipOptions{};
+            refreshContextMenuTooltipOptions.placement = ThemedTooltipPlacement::Cursor;
+            settingsUi.SetTooltip(
+                refreshContextMenuButton,
+                L"扫描Windows原生菜单，增量更新所有启用的工具菜单和图标。",
+                refreshContextMenuTooltipOptions);
+            ThemedUi::BindGroupChildren(contextMenuMaintenanceGroup, {resetContextMenuButton, refreshContextMenuButton});
 
             const ThemedSectionGeometry interactionLaunchSection = behaviorForm.section(
                 behaviorFrameLeft, pageTop, behaviorFrameWidth,
@@ -3645,6 +3777,24 @@ private:
         case WM_SETTINGS_WEBDAV_DONE:
             HandleWebDavResult(std::unique_ptr<SettingsWebDavResult>(reinterpret_cast<SettingsWebDavResult*>(lParam)));
             return 0;
+        case WM_CONTEXT_MENU_REFRESH_DONE: {
+            auto* msgPtr = reinterpret_cast<std::wstring*>(lParam);
+            std::unique_ptr<std::wstring> message(msgPtr);
+            if (wParam == 2) {
+                // Success
+                ShowToast(*message, ThemedToastRole::Success, 5000);
+            } else if (wParam == 1) {
+                // Partial failure
+                ShowThemedMessageBox(hwnd_, instance_, theme_, *message, L"从Windows菜单刷新", MB_OK | MB_ICONWARNING);
+            } else {
+                // No enabled tools
+                ShowThemedMessageBox(hwnd_, instance_, theme_, *message, L"从Windows菜单刷新", MB_OK | MB_ICONINFORMATION);
+            }
+            return 0;
+        }
+        case WM_CONTEXT_MENU_TABLE_REFRESH:
+            AddContextMenuTableRows();
+            return 0;
         case WM_NOTIFY:
             if (HandleHotKeyTableEvent(lParam)) {
                 return 0;
@@ -3697,6 +3847,10 @@ private:
             }
             if (LOWORD(wParam) == ID_RESET_CONTEXT_MENU) {
                 ResetContextMenu();
+                return 0;
+            }
+            if (LOWORD(wParam) == ID_REFRESH_CONTEXT_MENU_FROM_NATIVE) {
+                RefreshContextMenuFromNative();
                 return 0;
             }
             if (LOWORD(wParam) == ID_WEBDAV_UPLOAD) {

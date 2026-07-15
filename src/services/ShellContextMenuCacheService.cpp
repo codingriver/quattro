@@ -463,3 +463,164 @@ bool ShellContextMenuCacheService::Save() const {
     }
     return true;
 }
+
+// 新增实现: 获取缓存统计信息
+ShellContextMenuCacheService::CacheStatistics ShellContextMenuCacheService::GetStatistics() const {
+    CacheStatistics stats;
+    stats.linkCount = entries_.size();
+    stats.iconCount = iconPool_.size();
+    stats.menuItemCount = 0;
+
+    for (const auto& [_, entry] : entries_) {
+        for (const auto& item : entry.items) {
+            CountMenuItemsRecursive(item, stats.menuItemCount);
+        }
+    }
+
+    return stats;
+}
+
+// 新增实现: 递归计算菜单项数量
+void ShellContextMenuCacheService::CountMenuItemsRecursive(
+    const ShellContextMenuItem& item,
+    std::size_t& count) {
+    ++count;
+    for (const auto& child : item.children) {
+        CountMenuItemsRecursive(child, count);
+    }
+}
+
+// 新增实现: 增量更新缓存
+void ShellContextMenuCacheService::UpdateIncremental(
+    const Link& link,
+    const ShellContextMenuSnapshot& snapshot,
+    const ShellContextMenuTrackingOptions& tracking) {
+
+    if (!snapshot.complete) {
+        return;
+    }
+
+    // 吸收新快照中的图标
+    std::vector<ShellContextMenuItem> snapshotItems = snapshot.items;
+    std::vector<std::wstring> path;
+    IngestIcons(snapshotItems, path);
+    StripIcons(snapshotItems);
+
+    // 获取或创建该link的条目
+    Entry& entry = entries_[link.id];
+    entry.target = TargetKey(link);
+
+    // 移除tracking启用的providers的旧菜单项
+    entry.items.erase(std::remove_if(entry.items.begin(), entry.items.end(), [&](const auto& item) {
+        return tracking.Includes(item.providerId);
+    }), entry.items.end());
+
+    // 添加新的菜单项
+    for (const auto& item : snapshotItems) {
+        if (tracking.Includes(item.providerId)) {
+            entry.items.push_back(item);
+        }
+    }
+
+    // 如果条目为空则删除
+    if (entry.items.empty()) {
+        entries_.erase(link.id);
+    }
+
+    Save();
+}
+
+// 新增实现: 菜单项合并（保留用户状态）
+void ShellContextMenuCacheService::MergeMenuItems(
+    std::vector<ShellContextMenuItem>& existing,
+    const std::vector<ShellContextMenuItem>& incoming) {
+
+    // 构建existing的快速查找表
+    struct MenuItemKey {
+        std::wstring providerId;
+        std::wstring text;
+        std::wstring verb;
+
+        bool operator==(const MenuItemKey& other) const {
+            return providerId == other.providerId &&
+                   ToLower(text) == ToLower(other.text) &&
+                   ToLower(verb) == ToLower(other.verb);
+        }
+    };
+
+    // 处理每个incoming项
+    for (const auto& incomingItem : incoming) {
+        MenuItemKey incomingKey{incomingItem.providerId, incomingItem.text, incomingItem.verb};
+
+        // 在existing中查找相同的项
+        auto it = std::find_if(existing.begin(), existing.end(),
+            [&](const ShellContextMenuItem& existingItem) {
+                MenuItemKey existingKey{existingItem.providerId, existingItem.text, existingItem.verb};
+                return existingKey == incomingKey;
+            });
+
+        if (it != existing.end()) {
+            // 菜单项已存在，执行in-place更新
+            // 保存用户配置
+            const bool userEnabled = it->enabled;
+            const bool userChecked = it->checked;
+
+            // 更新命令和参数等
+            it->actionKind = incomingItem.actionKind;
+            it->actionId = incomingItem.actionId;
+            it->executable = incomingItem.executable;
+            it->arguments = incomingItem.arguments;
+            it->workingDirectory = incomingItem.workingDirectory;
+
+            // 恢复用户配置
+            it->enabled = userEnabled;
+            it->checked = userChecked;
+
+            // 递归处理子菜单
+            if (!incomingItem.children.empty()) {
+                MergeMenuItems(it->children, incomingItem.children);
+            }
+        } else {
+            // 新菜单项，直接添加
+            existing.push_back(incomingItem);
+        }
+    }
+}
+
+// 新增实现: 选择性移除Provider菜单
+void ShellContextMenuCacheService::RemoveProviderSelective(const std::wstring& providerId) {
+    bool changed = false;
+
+    // 从所有条目中移除该provider的菜单项
+    for (auto entry = entries_.begin(); entry != entries_.end();) {
+        auto& items = entry->second.items;
+        const auto oldSize = items.size();
+
+        items.erase(std::remove_if(items.begin(), items.end(),
+            [&](const auto& item) { return item.providerId == providerId; }),
+            items.end());
+
+        changed = changed || oldSize != items.size();
+
+        if (items.empty()) {
+            entry = entries_.erase(entry);
+        } else {
+            ++entry;
+        }
+    }
+
+    // 移除该provider的图标
+    const std::wstring iconPrefix = ToLower(providerId) + L"|";
+    for (auto icon = iconPool_.begin(); icon != iconPool_.end();) {
+        if (icon->first.rfind(iconPrefix, 0) == 0) {
+            icon = iconPool_.erase(icon);
+            changed = true;
+        } else {
+            ++icon;
+        }
+    }
+
+    if (changed) {
+        Save();
+    }
+}
