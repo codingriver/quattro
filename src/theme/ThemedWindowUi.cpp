@@ -9,7 +9,9 @@
 
 namespace {
 constexpr const wchar_t* kEditFrameClassName = L"QuattroThemedEditFrame";
+constexpr const wchar_t* kTableFrameClassName = L"QuattroThemedTableFrame";
 constexpr UINT_PTR kEditChildSubclassId = 0x51454652;
+constexpr UINT_PTR kTableChildSubclassId = 0x51544652;
 constexpr UINT_PTR kToastTimerId = 0x544f4153;
 
 std::wstring LastErrorText(const wchar_t* prefix) {
@@ -363,6 +365,7 @@ void ThemedWindowUi::ApplyDpiChange(UINT newDpi, const RECT* suggestedWindowRect
         frame.frame = RECT{
             MulDiv(frame.frame.left, newDpi, oldDpi), MulDiv(frame.frame.top, newDpi, oldDpi),
             MulDiv(frame.frame.right, newDpi, oldDpi), MulDiv(frame.frame.bottom, newDpi, oldDpi)};
+        SyncTableFrameWindow(frame);
     }
     RECT client{};
     GetClientRect(hwnd_, &client);
@@ -412,11 +415,40 @@ void ThemedWindowUi::RegisterTableFrame(HWND child, RECT frame) {
     auto it = std::find_if(tableFrames_.begin(), tableFrames_.end(), [child](const TableFrame& entry) {
         return entry.child == child;
     });
-    if (it == tableFrames_.end()) tableFrames_.push_back(TableFrame{child, frame});
-    else it->frame = frame;
+    if (it == tableFrames_.end()) {
+        tableFrames_.push_back(TableFrame{child, nullptr, frame});
+        TableFrame& newFrame = tableFrames_.back();
+        if (EnsureTableFrameClass()) {
+            newFrame.frameWindow = CreateWindowExW(
+                WS_EX_NOPARENTNOTIFY,
+                kTableFrameClassName,
+                L"",
+                WS_CHILD | WS_CLIPSIBLINGS,
+                frame.left,
+                frame.top,
+                frame.right - frame.left,
+                frame.bottom - frame.top,
+                hwnd_,
+                nullptr,
+                instance_,
+                this);
+        }
+        SetWindowSubclass(child, TableChildProc, kTableChildSubclassId, reinterpret_cast<DWORD_PTR>(this));
+        SyncTableFrameWindow(newFrame);
+    } else {
+        it->frame = frame;
+        SyncTableFrameWindow(*it);
+    }
 }
 
 void ThemedWindowUi::UnregisterTableFrame(HWND child) {
+    TableFrame* tableFrame = FindTableFrame(child);
+    if (tableFrame) {
+        RemoveWindowSubclass(child, TableChildProc, kTableChildSubclassId);
+        if (tableFrame->frameWindow && IsWindow(tableFrame->frameWindow)) {
+            DestroyWindow(tableFrame->frameWindow);
+        }
+    }
     tableFrames_.erase(
         std::remove_if(tableFrames_.begin(), tableFrames_.end(), [child](const TableFrame& entry) {
             return entry.child == child;
@@ -521,8 +553,10 @@ void ThemedWindowUi::DrawRegisteredEditFrames(HDC dc) const {
 
 void ThemedWindowUi::DrawRegisteredTableFrames(HDC dc) const {
     for (const auto& entry : tableFrames_) {
-        if (IsWindow(entry.child) && IsWindowVisible(entry.child)) {
-            ThemedControls::DrawListFrame(theme_, dc, entry.frame, entry.child);
+        if (entry.frameWindow && IsWindow(entry.frameWindow)) {
+            InvalidateRect(entry.frameWindow, nullptr, FALSE);
+        } else if (IsWindow(entry.child) && IsWindowVisible(entry.child)) {
+            ThemedControls::DrawTableFrame(theme_, dc, entry.frame, entry.child);
         }
     }
 }
@@ -913,6 +947,34 @@ const ThemedWindowUi::EditFrame* ThemedWindowUi::FindEditFrameWindow(HWND frameW
     return it == editFrames_.end() ? nullptr : &*it;
 }
 
+ThemedWindowUi::TableFrame* ThemedWindowUi::FindTableFrame(HWND child) {
+    auto it = std::find_if(tableFrames_.begin(), tableFrames_.end(), [child](const TableFrame& tableFrame) {
+        return tableFrame.child == child;
+    });
+    return it == tableFrames_.end() ? nullptr : &*it;
+}
+
+const ThemedWindowUi::TableFrame* ThemedWindowUi::FindTableFrame(HWND child) const {
+    auto it = std::find_if(tableFrames_.begin(), tableFrames_.end(), [child](const TableFrame& tableFrame) {
+        return tableFrame.child == child;
+    });
+    return it == tableFrames_.end() ? nullptr : &*it;
+}
+
+ThemedWindowUi::TableFrame* ThemedWindowUi::FindTableFrameWindow(HWND frameWindow) {
+    auto it = std::find_if(tableFrames_.begin(), tableFrames_.end(), [frameWindow](const TableFrame& tableFrame) {
+        return tableFrame.frameWindow == frameWindow;
+    });
+    return it == tableFrames_.end() ? nullptr : &*it;
+}
+
+const ThemedWindowUi::TableFrame* ThemedWindowUi::FindTableFrameWindow(HWND frameWindow) const {
+    auto it = std::find_if(tableFrames_.begin(), tableFrames_.end(), [frameWindow](const TableFrame& tableFrame) {
+        return tableFrame.frameWindow == frameWindow;
+    });
+    return it == tableFrames_.end() ? nullptr : &*it;
+}
+
 bool ThemedWindowUi::EnsureEditFrameClass() {
     WNDCLASSEXW wc{};
     wc.cbSize = sizeof(wc);
@@ -920,6 +982,16 @@ bool ThemedWindowUi::EnsureEditFrameClass() {
     wc.hInstance = instance_;
     wc.hCursor = LoadCursorW(nullptr, IDC_IBEAM);
     wc.lpszClassName = kEditFrameClassName;
+    return RegisterClassExW(&wc) != 0 || GetLastError() == ERROR_CLASS_ALREADY_EXISTS;
+}
+
+bool ThemedWindowUi::EnsureTableFrameClass() {
+    WNDCLASSEXW wc{};
+    wc.cbSize = sizeof(wc);
+    wc.lpfnWndProc = ThemedWindowUi::TableFrameProc;
+    wc.hInstance = instance_;
+    wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    wc.lpszClassName = kTableFrameClassName;
     return RegisterClassExW(&wc) != 0 || GetLastError() == ERROR_CLASS_ALREADY_EXISTS;
 }
 
@@ -952,6 +1024,34 @@ void ThemedWindowUi::PaintEditFrameWindow(HWND frameWindow, HDC dc) const {
         theme_, dc, rect, editFrame->child, editFrame->options.readOnly, editFrame->options.error);
 }
 
+void ThemedWindowUi::SyncTableFrameWindow(TableFrame& tableFrame) {
+    if (!tableFrame.frameWindow || !IsWindow(tableFrame.frameWindow) || !IsWindow(tableFrame.child)) {
+        return;
+    }
+    const bool visible = IsWindowVisible(tableFrame.child) != FALSE;
+    const bool enabled = IsWindowEnabled(tableFrame.child) != FALSE;
+    EnableWindow(tableFrame.frameWindow, enabled ? TRUE : FALSE);
+    SetWindowPos(
+        tableFrame.frameWindow,
+        tableFrame.child,
+        tableFrame.frame.left,
+        tableFrame.frame.top,
+        tableFrame.frame.right - tableFrame.frame.left,
+        tableFrame.frame.bottom - tableFrame.frame.top,
+        SWP_NOACTIVATE | (visible ? SWP_SHOWWINDOW : SWP_HIDEWINDOW));
+    InvalidateRect(tableFrame.frameWindow, nullptr, FALSE);
+}
+
+void ThemedWindowUi::PaintTableFrameWindow(HWND frameWindow, HDC dc) const {
+    const TableFrame* tableFrame = FindTableFrameWindow(frameWindow);
+    if (!tableFrame || !IsWindow(tableFrame->child)) {
+        return;
+    }
+    RECT rect{};
+    GetClientRect(frameWindow, &rect);
+    ThemedControls::DrawTableFrame(theme_, dc, rect, tableFrame->child);
+}
+
 LRESULT CALLBACK ThemedWindowUi::EditFrameProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
     ThemedWindowUi* ui = reinterpret_cast<ThemedWindowUi*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
     if (message == WM_NCCREATE) {
@@ -976,6 +1076,43 @@ LRESULT CALLBACK ThemedWindowUi::EditFrameProc(HWND hwnd, UINT message, WPARAM w
             if (EditFrame* editFrame = ui->FindEditFrameWindow(hwnd)) {
                 if (IsWindowEnabled(editFrame->child)) {
                     SetFocus(editFrame->child);
+                }
+            }
+        }
+        return 0;
+    case WM_NCDESTROY:
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+        break;
+    default:
+        break;
+    }
+    return DefWindowProcW(hwnd, message, wParam, lParam);
+}
+
+LRESULT CALLBACK ThemedWindowUi::TableFrameProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
+    ThemedWindowUi* ui = reinterpret_cast<ThemedWindowUi*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    if (message == WM_NCCREATE) {
+        auto* create = reinterpret_cast<CREATESTRUCTW*>(lParam);
+        ui = static_cast<ThemedWindowUi*>(create->lpCreateParams);
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(ui));
+    }
+    switch (message) {
+    case WM_ERASEBKGND:
+        return 1;
+    case WM_PAINT:
+        if (ui) {
+            PAINTSTRUCT ps{};
+            HDC dc = BeginPaint(hwnd, &ps);
+            ui->PaintTableFrameWindow(hwnd, dc);
+            EndPaint(hwnd, &ps);
+            return 0;
+        }
+        break;
+    case WM_LBUTTONDOWN:
+        if (ui) {
+            if (TableFrame* tableFrame = ui->FindTableFrameWindow(hwnd)) {
+                if (IsWindowEnabled(tableFrame->child)) {
+                    SetFocus(tableFrame->child);
                 }
             }
         }
@@ -1026,6 +1163,40 @@ LRESULT CALLBACK ThemedWindowUi::EditChildProc(
             } else if (message == WM_ENABLE || message == WM_SETFOCUS || message == WM_KILLFOCUS ||
                        message == WM_MOUSEMOVE || message == WM_MOUSELEAVE) {
                 ui->SyncEditFrameWindow(*editFrame);
+            }
+        }
+    }
+    return result;
+}
+
+LRESULT CALLBACK ThemedWindowUi::TableChildProc(
+    HWND hwnd,
+    UINT message,
+    WPARAM wParam,
+    LPARAM lParam,
+    UINT_PTR id,
+    DWORD_PTR data) {
+    auto* ui = reinterpret_cast<ThemedWindowUi*>(data);
+    if (message == WM_NCDESTROY) {
+        RemoveWindowSubclass(hwnd, TableChildProc, id);
+        const LRESULT result = DefSubclassProc(hwnd, message, wParam, lParam);
+        if (ui) {
+            ui->UnregisterTableFrame(hwnd);
+        }
+        return result;
+    }
+    const LRESULT result = DefSubclassProc(hwnd, message, wParam, lParam);
+    if (ui) {
+        if (TableFrame* tableFrame = ui->FindTableFrame(hwnd)) {
+            if (message == WM_SHOWWINDOW && tableFrame->frameWindow && IsWindow(tableFrame->frameWindow)) {
+                if (wParam) {
+                    ui->SyncTableFrameWindow(*tableFrame);
+                } else {
+                    ShowWindow(tableFrame->frameWindow, SW_HIDE);
+                }
+            } else if (message == WM_ENABLE || message == WM_SETFOCUS || message == WM_KILLFOCUS ||
+                       message == WM_MOUSEMOVE || message == WM_MOUSELEAVE) {
+                ui->SyncTableFrameWindow(*tableFrame);
             }
         }
     }
@@ -1109,6 +1280,15 @@ void ThemedWindowUi::ReleaseResources() {
         }
     }
     editFrames_.clear();
+    for (auto& tableFrame : tableFrames_) {
+        if (tableFrame.child && IsWindow(tableFrame.child)) {
+            RemoveWindowSubclass(tableFrame.child, TableChildProc, kTableChildSubclassId);
+        }
+        if (tableFrame.frameWindow && IsWindow(tableFrame.frameWindow)) {
+            DestroyWindow(tableFrame.frameWindow);
+        }
+    }
+    tableFrames_.clear();
     if (tooltip_) {
         DestroyWindow(tooltip_);
         tooltip_ = nullptr;

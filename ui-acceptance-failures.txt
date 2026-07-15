@@ -1,3 +1,2 @@
-app-launch-locker: screenshot looks blank or too flat
-app-launch-locker: table controls not found
-app-launch-locker: table header does not disable column resizing
+settings-dialog-????: expected visible child text not found: ???? Everything ????
+settings-dialog-????: expected visible child text not found: ???? Notepad++ ????

@@ -179,6 +179,8 @@ struct ThemedTableOptions {
     bool enabled = true;
     bool showHeader = true;
     bool allowColumnResize = false;
+    bool showRowGridLines = false;
+    bool showColumnGridLines = false;
 };
 
 enum class ThemedTableCellRole {

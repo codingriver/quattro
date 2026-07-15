@@ -262,6 +262,7 @@ int ListBoxItemHeight(const Theme& theme);
 int ListBoxTwoLineItemHeight(const Theme& theme);
 RECT ListItemTextRect(const Theme& theme, RECT frame);
 RECT ListFrameInnerRect(const Theme& theme, RECT frame);
+RECT TableFrameInnerRect(const Theme& theme, RECT frame);
 int LabelHeight(const Theme& theme);
 RECT LabelTextRect(const Theme& theme, RECT frame);
 int FieldFrameHeight(const Theme& theme);
@@ -362,6 +363,11 @@ void DrawListFrame(
     RECT rect,
     HWND child,
     bool readOnly = false);
+void DrawTableFrame(
+    const Theme& theme,
+    HDC dc,
+    RECT rect,
+    HWND child);
 
 void DrawPanelFrame(
     const Theme& theme,
@@ -388,6 +394,7 @@ struct TableCellRuntime {
 };
 void RegisterTable(HWND table, const Theme& theme);
 void ConfigureTableColumns(HWND table, const std::vector<int>& widthModes);
+void ConfigureTableGridLines(HWND table, bool rowGridLines, bool columnGridLines);
 void SetTableColumnResizeEnabled(HWND table, bool enabled);
 void SetTableRowEnabledStates(HWND table, const std::vector<bool>& enabled);
 void SetTableCells(HWND table, const std::vector<std::vector<TableCellRuntime>>& cells);

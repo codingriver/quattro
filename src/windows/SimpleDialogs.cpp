@@ -83,7 +83,9 @@ constexpr int ID_TRACK_SVN_CONTEXT_MENU = 434;
 constexpr int ID_TRACK_VSCODE_CONTEXT_MENU = 435;
 constexpr int ID_TRACK_TERMINAL_CONTEXT_MENU = 436;
 constexpr int ID_TRACK_ARCHIVE_CONTEXT_MENU = 437;
-constexpr int ID_RESET_CONTEXT_MENU = 438;
+constexpr int ID_TRACK_EVERYTHING_CONTEXT_MENU = 438;
+constexpr int ID_TRACK_NOTEPAD_PLUS_PLUS_CONTEXT_MENU = 439;
+constexpr int ID_RESET_CONTEXT_MENU = 440;
 constexpr int ID_MESSAGE_TEXT = 501;
 constexpr int ID_HOTKEY_CONFLICT_IGNORE = 502;
 constexpr int ID_MAIN_HOTKEY_PROBE = 0x5148;
@@ -2292,6 +2294,8 @@ private:
             value.trackVsCodeContextMenu = ThemedUi::IsChecked(trackVsCodeContextMenu_);
             value.trackTerminalContextMenu = ThemedUi::IsChecked(trackTerminalContextMenu_);
             value.trackArchiveContextMenu = ThemedUi::IsChecked(trackArchiveContextMenu_);
+            value.trackEverythingContextMenu = ThemedUi::IsChecked(trackEverythingContextMenu_);
+            value.trackNotepadPlusPlusContextMenu = ThemedUi::IsChecked(trackNotepadPlusPlusContextMenu_);
             break;
         case TabInteraction:
             value.doubleClickToRun = ThemedUi::IsChecked(doubleClick_);
@@ -2492,16 +2496,22 @@ private:
             config_.trackVsCodeContextMenu = false;
             config_.trackTerminalContextMenu = false;
             config_.trackArchiveContextMenu = false;
+            config_.trackEverythingContextMenu = false;
+            config_.trackNotepadPlusPlusContextMenu = false;
             draft_.trackGitContextMenu = false;
             draft_.trackSvnContextMenu = false;
             draft_.trackVsCodeContextMenu = false;
             draft_.trackTerminalContextMenu = false;
             draft_.trackArchiveContextMenu = false;
+            draft_.trackEverythingContextMenu = false;
+            draft_.trackNotepadPlusPlusContextMenu = false;
             ThemedUi::SetChecked(trackGitContextMenu_, false);
             ThemedUi::SetChecked(trackSvnContextMenu_, false);
             ThemedUi::SetChecked(trackVsCodeContextMenu_, false);
             ThemedUi::SetChecked(trackTerminalContextMenu_, false);
             ThemedUi::SetChecked(trackArchiveContextMenu_, false);
+            ThemedUi::SetChecked(trackEverythingContextMenu_, false);
+            ThemedUi::SetChecked(trackNotepadPlusPlusContextMenu_, false);
             ShowThemedMessageBox(
                 hwnd_,
                 instance_,
@@ -3175,11 +3185,13 @@ private:
                 behaviorFrameLeft, pageTop, behaviorFrameWidth,
                 {behaviorForm.sectionRow({ThemedSectionItemKind::CheckBox}),
                  behaviorForm.sectionRow({ThemedSectionItemKind::CheckBox}),
+                 behaviorForm.sectionRow({ThemedSectionItemKind::CheckBox}),
                  behaviorForm.sectionRow({ThemedSectionItemKind::CheckBox})});
             HWND contextMenuTrackingGroup = AddSectionFrame(TabContextMenu, L"自动跟踪", contextMenuTrackingSection.frame);
             const int contextMenuTrackingFirstY = behaviorForm.sectionItemY(contextMenuTrackingSection, 0, behaviorCheckHeight);
             const int contextMenuTrackingSecondY = behaviorForm.sectionItemY(contextMenuTrackingSection, 1, behaviorCheckHeight);
             const int contextMenuTrackingThirdY = behaviorForm.sectionItemY(contextMenuTrackingSection, 2, behaviorCheckHeight);
+            const int contextMenuTrackingFourthY = behaviorForm.sectionItemY(contextMenuTrackingSection, 3, behaviorCheckHeight);
             trackGitContextMenu_ = CheckBox(
                 TabContextMenu, ID_TRACK_GIT_CONTEXT_MENU, L"自动跟踪 Git 右键菜单",
                 behaviorLeft, contextMenuTrackingFirstY, draft_.trackGitContextMenu, behaviorCheckWidth);
@@ -3194,11 +3206,18 @@ private:
                 behaviorRight, contextMenuTrackingSecondY, draft_.trackTerminalContextMenu, behaviorCheckWidth);
             trackArchiveContextMenu_ = CheckBox(
                 TabContextMenu, ID_TRACK_ARCHIVE_CONTEXT_MENU, L"自动跟踪压缩工具右键菜单",
-                behaviorLeft, contextMenuTrackingThirdY, draft_.trackArchiveContextMenu, behaviorContentWidth);
+                behaviorLeft, contextMenuTrackingThirdY, draft_.trackArchiveContextMenu, behaviorCheckWidth);
+            trackEverythingContextMenu_ = CheckBox(
+                TabContextMenu, ID_TRACK_EVERYTHING_CONTEXT_MENU, L"自动跟踪 Everything 右键菜单",
+                behaviorRight, contextMenuTrackingThirdY, draft_.trackEverythingContextMenu, behaviorCheckWidth);
+            trackNotepadPlusPlusContextMenu_ = CheckBox(
+                TabContextMenu, ID_TRACK_NOTEPAD_PLUS_PLUS_CONTEXT_MENU, L"自动跟踪 Notepad++ 右键菜单",
+                behaviorLeft, contextMenuTrackingFourthY, draft_.trackNotepadPlusPlusContextMenu, behaviorContentWidth);
             ThemedUi::BindGroupChildren(
                 contextMenuTrackingGroup,
                 {trackGitContextMenu_, trackSvnContextMenu_, trackVsCodeContextMenu_,
-                 trackTerminalContextMenu_, trackArchiveContextMenu_});
+                 trackTerminalContextMenu_, trackArchiveContextMenu_, trackEverythingContextMenu_,
+                 trackNotepadPlusPlusContextMenu_});
 
             const int resetContextMenuWidth = settingsUi.buttonWidth(
                 L"重置右键菜单",
@@ -3754,6 +3773,8 @@ private:
     HWND trackVsCodeContextMenu_ = nullptr;
     HWND trackTerminalContextMenu_ = nullptr;
     HWND trackArchiveContextMenu_ = nullptr;
+    HWND trackEverythingContextMenu_ = nullptr;
+    HWND trackNotepadPlusPlusContextMenu_ = nullptr;
     HWND linkNameSingleLine_ = nullptr;
     HWND showTooltip_ = nullptr;
     HWND groupRight_ = nullptr;

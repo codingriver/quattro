@@ -646,6 +646,23 @@ std::wstring DetectProviderId(const std::wstring& text, const std::wstring& verb
         lowerVerb.find(L"peazip") != std::wstring::npos) {
         return ShellContextMenuProviderId::Archive;
     }
+    if (lowerText.find(L"everything") != std::wstring::npos ||
+        lowerText.find(L"搜索 everything") != std::wstring::npos ||
+        lowerText.find(L"用 everything") != std::wstring::npos ||
+        lowerVerb.find(L"everything") != std::wstring::npos ||
+        lowerVerb.find(L"es.exe") != std::wstring::npos) {
+        return ShellContextMenuProviderId::Everything;
+    }
+    if (lowerText.find(L"notepad++") != std::wstring::npos ||
+        lowerText.find(L"notepadplusplus") != std::wstring::npos ||
+        lowerText.find(L"edit with notepad") != std::wstring::npos ||
+        lowerText.find(L"使用 notepad") != std::wstring::npos ||
+        lowerText.find(L"用 notepad") != std::wstring::npos ||
+        lowerVerb.find(L"notepad++") != std::wstring::npos ||
+        lowerVerb.find(L"notepadplusplus") != std::wstring::npos ||
+        lowerVerb.find(L"npp") != std::wstring::npos) {
+        return ShellContextMenuProviderId::NotepadPlusPlus;
+    }
     if (lowerText.find(L"windows terminal") != std::wstring::npos ||
         lowerText.find(L"open in terminal") != std::wstring::npos ||
         lowerText.find(L"在终端中打开") != std::wstring::npos ||
@@ -976,11 +993,13 @@ bool ShellContextMenuTrackingOptions::Includes(const std::wstring& providerId) c
            (svn && providerId == ShellContextMenuProviderId::Svn) ||
            (vsCode && providerId == ShellContextMenuProviderId::VsCode) ||
            (terminal && providerId == ShellContextMenuProviderId::Terminal) ||
-           (archive && providerId == ShellContextMenuProviderId::Archive);
+           (archive && providerId == ShellContextMenuProviderId::Archive) ||
+           (everything && providerId == ShellContextMenuProviderId::Everything) ||
+           (notepadPlusPlus && providerId == ShellContextMenuProviderId::NotepadPlusPlus);
 }
 
 bool ShellContextMenuTrackingOptions::Any() const {
-    return git || svn || vsCode || terminal || archive;
+    return git || svn || vsCode || terminal || archive || everything || notepadPlusPlus;
 }
 
 std::wstring ShellItemService::DetectTrackedContextMenuProvider(

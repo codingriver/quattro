@@ -54,6 +54,8 @@ AppConfig ConfigService::Load() const {
     config.trackVsCodeContextMenu = ReadBool(L"bTrackVsCodeContextMenu", config.trackVsCodeContextMenu);
     config.trackTerminalContextMenu = ReadBool(L"bTrackTerminalContextMenu", config.trackTerminalContextMenu);
     config.trackArchiveContextMenu = ReadBool(L"bTrackArchiveContextMenu", config.trackArchiveContextMenu);
+    config.trackEverythingContextMenu = ReadBool(L"bTrackEverythingContextMenu", config.trackEverythingContextMenu);
+    config.trackNotepadPlusPlusContextMenu = ReadBool(L"bTrackNotepadPlusPlusContextMenu", config.trackNotepadPlusPlusContextMenu);
 
     config.mouseEnterActiveGroup = ReadBool(L"bMouseEnterActiveGroup", config.mouseEnterActiveGroup);
     config.mouseEnterActiveTag = ReadBool(L"bMouseEnterActiveTag", config.mouseEnterActiveTag);
@@ -213,6 +215,8 @@ AppConfig ConfigService::LoadForSchemaUpgrade(int targetVersion, bool& compatibl
     readBool(L"bTrackVsCodeContextMenu", config.trackVsCodeContextMenu);
     readBool(L"bTrackTerminalContextMenu", config.trackTerminalContextMenu);
     readBool(L"bTrackArchiveContextMenu", config.trackArchiveContextMenu);
+    readBool(L"bTrackEverythingContextMenu", config.trackEverythingContextMenu);
+    readBool(L"bTrackNotepadPlusPlusContextMenu", config.trackNotepadPlusPlusContextMenu);
     readBool(L"bMouseEnterActiveGroup", config.mouseEnterActiveGroup);
     readBool(L"bMouseEnterActiveTag", config.mouseEnterActiveTag);
     readInt(L"nActiveGroupDelay", config.activeGroupDelay);
@@ -329,6 +333,8 @@ void ConfigService::SaveWindowState(const AppConfig& config) const {
     WriteInt(L"bTrackVsCodeContextMenu", config.trackVsCodeContextMenu ? 1 : 0);
     WriteInt(L"bTrackTerminalContextMenu", config.trackTerminalContextMenu ? 1 : 0);
     WriteInt(L"bTrackArchiveContextMenu", config.trackArchiveContextMenu ? 1 : 0);
+    WriteInt(L"bTrackEverythingContextMenu", config.trackEverythingContextMenu ? 1 : 0);
+    WriteInt(L"bTrackNotepadPlusPlusContextMenu", config.trackNotepadPlusPlusContextMenu ? 1 : 0);
     WriteInt(L"bGroupRight", config.groupRight ? 1 : 0);
     WriteInt(L"bTagRight", config.tagRight ? 1 : 0);
     WriteInt(L"nGroupWidth", config.groupWidth);
@@ -378,6 +384,8 @@ void ConfigService::Save(const AppConfig& config) const {
     WriteInt(L"bTrackVsCodeContextMenu", config.trackVsCodeContextMenu ? 1 : 0);
     WriteInt(L"bTrackTerminalContextMenu", config.trackTerminalContextMenu ? 1 : 0);
     WriteInt(L"bTrackArchiveContextMenu", config.trackArchiveContextMenu ? 1 : 0);
+    WriteInt(L"bTrackEverythingContextMenu", config.trackEverythingContextMenu ? 1 : 0);
+    WriteInt(L"bTrackNotepadPlusPlusContextMenu", config.trackNotepadPlusPlusContextMenu ? 1 : 0);
     WriteInt(L"bGroupRight", config.groupRight ? 1 : 0);
     WriteInt(L"bTagRight", config.tagRight ? 1 : 0);
     WriteInt(L"nGroupWidth", config.groupWidth);

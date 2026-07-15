@@ -16,6 +16,8 @@ inline constexpr wchar_t Svn[] = L"svn";
 inline constexpr wchar_t VsCode[] = L"vscode";
 inline constexpr wchar_t Terminal[] = L"terminal";
 inline constexpr wchar_t Archive[] = L"archive";
+inline constexpr wchar_t Everything[] = L"everything";
+inline constexpr wchar_t NotepadPlusPlus[] = L"notepadplusplus";
 }
 
 enum class ShellContextMenuActionKind : std::uint8_t {
@@ -29,6 +31,8 @@ struct ShellContextMenuTrackingOptions {
     bool vsCode = false;
     bool terminal = false;
     bool archive = false;
+    bool everything = false;
+    bool notepadPlusPlus = false;
 
     bool Includes(const std::wstring& providerId) const;
     bool Any() const;

@@ -57,6 +57,8 @@ struct AppConfig {
     bool trackVsCodeContextMenu = false;
     bool trackTerminalContextMenu = false;
     bool trackArchiveContextMenu = false;
+    bool trackEverythingContextMenu = false;
+    bool trackNotepadPlusPlusContextMenu = false;
 
     bool mouseEnterActiveGroup = false;
     bool mouseEnterActiveTag = false;

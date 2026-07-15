@@ -793,6 +793,8 @@ struct TableHostWindow {
     HINSTANCE instance_ = nullptr;
     HWND hwnd_ = nullptr;
     HWND table_ = nullptr;
+    bool gridLines_ = false;
+    bool allowColumnResize_ = false;
     Theme theme_;
     std::unique_ptr<ThemedWindowUi> windowUi_;
 
@@ -818,12 +820,16 @@ struct TableHostWindow {
             windowUi_ = std::make_unique<ThemedWindowUi>(
                 instance_, nullptr, hwnd_, theme_, DialogLayoutKind::Compact, 360, 260);
             const ThemedUi ui = windowUi_->ui();
+            ThemedTableOptions tableOptions{ThemedTableSelection::Single, ThemedTableView::Details, false, true, true, true, false};
+            tableOptions.showRowGridLines = gridLines_;
+            tableOptions.showColumnGridLines = gridLines_;
+            tableOptions.allowColumnResize = allowColumnResize_;
             table_ = ui.Table(
                 101,
                 RECT{16, 16, 344, 240},
                 {{L"name", L"名称", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Remaining},
                  {L"value", L"值", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, 96}},
-                ThemedTableOptions{ThemedTableSelection::Single, ThemedTableView::Details, false, true, true, true, false});
+                tableOptions);
             ThemedUi::SetTableRows(table_, {
                 {1, {{L"行 0"}, {L"A"}}, false, true},
                 {2, {{L"行 1"}, {L"B"}}, false, true},
@@ -835,6 +841,14 @@ struct TableHostWindow {
             // wrongly reported every row selected, so unselected rows were also
             // painted with the selected background and the stripe disappeared.
             ThemedUi::SetTableSelectedIndex(table_, 0);
+            return 0;
+        }
+        if (message == WM_PAINT) {
+            PAINTSTRUCT ps{};
+            HDC dc = BeginPaint(hwnd_, &ps);
+            windowUi_->FillBackground(dc);
+            windowUi_->DrawRegisteredTableFrames(dc);
+            EndPaint(hwnd_, &ps);
             return 0;
         }
         return DefWindowProcW(hwnd_, message, wParam, lParam);
@@ -856,6 +870,117 @@ RECT TableRowRectInHostBitmap(HWND host, HWND table, int row) {
     GetWindowRect(host, &hostRect);
     return RECT{topLeft.x - hostRect.left, topLeft.y - hostRect.top,
                 bottomRight.x - hostRect.left, bottomRight.y - hostRect.top};
+}
+
+RECT TableSubItemRectInHostBitmap(HWND host, HWND table, int row, int column) {
+    RECT itemRect{LVIR_BOUNDS, column, 0, 0};
+    if (!SendMessageW(table, LVM_GETSUBITEMRECT, row, reinterpret_cast<LPARAM>(&itemRect))) {
+        return RECT{0, 0, 0, 0};
+    }
+    POINT topLeft{itemRect.left, itemRect.top};
+    POINT bottomRight{itemRect.right, itemRect.bottom};
+    ClientToScreen(table, &topLeft);
+    ClientToScreen(table, &bottomRight);
+    RECT hostRect{};
+    GetWindowRect(host, &hostRect);
+    return RECT{topLeft.x - hostRect.left, topLeft.y - hostRect.top,
+                bottomRight.x - hostRect.left, bottomRight.y - hostRect.top};
+}
+
+void RunTableGridLinesScenario(
+    const std::filesystem::path& outputDir,
+    TestState& state,
+    bool gridLines,
+    const std::wstring& scenarioName,
+    const std::wstring& screenshotName) {
+    AcceptanceLog(L"begin " + scenarioName);
+    HINSTANCE instance = GetModuleHandleW(nullptr);
+    TableHostWindow host;
+    host.instance_ = instance;
+    host.gridLines_ = gridLines;
+    host.theme_ = Theme::Load(std::filesystem::current_path() / L"theme", L"default");
+
+    const std::wstring className = L"QuattroTableGridLinesHost" + scenarioName;
+    WNDCLASSEXW wc{};
+    wc.cbSize = sizeof(wc);
+    wc.lpfnWndProc = TableHostWindow::Proc;
+    wc.hInstance = instance;
+    wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    wc.lpszClassName = className.c_str();
+    RegisterClassExW(&wc);
+
+    HWND hwnd = CreateWindowExW(0, wc.lpszClassName, scenarioName.c_str(), WS_OVERLAPPEDWINDOW,
+        160, 160, 400, 320, nullptr, nullptr, instance, &host);
+    if (!hwnd || !host.table_) {
+        state.Check(false, scenarioName + L": host window/table creation failed");
+        return;
+    }
+    ShowWindow(hwnd, SW_SHOW);
+    UpdateWindow(hwnd);
+    SetFocus(host.table_);
+    RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW | RDW_ALLCHILDREN);
+    Sleep(200);
+
+    BitmapCapture capture = CaptureWindowBitmap(hwnd);
+    state.Check(capture.bitmap != nullptr, scenarioName + L": capture failed");
+    if (capture.bitmap) {
+        const int probeRow = gridLines ? 1 : 0;
+        const int quietRow = 1;
+        const RECT rowRect = TableRowRectInHostBitmap(hwnd, host.table_, probeRow);
+        const RECT cellRect = TableSubItemRectInHostBitmap(hwnd, host.table_, probeRow, 0);
+        const RECT secondCellRect = TableSubItemRectInHostBitmap(hwnd, host.table_, probeRow, 1);
+        const RECT quietRowRect = TableRowRectInHostBitmap(hwnd, host.table_, quietRow);
+        const RECT quietCellRect = TableSubItemRectInHostBitmap(hwnd, host.table_, quietRow, 0);
+        const RECT quietSecondCellRect = TableSubItemRectInHostBitmap(hwnd, host.table_, quietRow, 1);
+        const int columnX = std::clamp(static_cast<int>(secondCellRect.left), 0, std::max(0, capture.width - 1));
+        const int rowY = std::clamp(static_cast<int>(rowRect.bottom - 1), 0, std::max(0, capture.height - 1));
+        const int middleY = std::clamp(static_cast<int>((rowRect.top + rowRect.bottom) / 2), 0, std::max(0, capture.height - 1));
+        const int middleX = std::clamp(static_cast<int>((cellRect.left + cellRect.right) / 2), 0, std::max(0, capture.width - 1));
+        const int quietColumnX = std::clamp(static_cast<int>(quietSecondCellRect.left), 0, std::max(0, capture.width - 1));
+        const int quietRowY = std::clamp(static_cast<int>(quietRowRect.bottom - 1), 0, std::max(0, capture.height - 1));
+        const int quietMiddleY = std::clamp(static_cast<int>((quietRowRect.top + quietRowRect.bottom) / 2), 0, std::max(0, capture.height - 1));
+        const int quietMiddleX = std::clamp(static_cast<int>((quietCellRect.left + quietCellRect.right) / 2), 0, std::max(0, capture.width - 1));
+
+        int columnDistance = 0;
+        for (int x = std::max(0, columnX - 4); x <= std::min(capture.width - 1, columnX + 4); ++x) {
+            columnDistance = std::max(columnDistance, ColorDistance(
+                BitmapPixel(capture.bitmap, x, middleY),
+                BitmapPixel(capture.bitmap, std::max(0, x - 3), middleY)));
+        }
+        const int rowDistance = ColorDistance(
+            BitmapPixel(capture.bitmap, middleX, rowY),
+            BitmapPixel(capture.bitmap, middleX, std::max(0, rowY - 3)));
+        int quietColumnDistance = 0;
+        for (int x = std::max(0, quietColumnX - 4); x <= std::min(capture.width - 1, quietColumnX + 4); ++x) {
+            quietColumnDistance = std::max(quietColumnDistance, ColorDistance(
+                BitmapPixel(capture.bitmap, x, quietMiddleY),
+                BitmapPixel(capture.bitmap, std::max(0, x - 3), quietMiddleY)));
+        }
+        const int quietRowDistance = ColorDistance(
+            BitmapPixel(capture.bitmap, quietMiddleX, quietRowY),
+            BitmapPixel(capture.bitmap, quietMiddleX, std::max(0, quietRowY - 3)));
+
+        AcceptanceLog(scenarioName + L" columnDistance=" + std::to_wstring(columnDistance) +
+            L" rowDistance=" + std::to_wstring(rowDistance) +
+            L" quietColumnDistance=" + std::to_wstring(quietColumnDistance) +
+            L" quietRowDistance=" + std::to_wstring(quietRowDistance));
+        if (gridLines) {
+            state.Check(columnDistance >= 24, scenarioName + L": column grid line is not visible");
+            state.Check(rowDistance >= 24, scenarioName + L": row grid line is not visible");
+        } else {
+            state.Check(columnDistance >= 24, scenarioName + L": first-row column grid line is not visible by default");
+            state.Check(rowDistance >= 24, scenarioName + L": first-row grid line is not visible by default");
+            state.Check(quietColumnDistance < 24, scenarioName + L": column grid line extends beyond the first row by default");
+            state.Check(quietRowDistance < 24, scenarioName + L": row grid line extends beyond the first row by default");
+        }
+
+        const std::filesystem::path screenshot = outputDir / screenshotName;
+        SavePng(capture.bitmap, screenshot);
+        DeleteObject(capture.bitmap);
+    }
+
+    DestroyWindow(hwnd);
+    AcceptanceLog(L"end " + scenarioName);
 }
 
 void RunTableAlternatingRowsScenario(const std::filesystem::path& outputDir, TestState& state) {
@@ -925,6 +1050,162 @@ void RunTableAlternatingRowsScenario(const std::filesystem::path& outputDir, Tes
     AcceptanceLog(L"end table-alternating-rows");
 }
 
+// Count distinct vertical header dividers. A divider spans the header's full
+// height while text glyphs stay inside the vertically centered text band, so
+// only x positions that differ from the background near the top edge, at the
+// center, and near the bottom edge count as dividers.
+int CountHeaderDividers(HBITMAP bitmap, int captureWidth, HWND host, HWND table) {
+    HWND header = ListView_GetHeader(table);
+    RECT headerRect{};
+    if (!header || !GetWindowRect(header, &headerRect)) {
+        return -1;
+    }
+    RECT hostRect{};
+    GetWindowRect(host, &hostRect);
+    const int top = headerRect.top - hostRect.top;
+    const int bottom = headerRect.bottom - hostRect.top;
+    const int yTop = top + 3;
+    const int yMiddle = (top + bottom) / 2;
+    // Stay above the bottom border line the themed header draws across the
+    // whole width.
+    const int yBottom = bottom - 4;
+    const int left = headerRect.left - hostRect.left;
+    const int right = std::min(static_cast<int>(headerRect.right - hostRect.left), captureWidth);
+    const COLORREF bg = BitmapPixel(bitmap, left + 2, yMiddle);
+    int dividers = 0;
+    bool inRun = false;
+    for (int x = left + 2; x < right - 1; ++x) {
+        const bool differs = ColorDistance(BitmapPixel(bitmap, x, yTop), bg) >= 8
+            && ColorDistance(BitmapPixel(bitmap, x, yMiddle), bg) >= 8
+            && ColorDistance(BitmapPixel(bitmap, x, yBottom), bg) >= 8;
+        if (differs && !inRun) {
+            ++dividers;
+        }
+        inRun = differs;
+    }
+    return dividers;
+}
+
+void RunTableColumnResizeScenario(const std::filesystem::path& outputDir, TestState& state) {
+    AcceptanceLog(L"begin table-column-resize");
+    HINSTANCE instance = GetModuleHandleW(nullptr);
+
+    // Default options: dragging must be disabled via HDS_NOSIZING.
+    {
+        TableHostWindow defaultHost;
+        defaultHost.instance_ = instance;
+        defaultHost.theme_ = Theme::Load(std::filesystem::current_path() / L"theme", L"default");
+        WNDCLASSEXW defaultWc{};
+        defaultWc.cbSize = sizeof(defaultWc);
+        defaultWc.lpfnWndProc = TableHostWindow::Proc;
+        defaultWc.hInstance = instance;
+        defaultWc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+        defaultWc.lpszClassName = L"QuattroTableColumnResizeDefaultHost";
+        RegisterClassExW(&defaultWc);
+        HWND defaultHwnd = CreateWindowExW(0, defaultWc.lpszClassName, L"table column resize default",
+            WS_OVERLAPPEDWINDOW, 140, 140, 400, 320, nullptr, nullptr, instance, &defaultHost);
+        state.Check(defaultHwnd && defaultHost.table_, L"table-column-resize: default host creation failed");
+        if (defaultHwnd && defaultHost.table_) {
+            HWND defaultHeader = ListView_GetHeader(defaultHost.table_);
+            state.Check(defaultHeader
+                    && (GetWindowLongPtrW(defaultHeader, GWL_STYLE) & HDS_NOSIZING) != 0,
+                L"table-column-resize: default table header must disable divider dragging");
+        }
+        if (defaultHwnd) {
+            DestroyWindow(defaultHwnd);
+        }
+    }
+
+    TableHostWindow host;
+    host.instance_ = instance;
+    host.allowColumnResize_ = true;
+    host.theme_ = Theme::Load(std::filesystem::current_path() / L"theme", L"default");
+
+    WNDCLASSEXW wc{};
+    wc.cbSize = sizeof(wc);
+    wc.lpfnWndProc = TableHostWindow::Proc;
+    wc.hInstance = instance;
+    wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    wc.lpszClassName = L"QuattroTableColumnResizeHost";
+    RegisterClassExW(&wc);
+
+    HWND hwnd = CreateWindowExW(0, wc.lpszClassName, L"table column resize", WS_OVERLAPPEDWINDOW,
+        140, 140, 400, 320, nullptr, nullptr, instance, &host);
+    if (!hwnd || !host.table_) {
+        state.Check(false, L"table-column-resize: host window/table creation failed");
+        return;
+    }
+    ShowWindow(hwnd, SW_SHOW);
+    UpdateWindow(hwnd);
+    SetForegroundWindow(hwnd);
+    RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW | RDW_ALLCHILDREN);
+    Sleep(200);
+
+    HWND header = ListView_GetHeader(host.table_);
+    state.Check(header != nullptr, L"table-column-resize: header not found");
+    if (header) {
+        // allowColumnResize=true must leave the header without HDS_NOSIZING so
+        // the user can drag the divider.
+        state.Check((GetWindowLongPtrW(header, GWL_STYLE) & HDS_NOSIZING) == 0,
+            L"table-column-resize: header still carries HDS_NOSIZING with allowColumnResize enabled");
+    }
+
+    const int columnCount = header ? Header_GetItemCount(header) : 0;
+    RECT tableClient{};
+    GetClientRect(host.table_, &tableClient);
+
+    // Simulate a completed header drag: apply the new width (what the header
+    // does during the drag), then deliver HDN_ENDTRACK to the ListView the way
+    // the header would. This exercises the shared subclass routing that refills
+    // the Remaining column so the table keeps spanning its client width.
+    const int firstWidthBefore = ListView_GetColumnWidth(host.table_, 0);
+    SendMessageW(host.table_, LVM_SETCOLUMNWIDTH, 0, MAKELPARAM(firstWidthBefore - 40, 0));
+    if (header) {
+        NMHEADERW endTrack{};
+        endTrack.hdr.hwndFrom = header;
+        endTrack.hdr.idFrom = static_cast<UINT_PTR>(GetDlgCtrlID(header));
+        endTrack.hdr.code = HDN_ENDTRACKW;
+        endTrack.iItem = 0;
+        HDITEMW item{};
+        endTrack.pitem = &item;
+        SendMessageW(host.table_, WM_NOTIFY, endTrack.hdr.idFrom, reinterpret_cast<LPARAM>(&endTrack));
+    }
+    RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW | RDW_ALLCHILDREN);
+    Sleep(100);
+
+    BitmapCapture capture = CaptureWindowBitmap(hwnd);
+    state.Check(capture.bitmap != nullptr, L"table-column-resize: capture failed");
+    if (capture.bitmap) {
+        const int dividers = CountHeaderDividers(capture.bitmap, capture.width, hwnd, host.table_);
+        AcceptanceLog(L"table-column-resize columns=" + std::to_wstring(columnCount) +
+            L" dividers=" + std::to_wstring(dividers));
+        // The divider count must stay exactly column count - 1 after a width
+        // change: one divider between each pair of adjacent columns and none at
+        // the last column's right edge.
+        state.Check(dividers == columnCount - 1,
+            L"table-column-resize: header divider count is not column count - 1 after column width change");
+
+        // The trailing area right of the last column must show no divider: the
+        // relayout should have refilled the full client width, so the last
+        // column's right edge coincides with the table client edge.
+        int columnsWidth = 0;
+        for (int i = 0; i < columnCount; ++i) {
+            columnsWidth += ListView_GetColumnWidth(host.table_, i);
+        }
+        AcceptanceLog(L"table-column-resize clientWidth=" + std::to_wstring(tableClient.right) +
+            L" columnsWidth=" + std::to_wstring(columnsWidth));
+        state.Check(columnsWidth >= tableClient.right - 1 && columnsWidth <= tableClient.right + 1,
+            L"table-column-resize: columns do not refill the table width after resize");
+
+        const std::filesystem::path screenshot = outputDir / L"table-column-resize.png";
+        SavePng(capture.bitmap, screenshot);
+        DeleteObject(capture.bitmap);
+    }
+
+    DestroyWindow(hwnd);
+    AcceptanceLog(L"end table-column-resize");
+}
+
 void ValidateAppLaunchLockerTables(HWND hwnd, TestState& state) {
     const auto children = Children(hwnd);
     bool sawTable = false;
@@ -945,7 +1226,9 @@ void ValidateAppLaunchLockerTables(HWND hwnd, TestState& state) {
     // Windows does not marshal across process boundaries, so querying this
     // separate AppLaunchLocker.exe process returns empty rects and stale state.
     state.Check(sawTable, L"app-launch-locker: table controls not found");
-    state.Check(sawNoSizingHeader, L"app-launch-locker: table header does not disable column resizing");
+    // The launcher tables opt into allowColumnResize, so no header may carry
+    // HDS_NOSIZING; the dividers must stay user-draggable.
+    state.Check(!sawNoSizingHeader, L"app-launch-locker: table header unexpectedly disables column resizing");
 }
 
 void RunAppLaunchLockerScenario(const std::filesystem::path& outputDir, TestState& state) {
@@ -974,6 +1257,16 @@ void RunAppLaunchLockerScenario(const std::filesystem::path& outputDir, TestStat
         ShowWindow(hwnd, SW_SHOWNORMAL);
         SetForegroundWindow(hwnd);
         UpdateWindow(hwnd);
+        RECT windowRect{};
+        RECT clientRect{};
+        GetWindowRect(hwnd, &windowRect);
+        GetClientRect(hwnd, &clientRect);
+        AcceptanceLog(L"app-launch-locker hwnd=" + std::to_wstring(reinterpret_cast<std::uintptr_t>(hwnd)) +
+            L" rect=" + std::to_wstring(windowRect.left) + L"," + std::to_wstring(windowRect.top) +
+            L"," + std::to_wstring(windowRect.right) + L"," + std::to_wstring(windowRect.bottom) +
+            L" client=" + std::to_wstring(clientRect.right - clientRect.left) +
+            L"x" + std::to_wstring(clientRect.bottom - clientRect.top) +
+            L" children=" + std::to_wstring(Children(hwnd).size()));
         AcceptanceLog(L"wait app-launch-locker table");
         HWND listView = WaitForChildClass(hwnd, L"SysListView32", 10000);
         if (!listView) {
@@ -984,13 +1277,23 @@ void RunAppLaunchLockerScenario(const std::filesystem::path& outputDir, TestStat
         RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
         Sleep(300);
         AcceptanceLog(L"inspect app-launch-locker");
-        // Only window-title and standard-control texts are checked here. "当前自启动" and
-        // "已禁用" live inside the category ListView as item rows; LVM_GETITEMTEXTW passes a
-        // pszText pointer that Windows does not marshal across process boundaries, so their
-        // text cannot be read from this separate AppLaunchLocker.exe process.
-        Scenario scenario{L"app-launch-locker", L"AppLaunchLockerMainWindow", L"自启动管理", L"app-launch-locker.png", {L"自启动管理", L"扫描"}, {}, 0, 2, false};
-        ValidateAndCapture(hwnd, scenario, outputDir, state);
         ValidateAppLaunchLockerTables(hwnd, state);
+        state.Check(WindowText(hwnd) == L"自启动管理", L"app-launch-locker: title mismatch");
+        int buttonCount = 0;
+        for (const auto& child : Children(hwnd)) {
+            if (child.className == L"Button" && IsWindowVisible(child.hwnd)) {
+                ++buttonCount;
+            }
+        }
+        state.Check(buttonCount >= 2, L"app-launch-locker: visible button count lower than expected");
+        BitmapCapture capture = CaptureWindowBitmap(hwnd);
+        state.Check(capture.bitmap != nullptr, L"app-launch-locker: screenshot bitmap was not created");
+        if (capture.bitmap) {
+            state.Check(BitmapHasVisualContent(capture.bitmap, capture.width, capture.height),
+                L"app-launch-locker: screenshot looks blank or too flat");
+            SavePng(capture.bitmap, outputDir / L"app-launch-locker.png");
+            DeleteObject(capture.bitmap);
+        }
         PostMessageW(hwnd, WM_CLOSE, 0, 0);
     } else {
         state.Check(false, L"app-launch-locker: window did not appear");
@@ -1063,6 +1366,9 @@ int wmain() {
 
     RunMainWindowScenario(outputDir, state);
     RunTableAlternatingRowsScenario(outputDir, state);
+    RunTableColumnResizeScenario(outputDir, state);
+    RunTableGridLinesScenario(outputDir, state, false, L"table-grid-lines-default", L"table-grid-lines-default.png");
+    RunTableGridLinesScenario(outputDir, state, true, L"table-grid-lines-enabled", L"table-grid-lines-enabled.png");
     RunAppLaunchLockerScenario(outputDir, state);
 
     RunDialogScenario(
@@ -1154,7 +1460,7 @@ int wmain() {
     const std::vector<std::pair<std::wstring, std::vector<std::wstring>>> settingsPages{
         {L"显示", {L"界面元素", L"布局与外观", L"显示标题栏", L"透明度", L"标签文字", L"分组宽度"}},
         {L"行为", {L"窗口行为", L"运行与数据", L"系统集成", L"启动后隐藏", L"开机启动", L"启用日志"}},
-        {L"右键菜单", {L"自动跟踪", L"自动跟踪 Git 右键菜单", L"自动跟踪 SVN 右键菜单", L"自动跟踪 VS Code 右键菜单", L"显示 CMD/PowerShell/WSL", L"自动跟踪压缩工具右键菜单", L"缓存维护", L"重置右键菜单"}},
+        {L"右键菜单", {L"自动跟踪", L"自动跟踪 Git 右键菜单", L"自动跟踪 SVN 右键菜单", L"自动跟踪 VS Code 右键菜单", L"显示 CMD/PowerShell/WSL", L"自动跟踪压缩工具右键菜单", L"自动跟踪 Everything 右键菜单", L"自动跟踪 Notepad++ 右键菜单", L"缓存维护", L"重置右键菜单"}},
         {L"交互", {L"启动操作", L"悬停激活", L"双击运行", L"分组激活延迟", L"标签激活延迟"}},
         {L"热键", {L"全局快捷键", L"启用全局快捷键", L"主窗口显隐", L"进程定位器"}},
         {L"链接", {L"目录命令", L"公共链接", L"打开目录命令", L"帮助链接", L"更新链接", L"FAQ 链接"}},

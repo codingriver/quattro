@@ -1904,12 +1904,14 @@ HWND ThemedUi::ListBox(int id, int x, int y, int width, int height, ThemedListBo
 }
 
 HWND ThemedUi::Table(int id, RECT frame, const std::vector<ThemedTableColumn>& columns, ThemedTableOptions options) const {
-    const RECT inner = ThemedControls::ListFrameInnerRect(theme_, frame);
+    const RECT inner = ThemedControls::TableFrameInnerRect(theme_, frame);
     DWORD style = WS_CHILD | WS_VISIBLE | WS_TABSTOP | LVS_SHOWSELALWAYS | LVS_SHAREIMAGELISTS;
     style |= options.view == ThemedTableView::Details ? LVS_REPORT : LVS_ICON;
     if (options.selection == ThemedTableSelection::Single) style |= LVS_SINGLESEL;
     if (!options.showHeader) style |= LVS_NOCOLUMNHEADER;
-    if (!options.allowColumnResize) style |= LVS_NOSORTHEADER;
+    // Header items are never clickable sort buttons; column-divider dragging is
+    // controlled independently via HDS_NOSIZING in SetTableColumnResizeEnabled.
+    style |= LVS_NOSORTHEADER;
     HWND table = CreateWindowExW(
         0, WC_LISTVIEWW, L"", style,
         inner.left, inner.top, inner.right - inner.left, inner.bottom - inner.top,
@@ -1919,6 +1921,7 @@ HWND ThemedUi::Table(int id, RECT frame, const std::vector<ThemedTableColumn>& c
     SendMessageW(table, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
     ThemedControls::RegisterTable(table, theme_);
     ThemedControls::SetTableColumnResizeEnabled(table, options.allowColumnResize);
+    ThemedControls::ConfigureTableGridLines(table, options.showRowGridLines, options.showColumnGridLines);
     DWORD extended = LVS_EX_DOUBLEBUFFER;
     if (options.checkable) extended |= LVS_EX_CHECKBOXES;
     if (options.fullRowSelect) extended |= LVS_EX_FULLROWSELECT;

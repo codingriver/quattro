@@ -293,6 +293,14 @@ LRESULT AppLaunchLockerWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam
             860, 580);
         CreateControls();
         return 0;
+    case WM_PAINT: {
+        PAINTSTRUCT ps{};
+        HDC dc = BeginPaint(hwnd_, &ps);
+        windowUi_->FillBackground(dc);
+        windowUi_->DrawRegisteredTableFrames(dc);
+        EndPaint(hwnd_, &ps);
+        return 0;
+    }
     case WM_COMMAND: {
         const int id = LOWORD(wParam);
         if (id == ID_REFRESH) StartScan();
@@ -357,14 +365,19 @@ void AppLaunchLockerWindow::CreateControls() {
     ui.Label(L"自启动项管理", content.left, headerY, content.right - content.left - scanWidth - ui.layout().controlGapX);
     ui.Button(ID_REFRESH, L"扫描", content.right - scanWidth, headerY,
         ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
+    ThemedTableOptions gridTableOptions{};
+    gridTableOptions.allowColumnResize = true;
+    gridTableOptions.showRowGridLines = true;
+    gridTableOptions.showColumnGridLines = true;
     categoryTable_ = ui.Table(ID_CATEGORY_TABLE, RECT{content.left, listTop, categoryRight, tableBottom},
         {{L"name", L"范围与分类", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Remaining},
          {L"count", L"数量", ThemedTableColumnAlign::End, ThemedTableColumnWidth::Fixed, ui.tableColumnWidth(L"9999")}},
-        ThemedTableOptions{ThemedTableSelection::Single, ThemedTableView::Details, false, true, true, true, false});
+        gridTableOptions);
     itemTable_ = ui.Table(ID_CURRENT_TABLE, RECT{itemLeft, listTop, content.right, tableBottom},
         {{L"name", L"名称", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Remaining},
          {L"source", L"来源", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, ui.tableColumnWidth(L"WMI 永久订阅")},
-         {L"state", L"状态", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, ui.tableColumnWidth(L"可禁用")}});
+         {L"state", L"状态", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, ui.tableColumnWidth(L"可禁用")}},
+        gridTableOptions);
     statusText_ = ui.StatusText(L"正在扫描…", itemLeft, statusY,
         content.right - itemLeft - elevateWidth - ui.layout().controlGapX,
         {ThemedStatusRole::Info, ThemedTextAlign::Start});

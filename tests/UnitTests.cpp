@@ -336,6 +336,8 @@ int wmain() {
     Check(!config.trackVsCodeContextMenu, "Config default VS Code context menu tracking disabled");
     Check(!config.trackTerminalContextMenu, "Config default terminal context menu tracking disabled");
     Check(!config.trackArchiveContextMenu, "Config default archive context menu tracking disabled");
+    Check(!config.trackEverythingContextMenu, "Config default Everything context menu tracking disabled");
+    Check(!config.trackNotepadPlusPlusContextMenu, "Config default Notepad++ context menu tracking disabled");
     Check(!config.hideNotifyIcon, "Config default tray visible");
     Check(config.width == 400, "Config default width fits three link columns");
     config.width = 500;
@@ -354,6 +356,8 @@ int wmain() {
     config.trackVsCodeContextMenu = true;
     config.trackTerminalContextMenu = true;
     config.trackArchiveContextMenu = true;
+    config.trackEverythingContextMenu = true;
+    config.trackNotepadPlusPlusContextMenu = true;
     config.httpServerEnabled = true;
     config.httpServerAutoStart = true;
     config.httpServerLanAccess = false;
@@ -378,6 +382,8 @@ int wmain() {
     Check(loaded.trackVsCodeContextMenu, "Config VS Code context menu tracking");
     Check(loaded.trackTerminalContextMenu, "Config terminal context menu tracking");
     Check(loaded.trackArchiveContextMenu, "Config archive context menu tracking");
+    Check(loaded.trackEverythingContextMenu, "Config Everything context menu tracking");
+    Check(loaded.trackNotepadPlusPlusContextMenu, "Config Notepad++ context menu tracking");
     Check(loaded.httpServerEnabled, "Config http enabled");
     Check(loaded.httpServerAutoStart, "Config http autostart");
     Check(!loaded.httpServerLanAccess, "Config http LAN access");
@@ -472,13 +478,23 @@ int wmain() {
     archiveItem.iconWidth = 1;
     archiveItem.iconHeight = 1;
     archiveItem.iconPixels = {0xFF112233u};
-    shellSnapshot.items = {gitItem, svnItem, codeItem, archiveItem};
+    ShellContextMenuItem everythingItem;
+    everythingItem.providerId = ShellContextMenuProviderId::Everything;
+    everythingItem.text = L"Search Everything...";
+    everythingItem.verb = L"everything_search";
+    ShellContextMenuItem notepadPlusPlusItem;
+    notepadPlusPlusItem.providerId = ShellContextMenuProviderId::NotepadPlusPlus;
+    notepadPlusPlusItem.text = L"Edit with Notepad++";
+    notepadPlusPlusItem.verb = L"notepad++";
+    shellSnapshot.items = {gitItem, svnItem, codeItem, archiveItem, everythingItem, notepadPlusPlusItem};
     ShellContextMenuTrackingOptions allTracking;
     allTracking.git = true;
     allTracking.svn = true;
     allTracking.vsCode = true;
     allTracking.terminal = true;
     allTracking.archive = true;
+    allTracking.everything = true;
+    allTracking.notepadPlusPlus = true;
     Link secondCachedLink = cachedLink;
     secondCachedLink.id = 702;
     secondCachedLink.path = L"C:\\Work\\SecondProject";
@@ -507,7 +523,7 @@ int wmain() {
         ShellContextMenuCacheService shellMenuCache(shellMenuCacheRoot);
         shellMenuCache.Update(cachedLink, shellSnapshot, allTracking);
         shellMenuCache.Update(secondCachedLink, secondSnapshot, allTracking);
-        Check(shellMenuCache.ItemsFor(cachedLink, allTracking).size() == 4, "Shell menu cache update");
+        Check(shellMenuCache.ItemsFor(cachedLink, allTracking).size() == 6, "Shell menu cache update");
         const auto sharedCodeItems = shellMenuCache.ItemsFor(secondCachedLink, allTracking);
         const auto sharedArchive = std::find_if(sharedCodeItems.begin(), sharedCodeItems.end(), [](const auto& item) {
             return item.providerId == ShellContextMenuProviderId::Archive;
@@ -525,7 +541,7 @@ int wmain() {
     {
         ShellContextMenuCacheService shellMenuCache(shellMenuCacheRoot);
         const auto persistedItems = shellMenuCache.ItemsFor(cachedLink, allTracking);
-        Check(persistedItems.size() == 4, "Shell menu cache persistence");
+        Check(persistedItems.size() == 6, "Shell menu cache persistence");
         const auto persistedCode = std::find_if(persistedItems.begin(), persistedItems.end(), [](const auto& item) {
             return item.providerId == ShellContextMenuProviderId::VsCode;
         });
@@ -550,7 +566,14 @@ int wmain() {
         Check(shellMenuCache.ItemsFor(changedTarget, allTracking).empty(), "Shell menu cache target invalidation");
         shellMenuCache.RemoveProvider(ShellContextMenuProviderId::Git);
         const auto withoutGit = shellMenuCache.ItemsFor(cachedLink, allTracking);
-        Check(withoutGit.size() == 3 && withoutGit.front().providerId == ShellContextMenuProviderId::Svn, "Shell menu cache provider removal");
+        Check(withoutGit.size() == 5 && withoutGit.front().providerId == ShellContextMenuProviderId::Svn, "Shell menu cache provider removal");
+        shellMenuCache.RemoveProvider(ShellContextMenuProviderId::Everything);
+        const auto withoutEverything = shellMenuCache.ItemsFor(cachedLink, allTracking);
+        Check(
+            std::none_of(withoutEverything.begin(), withoutEverything.end(), [](const auto& item) {
+                return item.providerId == ShellContextMenuProviderId::Everything;
+            }),
+            "Shell menu cache Everything provider removal");
         Check(shellMenuCache.Reset(), "Shell menu cache reset");
         Check(
             shellMenuCache.ItemsFor(cachedLink, allTracking).empty() &&
@@ -807,6 +830,8 @@ int wmain() {
     Check(fallbackTheme.color(L"text", L"danger", L"text").a > 0.9f, "Theme default text danger");
     Check(fallbackTheme.color(L"link", L"hover", L"text").a > 0.9f, "Theme default link hover");
     Check(fallbackTheme.color(L"table", L"normal", L"border").a > 0.9f, "Theme default table border");
+    Check(fallbackTheme.color(L"table", L"normal", L"grid").a > 0.9f, "Theme default table grid");
+    Check(Near(fallbackTheme.metric(L"table", L"gridWidth", 0.0f), 1.0f), "Theme default table grid width");
     Check(Near(fallbackTheme.metric(L"tableHeader", L"height", 0.0f), 28.0f), "Theme default table header height");
     Check(Near(fallbackTheme.metric(L"tooltip", L"maxWidth", 0.0f), 420.0f), "Theme default tooltip max width");
     Check(fallbackTheme.color(L"groupBox", L"normal", L"border").a > 0.9f, "Theme default group box border");
@@ -914,7 +939,9 @@ int wmain() {
     ThemedTableOptions tableOptions{};
     tableOptions.checkable = true;
     tableOptions.view = ThemedTableView::Icons;
-    Check(tableOptions.checkable && tableOptions.view == ThemedTableView::Icons, "Themed table options compose");
+    tableOptions.showColumnGridLines = true;
+    Check(tableOptions.checkable && tableOptions.view == ThemedTableView::Icons && tableOptions.showColumnGridLines,
+        "Themed table options compose");
     ThemedTooltipOptions tooltipOptions{};
     tooltipOptions.role = ThemedTooltipRole::Warning;
     tooltipOptions.placement = ThemedTooltipPlacement::Cursor;
@@ -1220,6 +1247,8 @@ int wmain() {
     Check(Launcher::IsShellTarget(shellLink), "Launcher shell target");
     Check(ShellItemService::IsShellParseName(shellLink.path), "Shell parse name");
     Check(ShellItemService::DetectTrackedContextMenuProvider(L"Open with Code") == ShellContextMenuProviderId::VsCode, "Shell menu detects VS Code");
+    Check(ShellItemService::DetectTrackedContextMenuProvider(L"Search Everything...") == ShellContextMenuProviderId::Everything, "Shell menu detects Everything");
+    Check(ShellItemService::DetectTrackedContextMenuProvider(L"Edit with Notepad++") == ShellContextMenuProviderId::NotepadPlusPlus, "Shell menu detects Notepad++");
     Check(ShellItemService::DetectTrackedContextMenuProvider(L"在终端中打开") == ShellContextMenuProviderId::Terminal, "Shell menu detects terminal");
     Check(ShellItemService::DetectTrackedContextMenuProvider(L"7-Zip") == ShellContextMenuProviderId::Archive, "Shell menu detects archive tool");
     Check(ShellItemService::DetectTrackedContextMenuProvider(L"Git Bash Here") == ShellContextMenuProviderId::Git, "Shell menu keeps Git Bash in Git provider");

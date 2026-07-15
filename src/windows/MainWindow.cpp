@@ -4659,6 +4659,8 @@ ShellContextMenuTrackingOptions MainWindow::TrackedShellMenuOptions() const {
     options.vsCode = config_.trackVsCodeContextMenu;
     options.terminal = config_.trackTerminalContextMenu;
     options.archive = config_.trackArchiveContextMenu;
+    options.everything = config_.trackEverythingContextMenu;
+    options.notepadPlusPlus = config_.trackNotepadPlusPlusContextMenu;
     return options;
 }
 
@@ -5137,6 +5139,8 @@ void MainWindow::OpenSettings() {
         reset.trackVsCodeContextMenu = false;
         reset.trackTerminalContextMenu = false;
         reset.trackArchiveContextMenu = false;
+        reset.trackEverythingContextMenu = false;
+        reset.trackNotepadPlusPlusContextMenu = false;
         CommitSettingsConfig(reset, false);
         next = config_;
         return true;
@@ -5185,6 +5189,12 @@ void MainWindow::CommitSettingsConfig(const AppConfig& next, bool importedData) 
     }
     if (previous.trackArchiveContextMenu && !config_.trackArchiveContextMenu) {
         shellContextMenuCache_.RemoveProvider(ShellContextMenuProviderId::Archive);
+    }
+    if (previous.trackEverythingContextMenu && !config_.trackEverythingContextMenu) {
+        shellContextMenuCache_.RemoveProvider(ShellContextMenuProviderId::Everything);
+    }
+    if (previous.trackNotepadPlusPlusContextMenu && !config_.trackNotepadPlusPlusContextMenu) {
+        shellContextMenuCache_.RemoveProvider(ShellContextMenuProviderId::NotepadPlusPlus);
     }
     if (previous.loggingEnabled != config_.loggingEnabled) {
         SetAppLogEnabled(config_.loggingEnabled);
@@ -6590,8 +6600,10 @@ void MainWindow::AppendTrackedShellMenuItems(HMENU menu, const Link& link) {
         return;
     }
     AppendThemedSeparator(menu);
-    const std::array<std::wstring, 5> providerOrder{{
+    const std::array<std::wstring, 7> providerOrder{{
         ShellContextMenuProviderId::VsCode,
+        ShellContextMenuProviderId::NotepadPlusPlus,
+        ShellContextMenuProviderId::Everything,
         ShellContextMenuProviderId::Git,
         ShellContextMenuProviderId::Svn,
         ShellContextMenuProviderId::Terminal,

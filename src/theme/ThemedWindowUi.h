@@ -137,6 +137,18 @@ private:
     bool EnsureEditFrameClass();
     void SyncEditFrameWindow(EditFrame& editFrame);
     void PaintEditFrameWindow(HWND frameWindow, HDC dc) const;
+    struct TableFrame {
+        HWND child = nullptr;
+        HWND frameWindow = nullptr;
+        RECT frame{};
+    };
+    TableFrame* FindTableFrame(HWND child);
+    const TableFrame* FindTableFrame(HWND child) const;
+    TableFrame* FindTableFrameWindow(HWND frameWindow);
+    const TableFrame* FindTableFrameWindow(HWND frameWindow) const;
+    bool EnsureTableFrameClass();
+    void SyncTableFrameWindow(TableFrame& tableFrame);
+    void PaintTableFrameWindow(HWND frameWindow, HDC dc) const;
     void ReleaseResources();
     void ApplyDpiChange(UINT newDpi, const RECT* suggestedWindowRect);
     bool EnsureTooltipWindow();
@@ -148,6 +160,8 @@ private:
     void PaintToast(HDC dc) const;
     static LRESULT CALLBACK EditFrameProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
     static LRESULT CALLBACK EditChildProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR id, DWORD_PTR data);
+    static LRESULT CALLBACK TableFrameProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
+    static LRESULT CALLBACK TableChildProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR id, DWORD_PTR data);
     static LRESULT CALLBACK TooltipProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
     static LRESULT CALLBACK ToastProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
 
@@ -166,10 +180,6 @@ private:
     bool ownerWasEnabled_ = false;
     bool ownerRestored_ = false;
     std::vector<EditFrame> editFrames_;
-    struct TableFrame {
-        HWND child = nullptr;
-        RECT frame{};
-    };
     std::vector<TableFrame> tableFrames_;
     HWND tooltip_ = nullptr;
     std::wstring tooltipText_;

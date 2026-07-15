@@ -238,6 +238,8 @@ int wmain() {
     config.trackVsCodeContextMenu = true;
     config.trackTerminalContextMenu = true;
     config.trackArchiveContextMenu = true;
+    config.trackEverythingContextMenu = true;
+    config.trackNotepadPlusPlusContextMenu = true;
     config.httpServerRootPath = root.wstring();
     config.httpServerPort = 45200 + static_cast<int>(GetCurrentProcessId() % 1000);
     config.httpServerLanAccess = false;
@@ -348,7 +350,9 @@ int wmain() {
         !config.trackSvnContextMenu &&
         !config.trackVsCodeContextMenu &&
         !config.trackTerminalContextMenu &&
-        !config.trackArchiveContextMenu;
+        !config.trackArchiveContextMenu &&
+        !config.trackEverythingContextMenu &&
+        !config.trackNotepadPlusPlusContextMenu;
     const bool ok = interactionDone && interactionOk && trackingReset;
     if (!ok) {
         return 1;

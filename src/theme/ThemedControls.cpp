@@ -78,6 +78,8 @@ struct ControlState {
     int tableHotRow = -1;
     int tableHotColumn = -1;
     bool tableAllowColumnResize = false;
+    bool tableShowRowGridLines = false;
+    bool tableShowColumnGridLines = false;
     std::vector<int> tableColumnWidthModes;
     std::vector<bool> tableRowEnabled;
     std::vector<std::vector<ThemedControls::TableCellRuntime>> tableCells;
@@ -604,6 +606,58 @@ void DrawPrimaryButton(const Theme& theme, const DRAWITEMSTRUCT* draw);
 void DrawMiniButton(const Theme& theme, const DRAWITEMSTRUCT* draw);
 void DrawSlider(HWND hwnd, HDC dc);
 
+// After a user drag (or divider double-click autosize) changes one column's
+// width, refill the table by resizing the last Remaining-mode column that was
+// not the dragged one, so the columns keep spanning the full client width and
+// no horizontal scrollbar or trailing blank strip appears. draggedIndex /
+// draggedWidth describe the column the user resized (-1 when unknown; current
+// widths are then read back from the control).
+void RelayoutTableRemainingColumns(HWND table, int draggedIndex, int draggedWidth) {
+    const auto state = FindState(table);
+    if (!state || state->kind != ControlKind::Table || state->tableColumnWidthModes.empty()) {
+        return;
+    }
+    // Stored via ConfigureTableColumns as static_cast<int>(ThemedTableColumnWidth).
+    constexpr int remainingMode = 2;  // ThemedTableColumnWidth::Remaining
+    const auto& modes = state->tableColumnWidthModes;
+    int adjustIndex = -1;
+    for (int i = static_cast<int>(modes.size()) - 1; i >= 0; --i) {
+        if (modes[i] == remainingMode && i != draggedIndex) {
+            adjustIndex = i;
+            break;
+        }
+    }
+    if (adjustIndex < 0) {
+        // The dragged column was the only Remaining one (or none exists). The
+        // user-driven width is authoritative for the dragged column, so keep the
+        // table filled by letting the last other column absorb the delta instead.
+        for (int i = static_cast<int>(modes.size()) - 1; i >= 0; --i) {
+            if (i != draggedIndex) {
+                adjustIndex = i;
+                break;
+            }
+        }
+    }
+    if (adjustIndex < 0) {
+        return;
+    }
+    RECT client{};
+    if (!GetClientRect(table, &client)) {
+        return;
+    }
+    int otherColumnsWidth = 0;
+    for (int i = 0; i < static_cast<int>(modes.size()); ++i) {
+        if (i == adjustIndex) {
+            continue;
+        }
+        otherColumnsWidth += (i == draggedIndex && draggedWidth >= 0)
+            ? draggedWidth
+            : ListView_GetColumnWidth(table, i);
+    }
+    const int width = std::max(24L, client.right - client.left - otherColumnsWidth);
+    ListView_SetColumnWidth(table, adjustIndex, width);
+}
+
 LRESULT CALLBACK ThemedControlProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR subclassId, DWORD_PTR) {
     if (message == WM_NOTIFY && KindFor(hwnd) == ControlKind::Table) {
         // The table's header (SysHeader32) sends its NM_CUSTOMDRAW notifications
@@ -617,6 +671,24 @@ LRESULT CALLBACK ThemedControlProc(HWND hwnd, UINT message, WPARAM wParam, LPARA
             if (ThemedControls::HandleListViewCustomDraw(*state->theme, lParam, drawResult)) {
                 return drawResult;
             }
+        }
+        if (nm && (nm->code == HDN_ENDTRACKW || nm->code == HDN_ENDTRACKA)) {
+            // The header applies the dragged width only after this notification
+            // returns, so pass the final width from the notification explicitly.
+            auto* headerNotify = reinterpret_cast<NMHEADERW*>(lParam);
+            const int draggedWidth = headerNotify->pitem && (headerNotify->pitem->mask & HDI_WIDTH)
+                ? headerNotify->pitem->cxy
+                : -1;
+            const LRESULT trackResult = DefSubclassProc(hwnd, message, wParam, lParam);
+            RelayoutTableRemainingColumns(hwnd, headerNotify->iItem, draggedWidth);
+            return trackResult;
+        }
+        if (nm && (nm->code == HDN_DIVIDERDBLCLICKW || nm->code == HDN_DIVIDERDBLCLICKA)) {
+            // The ListView performs the autosize while handling this notification,
+            // so current widths are final once DefSubclassProc returns.
+            const LRESULT clickResult = DefSubclassProc(hwnd, message, wParam, lParam);
+            RelayoutTableRemainingColumns(hwnd, -1, -1);
+            return clickResult;
         }
     }
     switch (message) {
@@ -1574,9 +1646,63 @@ std::wstring ClassName(HWND hwnd) {
     return buffer;
 }
 
+bool TableShowsRowGridLines(HWND table) {
+    auto state = FindState(table);
+    return state && state->kind == ControlKind::Table && state->tableShowRowGridLines;
+}
+
+bool TableShowsColumnGridLines(HWND table) {
+    auto state = FindState(table);
+    return state && state->kind == ControlKind::Table && state->tableShowColumnGridLines;
+}
+
+bool TableShowsDefaultHeaderGridLine(HWND table) {
+    auto state = FindState(table);
+    return state && state->kind == ControlKind::Table;
+}
+
+bool TableShowsDefaultFirstRowGridLine(HWND table, int row) {
+    auto state = FindState(table);
+    return state && state->kind == ControlKind::Table && row == 0;
+}
+
+void DrawTableGridLines(const Theme& theme, HDC dc, RECT rect, bool rowLine, bool columnLine) {
+    if (!rowLine && !columnLine) {
+        return;
+    }
+    HPEN pen = CreatePen(
+        PS_SOLID,
+        std::max(1, static_cast<int>(theme.metric(L"table", L"gridWidth", 1.0f))),
+        ToColorRef(theme.color(L"table", L"normal", L"grid")));
+    HGDIOBJ oldPen = SelectObject(dc, pen);
+    if (rowLine) {
+        MoveToEx(dc, rect.left, rect.bottom - 1, nullptr);
+        LineTo(dc, rect.right, rect.bottom - 1);
+    }
+    if (columnLine) {
+        MoveToEx(dc, rect.right - 1, rect.top, nullptr);
+        LineTo(dc, rect.right - 1, rect.bottom);
+    }
+    SelectObject(dc, oldPen);
+    DeleteObject(pen);
+}
+
+void DrawTableCellGridLines(const Theme& theme, HWND table, const NMLVCUSTOMDRAW* draw, RECT rect) {
+    HWND header = ListView_GetHeader(table);
+    const int columnCount = header ? Header_GetItemCount(header) : 0;
+    const int row = static_cast<int>(draw->nmcd.dwItemSpec);
+    const bool rowLine = TableShowsRowGridLines(table) || TableShowsDefaultFirstRowGridLine(table, row);
+    const bool columnLine =
+        (TableShowsColumnGridLines(table) || TableShowsDefaultFirstRowGridLine(table, row)) &&
+        draw->iSubItem >= 0 &&
+        draw->iSubItem < columnCount - 1;
+    DrawTableGridLines(theme, draw->nmcd.hdc, rect, rowLine, columnLine);
+}
+
 void DrawHeaderItem(const Theme& theme, HWND header, const NMCUSTOMDRAW* draw) {
     const bool table = KindFor(GetParent(header)) == ControlKind::Table;
     const wchar_t* component = table ? L"tableHeader" : L"list";
+    HWND tableHwnd = table ? GetParent(header) : nullptr;
     const int index = static_cast<int>(draw->dwItemSpec);
     const int itemCount = Header_GetItemCount(header);
     RECT rect = draw->rc;
@@ -1591,17 +1717,26 @@ void DrawHeaderItem(const Theme& theme, HWND header, const NMCUSTOMDRAW* draw) {
     item.cchTextMax = static_cast<int>(sizeof(text) / sizeof(text[0]));
     Header_GetItem(header, index, &item);
 
-    const COLORREF line = ToColorRef(theme.color(component, L"normal", L"border"));
-    HPEN pen = CreatePen(PS_SOLID, 1, line);
-    HGDIOBJ oldPen = SelectObject(draw->hdc, pen);
-    MoveToEx(draw->hdc, rect.left, rect.bottom - 1, nullptr);
-    LineTo(draw->hdc, rect.right, rect.bottom - 1);
-    if (index >= 0 && index < itemCount - 1) {
-        MoveToEx(draw->hdc, rect.right - 1, rect.top, nullptr);
-        LineTo(draw->hdc, rect.right - 1, rect.bottom);
+    if (!table || TableShowsDefaultHeaderGridLine(tableHwnd) ||
+        TableShowsRowGridLines(tableHwnd) || TableShowsColumnGridLines(tableHwnd)) {
+        const COLORREF line = table
+            ? ToColorRef(theme.color(L"table", L"normal", L"grid"))
+            : ToColorRef(theme.color(component, L"normal", L"border"));
+        HPEN pen = CreatePen(PS_SOLID, 1, line);
+        HGDIOBJ oldPen = SelectObject(draw->hdc, pen);
+        if (!table || TableShowsDefaultHeaderGridLine(tableHwnd) || TableShowsRowGridLines(tableHwnd)) {
+            MoveToEx(draw->hdc, rect.left, rect.bottom - 1, nullptr);
+            LineTo(draw->hdc, rect.right, rect.bottom - 1);
+        }
+        if ((!table || TableShowsDefaultHeaderGridLine(tableHwnd) || TableShowsColumnGridLines(tableHwnd)) &&
+            index >= 0 &&
+            index < itemCount - 1) {
+            MoveToEx(draw->hdc, rect.right - 1, rect.top, nullptr);
+            LineTo(draw->hdc, rect.right - 1, rect.bottom);
+        }
+        SelectObject(draw->hdc, oldPen);
+        DeleteObject(pen);
     }
-    SelectObject(draw->hdc, oldPen);
-    DeleteObject(pen);
 
     const int paddingX = static_cast<int>(theme.metric(L"listItem", L"paddingX", 8.0f));
     RECT textRect = rect;
@@ -1772,6 +1907,7 @@ void DrawTableActionCell(
     if (oldFont) {
         SelectObject(draw->nmcd.hdc, oldFont);
     }
+    DrawTableCellGridLines(theme, table, draw, cellRect);
 }
 
 void DrawTableTextCell(
@@ -1818,6 +1954,7 @@ void DrawTableTextCell(
     if (oldFont) {
         SelectObject(draw->nmcd.hdc, oldFont);
     }
+    DrawTableCellGridLines(theme, table, draw, cellRect);
 }
 
 void DrawTableRowCells(
@@ -2030,6 +2167,18 @@ RECT ListItemTextRect(const Theme& theme, RECT frame) {
 
 RECT ListFrameInnerRect(const Theme& theme, RECT frame) {
     const int inset = std::max(1, static_cast<int>(theme.metric(L"list", L"borderWidth", 1.0f)));
+    InflateRect(&frame, -inset, -inset);
+    if (frame.right <= frame.left) {
+        frame.right = frame.left + 1;
+    }
+    if (frame.bottom <= frame.top) {
+        frame.bottom = frame.top + 1;
+    }
+    return frame;
+}
+
+RECT TableFrameInnerRect(const Theme& theme, RECT frame) {
+    const int inset = std::max(1, static_cast<int>(theme.metric(L"table", L"borderWidth", 1.0f)));
     InflateRect(&frame, -inset, -inset);
     if (frame.right <= frame.left) {
         frame.right = frame.left + 1;
@@ -2817,6 +2966,19 @@ void DrawListFrame(const Theme& theme, HDC dc, RECT rect, HWND child, bool readO
         static_cast<int>(theme.metric(L"list", L"borderWidth", 1.0f)));
 }
 
+void DrawTableFrame(const Theme& theme, HDC dc, RECT rect, HWND child) {
+    const bool disabled = child && !IsWindowEnabled(child);
+    const bool focused = child && GetFocus() == child;
+    const wchar_t* state = disabled ? L"disabled" : (focused ? L"focused" : L"normal");
+    FillRoundRect(
+        dc,
+        rect,
+        static_cast<int>(theme.metric(L"table", L"radius", 7.0f)),
+        ToColorRef(theme.color(L"table", state, L"bg")),
+        ToColorRef(theme.color(L"table", state, L"border")),
+        static_cast<int>(theme.metric(L"table", L"borderWidth", 1.0f)));
+}
+
 void DrawPanelFrame(const Theme& theme, HDC dc, RECT rect, bool raised) {
     const wchar_t* state = raised ? L"raised" : L"normal";
     FillRoundRect(
@@ -2856,6 +3018,17 @@ void RegisterTable(HWND table, const Theme& theme) {
 void ConfigureTableColumns(HWND table, const std::vector<int>& widthModes) {
     if (!table) return;
     StateFor(table).tableColumnWidthModes = widthModes;
+}
+
+void ConfigureTableGridLines(HWND table, bool rowGridLines, bool columnGridLines) {
+    if (!table) return;
+    auto& state = StateFor(table);
+    state.tableShowRowGridLines = rowGridLines;
+    state.tableShowColumnGridLines = columnGridLines;
+    InvalidateRect(table, nullptr, TRUE);
+    if (HWND header = ListView_GetHeader(table)) {
+        InvalidateRect(header, nullptr, TRUE);
+    }
 }
 
 void SetTableColumnResizeEnabled(HWND table, bool enabled) {
