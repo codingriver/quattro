@@ -1,5 +1,5 @@
-param(
-    [ValidateSet("all", "x86", "x64")]
+﻿param(
+    [ValidateSet("all", "x86", "x64", "--all", "--help")]
     [string]$Platform = "x64",
     [switch]$All,
     [string]$Configuration = "Release",
@@ -22,6 +22,17 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+# PowerShell 脚本参数原生使用单短横线。保留项目文档既有的 GNU 风格入口，
+# 使 .\tools\build.ps1 --all / --help 与 -All / -Help 行为一致。
+if ($Platform -eq "--all") {
+    $All = $true
+    $Platform = "x64"
+} elseif ($Platform -eq "--help") {
+    $Help = $true
+    $Platform = "x64"
+}
+
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 $effectiveVersion = if ([string]::IsNullOrWhiteSpace($Version)) { "0.1.0" } else { $Version }
@@ -30,43 +41,116 @@ $defaultTopMostEnabled = if ($env:GITHUB_ACTIONS -eq "true") { "ON" } else { "OF
 $bundleOptionalExecutables = if ($All) { "ON" } else { "OFF" }
 $officialBuildEnabled = if ($OfficialBuild) { "ON" } else { "OFF" }
 $buildMarker = if ($OfficialBuild) { "none" } elseif ($All) { "DEBUG-All" } else { "DEBUG" }
+$buildScope = if ($All) { "complete" } else { "minimal" }
+$buildProfile = if ($OfficialBuild) {
+    "official-$buildScope"
+} elseif ($Test) {
+    "tests-$buildScope"
+} elseif ($All) {
+    "complete"
+} else {
+    "minimal"
+}
 
 function Show-PackageHelp {
     $scriptName = Split-Path -Leaf $PSCommandPath
     @"
-Quattro package tool
+Quattro 中文构建与打包工具
 
-Usage:
+用法：
   powershell -ExecutionPolicy Bypass -File .\tools\$scriptName [options]
 
-Defaults:
-  Builds and packages minimal x64 Quattro with the vcpkg backend, creates dist\Quattro-x64.exe and Quattro-x64.zip.
+默认行为：
+  构建本地开发版 x64 最小包，使用 vcpkg 后端和 Release 配置。
+  默认只打包 Quattro，不构建、不打包 AppLaunchLocker 和 QuattroUpdater。
+  主窗口显示红色（DEBUG）标记，默认生成：
+    dist\Quattro-x64.exe
+    dist\Quattro-x64.zip
+    dist\SHA256SUMS.txt
+    dist\latest.json
 
-Options:
-  --all, -All              Build complete x86 and x64 packages, including AppLaunchLocker and QuattroUpdater.
-  --help, -Help            Show this help text.
-  -Platform x86|x64        Build a minimal single-platform package. Default: x64.
-  -Configuration <name>    Build configuration. Default: Release.
-  -Clean                   Remove the selected build directory before configure.
-  -Test                    Build local test/helper tools and run unit tests before packaging. Requires local tests/ sources.
-  -SkipTests               Compatibility no-op; tests are skipped unless -Test is specified.
-  -NoZip                   Create package directories only, without zip archives.
-  -FullPackage             Include external resource folders beside the exe.
-  -FlatPackage             Run the previous default flat x64 single-exe package flow.
-  -Upx                     Compress packaged Quattro.exe with UPX before zipping.
-  -UpxPath <path>          UPX executable path. Default: upx.
-  -PlanOnly                Print the resolved architectures and optional-component mode without building.
-  -OfficialBuild           Build an official package without a DEBUG title marker; intended for CI releases.
-  -Version <semver>        Override the compiled app version, for example 1.2.3. Default: 0.1.0.
-  -ReleaseRepoUrl <url>    GitHub repository URL used in latest.json. Default: https://github.com/codingriver/quattro.
-  -ReleaseTag <tag>        Release tag used in latest.json. Default: v<Version>.
-  -Backend vcpkg|classic   Build backend. Default: vcpkg. Use classic for the legacy non-vcpkg build.
+参数：
+  --help, -Help
+      显示本帮助，不执行构建。
 
-Examples:
+  --all, -All
+      构建完整的 x86 和 x64 包，并包含 AppLaunchLocker 和 QuattroUpdater。
+      本地主窗口显示红色（DEBUG-All）标记。
+
+  -Platform x86|x64
+      选择最小包的目标架构，默认 x64。与 -All 一起使用时由 -All 构建全部架构。
+
+  -Configuration <名称>
+      指定 CMake/MSBuild 配置，默认 Release。
+
+  -Clean
+      构建前删除本次所选构建目录，执行全新构建。日常增量打包不建议使用。
+
+  -Test
+      构建本地测试/辅助工具并在打包前运行相关单元测试，需要本地 tests/ 源码。
+      此参数不会自动包含可选程序；测试 AppLaunchLocker 或 QuattroUpdater 时必须使用 -All -Test。
+
+  -SkipTests
+      兼容参数。默认本来就不运行测试，除非显式指定 -Test。
+
+  -NoZip
+      不生成 ZIP，只生成单文件 EXE、校验和及更新清单，可用于快速验收。
+
+  -FullPackage
+      在 EXE 旁保留外部资源目录，生成完整目录式包。
+
+  -FlatPackage
+      使用旧版默认的 x64 单文件平铺打包流程；不能与 -All、非 x64 或 -FullPackage 组合。
+
+  -Upx
+      打包前使用 UPX 压缩 Quattro.exe；启用后无法复用未变化的单文件产物。
+
+  -UpxPath <路径>
+      指定 UPX 可执行文件路径，默认从 PATH 中查找 upx。
+
+  -PlanOnly
+      仅输出解析后的架构、构建身份、可选组件状态和构建目录，不编译、不打包。
+
+  -OfficialBuild
+      构建正式版，不显示 DEBUG 标记，主要供 GitHub Actions 正式发布使用。
+      正式完整包通常组合使用 -OfficialBuild -All。
+
+  -Version <版本号>
+      指定编译和更新清单版本，例如 1.2.3；默认 0.1.0。
+
+  -ReleaseRepoUrl <URL>
+      指定 latest.json 使用的 GitHub 仓库地址。
+      默认：https://github.com/codingriver/quattro
+
+  -ReleaseTag <标签>
+      指定 latest.json 使用的发布标签；默认 v<Version>。
+
+  -Backend vcpkg|classic
+      指定依赖构建后端，默认 vcpkg；classic 仅用于兼容旧构建流程。
+
+常用示例：
+  # 本地 x64 开发版最小包（不包含 AppLaunchLocker、QuattroUpdater）
   powershell -ExecutionPolicy Bypass -File .\tools\$scriptName
-  powershell -ExecutionPolicy Bypass -File .\tools\$scriptName -Test
-  powershell -ExecutionPolicy Bypass -File .\tools\$scriptName -FlatPackage
+
+  # 本地完整包，包含 AppLaunchLocker、QuattroUpdater，构建 x86 和 x64
   powershell -ExecutionPolicy Bypass -File .\tools\$scriptName --all
+
+  # 测试 AppLaunchLocker、QuattroUpdater 相关内容
+  powershell -ExecutionPolicy Bypass -File .\tools\$scriptName -All -Test
+
+  # 只运行 Quattro 最小构建范围的相关测试
+  powershell -ExecutionPolicy Bypass -File .\tools\$scriptName -Test
+
+  # 快速构建但不生成 ZIP
+  powershell -ExecutionPolicy Bypass -File .\tools\$scriptName -NoZip
+
+  # 查看将使用的构建目录和组件范围
+  powershell -ExecutionPolicy Bypass -File .\tools\$scriptName -All -PlanOnly
+
+  # 构建指定版本的 GitHub 正式完整包
+  powershell -ExecutionPolicy Bypass -File .\tools\$scriptName -OfficialBuild -All -Version 1.2.3
+
+  # 仅构建 x86 最小包
   powershell -ExecutionPolicy Bypass -File .\tools\$scriptName -Platform x86
 "@
 }
@@ -94,6 +178,20 @@ function New-ArchitectureList {
         return $all
     }
     return $all | Where-Object { $_.Name -eq $Requested }
+}
+
+function Get-BuildDirectoryName {
+    param(
+        [string]$Architecture,
+        [string]$ClassicBuildDirectory,
+        [bool]$UseVcpkg
+    )
+
+    $baseName = if ($UseVcpkg) { "build-vcpkg-$Architecture" } else { $ClassicBuildDirectory }
+    if ($buildProfile -eq "minimal") {
+        return $baseName
+    }
+    return "$baseName-$buildProfile"
 }
 
 function Invoke-NativeCommand {
@@ -152,6 +250,21 @@ function Get-CMakeVisualStudioGenerator {
     throw "No installed Visual Studio instance matched CMake generators: $available"
 }
 
+function Get-CMakeCacheValue {
+    param(
+        [string]$CacheText,
+        [string]$Name
+    )
+
+    $match = [regex]::Match(
+        $CacheText,
+        "(?m)^" + [regex]::Escape($Name) + ":[^=]*=(.*)$")
+    if ($match.Success) {
+        return $match.Groups[1].Value.Trim()
+    }
+    return ""
+}
+
 function Ensure-Configured {
     param(
         [string]$BuildDir,
@@ -165,54 +278,52 @@ function Ensure-Configured {
     $cache = Join-Path $BuildDir "CMakeCache.txt"
     if (Test-Path $cache) {
         $cacheText = Get-Content -Path $cache -Raw
-        $expectedGenerator = "CMAKE_GENERATOR:INTERNAL=$generator"
-        $expected = "CMAKE_GENERATOR_PLATFORM:INTERNAL=$CMakePlatform"
-        $expectedSource = "CMAKE_HOME_DIRECTORY:INTERNAL=$($root.Replace('\', '/'))"
-        $expectedToolchain = "CMAKE_TOOLCHAIN_FILE:FILEPATH=$($root.Replace('\', '/'))/.vcpkg-root/scripts/buildsystems/vcpkg.cmake"
-        $expectedTriplet = "VCPKG_TARGET_TRIPLET:STRING=$VcpkgTriplet"
-        $expectedTestOption = "QUATTRO_BUILD_TESTS:BOOL=ON"
-        $expectedVersion = "QUATTRO_VERSION:STRING=$effectiveVersion"
-        $expectedLogging = "QUATTRO_DEFAULT_LOGGING_ENABLED:BOOL=$defaultLoggingEnabled"
-        $expectedTopMost = "QUATTRO_DEFAULT_TOP_MOST_ENABLED:BOOL=$defaultTopMostEnabled"
-        $expectedOptionalExecutables = "QUATTRO_BUNDLE_OPTIONAL_EXECUTABLES:BOOL=$bundleOptionalExecutables"
-        $expectedOfficialBuild = "QUATTRO_OFFICIAL_BUILD:BOOL=$officialBuildEnabled"
-        if ($cacheText -notmatch [regex]::Escape($expectedGenerator) -or
-            $cacheText -notmatch [regex]::Escape($expected) -or
-            $cacheText -notmatch [regex]::Escape($expectedSource) -or
-            $cacheText -notmatch [regex]::Escape($expectedVersion) -or
-            $cacheText -notmatch [regex]::Escape($expectedLogging) -or
-            $cacheText -notmatch [regex]::Escape($expectedTopMost) -or
-            $cacheText -notmatch [regex]::Escape($expectedOptionalExecutables) -or
-            $cacheText -notmatch [regex]::Escape($expectedOfficialBuild) -or
-            ($BuildTests -and $cacheText -notmatch [regex]::Escape($expectedTestOption)) -or
-            ($UseVcpkg -and ($cacheText -notmatch [regex]::Escape($expectedToolchain) -or
-                             $cacheText -notmatch [regex]::Escape($expectedTriplet)))) {
+        $expectedSource = $root.Replace('\', '/')
+        $expectedToolchain = "$expectedSource/.vcpkg-root/scripts/buildsystems/vcpkg.cmake"
+        $incompatibleReasons = New-Object System.Collections.Generic.List[string]
+        if ((Get-CMakeCacheValue -CacheText $cacheText -Name "CMAKE_GENERATOR") -ne $generator) {
+            $incompatibleReasons.Add("generator") | Out-Null
+        }
+        if ((Get-CMakeCacheValue -CacheText $cacheText -Name "CMAKE_GENERATOR_PLATFORM") -ne $CMakePlatform) {
+            $incompatibleReasons.Add("platform") | Out-Null
+        }
+        if ((Get-CMakeCacheValue -CacheText $cacheText -Name "CMAKE_HOME_DIRECTORY") -ne $expectedSource) {
+            $incompatibleReasons.Add("source") | Out-Null
+        }
+        if ($UseVcpkg -and
+            (Get-CMakeCacheValue -CacheText $cacheText -Name "CMAKE_TOOLCHAIN_FILE") -ne $expectedToolchain) {
+            $incompatibleReasons.Add("toolchain") | Out-Null
+        }
+        if ($UseVcpkg -and
+            (Get-CMakeCacheValue -CacheText $cacheText -Name "VCPKG_TARGET_TRIPLET") -ne $VcpkgTriplet) {
+            $incompatibleReasons.Add("triplet") | Out-Null
+        }
+        if ($incompatibleReasons.Count -gt 0) {
+            "recreating incompatible build directory $BuildDir`: $($incompatibleReasons -join ', ')"
             Remove-DirectoryRobust -Path $BuildDir
+        } else {
+            "reconfiguring compatible build directory in place: $BuildDir"
         }
     }
 
-    if (!(Test-Path $cache)) {
-        $configureArgs = @("-S", $root, "-B", $BuildDir, "-G", $generator, "-A", $CMakePlatform)
-        if ($UseVcpkg) {
-            $toolchain = Join-Path $root ".vcpkg-root\scripts\buildsystems\vcpkg.cmake"
-            if (!(Test-Path $toolchain)) {
-                throw "vcpkg backend requested but toolchain was not found: $toolchain. Run .\.vcpkg-root\bootstrap-vcpkg.bat or use -Backend classic."
-            }
-            $configureArgs += @(
-                "-DCMAKE_TOOLCHAIN_FILE=$($toolchain.Replace('\', '/'))",
-                "-DVCPKG_TARGET_TRIPLET=$VcpkgTriplet"
-            )
+    $configureArgs = @("-S", $root, "-B", $BuildDir, "-G", $generator, "-A", $CMakePlatform)
+    if ($UseVcpkg) {
+        $toolchain = Join-Path $root ".vcpkg-root\scripts\buildsystems\vcpkg.cmake"
+        if (!(Test-Path $toolchain)) {
+            throw "vcpkg backend requested but toolchain was not found: $toolchain. Run .\.vcpkg-root\bootstrap-vcpkg.bat or use -Backend classic."
         }
-        if ($BuildTests) {
-            $configureArgs += "-DQUATTRO_BUILD_TESTS=ON"
-        }
-        $configureArgs += "-DQUATTRO_VERSION=$effectiveVersion"
-        $configureArgs += "-DQUATTRO_DEFAULT_LOGGING_ENABLED=$defaultLoggingEnabled"
-        $configureArgs += "-DQUATTRO_DEFAULT_TOP_MOST_ENABLED=$defaultTopMostEnabled"
-        $configureArgs += "-DQUATTRO_BUNDLE_OPTIONAL_EXECUTABLES=$bundleOptionalExecutables"
-        $configureArgs += "-DQUATTRO_OFFICIAL_BUILD=$officialBuildEnabled"
-        Invoke-NativeCommand -Description "CMake configure" -Command "cmake" -Arguments $configureArgs
+        $configureArgs += @(
+            "-DCMAKE_TOOLCHAIN_FILE=$($toolchain.Replace('\', '/'))",
+            "-DVCPKG_TARGET_TRIPLET=$VcpkgTriplet"
+        )
     }
+    $configureArgs += "-DQUATTRO_BUILD_TESTS=$(if ($BuildTests) { 'ON' } else { 'OFF' })"
+    $configureArgs += "-DQUATTRO_VERSION=$effectiveVersion"
+    $configureArgs += "-DQUATTRO_DEFAULT_LOGGING_ENABLED=$defaultLoggingEnabled"
+    $configureArgs += "-DQUATTRO_DEFAULT_TOP_MOST_ENABLED=$defaultTopMostEnabled"
+    $configureArgs += "-DQUATTRO_BUNDLE_OPTIONAL_EXECUTABLES=$bundleOptionalExecutables"
+    $configureArgs += "-DQUATTRO_OFFICIAL_BUILD=$officialBuildEnabled"
+    Invoke-NativeCommand -Description "CMake configure" -Command "cmake" -Arguments $configureArgs
 }
 
 function Remove-LegacyBuildOutputs {
@@ -571,6 +682,9 @@ if ($PlanOnly) {
     "bundle_optional_executables=$bundleOptionalExecutables"
     "official_build=$officialBuildEnabled"
     "build_marker=$buildMarker"
+    "build_profile=$buildProfile"
+    $useVcpkg = $Backend -eq "vcpkg"
+    "build_directories=$((@($architectures | ForEach-Object { Get-BuildDirectoryName -Architecture $_.Name -ClassicBuildDirectory $_.BuildDir -UseVcpkg $useVcpkg }) -join ','))"
     return
 }
 
@@ -588,7 +702,7 @@ $outputs = New-Object System.Collections.Generic.List[string]
 $releaseFiles = New-Object System.Collections.Generic.List[string]
 foreach ($arch in $architectures) {
     $useVcpkg = $Backend -eq "vcpkg"
-    $buildDirName = if ($useVcpkg) { "build-vcpkg-$($arch.Name)" } else { $arch.BuildDir }
+    $buildDirName = Get-BuildDirectoryName -Architecture $arch.Name -ClassicBuildDirectory $arch.BuildDir -UseVcpkg $useVcpkg
     $buildDir = Join-Path $root $buildDirName
     if ($Clean -and (Test-Path $buildDir)) {
         Remove-DirectoryRobust -Path $buildDir

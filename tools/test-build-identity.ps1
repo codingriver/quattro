@@ -19,13 +19,20 @@ function Invoke-Native {
 }
 
 function Assert-Plan {
-    param([string[]]$Arguments, [string]$ExpectedOfficial, [string]$ExpectedMarker)
+    param(
+        [string[]]$Arguments,
+        [string]$ExpectedOfficial,
+        [string]$ExpectedMarker,
+        [string]$ExpectedProfile,
+        [string]$ExpectedDirectories)
     $parameters = @{ PlanOnly = $true }
     if ($Arguments -contains "-All") { $parameters.All = $true }
     if ($Arguments -contains "-OfficialBuild") { $parameters.OfficialBuild = $true }
     $lines = @(& (Join-Path $PSScriptRoot "build.ps1") @parameters)
     if ($lines -notcontains "official_build=$ExpectedOfficial" -or
-        $lines -notcontains "build_marker=$ExpectedMarker") {
+        $lines -notcontains "build_marker=$ExpectedMarker" -or
+        $lines -notcontains "build_profile=$ExpectedProfile" -or
+        $lines -notcontains "build_directories=$ExpectedDirectories") {
         throw "Unexpected build plan: $($lines -join '; ')"
     }
 }
@@ -60,9 +67,12 @@ function Assert-GeneratedIdentity {
 }
 
 New-Item -ItemType Directory -Force -Path $resolvedBuildRoot | Out-Null
-Assert-Plan -Arguments @() -ExpectedOfficial "OFF" -ExpectedMarker "DEBUG"
-Assert-Plan -Arguments @("-All") -ExpectedOfficial "OFF" -ExpectedMarker "DEBUG-All"
-Assert-Plan -Arguments @("-All", "-OfficialBuild") -ExpectedOfficial "ON" -ExpectedMarker "none"
+Assert-Plan -Arguments @() -ExpectedOfficial "OFF" -ExpectedMarker "DEBUG" `
+    -ExpectedProfile "minimal" -ExpectedDirectories "build-vcpkg-x64"
+Assert-Plan -Arguments @("-All") -ExpectedOfficial "OFF" -ExpectedMarker "DEBUG-All" `
+    -ExpectedProfile "complete" -ExpectedDirectories "build-vcpkg-x86-complete,build-vcpkg-x64-complete"
+Assert-Plan -Arguments @("-All", "-OfficialBuild") -ExpectedOfficial "ON" -ExpectedMarker "none" `
+    -ExpectedProfile "official-complete" -ExpectedDirectories "build-vcpkg-x86-official-complete,build-vcpkg-x64-official-complete"
 Assert-GeneratedIdentity -Name "debug" -BundleOptionalExecutables $false -OfficialBuild $false -ExpectedMarker "DEBUG" -ExpectedOfficial 0
 Assert-GeneratedIdentity -Name "debug-all" -BundleOptionalExecutables $true -OfficialBuild $false -ExpectedMarker "DEBUG-All" -ExpectedOfficial 0
 Assert-GeneratedIdentity -Name "official" -BundleOptionalExecutables $true -OfficialBuild $true -ExpectedMarker "" -ExpectedOfficial 1

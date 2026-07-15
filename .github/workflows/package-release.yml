@@ -151,8 +151,10 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            build-vcpkg-x86
-            build-vcpkg-x64
+            build-vcpkg-x86-official-complete
+            build-vcpkg-x64-official-complete
+            build-vcpkg-x86-official-minimal
+            build-vcpkg-x64-official-minimal
           key: build-${{ runner.os }}-${{ steps.options.outputs.configuration }}-${{ steps.options.outputs.platform }}-${{ hashFiles('CMakeLists.txt', 'CMakePresets.json', 'vcpkg.json', 'src/**', 'resources/**', 'theme/**', 'icons/**', 'docs/**', 'plugins/**', 'tools/**') }}
           restore-keys: |
             build-${{ runner.os }}-${{ steps.options.outputs.configuration }}-

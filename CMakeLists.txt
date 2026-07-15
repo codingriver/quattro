@@ -7,6 +7,10 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+add_compile_options(
+    $<$<COMPILE_LANG_AND_ID:CXX,MSVC>:/MP4>
+)
+
 option(QUATTRO_BUILD_TESTS "Build local Quattro test tools" OFF)
 option(QUATTRO_DEFAULT_LOGGING_ENABLED "Enable logging by default for new configs" ON)
 option(QUATTRO_DEFAULT_TOP_MOST_ENABLED "Keep the main window topmost by default for new configs" OFF)
