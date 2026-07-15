@@ -658,6 +658,23 @@ void RelayoutTableRemainingColumns(HWND table, int draggedIndex, int draggedWidt
     ListView_SetColumnWidth(table, adjustIndex, width);
 }
 
+// Repaint one table cell without erasing the background. Action cells are the
+// only cells whose appearance depends on the cursor, so hover changes never
+// need more than this per cell.
+void InvalidateTableCell(HWND list, int row, int column) {
+    if (row < 0) {
+        return;
+    }
+    RECT rect{};
+    if (column <= 0) {
+        if (ListView_GetItemRect(list, row, &rect, LVIR_BOUNDS)) {
+            InvalidateRect(list, &rect, FALSE);
+        }
+    } else if (ListView_GetSubItemRect(list, row, column, LVIR_BOUNDS, &rect)) {
+        InvalidateRect(list, &rect, FALSE);
+    }
+}
+
 LRESULT CALLBACK ThemedControlProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR subclassId, DWORD_PTR) {
     if (message == WM_NOTIFY && KindFor(hwnd) == ControlKind::Table) {
         // The table's header (SysHeader32) sends its NM_CUSTOMDRAW notifications
@@ -899,39 +916,34 @@ LRESULT CALLBACK ThemedControlProc(HWND hwnd, UINT message, WPARAM wParam, LPARA
             event.dwFlags = TME_LEAVE;
             event.hwndTrack = hwnd;
             TrackMouseEvent(&event);
-            InvalidateRect(hwnd, nullptr, TRUE);
+            // The table's custom draw never reads the control-level hover flag
+            // (action-cell hover uses the tracked hot cell below), so a full
+            // erase-and-repaint on enter only flickers; skip it for tables. The
+            // cursor also "enters" whenever it comes back from the header or the
+            // scrollbar, so this fired constantly while moving inside the list.
+            if (kind != ControlKind::Table) {
+                InvalidateRect(hwnd, nullptr, TRUE);
+            }
             if (kind == ControlKind::Edit) {
                 InvalidateParentAround(hwnd);
             }
-        } else if (kind == ControlKind::Table) {
+        }
+        if (kind == ControlKind::Table) {
             // Only repaint when the hovered cell actually changes. Invalidating the
             // whole ListView on every WM_MOUSEMOVE repaints all rows dozens of times
             // per second and makes the list flicker while the cursor moves. Action
             // cells are the only cells with a hover appearance, so repainting just the
             // cell the cursor entered/left is enough to keep the button hover correct.
-            auto invalidateCell = [](HWND list, int row, int column) {
-                if (row < 0) {
-                    return;
-                }
-                RECT rect{};
-                if (column <= 0) {
-                    if (ListView_GetItemRect(list, row, &rect, LVIR_BOUNDS)) {
-                        InvalidateRect(list, &rect, FALSE);
-                    }
-                } else if (ListView_GetSubItemRect(list, row, column, LVIR_BOUNDS, &rect)) {
-                    InvalidateRect(list, &rect, FALSE);
-                }
-            };
             LVHITTESTINFO hit{};
             hit.pt.x = GET_X_LPARAM(lParam);
             hit.pt.y = GET_Y_LPARAM(lParam);
             ListView_SubItemHitTest(hwnd, &hit);
             ControlState& tableState = StateFor(hwnd);
             if (hit.iItem != tableState.tableHotRow || hit.iSubItem != tableState.tableHotColumn) {
-                invalidateCell(hwnd, tableState.tableHotRow, tableState.tableHotColumn);
+                InvalidateTableCell(hwnd, tableState.tableHotRow, tableState.tableHotColumn);
                 tableState.tableHotRow = hit.iItem;
                 tableState.tableHotColumn = hit.iSubItem;
-                invalidateCell(hwnd, hit.iItem, hit.iSubItem);
+                InvalidateTableCell(hwnd, hit.iItem, hit.iSubItem);
             }
         }
         break;
@@ -939,8 +951,17 @@ LRESULT CALLBACK ThemedControlProc(HWND hwnd, UINT message, WPARAM wParam, LPARA
     case WM_MOUSELEAVE:
         StateFor(hwnd).hover = false;
         if (KindFor(hwnd) == ControlKind::Table) {
-            StateFor(hwnd).tableHotRow = -1;
-            StateFor(hwnd).tableHotColumn = -1;
+            // Same as on enter: nothing in the table's paint depends on the
+            // control-level hover flag, so only the cell that was hot needs a
+            // repaint — a full erase here flickered every time the cursor moved
+            // onto the header, the scrollbar, or out of the list.
+            ControlState& tableState = StateFor(hwnd);
+            const int hotRow = tableState.tableHotRow;
+            const int hotColumn = tableState.tableHotColumn;
+            tableState.tableHotRow = -1;
+            tableState.tableHotColumn = -1;
+            InvalidateTableCell(hwnd, hotRow, hotColumn);
+            break;
         }
         InvalidateRect(hwnd, nullptr, TRUE);
         if (KindFor(hwnd) == ControlKind::Edit) {
@@ -1661,11 +1682,6 @@ bool TableShowsDefaultHeaderGridLine(HWND table) {
     return state && state->kind == ControlKind::Table;
 }
 
-bool TableShowsDefaultFirstRowGridLine(HWND table, int row) {
-    auto state = FindState(table);
-    return state && state->kind == ControlKind::Table && row == 0;
-}
-
 void DrawTableGridLines(const Theme& theme, HDC dc, RECT rect, bool rowLine, bool columnLine) {
     if (!rowLine && !columnLine) {
         return;
@@ -1690,10 +1706,9 @@ void DrawTableGridLines(const Theme& theme, HDC dc, RECT rect, bool rowLine, boo
 void DrawTableCellGridLines(const Theme& theme, HWND table, const NMLVCUSTOMDRAW* draw, RECT rect) {
     HWND header = ListView_GetHeader(table);
     const int columnCount = header ? Header_GetItemCount(header) : 0;
-    const int row = static_cast<int>(draw->nmcd.dwItemSpec);
-    const bool rowLine = TableShowsRowGridLines(table) || TableShowsDefaultFirstRowGridLine(table, row);
+    const bool rowLine = TableShowsRowGridLines(table);
     const bool columnLine =
-        (TableShowsColumnGridLines(table) || TableShowsDefaultFirstRowGridLine(table, row)) &&
+        TableShowsColumnGridLines(table) &&
         draw->iSubItem >= 0 &&
         draw->iSubItem < columnCount - 1;
     DrawTableGridLines(theme, draw->nmcd.hdc, rect, rowLine, columnLine);

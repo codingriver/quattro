@@ -924,22 +924,38 @@ void RunTableGridLinesScenario(
     BitmapCapture capture = CaptureWindowBitmap(hwnd);
     state.Check(capture.bitmap != nullptr, scenarioName + L": capture failed");
     if (capture.bitmap) {
-        const int probeRow = gridLines ? 1 : 0;
-        const int quietRow = 1;
+        const int probeRow = 1;
         const RECT rowRect = TableRowRectInHostBitmap(hwnd, host.table_, probeRow);
         const RECT cellRect = TableSubItemRectInHostBitmap(hwnd, host.table_, probeRow, 0);
         const RECT secondCellRect = TableSubItemRectInHostBitmap(hwnd, host.table_, probeRow, 1);
-        const RECT quietRowRect = TableRowRectInHostBitmap(hwnd, host.table_, quietRow);
-        const RECT quietCellRect = TableSubItemRectInHostBitmap(hwnd, host.table_, quietRow, 0);
-        const RECT quietSecondCellRect = TableSubItemRectInHostBitmap(hwnd, host.table_, quietRow, 1);
+        RECT headerFirstRect{};
+        RECT headerSecondRect{};
+        if (HWND header = ListView_GetHeader(host.table_)) {
+            Header_GetItemRect(header, 0, &headerFirstRect);
+            Header_GetItemRect(header, 1, &headerSecondRect);
+            POINT headerTopLeft{headerFirstRect.left, headerFirstRect.top};
+            POINT headerBottomRight{headerFirstRect.right, headerFirstRect.bottom};
+            POINT headerSecondTopLeft{headerSecondRect.left, headerSecondRect.top};
+            ClientToScreen(header, &headerTopLeft);
+            ClientToScreen(header, &headerBottomRight);
+            ClientToScreen(header, &headerSecondTopLeft);
+            RECT hostRect{};
+            GetWindowRect(hwnd, &hostRect);
+            headerFirstRect = RECT{
+                headerTopLeft.x - hostRect.left,
+                headerTopLeft.y - hostRect.top,
+                headerBottomRight.x - hostRect.left,
+                headerBottomRight.y - hostRect.top};
+            headerSecondRect.left = headerSecondTopLeft.x - hostRect.left;
+        }
         const int columnX = std::clamp(static_cast<int>(secondCellRect.left), 0, std::max(0, capture.width - 1));
         const int rowY = std::clamp(static_cast<int>(rowRect.bottom - 1), 0, std::max(0, capture.height - 1));
         const int middleY = std::clamp(static_cast<int>((rowRect.top + rowRect.bottom) / 2), 0, std::max(0, capture.height - 1));
         const int middleX = std::clamp(static_cast<int>((cellRect.left + cellRect.right) / 2), 0, std::max(0, capture.width - 1));
-        const int quietColumnX = std::clamp(static_cast<int>(quietSecondCellRect.left), 0, std::max(0, capture.width - 1));
-        const int quietRowY = std::clamp(static_cast<int>(quietRowRect.bottom - 1), 0, std::max(0, capture.height - 1));
-        const int quietMiddleY = std::clamp(static_cast<int>((quietRowRect.top + quietRowRect.bottom) / 2), 0, std::max(0, capture.height - 1));
-        const int quietMiddleX = std::clamp(static_cast<int>((quietCellRect.left + quietCellRect.right) / 2), 0, std::max(0, capture.width - 1));
+        const int headerColumnX = std::clamp(static_cast<int>(headerSecondRect.left), 0, std::max(0, capture.width - 1));
+        const int headerRowY = std::clamp(static_cast<int>(headerFirstRect.bottom - 1), 0, std::max(0, capture.height - 1));
+        const int headerMiddleY = std::clamp(static_cast<int>((headerFirstRect.top + headerFirstRect.bottom) / 2), 0, std::max(0, capture.height - 1));
+        const int headerMiddleX = std::clamp(static_cast<int>((headerFirstRect.left + headerFirstRect.right) / 2), 0, std::max(0, capture.width - 1));
 
         int columnDistance = 0;
         for (int x = std::max(0, columnX - 4); x <= std::min(capture.width - 1, columnX + 4); ++x) {
@@ -950,28 +966,28 @@ void RunTableGridLinesScenario(
         const int rowDistance = ColorDistance(
             BitmapPixel(capture.bitmap, middleX, rowY),
             BitmapPixel(capture.bitmap, middleX, std::max(0, rowY - 3)));
-        int quietColumnDistance = 0;
-        for (int x = std::max(0, quietColumnX - 4); x <= std::min(capture.width - 1, quietColumnX + 4); ++x) {
-            quietColumnDistance = std::max(quietColumnDistance, ColorDistance(
-                BitmapPixel(capture.bitmap, x, quietMiddleY),
-                BitmapPixel(capture.bitmap, std::max(0, x - 3), quietMiddleY)));
+        int headerColumnDistance = 0;
+        for (int x = std::max(0, headerColumnX - 4); x <= std::min(capture.width - 1, headerColumnX + 4); ++x) {
+            headerColumnDistance = std::max(headerColumnDistance, ColorDistance(
+                BitmapPixel(capture.bitmap, x, headerMiddleY),
+                BitmapPixel(capture.bitmap, std::max(0, x - 3), headerMiddleY)));
         }
-        const int quietRowDistance = ColorDistance(
-            BitmapPixel(capture.bitmap, quietMiddleX, quietRowY),
-            BitmapPixel(capture.bitmap, quietMiddleX, std::max(0, quietRowY - 3)));
+        const int headerRowDistance = ColorDistance(
+            BitmapPixel(capture.bitmap, headerMiddleX, headerRowY),
+            BitmapPixel(capture.bitmap, headerMiddleX, std::max(0, headerRowY - 3)));
 
         AcceptanceLog(scenarioName + L" columnDistance=" + std::to_wstring(columnDistance) +
             L" rowDistance=" + std::to_wstring(rowDistance) +
-            L" quietColumnDistance=" + std::to_wstring(quietColumnDistance) +
-            L" quietRowDistance=" + std::to_wstring(quietRowDistance));
+            L" headerColumnDistance=" + std::to_wstring(headerColumnDistance) +
+            L" headerRowDistance=" + std::to_wstring(headerRowDistance));
+        state.Check(headerColumnDistance >= 24, scenarioName + L": header column grid line is not visible by default");
+        state.Check(headerRowDistance >= 24, scenarioName + L": header bottom grid line is not visible by default");
         if (gridLines) {
             state.Check(columnDistance >= 24, scenarioName + L": column grid line is not visible");
             state.Check(rowDistance >= 24, scenarioName + L": row grid line is not visible");
         } else {
-            state.Check(columnDistance >= 24, scenarioName + L": first-row column grid line is not visible by default");
-            state.Check(rowDistance >= 24, scenarioName + L": first-row grid line is not visible by default");
-            state.Check(quietColumnDistance < 24, scenarioName + L": column grid line extends beyond the first row by default");
-            state.Check(quietRowDistance < 24, scenarioName + L": row grid line extends beyond the first row by default");
+            state.Check(columnDistance < 24, scenarioName + L": data column grid line is visible by default");
+            state.Check(rowDistance < 24, scenarioName + L": data row grid line is visible by default");
         }
 
         const std::filesystem::path screenshot = outputDir / screenshotName;
@@ -1206,6 +1222,76 @@ void RunTableColumnResizeScenario(const std::filesystem::path& outputDir, TestSt
     AcceptanceLog(L"end table-column-resize");
 }
 
+// The cursor entering or leaving the table used to invalidate the whole
+// ListView with a background erase, which flickered every time the mouse
+// crossed the list edge, the header, or the scrollbar. Assert that a simulated
+// enter (WM_MOUSEMOVE) and leave (WM_MOUSELEAVE) only invalidate at most one
+// row's rect and never request an erase of the full client area.
+void RunTableHoverRepaintScenario(TestState& state) {
+    AcceptanceLog(L"begin table-hover-repaint");
+    HINSTANCE instance = GetModuleHandleW(nullptr);
+
+    TableHostWindow host;
+    host.instance_ = instance;
+    host.theme_ = Theme::Load(std::filesystem::current_path() / L"theme", L"default");
+
+    WNDCLASSEXW wc{};
+    wc.cbSize = sizeof(wc);
+    wc.lpfnWndProc = TableHostWindow::Proc;
+    wc.hInstance = instance;
+    wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    wc.lpszClassName = L"QuattroTableHoverRepaintHost";
+    RegisterClassExW(&wc);
+
+    HWND hwnd = CreateWindowExW(0, wc.lpszClassName, L"table hover repaint", WS_OVERLAPPEDWINDOW,
+        140, 140, 400, 320, nullptr, nullptr, instance, &host);
+    if (!hwnd || !host.table_) {
+        state.Check(false, L"table-hover-repaint: host window/table creation failed");
+        return;
+    }
+    ShowWindow(hwnd, SW_SHOW);
+    UpdateWindow(hwnd);
+    Sleep(100);
+
+    RECT tableClient{};
+    GetClientRect(host.table_, &tableClient);
+    RECT rowRect{LVIR_BOUNDS, 0, 0, 0};
+    SendMessageW(host.table_, LVM_GETITEMRECT, 1, reinterpret_cast<LPARAM>(&rowRect));
+    const int rowHeight = rowRect.bottom - rowRect.top;
+    state.Check(rowHeight > 0, L"table-hover-repaint: row rect unavailable");
+
+    auto updateHeightAfter = [&](UINT message, LPARAM lParam) {
+        ValidateRect(host.table_, nullptr);
+        SendMessageW(host.table_, message, 0, lParam);
+        RECT update{};
+        // FALSE: do not send WM_ERASEBKGND, just measure the pending region.
+        if (!GetUpdateRect(host.table_, &update, FALSE)) {
+            return 0;
+        }
+        return static_cast<int>(update.bottom - update.top);
+    };
+
+    // Enter: cursor lands in the middle of row 1.
+    const LPARAM rowPoint = MAKELPARAM((rowRect.left + rowRect.right) / 2,
+                                       (rowRect.top + rowRect.bottom) / 2);
+    const int enterHeight = updateHeightAfter(WM_MOUSEMOVE, rowPoint);
+    // Leave: only the previously hot cell may repaint.
+    const int leaveHeight = updateHeightAfter(WM_MOUSELEAVE, 0);
+
+    AcceptanceLog(L"table-hover-repaint rowHeight=" + std::to_wstring(rowHeight) +
+        L" enterHeight=" + std::to_wstring(enterHeight) +
+        L" leaveHeight=" + std::to_wstring(leaveHeight));
+    state.Check(enterHeight <= rowHeight + 2,
+        L"table-hover-repaint: mouse enter invalidates more than the hovered row");
+    state.Check(leaveHeight <= rowHeight + 2,
+        L"table-hover-repaint: mouse leave invalidates more than the hovered row");
+    state.Check(enterHeight < tableClient.bottom && leaveHeight < tableClient.bottom,
+        L"table-hover-repaint: enter/leave invalidates the whole table client area");
+
+    DestroyWindow(hwnd);
+    AcceptanceLog(L"end table-hover-repaint");
+}
+
 void ValidateAppLaunchLockerTables(HWND hwnd, TestState& state) {
     const auto children = Children(hwnd);
     bool sawTable = false;
@@ -1367,6 +1453,7 @@ int wmain() {
     RunMainWindowScenario(outputDir, state);
     RunTableAlternatingRowsScenario(outputDir, state);
     RunTableColumnResizeScenario(outputDir, state);
+    RunTableHoverRepaintScenario(state);
     RunTableGridLinesScenario(outputDir, state, false, L"table-grid-lines-default", L"table-grid-lines-default.png");
     RunTableGridLinesScenario(outputDir, state, true, L"table-grid-lines-enabled", L"table-grid-lines-enabled.png");
     RunAppLaunchLockerScenario(outputDir, state);
