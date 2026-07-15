@@ -351,7 +351,7 @@ int wmain() {
     AppConfig config;
     Check(config.autoDock, "Config default auto dock");
     Check(config.dockDelay == 1500, "Config default dock delay");
-    Check(config.topMost, "Config default top most");
+    Check(!config.topMost, "Local config default is not top most");
     Check(config.hideAfterLink, "Config default hide after link");
     Check(!config.hideWhenInactive, "Config default hide inactive");
     Check(!config.hideOnStart, "Config default hide on start");
@@ -405,9 +405,11 @@ int wmain() {
     Check(loaded.httpServerRootPath == L"C:\\QuattroWeb", "Config http root");
     Check(FileExists(unitUserConfigRoot / L"webdav.ini"), "Config webdav stored in user config directory");
     Check(FileExists(unitUserConfigRoot / L"http.ini"), "Config http stored in user config directory");
+    Check(FileExists(unitUserConfigRoot / L"context-menu.ini"), "Context menu settings stored in user config directory");
     const std::wstring savedConfigText = LoadUtf8File(temp);
     Check(savedConfigText.find(L"WebDavUrl") == std::wstring::npos, "Config removes legacy webdav fields");
     Check(savedConfigText.find(L"HttpServerPort") == std::wstring::npos, "Config removes legacy http fields");
+    Check(savedConfigText.find(L"bTrackGitContextMenu") == std::wstring::npos, "Config removes legacy context menu fields");
     Check(savedConfigText.find(L"password") == std::wstring::npos && savedConfigText.find(L"Password") == std::wstring::npos, "Config does not persist webdav password");
     std::filesystem::remove(temp, ec);
 
@@ -504,6 +506,15 @@ int wmain() {
     ShellContextMenuTrackingOptions allTracking;
     for (const auto& provider : TrackedContextMenuProviders()) {
         allTracking.*(provider.trackingMember) = true;
+    }
+    {
+        ShellContextMenuCacheService sharedShellMenuCache;
+        sharedShellMenuCache.Reset();
+        sharedShellMenuCache.Update(cachedLink, shellSnapshot, allTracking);
+        Check(
+            FileExists(unitUserConfigRoot / L"cache" / L"shell-context-menu.bin"),
+            "Default shell menu cache stored in user config directory");
+        sharedShellMenuCache.Reset();
     }
     Link secondCachedLink = cachedLink;
     secondCachedLink.id = 702;
@@ -1086,13 +1097,15 @@ int wmain() {
         runtimeTooltipOptions.placement = ThemedTooltipPlacement::Cursor;
         tooltipUi.SetTooltip(runtimeTooltipButton, L"button description", runtimeTooltipOptions);
         SendMessageW(runtimeTooltipButton, WM_MOUSEMOVE, 0, MAKELPARAM(2, 2));
+        SendMessageW(runtimeTooltipButton, WM_MOUSEMOVE, 0, MAKELPARAM(3, 2));
+        SendMessageW(runtimeTooltipButton, WM_MOUSEMOVE, 0, MAKELPARAM(4, 2));
         Check(
-            tooltipRegistry.visible && tooltipRegistry.showCount > 0 &&
+            tooltipRegistry.visible && tooltipRegistry.showCount == 1 &&
                 tooltipRegistry.shownText == L"button description" &&
                 tooltipRegistry.shownOptions.placement == ThemedTooltipPlacement::Cursor,
-            "Themed control tooltip shows through the public registry");
+            "Themed control tooltip shows once for one hover session");
         SendMessageW(runtimeTooltipButton, WM_MOUSELEAVE, 0, 0);
-        Check(!tooltipRegistry.visible && tooltipRegistry.hideCount > 0,
+        Check(!tooltipRegistry.visible && tooltipRegistry.hideCount == 1,
             "Themed control tooltip hides when pointer leaves");
         HWND runtimeCombo = controlUi.ComboBox(7105, 240, 72, controlUi.comboBoxWidth({L"Short", L"Long option"}));
         ThemedUi::SetComboBoxItems(runtimeCombo, {L"Short", L"Long option"}, 1);

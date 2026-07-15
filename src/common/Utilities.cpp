@@ -51,7 +51,7 @@ std::filesystem::path QuattroUserConfigDirectory() {
         overridePath.resize(copied);
         return overridePath;
     }
-    return UserHomeDirectory() / L".quatrro";
+    return UserHomeDirectory() / L".quattro";
 }
 
 std::wstring Trim(const std::wstring& value) {

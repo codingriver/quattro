@@ -34,7 +34,12 @@ struct AppConfig {
     int dockCorner = 0;
     int dockDelay = 1500;
     bool hideOnStart = false;
-    bool topMost = true;
+    bool topMost =
+#if defined(QUATTRO_DEFAULT_TOP_MOST_ENABLED)
+        QUATTRO_DEFAULT_TOP_MOST_ENABLED != 0;
+#else
+        false;
+#endif
     bool hideAfterLink = true;
     bool hideWhenInactive = false;
 

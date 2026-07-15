@@ -190,7 +190,7 @@ struct RegistryLocation {
     bool canDisable;
 };
 
-const std::array<RegistryLocation, 21> kRegistryLocations{{
+const std::array<RegistryLocation, 23> kRegistryLocations{{
     {HKEY_CURRENT_USER, L"HKCU", L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", StartupSourceType::Registry, true},
     {HKEY_CURRENT_USER, L"HKCU", L"Software\\Microsoft\\Windows\\CurrentVersion\\RunOnce", StartupSourceType::Registry, true},
     {HKEY_CURRENT_USER, L"HKCU", L"Software\\Microsoft\\Windows\\CurrentVersion\\RunOnceEx", StartupSourceType::Registry, true},
@@ -206,6 +206,8 @@ const std::array<RegistryLocation, 21> kRegistryLocations{{
     {HKEY_LOCAL_MACHINE, L"HKLM", L"Software\\Microsoft\\Windows\\CurrentVersion\\RunServicesOnce", StartupSourceType::Registry, true},
     {HKEY_CURRENT_USER, L"HKCU", L"Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer\\Run", StartupSourceType::Registry, true},
     {HKEY_LOCAL_MACHINE, L"HKLM", L"Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer\\Run", StartupSourceType::Registry, true},
+    {HKEY_CURRENT_USER, L"HKCU", L"Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\System", StartupSourceType::Registry, true},
+    {HKEY_LOCAL_MACHINE, L"HKLM", L"Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\System", StartupSourceType::Registry, true},
     {HKEY_CURRENT_USER, L"HKCU", L"Software\\Microsoft\\Windows NT\\CurrentVersion\\Windows", StartupSourceType::Registry, true},
     {HKEY_LOCAL_MACHINE, L"HKLM", L"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon", StartupSourceType::Winlogon, false},
     {HKEY_CURRENT_USER, L"HKCU", L"Software\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon", StartupSourceType::Winlogon, false},
@@ -225,6 +227,11 @@ bool RelevantNamedValue(const RegistryLocation& location, const std::wstring& va
     if (std::wstring(location.key).find(L"CurrentVersion\\Windows") != std::wstring::npos) {
         const std::wstring lower = Lower(valueName);
         return lower == L"load" || lower == L"run";
+    }
+    if (std::wstring(location.key).find(L"Policies\\System") != std::wstring::npos) {
+        // 该键还含 EnableLUA、ConsentPromptBehaviorAdmin 等 UAC 安全策略值，
+        // 只把自定义 Shell 劫持点当作启动项，绝不枚举其它策略值。
+        return Lower(valueName) == L"shell";
     }
     return true;
 }

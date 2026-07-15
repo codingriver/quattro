@@ -15,7 +15,8 @@ struct ShellContextMenuCachedIcon {
 
 class ShellContextMenuCacheService {
 public:
-    explicit ShellContextMenuCacheService(std::filesystem::path appDirectory);
+    ShellContextMenuCacheService();
+    explicit ShellContextMenuCacheService(std::filesystem::path storageDirectory);
 
     std::vector<ShellContextMenuItem> ItemsFor(
         const Link& link,

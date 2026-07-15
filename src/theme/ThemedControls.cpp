@@ -949,7 +949,7 @@ LRESULT CALLBACK ThemedControlProc(HWND hwnd, UINT message, WPARAM wParam, LPARA
             // cursor also "enters" whenever it comes back from the header or the
             // scrollbar, so this fired constantly while moving inside the list.
             if (kind != ControlKind::Table) {
-                InvalidateRect(hwnd, nullptr, TRUE);
+                InvalidateRect(hwnd, nullptr, IsOwnerDrawButtonKind(kind) ? FALSE : TRUE);
             }
             if (kind == ControlKind::Edit) {
                 InvalidateParentAround(hwnd);
@@ -984,7 +984,7 @@ LRESULT CALLBACK ThemedControlProc(HWND hwnd, UINT message, WPARAM wParam, LPARA
             InvalidateTableRow(hwnd, hotRow);
             break;
         }
-        InvalidateRect(hwnd, nullptr, TRUE);
+        InvalidateRect(hwnd, nullptr, IsOwnerDrawButtonKind(KindFor(hwnd)) ? FALSE : TRUE);
         if (KindFor(hwnd) == ControlKind::Edit) {
             InvalidateParentAround(hwnd);
         }

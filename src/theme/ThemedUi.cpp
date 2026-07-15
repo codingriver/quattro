@@ -272,6 +272,7 @@ struct ControlTooltipRuntime {
     std::wstring text;
     ThemedTooltipOptions options{};
     bool trackingMouseLeave = false;
+    bool shownForHover = false;
 };
 
 constexpr int kToolBarOverflowId = 0x7ff0;
@@ -728,12 +729,35 @@ LRESULT CALLBACK ControlTooltipProc(
                 track.hwndTrack = hwnd;
                 runtime.trackingMouseLeave = TrackMouseEvent(&track) != FALSE;
             }
-            POINT point{};
-            GetCursorPos(&point);
-            runtime.registry->ShowTooltip(runtime.text, point, runtime.options);
-        } else if ((message == WM_MOUSELEAVE || (message == WM_SHOWWINDOW && !wParam)) && runtime.registry) {
+            if (!runtime.shownForHover) {
+                POINT point{};
+                GetCursorPos(&point);
+                runtime.registry->ShowTooltip(runtime.text, point, runtime.options);
+                runtime.shownForHover = true;
+            }
+        } else if (message == WM_MOUSELEAVE && runtime.registry) {
             runtime.trackingMouseLeave = false;
-            runtime.registry->HideTooltip();
+            POINT cursor{};
+            RECT controlRect{};
+            GetCursorPos(&cursor);
+            GetWindowRect(hwnd, &controlRect);
+            if (PtInRect(&controlRect, cursor)) {
+                // Showing a non-activating popup can produce a transient leave
+                // notification even though the pointer is still over the source
+                // control. Keep the hover session alive; the next mouse move
+                // rearms TME_LEAVE.
+                return DefSubclassProc(hwnd, message, wParam, lParam);
+            }
+            if (runtime.shownForHover) {
+                runtime.registry->HideTooltip();
+                runtime.shownForHover = false;
+            }
+        } else if (message == WM_SHOWWINDOW && !wParam && runtime.registry) {
+            runtime.trackingMouseLeave = false;
+            if (runtime.shownForHover) {
+                runtime.registry->HideTooltip();
+                runtime.shownForHover = false;
+            }
         }
     }
     if (message == WM_NCDESTROY) {
@@ -2225,7 +2249,7 @@ void ThemedUi::SetTooltip(HWND control, const std::wstring& text, ThemedTooltipO
         return;
     }
 
-    states[control] = ControlTooltipRuntime{tooltipRegistry_, text, options, false};
+    states[control] = ControlTooltipRuntime{tooltipRegistry_, text, options, false, false};
     SetWindowSubclass(control, ControlTooltipProc, kControlTooltipSubclassId, 0);
 }
 

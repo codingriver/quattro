@@ -2244,7 +2244,7 @@ MainWindow::MainWindow(
       configService_(configService),
       storageService_(storageService),
       pluginRegistry_(appDirectory_),
-      shellContextMenuCache_(appDirectory_),
+      shellContextMenuCache_(),
       config_(std::move(config)),
       model_(std::move(model)),
       theme_(std::move(theme)),

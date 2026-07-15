@@ -186,6 +186,8 @@ private:
     ThemedTooltipOptions tooltipOptions_{};
     SIZE tooltipSize_{};
     bool tooltipLayoutValid_ = false;
+    POINT tooltipPosition_{};
+    bool tooltipPositionValid_ = false;
     HWND toast_ = nullptr;
     std::wstring toastText_;
     ThemedToastOptions toastOptions_{};

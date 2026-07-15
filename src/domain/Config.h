@@ -27,6 +27,7 @@ private:
     void WriteString(const wchar_t* key, const std::wstring& value) const;
     std::filesystem::path WebDavConfigPath() const;
     std::filesystem::path HttpConfigPath() const;
+    std::filesystem::path ContextMenuConfigPath() const;
     int ReadExternalInt(const std::filesystem::path& path, const wchar_t* section, const wchar_t* key, int fallback) const;
     bool ReadExternalBool(const std::filesystem::path& path, const wchar_t* section, const wchar_t* key, bool fallback) const;
     std::wstring ReadExternalString(const std::filesystem::path& path, const wchar_t* section, const wchar_t* key, const wchar_t* fallback) const;
@@ -34,6 +35,8 @@ private:
     void WriteExternalString(const std::filesystem::path& path, const wchar_t* section, const wchar_t* key, const std::wstring& value) const;
     void SaveExternalNetworkSettings(const AppConfig& config) const;
     void DeleteLegacyNetworkSettings() const;
+    void SaveExternalContextMenuSettings(const AppConfig& config) const;
+    void DeleteLegacyContextMenuSettings() const;
 
     std::filesystem::path configPath_;
 };

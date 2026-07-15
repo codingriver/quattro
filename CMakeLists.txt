@@ -9,6 +9,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(QUATTRO_BUILD_TESTS "Build local Quattro test tools" OFF)
 option(QUATTRO_DEFAULT_LOGGING_ENABLED "Enable logging by default for new configs" ON)
+option(QUATTRO_DEFAULT_TOP_MOST_ENABLED "Keep the main window topmost by default for new configs" OFF)
 
 find_package(CURL QUIET)
 find_package(httplib CONFIG QUIET)
@@ -377,6 +378,7 @@ target_compile_definitions(Quattro PRIVATE
 )
 target_compile_definitions(Quattro PRIVATE
     QUATTRO_DEFAULT_LOGGING_ENABLED=$<IF:$<BOOL:${QUATTRO_DEFAULT_LOGGING_ENABLED}>,1,0>
+    QUATTRO_DEFAULT_TOP_MOST_ENABLED=$<IF:$<BOOL:${QUATTRO_DEFAULT_TOP_MOST_ENABLED}>,1,0>
 )
 
 if(QUATTRO_WITH_WEBDAV_LIBS)

@@ -139,8 +139,12 @@ bool MatchesProvider(const ShellContextMenuItem& item, const std::wstring& provi
 }
 }
 
-ShellContextMenuCacheService::ShellContextMenuCacheService(std::filesystem::path appDirectory)
-    : cachePath_(std::move(appDirectory) / L"cache" / L"shell-context-menu.bin") {
+ShellContextMenuCacheService::ShellContextMenuCacheService()
+    : ShellContextMenuCacheService(QuattroUserConfigDirectory()) {
+}
+
+ShellContextMenuCacheService::ShellContextMenuCacheService(std::filesystem::path storageDirectory)
+    : cachePath_(std::move(storageDirectory) / L"cache" / L"shell-context-menu.bin") {
     Load();
 }
 

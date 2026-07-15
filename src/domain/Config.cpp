@@ -10,6 +10,7 @@ namespace {
 constexpr const wchar_t* kSection = L"main";
 constexpr const wchar_t* kWebDavSection = L"webdav";
 constexpr const wchar_t* kHttpSection = L"http";
+constexpr const wchar_t* kContextMenuSection = L"contextMenu";
 
 int Clamp(int value, int minValue, int maxValue) {
     return std::max(minValue, std::min(maxValue, value));
@@ -50,8 +51,13 @@ AppConfig ConfigService::Load() const {
     config.showToolboxButton = ReadBool(L"bShowBtnToolbox", ReadBool(L"bShowBtnMenu", config.showToolboxButton));
     config.showSkinButton = ReadBool(L"bShowBtnSkin", config.showSkinButton);
     config.loggingEnabled = ReadBool(L"bLoggingEnabled", config.loggingEnabled);
+    const std::filesystem::path contextMenuPath = ContextMenuConfigPath();
+    const bool hasContextMenuConfig = FileExists(contextMenuPath);
     for (const auto& provider : TrackedContextMenuProviders()) {
-        config.*(provider.configMember) = ReadBool(provider.configKey, config.*(provider.configMember));
+        const bool legacyValue = ReadBool(provider.configKey, config.*(provider.configMember));
+        config.*(provider.configMember) = hasContextMenuConfig
+            ? ReadExternalBool(contextMenuPath, kContextMenuSection, provider.configKey, legacyValue)
+            : legacyValue;
     }
 
     config.mouseEnterActiveGroup = ReadBool(L"bMouseEnterActiveGroup", config.mouseEnterActiveGroup);
@@ -210,6 +216,16 @@ AppConfig ConfigService::LoadForSchemaUpgrade(int targetVersion, bool& compatibl
     for (const auto& provider : TrackedContextMenuProviders()) {
         readBool(provider.configKey, config.*(provider.configMember));
     }
+    const std::filesystem::path contextMenuPath = ContextMenuConfigPath();
+    if (FileExists(contextMenuPath)) {
+        for (const auto& provider : TrackedContextMenuProviders()) {
+            config.*(provider.configMember) = ReadExternalBool(
+                contextMenuPath,
+                kContextMenuSection,
+                provider.configKey,
+                config.*(provider.configMember));
+        }
+    }
     readBool(L"bMouseEnterActiveGroup", config.mouseEnterActiveGroup);
     readBool(L"bMouseEnterActiveTag", config.mouseEnterActiveTag);
     readInt(L"nActiveGroupDelay", config.activeGroupDelay);
@@ -321,9 +337,6 @@ void ConfigService::SaveWindowState(const AppConfig& config) const {
     WriteString(L"bShowBtnMenu", L"");
     WriteInt(L"bShowBtnSkin", config.showSkinButton ? 1 : 0);
     WriteInt(L"bLoggingEnabled", config.loggingEnabled ? 1 : 0);
-    for (const auto& provider : TrackedContextMenuProviders()) {
-        WriteInt(provider.configKey, config.*(provider.configMember) ? 1 : 0);
-    }
     WriteInt(L"bGroupRight", config.groupRight ? 1 : 0);
     WriteInt(L"bTagRight", config.tagRight ? 1 : 0);
     WriteInt(L"nGroupWidth", config.groupWidth);
@@ -368,9 +381,8 @@ void ConfigService::Save(const AppConfig& config) const {
     WriteString(L"bShowBtnMenu", L"");
     WriteInt(L"bShowBtnSkin", config.showSkinButton ? 1 : 0);
     WriteInt(L"bLoggingEnabled", config.loggingEnabled ? 1 : 0);
-    for (const auto& provider : TrackedContextMenuProviders()) {
-        WriteInt(provider.configKey, config.*(provider.configMember) ? 1 : 0);
-    }
+    SaveExternalContextMenuSettings(config);
+    DeleteLegacyContextMenuSettings();
     WriteInt(L"bGroupRight", config.groupRight ? 1 : 0);
     WriteInt(L"bTagRight", config.tagRight ? 1 : 0);
     WriteInt(L"nGroupWidth", config.groupWidth);
@@ -475,6 +487,10 @@ std::filesystem::path ConfigService::HttpConfigPath() const {
     return QuattroUserConfigDirectory() / L"http.ini";
 }
 
+std::filesystem::path ConfigService::ContextMenuConfigPath() const {
+    return QuattroUserConfigDirectory() / L"context-menu.ini";
+}
+
 int ConfigService::ReadExternalInt(const std::filesystem::path& path, const wchar_t* section, const wchar_t* key, int fallback) const {
     return static_cast<int>(GetPrivateProfileIntW(section, key, fallback, path.c_str()));
 }
@@ -533,4 +549,21 @@ void ConfigService::DeleteLegacyNetworkSettings() const {
     WriteString(L"HttpServerLanAccess", L"");
     WriteString(L"HttpServerPort", L"");
     WriteString(L"HttpServerRootPath", L"");
+}
+
+void ConfigService::SaveExternalContextMenuSettings(const AppConfig& config) const {
+    const std::filesystem::path path = ContextMenuConfigPath();
+    for (const auto& provider : TrackedContextMenuProviders()) {
+        WriteExternalInt(
+            path,
+            kContextMenuSection,
+            provider.configKey,
+            config.*(provider.configMember) ? 1 : 0);
+    }
+}
+
+void ConfigService::DeleteLegacyContextMenuSettings() const {
+    for (const auto& provider : TrackedContextMenuProviders()) {
+        WriteString(provider.configKey, L"");
+    }
 }

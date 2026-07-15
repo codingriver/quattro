@@ -253,6 +253,23 @@ BitmapCapture CaptureWindowBitmap(HWND hwnd) {
     return BitmapCapture{bitmap, width, height};
 }
 
+BitmapCapture CaptureVisibleWindowScreenBitmap(HWND hwnd) {
+    RECT rect{};
+    GetWindowRect(hwnd, &rect);
+    const int width = std::max(1, static_cast<int>(rect.right - rect.left));
+    const int height = std::max(1, static_cast<int>(rect.bottom - rect.top));
+
+    HDC screen = GetDC(nullptr);
+    HDC dc = CreateCompatibleDC(screen);
+    HBITMAP bitmap = CreateCompatibleBitmap(screen, width, height);
+    HGDIOBJ old = SelectObject(dc, bitmap);
+    BitBlt(dc, 0, 0, width, height, screen, rect.left, rect.top, SRCCOPY);
+    SelectObject(dc, old);
+    DeleteDC(dc);
+    ReleaseDC(nullptr, screen);
+    return BitmapCapture{bitmap, width, height};
+}
+
 bool SavePng(HBITMAP bitmap, const std::filesystem::path& path) {
     CLSID pngClsid{};
     if (GetEncoderClsid(L"image/png", &pngClsid) < 0) {
@@ -691,16 +708,32 @@ void ValidateAndCapture(HWND hwnd, const Scenario& scenario, const std::filesyst
                 buttonRect.left + (buttonRect.right - buttonRect.left) / 2,
                 buttonRect.top + (buttonRect.bottom - buttonRect.top) / 2};
             SetCursorPos(cursorPoint.x, cursorPoint.y);
+            POINT actualCursor{};
+            GetCursorPos(&actualCursor);
+            state.Check(
+                PtInRect(&buttonRect, actualCursor) != FALSE,
+                scenario.name + L": acceptance cursor did not enter the tooltip button");
             SendMessageW(button->hwnd, WM_MOUSEMOVE, 0, MAKELPARAM(2, 2));
             HWND tooltip = WaitForTopWindow(
                 FindWindowRequest{L"QuattroThemedTooltip", scenario.expectedTooltipText, GetCurrentProcessId()},
                 2000);
             state.Check(tooltip != nullptr, scenario.name + L": themed tooltip did not appear");
             if (tooltip) {
+                Sleep(160);
+                state.Check(
+                    IsWindowVisible(tooltip) != FALSE,
+                    scenario.name + L": themed tooltip did not remain visible for the hover session");
+                const LONG_PTR tooltipStyle = GetWindowLongPtrW(tooltip, GWL_EXSTYLE);
+                state.Check(
+                    (tooltipStyle & WS_EX_TRANSPARENT) == 0,
+                    scenario.name + L": themed tooltip must not force transparent bottom-window repainting");
                 state.Check(
                     Contains(WindowText(tooltip), scenario.expectedTooltipText),
                     scenario.name + L": themed tooltip text mismatch");
-                BitmapCapture tooltipCapture = CaptureWindowBitmap(tooltip);
+                // PrintWindow may report success while returning a black bitmap
+                // for a visible WS_EX_NOACTIVATE popup. Capture the actual screen
+                // pixels for this visual acceptance instead.
+                BitmapCapture tooltipCapture = CaptureVisibleWindowScreenBitmap(tooltip);
                 const std::filesystem::path tooltipScreenshot = outputDir / scenario.tooltipScreenshotName;
                 state.Check(
                     tooltipCapture.bitmap != nullptr,

@@ -2597,12 +2597,11 @@ private:
 
         // 后台线程中执行扫描和刷新
         const HWND target = hwnd_;
-        const std::filesystem::path appDirectory = appDirectory_;
         const AppConfig currentConfig = draft_;
-        std::thread refreshThread([target, appDirectory, currentConfig]() {
+        std::thread refreshThread([target, currentConfig]() {
             try {
                 // 初始化缓存服务
-                ShellContextMenuCacheService cache(appDirectory);
+                ShellContextMenuCacheService cache;
 
                 // 获取启用的provider列表
                 const auto& providers = TrackedContextMenuProviders();

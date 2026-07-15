@@ -24,6 +24,7 @@ $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 $effectiveVersion = if ([string]::IsNullOrWhiteSpace($Version)) { "0.1.0" } else { $Version }
 $defaultLoggingEnabled = if ($env:GITHUB_ACTIONS -eq "true") { "OFF" } else { "ON" }
+$defaultTopMostEnabled = if ($env:GITHUB_ACTIONS -eq "true") { "ON" } else { "OFF" }
 
 function Show-PackageHelp {
     $scriptName = Split-Path -Leaf $PSCommandPath
@@ -165,11 +166,13 @@ function Ensure-Configured {
         $expectedTestOption = "QUATTRO_BUILD_TESTS:BOOL=ON"
         $expectedVersion = "QUATTRO_VERSION:STRING=$effectiveVersion"
         $expectedLogging = "QUATTRO_DEFAULT_LOGGING_ENABLED:BOOL=$defaultLoggingEnabled"
+        $expectedTopMost = "QUATTRO_DEFAULT_TOP_MOST_ENABLED:BOOL=$defaultTopMostEnabled"
         if ($cacheText -notmatch [regex]::Escape($expectedGenerator) -or
             $cacheText -notmatch [regex]::Escape($expected) -or
             $cacheText -notmatch [regex]::Escape($expectedSource) -or
             $cacheText -notmatch [regex]::Escape($expectedVersion) -or
             $cacheText -notmatch [regex]::Escape($expectedLogging) -or
+            $cacheText -notmatch [regex]::Escape($expectedTopMost) -or
             ($BuildTests -and $cacheText -notmatch [regex]::Escape($expectedTestOption)) -or
             ($UseVcpkg -and ($cacheText -notmatch [regex]::Escape($expectedToolchain) -or
                              $cacheText -notmatch [regex]::Escape($expectedTriplet)))) {
@@ -194,6 +197,7 @@ function Ensure-Configured {
         }
         $configureArgs += "-DQUATTRO_VERSION=$effectiveVersion"
         $configureArgs += "-DQUATTRO_DEFAULT_LOGGING_ENABLED=$defaultLoggingEnabled"
+        $configureArgs += "-DQUATTRO_DEFAULT_TOP_MOST_ENABLED=$defaultTopMostEnabled"
         Invoke-NativeCommand -Description "CMake configure" -Command "cmake" -Arguments $configureArgs
     }
 }

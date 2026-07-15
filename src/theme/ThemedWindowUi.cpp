@@ -573,7 +573,7 @@ bool ThemedWindowUi::EnsureTooltipWindow() {
     wc.lpszClassName = kClassName;
     if (!RegisterClassExW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return false;
     tooltip_ = CreateWindowExW(
-        WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT,
+        WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
         kClassName, L"", WS_POPUP, 0, 0, 0, 0, hwnd_, nullptr, instance_, this);
     return tooltip_ != nullptr;
 }
@@ -633,11 +633,21 @@ void ThemedWindowUi::ShowTooltip(
         y = std::max(static_cast<int>(info.rcWork.top), y);
     }
 
+    const bool positionChanged = !tooltipPositionValid_
+        || tooltipPosition_.x != x
+        || tooltipPosition_.y != y;
+    if (!layoutChanged && !positionChanged && IsWindowVisible(tooltip_)) {
+        return;
+    }
+
     if (contentChanged) {
         SetWindowTextW(tooltip_, tooltipText_.c_str());
     }
-    const UINT positionFlags = SWP_NOACTIVATE | (layoutChanged ? 0 : SWP_NOSIZE);
-    SetWindowPos(tooltip_, HWND_TOPMOST, x, y, size.cx, size.cy, positionFlags);
+    const UINT positionFlags = SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOOWNERZORDER
+        | (layoutChanged ? 0 : SWP_NOSIZE);
+    SetWindowPos(tooltip_, nullptr, x, y, size.cx, size.cy, positionFlags);
+    tooltipPosition_ = POINT{x, y};
+    tooltipPositionValid_ = true;
     if (layoutChanged) {
         const int radius = static_cast<int>(theme_.metric(L"tooltip", L"radius", 6.0f));
         HRGN region = CreateRoundRectRgn(0, 0, size.cx + 1, size.cy + 1, radius * 2, radius * 2);
@@ -657,6 +667,7 @@ void ThemedWindowUi::HideTooltip() {
     if (tooltip_) ShowWindow(tooltip_, SW_HIDE);
     tooltipText_.clear();
     tooltipLayoutValid_ = false;
+    tooltipPositionValid_ = false;
 }
 
 void ThemedWindowUi::PaintTooltip(HDC dc) const {
@@ -713,6 +724,7 @@ LRESULT CALLBACK ThemedWindowUi::TooltipProc(HWND hwnd, UINT message, WPARAM wPa
         if (ui && ui->tooltip_ == hwnd) {
             ui->tooltip_ = nullptr;
             ui->tooltipLayoutValid_ = false;
+            ui->tooltipPositionValid_ = false;
         }
         break;
     default:
