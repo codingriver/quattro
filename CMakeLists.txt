@@ -18,10 +18,6 @@ option(QUATTRO_BUNDLE_OPTIONAL_EXECUTABLES "Embed AppLaunchLocker and QuattroUpd
 option(QUATTRO_OFFICIAL_BUILD "Build an official package without a development title marker" OFF)
 option(QUATTRO_COMPRESS_EMBEDDED_ASSETS "Compress built-in theme and icon resources" OFF)
 
-if(QUATTRO_OFFICIAL_BUILD AND NOT QUATTRO_COMPRESS_EMBEDDED_ASSETS)
-    message(FATAL_ERROR "Official builds must enable QUATTRO_COMPRESS_EMBEDDED_ASSETS")
-endif()
-
 set(QUATTRO_BUILD_MARKER "")
 set(QUATTRO_OFFICIAL_BUILD_VALUE 0)
 if(QUATTRO_OFFICIAL_BUILD)
@@ -70,13 +66,15 @@ file(GLOB_RECURSE EMBEDDED_ASSET_DIR_INPUTS CONFIGURE_DEPENDS
 )
 list(APPEND EMBEDDED_ASSET_INPUTS ${EMBEDDED_ASSET_DIR_INPUTS})
 
-set(EMBEDDED_ASSET_PACK "${CMAKE_CURRENT_BINARY_DIR}/generated/EmbeddedAssets.pack")
-set(EMBEDDED_ASSET_RESOURCE "${CMAKE_CURRENT_BINARY_DIR}/generated/EmbeddedAssets.rc")
 if(QUATTRO_COMPRESS_EMBEDDED_ASSETS)
     set(EMBEDDED_ASSET_MODE "xpress")
+    set(QUATTRO_COMPRESS_EMBEDDED_ASSETS_VALUE 1)
 else()
     set(EMBEDDED_ASSET_MODE "raw")
+    set(QUATTRO_COMPRESS_EMBEDDED_ASSETS_VALUE 0)
 endif()
+set(EMBEDDED_ASSET_PACK "${CMAKE_CURRENT_BINARY_DIR}/generated/EmbeddedAssets.${EMBEDDED_ASSET_MODE}.pack")
+set(EMBEDDED_ASSET_RESOURCE "${CMAKE_CURRENT_BINARY_DIR}/generated/EmbeddedAssets.${EMBEDDED_ASSET_MODE}.rc")
 configure_file("${CMAKE_CURRENT_SOURCE_DIR}/src/Version.h.in" "${CMAKE_CURRENT_BINARY_DIR}/generated/Version.h" @ONLY)
 configure_file("${CMAKE_CURRENT_SOURCE_DIR}/resources/VersionResource.h.in" "${CMAKE_CURRENT_BINARY_DIR}/generated/VersionResource.h" @ONLY)
 
@@ -385,6 +383,7 @@ add_executable(Quattro WIN32
     src/domain/Config.cpp
     src/domain/TrackedContextMenuProviders.cpp
     src/services/ConfigPackageService.cpp
+    src/services/ContextMenuProviderIconService.cpp
     src/common/EmbeddedAssetInstaller.cpp
     src/common/Elevation.cpp
     src/windows/HotKeyEditor.cpp
@@ -469,6 +468,7 @@ add_executable(QuattroTests
     src/domain/Config.cpp
     src/domain/TrackedContextMenuProviders.cpp
     src/services/ConfigPackageService.cpp
+    src/services/ContextMenuProviderIconService.cpp
     src/services/Launcher.cpp
     src/common/JsonValue.cpp
     src/domain/LinkSorting.cpp
@@ -551,6 +551,7 @@ add_executable(QuattroUiScreenshotAcceptance
     src/windows/BuiltinTools.cpp
     src/windows/ConfirmDialog.cpp
     src/services/ConfigPackageService.cpp
+    src/services/ContextMenuProviderIconService.cpp
     src/windows/HotKeyEditor.cpp
     src/common/JsonValue.cpp
     src/services/Launcher.cpp
@@ -770,7 +771,6 @@ target_link_libraries(QuattroTests PRIVATE
     ccronexpr
     advapi32
     bcrypt
-    cabinet
     comctl32
     gdi32
     ole32
@@ -967,6 +967,7 @@ add_executable(QuattroSettingsHttpButtonsAcceptance
     src/windows/BuiltinTools.cpp
     src/windows/ConfirmDialog.cpp
     src/services/ConfigPackageService.cpp
+    src/services/ContextMenuProviderIconService.cpp
     src/windows/HotKeyEditor.cpp
     src/common/JsonValue.cpp
     src/services/Launcher.cpp
@@ -977,6 +978,7 @@ add_executable(QuattroSettingsHttpButtonsAcceptance
     src/domain/PluginRegistry.cpp
     src/windows/QuickImportDialog.cpp
     src/services/QuickImportService.cpp
+    src/services/ShellContextMenuCacheService.cpp
     src/services/ShellContextMenuRefreshService.cpp
     src/services/ShellItemService.cpp
     src/services/TerminalContextMenuService.cpp
@@ -1071,7 +1073,6 @@ target_link_libraries(Quattro PRIVATE
     ccronexpr
     advapi32
     bcrypt
-    cabinet
     d2d1
     dwrite
     iphlpapi
@@ -1089,6 +1090,21 @@ target_link_libraries(Quattro PRIVATE
     gdi32
     comctl32
 )
+
+target_compile_definitions(Quattro PRIVATE
+    QUATTRO_ENABLE_ASSET_DECOMPRESSION=${QUATTRO_COMPRESS_EMBEDDED_ASSETS_VALUE}
+)
+if(TARGET QuattroTests)
+    target_compile_definitions(QuattroTests PRIVATE
+        QUATTRO_ENABLE_ASSET_DECOMPRESSION=${QUATTRO_COMPRESS_EMBEDDED_ASSETS_VALUE}
+    )
+endif()
+if(QUATTRO_COMPRESS_EMBEDDED_ASSETS)
+    target_link_libraries(Quattro PRIVATE cabinet)
+    if(TARGET QuattroTests)
+        target_link_libraries(QuattroTests PRIVATE cabinet)
+    endif()
+endif()
 
 if(QUATTRO_WITH_WEBDAV_LIBS)
     target_link_libraries(Quattro PRIVATE CURL::libcurl pugixml)

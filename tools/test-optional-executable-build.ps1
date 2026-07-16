@@ -115,15 +115,30 @@ function Build-And-Assert {
 
 New-Item -ItemType Directory -Force -Path $resolvedBuildRoot | Out-Null
 $buildScript = Join-Path $PSScriptRoot "build.ps1"
-$minimalPlan = @(& $buildScript -PlanOnly)
+$defaultPlan = @(& $buildScript -PlanOnly)
+$minimalPlan = @(& $buildScript -Minimal -PlanOnly)
+$x64CompletePlan = @(& $buildScript -Complete -PlanOnly)
 $completePlan = @(& $buildScript -All -PlanOnly)
 if ($minimalPlan -notcontains "architectures=x64" -or
     $minimalPlan -notcontains "bundle_optional_executables=OFF") {
-    throw "Default build.ps1 plan is not a minimal x64 build."
+    throw "build.ps1 -Minimal plan is not a minimal x64 build."
+}
+if ($defaultPlan -notcontains "architectures=x64" -or
+    $defaultPlan -notcontains "bundle_optional_executables=ON" -or
+    $defaultPlan -notcontains "build_marker=DEBUG-All" -or
+    $defaultPlan -notcontains "build_directories=build-vcpkg-x64-complete") {
+    throw "Default build.ps1 plan is not a complete x64 build."
 }
 if ($completePlan -notcontains "architectures=x86,x64" -or
     $completePlan -notcontains "bundle_optional_executables=ON") {
     throw "build.ps1 -All plan is not a complete x86+x64 build."
+}
+if ($x64CompletePlan -notcontains "architectures=x64" -or
+    $x64CompletePlan -contains "architectures=x86,x64" -or
+    $x64CompletePlan -notcontains "bundle_optional_executables=ON" -or
+    $x64CompletePlan -notcontains "build_marker=DEBUG-All" -or
+    $x64CompletePlan -notcontains "build_directories=build-vcpkg-x64-complete") {
+    throw "build.ps1 -Complete plan is not a complete x64 build."
 }
 Build-And-Assert -Name "minimal" -BundleOptionalExecutables $false
 Build-And-Assert -Name "complete" -BundleOptionalExecutables $true

@@ -63,6 +63,7 @@ struct Scenario {
     bool validateContextMenuUninstalledRows = false;
     UINT forcedDpi = USER_DEFAULT_SCREEN_DPI;
     bool validateProcessToolsTableDpi = false;
+    bool waitForContextMenuIconLoad = true;
 };
 
 struct TestState {
@@ -76,6 +77,31 @@ struct TestState {
         }
     }
 };
+
+std::vector<ContextMenuProviderIconInfo> AcceptanceContextMenuProviderIcons(std::stop_token stopToken) {
+    const auto providers = TrackedContextMenuProviders();
+    std::vector<ContextMenuProviderIconInfo> result;
+    result.reserve(providers.size());
+    for (std::size_t index = 0; index < providers.size() && !stopToken.stop_requested(); ++index) {
+        ContextMenuProviderIconInfo info;
+        info.providerId = providers[index].providerId;
+        info.installed = index + 2 < providers.size();
+        info.installedViaProbe = info.installed;
+        info.attempted = info.installed;
+        if (info.installed) {
+            info.icon.width = 32;
+            info.icon.height = 32;
+            info.icon.quality = 1;
+            const std::uint32_t red = static_cast<std::uint32_t>(48 + (index * 37) % 176);
+            const std::uint32_t green = static_cast<std::uint32_t>(64 + (index * 53) % 160);
+            const std::uint32_t blue = static_cast<std::uint32_t>(80 + (index * 29) % 144);
+            const std::uint32_t color = 0xFF000000u | (red << 16) | (green << 8) | blue;
+            info.icon.pixels.assign(32 * 32, color);
+        }
+        result.push_back(std::move(info));
+    }
+    return result;
+}
 
 std::wstring WindowText(HWND hwnd) {
     const int length = GetWindowTextLengthW(hwnd);
@@ -600,6 +626,24 @@ void ValidateAndCapture(HWND hwnd, const Scenario& scenario, const std::filesyst
         if (button != children.end()) {
             SendMessageW(button->hwnd, BM_CLICK, 0, 0);
             RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+            if (scenario.activateButtonText == L"右键菜单" && scenario.waitForContextMenuIconLoad) {
+                for (int elapsed = 0; elapsed < 5000; elapsed += 20) {
+                    bool loading = false;
+                    for (const auto& child : Children(hwnd)) {
+                        if (!IsWindowVisible(child.hwnd) || child.className != L"SysListView32") continue;
+                        const int rowCount = ListView_GetItemCount(child.hwnd);
+                        for (int row = 0; row < rowCount; ++row) {
+                            wchar_t status[64]{};
+                            ListView_GetItemText(child.hwnd, row, 1, status, static_cast<int>(std::size(status)));
+                            loading = loading || std::wstring(status) == L"检测中...";
+                        }
+                    }
+                    if (!loading) break;
+                    Sleep(20);
+                }
+            } else if (scenario.activateButtonText == L"右键菜单") {
+                Sleep(80);
+            }
             children = Children(hwnd);
         }
     }
@@ -787,7 +831,18 @@ void ValidateAndCapture(HWND hwnd, const Scenario& scenario, const std::filesyst
         if (table) {
             int uninstalledRow = -1;
             const int rowCount = ListView_GetItemCount(table);
+            HIMAGELIST images = ListView_GetImageList(table, LVSIL_SMALL);
+            state.Check(images != nullptr && ImageList_GetImageCount(images) > 1,
+                scenario.name + L": context-menu provider image list was not populated");
+            bool foundRealProviderIcon = false;
             for (int row = 0; row < rowCount; ++row) {
+                LVITEMW item{};
+                item.mask = LVIF_IMAGE;
+                item.iItem = row;
+                if (ListView_GetItem(table, &item)) {
+                    state.Check(item.iImage >= 0, scenario.name + L": context-menu row has no image index");
+                    foundRealProviderIcon = foundRealProviderIcon || item.iImage > 0;
+                }
                 wchar_t status[64]{};
                 ListView_GetItemText(table, row, 1, status, static_cast<int>(std::size(status)));
                 if (std::wstring(status) == L"未安装") {
@@ -795,6 +850,7 @@ void ValidateAndCapture(HWND hwnd, const Scenario& scenario, const std::filesyst
                     break;
                 }
             }
+            state.Check(foundRealProviderIcon, scenario.name + L": installed providers did not display real icons");
             state.Check(uninstalledRow >= 0, scenario.name + L": no uninstalled provider row found");
             if (uninstalledRow >= 0) {
                 state.Check(
@@ -1937,12 +1993,39 @@ void RunAdBlockScenario(const std::filesystem::path& outputDir, TestState& state
         HWND pathEdit = ChildById(hwnd, 1210);
         HWND pickPath = ChildById(hwnd, 1211);
         HWND clearResults = ChildById(hwnd, 1217);
+        HWND tabControl = ChildById(hwnd, 1200);
+        HWND contentPanel = ChildById(hwnd, 1203);
         HWND exactMode = ChildById(hwnd, 1213);
         HWND nameMode = ChildById(hwnd, 1214);
         HWND scanTable = ChildById(hwnd, 1215);
         HWND blockButton = ChildById(hwnd, 1216);
-        state.Check(pathEdit && pickPath && clearResults && exactMode && nameMode && scanTable && blockButton,
+        state.Check(pathEdit && pickPath && clearResults && tabControl && contentPanel && exactMode && nameMode && scanTable && blockButton,
             L"ad-block: block page controls are incomplete");
+        state.Check(!pathEdit || (IsWindowVisible(pathEdit) && IsWindowVisible(pickPath) && IsWindowVisible(clearResults)),
+            L"ad-block: connected panel obscured the path action row");
+        if (tabControl && contentPanel) {
+            RECT tabRect{};
+            RECT panelRect{};
+            GetWindowRect(tabControl, &tabRect);
+            GetWindowRect(contentPanel, &panelRect);
+            state.Check(panelRect.top <= tabRect.bottom && tabRect.bottom - panelRect.top <= 3,
+                L"ad-block: connected tabs are not attached to the content panel");
+            state.Check(panelRect.left == tabRect.left && panelRect.right == tabRect.right,
+                L"ad-block: connected tab and content panel widths differ");
+            state.Check(GetWindow(contentPanel, GW_HWNDNEXT) == nullptr,
+                L"ad-block: connected content panel is above page controls in z-order");
+        }
+        if (contentPanel && pathEdit && scanTable) {
+            RECT panelRect{};
+            RECT pathRect{};
+            RECT tableRect{};
+            GetWindowRect(contentPanel, &panelRect);
+            GetWindowRect(pathEdit, &pathRect);
+            GetWindowRect(scanTable, &tableRect);
+            state.Check(pathRect.left > panelRect.left && pathRect.right < panelRect.right &&
+                    tableRect.left > panelRect.left && tableRect.right < panelRect.right,
+                L"ad-block: connected content controls do not respect panel insets");
+        }
         state.Check(pickPath && WindowText(pickPath) == L"选择",
             L"ad-block: merged file and folder entry label is incorrect");
         state.Check(clearResults && WindowText(clearResults) == L"Clear",
@@ -2121,21 +2204,51 @@ void RunAdBlockScenario(const std::filesystem::path& outputDir, TestState& state
             UpdateWindow(dpiWindow);
             HWND exactMode = ChildById(dpiWindow, 1213);
             HWND nameMode = ChildById(dpiWindow, 1214);
+            HWND tabControl = ChildById(dpiWindow, 1200);
+            HWND contentPanel = ChildById(dpiWindow, 1203);
             HWND pathEdit = ChildById(dpiWindow, 1210);
             HWND pickPath = ChildById(dpiWindow, 1211);
             HWND clearResults = ChildById(dpiWindow, 1217);
+            HWND scanTable = ChildById(dpiWindow, 1215);
             HWND blockButton = ChildById(dpiWindow, 1216);
-            state.Check(exactMode && nameMode && pathEdit && pickPath && clearResults && blockButton,
+            state.Check(exactMode && nameMode && tabControl && contentPanel && pathEdit && pickPath && clearResults && scanTable && blockButton,
                 L"ad-block: DPI action row controls are incomplete");
+            if (tabControl && contentPanel) {
+                RECT tabRect{};
+                RECT panelRect{};
+                GetWindowRect(tabControl, &tabRect);
+                GetWindowRect(contentPanel, &panelRect);
+                state.Check(panelRect.top <= tabRect.bottom && tabRect.bottom - panelRect.top <= 5,
+                    L"ad-block: DPI connected tabs detached from the content panel");
+                state.Check(panelRect.left == tabRect.left && panelRect.right == tabRect.right,
+                    L"ad-block: DPI connected tab and panel widths differ");
+            }
             if (pathEdit && clearResults && pickPath) {
                 RECT pathRect{};
                 RECT clearRect{};
                 RECT pickRect{};
+                RECT tableRect{};
                 GetWindowRect(pathEdit, &pathRect);
                 GetWindowRect(clearResults, &clearRect);
                 GetWindowRect(pickPath, &pickRect);
+                GetWindowRect(scanTable, &tableRect);
                 state.Check(pathRect.right < clearRect.left && clearRect.right < pickRect.left,
                     L"ad-block: DPI path row controls overlap or are out of order");
+                state.Check(pathRect.bottom <= tableRect.top && clearRect.bottom <= tableRect.top && pickRect.bottom <= tableRect.top,
+                    L"ad-block: DPI connected panel moved the path row behind the result table");
+                bool visibleEditFrame = false;
+                for (const auto& child : Children(dpiWindow)) {
+                    if (child.className != L"QuattroThemedEditFrame" || !IsWindowVisible(child.hwnd)) continue;
+                    RECT frameRect{};
+                    GetWindowRect(child.hwnd, &frameRect);
+                    if (frameRect.left <= pathRect.left && frameRect.right >= pathRect.right &&
+                            frameRect.top <= pathRect.top && frameRect.bottom >= pathRect.bottom) {
+                        visibleEditFrame = true;
+                        break;
+                    }
+                }
+                state.Check(visibleEditFrame,
+                    L"ad-block: DPI path edit lost its public themed frame before the window became visible");
             }
             if (exactMode && nameMode && blockButton) {
                 RECT exactRect{};
@@ -2470,6 +2583,8 @@ int wmain() {
         settingsScenario.expectedTooltipText =
             L"恢复跟踪开关默认值，并清除全部菜单列表、状态与图标缓存。";
         settingsScenario.tooltipScreenshotName = L"settings-dialog-右键菜单-tooltip.png";
+        settingsScenario.validateContextMenuUninstalledRows = true;
+        std::atomic_int automaticIconLoads{0};
         RunDialogScenario(
             settingsScenario,
             outputDir,
@@ -2477,8 +2592,80 @@ int wmain() {
             [&]() {
                 bool imported = false;
                 const std::filesystem::path baseDirectory = std::filesystem::current_path();
-                ShowSettingsDialog(owner, instance, config, theme, baseDirectory, baseDirectory, &imported);
+                ShowSettingsDialog(
+                    owner, instance, config, theme, baseDirectory, baseDirectory, &imported,
+                    nullptr, false, false, false, {}, {}, {}, {}, {},
+                    [&](std::stop_token stopToken) {
+                        ++automaticIconLoads;
+                        return AcceptanceContextMenuProviderIcons(stopToken);
+                    });
             });
+        state.Check(automaticIconLoads.load() == 1,
+            L"settings context-menu page should request provider icons exactly once per dialog");
+
+        for (UINT dpi : {120u, 144u}) {
+            Scenario dpiScenario = settingsScenario;
+            const std::wstring suffix = DpiPercentSuffix(dpi);
+            dpiScenario.name = L"settings-dialog-右键菜单-" + suffix;
+            dpiScenario.screenshotName = L"settings-dialog-右键菜单-" + suffix + L".png";
+            dpiScenario.forcedDpi = dpi;
+            dpiScenario.hoverButtonText.clear();
+            dpiScenario.expectedTooltipText.clear();
+            dpiScenario.tooltipScreenshotName.clear();
+            RunDialogScenario(
+                dpiScenario,
+                outputDir,
+                state,
+                [&]() {
+                    bool imported = false;
+                    const std::filesystem::path baseDirectory = std::filesystem::current_path();
+                    ShowSettingsDialog(
+                        owner, instance, config, theme, baseDirectory, baseDirectory, &imported,
+                        nullptr, false, false, false, {}, {}, {}, {}, {},
+                        AcceptanceContextMenuProviderIcons);
+                });
+        }
+
+        Scenario nonBlockingScenario{
+            L"settings-context-menu-icon-loading-close",
+            L"QuattroSettingsDialog",
+            L"设置",
+            L"settings-context-menu-icon-loading.png",
+            {L"设置", L"确定", L"取消"},
+            {},
+            0,
+            2,
+            false,
+            false,
+            true,
+            {L"自动跟踪", L"缓存维护", L"获取图标中..."},
+            L"右键菜单"};
+        nonBlockingScenario.waitForContextMenuIconLoad = false;
+        std::atomic_bool slowIconRunnerStarted{false};
+        std::chrono::milliseconds closeDuration{};
+        RunDialogScenario(
+            nonBlockingScenario,
+            outputDir,
+            state,
+            [&]() {
+                bool imported = false;
+                const std::filesystem::path baseDirectory = std::filesystem::current_path();
+                const auto started = std::chrono::steady_clock::now();
+                ShowSettingsDialog(
+                    owner, instance, config, theme, baseDirectory, baseDirectory, &imported,
+                    nullptr, false, false, false, {}, {}, {}, {}, {},
+                    [&](std::stop_token) {
+                        slowIconRunnerStarted = true;
+                        std::this_thread::sleep_for(std::chrono::seconds(2));
+                        return AcceptanceContextMenuProviderIcons({});
+                    });
+                closeDuration = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - started);
+            });
+        state.Check(slowIconRunnerStarted.load(),
+            L"settings context-menu slow icon runner did not start");
+        state.Check(closeDuration < std::chrono::milliseconds(1500),
+            L"settings context-menu close waited for the background icon runner");
 
         AppConfig refreshConfig = config;
         refreshConfig.trackGitContextMenu = true;
@@ -2543,7 +2730,8 @@ int wmain() {
                     delayedRefresh,
                     [&](const ShellContextMenuRefreshResult&) {
                         refreshApplied = true;
-                    });
+                    },
+                    AcceptanceContextMenuProviderIcons);
             });
         state.Check(refreshApplied.load(), L"settings context menu refresh result was not applied on completion");
 
@@ -2731,7 +2919,10 @@ int wmain() {
             [&]() {
                 bool imported = false;
                 const std::filesystem::path baseDirectory = std::filesystem::current_path();
-                ShowSettingsDialog(owner, instance, config, theme, baseDirectory, baseDirectory, &imported);
+                ShowSettingsDialog(
+                    owner, instance, config, theme, baseDirectory, baseDirectory, &imported,
+                    nullptr, false, false, false, {}, {}, {}, {}, {},
+                    AcceptanceContextMenuProviderIcons);
             });
     }
 

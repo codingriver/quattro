@@ -2,6 +2,7 @@
 
 #include "ThemedUi.h"
 
+#include <functional>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -116,6 +117,7 @@ public:
     void HideToast() override;
     void FillBackground(HDC dc) const;
     void InvalidateEditFrame(HWND child) const;
+    void SetDpiChangedCallback(std::function<void(UINT)> callback);
 
 private:
     struct EditFrame {
@@ -181,6 +183,7 @@ private:
     bool ownerRestored_ = false;
     std::vector<EditFrame> editFrames_;
     std::vector<TableFrame> tableFrames_;
+    std::function<void(UINT)> dpiChangedCallback_;
     HWND tooltip_ = nullptr;
     std::wstring tooltipText_;
     ThemedTooltipOptions tooltipOptions_{};

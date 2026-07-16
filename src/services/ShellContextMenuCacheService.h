@@ -3,6 +3,7 @@
 #include "ShellItemService.h"
 
 #include <filesystem>
+#include <optional>
 #include <unordered_map>
 #include <vector>
 
@@ -27,6 +28,8 @@ public:
     std::vector<ShellContextMenuItem> ItemsFor(
         const Link& link,
         const ShellContextMenuTrackingOptions& tracking) const;
+    std::optional<ShellContextMenuCachedIcon> BestIconForProvider(
+        const std::wstring& providerId) const;
     void Update(
         const Link& link,
         const ShellContextMenuSnapshot& snapshot,

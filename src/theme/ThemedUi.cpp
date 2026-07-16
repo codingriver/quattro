@@ -368,7 +368,9 @@ LRESULT CALLBACK PanelRuntimeProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM
             return 0;
         }
     }
-    if (message == WM_SIZE) ApplyPanelScroll(hwnd);
+    if (message == WM_SIZE && it != PanelStates().end() && it->second.scrollable) {
+        ApplyPanelScroll(hwnd);
+    }
     if (message == WM_NCDESTROY) {
         PanelStates().erase(hwnd);
         RemoveWindowSubclass(hwnd, PanelRuntimeProc, id);
@@ -1177,6 +1179,8 @@ HWND ThemedUi::Panel(int id, RECT frame, ThemedPanelOptions options) const {
     HWND panel = BindTheme(ThemedControls::CreatePanel(
         instance_, parent_, id, frame, font_, theme_, PanelRoleState(options.role), options.scrollable));
     if (!panel) return nullptr;
+    SetWindowPos(panel, HWND_BOTTOM, 0, 0, 0, 0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     auto& runtime = PanelStates()[panel];
     runtime.theme = &theme_;
     runtime.role = options.role;
@@ -1216,6 +1220,8 @@ void ThemedUi::BindPanelChildren(HWND panel, const std::vector<HWND>& children) 
         ShowWindow(child, it->second.visible ? SW_SHOWNA : SW_HIDE);
     }
     ApplyPanelScroll(panel);
+    SetWindowPos(panel, HWND_BOTTOM, 0, 0, 0, 0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
 }
 
 void ThemedUi::SetPanelEnabled(HWND panel, bool enabled) {

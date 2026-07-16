@@ -22,6 +22,7 @@
 #include "ThemedWindowUi.h"
 #include "TodoEditDialog.h"
 #include "TodoSchedule.h"
+#include "ToastFeedback.h"
 #include "UpdateCheckService.h"
 #include "UpdateCheckDialog.h"
 #include "UpdateDownloadDialog.h"
@@ -2688,13 +2689,20 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         SetDragOver(false);
         HDROP drop = reinterpret_cast<HDROP>(wParam);
         const UINT count = DragQueryFileW(drop, 0xFFFFFFFF, nullptr, 0);
+        int importedCount = 0;
+        int failedCount = 0;
         for (UINT i = 0; i < count; ++i) {
             const UINT length = DragQueryFileW(drop, i, nullptr, 0);
             std::wstring path(length, L'\0');
             DragQueryFileW(drop, i, path.data(), length + 1);
-            ImportPath(path);
+            if (ImportPath(path, false)) {
+                ++importedCount;
+            } else {
+                ++failedCount;
+            }
         }
         DragFinish(drop);
+        ShowImportFeedback(importedCount, failedCount);
         InvalidateRect(hwnd_, nullptr, FALSE);
         return 0;
     }
@@ -3131,9 +3139,13 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         case ID_MENU_REPAIR_LINK:
             if (Link* link = FindLink(CommandLinkId())) {
                 if (TryRepairLinkTarget(*link)) {
-                    storageService_.UpdateLink(*link);
-                    RegisterConfiguredHotKeys();
-                    InvalidateRect(hwnd_, nullptr, FALSE);
+                    if (!storageService_.UpdateLink(*link)) {
+                        MessageBoxW(hwnd_, storageService_.lastError().c_str(), L"修复启动项", MB_OK | MB_ICONWARNING);
+                    } else {
+                        RegisterConfiguredHotKeys();
+                        InvalidateRect(hwnd_, nullptr, FALSE);
+                        ShowToast(L"“" + link->name + L"”的目标已更新，可以重新启动。", ThemedToastRole::Success);
+                    }
                 }
             }
             return 0;
@@ -3577,6 +3589,20 @@ void MainWindow::DeleteGroup(int groupId) {
         MessageBoxW(hwnd_, storageService_.lastError().c_str(), L"删除分组", MB_OK | MB_ICONWARNING);
         return;
     }
+    const std::wstring deletedName = group->name;
+    std::unordered_set<int> deletedTagIds;
+    for (const Group& item : model_.groups) {
+        if (item.parentGroup == groupId) {
+            deletedTagIds.insert(item.id);
+        }
+    }
+    const int deletedContentCount = static_cast<int>(std::count_if(model_.links.begin(), model_.links.end(), [&](const Link& link) {
+        return deletedTagIds.contains(link.parentGroup);
+    }) + std::count_if(model_.notes.begin(), model_.notes.end(), [&](const NotePage& note) {
+        return deletedTagIds.contains(note.tagId);
+    }) + std::count_if(model_.todos.begin(), model_.todos.end(), [&](const TodoItem& item) {
+        return deletedTagIds.contains(item.tagId);
+    }));
     model_.links.erase(std::remove_if(model_.links.begin(), model_.links.end(), [&](const Link& link) {
         Group* tag = FindGroup(link.parentGroup);
         return tag && tag->parentGroup == groupId;
@@ -3595,6 +3621,11 @@ void MainWindow::DeleteGroup(int groupId) {
     RegisterConfiguredHotKeys();
     SelectInitialItems();
     InvalidateRect(hwnd_, nullptr, FALSE);
+    ShowToast(
+        L"已删除分组“" + deletedName + L"”（" + std::to_wstring(deletedTagIds.size()) +
+            L" 个标签、" + std::to_wstring(deletedContentCount) + L" 项内容）。",
+        ThemedToastRole::Info,
+        5000);
 }
 
 void MainWindow::AddTag() {
@@ -3726,6 +3757,11 @@ void MainWindow::DeleteTag(int tagId) {
         MessageBoxW(hwnd_, storageService_.lastError().c_str(), L"删除标签", MB_OK | MB_ICONWARNING);
         return;
     }
+    const std::wstring deletedName = tag->name;
+    const int deletedContentCount = static_cast<int>(
+        std::count_if(model_.links.begin(), model_.links.end(), [tagId](const Link& link) { return link.parentGroup == tagId; }) +
+        std::count_if(model_.notes.begin(), model_.notes.end(), [tagId](const NotePage& note) { return note.tagId == tagId; }) +
+        std::count_if(model_.todos.begin(), model_.todos.end(), [tagId](const TodoItem& item) { return item.tagId == tagId; }));
     model_.links.erase(std::remove_if(model_.links.begin(), model_.links.end(), [tagId](const Link& link) {
         return link.parentGroup == tagId;
     }), model_.links.end());
@@ -3741,6 +3777,9 @@ void MainWindow::DeleteTag(int tagId) {
     RegisterConfiguredHotKeys();
     SelectInitialItems();
     InvalidateRect(hwnd_, nullptr, FALSE);
+    ShowToast(
+        L"已删除标签“" + deletedName + L"”（" + std::to_wstring(deletedContentCount) + L" 项内容）。",
+        ThemedToastRole::Info);
 }
 
 void MainWindow::SetCurrentTagSort(int sort) {
@@ -3846,6 +3885,7 @@ void MainWindow::SetAllTagsSort(int sort) {
     }
     const int targetDirection = sort == 0 ? 0 :
         (hasSameAutoSort && allSameAutoDirection ? (currentDirection == 0 ? 1 : 0) : DefaultLinkSortDirection(sort));
+    int updatedCount = 0;
     for (Group& tag : model_.groups) {
         if (tag.parentGroup == 0) {
             continue;
@@ -3858,11 +3898,14 @@ void MainWindow::SetAllTagsSort(int sort) {
             return;
         }
         tag = edited;
+        ++updatedCount;
     }
     InvalidateRect(hwnd_, nullptr, FALSE);
+    ShowToast(L"已统一 " + std::to_wstring(updatedCount) + L" 个标签的排序方式。", ThemedToastRole::Success);
 }
 
 void MainWindow::SetAllTagsLayout(int layout) {
+    int updatedCount = 0;
     for (Group& tag : model_.groups) {
         if (tag.parentGroup == 0) {
             continue;
@@ -3874,9 +3917,13 @@ void MainWindow::SetAllTagsLayout(int layout) {
             return;
         }
         tag = edited;
+        ++updatedCount;
     }
     linkScrollOffset_ = 0.0f;
     InvalidateRect(hwnd_, nullptr, FALSE);
+    ShowToast(
+        L"已将 " + std::to_wstring(updatedCount) + L" 个标签统一为" + (layout == 0 ? L"列表" : L"平铺") + L"视图。",
+        ThemedToastRole::Success);
 }
 
 void MainWindow::SetAllTagsIconSize(int iconSize) {
@@ -3887,6 +3934,7 @@ void MainWindow::SetAllTagsIconSize(int iconSize) {
         normalized = 48;
     }
 
+    int updatedCount = 0;
     for (Group& tag : model_.groups) {
         if (tag.parentGroup == 0) {
             continue;
@@ -3898,9 +3946,14 @@ void MainWindow::SetAllTagsIconSize(int iconSize) {
             return;
         }
         tag = edited;
+        ++updatedCount;
     }
     linkScrollOffset_ = 0.0f;
     InvalidateRect(hwnd_, nullptr, FALSE);
+    const wchar_t* sizeText = normalized == 24 ? L"小" : (normalized == 48 ? L"大" : L"中等");
+    ShowToast(
+        L"已将 " + std::to_wstring(updatedCount) + L" 个标签统一为" + sizeText + L"图标。",
+        ThemedToastRole::Success);
 }
 
 void MainWindow::ToggleConfigVisibility(bool AppConfig::*field) {
@@ -4593,6 +4646,7 @@ void MainWindow::RunLink(int linkId) {
             } else {
                 RegisterConfiguredHotKeys();
                 InvalidateRect(hwnd_, nullptr, FALSE);
+                ShowToast(L"“" + link->name + L"”的目标已更新，可以重新启动。", ThemedToastRole::Success);
             }
         }
         return;
@@ -4791,6 +4845,7 @@ void MainWindow::ClearCurrentTagLinks() {
         }
     }
     if (linkIds.empty()) {
+        ShowToast(L"当前页面没有可清空的应用。", ThemedToastRole::Info);
         return;
     }
     std::wstring message = L"确定清空“" + tag->name + L"”中的全部应用？";
@@ -4812,6 +4867,9 @@ void MainWindow::ClearCurrentTagLinks() {
     }
     RegisterConfiguredHotKeys();
     InvalidateRect(hwnd_, nullptr, FALSE);
+    ShowToast(
+        L"已清空“" + tag->name + L"”中的 " + std::to_wstring(linkIds.size()) + L" 个应用。",
+        ThemedToastRole::Info);
 }
 
 void MainWindow::AddTodoItem() {
@@ -4877,6 +4935,7 @@ void MainWindow::DeleteTodoItem(int todoId) {
         MessageBoxW(hwnd_, storageService_.lastError().c_str(), L"删除待办事项", MB_OK | MB_ICONWARNING);
         return;
     }
+    const std::wstring deletedTitle = item->title;
     model_.todos.erase(std::remove_if(model_.todos.begin(), model_.todos.end(), [todoId](const TodoItem& item) {
         return item.id == todoId;
     }), model_.todos.end());
@@ -4884,6 +4943,7 @@ void MainWindow::DeleteTodoItem(int todoId) {
         selectedTodoId_ = 0;
     }
     InvalidateRect(hwnd_, nullptr, FALSE);
+    ShowToast(L"已删除待办“" + deletedTitle + L"”。", ThemedToastRole::Info);
 }
 
 void MainWindow::ToggleTodoDone(int todoId) {
@@ -4937,6 +4997,9 @@ void MainWindow::ToggleTodoEnabled(int todoId) {
         CheckTodoReminders();
     }
     InvalidateRect(hwnd_, nullptr, FALSE);
+    ShowToast(
+        enable ? (L"已启用“" + item->title + L"”的提醒。") : (L"已暂停“" + item->title + L"”的提醒。"),
+        enable ? ThemedToastRole::Success : ThemedToastRole::Info);
 }
 
 void MainWindow::ClearDoneTodos() {
@@ -4951,6 +5014,7 @@ void MainWindow::ClearDoneTodos() {
         }
     }
     if (doneIds.empty()) {
+        ShowToast(L"没有已完成的待办事项。", ThemedToastRole::Info);
         return;
     }
     if (MessageBoxW(hwnd_, L"确定清空已完成待办事项？", L"清空已完成", MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) != IDYES) {
@@ -5113,15 +5177,17 @@ void MainWindow::ShowTodoSystemNotification(const TodoItem& item) {
     Shell_NotifyIconW(NIM_MODIFY, &data);
 }
 
-void MainWindow::ShowClipboardImportNotification(int count, const std::wstring& pathDetail) {
-    if (count <= 0) {
+void MainWindow::ShowClipboardImportNotification(int count, int failedCount, const std::wstring& pathDetail) {
+    if (count <= 0 && failedCount <= 0) {
         return;
     }
-    const std::wstring body = pathDetail.empty()
-        ? (count == 1 ? L"剪贴板内容已添加到当前标签。" : L"已从剪贴板导入多个启动项。")
+    const Group* tag = FindGroup(currentTagId_);
+    const ImportToastSummary summary{count, failedCount};
+    const std::wstring body = pathDetail.empty() || failedCount > 0
+        ? ImportToastText(summary, tag ? tag->name : L"")
         : LimitNotificationText(pathDetail, 255);
     if (IsWindowVisible(hwnd_)) {
-        ShowToast(body, ThemedToastRole::Success);
+        ShowToast(body, ImportToastRole(summary), failedCount > 0 ? 5000 : 0);
         return;
     }
     if (!EnsureNotificationIcon()) {
@@ -5133,8 +5199,8 @@ void MainWindow::ShowClipboardImportNotification(int count, const std::wstring& 
     data.hWnd = hwnd_;
     data.uID = kTrayIconId;
     data.uFlags = NIF_INFO;
-    data.dwInfoFlags = NIIF_INFO;
-    const std::wstring title = L"已添加启动项";
+    data.dwInfoFlags = failedCount > 0 ? NIIF_WARNING : NIIF_INFO;
+    const std::wstring title = failedCount > 0 ? L"导入启动项未全部完成" : L"已添加启动项";
     wcscpy_s(data.szInfoTitle, LimitNotificationText(title, 63).c_str());
     wcscpy_s(data.szInfo, body.c_str());
     Shell_NotifyIconW(NIM_MODIFY, &data);
@@ -5243,6 +5309,7 @@ void MainWindow::OpenSettings() {
         return;
     }
     CommitSettingsConfig(next, importedData);
+    ShowToast(importedData ? L"设置和导入数据已保存。" : L"设置已保存。", ThemedToastRole::Success);
 }
 
 void MainWindow::CommitSettingsConfig(const AppConfig& next, bool importedData) {
@@ -5403,6 +5470,7 @@ void MainWindow::ResetLayoutToDefaults() {
         SWP_SHOWWINDOW);
     ActivateWindow(hwnd_);
     InvalidateRect(hwnd_, nullptr, FALSE);
+    ShowToast(L"窗口布局已恢复默认。", ThemedToastRole::Success);
 }
 
 void MainWindow::ClearIconCache() {
@@ -5416,6 +5484,7 @@ void MainWindow::ClearIconCache() {
 }
 
 void MainWindow::RefreshAllIcons() {
+    BeginResourceRefresh(L"全部启动项");
     std::unordered_set<int> ordinaryTagIds;
     for (const auto& tag : model_.groups) {
         if (IsOrdinaryTag(tag)) {
@@ -5428,27 +5497,37 @@ void MainWindow::RefreshAllIcons() {
         terminalContext = TerminalContextMenuService::DetectAvailablePrograms();
         terminalContextPtr = &terminalContext;
     }
+    int completed = 0;
+    int pending = 0;
+    int failed = 0;
     for (auto& link : model_.links) {
         if (ordinaryTagIds.contains(link.parentGroup) && !BuiltinSystemFunctionForLink(link)) {
-            RefreshLinkResources(link, terminalContextPtr);
+            switch (RefreshLinkResources(link, terminalContextPtr)) {
+            case LinkResourceRefreshState::Complete: ++completed; break;
+            case LinkResourceRefreshState::Pending: ++pending; break;
+            case LinkResourceRefreshState::Failed: ++failed; break;
+            }
         }
     }
     InvalidateRect(hwnd_, nullptr, FALSE);
-    ShowToast(L"已刷新全部图标。", ThemedToastRole::Success);
+    CompleteResourceRefreshStart(completed, pending, failed);
 }
 
-void MainWindow::RefreshLinkResources(
+MainWindow::LinkResourceRefreshState MainWindow::RefreshLinkResources(
     Link& link,
     const TerminalContextMenuRefreshContext* terminalContext) {
     if (IsUrlLink(link)) {
         shellContextMenuCache_.Remove(link.id);
-        urlIconDownloadService_.RequestManualRefresh(hwnd_, WM_QUATTRO_URL_ICON_DOWNLOADED, link);
-        return;
+        if (urlIconDownloadService_.RequestManualRefresh(hwnd_, WM_QUATTRO_URL_ICON_DOWNLOADED, link)) {
+            pendingUrlIconRefreshIds_.insert(link.id);
+            return LinkResourceRefreshState::Pending;
+        }
+        return LinkResourceRefreshState::Failed;
     }
-    iconService_.RefreshDiskCache(link);
+    bool success = iconService_.RefreshDiskCache(link);
     const ShellContextMenuTrackingOptions tracking = TrackedShellMenuOptions();
     if (!tracking.Any()) {
-        return;
+        return success ? LinkResourceRefreshState::Complete : LinkResourceRefreshState::Failed;
     }
     ShellContextMenuTrackingOptions nativeTracking = tracking;
     nativeTracking.terminal = false;
@@ -5456,6 +5535,8 @@ void MainWindow::RefreshLinkResources(
         ShellContextMenuSnapshot snapshot;
         if (ShellItemService::QueryTrackedContextMenu(hwnd_, link, nativeTracking, snapshot)) {
             shellContextMenuCache_.Update(link, snapshot, nativeTracking);
+        } else {
+            success = false;
         }
     }
     if (tracking.terminal) {
@@ -5471,6 +5552,50 @@ void MainWindow::RefreshLinkResources(
         terminalSnapshot.items = TerminalContextMenuService::ItemsFor(link, *terminalContext);
         shellContextMenuCache_.Update(link, terminalSnapshot, terminalOnly);
     }
+    return success ? LinkResourceRefreshState::Complete : LinkResourceRefreshState::Failed;
+}
+
+void MainWindow::BeginResourceRefresh(const std::wstring& scopeText) {
+    pendingUrlIconRefreshIds_.clear();
+    pendingResourceRefreshScope_ = scopeText;
+    pendingResourceRefreshCompleted_ = 0;
+    pendingResourceRefreshFailed_ = 0;
+    ShowToast(L"正在刷新" + scopeText + L"…", ThemedToastRole::Info, 5000);
+}
+
+void MainWindow::CompleteResourceRefreshStart(int completed, int pending, int failed) {
+    pendingResourceRefreshCompleted_ = completed;
+    pendingResourceRefreshFailed_ = failed;
+    if (pending <= 0) {
+        ShowResourceRefreshResult(completed, failed);
+        return;
+    }
+    std::wstring message = L"正在刷新" + pendingResourceRefreshScope_ + L"：" + std::to_wstring(pending) + L" 个网址图标在后台处理";
+    if (completed > 0) {
+        message += L"，" + std::to_wstring(completed) + L" 项已处理";
+    }
+    if (failed > 0) {
+        message += L"，" + std::to_wstring(failed) + L" 项未能开始";
+    }
+    message += L"。";
+    ShowToast(message, failed > 0 ? ThemedToastRole::Warning : ThemedToastRole::Info, 5000);
+}
+
+void MainWindow::ShowResourceRefreshResult(int completed, int failed) {
+    if (completed <= 0 && failed <= 0) {
+        ShowToast(pendingResourceRefreshScope_ + L"中没有需要刷新的启动项。", ThemedToastRole::Info);
+        return;
+    }
+    if (failed <= 0) {
+        ShowToast(
+            L"已刷新" + pendingResourceRefreshScope_ + L"（" + std::to_wstring(completed) + L" 项）。",
+            ThemedToastRole::Success);
+        return;
+    }
+    ShowToast(
+        L"已刷新 " + std::to_wstring(completed) + L" 项，" + std::to_wstring(failed) + L" 项失败。",
+        ThemedToastRole::Warning,
+        5000);
 }
 
 void MainWindow::RefreshTagLinks(int tagId) {
@@ -5478,18 +5603,27 @@ void MainWindow::RefreshTagLinks(int tagId) {
     if (!tag || !IsOrdinaryTag(*tag)) {
         return;
     }
+    BeginResourceRefresh(L"标签“" + tag->name + L"”");
     TerminalContextMenuRefreshContext terminalContext;
     const TerminalContextMenuRefreshContext* terminalContextPtr = nullptr;
     if (config_.trackTerminalContextMenu) {
         terminalContext = TerminalContextMenuService::DetectAvailablePrograms();
         terminalContextPtr = &terminalContext;
     }
+    int completed = 0;
+    int pending = 0;
+    int failed = 0;
     for (auto& link : model_.links) {
         if (link.parentGroup == tagId && !BuiltinSystemFunctionForLink(link)) {
-            RefreshLinkResources(link, terminalContextPtr);
+            switch (RefreshLinkResources(link, terminalContextPtr)) {
+            case LinkResourceRefreshState::Complete: ++completed; break;
+            case LinkResourceRefreshState::Pending: ++pending; break;
+            case LinkResourceRefreshState::Failed: ++failed; break;
+            }
         }
     }
     InvalidateRect(hwnd_, nullptr, FALSE);
+    CompleteResourceRefreshStart(completed, pending, failed);
 }
 
 void MainWindow::RefreshGroupLinks(int groupId) {
@@ -5497,6 +5631,7 @@ void MainWindow::RefreshGroupLinks(int groupId) {
     if (!group || group->parentGroup != 0) {
         return;
     }
+    BeginResourceRefresh(L"分组“" + group->name + L"”");
     std::unordered_set<int> ordinaryTagIds;
     for (const auto& tag : model_.groups) {
         if (tag.parentGroup == groupId && IsOrdinaryTag(tag)) {
@@ -5509,12 +5644,20 @@ void MainWindow::RefreshGroupLinks(int groupId) {
         terminalContext = TerminalContextMenuService::DetectAvailablePrograms();
         terminalContextPtr = &terminalContext;
     }
+    int completed = 0;
+    int pending = 0;
+    int failed = 0;
     for (auto& link : model_.links) {
         if (ordinaryTagIds.contains(link.parentGroup) && !BuiltinSystemFunctionForLink(link)) {
-            RefreshLinkResources(link, terminalContextPtr);
+            switch (RefreshLinkResources(link, terminalContextPtr)) {
+            case LinkResourceRefreshState::Complete: ++completed; break;
+            case LinkResourceRefreshState::Pending: ++pending; break;
+            case LinkResourceRefreshState::Failed: ++failed; break;
+            }
         }
     }
     InvalidateRect(hwnd_, nullptr, FALSE);
+    CompleteResourceRefreshStart(completed, pending, failed);
 }
 
 void MainWindow::RefreshLinkIcon(int linkId) {
@@ -5522,8 +5665,13 @@ void MainWindow::RefreshLinkIcon(int linkId) {
     if (!link) {
         return;
     }
-    RefreshLinkResources(*link);
+    BeginResourceRefresh(L"“" + link->name + L"”");
+    const LinkResourceRefreshState state = RefreshLinkResources(*link);
     InvalidateRect(hwnd_, nullptr, FALSE);
+    CompleteResourceRefreshStart(
+        state == LinkResourceRefreshState::Complete ? 1 : 0,
+        state == LinkResourceRefreshState::Pending ? 1 : 0,
+        state == LinkResourceRefreshState::Failed ? 1 : 0);
 }
 
 void MainWindow::RequestInitialUrlIconDownload(const Link& link) {
@@ -5533,12 +5681,25 @@ void MainWindow::RequestInitialUrlIconDownload(const Link& link) {
 }
 
 void MainWindow::OnUrlIconDownloaded(int linkId, bool success) {
-    if (!success) {
+    bool refreshed = success;
+    if (success) {
+        if (Link* link = FindLink(linkId)) {
+            refreshed = iconService_.RefreshDiskCache(*link);
+        } else {
+            refreshed = false;
+        }
+        InvalidateRect(hwnd_, nullptr, FALSE);
+    }
+    if (pendingUrlIconRefreshIds_.erase(linkId) == 0) {
         return;
     }
-    if (Link* link = FindLink(linkId)) {
-        iconService_.RefreshDiskCache(*link);
-        InvalidateRect(hwnd_, nullptr, FALSE);
+    if (refreshed) {
+        ++pendingResourceRefreshCompleted_;
+    } else {
+        ++pendingResourceRefreshFailed_;
+    }
+    if (pendingUrlIconRefreshIds_.empty()) {
+        ShowResourceRefreshResult(pendingResourceRefreshCompleted_, pendingResourceRefreshFailed_);
     }
 }
 
@@ -6022,13 +6183,13 @@ bool MainWindow::IsNearDockEdge(POINT screenPoint) const {
     return PtInRect(&window, screenPoint) != FALSE;
 }
 
-void MainWindow::ImportPath(const std::wstring& path) {
+bool MainWindow::ImportPath(const std::wstring& path, bool showError) {
     const std::wstring trimmed = Trim(path);
     if (trimmed.empty()) {
-        return;
+        return false;
     }
     if (EnsureCurrentTag() <= 0) {
-        return;
+        return false;
     }
     Link link;
     link.path = trimmed;
@@ -6069,17 +6230,38 @@ void MainWindow::ImportPath(const std::wstring& path) {
         EnsureGroupVisible(currentGroupId_);
         EnsureTagVisible(currentTagId_);
         EnsureLinkVisible(selectedLinkId_);
+        return true;
     } else {
-        MessageBoxW(hwnd_, storageService_.lastError().c_str(), L"导入启动项", MB_OK | MB_ICONWARNING);
+        if (showError) {
+            MessageBoxW(hwnd_, storageService_.lastError().c_str(), L"导入启动项", MB_OK | MB_ICONWARNING);
+        } else {
+            WriteAppLog(L"导入启动项失败：" + trimmed + L" - " + storageService_.lastError());
+        }
+        return false;
     }
+}
+
+void MainWindow::ShowImportFeedback(int succeeded, int failed) {
+    if (succeeded <= 0 && failed <= 0) {
+        ShowToast(L"没有可添加的内容。", ThemedToastRole::Info);
+        return;
+    }
+    const Group* tag = FindGroup(currentTagId_);
+    const ImportToastSummary summary{succeeded, failed};
+    ShowToast(
+        ImportToastText(summary, tag ? tag->name : L""),
+        ImportToastRole(summary),
+        failed > 0 ? 5000 : 0);
 }
 
 void MainWindow::ImportClipboard() {
     if (!OpenClipboardWithRetry(hwnd_)) {
+        ShowToast(L"无法读取剪贴板，请稍后重试。", ThemedToastRole::Warning);
         return;
     }
     HANDLE handle = GetClipboardData(CF_HDROP);
     int importedCount = 0;
+    int failedCount = 0;
     if (handle) {
         HDROP drop = static_cast<HDROP>(handle);
         const UINT count = DragQueryFileW(drop, 0xFFFFFFFF, nullptr, 0);
@@ -6087,27 +6269,35 @@ void MainWindow::ImportClipboard() {
             const UINT length = DragQueryFileW(drop, i, nullptr, 0);
             std::wstring path(length, L'\0');
             DragQueryFileW(drop, i, path.data(), length + 1);
-            ImportPath(path);
-            importedCount += 1;
+            if (ImportPath(path, false)) {
+                ++importedCount;
+            } else {
+                ++failedCount;
+            }
         }
     }
 
-    if (importedCount == 0) {
+    if (importedCount == 0 && failedCount == 0) {
         handle = GetClipboardData(CF_UNICODETEXT);
         if (handle) {
             const wchar_t* text = static_cast<const wchar_t*>(GlobalLock(handle));
             if (text) {
-                ImportPath(text);
+                if (ImportPath(text, false)) {
+                    ++importedCount;
+                } else {
+                    ++failedCount;
+                }
                 GlobalUnlock(handle);
-                importedCount = 1;
             }
         }
     }
     CloseClipboard();
 
-    if (importedCount > 0) {
-        ShowClipboardImportNotification(importedCount);
+    if (importedCount > 0 || failedCount > 0) {
+        ShowClipboardImportNotification(importedCount, failedCount);
         InvalidateRect(hwnd_, nullptr, FALSE);
+    } else {
+        ShowToast(L"剪贴板中没有可添加的文件、文件夹或网址。", ThemedToastRole::Info);
     }
 }
 
@@ -6193,7 +6383,14 @@ bool MainWindow::ImportDropData(IDataObject* dataObject) {
         return false;
     }
 
-    bool imported = false;
+    auto finish = [&](int succeeded, int failed) {
+        ShowImportFeedback(succeeded, failed);
+        if (succeeded > 0) {
+            InvalidateRect(hwnd_, nullptr, FALSE);
+        }
+        return succeeded > 0;
+    };
+
     FORMATETC fileFormat{};
     fileFormat.cfFormat = CF_HDROP;
     fileFormat.dwAspect = DVASPECT_CONTENT;
@@ -6201,22 +6398,27 @@ bool MainWindow::ImportDropData(IDataObject* dataObject) {
     fileFormat.tymed = TYMED_HGLOBAL;
     STGMEDIUM medium{};
     if (SUCCEEDED(dataObject->GetData(&fileFormat, &medium))) {
+        int succeeded = 0;
+        int failed = 0;
+        UINT count = 0;
         HDROP drop = static_cast<HDROP>(GlobalLock(medium.hGlobal));
         if (drop) {
-            const UINT count = DragQueryFileW(drop, 0xFFFFFFFF, nullptr, 0);
+            count = DragQueryFileW(drop, 0xFFFFFFFF, nullptr, 0);
             for (UINT i = 0; i < count; ++i) {
                 const UINT length = DragQueryFileW(drop, i, nullptr, 0);
                 std::wstring path(length, L'\0');
                 DragQueryFileW(drop, i, path.data(), length + 1);
-                ImportPath(path);
-                imported = true;
+                if (ImportPath(path, false)) {
+                    ++succeeded;
+                } else {
+                    ++failed;
+                }
             }
             GlobalUnlock(medium.hGlobal);
         }
         ReleaseStgMedium(&medium);
-        if (imported) {
-            InvalidateRect(hwnd_, nullptr, FALSE);
-            return true;
+        if (count > 0) {
+            return finish(succeeded, failed);
         }
     }
 
@@ -6229,6 +6431,9 @@ bool MainWindow::ImportDropData(IDataObject* dataObject) {
         shellFormat.tymed = TYMED_HGLOBAL;
         STGMEDIUM shellMedium{};
         if (SUCCEEDED(dataObject->GetData(&shellFormat, &shellMedium))) {
+            int succeeded = 0;
+            int failed = 0;
+            bool handled = false;
             const SIZE_T bytes = shellMedium.hGlobal ? GlobalSize(shellMedium.hGlobal) : 0;
             const CIDA* cida = static_cast<const CIDA*>(GlobalLock(shellMedium.hGlobal));
             if (cida && bytes >= sizeof(UINT) * 2) {
@@ -6240,18 +6445,25 @@ bool MainWindow::ImportDropData(IDataObject* dataObject) {
                     return static_cast<SIZE_T>(offset) + sizeof(USHORT) <= bytes;
                 };
                 auto importAbsolutePidl = [&](PCIDLIST_ABSOLUTE pidl) {
+                    handled = true;
                     if (!pidl) {
+                        ++failed;
                         return;
                     }
                     auto item = ShellItemService::FromAbsolutePidl(pidl);
                     if (!item) {
+                        ++failed;
                         return;
                     }
                     std::wstring target = !Trim(item->fileSystemPath).empty() ? item->fileSystemPath : item->parseName;
                     if (Trim(target).empty()) {
+                        ++failed;
                         return;
                     }
-                    ImportPath(target);
+                    if (!ImportPath(target, false)) {
+                        ++failed;
+                        return;
+                    }
                     if (Link* importedLink = FindLink(selectedLinkId_)) {
                         importedLink->pidl = item->pidl;
                         if (item->isVirtual || ShellItemService::IsShellParseName(target)) {
@@ -6260,9 +6472,11 @@ bool MainWindow::ImportDropData(IDataObject* dataObject) {
                         if (!Trim(item->displayName).empty()) {
                             importedLink->name = item->displayName;
                         }
-                        storageService_.UpdateLink(*importedLink);
+                        if (!storageService_.UpdateLink(*importedLink)) {
+                            WriteAppLog(L"更新 Shell 导入项信息失败：" + storageService_.lastError());
+                        }
                     }
-                    imported = true;
+                    ++succeeded;
                 };
 
                 if (headerBytes <= bytes && offsetValid(cida->aoffset[0])) {
@@ -6288,9 +6502,8 @@ bool MainWindow::ImportDropData(IDataObject* dataObject) {
                 GlobalUnlock(shellMedium.hGlobal);
             }
             ReleaseStgMedium(&shellMedium);
-            if (imported) {
-                InvalidateRect(hwnd_, nullptr, FALSE);
-                return true;
+            if (handled) {
+                return finish(succeeded, failed);
             }
         }
     }
@@ -6302,21 +6515,26 @@ bool MainWindow::ImportDropData(IDataObject* dataObject) {
     textFormat.tymed = TYMED_HGLOBAL;
     STGMEDIUM textMedium{};
     if (SUCCEEDED(dataObject->GetData(&textFormat, &textMedium))) {
+        int succeeded = 0;
+        int failed = 0;
         const wchar_t* text = static_cast<const wchar_t*>(GlobalLock(textMedium.hGlobal));
         if (text && *text) {
-            ImportPath(text);
-            imported = true;
+            if (ImportPath(text, false)) {
+                ++succeeded;
+            } else {
+                ++failed;
+            }
         }
         if (text) {
             GlobalUnlock(textMedium.hGlobal);
         }
         ReleaseStgMedium(&textMedium);
+        if (succeeded > 0 || failed > 0) {
+            return finish(succeeded, failed);
+        }
     }
-
-    if (imported) {
-        InvalidateRect(hwnd_, nullptr, FALSE);
-    }
-    return imported;
+    ShowToast(L"拖入内容不是可添加的文件、文件夹或网址。", ThemedToastRole::Info);
+    return false;
 }
 
 bool MainWindow::StartHttpServer(bool showMessage) {
@@ -6877,6 +7095,8 @@ void MainWindow::ExecuteBuiltinSystemContextAction(int linkId, BuiltinSystemCont
         const HRESULT hr = SHEmptyRecycleBinW(hwnd_, nullptr, 0);
         if (FAILED(hr) && hr != HRESULT_FROM_WIN32(ERROR_CANCELLED)) {
             MessageBoxW(hwnd_, L"清空回收站失败。", L"回收站", MB_OK | MB_ICONWARNING);
+        } else if (SUCCEEDED(hr)) {
+            ShowToast(L"回收站已清空。", ThemedToastRole::Success);
         }
         return;
     }

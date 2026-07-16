@@ -377,6 +377,9 @@ void ThemedWindowUi::ApplyDpiChange(UINT newDpi, const RECT* suggestedWindowRect
         PositionToast();
         InvalidateRect(toast_, nullptr, FALSE);
     }
+    if (dpiChangedCallback_) {
+        dpiChangedCallback_(newDpi);
+    }
     InvalidateRect(hwnd_, nullptr, TRUE);
 }
 
@@ -1012,7 +1015,7 @@ void ThemedWindowUi::SyncEditFrameWindow(EditFrame& editFrame) {
     if (!editFrame.frameWindow || !IsWindow(editFrame.frameWindow) || !IsWindow(editFrame.child)) {
         return;
     }
-    const bool visible = IsWindowVisible(editFrame.child) != FALSE;
+    const bool visible = (GetWindowLongPtrW(editFrame.child, GWL_STYLE) & WS_VISIBLE) != 0;
     const bool enabled = IsWindowEnabled(editFrame.child) != FALSE;
     EnableWindow(editFrame.frameWindow, enabled ? TRUE : FALSE);
     SetWindowPos(
@@ -1041,7 +1044,7 @@ void ThemedWindowUi::SyncTableFrameWindow(TableFrame& tableFrame) {
     if (!tableFrame.frameWindow || !IsWindow(tableFrame.frameWindow) || !IsWindow(tableFrame.child)) {
         return;
     }
-    const bool visible = IsWindowVisible(tableFrame.child) != FALSE;
+    const bool visible = (GetWindowLongPtrW(tableFrame.child, GWL_STYLE) & WS_VISIBLE) != 0;
     const bool enabled = IsWindowEnabled(tableFrame.child) != FALSE;
     EnableWindow(tableFrame.frameWindow, enabled ? TRUE : FALSE);
     SetWindowPos(
@@ -1246,6 +1249,10 @@ void ThemedWindowUi::InvalidateEditFrame(HWND child) const {
             return;
         }
     }
+}
+
+void ThemedWindowUi::SetDpiChangedCallback(std::function<void(UINT)> callback) {
+    dpiChangedCallback_ = std::move(callback);
 }
 
 COLORREF ThemedWindowUi::ToColorRef(Color color) {

@@ -16,6 +16,10 @@ bool Check(bool condition, const wchar_t* message) {
 
 int wmain() {
     bool ok = true;
+    const OperationResult complete{true, L"完成"};
+    const OperationResult partial{true, L"部分完成", true};
+    ok &= Check(!complete.partial, L"complete operation should not be partial by default");
+    ok &= Check(partial.success && partial.partial, L"partial operation should retain partial outcome");
     const std::filesystem::path directory = std::filesystem::temp_directory_path() /
         (L"AppLaunchLockerTests-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()));
     const std::filesystem::path file = directory / L"disabled-items.json";

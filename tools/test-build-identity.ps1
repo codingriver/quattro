@@ -28,7 +28,14 @@ function Assert-Plan {
         [string]$ExpectedDirectories)
     $parameters = @{ PlanOnly = $true }
     if ($Arguments -contains "-All") { $parameters.All = $true }
+    if ($Arguments -contains "-Complete") { $parameters.Complete = $true }
+    if ($Arguments -contains "-Minimal") { $parameters.Minimal = $true }
     if ($Arguments -contains "-OfficialBuild") { $parameters.OfficialBuild = $true }
+    if ($Arguments -contains "-CompressEmbeddedAssets") { $parameters.CompressEmbeddedAssets = $true }
+    $platformIndex = [Array]::IndexOf($Arguments, "-Platform")
+    if ($platformIndex -ge 0 -and $platformIndex + 1 -lt $Arguments.Count) {
+        $parameters.Platform = $Arguments[$platformIndex + 1]
+    }
     $lines = @(& (Join-Path $PSScriptRoot "build.ps1") @parameters)
     if ($lines -notcontains "official_build=$ExpectedOfficial" -or
         $lines -notcontains "build_marker=$ExpectedMarker" -or
@@ -44,8 +51,10 @@ function Assert-GeneratedIdentity {
         [string]$Name,
         [bool]$BundleOptionalExecutables,
         [bool]$OfficialBuild,
+        [bool]$CompressEmbeddedAssets,
         [string]$ExpectedMarker,
-        [int]$ExpectedOfficial
+        [int]$ExpectedOfficial,
+        [int]$ExpectedCompressedAssets
     )
 
     $buildDirectory = Join-Path $resolvedBuildRoot $Name
@@ -54,17 +63,19 @@ function Assert-GeneratedIdentity {
     }
     $bundleValue = if ($BundleOptionalExecutables) { "ON" } else { "OFF" }
     $officialValue = if ($OfficialBuild) { "ON" } else { "OFF" }
+    $compressedAssetsValue = if ($CompressEmbeddedAssets) { "ON" } else { "OFF" }
     Invoke-Native -Description "$Name configure" -Command "cmake" -Arguments @(
         "-S", $root,
         "-B", $buildDirectory,
         "-DQUATTRO_BUILD_TESTS=OFF",
         "-DQUATTRO_BUNDLE_OPTIONAL_EXECUTABLES=$bundleValue",
         "-DQUATTRO_OFFICIAL_BUILD=$officialValue",
-        "-DQUATTRO_COMPRESS_EMBEDDED_ASSETS=$officialValue"
+        "-DQUATTRO_COMPRESS_EMBEDDED_ASSETS=$compressedAssetsValue"
     )
     $header = Get-Content -LiteralPath (Join-Path $buildDirectory "generated\Version.h") -Raw
     if ($header -notmatch [regex]::Escape("#define QUATTRO_BUILD_MARKER_TEXT L`"$ExpectedMarker`"") -or
-        $header -notmatch [regex]::Escape("#define QUATTRO_OFFICIAL_BUILD $ExpectedOfficial")) {
+        $header -notmatch [regex]::Escape("#define QUATTRO_OFFICIAL_BUILD $ExpectedOfficial") -or
+        $header -notmatch [regex]::Escape("#define QUATTRO_COMPRESSED_EMBEDDED_ASSETS $ExpectedCompressedAssets")) {
         throw "$Name generated an unexpected build identity."
     }
 }
@@ -77,7 +88,7 @@ function Assert-ReleasePlan {
         "architectures=x86,x64",
         "bundle_optional_executables=ON",
         "official_build=ON",
-        "embedded_assets=xpress",
+        "embedded_assets=raw",
         "configuration=Release",
         "backend=vcpkg",
         "no_zip=ON",
@@ -101,9 +112,29 @@ function Assert-ReleasePlan {
         throw "Release single-platform plan is unexpected: $($singlePlatform -join '; ')"
     }
 
+    $singlePlatformMinimal = @(& $buildScript -Release -Platform x64 -Minimal -PlanOnly)
+    if ($singlePlatformMinimal -notcontains "architectures=x64" -or
+        $singlePlatformMinimal -notcontains "bundle_optional_executables=OFF" -or
+        $singlePlatformMinimal -notcontains "build_profile=official-minimal") {
+        throw "Release single-platform minimal plan is unexpected: $($singlePlatformMinimal -join '; ')"
+    }
+
+    $singlePlatformComplete = @(& $buildScript -Release -Platform x64 -Complete -PlanOnly)
+    if ($singlePlatformComplete -notcontains "architectures=x64" -or
+        $singlePlatformComplete -notcontains "bundle_optional_executables=ON" -or
+        $singlePlatformComplete -notcontains "build_profile=official-complete" -or
+        $singlePlatformComplete -notcontains "build_directories=build-vcpkg-x64-official-complete") {
+        throw "Release single-platform complete plan is unexpected: $($singlePlatformComplete -join '; ')"
+    }
+
     $withoutUpx = @(& $buildScript -Release -NoUpx -PlanOnly)
     if ($withoutUpx -notcontains "use_upx=OFF") {
         throw "Release -NoUpx did not disable executable compression: $($withoutUpx -join '; ')"
+    }
+
+    $withCompressedAssets = @(& $buildScript -Release -CompressEmbeddedAssets -PlanOnly)
+    if ($withCompressedAssets -notcontains "embedded_assets=xpress") {
+        throw "Release -CompressEmbeddedAssets did not enable resource compression: $($withCompressedAssets -join '; ')"
     }
 
     try {
@@ -118,6 +149,8 @@ function Assert-ReleasePlan {
     $workflow = Get-Content -LiteralPath (Join-Path $root ".github\workflows\package-release.yml") -Raw
     if ($workflow -notmatch '"-Release"' -or
         $workflow -notmatch '"-NoUpx"' -or
+        $workflow -notmatch '"-CompressEmbeddedAssets"' -or
+        $workflow -notmatch '(?s)compress_embedded_assets:.*?default:\s*false' -or
         $workflow -match '"-OfficialBuild"' -or
         $workflow -match '"-Backend", "vcpkg"') {
         throw "GitHub Actions Package step must use the shared -Release entry point."
@@ -125,17 +158,33 @@ function Assert-ReleasePlan {
 }
 
 New-Item -ItemType Directory -Force -Path $resolvedBuildRoot | Out-Null
-Assert-Plan -Arguments @() -ExpectedOfficial "OFF" -ExpectedMarker "DEBUG" `
+Assert-Plan -Arguments @() -ExpectedOfficial "OFF" -ExpectedMarker "DEBUG-All" `
+    -ExpectedEmbeddedAssets "raw" `
+    -ExpectedProfile "complete" -ExpectedDirectories "build-vcpkg-x64-complete"
+Assert-Plan -Arguments @("-Complete") -ExpectedOfficial "OFF" -ExpectedMarker "DEBUG-All" `
+    -ExpectedEmbeddedAssets "raw" `
+    -ExpectedProfile "complete" -ExpectedDirectories "build-vcpkg-x64-complete"
+Assert-Plan -Arguments @("-Platform", "x86", "-Complete") -ExpectedOfficial "OFF" -ExpectedMarker "DEBUG-All" `
+    -ExpectedEmbeddedAssets "raw" `
+    -ExpectedProfile "complete" -ExpectedDirectories "build-vcpkg-x86-complete"
+Assert-Plan -Arguments @("-Minimal") -ExpectedOfficial "OFF" -ExpectedMarker "DEBUG" `
     -ExpectedEmbeddedAssets "raw" `
     -ExpectedProfile "minimal" -ExpectedDirectories "build-vcpkg-x64"
+Assert-Plan -Arguments @("-Platform", "x86", "-Minimal") -ExpectedOfficial "OFF" -ExpectedMarker "DEBUG" `
+    -ExpectedEmbeddedAssets "raw" `
+    -ExpectedProfile "minimal" -ExpectedDirectories "build-vcpkg-x86"
 Assert-Plan -Arguments @("-All") -ExpectedOfficial "OFF" -ExpectedMarker "DEBUG-All" `
     -ExpectedEmbeddedAssets "raw" `
     -ExpectedProfile "complete" -ExpectedDirectories "build-vcpkg-x86-complete,build-vcpkg-x64-complete"
 Assert-Plan -Arguments @("-All", "-OfficialBuild") -ExpectedOfficial "ON" -ExpectedMarker "none" `
+    -ExpectedEmbeddedAssets "raw" `
+    -ExpectedProfile "official-complete" -ExpectedDirectories "build-vcpkg-x86-official-complete,build-vcpkg-x64-official-complete"
+Assert-Plan -Arguments @("-All", "-OfficialBuild", "-CompressEmbeddedAssets") -ExpectedOfficial "ON" -ExpectedMarker "none" `
     -ExpectedEmbeddedAssets "xpress" `
     -ExpectedProfile "official-complete" -ExpectedDirectories "build-vcpkg-x86-official-complete,build-vcpkg-x64-official-complete"
 Assert-ReleasePlan
-Assert-GeneratedIdentity -Name "debug" -BundleOptionalExecutables $false -OfficialBuild $false -ExpectedMarker "DEBUG" -ExpectedOfficial 0
-Assert-GeneratedIdentity -Name "debug-all" -BundleOptionalExecutables $true -OfficialBuild $false -ExpectedMarker "DEBUG-All" -ExpectedOfficial 0
-Assert-GeneratedIdentity -Name "official" -BundleOptionalExecutables $true -OfficialBuild $true -ExpectedMarker "" -ExpectedOfficial 1
+Assert-GeneratedIdentity -Name "debug" -BundleOptionalExecutables $false -OfficialBuild $false -CompressEmbeddedAssets $false -ExpectedMarker "DEBUG" -ExpectedOfficial 0 -ExpectedCompressedAssets 0
+Assert-GeneratedIdentity -Name "debug-all" -BundleOptionalExecutables $true -OfficialBuild $false -CompressEmbeddedAssets $false -ExpectedMarker "DEBUG-All" -ExpectedOfficial 0 -ExpectedCompressedAssets 0
+Assert-GeneratedIdentity -Name "official" -BundleOptionalExecutables $true -OfficialBuild $true -CompressEmbeddedAssets $false -ExpectedMarker "" -ExpectedOfficial 1 -ExpectedCompressedAssets 0
+Assert-GeneratedIdentity -Name "official-compressed-assets" -BundleOptionalExecutables $true -OfficialBuild $true -CompressEmbeddedAssets $true -ExpectedMarker "" -ExpectedOfficial 1 -ExpectedCompressedAssets 1
 "build identity acceptance passed"

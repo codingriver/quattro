@@ -1820,10 +1820,13 @@ bool IsActionCell(const ThemedControls::TableCellRuntime& cell) {
 }
 
 bool UsesNativeTableCellDrawing(HWND, int column, const ThemedControls::TableCellRuntime* cell) {
-    if (column != 0) {
-        return false;
-    }
-    return cell && cell->hasImage;
+    // Image-bearing rows must stay on the shared draw path. Native ListView
+    // drawing also paints the transparent state image used only for checkbox
+    // hit testing, which turns that reserved area into an opaque block on some
+    // systems and bypasses the themed checkbox/row-state rendering.
+    (void)column;
+    (void)cell;
+    return false;
 }
 
 bool UsesNativeTableRowDrawing(HWND table, int row) {
@@ -2014,6 +2017,35 @@ void DrawTableTextCell(
             DeleteObject(pen);
         }
         textRect.left = box.right + gap;
+    }
+
+    const auto cell = TableCellAt(table, row, column);
+    if (column == 0 && cell && cell->hasImage) {
+        LVITEMW item{};
+        item.mask = LVIF_IMAGE;
+        item.iItem = row;
+        HIMAGELIST images = ListView_GetImageList(table, LVSIL_SMALL);
+        if (images && ListView_GetItem(table, &item) && item.iImage >= 0) {
+            int imageWidth = 0;
+            int imageHeight = 0;
+            if (ImageList_GetIconSize(images, &imageWidth, &imageHeight) && imageWidth > 0 && imageHeight > 0) {
+                const int availableHeight = static_cast<int>(cellRect.bottom - cellRect.top);
+                const int imageY = cellRect.top + std::max(0, (availableHeight - imageHeight) / 2);
+                ImageList_DrawEx(
+                    images,
+                    item.iImage,
+                    draw->nmcd.hdc,
+                    textRect.left,
+                    imageY,
+                    imageWidth,
+                    imageHeight,
+                    CLR_NONE,
+                    CLR_NONE,
+                    ILD_NORMAL);
+                textRect.left += imageWidth +
+                    TableScaledMetric(table, theme, L"global", L"denseGap", 4.0f);
+            }
+        }
     }
 
     LVCOLUMNW columnInfo{};
@@ -2441,7 +2473,7 @@ void SetControlTheme(HWND hwnd, const Theme& theme) {
         auto state = FindState(hwnd);
         const ControlKind kind = state ? state->kind : ControlKind::None;
         if (kind == ControlKind::ComboBox || kind == ControlKind::Edit || kind == ControlKind::ProgressBar || kind == ControlKind::Slider
-            || kind == ControlKind::GroupBox
+            || kind == ControlKind::GroupBox || kind == ControlKind::Panel
             || kind == ControlKind::Toggle || kind == ControlKind::Radio || kind == ControlKind::StatusBadge || kind == ControlKind::StatusText) {
             StateFor(hwnd).theme = &theme;
         } else {
@@ -2606,8 +2638,8 @@ RECT PanelContentRect(HWND hwnd) {
     GetClientRect(hwnd, &rect);
     auto state = FindState(hwnd);
     if (!state || !state->theme) return rect;
-    const int insetX = static_cast<int>(state->theme->metric(L"panel", L"contentInsetX", 10.0f));
-    const int insetY = static_cast<int>(state->theme->metric(L"panel", L"contentInsetY", 8.0f));
+    const int insetX = ScaledMetric(hwnd, *state->theme, L"panel", L"contentInsetX", 10.0f);
+    const int insetY = ScaledMetric(hwnd, *state->theme, L"panel", L"contentInsetY", 8.0f);
     InflateRect(&rect, -insetX, -insetY);
     return rect;
 }

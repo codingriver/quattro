@@ -29,6 +29,11 @@ on:
         required: true
         default: true
         type: boolean
+      compress_embedded_assets:
+        description: "使用 XPRESS Huffman 压缩内嵌主题和图标资源"
+        required: true
+        default: false
+        type: boolean
       publish_release:
         description: "创建或更新 GitHub Release"
         required: true
@@ -79,6 +84,7 @@ jobs:
           $platform = if ($isTagBuild) { "all" } else { "${{ inputs.platform }}" }
           $configuration = if ($isTagBuild) { "Release" } else { "${{ inputs.configuration }}" }
           $useUpx = if ($isTagBuild) { "true" } else { "${{ inputs.use_upx }}" }
+          $compressEmbeddedAssets = if ($isTagBuild) { "false" } else { "${{ inputs.compress_embedded_assets }}" }
           $publishRelease = if ($isTagBuild) { "true" } else { "${{ inputs.publish_release }}" }
           $makeLatest = if ($isTagBuild) { "true" } else { "${{ inputs.make_latest }}" }
           $moveExistingTag = if ($isTagBuild) { "false" } else { "${{ inputs.move_existing_tag }}" }
@@ -96,6 +102,7 @@ jobs:
             $releaseTag = "v$version"
           }
           $useUpx = $useUpx.ToLowerInvariant()
+          $compressEmbeddedAssets = $compressEmbeddedAssets.ToLowerInvariant()
           $publishRelease = $publishRelease.ToLowerInvariant()
           $makeLatest = $makeLatest.ToLowerInvariant()
           $moveExistingTag = $moveExistingTag.ToLowerInvariant()
@@ -113,6 +120,7 @@ jobs:
           "platform=$platform" >> $env:GITHUB_OUTPUT
           "configuration=$configuration" >> $env:GITHUB_OUTPUT
           "use_upx=$useUpx" >> $env:GITHUB_OUTPUT
+          "compress_embedded_assets=$compressEmbeddedAssets" >> $env:GITHUB_OUTPUT
           "publish_release=$publishRelease" >> $env:GITHUB_OUTPUT
           "make_latest=$makeLatest" >> $env:GITHUB_OUTPUT
           "move_existing_tag=$moveExistingTag" >> $env:GITHUB_OUTPUT
@@ -155,9 +163,9 @@ jobs:
             build-vcpkg-x64-official-complete
             build-vcpkg-x86-official-minimal
             build-vcpkg-x64-official-minimal
-          key: build-${{ runner.os }}-${{ steps.options.outputs.configuration }}-${{ steps.options.outputs.platform }}-${{ hashFiles('CMakeLists.txt', 'CMakePresets.json', 'vcpkg.json', 'src/**', 'resources/**', 'theme/**', 'icons/**', 'docs/**', 'plugins/**', 'tools/**') }}
+          key: build-${{ runner.os }}-${{ steps.options.outputs.configuration }}-${{ steps.options.outputs.platform }}-assets-${{ steps.options.outputs.compress_embedded_assets }}-${{ hashFiles('CMakeLists.txt', 'CMakePresets.json', 'vcpkg.json', 'src/**', 'resources/**', 'theme/**', 'icons/**', 'docs/**', 'plugins/**', 'tools/**') }}
           restore-keys: |
-            build-${{ runner.os }}-${{ steps.options.outputs.configuration }}-
+            build-${{ runner.os }}-${{ steps.options.outputs.configuration }}-${{ steps.options.outputs.platform }}-assets-${{ steps.options.outputs.compress_embedded_assets }}-
 
       - name: Package
         run: |
@@ -185,6 +193,9 @@ jobs:
             }
           } else {
             $args += "-NoUpx"
+          }
+          if ("${{ steps.options.outputs.compress_embedded_assets }}" -eq "true") {
+            $args += "-CompressEmbeddedAssets"
           }
 
           & powershell @args

@@ -14,18 +14,21 @@ $gnuHelpText = (& $buildScript --help) -join "`n"
 
 $requiredText = @(
     "Quattro 中文构建与打包工具",
-    "默认只打包 Quattro，不构建、不打包 AppLaunchLocker 和 QuattroUpdater",
-    "测试 AppLaunchLocker 或 QuattroUpdater 时必须使用 -All -Test",
+    "默认包含 Quattro、AppLaunchLocker 和 QuattroUpdater",
+    "验收 AppLaunchLocker、QuattroUpdater 或完整发布链路时仍必须使用 -All -Test",
     "-OfficialBuild",
     "-Release",
+    "-Complete",
+    "-Minimal",
     "-NoUpx",
+    "-CompressEmbeddedAssets",
     "-PlanOnly",
     "-NoZip",
     "-Backend vcpkg|classic",
     "主窗口显示红色（DEBUG）标记",
     "主窗口显示红色（DEBUG-All）标记",
-    "正式版会压缩内置主题和图标",
-    "本地 DEBUG/DEBUG-All 直接嵌入原始资源",
+    "所有构建默认直接嵌入原始资源",
+    "正式版与本地 DEBUG/DEBUG-All 均默认直接嵌入原始主题和图标资源",
     "默认启用 UPX"
 )
 
@@ -51,11 +54,74 @@ if (!$allPlan.Contains("architectures=x86,x64") -or
     throw "--all 未正确启用完整开发版构建计划。"
 }
 
+$completePlan = (& $buildScript -Complete -PlanOnly) -join "`n"
+if (!$completePlan.Contains("architectures=x64") -or
+    $completePlan.Contains("architectures=x86,x64") -or
+    !$completePlan.Contains("bundle_optional_executables=ON") -or
+    !$completePlan.Contains("build_marker=DEBUG-All") -or
+    !$completePlan.Contains("build_profile=complete") -or
+    !$completePlan.Contains("build_directories=build-vcpkg-x64-complete")) {
+    throw "-Complete 未正确启用 x64 完整开发版构建计划。"
+}
+
+$defaultPlan = (& $buildScript -PlanOnly) -join "`n"
+if (!$defaultPlan.Contains("architectures=x64") -or
+    $defaultPlan.Contains("architectures=x86,x64") -or
+    !$defaultPlan.Contains("bundle_optional_executables=ON") -or
+    !$defaultPlan.Contains("build_marker=DEBUG-All") -or
+    !$defaultPlan.Contains("build_profile=complete") -or
+    !$defaultPlan.Contains("build_directories=build-vcpkg-x64-complete")) {
+    throw "默认构建未正确启用 x64 完整开发版计划。"
+}
+
+$minimalPlan = (& $buildScript -Minimal -PlanOnly) -join "`n"
+if (!$minimalPlan.Contains("architectures=x64") -or
+    !$minimalPlan.Contains("bundle_optional_executables=OFF") -or
+    !$minimalPlan.Contains("build_marker=DEBUG") -or
+    !$minimalPlan.Contains("build_profile=minimal") -or
+    !$minimalPlan.Contains("build_directories=build-vcpkg-x64")) {
+    throw "-Minimal 未正确启用 x64 精简开发版构建计划。"
+}
+
+try {
+    & $buildScript -Complete -Minimal -PlanOnly | Out-Null
+    throw "-Complete 与 -Minimal 被意外同时接受。"
+} catch {
+    if ($_.Exception.Message -notmatch "cannot be used together") {
+        throw
+    }
+}
+
+try {
+    & $buildScript -All -Minimal -PlanOnly | Out-Null
+    throw "-All 与 -Minimal 被意外同时接受。"
+} catch {
+    if ($_.Exception.Message -notmatch "complete multi-platform build") {
+        throw
+    }
+}
+
+try {
+    & $buildScript -Release -Minimal -PlanOnly | Out-Null
+    throw "未指定平台的 -Release -Minimal 被意外接受。"
+} catch {
+    if ($_.Exception.Message -notmatch "complete multi-platform build") {
+        throw
+    }
+}
+
 $officialPlan = (& $buildScript -OfficialBuild -PlanOnly) -join "`n"
 if (!$officialPlan.Contains("official_build=ON") -or
-    !$officialPlan.Contains("embedded_assets=xpress") -or
+    !$officialPlan.Contains("embedded_assets=raw") -or
     !$officialPlan.Contains("build_marker=none")) {
-    throw "-OfficialBuild 未正确启用正式压缩资源计划。"
+    throw "-OfficialBuild 未正确启用正式原始资源计划。"
+}
+
+$compressedPlan = (& $buildScript -OfficialBuild -CompressEmbeddedAssets -PlanOnly) -join "`n"
+if (!$compressedPlan.Contains("official_build=ON") -or
+    !$compressedPlan.Contains("embedded_assets=xpress") -or
+    !$compressedPlan.Contains("build_marker=none")) {
+    throw "-CompressEmbeddedAssets 未正确启用资源压缩计划。"
 }
 
 "build_help_acceptance=passed"

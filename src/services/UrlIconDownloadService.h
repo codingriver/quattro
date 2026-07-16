@@ -20,11 +20,11 @@ public:
     UrlIconDownloadService& operator=(const UrlIconDownloadService&) = delete;
 
     void RequestInitialDownload(HWND notifyHwnd, UINT notifyMessage, Link link);
-    void RequestManualRefresh(HWND notifyHwnd, UINT notifyMessage, Link link);
+    bool RequestManualRefresh(HWND notifyHwnd, UINT notifyMessage, Link link);
     void Shutdown();
 
 private:
-    void RequestDownload(HWND notifyHwnd, UINT notifyMessage, Link link, bool overwrite);
+    bool RequestDownload(HWND notifyHwnd, UINT notifyMessage, Link link, bool overwrite);
     bool DownloadIconForLink(const Link& link, bool overwrite);
     bool TryClaimHost(const std::wstring& host);
     void ReleaseHost(const std::wstring& host);

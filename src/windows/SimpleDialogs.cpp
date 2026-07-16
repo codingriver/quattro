@@ -4,6 +4,7 @@
 
 #include "AppLog.h"
 #include "ConfigPackageService.h"
+#include "ContextMenuProviderIconService.h"
 #include "DialogLayout.h"
 #include "HotKeyEditor.h"
 #include "JsonValue.h"
@@ -32,7 +33,9 @@
 #include <windowsx.h>
 
 #include <algorithm>
+#include <atomic>
 #include <array>
+#include <cstdint>
 #include <cstring>
 #include <cwchar>
 #include <fstream>
@@ -94,6 +97,8 @@ constexpr int ID_HOTKEY_CONFLICT_IGNORE = 502;
 constexpr int ID_MAIN_HOTKEY_PROBE = 0x5148;
 constexpr UINT WM_SETTINGS_WEBDAV_DONE = WM_APP + 0x81;
 constexpr UINT WM_CONTEXT_MENU_REFRESH_DONE = WM_APP + 0x82;
+constexpr UINT WM_CONTEXT_MENU_ICON_LOAD_REQUEST = WM_APP + 0x83;
+constexpr UINT WM_CONTEXT_MENU_ICON_LOAD_DONE = WM_APP + 0x84;
 
 enum class SettingsWebDavOperation {
     Test,
@@ -110,6 +115,56 @@ struct SettingsWebDavResult {
     std::vector<WebDavRemoteFile> backups;
     AppConfig config;
 };
+
+struct SettingsContextMenuIconAsyncState {
+    std::mutex mutex;
+    std::stop_source stopSource;
+    std::optional<std::vector<ContextMenuProviderIconInfo>> result;
+    std::uintptr_t generation = 0;
+    std::atomic_bool abandoned{false};
+};
+
+std::atomic_uintptr_t gContextMenuIconGeneration{1};
+
+bool IsValidCachedIcon(const ShellContextMenuCachedIcon& icon) {
+    return icon.width > 0 && icon.height > 0 && icon.width <= 64 && icon.height <= 64 &&
+        icon.pixels.size() == static_cast<std::size_t>(icon.width * icon.height);
+}
+
+HICON CreateIconFromCachedPixels(const ShellContextMenuCachedIcon& icon) {
+    if (!IsValidCachedIcon(icon)) {
+        return nullptr;
+    }
+    BITMAPINFO bitmapInfo{};
+    bitmapInfo.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bitmapInfo.bmiHeader.biWidth = icon.width;
+    bitmapInfo.bmiHeader.biHeight = -icon.height;
+    bitmapInfo.bmiHeader.biPlanes = 1;
+    bitmapInfo.bmiHeader.biBitCount = 32;
+    bitmapInfo.bmiHeader.biCompression = BI_RGB;
+    void* bits = nullptr;
+    HBITMAP color = CreateDIBSection(nullptr, &bitmapInfo, DIB_RGB_COLORS, &bits, nullptr, 0);
+    if (!color || !bits) {
+        if (color) DeleteObject(color);
+        return nullptr;
+    }
+    std::memcpy(bits, icon.pixels.data(), icon.pixels.size() * sizeof(std::uint32_t));
+    const std::size_t maskStride = static_cast<std::size_t>(((icon.width + 15) / 16) * 2);
+    std::vector<std::uint8_t> maskBits(maskStride * static_cast<std::size_t>(icon.height), 0);
+    HBITMAP mask = CreateBitmap(icon.width, icon.height, 1, 1, maskBits.data());
+    if (!mask) {
+        DeleteObject(color);
+        return nullptr;
+    }
+    ICONINFO info{};
+    info.fIcon = TRUE;
+    info.hbmColor = color;
+    info.hbmMask = mask;
+    HICON result = CreateIconIndirect(&info);
+    DeleteObject(mask);
+    DeleteObject(color);
+    return result;
+}
 
 std::wstring CurrentLanIpv4Address() {
     ULONG size = 0;
@@ -1971,7 +2026,8 @@ public:
         SettingsResetContextMenuCallback resetContextMenuCallback,
         std::vector<Link> contextMenuLinks,
         SettingsContextMenuRefreshRunner contextMenuRefreshRunner,
-        SettingsContextMenuRefreshApplyCallback contextMenuRefreshApplyCallback)
+        SettingsContextMenuRefreshApplyCallback contextMenuRefreshApplyCallback,
+        SettingsContextMenuProviderIconRunner contextMenuProviderIconRunner)
         : owner_(owner),
           instance_(instance),
           config_(config),
@@ -1987,7 +2043,13 @@ public:
           resetContextMenuCallback_(std::move(resetContextMenuCallback)),
           contextMenuLinks_(std::move(contextMenuLinks)),
           contextMenuRefreshRunner_(std::move(contextMenuRefreshRunner)),
-          contextMenuRefreshApplyCallback_(std::move(contextMenuRefreshApplyCallback)) {}
+          contextMenuRefreshApplyCallback_(std::move(contextMenuRefreshApplyCallback)),
+          contextMenuProviderIconRunner_(std::move(contextMenuProviderIconRunner)) {}
+
+    ~SettingsDialog() {
+        AbandonContextMenuIconLoad();
+        DestroyContextMenuImageList();
+    }
 
     bool Run() {
         HICON icon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_QUATTRO_APP_ICON));
@@ -2234,6 +2296,9 @@ private:
         if (currentTab_ == TabWebDav) {
             UpdateWebDavLastSyncLabel();
         }
+        if (currentTab_ == TabContextMenu) {
+            RequestContextMenuIconLoadOnce();
+        }
     }
 
     HWND AddSectionFrame(int tab, const std::wstring& title, RECT rect) {
@@ -2274,49 +2339,145 @@ private:
         });
     }
 
-    void AddContextMenuTableRows() {
-        if (!contextMenuTable_) return;
+    void EnsureContextMenuProviderState() {
         const auto providers = TrackedContextMenuProviders();
-        std::vector<bool> installed;
-        std::vector<bool> installedInNativeShell;
-        installed.reserve(providers.size());
-        installedInNativeShell.reserve(providers.size());
-
+        if (contextMenuProviderIcons_.size() == providers.size()) {
+            return;
+        }
+        contextMenuProviderIcons_.clear();
+        contextMenuProviderIcons_.reserve(providers.size());
         for (const auto& provider : providers) {
-            // 原始方式检测 (probe keys)
-            bool isInstalledViaProbeKey = ShellItemService::IsTrackedProviderInstalled(provider);
-            installed.push_back(isInstalledViaProbeKey);
+            ContextMenuProviderIconInfo info;
+            info.providerId = provider.providerId;
+            contextMenuProviderIcons_.push_back(std::move(info));
+        }
+        contextMenuProviderImageIndexes_.assign(providers.size(), 0);
+    }
 
-            // 新增: 从Native Shell检测 (Phase 3改进)
-            bool isInstalledInShell = false;
-            if (!isInstalledViaProbeKey) {
-                // 仅在probe key未检测到时才进行native shell扫描
-                isInstalledInShell = ShellItemService::IsInstalledInNativeShell(provider.providerId);
-            }
-            installedInNativeShell.push_back(isInstalledInShell);
+    void DestroyContextMenuImageList() {
+        if (contextMenuTable_ && IsWindow(contextMenuTable_)) {
+            ThemedUi::SetTableImageLists(contextMenuTable_, nullptr, nullptr);
+        }
+        if (contextMenuImages_) {
+            ImageList_Destroy(contextMenuImages_);
+            contextMenuImages_ = nullptr;
+        }
+    }
+
+    void RebuildContextMenuImageList() {
+        EnsureContextMenuProviderState();
+        const auto providers = TrackedContextMenuProviders();
+        const int iconSize = std::max(1, MakeUi().scale(16));
+        HIMAGELIST images = ImageList_Create(
+            iconSize, iconSize, ILC_COLOR32 | ILC_MASK,
+            static_cast<int>(providers.size()) + 1, 4);
+        if (!images) {
+            return;
         }
 
+        SHSTOCKICONINFO stockInfo{};
+        stockInfo.cbSize = sizeof(stockInfo);
+        HICON fallback = nullptr;
+        bool destroyFallback = false;
+        if (SUCCEEDED(SHGetStockIconInfo(SIID_APPLICATION, SHGSI_ICON | SHGSI_SMALLICON, &stockInfo))) {
+            fallback = stockInfo.hIcon;
+            destroyFallback = fallback != nullptr;
+        }
+        if (!fallback) {
+            fallback = LoadIconW(nullptr, IDI_APPLICATION);
+        }
+        int fallbackIndex = fallback ? ImageList_AddIcon(images, fallback) : -1;
+        if (destroyFallback) {
+            DestroyIcon(fallback);
+        }
+        if (fallbackIndex < 0) {
+            BITMAPINFO bitmapInfo{};
+            bitmapInfo.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+            bitmapInfo.bmiHeader.biWidth = iconSize;
+            bitmapInfo.bmiHeader.biHeight = -iconSize;
+            bitmapInfo.bmiHeader.biPlanes = 1;
+            bitmapInfo.bmiHeader.biBitCount = 32;
+            bitmapInfo.bmiHeader.biCompression = BI_RGB;
+            void* bits = nullptr;
+            HBITMAP blank = CreateDIBSection(nullptr, &bitmapInfo, DIB_RGB_COLORS, &bits, nullptr, 0);
+            if (blank && bits) {
+                ZeroMemory(bits, static_cast<SIZE_T>(iconSize) * static_cast<SIZE_T>(iconSize) * 4);
+                fallbackIndex = ImageList_Add(images, blank, nullptr);
+            }
+            if (blank) DeleteObject(blank);
+        }
+        if (fallbackIndex < 0) {
+            ImageList_Destroy(images);
+            return;
+        }
+
+        contextMenuProviderImageIndexes_.assign(providers.size(), fallbackIndex);
+        for (std::size_t index = 0; index < contextMenuProviderIcons_.size(); ++index) {
+            HICON icon = CreateIconFromCachedPixels(contextMenuProviderIcons_[index].icon);
+            if (!icon) {
+                continue;
+            }
+            const int imageIndex = ImageList_AddIcon(images, icon);
+            DestroyIcon(icon);
+            if (imageIndex >= 0) {
+                contextMenuProviderImageIndexes_[index] = imageIndex;
+            }
+        }
+
+        HIMAGELIST oldImages = contextMenuImages_;
+        contextMenuImages_ = images;
+        if (contextMenuTable_) {
+            ThemedUi::SetTableImageLists(contextMenuTable_, contextMenuImages_, nullptr);
+        }
+        if (oldImages) {
+            ImageList_Destroy(oldImages);
+        }
+    }
+
+    void AddContextMenuTableRows() {
+        if (!contextMenuTable_) return;
+        EnsureContextMenuProviderState();
+        const auto providers = TrackedContextMenuProviders();
+        std::vector<bool> installed(providers.size(), true);
+        if (contextMenuProviderLoadCompleted_) {
+            for (std::size_t index = 0; index < contextMenuProviderIcons_.size(); ++index) {
+                installed[index] = contextMenuProviderIcons_[index].installed;
+            }
+        }
+
+        const int selected = ThemedUi::TableSelectedIndex(contextMenuTable_);
+        const std::intptr_t selectedKey = selected >= 0
+            ? ThemedUi::TableRowKey(contextMenuTable_, selected)
+            : 0;
         contextMenuTableOrder_ = TrackedContextMenuDisplayOrder(installed);
         std::vector<ThemedTableRow> rows;
         rows.reserve(contextMenuTableOrder_.size());
 
         for (std::size_t bindingIndex : contextMenuTableOrder_) {
             const auto& provider = providers[bindingIndex];
+            const auto& iconInfo = contextMenuProviderIcons_[bindingIndex];
             ThemedTableRow row{};
             row.key = provider.checkBoxControlId;
 
-            // 改进: 显示更详细的安装状态
             std::wstring statusText;
-            if (installed[bindingIndex]) {
-                statusText = L"已安装(注册表)";  // Probe key检测到
-            } else if (installedInNativeShell[bindingIndex]) {
-                statusText = L"已安装(菜单)";    // Native Shell检测到
+            if (!contextMenuProviderLoadCompleted_) {
+                statusText = L"检测中...";
+            } else if (contextMenuProviderLoadFailed_) {
+                statusText = L"获取失败";
+            } else if (iconInfo.installedViaProbe) {
+                statusText = L"已安装(注册表)";
+            } else if (iconInfo.installedInNativeShell) {
+                statusText = L"已安装(菜单)";
             } else {
                 statusText = L"未安装";
             }
 
             row.cells = {
-                ThemedTableCell{provider.displayName},
+                ThemedTableCell{
+                    provider.displayName,
+                    bindingIndex < contextMenuProviderImageIndexes_.size()
+                        ? contextMenuProviderImageIndexes_[bindingIndex]
+                        : 0},
                 ThemedTableCell{statusText},
             };
             row.checked = draft_.*(provider.configMember);
@@ -2326,6 +2487,122 @@ private:
             rows.push_back(std::move(row));
         }
         ThemedUi::SetTableRows(contextMenuTable_, rows);
+        if (selectedKey != 0) {
+            for (std::size_t index = 0; index < rows.size(); ++index) {
+                if (rows[index].key == selectedKey) {
+                    ThemedUi::SetTableSelectedIndex(contextMenuTable_, static_cast<int>(index));
+                    break;
+                }
+            }
+        }
+    }
+
+    bool AllInstalledContextMenuProvidersAttempted() const {
+        if (!contextMenuProviderLoadCompleted_) {
+            return false;
+        }
+        return std::all_of(
+            contextMenuProviderIcons_.begin(), contextMenuProviderIcons_.end(),
+            [](const ContextMenuProviderIconInfo& info) {
+                return !info.installed || info.attempted;
+            });
+    }
+
+    void UpdateContextMenuRefreshButtonState() {
+        if (!refreshContextMenuButton_) {
+            return;
+        }
+        const wchar_t* text = contextMenuRefreshBusy_
+            ? L"扫描中..."
+            : (contextMenuIconLoadBusy_ ? L"获取图标中..." : L"从Windows菜单刷新");
+        SetWindowTextW(refreshContextMenuButton_, text);
+        MakeUi().SetEnabled(refreshContextMenuButton_, !contextMenuRefreshBusy_ && !contextMenuIconLoadBusy_);
+    }
+
+    void SetContextMenuIconLoadBusy(bool busy) {
+        contextMenuIconLoadBusy_ = busy;
+        UpdateContextMenuRefreshButtonState();
+    }
+
+    void RequestContextMenuIconLoadOnce() {
+        if (contextMenuIconAutoRequested_) {
+            return;
+        }
+        contextMenuIconAutoRequested_ = true;
+        PostMessageW(hwnd_, WM_CONTEXT_MENU_ICON_LOAD_REQUEST, 0, 0);
+    }
+
+    bool StartContextMenuIconLoad(bool force) {
+        if (contextMenuIconLoadBusy_ || (!force && AllInstalledContextMenuProvidersAttempted())) {
+            return false;
+        }
+        AbandonContextMenuIconLoad();
+        auto state = std::make_shared<SettingsContextMenuIconAsyncState>();
+        state->generation = gContextMenuIconGeneration.fetch_add(1);
+        contextMenuIconAsyncState_ = state;
+        contextMenuIconLoadGeneration_ = state->generation;
+        const HWND target = hwnd_;
+        const SettingsContextMenuProviderIconRunner runner = contextMenuProviderIconRunner_;
+        SetContextMenuIconLoadBusy(true);
+        std::thread([state, target, runner]() {
+            std::vector<ContextMenuProviderIconInfo> result;
+            try {
+                result = runner
+                    ? runner(state->stopSource.get_token())
+                    : ContextMenuProviderIconService().Load(state->stopSource.get_token());
+            } catch (...) {
+                result.clear();
+            }
+            if (state->abandoned.load() || state->stopSource.stop_requested()) {
+                return;
+            }
+            {
+                std::lock_guard lock(state->mutex);
+                state->result = std::move(result);
+            }
+            PostMessageW(
+                target,
+                WM_CONTEXT_MENU_ICON_LOAD_DONE,
+                static_cast<WPARAM>(state->generation),
+                0);
+        }).detach();
+        return true;
+    }
+
+    void CompleteContextMenuIconLoad(std::uintptr_t generation) {
+        const auto state = contextMenuIconAsyncState_;
+        if (!state || generation != contextMenuIconLoadGeneration_ || generation != state->generation) {
+            return;
+        }
+        std::optional<std::vector<ContextMenuProviderIconInfo>> result;
+        {
+            std::lock_guard lock(state->mutex);
+            result = std::move(state->result);
+        }
+        contextMenuIconAsyncState_.reset();
+        SetContextMenuIconLoadBusy(false);
+        if (!result || result->size() != TrackedContextMenuProviders().size()) {
+            contextMenuProviderLoadCompleted_ = true;
+            contextMenuProviderLoadFailed_ = true;
+            RebuildContextMenuImageList();
+            AddContextMenuTableRows();
+            return;
+        }
+        contextMenuProviderIcons_ = std::move(*result);
+        contextMenuProviderLoadCompleted_ = true;
+        contextMenuProviderLoadFailed_ = false;
+        RebuildContextMenuImageList();
+        AddContextMenuTableRows();
+    }
+
+    void AbandonContextMenuIconLoad() {
+        const auto state = contextMenuIconAsyncState_;
+        if (!state) {
+            return;
+        }
+        state->abandoned = true;
+        state->stopSource.request_stop();
+        contextMenuIconAsyncState_.reset();
     }
 
     void ReadContextMenuTableDraft(AppConfig& value) const {
@@ -2637,7 +2914,7 @@ private:
     }
 
     void ResetContextMenu() {
-        if (contextMenuRefreshBusy_) {
+        if (contextMenuRefreshBusy_ || contextMenuIconLoadBusy_) {
             ShowToast(L"Windows 菜单正在刷新，请稍候。", ThemedToastRole::Info);
             return;
         }
@@ -2679,9 +2956,7 @@ private:
 
     void SetContextMenuRefreshBusy(bool busy) {
         contextMenuRefreshBusy_ = busy;
-        if (refreshContextMenuButton_) {
-            SetWindowTextW(refreshContextMenuButton_, busy ? L"扫描中..." : L"从Windows菜单刷新");
-        }
+        UpdateContextMenuRefreshButtonState();
     }
 
     std::wstring ContextMenuRefreshResultText(const ShellContextMenuRefreshResult& result) const {
@@ -2716,6 +2991,7 @@ private:
         }
         SetContextMenuRefreshBusy(false);
         if (!result) {
+            StartContextMenuIconLoad(true);
             ShowThemedMessageBox(
                 hwnd_, instance_, theme_, L"刷新线程未返回结果。", L"从Windows菜单刷新", MB_OK | MB_ICONWARNING);
             return;
@@ -2727,7 +3003,7 @@ private:
         if (result->succeededLinks > 0 && contextMenuRefreshApplyCallback_) {
             contextMenuRefreshApplyCallback_(*result);
         }
-        AddContextMenuTableRows();
+        StartContextMenuIconLoad(true);
         if (result->failures.empty()) {
             const std::wstring message =
                 L"已刷新 " + std::to_wstring(result->succeededLinks) +
@@ -2741,17 +3017,19 @@ private:
     }
 
     void RefreshContextMenuFromNative() {
-        if (contextMenuRefreshBusy_) {
+        if (contextMenuRefreshBusy_ || contextMenuIconLoadBusy_) {
             ShowToast(L"Windows 菜单正在刷新，请稍候。", ThemedToastRole::Info);
             return;
         }
         const ShellContextMenuTrackingOptions tracking = ContextMenuTrackingDraft();
         if (!tracking.Any()) {
+            StartContextMenuIconLoad(true);
             ShowThemedMessageBox(
                 hwnd_, instance_, theme_, L"没有启用需要跟踪的工具。", L"从Windows菜单刷新", MB_OK | MB_ICONINFORMATION);
             return;
         }
         if (contextMenuLinks_.empty()) {
+            StartContextMenuIconLoad(true);
             ShowThemedMessageBox(
                 hwnd_, instance_, theme_, L"当前没有可刷新的启动项。", L"从Windows菜单刷新", MB_OK | MB_ICONINFORMATION);
             return;
@@ -3348,6 +3626,13 @@ private:
             windowUi_ = std::make_unique<ThemedWindowUi>(
                 instance_, owner_, hwnd_, theme_, DialogLayoutKind::Compact,
                 client.right - client.left, client.bottom - client.top);
+            windowUi_->SetDpiChangedCallback([this](UINT) {
+                if (!contextMenuTable_) {
+                    return;
+                }
+                RebuildContextMenuImageList();
+                AddContextMenuTableRows();
+            });
             CreateTabs();
             const ThemedUi settingsUi = MakeUi();
             const DialogLayoutMetrics& behaviorLayout = settingsUi.layout();
@@ -3520,6 +3805,7 @@ private:
                 },
                 contextMenuTableOptions);
             AddTabChild(contextMenuTable_, TabContextMenu);
+            RebuildContextMenuImageList();
             AddContextMenuTableRows();
             ThemedUi::BindGroupChildren(contextMenuTrackingGroup, {contextMenuTable_});
 
@@ -3896,6 +4182,14 @@ private:
         case WM_SETTINGS_WEBDAV_DONE:
             HandleWebDavResult(std::unique_ptr<SettingsWebDavResult>(reinterpret_cast<SettingsWebDavResult*>(lParam)));
             return 0;
+        case WM_CONTEXT_MENU_ICON_LOAD_REQUEST:
+            if (currentTab_ == TabContextMenu && contextMenuIconAutoRequested_) {
+                StartContextMenuIconLoad(false);
+            }
+            return 0;
+        case WM_CONTEXT_MENU_ICON_LOAD_DONE:
+            CompleteContextMenuIconLoad(static_cast<std::uintptr_t>(wParam));
+            return 0;
         case WM_CONTEXT_MENU_REFRESH_DONE:
             CompleteContextMenuRefresh();
             return 0;
@@ -4148,8 +4442,11 @@ private:
     HWND contextMenuTable_ = nullptr;
     HWND resetContextMenuButton_ = nullptr;
     HWND refreshContextMenuButton_ = nullptr;
+    HIMAGELIST contextMenuImages_ = nullptr;
     // 表格行序 → 绑定表下标（已安装在前、未安装沉底）。
     std::vector<std::size_t> contextMenuTableOrder_;
+    std::vector<ContextMenuProviderIconInfo> contextMenuProviderIcons_;
+    std::vector<int> contextMenuProviderImageIndexes_;
     HWND linkNameSingleLine_ = nullptr;
     HWND showTooltip_ = nullptr;
     HWND groupRight_ = nullptr;
@@ -4203,6 +4500,10 @@ private:
     bool importedData_ = false;
     bool webDavBusy_ = false;
     bool contextMenuRefreshBusy_ = false;
+    bool contextMenuIconLoadBusy_ = false;
+    bool contextMenuIconAutoRequested_ = false;
+    bool contextMenuProviderLoadCompleted_ = false;
+    bool contextMenuProviderLoadFailed_ = false;
     bool accepted_ = false;
     bool done_ = false;
     SettingsApplyCallback applyCallback_;
@@ -4210,9 +4511,12 @@ private:
     std::vector<Link> contextMenuLinks_;
     SettingsContextMenuRefreshRunner contextMenuRefreshRunner_;
     SettingsContextMenuRefreshApplyCallback contextMenuRefreshApplyCallback_;
+    SettingsContextMenuProviderIconRunner contextMenuProviderIconRunner_;
     std::jthread contextMenuRefreshThread_;
     std::mutex contextMenuRefreshMutex_;
     std::optional<ShellContextMenuRefreshResult> contextMenuRefreshResult_;
+    std::shared_ptr<SettingsContextMenuIconAsyncState> contextMenuIconAsyncState_;
+    std::uintptr_t contextMenuIconLoadGeneration_ = 0;
 };
 }
 
@@ -4262,7 +4566,8 @@ bool ShowSettingsDialog(
     SettingsResetContextMenuCallback resetContextMenuCallback,
     const std::vector<Link>& contextMenuLinks,
     SettingsContextMenuRefreshRunner contextMenuRefreshRunner,
-    SettingsContextMenuRefreshApplyCallback contextMenuRefreshApplyCallback) {
+    SettingsContextMenuRefreshApplyCallback contextMenuRefreshApplyCallback,
+    SettingsContextMenuProviderIconRunner contextMenuProviderIconRunner) {
     SettingsDialog dialog(
         owner,
         instance,
@@ -4278,7 +4583,8 @@ bool ShowSettingsDialog(
         std::move(resetContextMenuCallback),
         contextMenuLinks,
         std::move(contextMenuRefreshRunner),
-        std::move(contextMenuRefreshApplyCallback));
+        std::move(contextMenuRefreshApplyCallback),
+        std::move(contextMenuProviderIconRunner));
     const bool accepted = dialog.Run();
     if (importedData) {
         *importedData = dialog.webDavDataImported();

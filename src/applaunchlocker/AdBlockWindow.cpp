@@ -2,6 +2,7 @@
 
 #include "ThemedUi.h"
 #include "ThemedWindowUi.h"
+#include "ToastFeedback.h"
 #include "Utilities.h"
 #include "../../resources/resource.h"
 
@@ -17,6 +18,7 @@ namespace {
 constexpr int ID_TAB_CONTROL = 1200;
 constexpr int ID_TAB_BLOCK = 1201;
 constexpr int ID_TAB_BLOCKED = 1202;
+constexpr int ID_CONTENT_PANEL = 1203;
 constexpr int ID_PATH_EDIT = 1210;
 constexpr int ID_PICK_PATH = 1211;
 constexpr int ID_MODE_EXACT = 1213;
@@ -390,20 +392,35 @@ void AdBlockWindow::CreateControls() {
     const int gapX = ui.layout().controlGapX;
     const int rowGap = ui.layout().rowGap;
 
-    // 顶部标签页：拦截 / 已拦截
+    const int footerY = ui.footerButtonY(ui.footerButtonHeight());
+    const int statusY = footerY - ui.layout().sectionGap - ui.labelHeight();
+
+    // 顶部标签页与内容面板使用公共 ConnectedTabs 语义直接连接。
     const int tabHeight = ui.tabButtonHeight();
     const RECT tabRect{content.left, content.top, content.right, content.top + tabHeight};
+    const int connectionOverlap = ui.scale(1);
+    const RECT panelRect{
+        content.left,
+        tabRect.bottom - connectionOverlap,
+        content.right,
+        statusY - rowGap};
+    contentPanel_ = ui.Panel(ID_CONTENT_PANEL, panelRect, ThemedPanelOptions{ThemedPanelRole::Normal});
+    const RECT panelContent = ThemedUi::PanelContentRect(contentPanel_);
+    const RECT pageContent{
+        panelRect.left + panelContent.left,
+        panelRect.top + panelContent.top,
+        panelRect.left + panelContent.right,
+        panelRect.top + panelContent.bottom};
+
     ThemedTabControlOptions tabOptions{};
     tabOptions.activeIndex = 0;
-    tabOptions.appearance = ThemedTabControlAppearance::MinimalUnderline;
+    tabOptions.appearance = ThemedTabControlAppearance::ConnectedTabs;
     tabOptions.orientation = ThemedTabControlOrientation::Horizontal;
     tabControl_ = ui.TabControl(ID_TAB_CONTROL, tabRect,
         {{ID_TAB_BLOCK, L"拦截", true}, {ID_TAB_BLOCKED, L"已拦截", true}}, tabOptions);
 
-    const int bodyTop = tabRect.bottom + rowGap;
-    const int footerY = ui.footerButtonY(ui.footerButtonHeight());
-    const int statusY = footerY - ui.layout().sectionGap - ui.labelHeight();
-    const int tableBottom = statusY - rowGap;
+    const int bodyTop = pageContent.top;
+    const int tableBottom = pageContent.bottom;
 
     // ---- 拦截页控件 ----
     const int labelHeight = ui.labelHeight();
@@ -413,12 +430,12 @@ void AdBlockWindow::CreateControls() {
         ThemedButtonWidthMode::Text);
     const int editHeight = ui.editHeight();
     const int pathY = bodyTop;
-    const int editWidth = content.right - content.left - clearWidth - pickWidth - gapX * 2;
-    pathEdit_ = ui.Edit(ID_PATH_EDIT, ui.editFrame(content.left, pathY, editWidth), L"",
+    const int editWidth = pageContent.right - pageContent.left - clearWidth - pickWidth - gapX * 2;
+    pathEdit_ = ui.Edit(ID_PATH_EDIT, ui.editFrame(pageContent.left, pathY, editWidth), L"",
         ThemedEditOptions{ThemedEditMode::SingleLine, ThemedEditContent::Text, false, true, false, false, true, 0, L"选择要扫描的文件或文件夹"});
-    clearButton_ = ui.Button(ID_CLEAR_RESULTS, L"Clear", content.left + editWidth + gapX, pathY,
+    clearButton_ = ui.Button(ID_CLEAR_RESULTS, L"Clear", pageContent.left + editWidth + gapX, pathY,
         ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
-    pickPathButton_ = ui.Button(ID_PICK_PATH, L"选择", content.right - pickWidth, pathY,
+    pickPathButton_ = ui.Button(ID_PICK_PATH, L"选择", pageContent.right - pickWidth, pathY,
         ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
 
     const int listTop = ui.nextRowY(pathY, std::max(editHeight, labelHeight));
@@ -444,7 +461,7 @@ void AdBlockWindow::CreateControls() {
     tableOptions.allowColumnResize = true;
     tableOptions.showRowGridLines = true;
     tableOptions.showColumnGridLines = true;
-    scanTable_ = ui.Table(ID_SCAN_TABLE, RECT{content.left, listTop, content.right, tableBottom},
+    scanTable_ = ui.Table(ID_SCAN_TABLE, RECT{pageContent.left, listTop, pageContent.right, tableBottom},
         {{L"name", L"名称", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Remaining},
          {L"path", L"路径", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, ui.tableColumnWidth(L"C:\\Program Files\\Example\\example.exe")},
          {L"state", L"状态", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, ui.tableColumnWidth(L"可拦截（未签名）")}},
@@ -455,7 +472,7 @@ void AdBlockWindow::CreateControls() {
     blockedOptions.allowColumnResize = true;
     blockedOptions.showRowGridLines = true;
     blockedOptions.showColumnGridLines = true;
-    blockedTable_ = ui.Table(ID_BLOCKED_TABLE, RECT{content.left, bodyTop, content.right, tableBottom},
+    blockedTable_ = ui.Table(ID_BLOCKED_TABLE, RECT{pageContent.left, bodyTop, pageContent.right, tableBottom},
         {{L"name", L"名称", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Remaining},
          {L"path", L"路径", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, ui.tableColumnWidth(L"C:\\Program Files\\Example\\example.exe")},
          {L"mode", L"模式", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, ui.tableColumnWidth(L"同名程序")},
@@ -467,6 +484,13 @@ void AdBlockWindow::CreateControls() {
 
     blockButton_ = ui.FooterButton(ID_BLOCK_SELECTED, L"拦截所选", 0, 1, true, true);
     unblockButton_ = ui.FooterButton(ID_UNBLOCK, L"解除拦截", 0, 1, true, true);
+
+    const std::vector<HWND> panelChildren{
+        pathEdit_, clearButton_, pickPathButton_, scanTable_, blockedTable_};
+    for (HWND child : panelChildren) {
+        ThemedUi::SetControlSurface(child, ThemedControlSurface::Panel);
+    }
+    ThemedUi::BindPanelChildren(contentPanel_, panelChildren);
 
     // 绑定标签页可见性
     ThemedUi::BindTabPage(tabControl_, 0,
@@ -633,7 +657,7 @@ void AdBlockWindow::StartBlockSelected() {
         }
         if (fail == 0) payload->result = {true, L"已拦截 " + std::to_wstring(ok) + L" 个程序。"};
         else payload->result = {ok > 0, L"已拦截 " + std::to_wstring(ok) + L" 个，" + std::to_wstring(fail) +
-            L" 个失败：" + lastError};
+            L" 个失败：" + lastError, ok > 0};
         if (!PostMessageW(target, WM_APP_OPERATION_COMPLETE, 0, reinterpret_cast<LPARAM>(payload.get()))) return;
         payload.release();
     });
@@ -700,7 +724,8 @@ void AdBlockWindow::CompleteOperation(OperationResult result, bool rescan) {
         ThemedWindowUi::ShowMessageBox(hwnd_, instance_, theme_, result.message, L"广告拦截", MB_OK | MB_ICONWARNING);
     } else if (windowUi_) {
         ThemedToastOptions toast{};
-        toast.role = ThemedToastRole::Success;
+        toast.role = OperationToastRole(result.success, result.partial);
+        if (result.partial) toast.durationMs = 5000;
         windowUi_->ui().ShowToast(result.message.empty() ? L"操作完成。" : result.message, toast);
     }
     // 重新扫描以刷新已拦截列表；若在拦截页则也刷新扫描列表。

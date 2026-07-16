@@ -209,7 +209,7 @@ private:
     void ShowTodoReminderPanel(const TodoItem& item);
     void HideTodoReminderPanel();
     void ShowTodoSystemNotification(const TodoItem& item);
-    void ShowClipboardImportNotification(int count, const std::wstring& pathDetail = L"");
+    void ShowClipboardImportNotification(int count, int failedCount = 0, const std::wstring& pathDetail = L"");
     bool EnsureNotificationIcon();
     void OpenSettings();
     void CommitSettingsConfig(const AppConfig& next, bool importedData);
@@ -220,9 +220,17 @@ private:
     void RefreshAllIcons();
     void RefreshTagLinks(int tagId);
     void RefreshGroupLinks(int groupId);
-    void RefreshLinkResources(
+    enum class LinkResourceRefreshState {
+        Complete,
+        Pending,
+        Failed,
+    };
+    LinkResourceRefreshState RefreshLinkResources(
         Link& link,
         const TerminalContextMenuRefreshContext* terminalContext = nullptr);
+    void BeginResourceRefresh(const std::wstring& scopeText);
+    void CompleteResourceRefreshStart(int completed, int pending, int failed);
+    void ShowResourceRefreshResult(int completed, int failed);
     void RefreshLinkIcon(int linkId);
     void RequestInitialUrlIconDownload(const Link& link);
     void OnUrlIconDownloaded(int linkId, bool success);
@@ -249,7 +257,8 @@ private:
     bool IsEffectivelyVisible() const;
     void HideMainWindowAfterLink();
     void HideMainWindow();
-    void ImportPath(const std::wstring& path);
+    bool ImportPath(const std::wstring& path, bool showError = true);
+    void ShowImportFeedback(int succeeded, int failed);
     void ImportClipboard();
     void ExportConfigPackage();
     void ImportConfigPackageMerge();
@@ -448,6 +457,10 @@ private:
     bool hasClipboardLink_ = false;
     bool clipboardCut_ = false;
     int clipboardSourceId_ = 0;
+    std::unordered_set<int> pendingUrlIconRefreshIds_;
+    std::wstring pendingResourceRefreshScope_;
+    int pendingResourceRefreshCompleted_ = 0;
+    int pendingResourceRefreshFailed_ = 0;
     std::wstring tooltipText_;
     HitKind tooltipItemKind_ = HitKind::None;
     int tooltipItemId_ = 0;

@@ -49,7 +49,7 @@ try {
         (Join-Path $root "icons\menu\tabler\tabler-icons.ttf") |
         Measure-Object Length -Sum).Sum
     if ($xpressMagic -ne "QASPACK1" -or $xpressBytes.Length -ge $assetBytes) {
-        throw "Official mode must emit a compressed embedded asset pack."
+        throw "XPRESS mode must emit a compressed embedded asset pack."
     }
 
     "embedded_asset_generator_acceptance=passed raw_catalog_bytes=$($rawBytes.Length) xpress_pack_bytes=$($xpressBytes.Length)"

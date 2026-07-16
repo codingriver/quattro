@@ -288,6 +288,28 @@ std::vector<ShellContextMenuItem> ShellContextMenuCacheService::ItemsFor(
     return result;
 }
 
+std::optional<ShellContextMenuCachedIcon> ShellContextMenuCacheService::BestIconForProvider(
+    const std::wstring& providerId) const {
+    const std::wstring prefix = ToLower(Trim(providerId)) + L"|";
+    if (prefix.size() <= 1) {
+        return std::nullopt;
+    }
+    const ShellContextMenuCachedIcon* best = nullptr;
+    for (const auto& [key, icon] : iconPool_) {
+        if (key.rfind(prefix, 0) != 0 || icon.width <= 0 || icon.height <= 0 ||
+            icon.pixels.size() != static_cast<std::size_t>(icon.width * icon.height)) {
+            continue;
+        }
+        const int area = icon.width * icon.height;
+        const int bestArea = best ? best->width * best->height : 0;
+        if (!best || icon.quality > best->quality ||
+            (icon.quality == best->quality && area > bestArea)) {
+            best = &icon;
+        }
+    }
+    return best ? std::optional<ShellContextMenuCachedIcon>(*best) : std::nullopt;
+}
+
 void ShellContextMenuCacheService::Update(
     const Link& link,
     const ShellContextMenuSnapshot& snapshot,

@@ -3,6 +3,7 @@
 #include "../src/common/EmbeddedAssetInstaller.h"
 #include "../src/domain/LinkSorting.h"
 #include "../src/services/ConfigPackageService.h"
+#include "../src/services/ContextMenuProviderIconService.h"
 #include "../src/services/Launcher.h"
 #include "../src/domain/MenuCatalog.h"
 #include "../src/domain/PluginRegistry.h"
@@ -26,6 +27,7 @@
 #include "../src/services/WebDavRecoveryService.h"
 #include "../src/windows/MenuAnchorGeometry.h"
 #include "../src/windows/MainTitleBuildMarkerLayout.h"
+#include "../src/windows/ToastFeedback.h"
 #include "Version.h"
 
 #include <sqlite3.h>
@@ -493,7 +495,7 @@ int wmain() {
         const std::filesystem::path embeddedFontPath = firstInstall.appDirectory / L"icons" / L"menu" / L"tabler" / L"tabler-icons.ttf";
         const std::filesystem::path customThemePath = firstInstall.appDirectory / L"theme" / L"custom.xml";
         const std::wstring embeddedDefaultTheme = LoadUtf8File(defaultThemePath);
-        const bool expectCompressedAssets = QuattroIsOfficialBuild();
+        const bool expectCompressedAssets = QuattroUsesCompressedEmbeddedAssets();
         Check(firstInstall.failures == 0, "Embedded assets first install succeeds");
         Check(firstInstall.rawAssets + firstInstall.compressedAssets == firstInstall.filesWritten && firstInstall.filesWritten >= 3,
             "Embedded asset catalog covers every installed file");
@@ -501,13 +503,13 @@ int wmain() {
             expectCompressedAssets
                 ? firstInstall.compressedAssets == firstInstall.filesWritten && firstInstall.filesDecompressed == firstInstall.filesWritten
                 : firstInstall.rawAssets == firstInstall.filesWritten && firstInstall.compressedAssets == 0 && firstInstall.filesDecompressed == 0,
-            "Embedded asset storage follows the build identity");
+            "Embedded asset storage follows the build configuration");
         Check(FileExists(defaultThemePath) && embeddedDefaultTheme.find(L"version=\"2\"") != std::wstring::npos,
             "Embedded assets install default theme");
         Check(FileExists(embeddedCssPath) && std::filesystem::file_size(embeddedCssPath, ec) > 0,
-            "Compressed embedded assets install icon stylesheet");
+            "Embedded assets install icon stylesheet");
         Check(FileExists(embeddedFontPath) && std::filesystem::file_size(embeddedFontPath, ec) > 0,
-            "Compressed embedded assets install icon font");
+            "Embedded assets install icon font");
 
         EmbeddedAssetInstallResult unchangedInstall = PrepareEmbeddedAssets(assetModuleRoot);
         Check(unchangedInstall.failures == 0 && unchangedInstall.filesDecompressed == 0,
@@ -531,7 +533,7 @@ int wmain() {
         Check(secondInstall.filesDecompressed == (expectCompressedAssets ? 1 : 0),
             "Embedded assets only decompress modified files in compressed builds");
         Check(secondInstall.filesBackedUp == 1 && FileExists(secondInstall.backupDirectory / L"theme" / L"default.xml"),
-            "Compressed embedded assets back up modified managed files");
+            "Embedded assets back up modified managed files");
         const std::wstring restoredDefaultTheme = LoadUtf8File(defaultThemePath);
         Check(restoredDefaultTheme == embeddedDefaultTheme, "Embedded assets restore default theme by exact content");
         Check(FileExists(customThemePath), "Embedded assets keep custom theme files");
@@ -651,6 +653,14 @@ int wmain() {
             persistedCode != persistedItems.end() && persistedCode->iconWidth == 2 &&
             persistedCode->iconHeight == 2 && persistedCode->iconPixels == codeItem.iconPixels,
             "Shell menu cache native icon persistence");
+        const auto bestCodeIcon = shellMenuCache.BestIconForProvider(ShellContextMenuProviderId::VsCode);
+        Check(
+            bestCodeIcon && bestCodeIcon->width == 2 && bestCodeIcon->height == 2 &&
+            bestCodeIcon->pixels == codeItem.iconPixels,
+            "Shell menu cache exposes the best provider icon");
+        Check(
+            !shellMenuCache.BestIconForProvider(L"missing-provider"),
+            "Shell menu cache reports a missing provider icon");
         const auto persistedSharedCode = shellMenuCache.ItemsFor(secondCachedLink, allTracking);
         Check(
             persistedSharedCode.size() == 3 && persistedSharedCode.front().iconPixels == codeItem.iconPixels,
@@ -814,6 +824,29 @@ int wmain() {
         refreshResult.updates.size() == 2 && refreshResult.menuItemCount == 2 &&
         refreshResult.updates.front().nativeSnapshot.complete,
         "Shell menu refresh returns cache-ready snapshots");
+
+    int providerResolveCount = 0;
+    ContextMenuProviderIconService providerIconService(
+        [&](const TrackedContextMenuProviderBinding& provider,
+            const std::optional<ShellContextMenuCachedIcon>&,
+            std::stop_token) {
+            ++providerResolveCount;
+            ContextMenuProviderIconInfo info;
+            info.providerId = provider.providerId;
+            info.installed = true;
+            info.installedViaProbe = true;
+            info.attempted = true;
+            return info;
+        });
+    const auto providerIcons = providerIconService.Load();
+    Check(
+        providerIcons.size() == TrackedContextMenuProviderCount &&
+        providerResolveCount == static_cast<int>(TrackedContextMenuProviderCount),
+        "Provider icon load resolves each provider exactly once");
+    Check(
+        !providerIcons.empty() && providerIcons.front().providerId == ShellContextMenuProviderId::VsCode &&
+        providerIcons.back().providerId == ShellContextMenuProviderId::Vim,
+        "Provider icon load preserves the shared provider order");
     std::filesystem::remove_all(terminalTargetRoot, ec);
 
     // Executable menu icons must resolve even when the target exposes no icon at
@@ -1123,6 +1156,21 @@ int wmain() {
     toastOptions.durationMs = 1500;
     Check(toastOptions.role == ThemedToastRole::Success && toastOptions.anchor == ThemedToastAnchor::ScreenBottomRight && toastOptions.durationMs == 1500,
         "Themed toast options compose");
+    const ImportToastSummary importSuccess{3, 0};
+    Check(
+        ImportToastRole(importSuccess) == ThemedToastRole::Success &&
+            ImportToastText(importSuccess, L"工作") == L"已添加 3 项到“工作”。",
+        "Import toast success text and role");
+    const ImportToastSummary importPartial{2, 1};
+    Check(
+        ImportToastRole(importPartial) == ThemedToastRole::Warning &&
+            ImportToastText(importPartial, L"工作") == L"已添加 2 项，1 项失败。",
+        "Import toast partial text and role");
+    Check(
+        OperationToastRole(true, false) == ThemedToastRole::Success &&
+            OperationToastRole(true, true) == ThemedToastRole::Warning &&
+            OperationToastRole(false, false) == ThemedToastRole::Danger,
+        "Operation toast outcome roles");
     Check(fallbackTheme.color(L"toggle", L"disabled", L"text").a > 0.9f, "Theme default toggle text state");
     Check(fallbackTheme.color(L"radio", L"hover", L"border").a > 0.9f, "Theme default radio hover state");
     Check(fallbackTheme.color(L"slider", L"disabled", L"thumb").a > 0.9f, "Theme default slider disabled state");
@@ -1403,12 +1451,32 @@ int wmain() {
         panelOptions.role = ThemedPanelRole::Inset;
         panelOptions.scrollable = true;
         HWND runtimePanel = controlUi.Panel(516, RECT{380, 300, 620, 380}, panelOptions);
+        const RECT runtimePanelContent = ThemedUi::PanelContentRect(runtimePanel);
+        const UINT runtimePanelDpi = GetDpiForWindow(runtimePanel);
+        Check(runtimePanelContent.left == ThemedWindowUi::ScaleForDpi(10, runtimePanelDpi) &&
+                runtimePanelContent.top == ThemedWindowUi::ScaleForDpi(8, runtimePanelDpi) &&
+                runtimePanelContent.right == 240 - ThemedWindowUi::ScaleForDpi(10, runtimePanelDpi) &&
+                runtimePanelContent.bottom == 80 - ThemedWindowUi::ScaleForDpi(8, runtimePanelDpi),
+            "Themed panel public content rect preserves themed DPI-scaled insets");
         ThemedUi::BindPanelChildren(runtimePanel, {panelChild});
+        Check(GetWindow(runtimePanel, GW_HWNDNEXT) == nullptr,
+            "Themed panel remains behind sibling content in the parent z-order");
         ThemedUi::SetPanelEnabled(runtimePanel, false);
         Check(runtimePanel != nullptr && !IsWindowEnabled(panelChild), "Themed panel propagates enabled state");
         ThemedUi::SetPanelEnabled(runtimePanel, true);
         ThemedUi::SetPanelRole(runtimePanel, ThemedPanelRole::Raised);
         Check(ThemedUi::IsPanelEnabled(runtimePanel) && ThemedUi::IsPanelVisible(runtimePanel), "Themed panel public state queries");
+        HWND fixedPanelChild = CreateWindowExW(0, L"STATIC", L"fixed panel child", WS_CHILD | WS_VISIBLE,
+            12, 14, 80, 20, controlParent, nullptr, GetModuleHandleW(nullptr), nullptr);
+        HWND fixedPanel = controlUi.Panel(7120, RECT{0, 520, 240, 600});
+        ThemedUi::BindPanelChildren(fixedPanel, {fixedPanelChild});
+        RECT fixedChildBefore{};
+        RECT fixedChildAfter{};
+        GetWindowRect(fixedPanelChild, &fixedChildBefore);
+        SetWindowPos(fixedPanel, nullptr, 0, 520, 300, 100, SWP_NOACTIVATE | SWP_NOZORDER);
+        GetWindowRect(fixedPanelChild, &fixedChildAfter);
+        Check(EqualRect(&fixedChildBefore, &fixedChildAfter),
+            "Themed non-scrollable panel resize does not overwrite externally scaled child geometry");
         HWND runtimeToolbar = controlUi.ToolBar(
             514, RECT{380, 200, 700, 240},
             {{701, L"Run"}, {702, L"Pin", ThemedToolItemKind::Toggle, ThemedToolItemAlignment::Leading, true, false}});

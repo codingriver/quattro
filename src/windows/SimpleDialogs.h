@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Models.h"
+#include "ContextMenuProviderIconService.h"
 #include "ShellContextMenuRefreshService.h"
 #include "Theme.h"
 
@@ -20,6 +21,8 @@ using SettingsContextMenuRefreshRunner = std::function<ShellContextMenuRefreshRe
     std::stop_token)>;
 using SettingsContextMenuRefreshApplyCallback = std::function<void(
     const ShellContextMenuRefreshResult&)>;
+using SettingsContextMenuProviderIconRunner = std::function<std::vector<ContextMenuProviderIconInfo>(
+    std::stop_token)>;
 
 bool ShowTextInputDialog(HWND owner, HINSTANCE instance, const Theme& theme, const std::wstring& title, const std::wstring& label, std::wstring& value);
 int ShowThemedMessageBox(HWND owner, HINSTANCE instance, const Theme& theme, const std::wstring& message, const std::wstring& title, UINT flags);
@@ -51,4 +54,5 @@ bool ShowSettingsDialog(
     SettingsResetContextMenuCallback resetContextMenuCallback = {},
     const std::vector<Link>& contextMenuLinks = {},
     SettingsContextMenuRefreshRunner contextMenuRefreshRunner = {},
-    SettingsContextMenuRefreshApplyCallback contextMenuRefreshApplyCallback = {});
+    SettingsContextMenuRefreshApplyCallback contextMenuRefreshApplyCallback = {},
+    SettingsContextMenuProviderIconRunner contextMenuProviderIconRunner = {});

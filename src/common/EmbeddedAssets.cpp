@@ -3,7 +3,14 @@
 #include "../../resources/resource.h"
 
 #include <windows.h>
+
+#ifndef QUATTRO_ENABLE_ASSET_DECOMPRESSION
+#define QUATTRO_ENABLE_ASSET_DECOMPRESSION 0
+#endif
+
+#if QUATTRO_ENABLE_ASSET_DECOMPRESSION
 #include <compressapi.h>
+#endif
 
 #include <algorithm>
 #include <cwctype>
@@ -15,7 +22,7 @@ namespace {
 constexpr unsigned char kCompressedPackMagic[] = {'Q', 'A', 'S', 'P', 'A', 'C', 'K', '1'};
 constexpr unsigned char kRawCatalogMagic[] = {'Q', 'A', 'R', 'C', 'A', 'T', '0', '1'};
 constexpr std::uint32_t kFormatVersion = 1;
-constexpr std::uint32_t kCompressionAlgorithm = COMPRESS_ALGORITHM_XPRESS_HUFF;
+constexpr std::uint32_t kCompressionAlgorithm = 4; // COMPRESS_ALGORITHM_XPRESS_HUFF
 constexpr std::uint32_t kMaximumAssetCount = 1024;
 constexpr std::uint64_t kMaximumAssetSize = 256ull * 1024ull * 1024ull;
 
@@ -344,6 +351,7 @@ bool LoadEmbeddedAssetBytes(
         return true;
     }
 
+#if QUATTRO_ENABLE_ASSET_DECOMPRESSION
     DECOMPRESSOR_HANDLE decompressor = nullptr;
     if (!CreateDecompressor(COMPRESS_ALGORITHM_XPRESS_HUFF, nullptr, &decompressor)) {
         error = L"无法初始化内置资源解压器。";
@@ -367,4 +375,8 @@ bool LoadEmbeddedAssetBytes(
     }
     decompressed = true;
     return true;
+#else
+    error = L"当前构建未启用内置资源解压支持。";
+    return false;
+#endif
 }

@@ -47,6 +47,7 @@ private:
     std::unique_ptr<ThemedWindowUi> windowUi_;
 
     HWND tabControl_ = nullptr;
+    HWND contentPanel_ = nullptr;
     HWND pathEdit_ = nullptr;
     HWND pickPathButton_ = nullptr;
     HWND clearButton_ = nullptr;

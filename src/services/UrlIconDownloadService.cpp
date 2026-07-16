@@ -172,30 +172,31 @@ void UrlIconDownloadService::RequestInitialDownload(HWND notifyHwnd, UINT notify
     RequestDownload(notifyHwnd, notifyMessage, std::move(link), false);
 }
 
-void UrlIconDownloadService::RequestManualRefresh(HWND notifyHwnd, UINT notifyMessage, Link link) {
-    RequestDownload(notifyHwnd, notifyMessage, std::move(link), true);
+bool UrlIconDownloadService::RequestManualRefresh(HWND notifyHwnd, UINT notifyMessage, Link link) {
+    return RequestDownload(notifyHwnd, notifyMessage, std::move(link), true);
 }
 
-void UrlIconDownloadService::RequestDownload(HWND notifyHwnd, UINT notifyMessage, Link link, bool overwrite) {
+bool UrlIconDownloadService::RequestDownload(HWND notifyHwnd, UINT notifyMessage, Link link, bool overwrite) {
     if (!notifyHwnd || notifyMessage == 0 || !LooksLikeWebUrl(link)) {
-        return;
+        return false;
     }
 
     const std::wstring host = UrlHost(link.path);
     if (host.empty() || !TryClaimHost(host)) {
-        return;
+        return false;
     }
 
     std::lock_guard<std::mutex> lock(mutex_);
     if (stopping_) {
         activeHosts_.erase(host);
-        return;
+        return false;
     }
     threads_.emplace_back([this, notifyHwnd, notifyMessage, link = std::move(link), host, overwrite]() {
         const bool ok = DownloadIconForLink(link, overwrite);
         ReleaseHost(host);
         PostMessageW(notifyHwnd, notifyMessage, static_cast<WPARAM>(link.id), ok ? 1 : 0);
     });
+    return true;
 }
 
 void UrlIconDownloadService::Shutdown() {

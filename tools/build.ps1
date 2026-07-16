@@ -2,6 +2,8 @@
     [ValidateSet("all", "x86", "x64", "--all", "--help")]
     [string]$Platform = "x64",
     [switch]$All,
+    [switch]$Complete,
+    [switch]$Minimal,
     [string]$Configuration = "Release",
     [switch]$Clean,
     [switch]$Test,
@@ -12,6 +14,7 @@
     [switch]$Upx,
     [switch]$NoUpx,
     [string]$UpxPath = "upx",
+    [switch]$CompressEmbeddedAssets,
     [switch]$PlanOnly,
     [switch]$Release,
     [switch]$OfficialBuild,
@@ -42,6 +45,14 @@ if ($Platform -eq "--all") {
     $Platform = "x64"
 }
 
+if ($Complete -and $Minimal) {
+    throw "-Complete and -Minimal cannot be used together."
+}
+
+if (!$All -and !$Complete -and !$Minimal -and !$Release) {
+    $Complete = $true
+}
+
 if ($Release) {
     if ($backendWasExplicit -and $Backend -ne "vcpkg") {
         throw "-Release uses the same vcpkg backend as GitHub Actions and cannot be combined with -Backend classic."
@@ -57,6 +68,10 @@ if ($Release) {
     } elseif (!$platformWasExplicit -and !$All) {
         $All = $true
     }
+}
+
+if ($All -and $Minimal) {
+    throw "-All already represents a complete multi-platform build and cannot be combined with -Minimal."
 }
 
 if ($Upx -and !$PlanOnly) {
@@ -77,16 +92,17 @@ $effectiveVersion = if ([string]::IsNullOrWhiteSpace($Version)) { "0.1.0" } else
 $formalBuildDefaults = $OfficialBuild -or $env:GITHUB_ACTIONS -eq "true"
 $defaultLoggingEnabled = if ($formalBuildDefaults) { "OFF" } else { "ON" }
 $defaultTopMostEnabled = if ($formalBuildDefaults) { "ON" } else { "OFF" }
-$bundleOptionalExecutables = if ($All) { "ON" } else { "OFF" }
+$completeBuild = $All -or $Complete
+$bundleOptionalExecutables = if ($completeBuild) { "ON" } else { "OFF" }
 $officialBuildEnabled = if ($OfficialBuild) { "ON" } else { "OFF" }
-$compressEmbeddedAssets = if ($OfficialBuild) { "ON" } else { "OFF" }
-$buildMarker = if ($OfficialBuild) { "none" } elseif ($All) { "DEBUG-All" } else { "DEBUG" }
-$buildScope = if ($All) { "complete" } else { "minimal" }
+$embeddedAssetCompressionCmake = if ($CompressEmbeddedAssets) { "ON" } else { "OFF" }
+$buildMarker = if ($OfficialBuild) { "none" } elseif ($completeBuild) { "DEBUG-All" } else { "DEBUG" }
+$buildScope = if ($completeBuild) { "complete" } else { "minimal" }
 $buildProfile = if ($OfficialBuild) {
     "official-$buildScope"
 } elseif ($Test) {
     "tests-$buildScope"
-} elseif ($All) {
+} elseif ($completeBuild) {
     "complete"
 } else {
     "minimal"
@@ -101,9 +117,9 @@ Quattro 中文构建与打包工具
   powershell -ExecutionPolicy Bypass -File .\tools\$scriptName [options]
 
 默认行为：
-  构建本地开发版 x64 最小包，使用 vcpkg 后端和 Release 配置。
-  默认只打包 Quattro，不构建、不打包 AppLaunchLocker 和 QuattroUpdater。
-  主窗口显示红色（DEBUG）标记，默认生成：
+  构建本地开发版 x64 完整包，使用 vcpkg 后端和 Release 配置。
+  默认包含 Quattro、AppLaunchLocker 和 QuattroUpdater。
+  主窗口显示红色（DEBUG-All）标记，默认生成：
     dist\Quattro-x64.exe
     dist\Quattro-x64.zip
     dist\SHA256SUMS.txt
@@ -117,8 +133,17 @@ Quattro 中文构建与打包工具
       构建完整的 x86 和 x64 包，并包含 AppLaunchLocker 和 QuattroUpdater。
       本地主窗口显示红色（DEBUG-All）标记。
 
+  -Complete
+      为当前所选平台构建完整组件包，包含 AppLaunchLocker 和 QuattroUpdater。
+      默认平台为 x64；本地主窗口显示红色（DEBUG-All）标记。此参数不自动增加目标架构。
+
+  -Minimal
+      为当前所选平台仅构建 Quattro 精简包，不包含 AppLaunchLocker 和 QuattroUpdater。
+      本地主窗口显示红色（DEBUG）标记。与 -Release 组合时必须显式指定单个平台。
+
   -Platform x86|x64
-      选择最小包的目标架构，默认 x64。与 -All 一起使用时由 -All 构建全部架构。
+      选择目标架构，默认 x64。与 -Complete 组合时构建单平台完整包；
+      与 -All 一起使用时由 -All 构建全部架构。
 
   -Configuration <名称>
       指定 CMake/MSBuild 配置，默认 Release。
@@ -128,7 +153,8 @@ Quattro 中文构建与打包工具
 
   -Test
       构建本地测试/辅助工具并在打包前运行相关单元测试，需要本地 tests/ 源码。
-      此参数不会自动包含可选程序；测试 AppLaunchLocker 或 QuattroUpdater 时必须使用 -All -Test。
+      默认完整范围会包含可选程序；只测试 Quattro 精简范围可使用 -Minimal -Test。
+      验收 AppLaunchLocker、QuattroUpdater 或完整发布链路时仍必须使用 -All -Test。
 
   -SkipTests
       兼容参数。默认本来就不运行测试，除非显式指定 -Test。
@@ -151,13 +177,17 @@ Quattro 中文构建与打包工具
   -UpxPath <路径>
       指定 UPX 可执行文件路径，默认从 PATH 中查找 upx。
 
+  -CompressEmbeddedAssets
+      使用 XPRESS Huffman 压缩内置主题和图标资源。所有构建默认直接嵌入原始资源；
+      仅在需要比较资源压缩效果或生成兼容包时显式启用。
+
   -PlanOnly
       仅输出解析后的架构、构建身份、可选组件状态和构建目录，不编译、不打包。
 
   -OfficialBuild
       构建正式版，不显示 DEBUG 标记，主要供 GitHub Actions 正式发布使用。
       正式完整包通常组合使用 -OfficialBuild -All。
-      正式版会压缩内置主题和图标；本地 DEBUG/DEBUG-All 直接嵌入原始资源以缩短构建时间。
+      正式版与本地 DEBUG/DEBUG-All 均默认直接嵌入原始主题和图标资源。
 
   -Release
       使用与 GitHub Actions Package 步骤一致的正式打包参数：vcpkg、OfficialBuild、NoZip。
@@ -178,17 +208,26 @@ Quattro 中文构建与打包工具
       指定依赖构建后端，默认 vcpkg；classic 仅用于兼容旧构建流程。
 
 常用示例：
-  # 本地 x64 开发版最小包（不包含 AppLaunchLocker、QuattroUpdater）
+  # 本地 x64 开发版完整包（包含 AppLaunchLocker、QuattroUpdater）
   powershell -ExecutionPolicy Bypass -File .\tools\$scriptName
+
+  # 本地 x64 开发版精简包（仅 Quattro）
+  powershell -ExecutionPolicy Bypass -File .\tools\$scriptName -Minimal
 
   # 本地完整包，包含 AppLaunchLocker、QuattroUpdater，构建 x86 和 x64
   powershell -ExecutionPolicy Bypass -File .\tools\$scriptName --all
 
+  # 本地 x64 完整包，包含 AppLaunchLocker、QuattroUpdater
+  powershell -ExecutionPolicy Bypass -File .\tools\$scriptName -Complete
+
+  # 本地 x86 完整包，包含 AppLaunchLocker、QuattroUpdater
+  powershell -ExecutionPolicy Bypass -File .\tools\$scriptName -Platform x86 -Complete
+
   # 测试 AppLaunchLocker、QuattroUpdater 相关内容
   powershell -ExecutionPolicy Bypass -File .\tools\$scriptName -All -Test
 
-  # 只运行 Quattro 最小构建范围的相关测试
-  powershell -ExecutionPolicy Bypass -File .\tools\$scriptName -Test
+  # 只运行 Quattro 精简构建范围的相关测试
+  powershell -ExecutionPolicy Bypass -File .\tools\$scriptName -Minimal -Test
 
   # 快速构建但不生成 ZIP
   powershell -ExecutionPolicy Bypass -File .\tools\$scriptName -NoZip
@@ -205,8 +244,11 @@ Quattro 中文构建与打包工具
   # 构建不使用 UPX 的正式包
   powershell -ExecutionPolicy Bypass -File .\tools\$scriptName -Release -NoUpx -Version 1.2.3
 
-  # 仅构建 x86 最小包
-  powershell -ExecutionPolicy Bypass -File .\tools\$scriptName -Platform x86
+  # 显式压缩内置主题和图标资源
+  powershell -ExecutionPolicy Bypass -File .\tools\$scriptName -Release -CompressEmbeddedAssets -Version 1.2.3
+
+  # 仅构建 x86 精简包
+  powershell -ExecutionPolicy Bypass -File .\tools\$scriptName -Platform x86 -Minimal
 "@
 }
 
@@ -378,7 +420,7 @@ function Ensure-Configured {
     $configureArgs += "-DQUATTRO_DEFAULT_TOP_MOST_ENABLED=$defaultTopMostEnabled"
     $configureArgs += "-DQUATTRO_BUNDLE_OPTIONAL_EXECUTABLES=$bundleOptionalExecutables"
     $configureArgs += "-DQUATTRO_OFFICIAL_BUILD=$officialBuildEnabled"
-    $configureArgs += "-DQUATTRO_COMPRESS_EMBEDDED_ASSETS=$compressEmbeddedAssets"
+    $configureArgs += "-DQUATTRO_COMPRESS_EMBEDDED_ASSETS=$embeddedAssetCompressionCmake"
     Invoke-NativeCommand -Description "CMake configure" -Command "cmake" -Arguments $configureArgs
 }
 
@@ -741,7 +783,7 @@ if ($PlanOnly) {
     "architectures=$((@($architectures | ForEach-Object { $_.Name }) -join ','))"
     "bundle_optional_executables=$bundleOptionalExecutables"
     "official_build=$officialBuildEnabled"
-    "embedded_assets=$(if ($compressEmbeddedAssets -eq 'ON') { 'xpress' } else { 'raw' })"
+    "embedded_assets=$(if ($embeddedAssetCompressionCmake -eq 'ON') { 'xpress' } else { 'raw' })"
     "configuration=$Configuration"
     "backend=$Backend"
     "no_zip=$(if ($NoZip) { 'ON' } else { 'OFF' })"

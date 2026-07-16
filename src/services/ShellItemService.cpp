@@ -14,6 +14,7 @@
 #include <cstring>
 #include <filesystem>
 #include <optional>
+#include <string_view>
 #include <utility>
 
 namespace {
@@ -563,6 +564,110 @@ bool CaptureShellFileIcon(const std::wstring& path, ShellContextMenuItem& item, 
     return !item.iconPixels.empty();
 }
 
+std::wstring ResolveExecutablePath(std::wstring path) {
+    path = ExpandEnvironmentStringsSafe(Trim(path));
+    if (path.empty()) {
+        return {};
+    }
+    std::error_code ec;
+    if (std::filesystem::is_regular_file(path, ec)) {
+        return path;
+    }
+    const std::wstring fileName = std::filesystem::path(path).filename().wstring();
+    if (fileName.empty()) {
+        return path;
+    }
+    const std::array<std::pair<HKEY, const wchar_t*>, 2> appPathRoots{{
+        {HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\"},
+        {HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\"},
+    }};
+    for (const auto& [root, prefix] : appPathRoots) {
+        const std::wstring registered = RegistryString(root, std::wstring(prefix) + fileName, nullptr);
+        if (!registered.empty() && std::filesystem::is_regular_file(registered, ec)) {
+            return registered;
+        }
+    }
+    std::array<wchar_t, 32768> found{};
+    const DWORD length = SearchPathW(
+        nullptr, fileName.c_str(), nullptr, static_cast<DWORD>(found.size()), found.data(), nullptr);
+    return length > 0 && length < found.size() ? std::wstring(found.data(), length) : path;
+}
+
+bool CaptureIconLocationValue(
+    const std::wstring& value,
+    ShellContextMenuItem& item,
+    int quality = 1) {
+    std::wstring iconPath;
+    int iconIndex = 0;
+    if (!ParseIconLocation(value, iconPath, iconIndex)) {
+        return false;
+    }
+    iconPath = ResolveExecutablePath(iconPath);
+    HICON largeIcon = nullptr;
+    HICON smallIcon = nullptr;
+    if (ExtractIconExW(iconPath.c_str(), iconIndex, &largeIcon, &smallIcon, 1) != 0) {
+        CaptureIconHandle(smallIcon ? smallIcon : largeIcon, item, quality);
+        if (smallIcon) DestroyIcon(smallIcon);
+        if (largeIcon) DestroyIcon(largeIcon);
+    }
+    if (item.iconPixels.empty()) {
+        CaptureShellFileIcon(iconPath, item, quality);
+    }
+    return !item.iconPixels.empty();
+}
+
+bool CaptureCommandIcon(const std::wstring& command, ShellContextMenuItem& item) {
+    return CaptureIconLocationValue(ExecutableFromCommand(command), item);
+}
+
+bool CaptureRegistryKeyIcon(const std::wstring& key, ShellContextMenuItem& item) {
+    const std::array<std::pair<std::wstring, const wchar_t*>, 4> iconLocations{{
+        {key, L"Icon"},
+        {key + L"\\DefaultIcon", nullptr},
+        {key + L"\\shell\\open", L"Icon"},
+        {key + L"\\shell\\open\\DefaultIcon", nullptr},
+    }};
+    for (const auto& [location, valueName] : iconLocations) {
+        const std::wstring value = RegistryString(HKEY_CLASSES_ROOT, location, valueName);
+        if (!value.empty() && CaptureIconLocationValue(value, item)) {
+            return true;
+        }
+    }
+
+    const std::array<std::wstring, 2> commandLocations{{
+        key + L"\\command",
+        key + L"\\shell\\open\\command",
+    }};
+    for (const auto& location : commandLocations) {
+        const std::wstring command = RegistryString(HKEY_CLASSES_ROOT, location, nullptr);
+        if (!command.empty() && CaptureCommandIcon(command, item)) {
+            return true;
+        }
+    }
+
+    const std::wstring handlerClass = RegistryString(HKEY_CLASSES_ROOT, key, nullptr);
+    if (handlerClass.size() >= 2 && handlerClass.front() == L'{' && handlerClass.back() == L'}') {
+        const std::wstring classKey = L"CLSID\\" + handlerClass;
+        const std::wstring classIcon = RegistryString(HKEY_CLASSES_ROOT, classKey + L"\\DefaultIcon", nullptr);
+        if (!classIcon.empty() && CaptureIconLocationValue(classIcon, item)) {
+            return true;
+        }
+        const std::wstring module = RegistryString(HKEY_CLASSES_ROOT, classKey + L"\\InprocServer32", nullptr);
+        if (!module.empty() && CaptureIconLocationValue(module, item)) {
+            return true;
+        }
+    }
+
+    constexpr std::wstring_view applicationsPrefix = L"Applications\\";
+    if (key.rfind(applicationsPrefix, 0) == 0) {
+        const std::wstring executable = key.substr(applicationsPrefix.size());
+        if (!executable.empty() && CaptureIconLocationValue(ResolveExecutablePath(executable), item)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void CaptureRegisteredMenuIcon(const std::wstring& verb, ShellContextMenuItem& item) {
     if (verb.empty() || !item.iconPixels.empty()) {
         return;
@@ -1081,6 +1186,26 @@ bool ShellItemService::LoadExecutableMenuIcon(
         CaptureShellFileIcon(executable, item, 1);
     }
     return !item.iconPixels.empty();
+}
+
+bool ShellItemService::LoadTrackedProviderIcon(
+    const TrackedContextMenuProviderBinding& binding,
+    ShellContextMenuItem& item) {
+    item.providerId = binding.providerId ? binding.providerId : L"";
+    for (const wchar_t* probeKey : binding.shellProbeKeys) {
+        if (!probeKey) {
+            break;
+        }
+        HKEY key = nullptr;
+        if (RegOpenKeyExW(HKEY_CLASSES_ROOT, probeKey, 0, KEY_READ, &key) != ERROR_SUCCESS) {
+            continue;
+        }
+        RegCloseKey(key);
+        if (CaptureRegistryKeyIcon(probeKey, item)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 bool ShellItemService::IsShellParseName(const std::wstring& value) {

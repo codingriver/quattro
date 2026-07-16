@@ -53,6 +53,7 @@ struct ScanResult {
 struct OperationResult {
     bool success = false;
     std::wstring message;
+    bool partial = false;
 };
 
 std::wstring StartupSourceKey(StartupSourceType source);

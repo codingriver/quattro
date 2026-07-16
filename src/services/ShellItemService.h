@@ -77,6 +77,12 @@ public:
     static bool LoadExecutableMenuIcon(
         const std::wstring& executable,
         ShellContextMenuItem& item);
+    // Resolves one representative icon for a tracked provider from its bounded
+    // registry probes and executable commands. It never constructs a native
+    // IContextMenu, so it is suitable for finite background presentation work.
+    static bool LoadTrackedProviderIcon(
+        const TrackedContextMenuProviderBinding& binding,
+        ShellContextMenuItem& item);
     static bool OpenShellTarget(HWND owner, const Link& link, int showCmd, std::wstring& errorMessage);
     static bool OpenContainingLocation(HWND owner, const Link& link, std::wstring& errorMessage);
     static bool QueryTrackedContextMenu(
