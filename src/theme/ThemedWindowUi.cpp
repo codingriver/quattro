@@ -897,14 +897,16 @@ void ThemedWindowUi::PositionToast() {
         y = std::max<int>(info.rcWork.top + marginY, std::min<int>(y, info.rcWork.bottom - toastSize_.cy - marginY));
     }
 
+    const bool backgroundMode = BackgroundAcceptanceMode();
+    const UINT positionFlags = SWP_NOACTIVATE | (backgroundMode ? 0u : (SWP_NOZORDER | SWP_NOOWNERZORDER));
     SetWindowPos(
         toast_,
-        BackgroundAcceptanceMode() ? HWND_BOTTOM : HWND_TOPMOST,
+        backgroundMode ? HWND_BOTTOM : nullptr,
         x,
         y,
         toastSize_.cx,
         toastSize_.cy,
-        SWP_NOACTIVATE);
+        positionFlags);
     if ((GetWindowLongPtrW(toast_, GWL_EXSTYLE) & WS_EX_LAYERED) == 0) {
         const int radius = ScaleForDpi(static_cast<int>(theme_.metric(L"toast", L"radius", 7.0f)), dpi_);
         ThemedGdiFallback::ApplyRoundedWindowRegion(toast_, toastSize_, radius, false);
