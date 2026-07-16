@@ -18,6 +18,7 @@
 #include "../src/theme/Theme.h"
 #include "../src/theme/ThemedFormLayout.h"
 #include "../src/theme/ThemedUi.h"
+#include "../src/theme/ThemedControls.h"
 #include "../src/theme/ThemedWindowUi.h"
 #include "../src/domain/TodoSchedule.h"
 #include "../src/common/Utilities.h"
@@ -33,6 +34,7 @@
 #include <sqlite3.h>
 
 #include <cmath>
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -1394,12 +1396,58 @@ int wmain() {
         softPillTabOptions.appearance = ThemedTabControlAppearance::SoftPill;
         ThemedTabControlOptions connectedTabOptions{};
         connectedTabOptions.appearance = ThemedTabControlAppearance::ConnectedTabs;
+        Check(connectedTabOptions.containerStyle == ThemedTabControlContainerStyle::AppearanceDefault,
+            "Themed tab container style defaults to appearance behavior");
         Check(controlUi.TabControl(517, RECT{0, 400, 300, 434}, {{711, L"One"}, {712, L"Two"}}, minimalTabOptions) != nullptr,
             "Themed minimal underline tab control factory");
         Check(controlUi.TabControl(518, RECT{0, 440, 300, 474}, {{721, L"One"}, {722, L"Two"}}, softPillTabOptions) != nullptr,
             "Themed soft pill tab control factory");
-        Check(controlUi.TabControl(519, RECT{0, 480, 300, 514}, {{731, L"One"}, {732, L"Two"}}, connectedTabOptions) != nullptr,
+        HWND connectedTabs = controlUi.TabControl(519, RECT{0, 480, 300, 514}, {{731, L"One"}, {732, L"Two"}}, connectedTabOptions);
+        Check(connectedTabs != nullptr,
             "Themed connected tab control factory");
+        if (connectedTabs) {
+            Check(ThemedControls::TabContainerStyle(connectedTabs) ==
+                    static_cast<int>(ThemedTabControlContainerStyle::AppearanceDefault),
+                "Themed tab container style runtime default");
+
+            ThemedTabControlOptions borderlessOptions = connectedTabOptions;
+            borderlessOptions.containerStyle = ThemedTabControlContainerStyle::Borderless;
+            HWND borderlessTabs = controlUi.TabControl(
+                520, RECT{0, 520, 300, 554}, {{741, L"One"}, {742, L"Two"}}, borderlessOptions);
+            Check(borderlessTabs && ThemedControls::TabContainerStyle(borderlessTabs) ==
+                    static_cast<int>(ThemedTabControlContainerStyle::Borderless),
+                "Themed tab container style runtime borderless");
+
+            HDC screen = GetDC(nullptr);
+            HDC dc = screen ? CreateCompatibleDC(screen) : nullptr;
+            HBITMAP bitmap = screen ? CreateCompatibleBitmap(screen, 320, 40) : nullptr;
+            HGDIOBJ oldBitmap = dc && bitmap ? SelectObject(dc, bitmap) : nullptr;
+            auto drawContainer = [&](HWND tab, int height) {
+                DRAWITEMSTRUCT draw{};
+                draw.CtlType = ODT_BUTTON;
+                draw.hwndItem = tab;
+                draw.hDC = dc;
+                draw.rcItem = RECT{0, 0, 320, height};
+                ThemedControls::Draw(fallbackTheme, &draw);
+                return GetPixel(dc, 160, 0);
+            };
+            const COLORREF framedTop = dc && bitmap ? drawContainer(connectedTabs, 40) : CLR_INVALID;
+            const COLORREF borderlessTop = dc && bitmap && borderlessTabs ? drawContainer(borderlessTabs, 40) : CLR_INVALID;
+            const auto colorRef = [](const Color& color) {
+                return RGB(
+                    static_cast<BYTE>(std::clamp(color.r, 0.0f, 1.0f) * 255.0f + 0.5f),
+                    static_cast<BYTE>(std::clamp(color.g, 0.0f, 1.0f) * 255.0f + 0.5f),
+                    static_cast<BYTE>(std::clamp(color.b, 0.0f, 1.0f) * 255.0f + 0.5f));
+            };
+            const COLORREF connectedBorder = colorRef(fallbackTheme.color(L"tabControl", L"connected", L"border"));
+            const COLORREF connectedBg = colorRef(fallbackTheme.color(L"tabControl", L"connected", L"bg"));
+            Check(framedTop == connectedBorder && borderlessTop == connectedBg,
+                "Themed connected tab container borderless drawing removes only outer frame");
+            if (dc && oldBitmap) SelectObject(dc, oldBitmap);
+            if (bitmap) DeleteObject(bitmap);
+            if (dc) DeleteDC(dc);
+            if (screen) ReleaseDC(nullptr, screen);
+        }
         const std::vector<ThemedTabControlAppearance> verticalAppearances{
             ThemedTabControlAppearance::Standard,
             ThemedTabControlAppearance::EmphasizedSegmented,

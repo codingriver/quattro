@@ -146,6 +146,8 @@ void SetTabAppearance(HWND hwnd, int appearance);
 int TabAppearance(HWND hwnd);
 void SetTabOrientation(HWND hwnd, int orientation);
 int TabOrientation(HWND hwnd);
+void SetTabContainerStyle(HWND hwnd, int style);
+int TabContainerStyle(HWND hwnd);
 
 HWND CreateComboBox(
     HINSTANCE instance,

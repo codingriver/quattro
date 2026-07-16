@@ -337,6 +337,14 @@ enum class ThemedTabControlOrientation {
     Vertical,   // 标签从上到下排列，使用 Up/Down 导航。
 };
 
+// 标签组外层容器样式。AppearanceDefault 保持由 appearance 决定的默认行为；
+// Framed 强制显示公共容器外框；Borderless 仅保留容器背景，移除整体外框。
+enum class ThemedTabControlContainerStyle {
+    AppearanceDefault,
+    Framed,
+    Borderless,
+};
+
 struct ThemedTabControlOptions {
     int activeIndex = 0;
     bool enabled = true;
@@ -344,6 +352,7 @@ struct ThemedTabControlOptions {
     bool equalWidth = false;
     ThemedTabControlAppearance appearance = ThemedTabControlAppearance::Standard;
     ThemedTabControlOrientation orientation = ThemedTabControlOrientation::Horizontal;
+    ThemedTabControlContainerStyle containerStyle = ThemedTabControlContainerStyle::AppearanceDefault;
 };
 
 enum class ThemedToolItemKind {

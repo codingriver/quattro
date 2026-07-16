@@ -24,6 +24,9 @@ constexpr int kTabAppearanceSoftPill = 3;
 constexpr int kTabAppearanceConnectedTabs = 4;
 constexpr int kTabOrientationHorizontal = 0;
 constexpr int kTabOrientationVertical = 1;
+constexpr int kTabContainerStyleAppearanceDefault = 0;
+constexpr int kTabContainerStyleFramed = 1;
+constexpr int kTabContainerStyleBorderless = 2;
 
 enum class ControlKind {
     None,
@@ -65,6 +68,7 @@ struct ControlState {
     bool selected = false;
     int tabAppearance = 0;
     int tabOrientation = 0;
+    int tabContainerStyle = kTabContainerStyleAppearanceDefault;
     bool multiline = false;
     bool selectAllOnFocus = false;
     int radioGroup = 0;
@@ -1396,32 +1400,38 @@ void DrawContainer(const Theme& theme, const DRAWITEMSTRUCT* draw, ControlKind k
     const bool disabled = (draw->itemState & ODS_DISABLED) != 0;
     const auto state = FindState(draw->hwndItem);
     const int tabAppearance = kind == ControlKind::TabControl && state ? state->tabAppearance : 0;
+    const int tabContainerStyle = kind == ControlKind::TabControl && state
+        ? state->tabContainerStyle : kTabContainerStyleAppearanceDefault;
     const bool verticalTabs = kind == ControlKind::TabControl && state && state->tabOrientation == kTabOrientationVertical;
-    if (kind == ControlKind::TabControl && tabAppearance == kTabAppearanceMinimalUnderline) {
-        const wchar_t* visualState = disabled ? L"disabled" : L"minimalUnderline";
+    const bool forceFramed = kind == ControlKind::TabControl &&
+        tabContainerStyle == kTabContainerStyleFramed;
+    const bool forceBorderless = kind == ControlKind::TabControl &&
+        tabContainerStyle == kTabContainerStyleBorderless;
+    const wchar_t* tabContainerState = disabled ? L"disabled"
+        : (tabAppearance == kTabAppearanceMinimalUnderline ? L"minimalUnderline"
+        : (tabAppearance == kTabAppearanceSoftPill ? L"softPill"
+        : (tabAppearance == kTabAppearanceConnectedTabs ? L"connected" : L"normal")));
+    if (kind == ControlKind::TabControl && !forceFramed) {
+        const wchar_t* visualState = tabContainerState;
         HBRUSH background = CreateSolidBrush(ToColorRef(theme.color(L"tabControl", visualState, L"bg")));
         FillRect(draw->hDC, &rect, background);
         DeleteObject(background);
-        const int lineWidth = std::max(1, ScaledMetric(draw->hwndItem, theme, L"tabControl", L"underlineBorderWidth", 1.0f));
-        HPEN pen = CreatePen(PS_SOLID, lineWidth, ToColorRef(theme.color(L"tabControl", visualState, L"border")));
-        HGDIOBJ oldPen = SelectObject(draw->hDC, pen);
-        if (verticalTabs) {
-            MoveToEx(draw->hDC, rect.right - lineWidth, rect.top, nullptr);
-            LineTo(draw->hDC, rect.right - lineWidth, rect.bottom);
-        } else {
-            MoveToEx(draw->hDC, rect.left, rect.bottom - lineWidth, nullptr);
-            LineTo(draw->hDC, rect.right, rect.bottom - lineWidth);
+        if (forceBorderless || tabAppearance == kTabAppearanceSoftPill) return;
+        if (tabAppearance == kTabAppearanceMinimalUnderline) {
+            const int lineWidth = std::max(1, ScaledMetric(draw->hwndItem, theme, L"tabControl", L"underlineBorderWidth", 1.0f));
+            HPEN pen = CreatePen(PS_SOLID, lineWidth, ToColorRef(theme.color(L"tabControl", visualState, L"border")));
+            HGDIOBJ oldPen = SelectObject(draw->hDC, pen);
+            if (verticalTabs) {
+                MoveToEx(draw->hDC, rect.right - lineWidth, rect.top, nullptr);
+                LineTo(draw->hDC, rect.right - lineWidth, rect.bottom);
+            } else {
+                MoveToEx(draw->hDC, rect.left, rect.bottom - lineWidth, nullptr);
+                LineTo(draw->hDC, rect.right, rect.bottom - lineWidth);
+            }
+            SelectObject(draw->hDC, oldPen);
+            DeleteObject(pen);
+            return;
         }
-        SelectObject(draw->hDC, oldPen);
-        DeleteObject(pen);
-        return;
-    }
-    if (kind == ControlKind::TabControl && tabAppearance == kTabAppearanceSoftPill) {
-        const wchar_t* visualState = disabled ? L"disabled" : L"softPill";
-        HBRUSH background = CreateSolidBrush(ToColorRef(theme.color(L"tabControl", visualState, L"bg")));
-        FillRect(draw->hDC, &rect, background);
-        DeleteObject(background);
-        return;
     }
     const wchar_t* visualState = disabled ? L"disabled"
         : (kind == ControlKind::Panel && state && !state->statusState.empty() ? state->statusState.c_str()
@@ -2779,6 +2789,20 @@ void SetTabOrientation(HWND hwnd, int orientation) {
 int TabOrientation(HWND hwnd) {
     auto state = FindState(hwnd);
     return state ? state->tabOrientation : kTabOrientationHorizontal;
+}
+
+void SetTabContainerStyle(HWND hwnd, int style) {
+    if (!hwnd) {
+        return;
+    }
+    StateFor(hwnd).tabContainerStyle = std::clamp(
+        style, kTabContainerStyleAppearanceDefault, kTabContainerStyleBorderless);
+    InvalidateRect(hwnd, nullptr, FALSE);
+}
+
+int TabContainerStyle(HWND hwnd) {
+    auto state = FindState(hwnd);
+    return state ? state->tabContainerStyle : kTabContainerStyleAppearanceDefault;
 }
 
 HWND CreateComboBox(HINSTANCE instance, HWND parent, int id, int x, int y, int width, int height, HFONT font, const Theme& theme) {

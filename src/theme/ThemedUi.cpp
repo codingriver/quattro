@@ -1294,12 +1294,17 @@ HWND ThemedUi::TabControl(
     static_assert(static_cast<int>(ThemedTabControlAppearance::ConnectedTabs) == 4);
     static_assert(static_cast<int>(ThemedTabControlOrientation::Horizontal) == 0);
     static_assert(static_cast<int>(ThemedTabControlOrientation::Vertical) == 1);
+    static_assert(static_cast<int>(ThemedTabControlContainerStyle::AppearanceDefault) == 0);
+    static_assert(static_cast<int>(ThemedTabControlContainerStyle::Framed) == 1);
+    static_assert(static_cast<int>(ThemedTabControlContainerStyle::Borderless) == 2);
     HWND tab = BindTheme(ThemedControls::CreateTabControlFrame(instance_, parent_, id, frame, font_, theme_));
     if (!tab) return nullptr;
     const int appearance = static_cast<int>(options.appearance);
     const int orientation = static_cast<int>(options.orientation);
+    const int containerStyle = static_cast<int>(options.containerStyle);
     ThemedControls::SetTabAppearance(tab, appearance);
     ThemedControls::SetTabOrientation(tab, orientation);
+    ThemedControls::SetTabContainerStyle(tab, containerStyle);
     EnableWindow(tab, options.enabled ? TRUE : FALSE);
     auto& runtime = TabControlStates()[tab];
     runtime.owner = parent_;

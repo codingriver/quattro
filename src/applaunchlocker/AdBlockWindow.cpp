@@ -416,6 +416,7 @@ void AdBlockWindow::CreateControls() {
     tabOptions.activeIndex = 0;
     tabOptions.appearance = ThemedTabControlAppearance::ConnectedTabs;
     tabOptions.orientation = ThemedTabControlOrientation::Horizontal;
+    tabOptions.containerStyle = ThemedTabControlContainerStyle::Borderless;
     tabControl_ = ui.TabControl(ID_TAB_CONTROL, tabRect,
         {{ID_TAB_BLOCK, L"拦截", true}, {ID_TAB_BLOCKED, L"已拦截", true}}, tabOptions);
 
