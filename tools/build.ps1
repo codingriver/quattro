@@ -10,8 +10,10 @@
     [switch]$FullPackage,
     [switch]$FlatPackage,
     [switch]$Upx,
+    [switch]$NoUpx,
     [string]$UpxPath = "upx",
     [switch]$PlanOnly,
+    [switch]$Release,
     [switch]$OfficialBuild,
     [string]$Version = "",
     [string]$ReleaseRepoUrl = "https://github.com/codingriver/quattro",
@@ -22,6 +24,13 @@
 )
 
 $ErrorActionPreference = "Stop"
+$platformWasExplicit = $PSBoundParameters.ContainsKey("Platform")
+$backendWasExplicit = $PSBoundParameters.ContainsKey("Backend")
+$upxWasExplicit = $PSBoundParameters.ContainsKey("Upx")
+
+if ($Upx -and $NoUpx) {
+    throw "-Upx and -NoUpx cannot be used together."
+}
 
 # PowerShell 脚本参数原生使用单短横线。保留项目文档既有的 GNU 风格入口，
 # 使 .\tools\build.ps1 --all / --help 与 -All / -Help 行为一致。
@@ -33,13 +42,44 @@ if ($Platform -eq "--all") {
     $Platform = "x64"
 }
 
+if ($Release) {
+    if ($backendWasExplicit -and $Backend -ne "vcpkg") {
+        throw "-Release uses the same vcpkg backend as GitHub Actions and cannot be combined with -Backend classic."
+    }
+    $Backend = "vcpkg"
+    $OfficialBuild = $true
+    $NoZip = $true
+    if (!$NoUpx) {
+        $Upx = $true
+    }
+    if ($Platform -eq "all") {
+        $All = $true
+    } elseif (!$platformWasExplicit -and !$All) {
+        $All = $true
+    }
+}
+
+if ($Upx -and !$PlanOnly) {
+    $resolvedUpx = Get-Command $UpxPath -ErrorAction SilentlyContinue
+    if ($resolvedUpx) {
+        $UpxPath = $resolvedUpx.Source
+    } elseif ($Release -and !$upxWasExplicit) {
+        Write-Warning "Release defaults to UPX, but UPX is unavailable; continuing without executable compression."
+        $Upx = $false
+    } else {
+        throw "UPX was requested but is unavailable: $UpxPath"
+    }
+}
+
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 $effectiveVersion = if ([string]::IsNullOrWhiteSpace($Version)) { "0.1.0" } else { $Version }
-$defaultLoggingEnabled = if ($env:GITHUB_ACTIONS -eq "true") { "OFF" } else { "ON" }
-$defaultTopMostEnabled = if ($env:GITHUB_ACTIONS -eq "true") { "ON" } else { "OFF" }
+$formalBuildDefaults = $OfficialBuild -or $env:GITHUB_ACTIONS -eq "true"
+$defaultLoggingEnabled = if ($formalBuildDefaults) { "OFF" } else { "ON" }
+$defaultTopMostEnabled = if ($formalBuildDefaults) { "ON" } else { "OFF" }
 $bundleOptionalExecutables = if ($All) { "ON" } else { "OFF" }
 $officialBuildEnabled = if ($OfficialBuild) { "ON" } else { "OFF" }
+$compressEmbeddedAssets = if ($OfficialBuild) { "ON" } else { "OFF" }
 $buildMarker = if ($OfficialBuild) { "none" } elseif ($All) { "DEBUG-All" } else { "DEBUG" }
 $buildScope = if ($All) { "complete" } else { "minimal" }
 $buildProfile = if ($OfficialBuild) {
@@ -105,6 +145,9 @@ Quattro 中文构建与打包工具
   -Upx
       打包前使用 UPX 压缩 Quattro.exe；启用后无法复用未变化的单文件产物。
 
+  -NoUpx
+      禁止 UPX 压缩。主要用于覆盖 -Release 默认启用的 UPX，对应 GitHub Actions 的 use_upx=false。
+
   -UpxPath <路径>
       指定 UPX 可执行文件路径，默认从 PATH 中查找 upx。
 
@@ -114,6 +157,12 @@ Quattro 中文构建与打包工具
   -OfficialBuild
       构建正式版，不显示 DEBUG 标记，主要供 GitHub Actions 正式发布使用。
       正式完整包通常组合使用 -OfficialBuild -All。
+      正式版会压缩内置主题和图标；本地 DEBUG/DEBUG-All 直接嵌入原始资源以缩短构建时间。
+
+  -Release
+      使用与 GitHub Actions Package 步骤一致的正式打包参数：vcpkg、OfficialBuild、NoZip。
+      未指定平台时默认构建 x86+x64 完整组件包；可用 -Platform x64 或 x86 构建单平台精简包。
+      默认启用 UPX；未安装 UPX 时给出警告并继续。可使用 -NoUpx 关闭，对应 use_upx=false。
 
   -Version <版本号>
       指定编译和更新清单版本，例如 1.2.3；默认 0.1.0。
@@ -148,7 +197,13 @@ Quattro 中文构建与打包工具
   powershell -ExecutionPolicy Bypass -File .\tools\$scriptName -All -PlanOnly
 
   # 构建指定版本的 GitHub 正式完整包
-  powershell -ExecutionPolicy Bypass -File .\tools\$scriptName -OfficialBuild -All -Version 1.2.3
+  powershell -ExecutionPolicy Bypass -File .\tools\$scriptName -Release -Version 1.2.3
+
+  # 构建与 GitHub Actions 单平台选项一致的 x64 正式精简包
+  powershell -ExecutionPolicy Bypass -File .\tools\$scriptName -Release -Platform x64 -Version 1.2.3
+
+  # 构建不使用 UPX 的正式包
+  powershell -ExecutionPolicy Bypass -File .\tools\$scriptName -Release -NoUpx -Version 1.2.3
 
   # 仅构建 x86 最小包
   powershell -ExecutionPolicy Bypass -File .\tools\$scriptName -Platform x86
@@ -323,6 +378,7 @@ function Ensure-Configured {
     $configureArgs += "-DQUATTRO_DEFAULT_TOP_MOST_ENABLED=$defaultTopMostEnabled"
     $configureArgs += "-DQUATTRO_BUNDLE_OPTIONAL_EXECUTABLES=$bundleOptionalExecutables"
     $configureArgs += "-DQUATTRO_OFFICIAL_BUILD=$officialBuildEnabled"
+    $configureArgs += "-DQUATTRO_COMPRESS_EMBEDDED_ASSETS=$compressEmbeddedAssets"
     Invoke-NativeCommand -Description "CMake configure" -Command "cmake" -Arguments $configureArgs
 }
 
@@ -637,8 +693,8 @@ function Publish-Package {
         }
     }
 
+    $zipPath = Join-Path $distRoot "$DistName.zip"
     if ($Zip) {
-        $zipPath = Join-Path $distRoot "$DistName.zip"
         if (Test-Path $zipPath) {
             Remove-FileRobust -Path $zipPath -Purpose "zip package"
         }
@@ -648,6 +704,9 @@ function Publish-Package {
             Compress-Archive -Path (Join-Path $dist "*") -DestinationPath $zipPath -Force
         }
         "archive: $zipPath"
+    } elseif (Test-Path $zipPath) {
+        Remove-FileRobust -Path $zipPath -Purpose "stale no-zip package"
+        "removed stale archive: $zipPath"
     }
 
     if (!$SingleExe) {
@@ -678,9 +737,17 @@ if (($architectures | Where-Object { $_.Name -eq "x64" }) -and -not [System.Envi
 }
 
 if ($PlanOnly) {
+    "release=$(if ($Release) { 'ON' } else { 'OFF' })"
     "architectures=$((@($architectures | ForEach-Object { $_.Name }) -join ','))"
     "bundle_optional_executables=$bundleOptionalExecutables"
     "official_build=$officialBuildEnabled"
+    "embedded_assets=$(if ($compressEmbeddedAssets -eq 'ON') { 'xpress' } else { 'raw' })"
+    "configuration=$Configuration"
+    "backend=$Backend"
+    "no_zip=$(if ($NoZip) { 'ON' } else { 'OFF' })"
+    "use_upx=$(if ($Upx) { 'ON' } else { 'OFF' })"
+    "default_logging=$defaultLoggingEnabled"
+    "default_top_most=$defaultTopMostEnabled"
     "build_marker=$buildMarker"
     "build_profile=$buildProfile"
     $useVcpkg = $Backend -eq "vcpkg"

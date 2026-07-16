@@ -4,11 +4,12 @@
 #include "Utilities.h"
 
 #include <windows.h>
+#include <bcrypt.h>
 
-#include <algorithm>
-#include <cstring>
+#include <array>
+#include <chrono>
+#include <cstdint>
 #include <fstream>
-#include <iterator>
 #include <string>
 #include <vector>
 
@@ -94,8 +95,8 @@ std::wstring AssetTimestamp() {
     return buffer;
 }
 
-std::wstring NormalizeRelativePath(const wchar_t* path) {
-    std::wstring value = ToLower(path ? path : L"");
+std::wstring NormalizeRelativePath(const std::filesystem::path& path) {
+    std::wstring value = ToLower(path.wstring());
     for (wchar_t& ch : value) {
         if (ch == L'/') {
             ch = L'\\';
@@ -104,7 +105,7 @@ std::wstring NormalizeRelativePath(const wchar_t* path) {
     return value;
 }
 
-bool IsManagedAsset(const wchar_t* relativePath) {
+bool IsManagedAsset(const std::filesystem::path& relativePath) {
     const std::wstring path = NormalizeRelativePath(relativePath);
     return path == L"readme.md" ||
            path.rfind(L"docs\\", 0) == 0 ||
@@ -112,63 +113,113 @@ bool IsManagedAsset(const wchar_t* relativePath) {
            path.rfind(L"icons\\menu\\", 0) == 0;
 }
 
-bool IsBuiltInDefaultTheme(const wchar_t* relativePath) {
-    return NormalizeRelativePath(relativePath) == L"theme\\default.xml";
+class BCryptAlgorithm {
+public:
+    ~BCryptAlgorithm() {
+        if (handle_) {
+            BCryptCloseAlgorithmProvider(handle_, 0);
+        }
+    }
+    bool Open() {
+        return BCryptOpenAlgorithmProvider(&handle_, BCRYPT_SHA256_ALGORITHM, nullptr, 0) >= 0;
+    }
+    BCRYPT_ALG_HANDLE get() const { return handle_; }
+
+private:
+    BCRYPT_ALG_HANDLE handle_ = nullptr;
+};
+
+class BCryptHash {
+public:
+    ~BCryptHash() {
+        if (handle_) {
+            BCryptDestroyHash(handle_);
+        }
+    }
+    bool Create(BCRYPT_ALG_HANDLE algorithm, std::vector<unsigned char>& object) {
+        return BCryptCreateHash(
+                   algorithm,
+                   &handle_,
+                   object.data(),
+                   static_cast<ULONG>(object.size()),
+                   nullptr,
+                   0,
+                   0) >= 0;
+    }
+    BCRYPT_HASH_HANDLE get() const { return handle_; }
+
+private:
+    BCRYPT_HASH_HANDLE handle_ = nullptr;
+};
+
+template <typename Feed>
+bool Sha256(Feed feed, std::array<unsigned char, 32>& digest) {
+    BCryptAlgorithm algorithm;
+    if (!algorithm.Open()) {
+        return false;
+    }
+    DWORD objectSize = 0;
+    DWORD hashSize = 0;
+    DWORD copied = 0;
+    if (BCryptGetProperty(
+            algorithm.get(),
+            BCRYPT_OBJECT_LENGTH,
+            reinterpret_cast<PUCHAR>(&objectSize),
+            sizeof(objectSize),
+            &copied,
+            0) < 0 ||
+        BCryptGetProperty(
+            algorithm.get(),
+            BCRYPT_HASH_LENGTH,
+            reinterpret_cast<PUCHAR>(&hashSize),
+            sizeof(hashSize),
+            &copied,
+            0) < 0 ||
+        hashSize != digest.size()) {
+        return false;
+    }
+    std::vector<unsigned char> object(objectSize);
+    BCryptHash hash;
+    if (!hash.Create(algorithm.get(), object) || !feed(hash.get())) {
+        return false;
+    }
+    return BCryptFinishHash(hash.get(), digest.data(), static_cast<ULONG>(digest.size()), 0) >= 0;
 }
 
-std::wstring WideFromUtf8Bytes(const unsigned char* data, std::size_t size) {
-    if (!data || size == 0) {
-        return {};
-    }
-    const char* bytes = reinterpret_cast<const char*>(data);
-    const int length = MultiByteToWideChar(CP_UTF8, 0, bytes, static_cast<int>(size), nullptr, 0);
-    if (length <= 0) {
-        return {};
-    }
-    std::wstring text(length, L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, bytes, static_cast<int>(size), text.data(), length);
-    return text;
-}
-
-std::wstring XmlAttributeValue(const std::wstring& tag, const std::wstring& name) {
-    const std::wstring pattern = name + L"=\"";
-    std::size_t begin = tag.find(pattern);
-    if (begin == std::wstring::npos) {
-        return {};
-    }
-    begin += pattern.size();
-    const std::size_t end = tag.find(L'"', begin);
-    if (end == std::wstring::npos) {
-        return {};
-    }
-    return tag.substr(begin, end - begin);
-}
-
-std::wstring ThemeVersionFromXml(const std::wstring& xml) {
-    const std::size_t begin = xml.find(L"<Theme");
-    if (begin == std::wstring::npos) {
-        return {};
-    }
-    const std::size_t end = xml.find(L">", begin);
-    if (end == std::wstring::npos) {
-        return {};
-    }
-    return XmlAttributeValue(xml.substr(begin, end - begin + 1), L"version");
-}
-
-std::vector<unsigned char> ReadBinaryFile(const std::filesystem::path& path) {
+bool Sha256File(const std::filesystem::path& path, std::array<unsigned char, 32>& digest) {
     std::ifstream file(path, std::ios::binary);
     if (!file) {
-        return {};
+        return false;
     }
-    return std::vector<unsigned char>(
-        std::istreambuf_iterator<char>(file),
-        std::istreambuf_iterator<char>());
+    return Sha256(
+        [&](BCRYPT_HASH_HANDLE hash) {
+            std::array<char, 64 * 1024> buffer{};
+            while (file) {
+                file.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+                const std::streamsize count = file.gcount();
+                if (count > 0 && BCryptHashData(
+                        hash,
+                        reinterpret_cast<PUCHAR>(buffer.data()),
+                        static_cast<ULONG>(count),
+                        0) < 0) {
+                    return false;
+                }
+            }
+            return file.eof();
+        },
+        digest);
 }
 
-bool SameContent(const std::vector<unsigned char>& bytes, const EmbeddedAsset& asset) {
-    return bytes.size() == asset.size &&
-           (bytes.empty() || std::memcmp(bytes.data(), asset.data, asset.size) == 0);
+bool Sha256Bytes(const std::vector<unsigned char>& bytes, std::array<unsigned char, 32>& digest) {
+    return Sha256(
+        [&](BCRYPT_HASH_HANDLE hash) {
+            return bytes.empty() || BCryptHashData(
+                hash,
+                const_cast<unsigned char*>(bytes.data()),
+                static_cast<ULONG>(bytes.size()),
+                0) >= 0;
+        },
+        digest);
 }
 
 bool ShouldInstallAsset(const std::filesystem::path& target, const EmbeddedAsset& asset, bool exists, bool managed) {
@@ -179,38 +230,55 @@ bool ShouldInstallAsset(const std::filesystem::path& target, const EmbeddedAsset
         return false;
     }
 
-    const std::vector<unsigned char> currentBytes = ReadBinaryFile(target);
-    if (!IsBuiltInDefaultTheme(asset.relativePath)) {
-        return !SameContent(currentBytes, asset);
-    }
-
-    const std::wstring embeddedVersion = ThemeVersionFromXml(WideFromUtf8Bytes(asset.data, asset.size));
-    const std::wstring currentVersion = ThemeVersionFromXml(WideFromUtf8Bytes(currentBytes.data(), currentBytes.size()));
-    if (embeddedVersion.empty() || currentVersion.empty() || embeddedVersion != currentVersion) {
+    std::error_code ec;
+    const std::uint64_t currentSize = std::filesystem::file_size(target, ec);
+    if (ec || currentSize != asset.uncompressedSize) {
         return true;
     }
-    return !SameContent(currentBytes, asset);
+    std::array<unsigned char, 32> currentHash{};
+    return !Sha256File(target, currentHash) || currentHash != asset.sha256;
 }
 
-bool WriteAsset(const std::filesystem::path& target, const EmbeddedAsset& asset) {
+bool WriteAssetAtomically(const std::filesystem::path& target, const std::vector<unsigned char>& bytes) {
     std::error_code ec;
     std::filesystem::create_directories(target.parent_path(), ec);
     if (ec) {
         return false;
     }
 
-    std::ofstream file(target, std::ios::binary | std::ios::trunc);
-    if (!file) {
+    const std::filesystem::path temporary = target.parent_path() /
+        (target.filename().wstring() +
+         L".quattro-" + std::to_wstring(GetCurrentProcessId()) +
+         L"-" + std::to_wstring(GetTickCount64()) + L".tmp");
+    {
+        std::ofstream file(temporary, std::ios::binary | std::ios::trunc);
+        if (!file) {
+            return false;
+        }
+        file.write(
+            reinterpret_cast<const char*>(bytes.data()),
+            static_cast<std::streamsize>(bytes.size()));
+        if (!file.good()) {
+            file.close();
+            std::filesystem::remove(temporary, ec);
+            return false;
+        }
+    }
+
+    if (!MoveFileExW(
+            temporary.c_str(),
+            target.c_str(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        std::filesystem::remove(temporary, ec);
         return false;
     }
-    file.write(reinterpret_cast<const char*>(asset.data), static_cast<std::streamsize>(asset.size));
-    return file.good();
+    return true;
 }
 
 bool BackupAsset(
     const std::filesystem::path& appDirectory,
     const std::filesystem::path& target,
-    const EmbeddedAsset& asset,
+    const std::filesystem::path& relativePath,
     EmbeddedAssetInstallResult& result) {
     if (!FileExists(target)) {
         return true;
@@ -220,7 +288,7 @@ bool BackupAsset(
     }
 
     std::error_code ec;
-    const std::filesystem::path backup = result.backupDirectory / asset.relativePath;
+    const std::filesystem::path backup = result.backupDirectory / relativePath;
     std::filesystem::create_directories(backup.parent_path(), ec);
     if (ec) {
         return false;
@@ -235,29 +303,71 @@ bool BackupAsset(
 }
 
 EmbeddedAssetInstallResult PrepareEmbeddedAssets(const std::filesystem::path& moduleDirectory) {
+    const auto totalStarted = std::chrono::steady_clock::now();
+    std::chrono::steady_clock::duration validationDuration{};
+    std::chrono::steady_clock::duration decompressionDuration{};
+
     EmbeddedAssetInstallResult result;
     result.appDirectory = SelectAppDirectory(moduleDirectory, result.usedFallbackDirectory);
 
-    for (std::size_t i = 0; i < EmbeddedAssetCount(); ++i) {
-        const EmbeddedAsset& asset = EmbeddedAssetAt(i);
-        if (!asset.relativePath || !asset.data || asset.size == 0) {
-            continue;
+    std::vector<EmbeddedAsset> assets;
+    std::wstring catalogError;
+    if (!LoadEmbeddedAssetCatalog(GetModuleHandleW(nullptr), assets, catalogError)) {
+        ++result.failures;
+        result.message = catalogError;
+        result.totalMilliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - totalStarted).count();
+        return result;
+    }
+    for (const EmbeddedAsset& asset : assets) {
+        if (asset.storage == EmbeddedAssetStorage::RawResource) {
+            ++result.rawAssets;
+        } else {
+            ++result.compressedAssets;
         }
+    }
 
+    for (const EmbeddedAsset& asset : assets) {
         const std::filesystem::path target = result.appDirectory / asset.relativePath;
         const bool exists = FileExists(target);
         const bool managed = IsManagedAsset(asset.relativePath);
-        if (!ShouldInstallAsset(target, asset, exists, managed)) {
+        const auto validationStarted = std::chrono::steady_clock::now();
+        const bool shouldInstall = ShouldInstallAsset(target, asset, exists, managed);
+        validationDuration += std::chrono::steady_clock::now() - validationStarted;
+        if (!shouldInstall) {
             ++result.filesSkipped;
             continue;
         }
 
-        if (exists && !BackupAsset(result.appDirectory, target, asset, result)) {
+        const auto decompressionStarted = std::chrono::steady_clock::now();
+        std::vector<unsigned char> bytes;
+        std::wstring decompressionError;
+        bool wasDecompressed = false;
+        const bool loaded = LoadEmbeddedAssetBytes(asset, bytes, wasDecompressed, decompressionError);
+        const auto materializationDuration = std::chrono::steady_clock::now() - decompressionStarted;
+        if (!loaded) {
+            ++result.failures;
+            continue;
+        }
+        if (wasDecompressed) {
+            decompressionDuration += materializationDuration;
+            ++result.filesDecompressed;
+        }
+
+        std::array<unsigned char, 32> decompressedHash{};
+        if (bytes.size() != asset.uncompressedSize ||
+            !Sha256Bytes(bytes, decompressedHash) ||
+            decompressedHash != asset.sha256) {
             ++result.failures;
             continue;
         }
 
-        if (WriteAsset(target, asset)) {
+        if (exists && !BackupAsset(result.appDirectory, target, asset.relativePath, result)) {
+            ++result.failures;
+            continue;
+        }
+
+        if (WriteAssetAtomically(target, bytes)) {
             if (exists) {
                 ++result.filesUpdated;
             } else {
@@ -277,5 +387,9 @@ EmbeddedAssetInstallResult PrepareEmbeddedAssets(const std::filesystem::path& mo
         }
         result.message += L"部分内置资源释放失败: " + std::to_wstring(result.failures);
     }
+    result.validationMilliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(validationDuration).count();
+    result.decompressionMilliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(decompressionDuration).count();
+    result.totalMilliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - totalStarted).count();
     return result;
 }

@@ -25,9 +25,9 @@ private:
     static LRESULT CALLBACK Proc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
     LRESULT Handle(UINT message, WPARAM wParam, LPARAM lParam);
     void CreateControls();
-    void PickFile();
-    void PickDirectory();
+    void PickPath();
     void StartScan();
+    void ClearScanResults();
     void StartBlockSelected();
     void StartUnblock();
     void LoadBlockedAsync();
@@ -48,10 +48,11 @@ private:
 
     HWND tabControl_ = nullptr;
     HWND pathEdit_ = nullptr;
-    HWND pickFileButton_ = nullptr;
-    HWND pickDirButton_ = nullptr;
+    HWND pickPathButton_ = nullptr;
+    HWND clearButton_ = nullptr;
     HWND modeExactRadio_ = nullptr;
     HWND modeNameRadio_ = nullptr;
+    HWND modeStartupRadio_ = nullptr;
     HWND scanTable_ = nullptr;
     HWND blockedTable_ = nullptr;
     HWND statusText_ = nullptr;

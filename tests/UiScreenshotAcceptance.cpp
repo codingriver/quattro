@@ -61,6 +61,8 @@ struct Scenario {
     DWORD closeDelayMs = 0;
     bool validateHotKeyTableLayout = false;
     bool validateContextMenuUninstalledRows = false;
+    UINT forcedDpi = USER_DEFAULT_SCREEN_DPI;
+    bool validateProcessToolsTableDpi = false;
 };
 
 struct TestState {
@@ -163,6 +165,27 @@ HWND FindTopWindow(const FindWindowRequest& request) {
     EnumWindowData data{request, nullptr};
     EnumWindows(EnumWindowsProc, reinterpret_cast<LPARAM>(&data));
     return data.match;
+}
+
+int CountTopWindowsForProcess(const std::wstring& title, DWORD processId) {
+    struct CountData {
+        const std::wstring* title = nullptr;
+        DWORD processId = 0;
+        int count = 0;
+    } data{&title, processId, 0};
+    EnumWindows([](HWND hwnd, LPARAM value) -> BOOL {
+        auto* count = reinterpret_cast<CountData*>(value);
+        if (!IsWindowVisible(hwnd)) {
+            return TRUE;
+        }
+        DWORD windowProcessId = 0;
+        GetWindowThreadProcessId(hwnd, &windowProcessId);
+        if (windowProcessId == count->processId && WindowText(hwnd) == *count->title) {
+            ++count->count;
+        }
+        return TRUE;
+    }, reinterpret_cast<LPARAM>(&data));
+    return data.count;
 }
 
 HWND WaitForTopWindow(const FindWindowRequest& request, DWORD timeoutMs = 5000) {
@@ -440,13 +463,14 @@ std::size_t CountPixelsNearColor(
 
 struct ChildInfo {
     HWND hwnd = nullptr;
+    int id = 0;
     std::wstring className;
     std::wstring text;
 };
 
 BOOL CALLBACK EnumChildProc(HWND hwnd, LPARAM lParam) {
     auto* children = reinterpret_cast<std::vector<ChildInfo>*>(lParam);
-    children->push_back(ChildInfo{hwnd, ClassName(hwnd), WindowText(hwnd)});
+    children->push_back(ChildInfo{hwnd, GetDlgCtrlID(hwnd), ClassName(hwnd), WindowText(hwnd)});
     return TRUE;
 }
 
@@ -454,6 +478,14 @@ std::vector<ChildInfo> Children(HWND hwnd) {
     std::vector<ChildInfo> children;
     EnumChildWindows(hwnd, EnumChildProc, reinterpret_cast<LPARAM>(&children));
     return children;
+}
+
+HWND ChildById(HWND hwnd, int id) {
+    const auto children = Children(hwnd);
+    const auto found = std::find_if(children.begin(), children.end(), [id](const ChildInfo& child) {
+        return child.id == id;
+    });
+    return found == children.end() ? nullptr : found->hwnd;
 }
 
 std::vector<std::wstring> CollectTexts(HWND hwnd, const std::vector<ChildInfo>& children) {
@@ -535,6 +567,26 @@ void ValidateChildBounds(HWND parent, const std::vector<ChildInfo>& children, Te
 }
 
 void ValidateAndCapture(HWND hwnd, const Scenario& scenario, const std::filesystem::path& outputDir, TestState& state) {
+    if (scenario.forcedDpi != USER_DEFAULT_SCREEN_DPI) {
+        RECT windowRect{};
+        GetWindowRect(hwnd, &windowRect);
+        const int width = windowRect.right - windowRect.left;
+        const int height = windowRect.bottom - windowRect.top;
+        RECT suggested{
+            windowRect.left,
+            windowRect.top,
+            windowRect.left + MulDiv(width, static_cast<int>(scenario.forcedDpi), USER_DEFAULT_SCREEN_DPI),
+            windowRect.top + MulDiv(height, static_cast<int>(scenario.forcedDpi), USER_DEFAULT_SCREEN_DPI),
+        };
+        SendMessageW(
+            hwnd,
+            WM_DPICHANGED,
+            MAKEWPARAM(scenario.forcedDpi, scenario.forcedDpi),
+            reinterpret_cast<LPARAM>(&suggested));
+        RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+        Sleep(120);
+    }
+
     RECT client{};
     GetClientRect(hwnd, &client);
     state.Check(client.right - client.left >= 120 && client.bottom - client.top >= 80, scenario.name + L": client area too small");
@@ -553,7 +605,7 @@ void ValidateAndCapture(HWND hwnd, const Scenario& scenario, const std::filesyst
     }
     if (!scenario.actionButtonText.empty()) {
         auto button = std::find_if(children.begin(), children.end(), [&](const ChildInfo& child) {
-            return child.className == L"Button" && child.text == scenario.actionButtonText;
+            return IsWindowVisible(child.hwnd) && child.className == L"Button" && child.text == scenario.actionButtonText;
         });
         state.Check(button != children.end(), scenario.name + L": action button not found: " + scenario.actionButtonText);
         if (button != children.end()) {
@@ -564,6 +616,40 @@ void ValidateAndCapture(HWND hwnd, const Scenario& scenario, const std::filesyst
         }
     }
     ValidateChildBounds(hwnd, children, state, scenario.name);
+
+    if (scenario.validateProcessToolsTableDpi) {
+        HWND table = nullptr;
+        for (const auto& child : children) {
+            if (IsWindowVisible(child.hwnd) && child.className == L"SysListView32") {
+                table = child.hwnd;
+                break;
+            }
+        }
+        state.Check(table != nullptr, scenario.name + L": visible process table not found");
+        if (table) {
+            RECT tableClient{};
+            GetClientRect(table, &tableClient);
+            const int columnCount = Header_GetItemCount(ListView_GetHeader(table));
+            state.Check(columnCount == 4, scenario.name + L": process table column count mismatch");
+            if (columnCount == 4) {
+                int totalWidth = 0;
+                for (int column = 0; column < columnCount; ++column) {
+                    totalWidth += ListView_GetColumnWidth(table, column);
+                }
+                const int pidWidth = ListView_GetColumnWidth(table, 1);
+                const int actionWidth = ListView_GetColumnWidth(table, 3);
+                state.Check(
+                    totalWidth <= tableClient.right - tableClient.left + 1,
+                    scenario.name + L": process table columns overflow horizontally");
+                state.Check(
+                    pidWidth >= MulDiv(52, static_cast<int>(scenario.forcedDpi), USER_DEFAULT_SCREEN_DPI),
+                    scenario.name + L": PID column did not scale with DPI");
+                state.Check(
+                    actionWidth >= MulDiv(72, static_cast<int>(scenario.forcedDpi), USER_DEFAULT_SCREEN_DPI),
+                    scenario.name + L": action column did not scale with DPI");
+            }
+        }
+    }
 
     const auto texts = CollectTexts(hwnd, children);
     for (const auto& expected : scenario.expectedTexts) {
@@ -1718,7 +1804,14 @@ void ValidateAppLaunchLockerTables(HWND hwnd, TestState& state) {
 
 void RunAppLaunchLockerScenario(const std::filesystem::path& outputDir, TestState& state) {
     AcceptanceLog(L"begin app-launch-locker");
-    const std::filesystem::path exe = ModuleDirectory() / L"AppLaunchLocker.exe";
+    wchar_t executableOverride[32768]{};
+    const DWORD overrideLength = GetEnvironmentVariableW(
+        L"QUATTRO_UI_ACCEPTANCE_APP_LAUNCH_LOCKER",
+        executableOverride,
+        static_cast<DWORD>(std::size(executableOverride)));
+    const std::filesystem::path exe = overrideLength > 0 && overrideLength < std::size(executableOverride)
+        ? std::filesystem::path(executableOverride)
+        : ModuleDirectory() / L"AppLaunchLocker.exe";
     if (!std::filesystem::exists(exe)) {
         state.Check(false, L"app-launch-locker: AppLaunchLocker.exe not found beside acceptance executable");
         AcceptanceLog(L"missing app-launch-locker exe");
@@ -1793,6 +1886,445 @@ void RunAppLaunchLockerScenario(const std::filesystem::path& outputDir, TestStat
     AcceptanceLog(L"end app-launch-locker");
 }
 
+void RunAdBlockScenario(const std::filesystem::path& outputDir, TestState& state) {
+    AcceptanceLog(L"begin ad-block");
+    wchar_t executableOverride[32768]{};
+    const DWORD overrideLength = GetEnvironmentVariableW(
+        L"QUATTRO_UI_ACCEPTANCE_APP_LAUNCH_LOCKER",
+        executableOverride,
+        static_cast<DWORD>(std::size(executableOverride)));
+    const std::filesystem::path exe = overrideLength > 0 && overrideLength < std::size(executableOverride)
+        ? std::filesystem::path(executableOverride)
+        : ModuleDirectory() / L"AppLaunchLocker.exe";
+    if (!std::filesystem::exists(exe)) {
+        state.Check(false, L"ad-block: AppLaunchLocker.exe not found beside acceptance executable");
+        return;
+    }
+
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    PROCESS_INFORMATION process{};
+    std::wstring command = L"\"" + exe.wstring() + L"\" --ad-block";
+    SetEnvironmentVariableW(L"QUATTRO_AD_BLOCK_ACCEPTANCE_DPI", L"96");
+    if (!CreateProcessW(exe.c_str(), command.data(), nullptr, nullptr, FALSE, 0, nullptr,
+            ModuleDirectory().c_str(), &startup, &process)) {
+        SetEnvironmentVariableW(L"QUATTRO_AD_BLOCK_ACCEPTANCE_DPI", nullptr);
+        state.Check(false, L"ad-block: CreateProcess failed");
+        return;
+    }
+    SetEnvironmentVariableW(L"QUATTRO_AD_BLOCK_ACCEPTANCE_DPI", nullptr);
+
+    WaitForInputIdle(process.hProcess, 10000);
+    HWND hwnd = WaitForTopWindow(FindWindowRequest{L"AdBlockMainWindow", L"广告拦截", process.dwProcessId}, 10000);
+    auto capture = [&](HWND target, const wchar_t* fileName, const std::wstring& scenario) {
+        RedrawWindow(target, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+        Sleep(200);
+        BitmapCapture bitmap = CaptureWindowBitmap(target);
+        state.Check(bitmap.bitmap != nullptr, scenario + L": screenshot bitmap was not created");
+        if (bitmap.bitmap) {
+            state.Check(BitmapHasVisualContent(bitmap.bitmap, bitmap.width, bitmap.height),
+                scenario + L": screenshot looks blank or too flat");
+            state.Check(SavePng(bitmap.bitmap, outputDir / fileName), scenario + L": screenshot save failed");
+            DeleteObject(bitmap.bitmap);
+        }
+    };
+
+    if (hwnd) {
+        ShowWindow(hwnd, SW_SHOWNORMAL);
+        SetForegroundWindow(hwnd);
+        UpdateWindow(hwnd);
+
+        HWND pathEdit = ChildById(hwnd, 1210);
+        HWND pickPath = ChildById(hwnd, 1211);
+        HWND clearResults = ChildById(hwnd, 1217);
+        HWND exactMode = ChildById(hwnd, 1213);
+        HWND nameMode = ChildById(hwnd, 1214);
+        HWND scanTable = ChildById(hwnd, 1215);
+        HWND blockButton = ChildById(hwnd, 1216);
+        state.Check(pathEdit && pickPath && clearResults && exactMode && nameMode && scanTable && blockButton,
+            L"ad-block: block page controls are incomplete");
+        state.Check(pickPath && WindowText(pickPath) == L"选择",
+            L"ad-block: merged file and folder entry label is incorrect");
+        state.Check(clearResults && WindowText(clearResults) == L"Clear",
+            L"ad-block: clear-results action label is incorrect");
+        state.Check(!clearResults || !IsWindowEnabled(clearResults),
+            L"ad-block: clear-results action should start disabled");
+        if (pathEdit && clearResults && pickPath) {
+            RECT pathRect{};
+            RECT clearRect{};
+            RECT pickRect{};
+            GetWindowRect(pathEdit, &pathRect);
+            GetWindowRect(clearResults, &clearRect);
+            GetWindowRect(pickPath, &pickRect);
+            state.Check(pathRect.right < clearRect.left && clearRect.right < pickRect.left,
+                L"ad-block: path, Clear, and picker controls overlap or are out of order");
+            state.Check(std::max(pathRect.top, clearRect.top) < std::min(pathRect.bottom, clearRect.bottom) &&
+                    std::max(clearRect.top, pickRect.top) < std::min(clearRect.bottom, pickRect.bottom),
+                L"ad-block: path, Clear, and picker controls are not aligned on one row");
+        }
+
+        auto validateActionRow = [&](const std::wstring& scenario) {
+            if (!exactMode || !nameMode || !blockButton) return;
+            RECT exactRect{};
+            RECT nameRect{};
+            RECT buttonRect{};
+            GetWindowRect(exactMode, &exactRect);
+            GetWindowRect(nameMode, &nameRect);
+            GetWindowRect(blockButton, &buttonRect);
+            state.Check(exactRect.left < nameRect.left && nameRect.right < buttonRect.left,
+                scenario + L": blocking modes are not left of the primary action");
+            state.Check(std::max(exactRect.top, buttonRect.top) < std::min(exactRect.bottom, buttonRect.bottom),
+                scenario + L": blocking modes and primary action are not on the same row");
+        };
+
+        validateActionRow(L"ad-block 100% DPI");
+        capture(hwnd, L"ad-block-block-page.png", L"ad-block block page");
+
+        HWND statusText = nullptr;
+        for (const auto& child : Children(hwnd)) {
+            if (child.text == L"选择文件或文件夹后开始扫描。") {
+                statusText = child.hwnd;
+                break;
+            }
+        }
+        state.Check(statusText != nullptr, L"ad-block: scan status text is missing");
+        if (pathEdit && statusText && clearResults) {
+            for (const wchar_t character : exe.wstring()) {
+                DWORD_PTR typeResult = 0;
+                SendMessageTimeoutW(pathEdit, WM_CHAR, character, 1,
+                    SMTO_ABORTIFHUNG, 5000, &typeResult);
+            }
+            PostMessageW(pathEdit, WM_KEYDOWN, VK_RETURN, 0);
+            const auto scanBegin = GetTickCount64();
+            while (!Contains(WindowText(statusText), L"个可启动文件") &&
+                   GetTickCount64() - scanBegin < 10000) {
+                Sleep(50);
+            }
+            state.Check(Contains(WindowText(statusText), L"个可启动文件"),
+                L"ad-block: Enter in the manually entered path did not start scanning");
+            state.Check(IsWindowEnabled(clearResults) != FALSE,
+                L"ad-block: clear-results action was not enabled after scanning");
+            capture(hwnd, L"ad-block-manual-path-result.png", L"ad-block manual path result");
+
+            DWORD_PTR clearResult = 0;
+            SendMessageTimeoutW(clearResults, BM_CLICK, 0, 0, SMTO_ABORTIFHUNG, 5000, &clearResult);
+            Sleep(200);
+            state.Check(WindowText(statusText) == L"选择文件或文件夹后开始扫描。",
+                L"ad-block: clearing displayed results did not restore the initial status");
+            state.Check(IsWindowEnabled(clearResults) == FALSE,
+                L"ad-block: clear-results action remained enabled after clearing");
+            capture(hwnd, L"ad-block-cleared-results.png", L"ad-block cleared results");
+
+            PostMessageW(pathEdit, WM_KEYDOWN, VK_RETURN, 0);
+            const auto rescanBegin = GetTickCount64();
+            while (!Contains(WindowText(statusText), L"个可启动文件") &&
+                   GetTickCount64() - rescanBegin < 10000) {
+                Sleep(50);
+            }
+            state.Check(Contains(WindowText(statusText), L"个可启动文件"),
+                L"ad-block: Clear removed the entered path instead of only clearing displayed results");
+            SendMessageTimeoutW(clearResults, BM_CLICK, 0, 0, SMTO_ABORTIFHUNG, 5000, &clearResult);
+            Sleep(200);
+        }
+
+        if (pickPath) {
+            PostMessageW(pickPath, BM_CLICK, 0, 0);
+            HWND picker = WaitForTopWindow(
+                FindWindowRequest{L"#32770", L"", process.dwProcessId}, 5000);
+            state.Check(picker != nullptr, L"ad-block: direct file and folder picker did not open");
+            if (picker) {
+                capture(picker, L"ad-block-path-picker.png", L"ad-block path picker");
+                HWND chooseFolder = nullptr;
+                for (const auto& child : Children(picker)) {
+                    if (child.className == L"Button" && child.text == L"选择此文件夹") {
+                        chooseFolder = child.hwnd;
+                        break;
+                    }
+                }
+                state.Check(chooseFolder != nullptr,
+                    L"ad-block: modern picker does not expose the direct folder action");
+                HWND cancelButton = nullptr;
+                for (const auto& child : Children(picker)) {
+                    if (child.className == L"Button" && child.text == L"取消") {
+                        cancelButton = child.hwnd;
+                        break;
+                    }
+                }
+                if (cancelButton) {
+                    DWORD_PTR cancelResult = 0;
+                    SendMessageTimeoutW(cancelButton, BM_CLICK, 0, 0,
+                        SMTO_ABORTIFHUNG, 5000, &cancelResult);
+                } else {
+                    PostMessageW(picker, WM_COMMAND, IDCANCEL, 0);
+                }
+                const auto closeBegin = GetTickCount64();
+                while (IsWindow(picker) && GetTickCount64() - closeBegin < 5000) Sleep(50);
+                if (IsWindow(picker)) {
+                    PostMessageW(picker, WM_CLOSE, 0, 0);
+                    const auto fallbackBegin = GetTickCount64();
+                    while (IsWindow(picker) && GetTickCount64() - fallbackBegin < 2000) Sleep(50);
+                }
+                state.Check(!IsWindow(picker), L"ad-block: modern picker did not close after cancellation");
+                Sleep(300);
+            }
+        }
+
+        HWND blockedTab = ChildById(hwnd, 1202);
+        state.Check(blockedTab != nullptr, L"ad-block: blocked tab is missing");
+        if (blockedTab) {
+            DWORD_PTR tabResult = 0;
+            SendMessageTimeoutW(blockedTab, BM_CLICK, 0, 0, SMTO_ABORTIFHUNG, 5000, &tabResult);
+            Sleep(500);
+            HWND blockedTable = ChildById(hwnd, 1220);
+            HWND unblockButton = ChildById(hwnd, 1221);
+            state.Check(blockedTable && IsWindowVisible(blockedTable),
+                L"ad-block: blocked table did not become visible");
+            state.Check(unblockButton && IsWindowVisible(unblockButton),
+                L"ad-block: unblock action did not become visible");
+            state.Check(!exactMode || !IsWindowVisible(exactMode),
+                L"ad-block: blocking mode remained visible on blocked page");
+            capture(hwnd, L"ad-block-blocked-page.png", L"ad-block blocked page");
+        }
+
+        PostMessageW(hwnd, WM_CLOSE, 0, 0);
+    } else {
+        state.Check(false, L"ad-block: window did not appear");
+    }
+
+    if (WaitForSingleObject(process.hProcess, 5000) == WAIT_TIMEOUT) {
+        TerminateProcess(process.hProcess, 2);
+    }
+    CloseHandle(process.hThread);
+    CloseHandle(process.hProcess);
+
+    for (const UINT dpi : {120u, 144u}) {
+        STARTUPINFOW dpiStartup{};
+        dpiStartup.cb = sizeof(dpiStartup);
+        PROCESS_INFORMATION dpiProcess{};
+        std::wstring dpiCommand = L"\"" + exe.wstring() + L"\" --ad-block";
+        const std::wstring dpiText = std::to_wstring(dpi);
+        SetEnvironmentVariableW(L"QUATTRO_AD_BLOCK_ACCEPTANCE_DPI", dpiText.c_str());
+        const BOOL started = CreateProcessW(exe.c_str(), dpiCommand.data(), nullptr, nullptr, FALSE, 0, nullptr,
+            ModuleDirectory().c_str(), &dpiStartup, &dpiProcess);
+        SetEnvironmentVariableW(L"QUATTRO_AD_BLOCK_ACCEPTANCE_DPI", nullptr);
+        state.Check(started != FALSE, L"ad-block: DPI acceptance process failed to start");
+        if (!started) continue;
+        WaitForInputIdle(dpiProcess.hProcess, 10000);
+        HWND dpiWindow = WaitForTopWindow(
+            FindWindowRequest{L"AdBlockMainWindow", L"广告拦截", dpiProcess.dwProcessId}, 10000);
+        state.Check(dpiWindow != nullptr, L"ad-block: DPI acceptance window did not appear");
+        if (dpiWindow) {
+            ShowWindow(dpiWindow, SW_SHOWNORMAL);
+            SetWindowPos(dpiWindow, HWND_TOPMOST, 0, 0, 0, 0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            SetForegroundWindow(dpiWindow);
+            UpdateWindow(dpiWindow);
+            HWND exactMode = ChildById(dpiWindow, 1213);
+            HWND nameMode = ChildById(dpiWindow, 1214);
+            HWND pathEdit = ChildById(dpiWindow, 1210);
+            HWND pickPath = ChildById(dpiWindow, 1211);
+            HWND clearResults = ChildById(dpiWindow, 1217);
+            HWND blockButton = ChildById(dpiWindow, 1216);
+            state.Check(exactMode && nameMode && pathEdit && pickPath && clearResults && blockButton,
+                L"ad-block: DPI action row controls are incomplete");
+            if (pathEdit && clearResults && pickPath) {
+                RECT pathRect{};
+                RECT clearRect{};
+                RECT pickRect{};
+                GetWindowRect(pathEdit, &pathRect);
+                GetWindowRect(clearResults, &clearRect);
+                GetWindowRect(pickPath, &pickRect);
+                state.Check(pathRect.right < clearRect.left && clearRect.right < pickRect.left,
+                    L"ad-block: DPI path row controls overlap or are out of order");
+            }
+            if (exactMode && nameMode && blockButton) {
+                RECT exactRect{};
+                RECT nameRect{};
+                RECT buttonRect{};
+                GetWindowRect(exactMode, &exactRect);
+                GetWindowRect(nameMode, &nameRect);
+                GetWindowRect(blockButton, &buttonRect);
+                state.Check(exactRect.left < nameRect.left && nameRect.right < buttonRect.left,
+                    L"ad-block: DPI action row overlaps horizontally");
+                state.Check(std::max(exactRect.top, buttonRect.top) < std::min(exactRect.bottom, buttonRect.bottom),
+                    L"ad-block: DPI action row is not vertically aligned");
+            }
+            RedrawWindow(dpiWindow, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+            Sleep(200);
+            BitmapCapture bitmap = CaptureWindowBitmap(dpiWindow);
+            state.Check(bitmap.bitmap != nullptr, L"ad-block: DPI screenshot bitmap was not created");
+            if (bitmap.bitmap) {
+                const std::wstring fileName = dpi == 120 ? L"ad-block-block-page-125.png" : L"ad-block-block-page-150.png";
+                state.Check(BitmapHasVisualContent(bitmap.bitmap, bitmap.width, bitmap.height),
+                    L"ad-block: DPI screenshot looks blank or too flat");
+                state.Check(SavePng(bitmap.bitmap, outputDir / fileName), L"ad-block: DPI screenshot save failed");
+                DeleteObject(bitmap.bitmap);
+            }
+            SetWindowPos(dpiWindow, HWND_NOTOPMOST, 0, 0, 0, 0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            PostMessageW(dpiWindow, WM_CLOSE, 0, 0);
+        }
+        if (WaitForSingleObject(dpiProcess.hProcess, 5000) == WAIT_TIMEOUT) {
+            TerminateProcess(dpiProcess.hProcess, 2);
+        }
+        CloseHandle(dpiProcess.hThread);
+        CloseHandle(dpiProcess.hProcess);
+    }
+    AcceptanceLog(L"end ad-block");
+}
+
+std::wstring DpiPercentSuffix(UINT dpi) {
+    if (dpi == 120) return L"125";
+    if (dpi == 144) return L"150";
+    return L"100";
+}
+
+void RunProcessToolsSingletonScenario(
+    HWND owner,
+    HINSTANCE instance,
+    const Theme& theme,
+    TestState& state) {
+    AcceptanceLog(L"begin process-tools-singleton");
+    PluginRegistry registry(std::filesystem::current_path());
+    AppConfig config;
+    std::atomic<bool> inspected = false;
+    std::thread controller([&]() {
+        HWND firstWindow = WaitForTopWindow(
+            FindWindowRequest{L"QuattroProcessTools", L"进程工具", GetCurrentProcessId()},
+            7000);
+        state.Check(firstWindow != nullptr, L"process-tools-singleton: initial window did not appear");
+        if (!firstWindow) {
+            inspected = true;
+            CloseTopWindowsForProcess(GetCurrentProcessId(), nullptr);
+            return;
+        }
+
+        state.Check(
+            CountTopWindowsForProcess(L"进程工具", GetCurrentProcessId()) == 1,
+            L"process-tools-singleton: initial window count is not one");
+        for (int attempt = 0; attempt < 3; ++attempt) {
+            const bool reopened = ShowBuiltinTool(
+                owner,
+                instance,
+                theme,
+                registry,
+                config,
+                L"process-locator",
+                attempt == 2);
+            state.Check(reopened, L"process-tools-singleton: repeated open request failed");
+            Sleep(120);
+            const HWND currentWindow = FindTopWindow(
+                FindWindowRequest{L"QuattroProcessTools", L"进程工具", GetCurrentProcessId()});
+            state.Check(
+                currentWindow == firstWindow,
+                L"process-tools-singleton: repeated request replaced the existing HWND");
+            state.Check(
+                CountTopWindowsForProcess(L"进程工具", GetCurrentProcessId()) == 1,
+                L"process-tools-singleton: repeated request created another window");
+        }
+        inspected = true;
+        PostMessageW(firstWindow, WM_CLOSE, 0, 0);
+    });
+
+    ShowBuiltinTool(owner, instance, theme, registry, config, L"process-locator");
+    controller.join();
+    state.Check(inspected.load(), L"process-tools-singleton: controller did not complete");
+    AcceptanceLog(L"end process-tools-singleton");
+}
+
+void RunProcessToolsScenarios(
+    HWND owner,
+    HINSTANCE instance,
+    const Theme& theme,
+    const std::filesystem::path& outputDir,
+    TestState& state,
+    UINT dpi) {
+    PluginRegistry registry(std::filesystem::current_path());
+    AppConfig config;
+    const std::wstring dpiSuffix = DpiPercentSuffix(dpi);
+
+    auto run = [&](Scenario scenario, const wchar_t* engine) {
+        scenario.forcedDpi = dpi;
+        scenario.validateProcessToolsTableDpi = std::wstring(engine) != L"process-locator";
+        RunDialogScenario(
+            scenario,
+            outputDir,
+            state,
+            [&]() {
+                ShowBuiltinTool(owner, instance, theme, registry, config, engine);
+            });
+    };
+
+    run(
+        Scenario{
+            L"builtin-process-tools-locator-" + dpiSuffix,
+            L"",
+            L"进程工具",
+            L"builtin-process-tools-locator-" + dpiSuffix + L".png",
+            {L"进程工具", L"进程定位", L"PID 查询", L"端口占用", L"文件占用", L"结束进程", L"打开所在目录", L"立即获取", L"进程 ID", L"绝对路径", L"全局快捷键"},
+            {L"等待获取"},
+            2,
+            3,
+            false,
+            false,
+            false,
+            {L"将鼠标移到目标窗口或托盘图标上，然后获取进程信息。", L"全局快捷键", L"立即获取"}},
+        L"process-locator");
+
+    const std::wstring processId = std::to_wstring(GetCurrentProcessId());
+    registry.SetSetting(L"quattro.builtin.process-tools", L"pid", processId);
+    Scenario processIdScenario{
+        L"builtin-process-tools-pid-" + dpiSuffix,
+        L"",
+        L"进程工具",
+        L"builtin-process-tools-pid-" + dpiSuffix + L".png",
+        {L"进程工具", L"进程定位", L"PID 查询", L"端口占用", L"文件占用"},
+        {processId},
+        1,
+        1,
+        false,
+        false,
+        false,
+        {L"进程 ID", L"查询(&Q)", processId}};
+    processIdScenario.actionButtonText = L"查询(&Q)";
+    run(std::move(processIdScenario), L"process-inspector");
+
+    registry.SetSetting(L"quattro.builtin.process-tools", L"port", L"0");
+    Scenario portScenario{
+        L"builtin-process-tools-port-" + dpiSuffix,
+        L"",
+        L"进程工具",
+        L"builtin-process-tools-port-" + dpiSuffix + L".png",
+        {L"进程工具", L"进程定位", L"PID 查询", L"端口占用", L"文件占用"},
+        {L"0"},
+        1,
+        1,
+        false,
+        false,
+        false,
+        {L"端口号", L"检查(&C)", L"请输入 1–65535 之间的端口号。"}};
+    portScenario.actionButtonText = L"检查(&C)";
+    run(std::move(portScenario), L"port-inspector");
+
+    const std::wstring filePath = (std::filesystem::current_path() / L"CMakeLists.txt").wstring();
+    registry.SetSetting(L"quattro.builtin.process-tools", L"path", filePath);
+    Scenario fileScenario{
+        L"builtin-process-tools-file-lock-" + dpiSuffix,
+        L"",
+        L"进程工具",
+        L"builtin-process-tools-file-lock-" + dpiSuffix + L".png",
+        {L"进程工具", L"进程定位", L"PID 查询", L"端口占用", L"文件占用"},
+        {L"CMakeLists.txt"},
+        1,
+        3,
+        false,
+        false,
+        false,
+        {L"路径", L"检查(&C)", L"已检查 1 个路径"}};
+    fileScenario.actionButtonText = L"检查(&C)";
+    run(std::move(fileScenario), L"file-lock-inspector");
+}
+
 AppModel SampleModel() {
     AppModel model;
     Group group;
@@ -1848,6 +2380,49 @@ int wmain() {
     config.webDavUrl = L"https://dav.example.test/remote.php/dav/files/demo";
     config.webDavRemotePath = L"/Quattro/backups/";
     config.webDavUserName = L"acceptance-user";
+
+    wchar_t adBlockOnly[8]{};
+    if (GetEnvironmentVariableW(
+            L"QUATTRO_UI_ACCEPTANCE_AD_BLOCK_ONLY",
+            adBlockOnly,
+            static_cast<DWORD>(std::size(adBlockOnly))) > 0) {
+        RunAdBlockScenario(outputDir, state);
+        DestroyWindow(owner);
+        OleUninitialize();
+        Gdiplus::GdiplusShutdown(gdiplusToken);
+        if (!state.ok) {
+            for (const auto& failure : state.failures) {
+                AcceptanceLog(L"ad-block target failure " + failure);
+                std::wcerr << failure << L"\n";
+            }
+            return 1;
+        }
+        std::wcout << L"ui_ad_block_acceptance=passed screenshots=" << outputDir.wstring() << L"\n";
+        return 0;
+    }
+
+    wchar_t processToolsOnly[8]{};
+    if (GetEnvironmentVariableW(
+            L"QUATTRO_UI_ACCEPTANCE_PROCESS_TOOLS_ONLY",
+            processToolsOnly,
+            static_cast<DWORD>(std::size(processToolsOnly))) > 0) {
+        RunProcessToolsSingletonScenario(owner, instance, theme, state);
+        RunProcessToolsScenarios(owner, instance, theme, outputDir, state, 96);
+        RunProcessToolsScenarios(owner, instance, theme, outputDir, state, 120);
+        RunProcessToolsScenarios(owner, instance, theme, outputDir, state, 144);
+        DestroyWindow(owner);
+        OleUninitialize();
+        Gdiplus::GdiplusShutdown(gdiplusToken);
+        if (!state.ok) {
+            for (const auto& failure : state.failures) {
+                AcceptanceLog(L"process-tools target failure " + failure);
+                std::wcerr << failure << L"\n";
+            }
+            return 1;
+        }
+        std::wcout << L"ui_process_tools_acceptance=passed screenshots=" << outputDir.wstring() << L"\n";
+        return 0;
+    }
 
     wchar_t mainWindowOnly[8]{};
     if (GetEnvironmentVariableW(
@@ -2020,6 +2595,7 @@ int wmain() {
     RunTableGridLinesScenario(outputDir, state, false, L"table-grid-lines-default", L"table-grid-lines-default.png");
     RunTableGridLinesScenario(outputDir, state, true, L"table-grid-lines-enabled", L"table-grid-lines-enabled.png");
     RunAppLaunchLockerScenario(outputDir, state);
+    RunAdBlockScenario(outputDir, state);
 
     RunDialogScenario(
         Scenario{L"message-dialog", L"QuattroThemedMessageDialog", L"验收消息", L"message-dialog.png", {L"验收消息"}, {}, 0, 1, false},
@@ -2239,36 +2815,8 @@ int wmain() {
         [&]() {
             ShowBuiltinTool(owner, instance, theme, registry, builtinToolConfig, L"stopwatch");
         });
-    RunDialogScenario(
-        Scenario{L"builtin-port-inspector", L"", L"端口占用检查", L"builtin-port-inspector.png", {L"端口占用检查", L"扫描(&S)", L"输入端口号后点击扫描。"}, {}, 1, 1, false},
-        outputDir,
-        state,
-        [&]() {
-            ShowBuiltinTool(owner, instance, theme, registry, builtinToolConfig, L"port-inspector");
-        });
-    RunDialogScenario(
-        Scenario{L"builtin-process-inspector", L"", L"进程ID查询", L"builtin-process-inspector.png", {L"进程ID查询", L"查询(&Q)", L"输入进程ID后点击查询。"}, {}, 1, 1, false},
-        outputDir,
-        state,
-        [&]() {
-            ShowBuiltinTool(owner, instance, theme, registry, builtinToolConfig, L"process-inspector");
-        });
-    RunDialogScenario(
-        Scenario{
-            L"builtin-process-locator",
-            L"",
-            L"进程定位器",
-            L"builtin-process-locator.png",
-            {L"进程定位器", L"结束进程", L"打开所在目录", L"立即获取", L"进程 ID", L"绝对路径", L"全局快捷键"},
-            {L"等待获取"},
-            2,
-            3,
-            false},
-        outputDir,
-        state,
-        [&]() {
-            ShowBuiltinTool(owner, instance, theme, registry, builtinToolConfig, L"process-locator");
-        });
+    RunProcessToolsSingletonScenario(owner, instance, theme, state);
+    RunProcessToolsScenarios(owner, instance, theme, outputDir, state, 96);
 
     DestroyWindow(owner);
     OleUninitialize();

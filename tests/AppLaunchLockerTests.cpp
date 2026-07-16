@@ -141,6 +141,15 @@ int wmain() {
         ok &= Check(!adBlock.Block((adDir / L"missing.exe").wstring(), L"exact").success, L"missing block target rejected");
         ok &= Check(!adBlock.Block(scriptPath.wstring(), L"exact").success, L"script block target rejected");
 
+        // 启动拦截模式：临时目录内的 exe 不可能注册为开机自启动，须以“无自启动项”拒绝，
+        // 且不静默回退 IFEO、不写注册表，「已拦截」列表保持为空。
+        const OperationResult startupReject = adBlock.Block(exePath.wstring(), L"startup");
+        ok &= Check(!startupReject.success, L"startup block on non-autostart target rejected");
+        std::vector<DisabledRecord> afterStartup;
+        std::wstring afterStartupError;
+        ok &= Check(adBlock.ListBlocked(afterStartup, afterStartupError) && afterStartup.empty(),
+            L"rejected startup block must not persist any record");
+
         // 解除不存在的记录：拒绝。
         ok &= Check(!adBlock.Unblock(L"no-such-record").success, L"unblock of unknown record rejected");
     }

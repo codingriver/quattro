@@ -1,6 +1,7 @@
 #include "PluginRegistry.h"
 
 #include "Utilities.h"
+#include "Version.h"
 
 #include <algorithm>
 #include <unordered_map>
@@ -84,69 +85,21 @@ std::vector<PluginRecord> PluginRegistry::BuiltinPlugins() {
     stopwatch.enabled = true;
     stopwatch.installed = true;
 
-    PluginRecord portInspector;
-    portInspector.id = L"quattro.builtin.port-inspector";
-    portInspector.name = L"端口占用检查";
-    portInspector.version = L"1.0.0";
-    portInspector.category = L"builtin-tools";
-    portInspector.kind = L"builtin-tool";
-    portInspector.engine = L"port-inspector";
-    portInspector.description = L"扫描指定端口占用，并可结束对应进程。";
-    portInspector.permissions = L"进程查询, 结束进程";
-    portInspector.author = L"Quattro快速启动器";
-    portInspector.license = L"Built-in";
-    portInspector.builtin = true;
-    portInspector.deletable = false;
-    portInspector.enabled = true;
-    portInspector.installed = true;
-
-    PluginRecord processInspector;
-    processInspector.id = L"quattro.builtin.process-inspector";
-    processInspector.name = L"进程ID查询";
-    processInspector.version = L"1.0.0";
-    processInspector.category = L"builtin-tools";
-    processInspector.kind = L"builtin-tool";
-    processInspector.engine = L"process-inspector";
-    processInspector.description = L"按进程ID查询进程，并可结束对应进程。";
-    processInspector.permissions = L"进程查询, 结束进程";
-    processInspector.author = L"Quattro快速启动器";
-    processInspector.license = L"Built-in";
-    processInspector.builtin = true;
-    processInspector.deletable = false;
-    processInspector.enabled = true;
-    processInspector.installed = true;
-
-    PluginRecord processLocator;
-    processLocator.id = L"quattro.builtin.process-locator";
-    processLocator.name = L"进程定位器";
-    processLocator.version = L"1.0.0";
-    processLocator.category = L"builtin-tools";
-    processLocator.kind = L"builtin-tool";
-    processLocator.engine = L"process-locator";
-    processLocator.description = L"按快捷键获取鼠标悬浮程序的进程 ID 和绝对路径。";
-    processLocator.permissions = L"进程查询, 结束进程, 打开目录, 全局快捷键";
-    processLocator.author = L"Quattro快速启动器";
-    processLocator.license = L"Built-in";
-    processLocator.builtin = true;
-    processLocator.deletable = false;
-    processLocator.enabled = true;
-    processLocator.installed = true;
-
-    PluginRecord fileLockInspector;
-    fileLockInspector.id = L"quattro.builtin.file-lock-inspector";
-    fileLockInspector.name = L"文件占用检查";
-    fileLockInspector.version = L"1.0.0";
-    fileLockInspector.category = L"builtin-tools";
-    fileLockInspector.kind = L"builtin-tool";
-    fileLockInspector.engine = L"file-lock-inspector";
-    fileLockInspector.description = L"检查文件或目录被哪些进程占用，并可结束对应进程。";
-    fileLockInspector.permissions = L"文件查询, 进程查询, 结束进程";
-    fileLockInspector.author = L"Quattro快速启动器";
-    fileLockInspector.license = L"Built-in";
-    fileLockInspector.builtin = true;
-    fileLockInspector.deletable = false;
-    fileLockInspector.enabled = true;
-    fileLockInspector.installed = true;
+    PluginRecord processTools;
+    processTools.id = L"quattro.builtin.process-tools";
+    processTools.name = L"进程工具";
+    processTools.version = L"1.0.0";
+    processTools.category = L"builtin-tools";
+    processTools.kind = L"builtin-tool";
+    processTools.engine = L"process-tools";
+    processTools.description = L"通过鼠标位置、进程 ID、端口或文件路径查询进程，并执行相关操作。";
+    processTools.permissions = L"文件查询, 进程查询, 结束进程, 打开目录, 全局快捷键";
+    processTools.author = L"Quattro快速启动器";
+    processTools.license = L"Built-in";
+    processTools.builtin = true;
+    processTools.deletable = false;
+    processTools.enabled = true;
+    processTools.installed = true;
 
     PluginRecord appLaunchLocker;
     appLaunchLocker.id = L"quattro.builtin.app-launch-locker";
@@ -180,17 +133,17 @@ std::vector<PluginRecord> PluginRegistry::BuiltinPlugins() {
     adBlock.enabled = true;
     adBlock.installed = true;
 
-    return {
+    std::vector<PluginRecord> plugins = {
         clicker,
         timer,
         stopwatch,
-        portInspector,
-        processInspector,
-        processLocator,
-        fileLockInspector,
-        appLaunchLocker,
-        adBlock,
+        processTools,
     };
+    if (!QuattroIsOfficialBuild()) {
+        plugins.push_back(std::move(appLaunchLocker));
+    }
+    plugins.push_back(std::move(adBlock));
+    return plugins;
 }
 
 std::vector<PluginRecord> PluginRegistry::LoadPlugins() {

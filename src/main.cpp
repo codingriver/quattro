@@ -567,7 +567,13 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
             L", embedded_updated=" + std::to_wstring(assetInstall.filesUpdated) +
             L", embedded_backed_up=" + std::to_wstring(assetInstall.filesBackedUp) +
             L", embedded_skipped=" + std::to_wstring(assetInstall.filesSkipped) +
+            L", embedded_decompressed=" + std::to_wstring(assetInstall.filesDecompressed) +
+            L", embedded_raw_assets=" + std::to_wstring(assetInstall.rawAssets) +
+            L", embedded_compressed_assets=" + std::to_wstring(assetInstall.compressedAssets) +
             L", embedded_failures=" + std::to_wstring(assetInstall.failures) +
+            L", embedded_validation_ms=" + std::to_wstring(assetInstall.validationMilliseconds) +
+            L", embedded_decompression_ms=" + std::to_wstring(assetInstall.decompressionMilliseconds) +
+            L", embedded_total_ms=" + std::to_wstring(assetInstall.totalMilliseconds) +
             L", fallback_dir=" + BoolText(assetInstall.usedFallbackDirectory));
     if (assetInstall.filesWritten > 0) {
         WriteAppLog(L"已释放内置资源: " + std::to_wstring(assetInstall.filesWritten));

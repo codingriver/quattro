@@ -23,6 +23,7 @@
 #include <windowsx.h>
 
 #include <algorithm>
+#include <atomic>
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -83,10 +84,18 @@ constexpr int ID_FILE_LOCK_PICK_FILE = 7602;
 constexpr int ID_FILE_LOCK_PICK_DIR = 7603;
 constexpr int ID_FILE_LOCK_SCAN = 7604;
 constexpr int ID_FILE_LOCK_KILL_BASE = 7610;
+constexpr int ID_PROCESS_TOOLS_TAB = 7700;
+constexpr int ID_PROCESS_TOOLS_TAB_BASE = 7710;
+constexpr int ID_PROCESS_TOOLS_PORT_TABLE = 7720;
+constexpr int ID_PROCESS_TOOLS_PID_TABLE = 7721;
+constexpr int ID_PROCESS_TOOLS_FILE_TABLE = 7722;
 constexpr UINT WM_QUATTRO_TOOL_AUTOMATION = WM_APP + 0x80;
 constexpr UINT WM_QUATTRO_TOOL_TIMER_AUTOMATION = WM_APP + 0x81;
+constexpr UINT WM_QUATTRO_PROCESS_TOOLS_ACTIVATE = WM_APP + 0x82;
+constexpr wchar_t kProcessToolsWindowClass[] = L"QuattroProcessTools";
 constexpr UINT kTimerDisplayIntervalMs = 33;
 constexpr std::size_t kFileLockDirectoryFileLimit = 512;
+std::atomic<HWND> gProcessToolsWindow{nullptr};
 #ifndef AF_INET6
 constexpr ULONG AF_INET6 = 23;
 #endif
@@ -2717,6 +2726,846 @@ private:
     bool locateOnOpen_ = false;
     bool done_ = false;
 };
+
+class ProcessToolsDialog final {
+public:
+    enum class Page {
+        Locator = 0,
+        ProcessId = 1,
+        Port = 2,
+        FileLock = 3,
+    };
+
+    ProcessToolsDialog(
+        HWND owner,
+        HINSTANCE instance,
+        const Theme& theme,
+        PluginRegistry& registry,
+        const AppConfig& config,
+        Page initialPage,
+        bool locateOnOpen)
+        : owner_(owner),
+          instance_(instance),
+          theme_(theme),
+          registry_(registry),
+          config_(config),
+          initialPage_(initialPage),
+          locateOnOpen_(locateOnOpen) {}
+
+    bool Run() {
+        const HWND existingWindow = gProcessToolsWindow.load();
+        if (IsWindow(existingWindow)) {
+            PostMessageW(
+                existingWindow,
+                WM_QUATTRO_PROCESS_TOOLS_ACTIVATE,
+                static_cast<WPARAM>(initialPage_),
+                locateOnOpen_ ? 1 : 0);
+            return true;
+        }
+        gProcessToolsWindow.store(nullptr);
+
+        HICON icon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_QUATTRO_APP_ICON));
+        ThemedWindowCreateOptions options = ThemedWindowUi::DialogOptions(
+            instance_, owner_, kProcessToolsWindowClass, L"进程工具", ProcessToolsDialog::Proc, this, icon, icon);
+        options.clientWidth = kClientWidth;
+        options.clientHeight = kClientHeight;
+        options.placement = ThemedWindowPlacement::OffsetOwner;
+        options.offsetX = 60;
+        options.offsetY = 60;
+        std::wstring error;
+        hwnd_ = ThemedWindowUi::CreateWindowHandle(options, &error);
+        if (!hwnd_) {
+            WriteAppLog(L"进程工具窗口创建失败: " + error);
+            return false;
+        }
+        gProcessToolsWindow.store(hwnd_);
+
+        windowUi_->ShowModal();
+        UpdateWindow(hwnd_);
+        MSG message{};
+        while (!done_ && GetMessageW(&message, nullptr, 0, 0) > 0) {
+            if (!ThemedUi::PreTranslateMessage(message) && !IsDialogMessageW(hwnd_, &message)) {
+                TranslateMessage(&message);
+                DispatchMessageW(&message);
+            }
+        }
+        return true;
+    }
+
+private:
+    static constexpr int kClientWidth = 680;
+    static constexpr int kClientHeight = 440;
+    static constexpr int kPageCount = 4;
+
+    static LRESULT CALLBACK Proc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
+        ProcessToolsDialog* dialog = nullptr;
+        if (message == WM_NCCREATE) {
+            auto* create = reinterpret_cast<CREATESTRUCTW*>(lParam);
+            dialog = static_cast<ProcessToolsDialog*>(create->lpCreateParams);
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(dialog));
+            dialog->hwnd_ = hwnd;
+        } else {
+            dialog = reinterpret_cast<ProcessToolsDialog*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+        }
+        return dialog ? dialog->Handle(message, wParam, lParam) : DefWindowProcW(hwnd, message, wParam, lParam);
+    }
+
+    LRESULT Handle(UINT message, WPARAM wParam, LPARAM lParam) {
+        LRESULT commonResult = 0;
+        if (ThemedWindowUi::HandleCommonMessage(windowUi_, message, wParam, lParam, commonResult)) {
+            if (message == WM_DESTROY) {
+                if (gProcessToolsWindow.load() == hwnd_) {
+                    gProcessToolsWindow.store(nullptr);
+                }
+                done_ = true;
+            }
+            return commonResult;
+        }
+
+        switch (message) {
+        case WM_CREATE:
+            windowUi_ = std::make_unique<ThemedWindowUi>(
+                instance_, owner_, hwnd_, theme_, DialogLayoutKind::Compact, kClientWidth, kClientHeight);
+            CreateControls();
+            return 0;
+        case WM_COMMAND:
+            HandleCommand(LOWORD(wParam), HIWORD(wParam));
+            return 0;
+        case WM_NOTIFY:
+            if (HandleTableEvent(lParam)) {
+                return 0;
+            }
+            return DefWindowProcW(hwnd_, message, wParam, lParam);
+        case WM_QUATTRO_PROCESS_TOOLS_ACTIVATE: {
+            const int requestedPage = std::clamp(static_cast<int>(wParam), 0, kPageCount - 1);
+            ShowPage(static_cast<Page>(requestedPage));
+            if (IsIconic(hwnd_)) {
+                ShowWindow(hwnd_, SW_RESTORE);
+            } else {
+                ShowWindow(hwnd_, SW_SHOW);
+            }
+            BringWindowToTop(hwnd_);
+            SetForegroundWindow(hwnd_);
+            if (lParam != 0) {
+                PostMessageW(hwnd_, WM_COMMAND, MAKEWPARAM(ID_LOCATOR_PICK, BN_CLICKED), 0);
+            }
+            return 0;
+        }
+        case WM_PAINT: {
+            PAINTSTRUCT ps{};
+            HDC dc = BeginPaint(hwnd_, &ps);
+            windowUi_->FillBackground(dc);
+            windowUi_->DrawRegisteredEditFrames(dc);
+            windowUi_->DrawRegisteredTableFrames(dc);
+            EndPaint(hwnd_, &ps);
+            return 0;
+        }
+        case WM_CLOSE:
+            DestroyWindow(hwnd_);
+            return 0;
+        default:
+            return DefWindowProcW(hwnd_, message, wParam, lParam);
+        }
+    }
+
+    ThemedUi Ui() const {
+        return windowUi_->ui();
+    }
+
+    void AddPageControl(Page page, HWND control) {
+        if (!control) {
+            return;
+        }
+        pageControls_[static_cast<std::size_t>(page)].push_back(control);
+    }
+
+    HWND AddLabel(Page page, const std::wstring& text, int x, int y, int width, ThemedLabelOptions options = {}) {
+        HWND control = Ui().Label(text, x, y, width, options);
+        AddPageControl(page, control);
+        return control;
+    }
+
+    HWND AddStatus(Page page, const std::wstring& text, int x, int y, int width) {
+        ThemedStatusTextOptions options{};
+        options.align = ThemedTextAlign::Start;
+        HWND control = Ui().StatusText(text, x, y, width, options);
+        AddPageControl(page, control);
+        return control;
+    }
+
+    HWND AddButton(
+        Page page,
+        int id,
+        const std::wstring& text,
+        int x,
+        int y,
+        ThemedButtonRole role,
+        ThemedButtonSize size,
+        ThemedButtonWidthMode widthMode,
+        int width,
+        bool defaultButton = false) {
+        HWND control = Ui().Button(id, text, x, y, role, size, widthMode, width, defaultButton);
+        AddPageControl(page, control);
+        return control;
+    }
+
+    HWND AddEdit(Page page, int id, RECT frame, const std::wstring& value, ThemedEditOptions options = {}) {
+        HWND control = Ui().Edit(id, frame, value, options);
+        AddPageControl(page, control);
+        return control;
+    }
+
+    HWND AddProcessTable(Page page, int id, RECT frame) {
+        const ThemedUi ui = Ui();
+        const int nameWidth = ui.tableColumnWidth({L"进程名称", L"Application.exe"});
+        const int pidWidth = ui.tableColumnWidth({L"PID", L"999999"});
+        const int actionWidth = ui.tableColumnWidth({L"操作", L"结束进程"});
+        std::vector<ThemedTableColumn> columns{
+            ThemedTableColumn{L"name", L"进程名称", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, nameWidth},
+            ThemedTableColumn{L"pid", L"PID", ThemedTableColumnAlign::Center, ThemedTableColumnWidth::Fixed, pidWidth},
+            ThemedTableColumn{L"path", L"程序路径", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Remaining},
+            ThemedTableColumn{L"action", L"操作", ThemedTableColumnAlign::Center, ThemedTableColumnWidth::Fixed, actionWidth},
+        };
+        ThemedTableOptions options{};
+        options.selection = ThemedTableSelection::Single;
+        options.reserveScrollBarGutter = true;
+        HWND table = ui.Table(id, frame, columns, options);
+        AddPageControl(page, table);
+        return table;
+    }
+
+    void CreateControls() {
+        const ThemedUi ui = Ui();
+        const int left = ui.contentLeft();
+        const int right = ui.clientWidth() - left;
+        RECT tabBounds{left, ui.contentTop(), right, ui.contentTop() + ui.tabButtonHeight()};
+        tabStripRect_ = ui.tabStripRect(tabBounds);
+
+        const std::vector<ThemedTabItem> tabs{
+            ThemedTabItem{ID_PROCESS_TOOLS_TAB_BASE, L"进程定位", true},
+            ThemedTabItem{ID_PROCESS_TOOLS_TAB_BASE + 1, L"PID 查询", true},
+            ThemedTabItem{ID_PROCESS_TOOLS_TAB_BASE + 2, L"端口占用", true},
+            ThemedTabItem{ID_PROCESS_TOOLS_TAB_BASE + 3, L"文件占用", true},
+        };
+        ThemedTabControlOptions tabOptions{};
+        tabOptions.activeIndex = static_cast<int>(initialPage_);
+        tabOptions.equalWidth = true;
+        tabOptions.appearance = ThemedTabControlAppearance::EmphasizedSegmented;
+        tabOptions.orientation = ThemedTabControlOrientation::Horizontal;
+        tabs_ = ui.TabControl(ID_PROCESS_TOOLS_TAB, tabStripRect_, tabs, tabOptions);
+
+        const int pageTop = ui.tabPageTop(tabStripRect_);
+        CreateLocatorPage(pageTop);
+        CreateProcessIdPage(pageTop);
+        CreatePortPage(pageTop);
+        CreateFileLockPage(pageTop);
+
+        for (int page = 0; page < kPageCount; ++page) {
+            ThemedUi::BindTabPage(tabs_, page, pageControls_[static_cast<std::size_t>(page)]);
+        }
+        ShowPage(initialPage_);
+        if (initialPage_ == Page::Locator && locateOnOpen_) {
+            PostMessageW(hwnd_, WM_COMMAND, MAKEWPARAM(ID_LOCATOR_PICK, BN_CLICKED), 0);
+        }
+    }
+
+    int StatusY() const {
+        const ThemedUi ui = Ui();
+        return ui.clientHeight() - ui.layout().contentInsetY - ui.labelHeight();
+    }
+
+    RECT ResultsFrame(int top) const {
+        const ThemedUi ui = Ui();
+        const DialogLayoutMetrics& layout = ui.layout();
+        return RECT{
+            ui.contentLeft(),
+            top,
+            ui.clientWidth() - ui.contentLeft(),
+            StatusY() - layout.rowGap,
+        };
+    }
+
+    void CreateLocatorPage(int pageTop) {
+        const Page page = Page::Locator;
+        const ThemedUi ui = Ui();
+        const DialogLayoutMetrics& layout = ui.layout();
+        const int labelHeight = ui.labelHeight();
+        const int fieldHeight = ui.editHeight();
+        const int buttonHeight = ui.buttonHeight();
+        const int rowHeight = std::max(fieldHeight, buttonHeight);
+        const int labelOffsetY = std::max(0, (rowHeight - labelHeight) / 2);
+        const int fieldOffsetY = std::max(0, (rowHeight - fieldHeight) / 2);
+        const int buttonOffsetY = std::max(0, (rowHeight - buttonHeight) / 2);
+        const int left = ui.contentLeft();
+        const int contentWidth = ui.contentWidth();
+
+        AddLabel(page, L"将鼠标移到目标窗口或托盘图标上，然后获取进程信息。", left, pageTop, contentWidth);
+
+        const int actionRowY = pageTop + labelHeight + layout.sectionGap;
+        const int hotKeyWidth = ui.scale(180);
+        const int pickWidth = ui.buttonWidth(
+            L"立即获取", ThemedButtonRole::Primary, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
+        const int actionGroupWidth = layout.labelWidth + layout.labelGap + hotKeyWidth + layout.controlGapX + pickWidth;
+        const int actionGroupX = ui.centeredGroupX(actionGroupWidth);
+        AddLabel(page, L"全局快捷键", actionGroupX, actionRowY + labelOffsetY, layout.labelWidth);
+        ThemedEditOptions readOnlyOptions{};
+        readOnlyOptions.readOnly = true;
+        locatorHotKey_ = AddEdit(
+            page,
+            nextGeneratedControlId_++,
+            ui.rect(actionGroupX + layout.labelWidth + layout.labelGap, actionRowY + fieldOffsetY, hotKeyWidth, fieldHeight),
+            LocatorHotKeyText(),
+            readOnlyOptions);
+        AddButton(
+            page,
+            ID_LOCATOR_PICK,
+            L"立即获取",
+            actionGroupX + layout.labelWidth + layout.labelGap + hotKeyWidth + layout.controlGapX,
+            actionRowY + buttonOffsetY,
+            ThemedButtonRole::Primary,
+            ThemedButtonSize::Normal,
+            ThemedButtonWidthMode::Fixed,
+            pickWidth,
+            true);
+
+        const int detailsTop = actionRowY + rowHeight + layout.sectionGap;
+        const int actionWidth = ui.buttonWidth(
+            L"打开所在目录", ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
+        const int fieldX = left + layout.labelWidth + layout.labelGap;
+        const int fieldWidth = ui.clientWidth() - left - fieldX - layout.controlGapX - actionWidth;
+
+        AddLabel(page, L"进程 ID", left, detailsTop + labelOffsetY, layout.labelWidth);
+        locatorPid_ = AddEdit(
+            page,
+            ID_LOCATOR_PID_VALUE,
+            ui.rect(fieldX, detailsTop + fieldOffsetY, fieldWidth, fieldHeight),
+            L"等待获取",
+            readOnlyOptions);
+        locatorKill_ = AddButton(
+            page,
+            ID_LOCATOR_KILL,
+            L"结束进程",
+            fieldX + fieldWidth + layout.controlGapX,
+            detailsTop + buttonOffsetY,
+            ThemedButtonRole::Normal,
+            ThemedButtonSize::Normal,
+            ThemedButtonWidthMode::Fixed,
+            actionWidth);
+
+        const int pathRowY = detailsTop + rowHeight + layout.rowGap;
+        AddLabel(page, L"绝对路径", left, pathRowY + labelOffsetY, layout.labelWidth);
+        locatorPath_ = AddEdit(
+            page,
+            ID_LOCATOR_PATH_VALUE,
+            ui.rect(fieldX, pathRowY + fieldOffsetY, fieldWidth, fieldHeight),
+            L"等待获取",
+            readOnlyOptions);
+        locatorOpen_ = AddButton(
+            page,
+            ID_LOCATOR_OPEN,
+            L"打开所在目录",
+            fieldX + fieldWidth + layout.controlGapX,
+            pathRowY + buttonOffsetY,
+            ThemedButtonRole::Normal,
+            ThemedButtonSize::Normal,
+            ThemedButtonWidthMode::Fixed,
+            actionWidth);
+
+        locatorStatus_ = AddStatus(page, LocatorStatusText(), left, StatusY(), contentWidth);
+        UpdateLocatorButtons();
+    }
+
+    void CreateProcessIdPage(int pageTop) {
+        const Page page = Page::ProcessId;
+        const ThemedUi ui = Ui();
+        const DialogLayoutMetrics& layout = ui.layout();
+        const int left = ui.contentLeft();
+        const int fieldX = left + layout.labelWidth + layout.labelGap;
+        const int buttonWidth = ui.buttonWidth(
+            L"查询(&Q)", ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
+        const int fieldWidth = ui.clientWidth() - left - fieldX - layout.controlGapX - buttonWidth;
+        const int rowHeight = std::max(ui.editHeight(), ui.buttonHeight());
+        const int labelOffsetY = std::max(0, (rowHeight - ui.labelHeight()) / 2);
+        const int fieldOffsetY = std::max(0, (rowHeight - ui.editHeight()) / 2);
+        const int buttonOffsetY = std::max(0, (rowHeight - ui.buttonHeight()) / 2);
+
+        AddLabel(page, L"进程 ID", left, pageTop + labelOffsetY, layout.labelWidth);
+        ThemedEditOptions options{};
+        options.content = ThemedEditContent::Integer;
+        processIdInput_ = AddEdit(
+            page,
+            ID_PROCESS_VALUE,
+            ui.rect(fieldX, pageTop + fieldOffsetY, fieldWidth, ui.editHeight()),
+            registry_.GetSetting(
+                L"quattro.builtin.process-tools",
+                L"pid",
+                registry_.GetSetting(L"quattro.builtin.process-inspector", L"pid", L"")),
+            options);
+        AddButton(
+            page,
+            ID_PROCESS_QUERY,
+            L"查询(&Q)",
+            fieldX + fieldWidth + layout.controlGapX,
+            pageTop + buttonOffsetY,
+            ThemedButtonRole::Normal,
+            ThemedButtonSize::Normal,
+            ThemedButtonWidthMode::Fixed,
+            buttonWidth,
+            true);
+
+        processIdTable_ = AddProcessTable(
+            page,
+            ID_PROCESS_TOOLS_PID_TABLE,
+            ResultsFrame(pageTop + rowHeight + layout.sectionGap));
+        processIdStatus_ = AddStatus(page, L"输入进程 ID 后点击查询。", left, StatusY(), ui.contentWidth());
+    }
+
+    void CreatePortPage(int pageTop) {
+        const Page page = Page::Port;
+        const ThemedUi ui = Ui();
+        const DialogLayoutMetrics& layout = ui.layout();
+        const int left = ui.contentLeft();
+        const int fieldX = left + layout.labelWidth + layout.labelGap;
+        const int buttonWidth = ui.buttonWidth(
+            L"检查(&C)", ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
+        const int fieldWidth = ui.clientWidth() - left - fieldX - layout.controlGapX - buttonWidth;
+        const int rowHeight = std::max(ui.editHeight(), ui.buttonHeight());
+        const int labelOffsetY = std::max(0, (rowHeight - ui.labelHeight()) / 2);
+        const int fieldOffsetY = std::max(0, (rowHeight - ui.editHeight()) / 2);
+        const int buttonOffsetY = std::max(0, (rowHeight - ui.buttonHeight()) / 2);
+
+        AddLabel(page, L"端口号", left, pageTop + labelOffsetY, layout.labelWidth);
+        ThemedEditOptions options{};
+        options.content = ThemedEditContent::Integer;
+        portInput_ = AddEdit(
+            page,
+            ID_PORT_VALUE,
+            ui.rect(fieldX, pageTop + fieldOffsetY, fieldWidth, ui.editHeight()),
+            registry_.GetSetting(
+                L"quattro.builtin.process-tools",
+                L"port",
+                registry_.GetSetting(L"quattro.builtin.port-inspector", L"port", L"")),
+            options);
+        AddButton(
+            page,
+            ID_PORT_SCAN,
+            L"检查(&C)",
+            fieldX + fieldWidth + layout.controlGapX,
+            pageTop + buttonOffsetY,
+            ThemedButtonRole::Normal,
+            ThemedButtonSize::Normal,
+            ThemedButtonWidthMode::Fixed,
+            buttonWidth,
+            true);
+
+        portTable_ = AddProcessTable(
+            page,
+            ID_PROCESS_TOOLS_PORT_TABLE,
+            ResultsFrame(pageTop + rowHeight + layout.sectionGap));
+        portStatus_ = AddStatus(page, L"输入端口号后点击检查。", left, StatusY(), ui.contentWidth());
+    }
+
+    void CreateFileLockPage(int pageTop) {
+        const Page page = Page::FileLock;
+        const ThemedUi ui = Ui();
+        const DialogLayoutMetrics& layout = ui.layout();
+        const int left = ui.contentLeft();
+        const int fieldX = left + layout.labelWidth + layout.labelGap;
+        const int fileWidth = ui.buttonWidth(
+            L"文件", ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
+        const int directoryWidth = ui.buttonWidth(
+            L"目录", ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
+        const int checkWidth = ui.buttonWidth(
+            L"检查(&C)", ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
+        const int actionWidth = fileWidth + directoryWidth + checkWidth + layout.controlGapX * 3;
+        const int fieldWidth = ui.clientWidth() - left - fieldX - actionWidth;
+        const int rowHeight = std::max(ui.editHeight(), ui.buttonHeight());
+        const int labelOffsetY = std::max(0, (rowHeight - ui.labelHeight()) / 2);
+        const int fieldOffsetY = std::max(0, (rowHeight - ui.editHeight()) / 2);
+        const int buttonOffsetY = std::max(0, (rowHeight - ui.buttonHeight()) / 2);
+
+        AddLabel(page, L"路径", left, pageTop + labelOffsetY, layout.labelWidth);
+        filePathInput_ = AddEdit(
+            page,
+            ID_FILE_LOCK_PATH,
+            ui.rect(fieldX, pageTop + fieldOffsetY, fieldWidth, ui.editHeight()),
+            registry_.GetSetting(
+                L"quattro.builtin.process-tools",
+                L"path",
+                registry_.GetSetting(L"quattro.builtin.file-lock-inspector", L"path", L"")));
+        int buttonX = fieldX + fieldWidth + layout.controlGapX;
+        AddButton(
+            page, ID_FILE_LOCK_PICK_FILE, L"文件", buttonX, pageTop + buttonOffsetY,
+            ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, fileWidth);
+        buttonX += fileWidth + layout.controlGapX;
+        AddButton(
+            page, ID_FILE_LOCK_PICK_DIR, L"目录", buttonX, pageTop + buttonOffsetY,
+            ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, directoryWidth);
+        buttonX += directoryWidth + layout.controlGapX;
+        AddButton(
+            page, ID_FILE_LOCK_SCAN, L"检查(&C)", buttonX, pageTop + buttonOffsetY,
+            ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, checkWidth, true);
+
+        fileTable_ = AddProcessTable(
+            page,
+            ID_PROCESS_TOOLS_FILE_TABLE,
+            ResultsFrame(pageTop + rowHeight + layout.sectionGap));
+        fileStatus_ = AddStatus(page, L"输入文件或目录路径后点击检查。", left, StatusY(), ui.contentWidth());
+    }
+
+    void ShowPage(Page page) {
+        const int index = static_cast<int>(page);
+        if (index < 0 || index >= kPageCount) {
+            return;
+        }
+        ThemedUi::SetActiveTab(tabs_, index, false);
+        registry_.SetSetting(L"quattro.builtin.process-tools", L"active-tab", std::to_wstring(index));
+        RECT content{};
+        GetClientRect(hwnd_, &content);
+        content.top = tabStripRect_.bottom;
+        RedrawWindow(hwnd_, &content, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+    }
+
+    void HandleCommand(int id, int notify) {
+        if (id == ID_PROCESS_TOOLS_TAB && notify == CBN_SELCHANGE) {
+            ShowPage(static_cast<Page>(ThemedUi::ActiveTab(tabs_)));
+            return;
+        }
+        switch (id) {
+        case ID_LOCATOR_PICK:
+            LocateHoveredProcess();
+            break;
+        case ID_LOCATOR_KILL:
+            KillLocatedProcess();
+            break;
+        case ID_LOCATOR_OPEN:
+            OpenLocatedProcessDirectory();
+            break;
+        case ID_PROCESS_QUERY:
+            QueryProcessId();
+            break;
+        case ID_PORT_SCAN:
+            QueryPort();
+            break;
+        case ID_FILE_LOCK_PICK_FILE:
+            PickFile();
+            break;
+        case ID_FILE_LOCK_PICK_DIR:
+            PickDirectory();
+            break;
+        case ID_FILE_LOCK_SCAN:
+            QueryFileLock();
+            break;
+        case IDCANCEL:
+            DestroyWindow(hwnd_);
+            break;
+        default:
+            break;
+        }
+    }
+
+    bool HandleTableEvent(LPARAM lParam) {
+        ThemedTableEvent event{};
+        if (processIdTable_ && ThemedUi::DecodeTableEvent(processIdTable_, lParam, event)) {
+            if (event.kind == ThemedTableEventKind::ActionInvoked) {
+                if (ConfirmAndKill(static_cast<DWORD>(event.rowKey), L"PID 查询")) {
+                    QueryProcessId();
+                }
+            }
+            return true;
+        }
+        if (portTable_ && ThemedUi::DecodeTableEvent(portTable_, lParam, event)) {
+            if (event.kind == ThemedTableEventKind::ActionInvoked) {
+                if (ConfirmAndKill(static_cast<DWORD>(event.rowKey), L"端口占用")) {
+                    QueryPort();
+                }
+            }
+            return true;
+        }
+        if (fileTable_ && ThemedUi::DecodeTableEvent(fileTable_, lParam, event)) {
+            if (event.kind == ThemedTableEventKind::ActionInvoked) {
+                if (ConfirmAndKill(static_cast<DWORD>(event.rowKey), L"文件占用")) {
+                    QueryFileLock();
+                }
+            }
+            return true;
+        }
+        return false;
+    }
+
+    void SetStatus(HWND status, const std::wstring& text, ThemedStatusRole role = ThemedStatusRole::Normal) {
+        SetText(status, text);
+        Ui().SetStatusTextRole(status, role);
+    }
+
+    void SetProcessRows(HWND table, const std::vector<ProcessDisplayRow>& rows) {
+        std::vector<ThemedTableRow> tableRows;
+        tableRows.reserve(rows.size());
+        for (const auto& row : rows) {
+            const ProcessInfo info = QueryProcessInfo(row.pid);
+            const std::wstring name = info.name.empty() ? L"未知进程" : info.name;
+            const std::wstring path = info.path.empty() ? row.detail : info.path;
+            tableRows.push_back(ThemedTableRow{
+                static_cast<std::intptr_t>(row.pid),
+                {
+                    ThemedTableCell{name},
+                    ThemedTableCell{std::to_wstring(row.pid)},
+                    ThemedTableCell{path},
+                    ThemedTableCell{L"结束", -1, ThemedTableCellRole::DestructiveAction, 1},
+                },
+            });
+        }
+        ThemedUi::SetTableRows(table, tableRows);
+    }
+
+    bool ConfirmAndKill(DWORD pid, const wchar_t* title) {
+        if (!pid) {
+            return false;
+        }
+        const ProcessInfo info = QueryProcessInfo(pid);
+        const std::wstring name = info.name.empty() ? L"未知进程" : info.name;
+        const std::wstring message = L"确认结束进程 " + name + L" (PID " + std::to_wstring(pid) + L")？";
+        if (ShowThemedMessageBox(hwnd_, instance_, theme_, message, title, MB_OKCANCEL | MB_ICONWARNING) != IDOK) {
+            return false;
+        }
+        const std::wstring error = KillProcessById(pid);
+        if (!error.empty()) {
+            ShowThemedMessageBox(hwnd_, instance_, theme_, error, title, MB_OK | MB_ICONWARNING);
+            return false;
+        }
+        return true;
+    }
+
+    std::wstring LocatorHotKeyText() const {
+        if (!config_.globalHotKeysEnabled) {
+            return L"已关闭";
+        }
+        if (config_.processLocatorHotKey == 0) {
+            return L"未设置";
+        }
+        return FormatGlobalHotKeyText(config_.processLocatorHotKey);
+    }
+
+    std::wstring LocatorStatusText() const {
+        if (!config_.globalHotKeysEnabled) {
+            return L"全局快捷键已关闭。";
+        }
+        if (config_.processLocatorHotKey == 0) {
+            return L"将鼠标移到目标程序上，然后点击立即获取。";
+        }
+        return L"将鼠标移到目标程序上，然后按 " + FormatGlobalHotKeyText(config_.processLocatorHotKey) + L"。";
+    }
+
+    void LocateHoveredProcess() {
+        const HoveredProcessResult hovered = QueryHoveredProcess(hwnd_);
+        if (!hovered.pid) {
+            locatedPid_ = 0;
+            locatedPath_.clear();
+            SetText(locatorPid_, L"获取失败");
+            SetText(locatorPath_, L"无法获取");
+            UpdateLocatorButtons();
+            SetStatus(
+                locatorStatus_,
+                hovered.trayTarget
+                    ? L"无法识别该托盘图标所属的进程。"
+                    : L"获取进程 ID 失败：" + FormatLastError(hovered.error),
+                ThemedStatusRole::Danger);
+            return;
+        }
+        locatedPid_ = hovered.pid;
+        const ProcessInfo info = QueryProcessInfo(locatedPid_);
+        locatedPath_ = info.path;
+        SetText(locatorPid_, std::to_wstring(locatedPid_));
+        SetText(locatorPath_, locatedPath_.empty() ? L"无法获取" : locatedPath_);
+        UpdateLocatorButtons();
+        SetStatus(
+            locatorStatus_,
+            locatedPath_.empty()
+                ? L"已获取进程 ID，但程序路径不可读或权限不足。"
+                : (hovered.trayTarget ? L"已识别托盘图标所属进程。" : L"已获取鼠标位置对应的进程信息。"),
+            locatedPath_.empty() ? ThemedStatusRole::Warning : ThemedStatusRole::Success);
+    }
+
+    void KillLocatedProcess() {
+        if (!locatedPid_) {
+            return;
+        }
+        if (!ConfirmAndKill(locatedPid_, L"进程定位")) {
+            return;
+        }
+        locatedPid_ = 0;
+        locatedPath_.clear();
+        SetText(locatorPid_, L"进程已结束");
+        SetText(locatorPath_, L"等待获取");
+        UpdateLocatorButtons();
+        SetStatus(locatorStatus_, L"目标进程已结束。", ThemedStatusRole::Success);
+    }
+
+    void OpenLocatedProcessDirectory() {
+        const std::wstring error = OpenProcessLocation(locatedPath_);
+        if (!error.empty()) {
+            ShowThemedMessageBox(hwnd_, instance_, theme_, error, L"进程定位", MB_OK | MB_ICONWARNING);
+            SetStatus(locatorStatus_, L"打开所在目录失败。", ThemedStatusRole::Danger);
+            return;
+        }
+        SetStatus(locatorStatus_, L"已在资源管理器中定位程序文件。", ThemedStatusRole::Success);
+    }
+
+    void UpdateLocatorButtons() {
+        if (locatorKill_) {
+            Ui().SetEnabled(locatorKill_, locatedPid_ != 0);
+        }
+        if (locatorOpen_) {
+            Ui().SetEnabled(locatorOpen_, !locatedPath_.empty());
+        }
+    }
+
+    void QueryProcessId() {
+        const std::optional<int> parsedPid = ParseInt(Trim(GetText(processIdInput_)));
+        if (!parsedPid || *parsedPid <= 0) {
+            ThemedUi::ClearTable(processIdTable_);
+            SetStatus(processIdStatus_, L"请输入有效的进程 ID。", ThemedStatusRole::Warning);
+            return;
+        }
+
+        const int pid = *parsedPid;
+        registry_.SetSetting(L"quattro.builtin.process-tools", L"pid", std::to_wstring(pid));
+        const ProcessInfo info = QueryProcessInfo(static_cast<DWORD>(pid));
+        std::vector<ProcessDisplayRow> rows;
+        if (!info.name.empty() && info.name != L"未知进程") {
+            rows.push_back(ProcessDisplayRow{
+                static_cast<DWORD>(pid),
+                info.name,
+                info.path.empty() ? L"进程路径不可读，仍可尝试结束进程" : info.path,
+            });
+        }
+        SetProcessRows(processIdTable_, rows);
+        SetStatus(
+            processIdStatus_,
+            rows.empty() ? L"未找到该进程，或进程已经退出。" : L"找到 1 个进程。",
+            rows.empty() ? ThemedStatusRole::Warning : ThemedStatusRole::Success);
+    }
+
+    void QueryPort() {
+        const std::optional<int> parsedPort = ParseInt(Trim(GetText(portInput_)));
+        if (!parsedPort || *parsedPort <= 0 || *parsedPort > 65535) {
+            ThemedUi::ClearTable(portTable_);
+            SetStatus(portStatus_, L"请输入 1–65535 之间的端口号。", ThemedStatusRole::Warning);
+            return;
+        }
+
+        const int port = *parsedPort;
+        registry_.SetSetting(L"quattro.builtin.process-tools", L"port", std::to_wstring(port));
+        const std::vector<ProcessDisplayRow> rows = QueryPortRows(static_cast<unsigned short>(port));
+        SetProcessRows(portTable_, rows);
+        SetStatus(
+            portStatus_,
+            rows.empty()
+                ? L"未发现占用进程。"
+                : L"发现 " + std::to_wstring(rows.size()) + L" 个占用端口 " + std::to_wstring(port) + L" 的进程。",
+            rows.empty() ? ThemedStatusRole::Normal : ThemedStatusRole::Success);
+    }
+
+    void PickFile() {
+        std::wstring buffer(32768, L'\0');
+        OPENFILENAMEW dialog{};
+        dialog.lStructSize = sizeof(dialog);
+        dialog.hwndOwner = hwnd_;
+        dialog.lpstrFile = buffer.data();
+        dialog.nMaxFile = static_cast<DWORD>(buffer.size());
+        dialog.lpstrFilter = L"所有文件\0*.*\0";
+        dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+        if (GetOpenFileNameW(&dialog)) {
+            SetText(filePathInput_, buffer.c_str());
+        }
+    }
+
+    void PickDirectory() {
+        IFileDialog* dialog = nullptr;
+        if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog))) || !dialog) {
+            return;
+        }
+        DWORD options = 0;
+        dialog->GetOptions(&options);
+        dialog->SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST);
+        dialog->SetTitle(L"选择待检查目录");
+        if (SUCCEEDED(dialog->Show(hwnd_))) {
+            IShellItem* item = nullptr;
+            if (SUCCEEDED(dialog->GetResult(&item)) && item) {
+                PWSTR selected = nullptr;
+                if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &selected)) && selected) {
+                    SetText(filePathInput_, selected);
+                    CoTaskMemFree(selected);
+                }
+                item->Release();
+            }
+        }
+        dialog->Release();
+    }
+
+    void QueryFileLock() {
+        const std::wstring path = Trim(GetText(filePathInput_));
+        if (path.empty()) {
+            ThemedUi::ClearTable(fileTable_);
+            SetStatus(fileStatus_, L"请输入文件或目录路径。", ThemedStatusRole::Warning);
+            return;
+        }
+
+        registry_.SetSetting(L"quattro.builtin.process-tools", L"path", path);
+        std::wstring detail;
+        const std::vector<ProcessDisplayRow> rows = QueryFileLockRows(path, detail);
+        SetProcessRows(fileTable_, rows);
+        std::wstring status;
+        if (rows.empty()) {
+            status = detail.starts_with(L"已检查")
+                ? L"未发现占用进程。 " + detail
+                : (detail.empty() ? L"未发现占用进程。" : detail);
+        } else {
+            status = L"发现 " + std::to_wstring(rows.size()) + L" 个占用进程。";
+            if (!detail.empty()) {
+                status += L" " + detail;
+            }
+        }
+        SetStatus(
+            fileStatus_,
+            status,
+            rows.empty() ? ThemedStatusRole::Normal : ThemedStatusRole::Success);
+    }
+
+    HWND owner_ = nullptr;
+    HINSTANCE instance_ = nullptr;
+    const Theme& theme_;
+    PluginRegistry& registry_;
+    const AppConfig& config_;
+    HWND hwnd_ = nullptr;
+    std::unique_ptr<ThemedWindowUi> windowUi_;
+    HWND tabs_ = nullptr;
+    RECT tabStripRect_{};
+    std::vector<HWND> pageControls_[kPageCount];
+    Page initialPage_ = Page::Locator;
+    bool locateOnOpen_ = false;
+    bool done_ = false;
+    int nextGeneratedControlId_ = 7780;
+
+    HWND locatorHotKey_ = nullptr;
+    HWND locatorPid_ = nullptr;
+    HWND locatorPath_ = nullptr;
+    HWND locatorKill_ = nullptr;
+    HWND locatorOpen_ = nullptr;
+    HWND locatorStatus_ = nullptr;
+    DWORD locatedPid_ = 0;
+    std::wstring locatedPath_;
+
+    HWND processIdInput_ = nullptr;
+    HWND processIdTable_ = nullptr;
+    HWND processIdStatus_ = nullptr;
+    HWND portInput_ = nullptr;
+    HWND portTable_ = nullptr;
+    HWND portStatus_ = nullptr;
+    HWND filePathInput_ = nullptr;
+    HWND fileTable_ = nullptr;
+    HWND fileStatus_ = nullptr;
+};
 }
 
 bool ShowBuiltinTool(
@@ -2739,20 +3588,25 @@ bool ShowBuiltinTool(
         StopwatchDialog dialog(owner, instance, theme, registry);
         return dialog.Run();
     }
-    if (engine == L"port-inspector") {
-        PortInspectorDialog dialog(owner, instance, theme, registry);
-        return dialog.Run();
-    }
-    if (engine == L"process-inspector") {
-        ProcessInspectorDialog dialog(owner, instance, theme, registry);
-        return dialog.Run();
-    }
-    if (engine == L"process-locator") {
-        ProcessLocatorDialog dialog(owner, instance, theme, registry, config, locateProcessOnOpen);
-        return dialog.Run();
-    }
-    if (engine == L"file-lock-inspector") {
-        FileLockInspectorDialog dialog(owner, instance, theme, registry);
+    if (engine == L"process-tools" ||
+        engine == L"port-inspector" ||
+        engine == L"process-inspector" ||
+        engine == L"process-locator" ||
+        engine == L"file-lock-inspector") {
+        ProcessToolsDialog::Page page = ProcessToolsDialog::Page::Locator;
+        if (engine == L"process-tools") {
+            const std::optional<int> stored = ParseInt(registry.GetSetting(
+                L"quattro.builtin.process-tools", L"active-tab", L"0"));
+            const int index = std::clamp(stored.value_or(0), 0, 3);
+            page = static_cast<ProcessToolsDialog::Page>(index);
+        } else if (engine == L"process-inspector") {
+            page = ProcessToolsDialog::Page::ProcessId;
+        } else if (engine == L"port-inspector") {
+            page = ProcessToolsDialog::Page::Port;
+        } else if (engine == L"file-lock-inspector") {
+            page = ProcessToolsDialog::Page::FileLock;
+        }
+        ProcessToolsDialog dialog(owner, instance, theme, registry, config, page, locateProcessOnOpen);
         return dialog.Run();
     }
     ShowThemedMessageBox(owner, instance, theme, L"这个内置工具暂不可用。", L"工具箱", MB_OK | MB_ICONINFORMATION);

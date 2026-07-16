@@ -489,10 +489,31 @@ int wmain() {
         std::filesystem::create_directories(assetModuleRoot, ec);
         EmbeddedAssetInstallResult firstInstall = PrepareEmbeddedAssets(assetModuleRoot);
         const std::filesystem::path defaultThemePath = firstInstall.appDirectory / L"theme" / L"default.xml";
+        const std::filesystem::path embeddedCssPath = firstInstall.appDirectory / L"icons" / L"menu" / L"tabler" / L"tabler-icons.css";
+        const std::filesystem::path embeddedFontPath = firstInstall.appDirectory / L"icons" / L"menu" / L"tabler" / L"tabler-icons.ttf";
         const std::filesystem::path customThemePath = firstInstall.appDirectory / L"theme" / L"custom.xml";
         const std::wstring embeddedDefaultTheme = LoadUtf8File(defaultThemePath);
+        const bool expectCompressedAssets = QuattroIsOfficialBuild();
+        Check(firstInstall.failures == 0, "Embedded assets first install succeeds");
+        Check(firstInstall.rawAssets + firstInstall.compressedAssets == firstInstall.filesWritten && firstInstall.filesWritten >= 3,
+            "Embedded asset catalog covers every installed file");
+        Check(
+            expectCompressedAssets
+                ? firstInstall.compressedAssets == firstInstall.filesWritten && firstInstall.filesDecompressed == firstInstall.filesWritten
+                : firstInstall.rawAssets == firstInstall.filesWritten && firstInstall.compressedAssets == 0 && firstInstall.filesDecompressed == 0,
+            "Embedded asset storage follows the build identity");
         Check(FileExists(defaultThemePath) && embeddedDefaultTheme.find(L"version=\"2\"") != std::wstring::npos,
             "Embedded assets install default theme");
+        Check(FileExists(embeddedCssPath) && std::filesystem::file_size(embeddedCssPath, ec) > 0,
+            "Compressed embedded assets install icon stylesheet");
+        Check(FileExists(embeddedFontPath) && std::filesystem::file_size(embeddedFontPath, ec) > 0,
+            "Compressed embedded assets install icon font");
+
+        EmbeddedAssetInstallResult unchangedInstall = PrepareEmbeddedAssets(assetModuleRoot);
+        Check(unchangedInstall.failures == 0 && unchangedInstall.filesDecompressed == 0,
+            "Embedded assets skip decompression when files match manifest hashes");
+        Check(unchangedInstall.filesSkipped == firstInstall.filesWritten,
+            "Embedded assets skip every unchanged file");
         {
             std::ofstream theme(defaultThemePath, std::ios::binary | std::ios::trunc);
             theme << "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
@@ -505,10 +526,23 @@ int wmain() {
             custom << "<Theme id=\"custom\" displayName=\"custom\" version=\"1\"/>\n";
         }
         EmbeddedAssetInstallResult secondInstall = PrepareEmbeddedAssets(assetModuleRoot);
-        Check(secondInstall.filesUpdated > 0, "Embedded assets overwrite same-version modified default theme");
+        Check(secondInstall.failures == 0 && secondInstall.filesUpdated == 1,
+            "Embedded assets overwrite only the modified default theme");
+        Check(secondInstall.filesDecompressed == (expectCompressedAssets ? 1 : 0),
+            "Embedded assets only decompress modified files in compressed builds");
+        Check(secondInstall.filesBackedUp == 1 && FileExists(secondInstall.backupDirectory / L"theme" / L"default.xml"),
+            "Compressed embedded assets back up modified managed files");
         const std::wstring restoredDefaultTheme = LoadUtf8File(defaultThemePath);
         Check(restoredDefaultTheme == embeddedDefaultTheme, "Embedded assets restore default theme by exact content");
         Check(FileExists(customThemePath), "Embedded assets keep custom theme files");
+        std::cout << "embedded_asset_acceptance=passed"
+                  << " first_total_ms=" << firstInstall.totalMilliseconds
+                  << " unchanged_total_ms=" << unchangedInstall.totalMilliseconds
+                  << " changed_total_ms=" << secondInstall.totalMilliseconds
+                  << " storage=" << (expectCompressedAssets ? "xpress" : "raw")
+                  << " unchanged_decompressed=" << unchangedInstall.filesDecompressed
+                  << " changed_decompressed=" << secondInstall.filesDecompressed
+                  << "\n";
         std::filesystem::remove_all(assetModuleRoot, ec);
     }
 
@@ -1403,6 +1437,16 @@ int wmain() {
         ThemedWindowUi dpiWindow(
             GetModuleHandleW(nullptr), nullptr, controlParent, fallbackTheme,
             DialogLayoutKind::Compact, 320, 200);
+        HWND dpiTable = dpiWindow.ui().Table(
+            517,
+            RECT{80, 40, 300, 140},
+            {
+                ThemedTableColumn{L"name", L"Name", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, 60},
+                ThemedTableColumn{L"path", L"Path", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Remaining},
+                ThemedTableColumn{L"action", L"Action", ThemedTableColumnAlign::Center, ThemedTableColumnWidth::Fixed, 50},
+            });
+        Check(dpiTable != nullptr && ListView_GetColumnWidth(dpiTable, 0) == 60 && ListView_GetColumnWidth(dpiTable, 2) == 50,
+            "Themed table starts with configured fixed column widths");
         RECT suggested{0, 0, 400, 250};
         LRESULT dpiResult = 0;
         Check(dpiWindow.HandleMessage(WM_DPICHANGED, MAKEWPARAM(120, 120), reinterpret_cast<LPARAM>(&suggested), dpiResult),
@@ -1411,12 +1455,16 @@ int wmain() {
         GetWindowRect(dpiChild, &dpiChildRect);
         Check(dpiChildRect.right - dpiChildRect.left == 50 && dpiChildRect.bottom - dpiChildRect.top == 25,
             "Themed window scales child geometry at 125 percent DPI");
+        Check(ListView_GetColumnWidth(dpiTable, 0) == 75 && ListView_GetColumnWidth(dpiTable, 2) == 63,
+            "Themed table scales fixed columns at 125 percent DPI");
         suggested = RECT{0, 0, 480, 300};
         Check(dpiWindow.HandleMessage(WM_DPICHANGED, MAKEWPARAM(144, 144), reinterpret_cast<LPARAM>(&suggested), dpiResult),
             "Themed window handles 150 percent DPI change");
         GetWindowRect(dpiChild, &dpiChildRect);
         Check(dpiChildRect.right - dpiChildRect.left == 60 && dpiChildRect.bottom - dpiChildRect.top == 30 && dpiWindow.ui().dpi() == 144,
             "Themed window keeps public UI metrics at 150 percent DPI");
+        Check(ListView_GetColumnWidth(dpiTable, 0) == 90 && ListView_GetColumnWidth(dpiTable, 2) == 76,
+            "Themed table keeps scaled fixed columns at 150 percent DPI");
         DestroyWindow(controlParent);
     }
     std::filesystem::remove_all(themeRoot, ec);
@@ -1645,17 +1693,24 @@ int wmain() {
     auto plugins = pluginRegistry.LoadPlugins();
     Check(plugins.size() >= 3, "Plugin registry builtin count");
     bool hasAutoClickerName = false;
-    bool hasProcessLocator = false;
+    bool hasProcessTools = false;
+    bool hasLegacyProcessTool = false;
     bool hasAppLaunchLocker = false;
     bool hasAdBlock = false;
     for (const auto& plugin : plugins) {
         if (plugin.id == L"quattro.builtin.clicker" && plugin.name == L"连点器") {
             hasAutoClickerName = true;
         }
-        if (plugin.id == L"quattro.builtin.process-locator" &&
-            plugin.name == L"进程定位器" &&
-            plugin.engine == L"process-locator") {
-            hasProcessLocator = true;
+        if (plugin.id == L"quattro.builtin.process-tools" &&
+            plugin.name == L"进程工具" &&
+            plugin.engine == L"process-tools") {
+            hasProcessTools = true;
+        }
+        if (plugin.id == L"quattro.builtin.port-inspector" ||
+            plugin.id == L"quattro.builtin.process-inspector" ||
+            plugin.id == L"quattro.builtin.process-locator" ||
+            plugin.id == L"quattro.builtin.file-lock-inspector") {
+            hasLegacyProcessTool = true;
         }
         if (plugin.id == L"quattro.builtin.app-launch-locker" &&
             plugin.name == L"自启动管理" &&
@@ -1669,13 +1724,20 @@ int wmain() {
         }
     }
     Check(hasAutoClickerName, "Plugin clicker display name");
-    Check(hasProcessLocator, "Plugin process locator registration");
-    Check(hasAppLaunchLocker, "Plugin AppLaunchLocker external tool registration");
+    Check(hasProcessTools, "Plugin process tools registration");
+    Check(!hasLegacyProcessTool, "Legacy process tools are hidden from the toolbox registry");
+    Check(hasAppLaunchLocker == !QuattroIsOfficialBuild(),
+        "Plugin AppLaunchLocker registration follows build identity");
     Check(hasAdBlock, "Plugin AdBlock external tool registration");
     Check(pluginRegistry.IsEnabled(L"quattro.builtin.clicker"), "Plugin clicker enabled by default");
     Check(pluginRegistry.IsEnabled(L"quattro.builtin.timer"), "Plugin timer enabled by default");
-    Check(pluginRegistry.IsEnabled(L"quattro.builtin.process-locator"), "Plugin process locator enabled by default");
-    Check(pluginRegistry.IsEnabled(L"quattro.builtin.app-launch-locker"), "Plugin AppLaunchLocker enabled by default");
+    Check(pluginRegistry.IsEnabled(L"quattro.builtin.process-tools"), "Plugin process tools enabled by default");
+    Check(pluginRegistry.IsEnabled(L"quattro.builtin.app-launch-locker") == !QuattroIsOfficialBuild(),
+        "Plugin AppLaunchLocker availability follows build identity");
+    if (QuattroIsOfficialBuild()) {
+        Check(!pluginRegistry.SetEnabled(L"quattro.builtin.app-launch-locker", true),
+            "Plugin AppLaunchLocker cannot be enabled in official builds");
+    }
     Check(pluginRegistry.IsEnabled(L"quattro.builtin.ad-block"), "Plugin AdBlock enabled by default");
     Check(pluginRegistry.SetEnabled(L"quattro.builtin.clicker", false), "Plugin builtin disable");
     Check(!pluginRegistry.IsEnabled(L"quattro.builtin.clicker"), "Plugin builtin can be disabled");

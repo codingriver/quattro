@@ -17,11 +17,16 @@ $requiredText = @(
     "默认只打包 Quattro，不构建、不打包 AppLaunchLocker 和 QuattroUpdater",
     "测试 AppLaunchLocker 或 QuattroUpdater 时必须使用 -All -Test",
     "-OfficialBuild",
+    "-Release",
+    "-NoUpx",
     "-PlanOnly",
     "-NoZip",
     "-Backend vcpkg|classic",
     "主窗口显示红色（DEBUG）标记",
-    "主窗口显示红色（DEBUG-All）标记"
+    "主窗口显示红色（DEBUG-All）标记",
+    "正式版会压缩内置主题和图标",
+    "本地 DEBUG/DEBUG-All 直接嵌入原始资源",
+    "默认启用 UPX"
 )
 
 foreach ($text in $requiredText) {
@@ -41,8 +46,16 @@ if ($gnuHelpText -ne $helpText) {
 $allPlan = (& $buildScript --all -PlanOnly) -join "`n"
 if (!$allPlan.Contains("architectures=x86,x64") -or
     !$allPlan.Contains("bundle_optional_executables=ON") -or
+    !$allPlan.Contains("embedded_assets=raw") -or
     !$allPlan.Contains("build_marker=DEBUG-All")) {
     throw "--all 未正确启用完整开发版构建计划。"
+}
+
+$officialPlan = (& $buildScript -OfficialBuild -PlanOnly) -join "`n"
+if (!$officialPlan.Contains("official_build=ON") -or
+    !$officialPlan.Contains("embedded_assets=xpress") -or
+    !$officialPlan.Contains("build_marker=none")) {
+    throw "-OfficialBuild 未正确启用正式压缩资源计划。"
 }
 
 "build_help_acceptance=passed"

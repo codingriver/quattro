@@ -164,10 +164,8 @@ jobs:
           $args = @(
             "-ExecutionPolicy", "Bypass",
             "-File", ".\tools\build.ps1",
+            "-Release",
             "-Configuration", "${{ steps.options.outputs.configuration }}",
-            "-Backend", "vcpkg",
-            "-NoZip",
-            "-OfficialBuild",
             "-Version", "${{ steps.options.outputs.version }}",
             "-ReleaseTag", "${{ steps.options.outputs.release_tag }}"
           )
@@ -185,6 +183,8 @@ jobs:
             } else {
               Write-Warning "UPX was requested but is unavailable; continuing without compression."
             }
+          } else {
+            $args += "-NoUpx"
           }
 
           & powershell @args

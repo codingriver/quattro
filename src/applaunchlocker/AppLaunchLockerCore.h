@@ -97,11 +97,14 @@ public:
 
     // 扫描给定文件或文件夹下的可启动文件（不递归子目录）；每项 canDisable 已由守卫判定。
     ScanResult ScanPath(const std::wstring& fileOrDir) const;
-    // mode = L"exact"（精确路径）| L"name"（同名程序）。
+    // mode = L"exact"（精确路径）| L"name"（同名程序）| L"startup"（仅禁自启，系统开关）。
     OperationResult Block(const std::wstring& targetPath, const std::wstring& mode) const;
     OperationResult Unblock(const std::wstring& recordId) const;
     bool ListBlocked(std::vector<DisabledRecord>& records, std::wstring& error) const;
 
 private:
+    // 启动拦截：禁用目标 exe 的所有开机自启动注册项（StartupApproved 系统开关）。
+    OperationResult BlockStartup(const std::wstring& targetExe) const;
+
     DisabledItemStore store_;
 };

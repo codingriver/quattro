@@ -1,12 +1,33 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
+#include <cstdint>
+#include <filesystem>
+#include <string>
+#include <vector>
 
-struct EmbeddedAsset {
-    const wchar_t* relativePath;
-    const unsigned char* data;
-    std::size_t size;
+enum class EmbeddedAssetStorage {
+    RawResource,
+    XpressHuff
 };
 
-std::size_t EmbeddedAssetCount();
-const EmbeddedAsset& EmbeddedAssetAt(std::size_t index);
+struct EmbeddedAsset {
+    std::filesystem::path relativePath;
+    std::array<unsigned char, 32> sha256{};
+    std::uint64_t uncompressedSize = 0;
+    EmbeddedAssetStorage storage = EmbeddedAssetStorage::RawResource;
+    const unsigned char* payloadData = nullptr;
+    std::size_t payloadSize = 0;
+};
+
+bool LoadEmbeddedAssetCatalog(
+    void* moduleHandle,
+    std::vector<EmbeddedAsset>& assets,
+    std::wstring& error);
+
+bool LoadEmbeddedAssetBytes(
+    const EmbeddedAsset& asset,
+    std::vector<unsigned char>& bytes,
+    bool& decompressed,
+    std::wstring& error);

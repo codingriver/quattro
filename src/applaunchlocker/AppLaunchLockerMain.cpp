@@ -144,7 +144,9 @@ std::wstring MapField(const std::map<std::wstring, std::wstring>& values, const 
 std::wstring BlockedPlain(const std::vector<DisabledRecord>& records) {
     std::wostringstream output;
     for (const auto& record : records) {
-        const std::wstring mode = MapField(record.original, L"blockMode") == L"exact" ? L"精确路径" : L"同名程序";
+        const std::wstring blockMode = MapField(record.original, L"blockMode");
+        const std::wstring mode = blockMode == L"exact" ? L"精确路径"
+            : blockMode == L"startup" ? L"禁止自启" : L"同名程序";
         output << record.recordId << L"\t" << record.name << L"\t" << mode
                << L"\t" << MapField(record.original, L"targetPath") << L"\t" << record.disabledAt << L"\n";
     }

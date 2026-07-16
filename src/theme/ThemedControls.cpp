@@ -3239,7 +3239,23 @@ void RefreshTableDpiResources(HWND table, UINT dpi) {
     if (!table) return;
     auto& state = StateFor(table);
     if (state.kind != ControlKind::Table || !state.theme) return;
-    if (dpi) state.tableDpi = dpi;
+    const UINT oldDpi = state.tableDpi ? state.tableDpi : USER_DEFAULT_SCREEN_DPI;
+    const UINT newDpi = dpi ? dpi : oldDpi;
+    if (newDpi != oldDpi) {
+        const int columnCount = Header_GetItemCount(ListView_GetHeader(table));
+        for (int column = 0; column < columnCount; ++column) {
+            const int width = ListView_GetColumnWidth(table, column);
+            ListView_SetColumnWidth(table, column, std::max(1, MulDiv(width, newDpi, oldDpi)));
+        }
+        state.tableDpi = newDpi;
+        constexpr int remainingMode = 2;  // ThemedTableColumnWidth::Remaining
+        if (std::find(
+                state.tableColumnWidthModes.begin(),
+                state.tableColumnWidthModes.end(),
+                remainingMode) != state.tableColumnWidthModes.end()) {
+            RelayoutTableRemainingColumns(table, -1, -1);
+        }
+    }
     const bool usesDefaultSmallImages = state.tableDefaultSmallImages
         && ListView_GetImageList(table, LVSIL_SMALL) == state.tableDefaultSmallImages;
     if (state.tableDefaultSmallImages) {

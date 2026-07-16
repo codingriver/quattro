@@ -16,6 +16,11 @@ option(QUATTRO_DEFAULT_LOGGING_ENABLED "Enable logging by default for new config
 option(QUATTRO_DEFAULT_TOP_MOST_ENABLED "Keep the main window topmost by default for new configs" OFF)
 option(QUATTRO_BUNDLE_OPTIONAL_EXECUTABLES "Embed AppLaunchLocker and QuattroUpdater in Quattro" OFF)
 option(QUATTRO_OFFICIAL_BUILD "Build an official package without a development title marker" OFF)
+option(QUATTRO_COMPRESS_EMBEDDED_ASSETS "Compress built-in theme and icon resources" OFF)
+
+if(QUATTRO_OFFICIAL_BUILD AND NOT QUATTRO_COMPRESS_EMBEDDED_ASSETS)
+    message(FATAL_ERROR "Official builds must enable QUATTRO_COMPRESS_EMBEDDED_ASSETS")
+endif()
 
 set(QUATTRO_BUILD_MARKER "")
 set(QUATTRO_OFFICIAL_BUILD_VALUE 0)
@@ -65,7 +70,13 @@ file(GLOB_RECURSE EMBEDDED_ASSET_DIR_INPUTS CONFIGURE_DEPENDS
 )
 list(APPEND EMBEDDED_ASSET_INPUTS ${EMBEDDED_ASSET_DIR_INPUTS})
 
-set(EMBEDDED_ASSETS_CPP "${CMAKE_CURRENT_BINARY_DIR}/generated/EmbeddedAssets.cpp")
+set(EMBEDDED_ASSET_PACK "${CMAKE_CURRENT_BINARY_DIR}/generated/EmbeddedAssets.pack")
+set(EMBEDDED_ASSET_RESOURCE "${CMAKE_CURRENT_BINARY_DIR}/generated/EmbeddedAssets.rc")
+if(QUATTRO_COMPRESS_EMBEDDED_ASSETS)
+    set(EMBEDDED_ASSET_MODE "xpress")
+else()
+    set(EMBEDDED_ASSET_MODE "raw")
+endif()
 configure_file("${CMAKE_CURRENT_SOURCE_DIR}/src/Version.h.in" "${CMAKE_CURRENT_BINARY_DIR}/generated/Version.h" @ONLY)
 configure_file("${CMAKE_CURRENT_SOURCE_DIR}/resources/VersionResource.h.in" "${CMAKE_CURRENT_BINARY_DIR}/generated/VersionResource.h" @ONLY)
 
@@ -175,15 +186,24 @@ if(QUATTRO_BUNDLE_OPTIONAL_EXECUTABLES)
 endif()
 
 add_custom_command(
-    OUTPUT "${EMBEDDED_ASSETS_CPP}"
-    COMMAND powershell -ExecutionPolicy Bypass -File "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate-embedded-assets.ps1"
+    OUTPUT "${EMBEDDED_ASSET_PACK}" "${EMBEDDED_ASSET_RESOURCE}"
+    COMMAND powershell -ExecutionPolicy Bypass -File "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate-embedded-asset-pack.ps1"
             -Root "${CMAKE_CURRENT_SOURCE_DIR}"
-            -Output "${EMBEDDED_ASSETS_CPP}"
+            -PackOutput "${EMBEDDED_ASSET_PACK}"
+            -ResourceOutput "${EMBEDDED_ASSET_RESOURCE}"
+            -ResourceHeader "${CMAKE_CURRENT_SOURCE_DIR}/resources/resource.h"
+            -ResourceName IDR_QUATTRO_ASSET_PACK
+            -Mode "${EMBEDDED_ASSET_MODE}"
     DEPENDS
-        "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate-embedded-assets.ps1"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate-embedded-asset-pack.ps1"
+        "${CMAKE_CURRENT_SOURCE_DIR}/resources/resource.h"
         ${EMBEDDED_ASSET_INPUTS}
-    COMMENT "Generating embedded default assets"
+    COMMENT "Generating ${EMBEDDED_ASSET_MODE} embedded assets"
     VERBATIM
+)
+set_source_files_properties("${EMBEDDED_ASSET_RESOURCE}" PROPERTIES GENERATED TRUE)
+add_library(QuattroEmbeddedAssetResources OBJECT
+    "${EMBEDDED_ASSET_RESOURCE}"
 )
 
 add_library(sqlite3 STATIC
@@ -352,12 +372,13 @@ target_compile_options(QuattroEmbeddedExecutableCatalogProbe PRIVATE
 )
 
 add_executable(Quattro WIN32
-    ${EMBEDDED_ASSETS_CPP}
+    $<TARGET_OBJECTS:QuattroEmbeddedAssetResources>
     ${EMBEDDED_EXECUTABLE_SOURCES}
     resources/Quattro.rc
     src/main.cpp
     src/windows/AboutDialog.cpp
     src/common/AppLog.cpp
+    src/common/EmbeddedAssets.cpp
     src/common/EmbeddedExecutableManager.cpp
     src/windows/BuiltinTools.cpp
     src/windows/ConfirmDialog.cpp
@@ -439,9 +460,10 @@ target_include_directories(Quattro PRIVATE
 
 if(QUATTRO_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/UnitTests.cpp")
 add_executable(QuattroTests
-    ${EMBEDDED_ASSETS_CPP}
+    $<TARGET_OBJECTS:QuattroEmbeddedAssetResources>
     tests/UnitTests.cpp
     src/common/AppLog.cpp
+    src/common/EmbeddedAssets.cpp
     src/common/EmbeddedAssetInstaller.cpp
     src/common/EmbeddedExecutableManager.cpp
     src/domain/Config.cpp
@@ -748,6 +770,7 @@ target_link_libraries(QuattroTests PRIVATE
     ccronexpr
     advapi32
     bcrypt
+    cabinet
     comctl32
     gdi32
     ole32
@@ -1048,6 +1071,7 @@ target_link_libraries(Quattro PRIVATE
     ccronexpr
     advapi32
     bcrypt
+    cabinet
     d2d1
     dwrite
     iphlpapi
