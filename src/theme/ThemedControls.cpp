@@ -1,4 +1,6 @@
 #include "ThemedControls.h"
+#include "ThemedD2D.h"
+#include "ThemedGdiFallback.h"
 
 #include <commctrl.h>
 #include <windowsx.h>
@@ -50,6 +52,7 @@ enum class ControlKind {
     Table,
     ProgressBar,
     Slider,
+    Label,
     StatusBadge,
     StatusText,
 };
@@ -184,6 +187,12 @@ int TableScaledMetric(HWND table, const Theme& theme, const wchar_t* component, 
     return MulDiv(static_cast<int>(theme.metric(component, name, fallback)), static_cast<int>(dpi), USER_DEFAULT_SCREEN_DPI);
 }
 
+int ActiveScaledMetric(const Theme& theme, const wchar_t* component, const wchar_t* name, float fallback) {
+    return ThemedD2D::ScaleDip(
+        static_cast<int>(theme.metric(component, name, fallback)),
+        ThemedD2D::ActiveDpi());
+}
+
 std::wstring WindowText(HWND hwnd) {
     const int length = GetWindowTextLengthW(hwnd);
     std::wstring text(static_cast<std::size_t>(length) + 1, L'\0');
@@ -230,34 +239,86 @@ const wchar_t* ButtonState(bool hover, bool pressed, bool disabled) {
 }
 
 void FillRoundRect(HDC dc, RECT rect, int radius, COLORREF fill, COLORREF border, int borderWidth) {
-    const int stroke = std::max(1, borderWidth);
-    HBRUSH brush = CreateSolidBrush(fill);
-    HPEN pen = CreatePen(PS_SOLID, stroke, border);
-    HGDIOBJ oldBrush = SelectObject(dc, brush);
-    HGDIOBJ oldPen = SelectObject(dc, pen);
-    if (stroke > 1) {
-        InflateRect(&rect, -(stroke / 2), -(stroke / 2));
+    if (ThemedD2D::FillRoundedRect(
+            dc,
+            rect,
+            static_cast<float>(std::max(0, radius)),
+            fill,
+            border,
+            static_cast<float>(std::max(0, borderWidth)))) {
+        return;
     }
-    RoundRect(dc, rect.left, rect.top, rect.right, rect.bottom, radius * 2, radius * 2);
-    SelectObject(dc, oldPen);
-    SelectObject(dc, oldBrush);
-    DeleteObject(pen);
-    DeleteObject(brush);
+    ThemedGdiFallback::FillRoundedRect(dc, rect, radius, fill, border, borderWidth);
 }
 
 void DrawRoundRect(HDC dc, RECT rect, int radius, COLORREF border, int borderWidth) {
-    const int stroke = std::max(1, borderWidth);
-    HBRUSH brush = reinterpret_cast<HBRUSH>(GetStockObject(NULL_BRUSH));
-    HPEN pen = CreatePen(PS_SOLID, stroke, border);
-    HGDIOBJ oldBrush = SelectObject(dc, brush);
-    HGDIOBJ oldPen = SelectObject(dc, pen);
-    if (stroke > 1) {
-        InflateRect(&rect, -(stroke / 2), -(stroke / 2));
+    if (ThemedD2D::DrawRoundedRect(
+            dc,
+            rect,
+            static_cast<float>(std::max(0, radius)),
+            border,
+            static_cast<float>(std::max(1, borderWidth)))) {
+        return;
     }
-    RoundRect(dc, rect.left, rect.top, rect.right, rect.bottom, radius * 2, radius * 2);
-    SelectObject(dc, oldPen);
-    SelectObject(dc, oldBrush);
-    DeleteObject(pen);
+    ThemedGdiFallback::DrawRoundedRect(dc, rect, radius, border, borderWidth);
+}
+
+void DrawThemedText(
+    HDC dc,
+    HFONT font,
+    const wchar_t* text,
+    int textLength,
+    RECT rect,
+    UINT format,
+    COLORREF color) {
+    if (ThemedD2D::DrawTextLayout(dc, font, text, textLength, rect, format, color)) {
+        return;
+    }
+    ThemedGdiFallback::DrawText(dc, font, text, textLength, rect, format, color);
+}
+
+void FillThemedRect(HDC dc, RECT rect, COLORREF fill) {
+    if (ThemedD2D::FillRect(dc, rect, fill)) {
+        return;
+    }
+    ThemedGdiFallback::FillSolidRect(dc, rect, fill);
+}
+
+void FillThemedEllipse(HDC dc, RECT rect, COLORREF fill, COLORREF border, int borderWidth) {
+    if (ThemedD2D::FillEllipse(dc, rect, fill, border, static_cast<float>(std::max(0, borderWidth)))) {
+        return;
+    }
+    ThemedGdiFallback::FillEllipse(dc, rect, fill, border, borderWidth);
+}
+
+void DrawThemedPolyline(HDC dc, const POINT* points, int pointCount, COLORREF color, int strokeWidth) {
+    if (ThemedD2D::DrawPolyline(dc, points, pointCount, color, static_cast<float>(std::max(1, strokeWidth)))) {
+        return;
+    }
+    ThemedGdiFallback::DrawPolyline(dc, points, pointCount, color, strokeWidth);
+}
+
+void DrawThemedLine(
+    HDC dc,
+    int x1,
+    int y1,
+    int x2,
+    int y2,
+    COLORREF color,
+    int strokeWidth,
+    bool pixelSnap = true) {
+    if (ThemedD2D::DrawLine(
+            dc,
+            static_cast<float>(x1),
+            static_cast<float>(y1),
+            static_cast<float>(x2),
+            static_cast<float>(y2),
+            color,
+            static_cast<float>(std::max(1, strokeWidth)),
+            pixelSnap)) {
+        return;
+    }
+    ThemedGdiFallback::DrawLine(dc, x1, y1, x2, y2, color, strokeWidth);
 }
 
 void DrawButtonFrame(
@@ -270,14 +331,18 @@ void DrawButtonFrame(
     bool focused,
     bool disabled) {
     const wchar_t* state = ButtonState(hover, pressed, disabled);
-    const int radius = static_cast<int>(theme.metric(L"button", L"radius", 6.0f));
-    const int borderWidth = static_cast<int>(theme.metric(L"button", L"borderWidth", 1.0f));
+    const int radius = ActiveScaledMetric(theme, L"button", L"radius", 6.0f);
+    const int borderWidth = ActiveScaledMetric(theme, L"button", L"borderWidth", 1.0f);
     FillRoundRect(
         dc,
         rect,
         radius,
         ToColorRef(theme.color(component, state, L"bg")),
-        ToColorRef(theme.color(component, focused ? L"focused" : state, L"border")),
+        // A disabled control must not retain the keyboard-focus accent. Native
+        // buttons can keep focus briefly when they are disabled (for example
+        // after clicking a Stop button), and drawing the focused border on each
+        // timer refresh makes that disabled control appear to flash.
+        ToColorRef(theme.color(component, (focused && !disabled) ? L"focused" : state, L"border")),
         borderWidth);
 }
 
@@ -374,10 +439,10 @@ void SetSliderFromClientX(HWND hwnd, int x, bool notify) {
 }
 
 RECT ComboTextRect(const Theme& theme, RECT frame) {
-    const int paddingX = static_cast<int>(theme.metric(L"comboBox", L"paddingX", 9.0f));
-    const int textHeight = static_cast<int>(theme.metric(L"comboBox", L"textHeight", 20.0f));
-    const int offsetY = static_cast<int>(theme.metric(L"comboBox", L"textOffsetY", 1.0f));
-    const int arrowWidth = static_cast<int>(theme.metric(L"comboBox", L"arrowWidth", 28.0f));
+    const int paddingX = ActiveScaledMetric(theme, L"comboBox", L"paddingX", 9.0f);
+    const int textHeight = ActiveScaledMetric(theme, L"comboBox", L"textHeight", 20.0f);
+    const int offsetY = ActiveScaledMetric(theme, L"comboBox", L"textOffsetY", 1.0f);
+    const int arrowWidth = ActiveScaledMetric(theme, L"comboBox", L"arrowWidth", 28.0f);
     RECT rect{};
     rect.left = frame.left + paddingX;
     rect.right = frame.right - arrowWidth;
@@ -428,6 +493,7 @@ void DrawComboOverlay(HWND hwnd, HDC targetDc = nullptr) {
     if (!dc) {
         return;
     }
+    ThemedD2D::ScopedHdcPaint d2dPaint(hwnd, dc);
 
     RECT rect{};
     GetClientRect(hwnd, &rect);
@@ -435,11 +501,9 @@ void DrawComboOverlay(HWND hwnd, HDC targetDc = nullptr) {
     const bool focused = GetFocus() == hwnd;
     const bool hover = IsHover(hwnd);
     const wchar_t* state = disabled ? L"disabled" : (focused ? L"focused" : (hover ? L"hover" : L"normal"));
-    const int radius = static_cast<int>(theme->metric(L"comboBox", L"radius", 7.0f));
-    const int borderWidth = static_cast<int>(theme->metric(L"comboBox", L"borderWidth", 1.0f));
-    HBRUSH parentBrush = CreateSolidBrush(ToColorRef(theme->color(L"dialog", L"normal", L"bg")));
-    FillRect(dc, &rect, parentBrush);
-    DeleteObject(parentBrush);
+    const int radius = ActiveScaledMetric(*theme, L"comboBox", L"radius", 7.0f);
+    const int borderWidth = ActiveScaledMetric(*theme, L"comboBox", L"borderWidth", 1.0f);
+    FillThemedRect(dc, rect, ToColorRef(theme->color(L"dialog", L"normal", L"bg")));
     FillRoundRect(
         dc,
         rect,
@@ -458,22 +522,26 @@ void DrawComboOverlay(HWND hwnd, HDC targetDc = nullptr) {
     RECT textRect = ComboTextRect(*theme, rect);
     SetBkMode(dc, TRANSPARENT);
     SetTextColor(dc, ToColorRef(theme->color(L"comboBox", state, L"text")));
-    DrawTextW(dc, text.c_str(), static_cast<int>(text.size()), &textRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    DrawThemedText(dc, font, text.c_str(), static_cast<int>(text.size()), textRect,
+        DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS, GetTextColor(dc));
     if (oldFont) {
         SelectObject(dc, oldFont);
     }
 
-    const int arrowSize = static_cast<int>(theme->metric(L"comboBox", L"arrowSize", 5.0f));
-    const int arrowPaddingRight = static_cast<int>(theme->metric(L"comboBox", L"arrowPaddingRight", 11.0f));
+    const int arrowSize = ActiveScaledMetric(*theme, L"comboBox", L"arrowSize", 5.0f);
+    const int arrowPaddingRight = ActiveScaledMetric(*theme, L"comboBox", L"arrowPaddingRight", 11.0f);
     const int cx = rect.right - arrowPaddingRight - arrowSize;
-    const int cy = (rect.top + rect.bottom) / 2 + static_cast<int>(theme->metric(L"comboBox", L"arrowOffsetY", 1.0f));
-    HPEN pen = CreatePen(PS_SOLID, static_cast<int>(theme->metric(L"comboBox", L"arrowStrokeWidth", 1.0f)), ToColorRef(theme->color(L"comboBox", state, L"arrow")));
-    HGDIOBJ oldPen = SelectObject(dc, pen);
-    MoveToEx(dc, cx - arrowSize, cy - arrowSize / 2, nullptr);
-    LineTo(dc, cx, cy + arrowSize / 2);
-    LineTo(dc, cx + arrowSize, cy - arrowSize / 2);
-    SelectObject(dc, oldPen);
-    DeleteObject(pen);
+    const int cy = (rect.top + rect.bottom) / 2 + ActiveScaledMetric(*theme, L"comboBox", L"arrowOffsetY", 1.0f);
+    const POINT arrow[]{
+        POINT{cx - arrowSize, cy - arrowSize / 2},
+        POINT{cx, cy + arrowSize / 2},
+        POINT{cx + arrowSize, cy - arrowSize / 2}};
+    DrawThemedPolyline(
+        dc,
+        arrow,
+        3,
+        ToColorRef(theme->color(L"comboBox", state, L"arrow")),
+        ActiveScaledMetric(*theme, L"comboBox", L"arrowStrokeWidth", 1.0f));
 
     DrawRoundRect(dc, rect, radius, ToColorRef(theme->color(L"comboBox", state, L"border")), borderWidth);
     if (!targetDc) {
@@ -499,9 +567,7 @@ void DrawStatusBadge(HWND hwnd, HDC dc, RECT rect) {
     }
 
     const std::wstring backgroundComponent = BackgroundComponent(hwnd);
-    HBRUSH background = CreateSolidBrush(ToColorRef(theme->color(backgroundComponent, L"normal", L"bg")));
-    FillRect(dc, &rect, background);
-    DeleteObject(background);
+    FillThemedRect(dc, rect, ToColorRef(theme->color(backgroundComponent, L"normal", L"bg")));
 
     RECT badge = rect;
     InflateRect(&badge, 0, -1);
@@ -521,10 +587,37 @@ void DrawStatusBadge(HWND hwnd, HDC dc, RECT rect) {
     HFONT font = reinterpret_cast<HFONT>(SendMessageW(hwnd, WM_GETFONT, 0, 0));
     HGDIOBJ oldFont = font ? SelectObject(dc, font) : nullptr;
     std::wstring text = ControlText(hwnd);
-    DrawTextW(dc, text.c_str(), static_cast<int>(text.size()), &badge, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    DrawThemedText(dc, font, text.c_str(), static_cast<int>(text.size()), badge,
+        DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS, GetTextColor(dc));
     if (oldFont) {
         SelectObject(dc, oldFont);
     }
+}
+
+void DrawLabelControl(HWND hwnd, HDC dc, RECT rect) {
+    auto controlState = FindState(hwnd);
+    const Theme* theme = controlState ? controlState->theme : nullptr;
+    if (!theme) return;
+    FillThemedRect(
+        dc, rect,
+        ToColorRef(theme->color(BackgroundComponent(hwnd), L"normal", L"bg")));
+    HFONT font = reinterpret_cast<HFONT>(SendMessageW(hwnd, WM_GETFONT, 0, 0));
+    const LONG style = GetWindowLongW(hwnd, GWL_STYLE);
+    UINT format = controlState->multiline
+        ? (DT_WORDBREAK | DT_NOPREFIX)
+        : (DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
+    if ((style & SS_CENTER) == SS_CENTER) format |= DT_CENTER;
+    else if ((style & SS_RIGHT) == SS_RIGHT) format |= DT_RIGHT;
+    else format |= DT_LEFT;
+    const std::wstring text = ControlText(hwnd);
+    DrawThemedText(
+        dc,
+        font,
+        text.c_str(),
+        static_cast<int>(text.size()),
+        rect,
+        format,
+        ToColorRef(theme->color(L"label", IsWindowEnabled(hwnd) ? L"normal" : L"disabled", L"text")));
 }
 
 void DrawStatusText(HWND hwnd, HDC dc, RECT rect) {
@@ -535,9 +628,7 @@ void DrawStatusText(HWND hwnd, HDC dc, RECT rect) {
     }
 
     const std::wstring backgroundComponent = BackgroundComponent(hwnd);
-    HBRUSH background = CreateSolidBrush(ToColorRef(theme->color(backgroundComponent, L"normal", L"bg")));
-    FillRect(dc, &rect, background);
-    DeleteObject(background);
+    FillThemedRect(dc, rect, ToColorRef(theme->color(backgroundComponent, L"normal", L"bg")));
 
     const std::wstring stateValue = controlState->statusState;
     const wchar_t* state = stateValue.empty() ? L"normal" : stateValue.c_str();
@@ -555,7 +646,7 @@ void DrawStatusText(HWND hwnd, HDC dc, RECT rect) {
     } else {
         format |= DT_LEFT;
     }
-    DrawTextW(dc, text.c_str(), static_cast<int>(text.size()), &rect, format);
+    DrawThemedText(dc, font, text.c_str(), static_cast<int>(text.size()), rect, format, GetTextColor(dc));
     if (oldFont) {
         SelectObject(dc, oldFont);
     }
@@ -572,13 +663,14 @@ void DrawProgressBar(HWND hwnd, HDC targetDc = nullptr) {
     if (!dc) {
         return;
     }
+    ThemedD2D::ScopedHdcPaint d2dPaint(hwnd, dc);
 
     RECT rect{};
     GetClientRect(hwnd, &rect);
     const bool disabled = !IsWindowEnabled(hwnd);
     const wchar_t* state = disabled ? L"disabled" : L"normal";
-    const int radius = static_cast<int>(theme->metric(L"progressBar", L"radius", 7.0f));
-    const int borderWidth = static_cast<int>(theme->metric(L"progressBar", L"borderWidth", 1.0f));
+    const int radius = ActiveScaledMetric(*theme, L"progressBar", L"radius", 7.0f);
+    const int borderWidth = ActiveScaledMetric(*theme, L"progressBar", L"borderWidth", 1.0f);
     FillRoundRect(
         dc,
         rect,
@@ -895,6 +987,22 @@ LRESULT CALLBACK ThemedControlProc(HWND hwnd, UINT message, WPARAM wParam, LPARA
         if (IsOwnerDrawButtonKind(kind)) {
             return DefSubclassProc(hwnd, message, wParam, lParam);
         }
+        if (kind == ControlKind::Label || kind == ControlKind::StatusBadge || kind == ControlKind::StatusText) {
+            PAINTSTRUCT ps{};
+            HDC dc = BeginPaint(hwnd, &ps);
+            RECT rect{};
+            GetClientRect(hwnd, &rect);
+            {
+                // EndDraw must complete while the BeginPaint HDC is still
+                // valid; committing after EndPaint leaves stale pixels.
+                ThemedD2D::ScopedHdcPaint d2dPaint(hwnd, dc);
+                if (kind == ControlKind::Label) DrawLabelControl(hwnd, dc, rect);
+                else if (kind == ControlKind::StatusBadge) DrawStatusBadge(hwnd, dc, rect);
+                else DrawStatusText(hwnd, dc, rect);
+            }
+            EndPaint(hwnd, &ps);
+            return 0;
+        }
         if (kind == ControlKind::ProgressBar) {
             PAINTSTRUCT ps{};
             HDC dc = BeginPaint(hwnd, &ps);
@@ -919,6 +1027,16 @@ LRESULT CALLBACK ThemedControlProc(HWND hwnd, UINT message, WPARAM wParam, LPARA
         ControlKind kind = KindFor(hwnd);
         if (IsOwnerDrawButtonKind(kind)) {
             return DefSubclassProc(hwnd, message, wParam, lParam);
+        }
+        if (kind == ControlKind::Label || kind == ControlKind::StatusBadge || kind == ControlKind::StatusText) {
+            HDC dc = reinterpret_cast<HDC>(wParam);
+            RECT rect{};
+            GetClientRect(hwnd, &rect);
+            ThemedD2D::ScopedHdcPaint d2dPaint(hwnd, dc);
+            if (kind == ControlKind::Label) DrawLabelControl(hwnd, dc, rect);
+            else if (kind == ControlKind::StatusBadge) DrawStatusBadge(hwnd, dc, rect);
+            else DrawStatusText(hwnd, dc, rect);
+            return 0;
         }
         if (kind == ControlKind::ProgressBar) {
             DrawProgressBar(hwnd, reinterpret_cast<HDC>(wParam));
@@ -1036,18 +1154,17 @@ void DrawSlider(HWND hwnd, HDC dc) {
     if (!state || !state->theme) {
         return;
     }
+    ThemedD2D::ScopedHdcPaint d2dPaint(hwnd, dc);
     const Theme& theme = *state->theme;
     RECT rect{};
     GetClientRect(hwnd, &rect);
-    HBRUSH background = CreateSolidBrush(ToColorRef(theme.color(L"dialog", L"normal", L"bg")));
-    FillRect(dc, &rect, background);
-    DeleteObject(background);
+    FillThemedRect(dc, rect, ToColorRef(theme.color(L"dialog", L"normal", L"bg")));
 
     const bool disabled = !IsWindowEnabled(hwnd);
     const bool hover = IsHover(hwnd);
     const wchar_t* visualState = disabled ? L"disabled" : (hover ? L"hover" : L"normal");
-    const int thumbSize = static_cast<int>(theme.metric(L"slider", L"thumbSize", 14.0f));
-    const int trackHeight = static_cast<int>(theme.metric(L"slider", L"trackHeight", 4.0f));
+    const int thumbSize = ActiveScaledMetric(theme, L"slider", L"thumbSize", 14.0f);
+    const int trackHeight = ActiveScaledMetric(theme, L"slider", L"trackHeight", 4.0f);
     const int left = thumbSize / 2;
     const int right = std::max(left + 1, static_cast<int>(rect.right) - thumbSize / 2);
     const double range = state->sliderMaximum - state->sliderMinimum;
@@ -1068,15 +1185,12 @@ void DrawSlider(HWND hwnd, HDC dc) {
             ToColorRef(theme.color(L"slider", visualState, L"fill")), 1);
     }
     RECT thumb{thumbCenter - thumbSize / 2, centerY - thumbSize / 2, thumbCenter + (thumbSize + 1) / 2, centerY + (thumbSize + 1) / 2};
-    HBRUSH thumbBrush = CreateSolidBrush(ToColorRef(theme.color(L"slider", visualState, L"thumb")));
-    HPEN thumbPen = CreatePen(PS_SOLID, 1, ToColorRef(theme.color(L"slider", visualState, L"border")));
-    HGDIOBJ oldBrush = SelectObject(dc, thumbBrush);
-    HGDIOBJ oldPen = SelectObject(dc, thumbPen);
-    Ellipse(dc, thumb.left, thumb.top, thumb.right, thumb.bottom);
-    SelectObject(dc, oldPen);
-    SelectObject(dc, oldBrush);
-    DeleteObject(thumbPen);
-    DeleteObject(thumbBrush);
+    FillThemedEllipse(
+        dc,
+        thumb,
+        ToColorRef(theme.color(L"slider", visualState, L"thumb")),
+        ToColorRef(theme.color(L"slider", visualState, L"border")),
+        1);
 }
 
 void DrawButton(const Theme& theme, const DRAWITEMSTRUCT* draw) {
@@ -1101,21 +1215,23 @@ void DrawButton(const Theme& theme, const DRAWITEMSTRUCT* draw) {
     RECT textRect = ThemedControls::ButtonTextRect(theme, rect, pressed);
     HICON icon = reinterpret_cast<HICON>(SendMessageW(draw->hwndItem, BM_GETIMAGE, IMAGE_ICON, 0));
     if (icon) {
-        const int iconSize = static_cast<int>(theme.metric(L"toolbarItem", L"iconSize", 16.0f));
-        const int iconGap = text.empty() ? 0 : static_cast<int>(theme.metric(L"toolbarItem", L"iconGap", 6.0f));
+        const int iconSize = ActiveScaledMetric(theme, L"toolbarItem", L"iconSize", 16.0f);
+        const int iconGap = text.empty() ? 0 : ActiveScaledMetric(theme, L"toolbarItem", L"iconGap", 6.0f);
         SIZE textSize{};
-        if (!text.empty()) GetTextExtentPoint32W(draw->hDC, text.c_str(), static_cast<int>(text.size()), &textSize);
+        if (!text.empty()) textSize.cx = ThemedD2D::MeasureTextWidth(font, text);
         const int contentWidth = iconSize + iconGap + textSize.cx;
         const int iconX = rect.left + std::max(0, (static_cast<int>(rect.right - rect.left) - contentWidth) / 2) + (pressed ? 1 : 0);
         const int iconY = rect.top + ((rect.bottom - rect.top) - iconSize) / 2 + (pressed ? 1 : 0);
-        if (disabled) {
-            DrawStateW(draw->hDC, nullptr, nullptr, reinterpret_cast<LPARAM>(icon), 0, iconX, iconY, iconSize, iconSize, DST_ICON | DSS_DISABLED);
-        } else {
-            DrawIconEx(draw->hDC, iconX, iconY, icon, iconSize, iconSize, 0, nullptr, DI_NORMAL);
+        const RECT iconRect{iconX, iconY, iconX + iconSize, iconY + iconSize};
+        if (!ThemedD2D::DrawIcon(draw->hDC, icon, iconRect, disabled)) {
+            ThemedGdiFallback::DrawIcon(draw->hDC, icon, iconRect, disabled);
         }
         if (!text.empty()) textRect.left = iconX + iconSize + iconGap;
     }
-    DrawTextW(draw->hDC, text.c_str(), static_cast<int>(text.size()), &textRect, icon ? (DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS) : (DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS));
+    DrawThemedText(draw->hDC, font, text.c_str(), static_cast<int>(text.size()), textRect,
+        icon ? (DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS)
+             : (DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS),
+        GetTextColor(draw->hDC));
     if (oldFont) {
         SelectObject(draw->hDC, oldFont);
     }
@@ -1141,7 +1257,8 @@ void DrawPrimaryButton(const Theme& theme, const DRAWITEMSTRUCT* draw) {
     HGDIOBJ oldFont = font ? SelectObject(draw->hDC, font) : nullptr;
     std::wstring text = ControlText(draw->hwndItem);
     RECT textRect = ThemedControls::ButtonTextRect(theme, rect, pressed);
-    DrawTextW(draw->hDC, text.c_str(), static_cast<int>(text.size()), &textRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    DrawThemedText(draw->hDC, font, text.c_str(), static_cast<int>(text.size()), textRect,
+        DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS, GetTextColor(draw->hDC));
     if (oldFont) {
         SelectObject(draw->hDC, oldFont);
     }
@@ -1159,10 +1276,10 @@ void DrawMiniButton(const Theme& theme, const DRAWITEMSTRUCT* draw) {
 
     const std::wstring text = ControlText(draw->hwndItem);
     const bool down = text == L"down" || text == L"next" || text == L"v";
-    const int size = static_cast<int>(theme.metric(L"miniButton", L"arrowSize", 5.0f));
-    const int stroke = static_cast<int>(theme.metric(L"miniButton", L"arrowStrokeWidth", 2.0f));
-    const int cy = (rect.top + rect.bottom) / 2 + (pressed ? static_cast<int>(theme.metric(L"miniButton", L"pressedOffset", 1.0f)) : 0);
-    const int cx = (rect.left + rect.right) / 2 + (pressed ? static_cast<int>(theme.metric(L"miniButton", L"pressedOffset", 1.0f)) : 0);
+    const int size = ActiveScaledMetric(theme, L"miniButton", L"arrowSize", 5.0f);
+    const int stroke = ActiveScaledMetric(theme, L"miniButton", L"arrowStrokeWidth", 2.0f);
+    const int cy = (rect.top + rect.bottom) / 2 + (pressed ? ActiveScaledMetric(theme, L"miniButton", L"pressedOffset", 1.0f) : 0);
+    const int cx = (rect.left + rect.right) / 2 + (pressed ? ActiveScaledMetric(theme, L"miniButton", L"pressedOffset", 1.0f) : 0);
     POINT points[3]{};
     if (down) {
         points[0] = POINT{cx - size, cy - 2};
@@ -1173,11 +1290,12 @@ void DrawMiniButton(const Theme& theme, const DRAWITEMSTRUCT* draw) {
         points[1] = POINT{cx, cy - 3};
         points[2] = POINT{cx + size, cy + 2};
     }
-    HPEN pen = CreatePen(PS_SOLID, std::max(1, stroke), ToColorRef(theme.color(L"miniButton", state, L"icon")));
-    HGDIOBJ oldPen = SelectObject(draw->hDC, pen);
-    Polyline(draw->hDC, points, 3);
-    SelectObject(draw->hDC, oldPen);
-    DeleteObject(pen);
+    DrawThemedPolyline(
+        draw->hDC,
+        points,
+        3,
+        ToColorRef(theme.color(L"miniButton", state, L"icon")),
+        stroke);
 }
 
 void DrawCheckBox(const Theme& theme, const DRAWITEMSTRUCT* draw) {
@@ -1189,11 +1307,9 @@ void DrawCheckBox(const Theme& theme, const DRAWITEMSTRUCT* draw) {
 
     RECT rect = draw->rcItem;
     const std::wstring backgroundComponent = BackgroundComponent(draw->hwndItem);
-    HBRUSH bg = CreateSolidBrush(ToColorRef(theme.color(backgroundComponent, L"normal", L"bg")));
-    FillRect(draw->hDC, &rect, bg);
-    DeleteObject(bg);
+    FillThemedRect(draw->hDC, rect, ToColorRef(theme.color(backgroundComponent, L"normal", L"bg")));
 
-    const int radius = static_cast<int>(theme.metric(L"checkbox", L"radius", 4.0f));
+    const int radius = ActiveScaledMetric(theme, L"checkbox", L"radius", 4.0f);
     RECT box = ThemedControls::CheckBoxBoxRect(theme, rect);
 
     FillRoundRect(
@@ -1202,24 +1318,27 @@ void DrawCheckBox(const Theme& theme, const DRAWITEMSTRUCT* draw) {
         radius,
         ToColorRef(theme.color(L"checkbox", state, L"boxBg")),
         ToColorRef(theme.color(L"checkbox", focused ? L"focused" : state, L"border")),
-        static_cast<int>(theme.metric(L"checkbox", L"borderWidth", 1.0f)));
+        ActiveScaledMetric(theme, L"checkbox", L"borderWidth", 1.0f));
 
     if (checked) {
         const int boxSize = box.right - box.left;
-        const int markWidth = static_cast<int>(theme.metric(L"checkbox", L"markWidth", 2.0f));
-        HPEN pen = CreatePen(PS_SOLID, std::max(1, markWidth), ToColorRef(theme.color(L"checkbox", L"checked", L"mark")));
-        HGDIOBJ oldPen = SelectObject(draw->hDC, pen);
-        MoveToEx(draw->hDC, box.left + boxSize / 4, box.top + boxSize / 2, nullptr);
-        LineTo(draw->hDC, box.left + boxSize * 7 / 16, box.bottom - boxSize / 4);
-        LineTo(draw->hDC, box.right - boxSize / 5, box.top + boxSize / 4);
-        SelectObject(draw->hDC, oldPen);
-        DeleteObject(pen);
+        const int markWidth = ActiveScaledMetric(theme, L"checkbox", L"markWidth", 2.0f);
+        const POINT points[]{
+            POINT{box.left + boxSize / 4, box.top + boxSize / 2},
+            POINT{box.left + boxSize * 7 / 16, box.bottom - boxSize / 4},
+            POINT{box.right - boxSize / 5, box.top + boxSize / 4}};
+        DrawThemedPolyline(
+            draw->hDC,
+            points,
+            static_cast<int>(std::size(points)),
+            ToColorRef(theme.color(L"checkbox", L"checked", L"mark")),
+            markWidth);
     }
 
     const bool multiline = [&] { auto s = FindState(draw->hwndItem); return s && s->multiline; }();
     RECT textRect = ThemedControls::CheckBoxTextRect(theme, rect);
     if (multiline) {
-        textRect.top = rect.top + static_cast<int>(theme.metric(L"checkbox", L"textOffsetY", 1.0f));
+        textRect.top = rect.top + ActiveScaledMetric(theme, L"checkbox", L"textOffsetY", 1.0f);
         textRect.bottom = rect.bottom;
     }
     SetBkMode(draw->hDC, TRANSPARENT);
@@ -1230,7 +1349,7 @@ void DrawCheckBox(const Theme& theme, const DRAWITEMSTRUCT* draw) {
     const UINT format = multiline
         ? (DT_LEFT | DT_WORDBREAK)
         : (DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-    DrawTextW(draw->hDC, text.c_str(), static_cast<int>(text.size()), &textRect, format);
+    DrawThemedText(draw->hDC, font, text.c_str(), static_cast<int>(text.size()), textRect, format, GetTextColor(draw->hDC));
     if (oldFont) {
         SelectObject(draw->hDC, oldFont);
     }
@@ -1243,13 +1362,11 @@ void DrawToggle(const Theme& theme, const DRAWITEMSTRUCT* draw) {
     const wchar_t* state = disabled ? L"disabled" : (checked ? L"checked" : (hover ? L"hover" : L"normal"));
     RECT rect = draw->rcItem;
     const std::wstring backgroundComponent = BackgroundComponent(draw->hwndItem);
-    HBRUSH bg = CreateSolidBrush(ToColorRef(theme.color(backgroundComponent, L"normal", L"bg")));
-    FillRect(draw->hDC, &rect, bg);
-    DeleteObject(bg);
+    FillThemedRect(draw->hDC, rect, ToColorRef(theme.color(backgroundComponent, L"normal", L"bg")));
 
-    const int trackWidth = static_cast<int>(theme.metric(L"toggle", L"width", 38.0f));
-    const int trackHeight = static_cast<int>(theme.metric(L"toggle", L"height", 24.0f));
-    const int thumbSize = static_cast<int>(theme.metric(L"toggle", L"thumbSize", 18.0f));
+    const int trackWidth = ActiveScaledMetric(theme, L"toggle", L"width", 38.0f);
+    const int trackHeight = ActiveScaledMetric(theme, L"toggle", L"height", 24.0f);
+    const int thumbSize = ActiveScaledMetric(theme, L"toggle", L"thumbSize", 18.0f);
     RECT track{rect.left, rect.top + (rect.bottom - rect.top - trackHeight) / 2, rect.left + trackWidth, 0};
     track.bottom = track.top + trackHeight;
     FillRoundRect(
@@ -1262,22 +1379,22 @@ void DrawToggle(const Theme& theme, const DRAWITEMSTRUCT* draw) {
     thumb.top = track.top + inset;
     thumb.right = thumb.left + thumbSize;
     thumb.bottom = thumb.top + thumbSize;
-    HBRUSH thumbBrush = CreateSolidBrush(ToColorRef(theme.color(L"toggle", state, L"thumb")));
-    HGDIOBJ oldBrush = SelectObject(draw->hDC, thumbBrush);
-    HGDIOBJ oldPen = SelectObject(draw->hDC, GetStockObject(NULL_PEN));
-    Ellipse(draw->hDC, thumb.left, thumb.top, thumb.right, thumb.bottom);
-    SelectObject(draw->hDC, oldPen);
-    SelectObject(draw->hDC, oldBrush);
-    DeleteObject(thumbBrush);
+    FillThemedEllipse(
+        draw->hDC,
+        thumb,
+        ToColorRef(theme.color(L"toggle", state, L"thumb")),
+        ToColorRef(theme.color(L"toggle", state, L"thumb")),
+        0);
 
-    const int gap = static_cast<int>(theme.metric(L"toggle", L"gap", 8.0f));
+    const int gap = ActiveScaledMetric(theme, L"toggle", L"gap", 8.0f);
     RECT textRect{track.right + gap, rect.top, rect.right, rect.bottom};
     SetBkMode(draw->hDC, TRANSPARENT);
     SetTextColor(draw->hDC, ToColorRef(theme.color(L"toggle", state, L"text")));
     HFONT font = reinterpret_cast<HFONT>(SendMessageW(draw->hwndItem, WM_GETFONT, 0, 0));
     HGDIOBJ oldFont = font ? SelectObject(draw->hDC, font) : nullptr;
     const std::wstring text = ControlText(draw->hwndItem);
-    DrawTextW(draw->hDC, text.c_str(), static_cast<int>(text.size()), &textRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    DrawThemedText(draw->hDC, font, text.c_str(), static_cast<int>(text.size()), textRect,
+        DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS, GetTextColor(draw->hDC));
     if (oldFont) SelectObject(draw->hDC, oldFont);
 }
 
@@ -1288,43 +1405,34 @@ void DrawRadioButton(const Theme& theme, const DRAWITEMSTRUCT* draw) {
     const wchar_t* state = disabled ? L"disabled" : (checked ? L"checked" : (hover ? L"hover" : L"normal"));
     RECT rect = draw->rcItem;
     const std::wstring backgroundComponent = BackgroundComponent(draw->hwndItem);
-    HBRUSH bg = CreateSolidBrush(ToColorRef(theme.color(backgroundComponent, L"normal", L"bg")));
-    FillRect(draw->hDC, &rect, bg);
-    DeleteObject(bg);
+    FillThemedRect(draw->hDC, rect, ToColorRef(theme.color(backgroundComponent, L"normal", L"bg")));
 
-    const int dotSize = static_cast<int>(theme.metric(L"radio", L"dotSize", 16.0f));
+    const int dotSize = ActiveScaledMetric(theme, L"radio", L"dotSize", 16.0f);
     RECT dot{rect.left, rect.top + (rect.bottom - rect.top - dotSize) / 2, rect.left + dotSize, 0};
     dot.bottom = dot.top + dotSize;
-    HBRUSH dotBrush = CreateSolidBrush(ToColorRef(theme.color(L"radio", state, L"dot")));
-    HPEN dotPen = CreatePen(PS_SOLID, 1, ToColorRef(theme.color(L"radio", state, L"border")));
-    HGDIOBJ oldBrush = SelectObject(draw->hDC, dotBrush);
-    HGDIOBJ oldPen = SelectObject(draw->hDC, dotPen);
-    Ellipse(draw->hDC, dot.left, dot.top, dot.right, dot.bottom);
-    SelectObject(draw->hDC, oldPen);
-    SelectObject(draw->hDC, oldBrush);
-    DeleteObject(dotPen);
-    DeleteObject(dotBrush);
+    FillThemedEllipse(
+        draw->hDC,
+        dot,
+        ToColorRef(theme.color(L"radio", state, L"dot")),
+        ToColorRef(theme.color(L"radio", state, L"border")),
+        1);
     if (checked) {
-        const int innerSize = static_cast<int>(theme.metric(L"radio", L"innerDotSize", 8.0f));
+        const int innerSize = ActiveScaledMetric(theme, L"radio", L"innerDotSize", 8.0f);
         RECT inner{dot.left + (dotSize - innerSize) / 2, dot.top + (dotSize - innerSize) / 2, 0, 0};
         inner.right = inner.left + innerSize;
         inner.bottom = inner.top + innerSize;
-        HBRUSH innerBrush = CreateSolidBrush(ToColorRef(theme.color(L"radio", L"checked", L"border")));
-        oldBrush = SelectObject(draw->hDC, innerBrush);
-        oldPen = SelectObject(draw->hDC, GetStockObject(NULL_PEN));
-        Ellipse(draw->hDC, inner.left, inner.top, inner.right, inner.bottom);
-        SelectObject(draw->hDC, oldPen);
-        SelectObject(draw->hDC, oldBrush);
-        DeleteObject(innerBrush);
+        const COLORREF innerColor = ToColorRef(theme.color(L"radio", L"checked", L"border"));
+        FillThemedEllipse(draw->hDC, inner, innerColor, innerColor, 0);
     }
-    const int gap = static_cast<int>(theme.metric(L"radio", L"gap", 8.0f));
+    const int gap = ActiveScaledMetric(theme, L"radio", L"gap", 8.0f);
     RECT textRect{dot.right + gap, rect.top, rect.right, rect.bottom};
     SetBkMode(draw->hDC, TRANSPARENT);
     SetTextColor(draw->hDC, ToColorRef(theme.color(L"radio", state, L"text")));
     HFONT font = reinterpret_cast<HFONT>(SendMessageW(draw->hwndItem, WM_GETFONT, 0, 0));
     HGDIOBJ oldFont = font ? SelectObject(draw->hDC, font) : nullptr;
     const std::wstring text = ControlText(draw->hwndItem);
-    DrawTextW(draw->hDC, text.c_str(), static_cast<int>(text.size()), &textRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    DrawThemedText(draw->hDC, font, text.c_str(), static_cast<int>(text.size()), textRect,
+        DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS, GetTextColor(draw->hDC));
     if (oldFont) SelectObject(draw->hDC, oldFont);
 }
 
@@ -1337,17 +1445,18 @@ void DrawHotKeyCapture(const Theme& theme, const DRAWITEMSTRUCT* draw) {
     FillRoundRect(
         draw->hDC,
         rect,
-        static_cast<int>(theme.metric(L"edit", L"radius", 7.0f)),
+        ActiveScaledMetric(theme, L"edit", L"radius", 7.0f),
         ToColorRef(theme.color(L"edit", state, L"bg")),
         ToColorRef(theme.color(L"edit", state, L"border")),
-        static_cast<int>(theme.metric(L"edit", L"borderWidth", 1.0f)));
+        ActiveScaledMetric(theme, L"edit", L"borderWidth", 1.0f));
     InflateRect(&rect, -ThemedControls::EditPaddingX(theme), 0);
     SetBkMode(draw->hDC, TRANSPARENT);
     SetTextColor(draw->hDC, ToColorRef(theme.color(L"edit", state, L"text")));
     HFONT font = reinterpret_cast<HFONT>(SendMessageW(draw->hwndItem, WM_GETFONT, 0, 0));
     HGDIOBJ oldFont = font ? SelectObject(draw->hDC, font) : nullptr;
     const std::wstring text = ControlText(draw->hwndItem);
-    DrawTextW(draw->hDC, text.c_str(), static_cast<int>(text.size()), &rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    DrawThemedText(draw->hDC, font, text.c_str(), static_cast<int>(text.size()), rect,
+        DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS, GetTextColor(draw->hDC));
     if (oldFont) SelectObject(draw->hDC, oldFont);
 }
 
@@ -1367,9 +1476,7 @@ void DrawLinkText(const Theme& theme, const DRAWITEMSTRUCT* draw) {
 
     RECT rect = draw->rcItem;
     const std::wstring backgroundComponent = BackgroundComponent(draw->hwndItem);
-    HBRUSH background = CreateSolidBrush(ToColorRef(theme.color(backgroundComponent, L"normal", L"bg")));
-    FillRect(draw->hDC, &rect, background);
-    DeleteObject(background);
+    FillThemedRect(draw->hDC, rect, ToColorRef(theme.color(backgroundComponent, L"normal", L"bg")));
 
     SetBkMode(draw->hDC, TRANSPARENT);
     SetTextColor(draw->hDC, ToColorRef(theme.color(L"link", state, L"text")));
@@ -1381,13 +1488,18 @@ void DrawLinkText(const Theme& theme, const DRAWITEMSTRUCT* draw) {
     else if ((style & BS_RIGHT) == BS_RIGHT) format |= DT_RIGHT;
     else format |= DT_LEFT;
     const std::wstring text = ControlText(draw->hwndItem);
-    DrawTextW(draw->hDC, text.c_str(), static_cast<int>(text.size()), &rect, format);
+    DrawThemedText(draw->hDC, font, text.c_str(), static_cast<int>(text.size()), rect, format, GetTextColor(draw->hDC));
     if (oldFont) SelectObject(draw->hDC, oldFont);
 
     if (focused) {
         RECT focusRect = rect;
         InflateRect(&focusRect, -1, -2);
-        DrawFocusRect(draw->hDC, &focusRect);
+        DrawRoundRect(
+            draw->hDC,
+            focusRect,
+            ActiveScaledMetric(theme, L"checkbox", L"radius", 4.0f),
+            ToColorRef(theme.color(L"link", L"focused", L"text")),
+            1);
     }
 }
 
@@ -1413,32 +1525,27 @@ void DrawContainer(const Theme& theme, const DRAWITEMSTRUCT* draw, ControlKind k
         : (tabAppearance == kTabAppearanceConnectedTabs ? L"connected" : L"normal")));
     if (kind == ControlKind::TabControl && !forceFramed) {
         const wchar_t* visualState = tabContainerState;
-        HBRUSH background = CreateSolidBrush(ToColorRef(theme.color(L"tabControl", visualState, L"bg")));
-        FillRect(draw->hDC, &rect, background);
-        DeleteObject(background);
+        FillThemedRect(draw->hDC, rect, ToColorRef(theme.color(L"tabControl", visualState, L"bg")));
         if (forceBorderless || tabAppearance == kTabAppearanceSoftPill) return;
         if (tabAppearance == kTabAppearanceMinimalUnderline) {
             const int lineWidth = std::max(1, ScaledMetric(draw->hwndItem, theme, L"tabControl", L"underlineBorderWidth", 1.0f));
-            HPEN pen = CreatePen(PS_SOLID, lineWidth, ToColorRef(theme.color(L"tabControl", visualState, L"border")));
-            HGDIOBJ oldPen = SelectObject(draw->hDC, pen);
-            if (verticalTabs) {
-                MoveToEx(draw->hDC, rect.right - lineWidth, rect.top, nullptr);
-                LineTo(draw->hDC, rect.right - lineWidth, rect.bottom);
-            } else {
-                MoveToEx(draw->hDC, rect.left, rect.bottom - lineWidth, nullptr);
-                LineTo(draw->hDC, rect.right, rect.bottom - lineWidth);
-            }
-            SelectObject(draw->hDC, oldPen);
-            DeleteObject(pen);
-            return;
+        const COLORREF lineColor = ToColorRef(theme.color(L"tabControl", visualState, L"border"));
+        if (verticalTabs) {
+            DrawThemedLine(draw->hDC, rect.right - lineWidth, rect.top, rect.right - lineWidth, rect.bottom,
+                lineColor, lineWidth);
+        } else {
+            DrawThemedLine(draw->hDC, rect.left, rect.bottom - lineWidth, rect.right, rect.bottom - lineWidth,
+                lineColor, lineWidth);
+        }
+        return;
         }
     }
     const wchar_t* visualState = disabled ? L"disabled"
         : (kind == ControlKind::Panel && state && !state->statusState.empty() ? state->statusState.c_str()
         : ((kind == ControlKind::GroupBox && state && state->checked) ? L"raised"
         : (kind == ControlKind::TabControl && tabAppearance == kTabAppearanceConnectedTabs ? L"connected" : L"normal")));
-    const int radius = static_cast<int>(theme.metric(component, L"radius", 7.0f));
-    const int borderWidth = static_cast<int>(theme.metric(component, L"borderWidth", 1.0f));
+    const int radius = ActiveScaledMetric(theme, component, L"radius", 7.0f);
+    const int borderWidth = ActiveScaledMetric(theme, component, L"borderWidth", 1.0f);
     FillRoundRect(
         draw->hDC, rect, radius,
         ToColorRef(theme.color(component, visualState, L"bg")),
@@ -1449,9 +1556,11 @@ void DrawContainer(const Theme& theme, const DRAWITEMSTRUCT* draw, ControlKind k
     const std::wstring title = ControlText(draw->hwndItem);
     if (title.empty()) return;
     HFONT font = reinterpret_cast<HFONT>(SendMessageW(draw->hwndItem, WM_GETFONT, 0, 0));
-    HGDIOBJ oldFont = font ? SelectObject(draw->hDC, font) : nullptr;
-    SIZE size{};
-    GetTextExtentPoint32W(draw->hDC, title.c_str(), static_cast<int>(title.size()), &size);
+    SIZE size = ThemedD2D::MeasureText(font, title, 0, false);
+    if (size.cx <= 0 || size.cy <= 0) {
+        size = ThemedGdiFallback::MeasureText(
+            draw->hDC, font, title.c_str(), static_cast<int>(title.size()));
+    }
     const int inset = ScaledMetric(draw->hwndItem, theme, L"groupBox", L"titleInsetX", 10.0f);
     const int gap = ScaledMetric(draw->hwndItem, theme, L"groupBox", L"titleGap", 6.0f);
     const int titleHeight = ScaledMetric(draw->hwndItem, theme, L"groupBox", L"titleHeight", 20.0f);
@@ -1462,36 +1571,27 @@ void DrawContainer(const Theme& theme, const DRAWITEMSTRUCT* draw, ControlKind k
         titleTop,
         rect.left + inset + size.cx + gap / 2,
         titleTop + std::max(size.cy, static_cast<LONG>(titleHeight))};
-    HBRUSH background = CreateSolidBrush(ToColorRef(theme.color(L"groupBox", visualState, L"bg")));
-    FillRect(draw->hDC, &titleBg, background);
-    DeleteObject(background);
+    FillThemedRect(draw->hDC, titleBg, ToColorRef(theme.color(L"groupBox", visualState, L"bg")));
     SetBkMode(draw->hDC, TRANSPARENT);
     SetTextColor(draw->hDC, ToColorRef(theme.color(L"groupBox", visualState, L"text")));
     RECT titleRect{rect.left + inset, titleTop, rect.right - inset, titleBg.bottom};
-    DrawTextW(draw->hDC, title.c_str(), static_cast<int>(title.size()), &titleRect, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS);
-    if (oldFont) SelectObject(draw->hDC, oldFont);
+    DrawThemedText(draw->hDC, font, title.c_str(), static_cast<int>(title.size()), titleRect,
+        DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS, GetTextColor(draw->hDC));
 }
 
 void DrawSeparator(const Theme& theme, const DRAWITEMSTRUCT* draw) {
     RECT rect = draw->rcItem;
     const auto state = FindState(draw->hwndItem);
     const bool vertical = state && state->checked;
-    HPEN pen = CreatePen(
-        PS_SOLID,
-        std::max(1, static_cast<int>(theme.metric(L"separator", L"thickness", 1.0f))),
-        ToColorRef(theme.color(L"separator", L"normal", L"line")));
-    HGDIOBJ oldPen = SelectObject(draw->hDC, pen);
+    const int thickness = std::max(1, ActiveScaledMetric(theme, L"separator", L"thickness", 1.0f));
+    const COLORREF color = ToColorRef(theme.color(L"separator", L"normal", L"line"));
     if (vertical) {
         const int x = (rect.left + rect.right) / 2;
-        MoveToEx(draw->hDC, x, rect.top + 3, nullptr);
-        LineTo(draw->hDC, x, rect.bottom - 3);
+        DrawThemedLine(draw->hDC, x, rect.top + 3, x, rect.bottom - 3, color, thickness);
     } else {
         const int y = (rect.top + rect.bottom) / 2;
-        MoveToEx(draw->hDC, rect.left + 3, y, nullptr);
-        LineTo(draw->hDC, rect.right - 3, y);
+        DrawThemedLine(draw->hDC, rect.left + 3, y, rect.right - 3, y, color, thickness);
     }
-    SelectObject(draw->hDC, oldPen);
-    DeleteObject(pen);
 }
 
 void DrawTabButton(const Theme& theme, const DRAWITEMSTRUCT* draw) {
@@ -1536,9 +1636,7 @@ void DrawTabButton(const Theme& theme, const DRAWITEMSTRUCT* draw) {
     const Color baseColor = appearance == kTabAppearanceStandard || appearance == kTabAppearanceEmphasizedSegmented
         ? theme.color(L"tabButton", L"normal", L"bg")
         : theme.color(L"tabControl", containerState, L"bg");
-    HBRUSH bg = CreateSolidBrush(ToColorRef(baseColor));
-    FillRect(draw->hDC, &rect, bg);
-    DeleteObject(bg);
+    FillThemedRect(draw->hDC, rect, ToColorRef(baseColor));
 
     if (appearance == kTabAppearanceMinimalUnderline) {
         if (hover || focused) {
@@ -1607,9 +1705,7 @@ void DrawTabButton(const Theme& theme, const DRAWITEMSTRUCT* draw) {
                     segmentRect.right - borderWidth,
                     rect.bottom};
             }
-            HBRUSH openingBrush = CreateSolidBrush(ToColorRef(theme.color(L"tabButton", state, L"bg")));
-            FillRect(draw->hDC, &opening, openingBrush);
-            DeleteObject(openingBrush);
+            FillThemedRect(draw->hDC, opening, ToColorRef(theme.color(L"tabButton", state, L"bg")));
         }
     } else {
         FillRoundRect(
@@ -1629,21 +1725,23 @@ void DrawTabButton(const Theme& theme, const DRAWITEMSTRUCT* draw) {
     RECT textRect = ThemedControls::TabButtonTextRect(theme, rect);
     HICON icon = reinterpret_cast<HICON>(SendMessageW(draw->hwndItem, BM_GETIMAGE, IMAGE_ICON, 0));
     if (icon) {
-        const int iconSize = static_cast<int>(theme.metric(L"toolbarItem", L"iconSize", 16.0f));
-        const int iconGap = text.empty() ? 0 : static_cast<int>(theme.metric(L"toolbarItem", L"iconGap", 6.0f));
+        const int iconSize = ActiveScaledMetric(theme, L"toolbarItem", L"iconSize", 16.0f);
+        const int iconGap = text.empty() ? 0 : ActiveScaledMetric(theme, L"toolbarItem", L"iconGap", 6.0f);
         SIZE textSize{};
-        if (!text.empty()) GetTextExtentPoint32W(draw->hDC, text.c_str(), static_cast<int>(text.size()), &textSize);
+        if (!text.empty()) textSize.cx = ThemedD2D::MeasureTextWidth(font, text);
         const int contentWidth = iconSize + iconGap + textSize.cx;
         const int iconX = rect.left + std::max(0, (static_cast<int>(rect.right - rect.left) - contentWidth) / 2);
         const int iconY = rect.top + ((rect.bottom - rect.top) - iconSize) / 2;
-        if (disabled) {
-            DrawStateW(draw->hDC, nullptr, nullptr, reinterpret_cast<LPARAM>(icon), 0, iconX, iconY, iconSize, iconSize, DST_ICON | DSS_DISABLED);
-        } else {
-            DrawIconEx(draw->hDC, iconX, iconY, icon, iconSize, iconSize, 0, nullptr, DI_NORMAL);
+        const RECT iconRect{iconX, iconY, iconX + iconSize, iconY + iconSize};
+        if (!ThemedD2D::DrawIcon(draw->hDC, icon, iconRect, disabled)) {
+            ThemedGdiFallback::DrawIcon(draw->hDC, icon, iconRect, disabled);
         }
         if (!text.empty()) textRect.left = iconX + iconSize + iconGap;
     }
-    DrawTextW(draw->hDC, text.c_str(), static_cast<int>(text.size()), &textRect, icon ? (DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS) : (DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS));
+    DrawThemedText(draw->hDC, font, text.c_str(), static_cast<int>(text.size()), textRect,
+        icon ? (DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS)
+             : (DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS),
+        GetTextColor(draw->hDC));
     if (oldFont) {
         SelectObject(draw->hDC, oldFont);
     }
@@ -1655,9 +1753,7 @@ void DrawComboBox(const Theme& theme, const DRAWITEMSTRUCT* draw) {
     const bool selected = (draw->itemState & ODS_SELECTED) != 0;
     const bool focused = (draw->itemState & ODS_FOCUS) != 0;
     const wchar_t* state = disabled ? L"disabled" : (selected ? L"selected" : (focused ? L"focused" : L"normal"));
-    HBRUSH brush = CreateSolidBrush(ToColorRef(theme.color(L"comboBox", state, L"itemBg")));
-    FillRect(draw->hDC, &rect, brush);
-    DeleteObject(brush);
+    FillThemedRect(draw->hDC, rect, ToColorRef(theme.color(L"comboBox", state, L"itemBg")));
 
     if (draw->itemID == static_cast<UINT>(-1)) {
         return;
@@ -1668,7 +1764,8 @@ void DrawComboBox(const Theme& theme, const DRAWITEMSTRUCT* draw) {
     SetTextColor(draw->hDC, ToColorRef(theme.color(L"comboBox", state, L"text")));
     HFONT font = reinterpret_cast<HFONT>(SendMessageW(draw->hwndItem, WM_GETFONT, 0, 0));
     HGDIOBJ oldFont = font ? SelectObject(draw->hDC, font) : nullptr;
-    DrawTextW(draw->hDC, text.c_str(), static_cast<int>(text.size()), &textRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    DrawThemedText(draw->hDC, font, text.c_str(), static_cast<int>(text.size()), textRect,
+        DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS, GetTextColor(draw->hDC));
     if (oldFont) {
         SelectObject(draw->hDC, oldFont);
     }
@@ -1681,9 +1778,7 @@ void DrawListBox(const Theme& theme, const DRAWITEMSTRUCT* draw) {
     const bool focused = (draw->itemState & ODS_FOCUS) != 0;
     const wchar_t* state = disabled ? L"disabled" : (selected ? L"selected" : (focused ? L"focused" : L"normal"));
 
-    HBRUSH brush = CreateSolidBrush(ToColorRef(theme.color(L"listItem", state, L"bg")));
-    FillRect(draw->hDC, &rect, brush);
-    DeleteObject(brush);
+    FillThemedRect(draw->hDC, rect, ToColorRef(theme.color(L"listItem", state, L"bg")));
 
     if (draw->itemID == static_cast<UINT>(-1)) {
         return;
@@ -1694,7 +1789,9 @@ void DrawListBox(const Theme& theme, const DRAWITEMSTRUCT* draw) {
     RECT textRect = ThemedControls::ListItemTextRect(theme, rect);
     SetBkMode(draw->hDC, TRANSPARENT);
     SetTextColor(draw->hDC, ToColorRef(theme.color(L"listItem", state, L"text")));
-    DrawTextW(draw->hDC, buffer, -1, &textRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    HFONT font = reinterpret_cast<HFONT>(SendMessageW(draw->hwndItem, WM_GETFONT, 0, 0));
+    DrawThemedText(draw->hDC, font, buffer, -1, textRect,
+        DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS, GetTextColor(draw->hDC));
 }
 
 std::wstring ClassName(HWND hwnd) {
@@ -1722,21 +1819,14 @@ void DrawTableGridLines(const Theme& theme, HDC dc, RECT rect, bool rowLine, boo
     if (!rowLine && !columnLine) {
         return;
     }
-    HPEN pen = CreatePen(
-        PS_SOLID,
-        std::max(1, static_cast<int>(theme.metric(L"table", L"gridWidth", 1.0f))),
-        ToColorRef(theme.color(L"table", L"normal", L"grid")));
-    HGDIOBJ oldPen = SelectObject(dc, pen);
+    const int width = std::max(1, ActiveScaledMetric(theme, L"table", L"gridWidth", 1.0f));
+    const COLORREF color = ToColorRef(theme.color(L"table", L"normal", L"grid"));
     if (rowLine) {
-        MoveToEx(dc, rect.left, rect.bottom - 1, nullptr);
-        LineTo(dc, rect.right, rect.bottom - 1);
+        DrawThemedLine(dc, rect.left, rect.bottom - 1, rect.right, rect.bottom - 1, color, width);
     }
     if (columnLine) {
-        MoveToEx(dc, rect.right - 1, rect.top, nullptr);
-        LineTo(dc, rect.right - 1, rect.bottom);
+        DrawThemedLine(dc, rect.right - 1, rect.top, rect.right - 1, rect.bottom, color, width);
     }
-    SelectObject(dc, oldPen);
-    DeleteObject(pen);
 }
 
 void DrawTableCellGridLines(const Theme& theme, HWND table, const NMLVCUSTOMDRAW* draw, RECT rect) {
@@ -1757,9 +1847,7 @@ void DrawHeaderItem(const Theme& theme, HWND header, const NMCUSTOMDRAW* draw) {
     const int index = static_cast<int>(draw->dwItemSpec);
     const int itemCount = Header_GetItemCount(header);
     RECT rect = draw->rc;
-    HBRUSH brush = CreateSolidBrush(ToColorRef(theme.color(component, L"normal", L"bg")));
-    FillRect(draw->hdc, &rect, brush);
-    DeleteObject(brush);
+    FillThemedRect(draw->hdc, rect, ToColorRef(theme.color(component, L"normal", L"bg")));
 
     wchar_t text[256]{};
     HDITEMW item{};
@@ -1773,20 +1861,14 @@ void DrawHeaderItem(const Theme& theme, HWND header, const NMCUSTOMDRAW* draw) {
         const COLORREF line = table
             ? ToColorRef(theme.color(L"table", L"normal", L"grid"))
             : ToColorRef(theme.color(component, L"normal", L"border"));
-        HPEN pen = CreatePen(PS_SOLID, 1, line);
-        HGDIOBJ oldPen = SelectObject(draw->hdc, pen);
         if (!table || TableShowsDefaultHeaderGridLine(tableHwnd) || TableShowsRowGridLines(tableHwnd)) {
-            MoveToEx(draw->hdc, rect.left, rect.bottom - 1, nullptr);
-            LineTo(draw->hdc, rect.right, rect.bottom - 1);
+            DrawThemedLine(draw->hdc, rect.left, rect.bottom - 1, rect.right, rect.bottom - 1, line, 1);
         }
         if ((!table || TableShowsDefaultHeaderGridLine(tableHwnd) || TableShowsColumnGridLines(tableHwnd)) &&
             index >= 0 &&
             index < itemCount - 1) {
-            MoveToEx(draw->hdc, rect.right - 1, rect.top, nullptr);
-            LineTo(draw->hdc, rect.right - 1, rect.bottom);
+            DrawThemedLine(draw->hdc, rect.right - 1, rect.top, rect.right - 1, rect.bottom, line, 1);
         }
-        SelectObject(draw->hdc, oldPen);
-        DeleteObject(pen);
     }
 
     const int paddingX = table
@@ -1806,7 +1888,7 @@ void DrawHeaderItem(const Theme& theme, HWND header, const NMCUSTOMDRAW* draw) {
     SetTextColor(draw->hdc, ToColorRef(theme.color(component, L"normal", L"text")));
     HFONT font = reinterpret_cast<HFONT>(SendMessageW(header, WM_GETFONT, 0, 0));
     HGDIOBJ oldFont = font ? SelectObject(draw->hdc, font) : nullptr;
-    DrawTextW(draw->hdc, text, -1, &textRect, format);
+    DrawThemedText(draw->hdc, font, text, -1, textRect, format, GetTextColor(draw->hdc));
     if (oldFont) {
         SelectObject(draw->hdc, oldFont);
     }
@@ -1918,16 +2000,14 @@ void DrawTableActionCell(
     const bool selected = ThemedControls::IsTableRowSelected(table, row);
     const bool hovered = IsTableRowHovered(table, row);
     const wchar_t* rowState = TableRowState(row, selected, enabled, hovered);
-    HBRUSH background = CreateSolidBrush(TableRowBackground(theme, rowState));
-    FillRect(draw->nmcd.hdc, &cellRect, background);
-    DeleteObject(background);
+    FillThemedRect(draw->nmcd.hdc, cellRect, TableRowBackground(theme, rowState));
 
     const std::wstring text = ListViewCellText(table, row, column);
     SIZE textSize{};
     HFONT font = reinterpret_cast<HFONT>(SendMessageW(table, WM_GETFONT, 0, 0));
     HGDIOBJ oldFont = font ? SelectObject(draw->nmcd.hdc, font) : nullptr;
     if (!text.empty()) {
-        GetTextExtentPoint32W(draw->nmcd.hdc, text.c_str(), static_cast<int>(text.size()), &textSize);
+        textSize.cx = ThemedD2D::MeasureTextWidth(font, text);
     }
 
     const int paddingX = ThemedControls::ButtonPaddingX(theme);
@@ -1938,7 +2018,7 @@ void DrawTableActionCell(
         std::max(1, cellHeight - 4),
         ThemedControls::CompactButtonHeight(theme));
     const int desiredWidth = std::max(
-        static_cast<int>(theme.metric(L"button", L"minWidth", 64.0f)),
+        ActiveScaledMetric(theme, L"button", L"minWidth", 64.0f),
         textWidth + paddingX * 2);
     const int buttonWidth = std::min(std::max(1, cellWidth - 4), desiredWidth);
     RECT buttonRect{
@@ -1959,12 +2039,14 @@ void DrawTableActionCell(
     const wchar_t* buttonState = ButtonState(hot, pressed, !enabled);
     SetTextColor(draw->nmcd.hdc, ToColorRef(theme.color(component, buttonState, L"text")));
     RECT textRect = ThemedControls::ButtonTextRect(theme, buttonRect, pressed);
-    DrawTextW(
+    DrawThemedText(
         draw->nmcd.hdc,
+        font,
         text.c_str(),
         static_cast<int>(text.size()),
-        &textRect,
-        DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        textRect,
+        DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS,
+        GetTextColor(draw->nmcd.hdc));
     if (oldFont) {
         SelectObject(draw->nmcd.hdc, oldFont);
     }
@@ -1982,9 +2064,7 @@ void DrawTableTextCell(
     const bool selected = ThemedControls::IsTableRowSelected(table, row);
     const bool hovered = IsTableRowHovered(table, row);
     const wchar_t* rowState = TableRowState(row, selected, enabled, hovered);
-    HBRUSH background = CreateSolidBrush(TableRowBackground(theme, rowState));
-    FillRect(draw->nmcd.hdc, &cellRect, background);
-    DeleteObject(background);
+    FillThemedRect(draw->nmcd.hdc, cellRect, TableRowBackground(theme, rowState));
 
     const int paddingX = TableScaledMetric(table, theme, L"listItem", L"paddingX", 8.0f);
     RECT textRect = cellRect;
@@ -2015,16 +2095,16 @@ void DrawTableTextCell(
             TableScaledMetric(table, theme, L"checkbox", L"borderWidth", 1.0f));
         if (checked) {
             const int markWidth = TableScaledMetric(table, theme, L"checkbox", L"markWidth", 2.0f);
-            HPEN pen = CreatePen(
-                PS_SOLID,
-                std::max(1, markWidth),
-                ToColorRef(theme.color(L"checkbox", L"checked", L"mark")));
-            HGDIOBJ oldPen = SelectObject(draw->nmcd.hdc, pen);
-            MoveToEx(draw->nmcd.hdc, box.left + boxSize / 4, box.top + boxSize / 2, nullptr);
-            LineTo(draw->nmcd.hdc, box.left + boxSize * 7 / 16, box.bottom - boxSize / 4);
-            LineTo(draw->nmcd.hdc, box.right - boxSize / 5, box.top + boxSize / 4);
-            SelectObject(draw->nmcd.hdc, oldPen);
-            DeleteObject(pen);
+            const POINT points[]{
+                POINT{box.left + boxSize / 4, box.top + boxSize / 2},
+                POINT{box.left + boxSize * 7 / 16, box.bottom - boxSize / 4},
+                POINT{box.right - boxSize / 5, box.top + boxSize / 4}};
+            DrawThemedPolyline(
+                draw->nmcd.hdc,
+                points,
+                3,
+                ToColorRef(theme.color(L"checkbox", L"checked", L"mark")),
+                markWidth);
         }
         textRect.left = box.right + gap;
     }
@@ -2041,17 +2121,15 @@ void DrawTableTextCell(
             if (ImageList_GetIconSize(images, &imageWidth, &imageHeight) && imageWidth > 0 && imageHeight > 0) {
                 const int availableHeight = static_cast<int>(cellRect.bottom - cellRect.top);
                 const int imageY = cellRect.top + std::max(0, (availableHeight - imageHeight) / 2);
-                ImageList_DrawEx(
-                    images,
-                    item.iImage,
-                    draw->nmcd.hdc,
-                    textRect.left,
-                    imageY,
-                    imageWidth,
-                    imageHeight,
-                    CLR_NONE,
-                    CLR_NONE,
-                    ILD_NORMAL);
+                HICON icon = ImageList_GetIcon(images, item.iImage, ILD_TRANSPARENT);
+                if (icon) {
+                    const RECT iconRect{
+                        textRect.left, imageY, textRect.left + imageWidth, imageY + imageHeight};
+                    if (!ThemedD2D::DrawIcon(draw->nmcd.hdc, icon, iconRect, !enabled)) {
+                        ThemedGdiFallback::DrawIcon(draw->nmcd.hdc, icon, iconRect, !enabled);
+                    }
+                    DestroyIcon(icon);
+                }
                 textRect.left += imageWidth +
                     TableScaledMetric(table, theme, L"global", L"denseGap", 4.0f);
             }
@@ -2074,12 +2152,14 @@ void DrawTableTextCell(
     SetBkMode(draw->nmcd.hdc, TRANSPARENT);
     const wchar_t* textState = enabled ? rowState : L"disabled";
     SetTextColor(draw->nmcd.hdc, ToColorRef(theme.color(L"listItem", textState, L"text")));
-    DrawTextW(
+    DrawThemedText(
         draw->nmcd.hdc,
+        font,
         text.c_str(),
         static_cast<int>(text.size()),
-        &textRect,
-        format);
+        textRect,
+        format,
+        GetTextColor(draw->nmcd.hdc));
     if (oldFont) {
         SelectObject(draw->nmcd.hdc, oldFont);
     }
@@ -2108,6 +2188,10 @@ void DrawTableRowCells(
 
 namespace ThemedControls {
 
+COLORREF ListSurfaceColor(const Theme& theme) {
+    return ToColorRef(theme.color(L"list", L"normal", L"bg"));
+}
+
 bool IsControlHovered(HWND hwnd) {
     return IsHover(hwnd);
 }
@@ -2115,6 +2199,12 @@ bool IsControlHovered(HWND hwnd) {
 namespace {
 constexpr int kDialogFontPx = 14;
 constexpr int kSingleLineEditFontPx = 14;
+
+int RenderMetric(const Theme& theme, const wchar_t* component, const wchar_t* name, float fallback) {
+    return ThemedD2D::ScaleDip(
+        static_cast<int>(theme.metric(component, name, fallback)),
+        ThemedD2D::ActiveDpi());
+}
 
 HFONT CreateThemeFontPx(int pixelHeight) {
     return CreateFontW(
@@ -2124,10 +2214,10 @@ HFONT CreateThemeFontPx(int pixelHeight) {
 }
 
 RECT TextRectFromMetrics(const Theme& theme, const wchar_t* component, RECT frame, float fallbackHeight, bool center, bool pressed = false) {
-    const int paddingX = static_cast<int>(theme.metric(component, L"paddingX", 0.0f));
-    const int textHeight = static_cast<int>(theme.metric(component, L"textHeight", fallbackHeight));
-    const int offsetY = static_cast<int>(theme.metric(component, L"textOffsetY", 0.0f));
-    const int pressedOffset = pressed ? static_cast<int>(theme.metric(component, L"pressedOffset", 1.0f)) : 0;
+    const int paddingX = RenderMetric(theme, component, L"paddingX", 0.0f);
+    const int textHeight = RenderMetric(theme, component, L"textHeight", fallbackHeight);
+    const int offsetY = RenderMetric(theme, component, L"textOffsetY", 0.0f);
+    const int pressedOffset = pressed ? RenderMetric(theme, component, L"pressedOffset", 1.0f) : 0;
     RECT rect{};
     rect.left = frame.left + paddingX + pressedOffset;
     rect.right = frame.right - paddingX + pressedOffset;
@@ -2162,7 +2252,7 @@ void DrawIconButtonFrame(
     bool focused,
     bool disabled) {
     const wchar_t* state = ButtonState(hover, pressed, disabled);
-    const int radius = static_cast<int>(theme.metric(L"iconButton", L"radius", 7.0f));
+    const int radius = RenderMetric(theme, L"iconButton", L"radius", 7.0f);
     const COLORREF border = focused
         ? ToColorRef(theme.color(L"button", L"focused", L"border"))
         : ToColorRef(theme.color(L"panel", L"normal", L"border"));
@@ -2172,7 +2262,7 @@ void DrawIconButtonFrame(
         radius,
         ToColorRef(theme.color(L"iconButton", state, L"bg")),
         border,
-        1);
+        RenderMetric(theme, L"iconButton", L"borderWidth", 1.0f));
 }
 
 void DrawMiniButtonFrame(
@@ -2187,10 +2277,10 @@ void DrawMiniButtonFrame(
     FillRoundRect(
         dc,
         rect,
-        static_cast<int>(theme.metric(L"miniButton", L"radius", 6.0f)),
+        RenderMetric(theme, L"miniButton", L"radius", 6.0f),
         ToColorRef(theme.color(L"miniButton", state, L"bg")),
         ToColorRef(theme.color(L"miniButton", focused ? L"focused" : state, L"border")),
-        static_cast<int>(theme.metric(L"miniButton", L"borderWidth", 1.0f)));
+        RenderMetric(theme, L"miniButton", L"borderWidth", 1.0f));
 }
 
 int ButtonPaddingX(const Theme& theme) {
@@ -2218,9 +2308,9 @@ int RadioButtonHeight(const Theme& theme) {
 }
 
 RECT CheckBoxBoxRect(const Theme& theme, RECT frame) {
-    const int boxSize = static_cast<int>(theme.metric(L"checkbox", L"boxSize", 16.0f));
-    const int offsetX = static_cast<int>(theme.metric(L"checkbox", L"boxOffsetX", 0.0f));
-    const int offsetY = static_cast<int>(theme.metric(L"checkbox", L"boxOffsetY", 0.0f));
+    const int boxSize = RenderMetric(theme, L"checkbox", L"boxSize", 16.0f);
+    const int offsetX = RenderMetric(theme, L"checkbox", L"boxOffsetX", 0.0f);
+    const int offsetY = RenderMetric(theme, L"checkbox", L"boxOffsetY", 0.0f);
     RECT box{};
     box.left = frame.left + offsetX;
     box.top = frame.top + ((frame.bottom - frame.top) - boxSize) / 2 + offsetY;
@@ -2231,7 +2321,7 @@ RECT CheckBoxBoxRect(const Theme& theme, RECT frame) {
 
 RECT CheckBoxTextRect(const Theme& theme, RECT frame) {
     const RECT box = CheckBoxBoxRect(theme, frame);
-    const int gap = static_cast<int>(theme.metric(L"checkbox", L"gap", 8.0f));
+    const int gap = RenderMetric(theme, L"checkbox", L"gap", 8.0f);
     RECT textRect = TextRectFromMetrics(theme, L"checkbox", frame, 20.0f, true);
     textRect.left = box.right + gap;
     return textRect;
@@ -2244,7 +2334,7 @@ int TabButtonHeight(const Theme& theme) {
 RECT TabButtonTextRect(const Theme& theme, RECT frame) {
     RECT rect = TextRectFromMetrics(theme, L"tabButton", frame, 20.0f, true);
     const int width = frame.right - frame.left;
-    const int minTextWidth = static_cast<int>(theme.metric(L"tabButton", L"minTextWidth", 18.0f));
+    const int minTextWidth = RenderMetric(theme, L"tabButton", L"minTextWidth", 18.0f);
     if (width > 0 && (rect.right - rect.left) < minTextWidth) {
         const int paddingX = std::max(2, (width - minTextWidth) / 2);
         rect.left = frame.left + paddingX;
@@ -2254,7 +2344,7 @@ RECT TabButtonTextRect(const Theme& theme, RECT frame) {
 }
 
 RECT TabGroupInnerRect(const Theme& theme, RECT frame) {
-    const int padding = static_cast<int>(theme.metric(L"tabButton", L"groupPadding", 3.0f));
+    const int padding = RenderMetric(theme, L"tabButton", L"groupPadding", 3.0f);
     RECT rect = frame;
     InflateRect(&rect, -padding, -padding);
     return rect;
@@ -2268,8 +2358,10 @@ int ComboBoxItemHeight(const Theme& theme) {
     return static_cast<int>(theme.metric(L"comboBox", L"itemHeight", 24.0f));
 }
 
-int ComboBoxDropdownHeight(const Theme& theme) {
-    return std::max(EditFrameHeight(theme), EditFrameHeight(theme) + ComboBoxItemHeight(theme) * 6);
+int ComboBoxDropdownHeight(const Theme& theme, UINT dpi) {
+    const int frameHeight = ThemedD2D::ScaleDip(EditFrameHeight(theme), dpi);
+    const int itemHeight = ThemedD2D::ScaleDip(ComboBoxItemHeight(theme), dpi);
+    return std::max(frameHeight, frameHeight + itemHeight * 6);
 }
 
 int ComboBoxContentWidth(const Theme& theme, int textWidth) {
@@ -2294,8 +2386,9 @@ RECT ListItemTextRect(const Theme& theme, RECT frame) {
     return TextRectFromMetrics(theme, L"listItem", frame, 20.0f, true);
 }
 
-RECT ListFrameInnerRect(const Theme& theme, RECT frame) {
-    const int inset = std::max(1, static_cast<int>(theme.metric(L"list", L"borderWidth", 1.0f)));
+RECT ListFrameInnerRect(const Theme& theme, RECT frame, UINT dpi) {
+    const int inset = std::max(1, ThemedD2D::ScaleDip(
+        static_cast<int>(theme.metric(L"list", L"borderWidth", 1.0f)), dpi));
     InflateRect(&frame, -inset, -inset);
     if (frame.right <= frame.left) {
         frame.right = frame.left + 1;
@@ -2306,8 +2399,9 @@ RECT ListFrameInnerRect(const Theme& theme, RECT frame) {
     return frame;
 }
 
-RECT TableFrameInnerRect(const Theme& theme, RECT frame) {
-    const int inset = std::max(1, static_cast<int>(theme.metric(L"table", L"borderWidth", 1.0f)));
+RECT TableFrameInnerRect(const Theme& theme, RECT frame, UINT dpi) {
+    const int inset = std::max(1, ThemedD2D::ScaleDip(
+        static_cast<int>(theme.metric(L"table", L"borderWidth", 1.0f)), dpi));
     InflateRect(&frame, -inset, -inset);
     if (frame.right <= frame.left) {
         frame.right = frame.left + 1;
@@ -2335,10 +2429,10 @@ RECT FieldTextRect(const Theme& theme, RECT frame) {
 }
 
 RECT FieldMultilineTextRect(const Theme& theme, RECT frame) {
-    const int paddingX = static_cast<int>(theme.metric(L"field", L"paddingX", 9.0f));
-    const int fieldHeight = static_cast<int>(theme.metric(L"field", L"height", 28.0f));
-    const int textHeight = static_cast<int>(theme.metric(L"field", L"textHeight", 20.0f));
-    const int offsetY = static_cast<int>(theme.metric(L"field", L"textOffsetY", 1.0f));
+    const int paddingX = RenderMetric(theme, L"field", L"paddingX", 9.0f);
+    const int fieldHeight = RenderMetric(theme, L"field", L"height", 28.0f);
+    const int textHeight = RenderMetric(theme, L"field", L"textHeight", 20.0f);
+    const int offsetY = RenderMetric(theme, L"field", L"textOffsetY", 1.0f);
     const int paddingY = std::max(0, (fieldHeight - textHeight) / 2 + offsetY);
     RECT rect = frame;
     rect.left += paddingX;
@@ -2378,20 +2472,42 @@ HWND CreateStaticText(HINSTANCE instance, HWND parent, const wchar_t* text, int 
     return hwnd;
 }
 
-HWND CreateLabelText(HINSTANCE instance, HWND parent, const wchar_t* text, int x, int y, int width, const Theme& theme, HFONT font, DWORD style) {
-    return CreateStaticText(instance, parent, text, x, y, width, LabelHeight(theme), font, style);
-}
-
-HWND CreateStatusBadge(HINSTANCE instance, HWND parent, const wchar_t* text, int x, int y, int width, const Theme& theme, HFONT font, const wchar_t* state) {
+HWND CreateLabelText(HINSTANCE instance, HWND parent, const wchar_t* text, int x, int y, int width, int height, const Theme& theme, HFONT font, DWORD style, bool multiline) {
     HWND hwnd = CreateWindowExW(
         0,
         L"STATIC",
         text,
-        WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | SS_OWNERDRAW,
+        WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | style,
         x,
         y,
         width,
-        LabelHeight(theme),
+        height,
+        parent,
+        nullptr,
+        instance,
+        nullptr);
+    if (hwnd) {
+        SendMessageW(hwnd, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+        SetControlTextProp(hwnd, text);
+        auto& state = StateFor(hwnd);
+        state.kind = ControlKind::Label;
+        state.theme = &theme;
+        state.multiline = multiline;
+        AttachThemedBehavior(hwnd);
+    }
+    return hwnd;
+}
+
+HWND CreateStatusBadge(HINSTANCE instance, HWND parent, const wchar_t* text, int x, int y, int width, const Theme& theme, HFONT font, const wchar_t* state, UINT dpi) {
+    HWND hwnd = CreateWindowExW(
+        0,
+        L"STATIC",
+        text,
+        WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS,
+        x,
+        y,
+        width,
+        ThemedD2D::ScaleDip(LabelHeight(theme), dpi),
         parent,
         nullptr,
         instance,
@@ -2418,16 +2534,16 @@ void SetStatusBadgeState(HWND hwnd, const wchar_t* state) {
     InvalidateRect(hwnd, nullptr, TRUE);
 }
 
-HWND CreateStatusText(HINSTANCE instance, HWND parent, const wchar_t* text, int x, int y, int width, const Theme& theme, HFONT font, const wchar_t* state, DWORD style) {
+HWND CreateStatusText(HINSTANCE instance, HWND parent, const wchar_t* text, int x, int y, int width, const Theme& theme, HFONT font, const wchar_t* state, DWORD style, UINT dpi) {
     HWND hwnd = CreateWindowExW(
         0,
         L"STATIC",
         text,
-        WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | SS_OWNERDRAW | style,
+        WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | style,
         x,
         y,
         width,
-        LabelHeight(theme),
+        ThemedD2D::ScaleDip(LabelHeight(theme), dpi),
         parent,
         nullptr,
         instance,
@@ -2484,7 +2600,8 @@ void SetControlTheme(HWND hwnd, const Theme& theme) {
         const ControlKind kind = state ? state->kind : ControlKind::None;
         if (kind == ControlKind::ComboBox || kind == ControlKind::Edit || kind == ControlKind::ProgressBar || kind == ControlKind::Slider
             || kind == ControlKind::GroupBox || kind == ControlKind::Panel
-            || kind == ControlKind::Toggle || kind == ControlKind::Radio || kind == ControlKind::StatusBadge || kind == ControlKind::StatusText) {
+            || kind == ControlKind::Toggle || kind == ControlKind::Radio || kind == ControlKind::Label
+            || kind == ControlKind::StatusBadge || kind == ControlKind::StatusText) {
             StateFor(hwnd).theme = &theme;
         } else {
             StateFor(hwnd).theme = nullptr;
@@ -2518,11 +2635,11 @@ HWND CreateCheckBox(HINSTANCE instance, HWND parent, int id, const wchar_t* text
     return hwnd;
 }
 
-HWND CreateToggle(HINSTANCE instance, HWND parent, int id, const wchar_t* text, int x, int y, int width, HFONT font, const Theme& theme, bool checked) {
+HWND CreateToggle(HINSTANCE instance, HWND parent, int id, const wchar_t* text, int x, int y, int width, HFONT font, const Theme& theme, bool checked, UINT dpi) {
     HWND hwnd = CreateWindowExW(
         0, L"BUTTON", text,
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_CLIPSIBLINGS | BS_OWNERDRAW,
-        x, y, width, ToggleHeight(theme), parent,
+        x, y, width, ThemedD2D::ScaleDip(ToggleHeight(theme), dpi), parent,
         reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), instance, nullptr);
     if (hwnd) {
         SendMessageW(hwnd, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
@@ -2536,11 +2653,11 @@ HWND CreateToggle(HINSTANCE instance, HWND parent, int id, const wchar_t* text, 
     return hwnd;
 }
 
-HWND CreateRadioButton(HINSTANCE instance, HWND parent, int id, const wchar_t* text, int x, int y, int width, HFONT font, const Theme& theme, int group, bool checked) {
+HWND CreateRadioButton(HINSTANCE instance, HWND parent, int id, const wchar_t* text, int x, int y, int width, HFONT font, const Theme& theme, int group, bool checked, UINT dpi) {
     HWND hwnd = CreateWindowExW(
         0, L"BUTTON", text,
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_CLIPSIBLINGS | BS_OWNERDRAW,
-        x, y, width, RadioButtonHeight(theme), parent,
+        x, y, width, ThemedD2D::ScaleDip(RadioButtonHeight(theme), dpi), parent,
         reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), instance, nullptr);
     if (hwnd) {
         SendMessageW(hwnd, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
@@ -2557,11 +2674,11 @@ HWND CreateRadioButton(HINSTANCE instance, HWND parent, int id, const wchar_t* t
     return hwnd;
 }
 
-HWND CreateHotKeyCapture(HINSTANCE instance, HWND parent, int id, const wchar_t* text, int x, int y, int width, HFONT font, const Theme& theme) {
+HWND CreateHotKeyCapture(HINSTANCE instance, HWND parent, int id, const wchar_t* text, int x, int y, int width, HFONT font, const Theme& theme, UINT dpi) {
     HWND hwnd = CreateWindowExW(
         0, L"BUTTON", text,
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_CLIPSIBLINGS | BS_OWNERDRAW,
-        x, y, width, EditFrameHeight(theme), parent,
+        x, y, width, ThemedD2D::ScaleDip(EditFrameHeight(theme), dpi), parent,
         reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), instance, nullptr);
     if (hwnd) {
         SendMessageW(hwnd, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
@@ -2805,14 +2922,18 @@ int TabContainerStyle(HWND hwnd) {
     return state ? state->tabContainerStyle : kTabContainerStyleAppearanceDefault;
 }
 
-HWND CreateComboBox(HINSTANCE instance, HWND parent, int id, int x, int y, int width, int height, HFONT font, const Theme& theme) {
+HWND CreateComboBox(
+    HINSTANCE instance, HWND parent, int id, int x, int y, int width, int height,
+    HFONT font, const Theme& theme, UINT dpi) {
     HWND hwnd = CreateWindowExW(0, WC_COMBOBOXW, nullptr,
                                 WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST | CBS_OWNERDRAWFIXED | CBS_HASSTRINGS | WS_VSCROLL,
                                 x, y, width, height, parent, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), instance, nullptr);
     if (hwnd) {
         SendMessageW(hwnd, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
-        SendMessageW(hwnd, CB_SETITEMHEIGHT, static_cast<WPARAM>(-1), static_cast<LPARAM>(ComboBoxHeight(theme)));
-        SendMessageW(hwnd, CB_SETITEMHEIGHT, 0, static_cast<LPARAM>(ComboBoxItemHeight(theme)));
+        SendMessageW(hwnd, CB_SETITEMHEIGHT, static_cast<WPARAM>(-1),
+            static_cast<LPARAM>(ThemedD2D::ScaleDip(ComboBoxHeight(theme), dpi)));
+        SendMessageW(hwnd, CB_SETITEMHEIGHT, 0,
+            static_cast<LPARAM>(ThemedD2D::ScaleDip(ComboBoxItemHeight(theme), dpi)));
         {
             auto& s = StateFor(hwnd);
             s.kind = ControlKind::ComboBox;
@@ -2823,7 +2944,9 @@ HWND CreateComboBox(HINSTANCE instance, HWND parent, int id, int x, int y, int w
     return hwnd;
 }
 
-HWND CreateListBox(HINSTANCE instance, HWND parent, int id, int x, int y, int width, int height, HFONT font, const Theme& theme, DWORD extraStyle) {
+HWND CreateListBox(
+    HINSTANCE instance, HWND parent, int id, int x, int y, int width, int height,
+    HFONT font, const Theme& theme, DWORD extraStyle, UINT dpi) {
     HWND hwnd = CreateWindowExW(
         0,
         L"LISTBOX",
@@ -2839,7 +2962,8 @@ HWND CreateListBox(HINSTANCE instance, HWND parent, int id, int x, int y, int wi
         nullptr);
     if (hwnd) {
         SendMessageW(hwnd, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
-        SendMessageW(hwnd, LB_SETITEMHEIGHT, 0, static_cast<LPARAM>(ListBoxItemHeight(theme)));
+        SendMessageW(hwnd, LB_SETITEMHEIGHT, 0,
+            static_cast<LPARAM>(ThemedD2D::ScaleDip(ListBoxItemHeight(theme), dpi)));
         StateFor(hwnd).kind = ControlKind::ListBox;
         AttachThemedBehavior(hwnd);
     }
@@ -2862,10 +2986,12 @@ int EditFontSizePx(const Theme& theme) {
     return static_cast<int>(theme.metric(L"edit", L"singleLineFontSizePx", 14.0f));
 }
 
-RECT SingleLineEditRect(const Theme& theme, RECT frame) {
-    const int paddingX = EditPaddingX(theme);
-    const int controlHeight = static_cast<int>(theme.metric(L"edit", L"singleLineControlHeight", static_cast<float>(EditTextHeight(theme))));
-    const int offsetY = static_cast<int>(theme.metric(L"edit", L"singleLineOffsetY", theme.metric(L"edit", L"textOffsetY", 0.0f)));
+RECT SingleLineEditRect(const Theme& theme, RECT frame, UINT dpi) {
+    const int paddingX = ThemedD2D::ScaleDip(EditPaddingX(theme), dpi);
+    const int controlHeight = ThemedD2D::ScaleDip(
+        static_cast<int>(theme.metric(L"edit", L"singleLineControlHeight", static_cast<float>(EditTextHeight(theme)))), dpi);
+    const int offsetY = ThemedD2D::ScaleDip(
+        static_cast<int>(theme.metric(L"edit", L"singleLineOffsetY", theme.metric(L"edit", L"textOffsetY", 0.0f))), dpi);
     RECT rect{};
     rect.left = frame.left + paddingX;
     rect.right = frame.right - paddingX;
@@ -2874,12 +3000,14 @@ RECT SingleLineEditRect(const Theme& theme, RECT frame) {
     return rect;
 }
 
-RECT SingleLineEditRectForFrame(const Theme& theme, RECT frame) {
-    const int paddingX = EditPaddingX(theme);
-    const int preferredHeight = static_cast<int>(theme.metric(L"edit", L"singleLineControlHeight", static_cast<float>(EditTextHeight(theme))));
+RECT SingleLineEditRectForFrame(const Theme& theme, RECT frame, UINT dpi) {
+    const int paddingX = ThemedD2D::ScaleDip(EditPaddingX(theme), dpi);
+    const int preferredHeight = ThemedD2D::ScaleDip(
+        static_cast<int>(theme.metric(L"edit", L"singleLineControlHeight", static_cast<float>(EditTextHeight(theme)))), dpi);
     const int frameHeight = std::max(1, static_cast<int>(frame.bottom - frame.top));
     const int controlHeight = std::max(1, std::min(preferredHeight, frameHeight - 2));
-    const int offsetY = static_cast<int>(theme.metric(L"edit", L"singleLineOffsetY", theme.metric(L"edit", L"textOffsetY", 0.0f)));
+    const int offsetY = ThemedD2D::ScaleDip(
+        static_cast<int>(theme.metric(L"edit", L"singleLineOffsetY", theme.metric(L"edit", L"textOffsetY", 0.0f))), dpi);
     RECT rect{};
     rect.left = frame.left + paddingX;
     rect.right = frame.right - paddingX;
@@ -2888,10 +3016,10 @@ RECT SingleLineEditRectForFrame(const Theme& theme, RECT frame) {
     return rect;
 }
 
-RECT MultiLineEditRect(const Theme& theme, RECT frame) {
-    const int paddingX = EditPaddingX(theme);
-    const int paddingTop = static_cast<int>(theme.metric(L"edit", L"multiLinePaddingTop", 7.0f));
-    const int paddingBottom = static_cast<int>(theme.metric(L"edit", L"multiLinePaddingBottom", 7.0f));
+RECT MultiLineEditRect(const Theme& theme, RECT frame, UINT dpi) {
+    const int paddingX = ThemedD2D::ScaleDip(EditPaddingX(theme), dpi);
+    const int paddingTop = ThemedD2D::ScaleDip(static_cast<int>(theme.metric(L"edit", L"multiLinePaddingTop", 7.0f)), dpi);
+    const int paddingBottom = ThemedD2D::ScaleDip(static_cast<int>(theme.metric(L"edit", L"multiLinePaddingBottom", 7.0f)), dpi);
     RECT rect{};
     rect.left = frame.left + paddingX;
     rect.right = frame.right - paddingX;
@@ -2908,7 +3036,7 @@ void ConfigureEditBehavior(HWND hwnd, bool selectAllOnFocus) {
 }
 
 HWND CreateSingleLineEdit(HINSTANCE instance, HWND parent, int id, const Theme& theme, RECT frame, const std::wstring& value, HFONT font, DWORD extraStyle) {
-    const RECT editRect = SingleLineEditRect(theme, frame);
+    const RECT editRect = SingleLineEditRect(theme, frame, GetDpiForWindow(parent));
     HWND hwnd = CreateWindowExW(
         0,
         L"EDIT",
@@ -2934,7 +3062,7 @@ HWND CreateSingleLineEdit(HINSTANCE instance, HWND parent, int id, const Theme& 
 }
 
 HWND CreateMultiLineEdit(HINSTANCE instance, HWND parent, int id, const Theme& theme, RECT frame, const std::wstring& value, HFONT font, DWORD extraStyle) {
-    const RECT editRect = MultiLineEditRect(theme, frame);
+    const RECT editRect = MultiLineEditRect(theme, frame, GetDpiForWindow(parent));
     HWND hwnd = CreateWindowExW(
         0,
         L"EDIT",
@@ -3054,6 +3182,7 @@ double SliderValue(HWND hwnd) {
 }
 
 void DrawFieldFrame(const Theme& theme, HDC dc, RECT rect, HWND child, bool readOnly, bool error) {
+    ThemedD2D::ScopedHdcPaint d2dPaint(WindowFromDC(dc), dc);
     const bool disabled = child && !IsWindowEnabled(child);
     const bool focused = child && GetFocus() == child;
     const bool hover = child && IsHover(child);
@@ -3062,13 +3191,14 @@ void DrawFieldFrame(const Theme& theme, HDC dc, RECT rect, HWND child, bool read
     FillRoundRect(
         dc,
         rect,
-        static_cast<int>(theme.metric(component, L"radius", 7.0f)),
+        RenderMetric(theme, component, L"radius", 7.0f),
         ToColorRef(theme.color(component, state, L"bg")),
         ToColorRef(theme.color(component, state, L"border")),
-        static_cast<int>(theme.metric(component, L"borderWidth", 1.0f)));
+        RenderMetric(theme, component, L"borderWidth", 1.0f));
 }
 
 void DrawEditFrame(const Theme& theme, HDC dc, RECT rect, HWND child, bool readOnly, bool error) {
+    ThemedD2D::ScopedHdcPaint d2dPaint(WindowFromDC(dc), dc);
     const bool disabled = child && !IsWindowEnabled(child);
     const bool focused = child && GetFocus() == child;
     const bool hover = child && IsHover(child);
@@ -3076,13 +3206,14 @@ void DrawEditFrame(const Theme& theme, HDC dc, RECT rect, HWND child, bool readO
     FillRoundRect(
         dc,
         rect,
-        static_cast<int>(theme.metric(L"edit", L"radius", 7.0f)),
+        RenderMetric(theme, L"edit", L"radius", 7.0f),
         ToColorRef(theme.color(L"edit", state, L"bg")),
         ToColorRef(theme.color(L"edit", state, L"border")),
-        static_cast<int>(theme.metric(L"edit", L"borderWidth", 1.0f)));
+        RenderMetric(theme, L"edit", L"borderWidth", 1.0f));
 }
 
 void DrawComboFrame(const Theme& theme, HDC dc, RECT rect, HWND child) {
+    ThemedD2D::ScopedHdcPaint d2dPaint(WindowFromDC(dc), dc);
     const bool disabled = child && !IsWindowEnabled(child);
     const bool focused = child && GetFocus() == child;
     const bool hover = child && IsHover(child);
@@ -3090,47 +3221,50 @@ void DrawComboFrame(const Theme& theme, HDC dc, RECT rect, HWND child) {
     FillRoundRect(
         dc,
         rect,
-        static_cast<int>(theme.metric(L"comboBox", L"radius", 7.0f)),
+        RenderMetric(theme, L"comboBox", L"radius", 7.0f),
         ToColorRef(theme.color(L"comboBox", state, L"bg")),
         ToColorRef(theme.color(L"comboBox", state, L"border")),
-        static_cast<int>(theme.metric(L"comboBox", L"borderWidth", 1.0f)));
+        RenderMetric(theme, L"comboBox", L"borderWidth", 1.0f));
 }
 
 void DrawListFrame(const Theme& theme, HDC dc, RECT rect, HWND child, bool readOnly) {
+    ThemedD2D::ScopedHdcPaint d2dPaint(WindowFromDC(dc), dc);
     const bool disabled = child && !IsWindowEnabled(child);
     const bool focused = child && GetFocus() == child;
     const wchar_t* state = disabled ? L"disabled" : (focused ? L"focused" : (readOnly ? L"readonly" : L"normal"));
     FillRoundRect(
         dc,
         rect,
-        static_cast<int>(theme.metric(L"list", L"radius", 7.0f)),
+        RenderMetric(theme, L"list", L"radius", 7.0f),
         ToColorRef(theme.color(L"list", state, L"bg")),
         ToColorRef(theme.color(L"list", state, L"border")),
-        static_cast<int>(theme.metric(L"list", L"borderWidth", 1.0f)));
+        RenderMetric(theme, L"list", L"borderWidth", 1.0f));
 }
 
 void DrawTableFrame(const Theme& theme, HDC dc, RECT rect, HWND child) {
+    ThemedD2D::ScopedHdcPaint d2dPaint(WindowFromDC(dc), dc);
     const bool disabled = child && !IsWindowEnabled(child);
     const bool focused = child && GetFocus() == child;
     const wchar_t* state = disabled ? L"disabled" : (focused ? L"focused" : L"normal");
     FillRoundRect(
         dc,
         rect,
-        static_cast<int>(theme.metric(L"table", L"radius", 7.0f)),
+        RenderMetric(theme, L"table", L"radius", 7.0f),
         ToColorRef(theme.color(L"table", state, L"bg")),
         ToColorRef(theme.color(L"table", state, L"border")),
-        static_cast<int>(theme.metric(L"table", L"borderWidth", 1.0f)));
+        RenderMetric(theme, L"table", L"borderWidth", 1.0f));
 }
 
 void DrawPanelFrame(const Theme& theme, HDC dc, RECT rect, bool raised) {
+    ThemedD2D::ScopedHdcPaint d2dPaint(WindowFromDC(dc), dc);
     const wchar_t* state = raised ? L"raised" : L"normal";
     FillRoundRect(
         dc,
         rect,
-        static_cast<int>(theme.metric(L"panel", L"radius", 7.0f)),
+        RenderMetric(theme, L"panel", L"radius", 7.0f),
         ToColorRef(theme.color(L"panel", state, L"bg")),
         ToColorRef(theme.color(L"panel", state, L"border")),
-        static_cast<int>(theme.metric(L"panel", L"borderWidth", 1.0f)));
+        RenderMetric(theme, L"panel", L"borderWidth", 1.0f));
 }
 
 void ApplyListViewTheme(HWND list, const Theme& theme) {
@@ -3333,13 +3467,14 @@ void RefreshTableDpiResources(HWND table, UINT dpi) {
 
 
 void DrawTabGroupFrame(const Theme& theme, HDC dc, RECT rect) {
+    ThemedD2D::ScopedHdcPaint d2dPaint(WindowFromDC(dc), dc);
     FillRoundRect(
         dc,
         rect,
-        static_cast<int>(theme.metric(L"tabButton", L"groupRadius", 10.0f)),
+        RenderMetric(theme, L"tabButton", L"groupRadius", 10.0f),
         ToColorRef(theme.color(L"tabButton", L"normal", L"groupBg")),
         ToColorRef(theme.color(L"tabButton", L"normal", L"groupBorder")),
-        static_cast<int>(theme.metric(L"tabButton", L"groupBorderWidth", 1.0f)));
+        RenderMetric(theme, L"tabButton", L"groupBorderWidth", 1.0f));
 }
 
 bool Draw(const Theme& theme, const DRAWITEMSTRUCT* draw) {
@@ -3347,6 +3482,11 @@ bool Draw(const Theme& theme, const DRAWITEMSTRUCT* draw) {
         return false;
     }
     ControlKind kind = KindFor(draw->hwndItem);
+    ThemedD2D::ScopedHdcPaint d2dPaint(draw->hwndItem, draw->hDC);
+    if (draw->CtlType == ODT_STATIC && kind == ControlKind::Label) {
+        DrawLabelControl(draw->hwndItem, draw->hDC, draw->rcItem);
+        return true;
+    }
     if (draw->CtlType == ODT_STATIC && kind == ControlKind::StatusBadge) {
         DrawStatusBadge(draw->hwndItem, draw->hDC, draw->rcItem);
         return true;
@@ -3439,6 +3579,9 @@ bool HandleListViewCustomDraw(const Theme& theme, LPARAM lParam, LRESULT& result
         return false;
     }
 
+    auto* commonDraw = reinterpret_cast<NMCUSTOMDRAW*>(lParam);
+    ThemedD2D::ScopedHdcPaint d2dPaint(header->hwndFrom, commonDraw->hdc);
+
     if (className == L"SysHeader32") {
         auto* draw = reinterpret_cast<NMCUSTOMDRAW*>(lParam);
         switch (draw->dwDrawStage) {
@@ -3454,9 +3597,7 @@ bool HandleListViewCustomDraw(const Theme& theme, LPARAM lParam, LRESULT& result
             const wchar_t* component = tableHeader ? L"tableHeader" : L"list";
             RECT client{};
             if (GetClientRect(header->hwndFrom, &client)) {
-                HBRUSH brush = CreateSolidBrush(ToColorRef(theme.color(component, L"normal", L"bg")));
-                FillRect(draw->hdc, &client, brush);
-                DeleteObject(brush);
+                FillThemedRect(draw->hdc, client, ToColorRef(theme.color(component, L"normal", L"bg")));
             }
             result = CDRF_NOTIFYITEMDRAW;
             return true;
@@ -3489,9 +3630,7 @@ bool HandleListViewCustomDraw(const Theme& theme, LPARAM lParam, LRESULT& result
         const wchar_t* state = TableRowState(row, selected, enabled, hovered);
         RECT rowRect{};
         if (ListView_GetItemRect(header->hwndFrom, row, &rowRect, LVIR_BOUNDS)) {
-            HBRUSH background = CreateSolidBrush(TableRowBackground(theme, state));
-            FillRect(draw->nmcd.hdc, &rowRect, background);
-            DeleteObject(background);
+            FillThemedRect(draw->nmcd.hdc, rowRect, TableRowBackground(theme, state));
         }
         if (!UsesNativeTableRowDrawing(header->hwndFrom, row)) {
             DrawTableRowCells(theme, header->hwndFrom, draw);

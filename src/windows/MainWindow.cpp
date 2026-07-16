@@ -65,12 +65,10 @@ constexpr int ID_HOTKEY_PROCESS_LOCATOR = 2;
 constexpr int ID_HOTKEY_COPY_SELECTED_PATHS = 3;
 constexpr int ID_HOTKEY_LINK_BASE = 1000;
 constexpr int ID_NOTE_EDIT = 2100;
-constexpr int ID_REMINDER_PANEL = 2101;
 constexpr UINT_PTR ID_TIMER_DOCK = 10;
 constexpr UINT_PTR ID_TIMER_HOVER_ACTIVATE = 11;
 constexpr UINT_PTR ID_TIMER_NOTE_AUTOSAVE = 12;
 constexpr UINT_PTR ID_TIMER_REMINDER_SCAN = 13;
-constexpr UINT_PTR ID_TIMER_REMINDER_PANEL = 14;
 constexpr UINT kTrayIconId = 1;
 constexpr UINT WM_QUATTRO_DOUBLE_ALT_HOTKEY = WM_APP + 0x6C;
 constexpr int kDockVisiblePixels = 3;
@@ -78,7 +76,6 @@ constexpr int kDockPeekVisiblePixels = 6;
 constexpr int kDockRestoreGraceMs = 1500;
 constexpr int kDockSnapThreshold = 12;
 constexpr const wchar_t* kDockPeekWindowClass = L"QuattroDockPeekWindow";
-constexpr const wchar_t* kTooltipWindowClass = L"QuattroTooltipWindow";
 constexpr const wchar_t* kAppDisplayName = L"Quattro快速启动器";
 constexpr DWORD kDoubleAltMaxIntervalMs = 450;
 
@@ -164,47 +161,6 @@ std::wstring VersionCompareText(int comparison) {
         return L"local_newer";
     }
     return L"equal";
-}
-
-// 提示/提醒面板的绘制样式。以进程内 HWND 映射存储，避免使用桌面堆（SetPropW），
-// 因为某些桌面的桌面堆不可用会导致 SetPropW 以 ERROR_NOT_ENOUGH_MEMORY 失败。
-struct TooltipStyle {
-    COLORREF bg = RGB(32, 32, 32);
-    COLORREF text = RGB(255, 255, 255);
-    COLORREF border = RGB(32, 32, 32);
-    int paddingX = 8;
-    int paddingY = 7;
-    int lineGap = 4;
-    int radius = 0;
-    int borderWidth = 1;
-};
-
-std::mutex& TooltipStyleMutex() {
-    static std::mutex mutex;
-    return mutex;
-}
-
-std::unordered_map<HWND, TooltipStyle>& TooltipStyleMap() {
-    static std::unordered_map<HWND, TooltipStyle> map;
-    return map;
-}
-
-void SetTooltipStyle(HWND hwnd, const TooltipStyle& style) {
-    std::lock_guard<std::mutex> lock(TooltipStyleMutex());
-    TooltipStyleMap()[hwnd] = style;
-}
-
-// 读取样式，未设置时返回带默认值的样式副本。
-TooltipStyle TooltipStyleFor(HWND hwnd) {
-    std::lock_guard<std::mutex> lock(TooltipStyleMutex());
-    auto& map = TooltipStyleMap();
-    auto it = map.find(hwnd);
-    return it == map.end() ? TooltipStyle{} : it->second;
-}
-
-void EraseTooltipStyle(HWND hwnd) {
-    std::lock_guard<std::mutex> lock(TooltipStyleMutex());
-    TooltipStyleMap().erase(hwnd);
 }
 
 enum class DockEdge {
@@ -483,6 +439,9 @@ COLORREF ToColorRef(Color color) {
 
 DWORD MainWindowExStyle(int alpha) {
     DWORD style = WS_EX_APPWINDOW;
+    if (BackgroundAcceptanceMode()) {
+        style |= WS_EX_NOACTIVATE;
+    }
     if (alpha < 255) {
         style |= WS_EX_LAYERED;
     }
@@ -503,10 +462,16 @@ void ApplyMainWindowAlpha(HWND hwnd, int alpha) {
 }
 
 HWND MainWindowTopMostInsertAfter(bool topMost) {
+    if (BackgroundAcceptanceMode()) {
+        return HWND_BOTTOM;
+    }
     return topMost ? HWND_TOPMOST : HWND_NOTOPMOST;
 }
 
 HWND MainWindowMoveInsertAfter(bool topMost) {
+    if (BackgroundAcceptanceMode()) {
+        return HWND_BOTTOM;
+    }
     return topMost ? HWND_TOPMOST : nullptr;
 }
 
@@ -716,21 +681,6 @@ std::vector<std::wstring> SplitTooltipLines(const std::wstring& text) {
     return lines;
 }
 
-SIZE MeasureTooltipText(HDC dc, const std::wstring& text, int lineGap) {
-    SIZE result{};
-    TEXTMETRICW metrics{};
-    GetTextMetricsW(dc, &metrics);
-    const int lineHeight = metrics.tmHeight;
-    for (const auto& line : SplitTooltipLines(text)) {
-        SIZE lineSize{};
-        GetTextExtentPoint32W(dc, line.c_str(), static_cast<int>(line.size()), &lineSize);
-        result.cx = std::max(result.cx, lineSize.cx);
-    }
-    const int lineCount = static_cast<int>(SplitTooltipLines(text).size());
-    result.cy = lineCount * lineHeight + std::max(0, lineCount - 1) * lineGap;
-    return result;
-}
-
 LRESULT CALLBACK DockPeekWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
     switch (message) {
     case WM_NCCREATE: {
@@ -760,79 +710,6 @@ LRESULT CALLBACK DockPeekWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPAR
         EndPaint(hwnd, &ps);
         return 0;
     }
-    default:
-        return DefWindowProcW(hwnd, message, wParam, lParam);
-    }
-}
-
-LRESULT CALLBACK TooltipWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
-    switch (message) {
-    case WM_ERASEBKGND:
-        return 1;
-    case WM_LBUTTONUP:
-        if (GetDlgCtrlID(hwnd) == ID_REMINDER_PANEL) {
-            HWND parent = GetParent(hwnd);
-            if (parent) {
-                SendMessageW(parent, WM_COMMAND, MAKEWPARAM(ID_REMINDER_PANEL, 0), reinterpret_cast<LPARAM>(hwnd));
-            }
-            return 0;
-        }
-        return DefWindowProcW(hwnd, message, wParam, lParam);
-    case WM_PAINT: {
-        PAINTSTRUCT ps{};
-        HDC dc = BeginPaint(hwnd, &ps);
-        RECT rect{};
-        GetClientRect(hwnd, &rect);
-        const TooltipStyle style = TooltipStyleFor(hwnd);
-        const COLORREF bg = style.bg;
-        const COLORREF text = style.text;
-        const COLORREF border = style.border;
-        const int radius = style.radius;
-        const int borderWidth = style.borderWidth;
-        HBRUSH brush = CreateSolidBrush(bg);
-        HPEN customPen = borderWidth > 0 ? CreatePen(PS_SOLID, borderWidth, border) : nullptr;
-        HPEN pen = customPen ? customPen : reinterpret_cast<HPEN>(GetStockObject(NULL_PEN));
-        HPEN previousPen = reinterpret_cast<HPEN>(SelectObject(dc, pen));
-        HBRUSH previousBrush = reinterpret_cast<HBRUSH>(SelectObject(dc, brush));
-        if (radius > 0) {
-            const int diameter = radius * 2;
-            RoundRect(dc, rect.left, rect.top, rect.right, rect.bottom, diameter, diameter);
-        } else {
-            Rectangle(dc, rect.left, rect.top, rect.right, rect.bottom);
-        }
-        SelectObject(dc, previousBrush);
-        SelectObject(dc, previousPen);
-        if (customPen) {
-            DeleteObject(customPen);
-        }
-        DeleteObject(brush);
-
-        wchar_t buffer[1024]{};
-        GetWindowTextW(hwnd, buffer, static_cast<int>(std::size(buffer)));
-        SetBkMode(dc, TRANSPARENT);
-        SetTextColor(dc, text);
-        HFONT font = reinterpret_cast<HFONT>(SendMessageW(hwnd, WM_GETFONT, 0, 0));
-        if (!font) {
-            font = reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
-        }
-        HFONT previousFont = reinterpret_cast<HFONT>(SelectObject(dc, font));
-        const int paddingX = style.paddingX;
-        const int paddingY = style.paddingY;
-        const int lineGap = style.lineGap;
-        TEXTMETRICW metrics{};
-        GetTextMetricsW(dc, &metrics);
-        int y = rect.top + paddingY;
-        for (const auto& line : SplitTooltipLines(buffer)) {
-            TextOutW(dc, rect.left + paddingX, y, line.c_str(), static_cast<int>(line.size()));
-            y += metrics.tmHeight + lineGap;
-        }
-        SelectObject(dc, previousFont);
-        EndPaint(hwnd, &ps);
-        return 0;
-    }
-    case WM_NCDESTROY:
-        EraseTooltipStyle(hwnd);
-        return 0;
     default:
         return DefWindowProcW(hwnd, message, wParam, lParam);
     }
@@ -2285,14 +2162,6 @@ MainWindow::~MainWindow() {
         noteEdit_ = nullptr;
     }
     embeddedUi_.reset();
-    if (reminderPanel_) {
-        DestroyWindow(reminderPanel_);
-        reminderPanel_ = nullptr;
-    }
-    if (reminderPanelFont_) {
-        DeleteObject(reminderPanelFont_);
-        reminderPanelFont_ = nullptr;
-    }
     DiscardDeviceResources();
     SafeRelease(titleFormat_);
     SafeRelease(textFormat_);
@@ -2376,6 +2245,8 @@ bool MainWindow::Create() {
     if (!hwnd_) {
         return false;
     }
+    dpi_ = GetDpiForWindow(hwnd_);
+    if (!dpi_) dpi_ = USER_DEFAULT_SCREEN_DPI;
     WriteStartupTiming(
         L"native main window created",
         L"size=" + std::to_wstring(config_.width) + L"x" + std::to_wstring(config_.height));
@@ -2403,7 +2274,7 @@ bool MainWindow::Create() {
     WriteStartupTiming(L"tooltip window deferred");
 
     if (!config_.hideOnStart) {
-        ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
+        ShowWindowRespectFocusPolicy(hwnd_, SW_SHOWNORMAL);
         WriteStartupTiming(L"main window shown");
         UpdateWindow(hwnd_);
         WriteStartupTiming(L"main window update requested");
@@ -2579,9 +2450,9 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         if (bottom) return HTBOTTOM;
 
         const int titleHeight = config_.showTitle
-            ? static_cast<int>(Metric(theme_, L"title", L"height", 32.0f))
+            ? ClientDipToPx(Metric(theme_, L"title", L"height", 32.0f))
             : 0;
-        const int titleButtonsWidth = static_cast<int>(TitleButtonsReserveWidth() + 0.999f);
+        const int titleButtonsWidth = ClientDipToPx(TitleButtonsReserveWidth());
         if (clientPoint.y >= 0 && clientPoint.y < titleHeight && clientPoint.x < width - titleButtonsWidth) {
             return HTCAPTION;
         }
@@ -2626,6 +2497,9 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         return 0;
     case WM_DISPLAYCHANGE:
         InvalidateRect(hwnd_, nullptr, FALSE);
+        return 0;
+    case WM_DPICHANGED:
+        ApplyDpiChange(HIWORD(wParam), reinterpret_cast<const RECT*>(lParam));
         return 0;
     case WM_SETTINGCHANGE:
     case WM_FONTCHANGE:
@@ -2678,10 +2552,6 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             if (const Group* tag = FindGroup(currentTagId_); tag && IsTodoItemsTag(*tag)) {
                 InvalidateRect(hwnd_, nullptr, FALSE);
             }
-            return 0;
-        }
-        if (wParam == ID_TIMER_REMINDER_PANEL) {
-            HideTodoReminderPanel();
             return 0;
         }
         return 0;
@@ -2739,9 +2609,10 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         SaveWindowState();
         return 0;
     case WM_MOUSEMOVE: {
-        const float x = static_cast<float>(GET_X_LPARAM(lParam));
-        const float y = static_cast<float>(GET_Y_LPARAM(lParam));
         POINT clientPoint{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+        const POINT dipPoint = ClientPointToDip(clientPoint);
+        const float x = static_cast<float>(dipPoint.x);
+        const float y = static_cast<float>(dipPoint.y);
         if (navDragCandidateId_ > 0 || navDragActive_) {
             UpdateNavDrag(clientPoint);
             if (navDragActive_) {
@@ -2809,6 +2680,7 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         HideItemTooltip();
         POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
         ScreenToClient(hwnd_, &point);
+        point = ClientPointToDip(point);
         ScrollAtPoint(static_cast<float>(point.x), static_cast<float>(point.y), GET_WHEEL_DELTA_WPARAM(wParam), false);
         return 0;
     }
@@ -2816,6 +2688,7 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         HideItemTooltip();
         POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
         ScreenToClient(hwnd_, &point);
+        point = ClientPointToDip(point);
         ScrollAtPoint(static_cast<float>(point.x), static_cast<float>(point.y), GET_WHEEL_DELTA_WPARAM(wParam), true);
         return 0;
     }
@@ -2825,9 +2698,10 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         selectionByKeyboard_ = false;
         CancelNavDrag();
         CancelLinkDrag();
-        const float x = static_cast<float>(GET_X_LPARAM(lParam));
-        const float y = static_cast<float>(GET_Y_LPARAM(lParam));
         POINT clientPoint{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+        const POINT dipPoint = ClientPointToDip(clientPoint);
+        const float x = static_cast<float>(dipPoint.x);
+        const float y = static_cast<float>(dipPoint.y);
         HitArea hit = HitTest(x, y);
         switch (hit.kind) {
         case HitKind::CloseButton:
@@ -2913,8 +2787,9 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         HideItemTooltip();
         SetFocus(hwnd_);
         selectionByKeyboard_ = false;
-        const float x = static_cast<float>(GET_X_LPARAM(lParam));
-        const float y = static_cast<float>(GET_Y_LPARAM(lParam));
+        const POINT dipPoint = ClientPointToDip(POINT{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)});
+        const float x = static_cast<float>(dipPoint.x);
+        const float y = static_cast<float>(dipPoint.y);
         HitArea hit = HitTest(x, y);
         POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
         ClientToScreen(hwnd_, &point);
@@ -2929,16 +2804,9 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         } else if (hit.kind == HitKind::Tag) {
             ShowTagMenu(hit.id, point);
         } else {
-            RECT client{};
             D2D1_RECT_F title{}, groups{}, tags{}, links{};
-            if (GetClientRect(hwnd_, &client)) {
-                BuildLayout(static_cast<float>(client.right - client.left),
-                            static_cast<float>(client.bottom - client.top),
-                            title,
-                            groups,
-                            tags,
-                            links);
-            }
+            const D2D1_SIZE_F client = ClientSizeDip();
+            BuildLayout(client.width, client.height, title, groups, tags, links);
             if (Width(groups) > 0.0f && Height(groups) > 0.0f && Contains(groups, x, y)) {
                 ShowGroupBlankMenu(point);
             } else if (Width(tags) > 0.0f && Height(tags) > 0.0f && Contains(tags, x, y)) {
@@ -2952,8 +2820,9 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
     }
     case WM_LBUTTONDBLCLK: {
         HideItemTooltip();
-        const float x = static_cast<float>(GET_X_LPARAM(lParam));
-        const float y = static_cast<float>(GET_Y_LPARAM(lParam));
+        const POINT dipPoint = ClientPointToDip(POINT{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)});
+        const float x = static_cast<float>(dipPoint.x);
+        const float y = static_cast<float>(dipPoint.y);
         HitArea hit = HitTest(x, y);
         if (hit.kind == HitKind::Link) {
             RunLink(hit.id);
@@ -2984,10 +2853,6 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
     case WM_COMMAND:
         {
         const UINT command = LOWORD(wParam);
-        if (command == ID_REMINDER_PANEL) {
-            HideTodoReminderPanel();
-            return 0;
-        }
         if (command == ID_NOTE_EDIT && HIWORD(wParam) == EN_CHANGE) {
             noteDirty_ = true;
             if (noteSaveTimerId_ != 0) {
@@ -3400,10 +3265,6 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         if (reminderScanTimerId_ != 0) {
             KillTimer(hwnd_, ID_TIMER_REMINDER_SCAN);
             reminderScanTimerId_ = 0;
-        }
-        if (reminderPanelTimerId_ != 0) {
-            KillTimer(hwnd_, ID_TIMER_REMINDER_PANEL);
-            reminderPanelTimerId_ = 0;
         }
         HideTodoReminderPanel();
         DragAcceptFiles(hwnd_, FALSE);
@@ -5057,87 +4918,21 @@ void MainWindow::ShowTodoReminder(const TodoItem& item) {
 }
 
 void MainWindow::ShowTodoReminderPanel(const TodoItem& item) {
-    HideTodoReminderPanel();
-
-    if (!reminderPanelFont_) {
-        reminderPanelFont_ = ThemedControls::CreateDialogFont();
-    }
-
-    RECT work{};
-    HMONITOR monitor = MonitorFromWindow(hwnd_, MONITOR_DEFAULTTONEAREST);
-    MONITORINFO info{};
-    info.cbSize = sizeof(info);
-    if (GetMonitorInfoW(monitor, &info)) {
-        work = info.rcWork;
-    } else {
-        SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
-    }
-
-    const int width = 340;
-    const int height = 136;
-    const int x = work.right - width - 18;
-    const int y = work.bottom - height - 18;
     const std::wstring text = L"待办提醒\r\n" + LimitNotificationText(item.title, 80) +
         (Trim(item.content).empty() ? L"" : (L"\r\n" + LimitNotificationText(Trim(item.content), 160)));
-
-    WNDCLASSEXW wc{};
-    wc.cbSize = sizeof(wc);
-    wc.lpfnWndProc = TooltipWindowProc;
-    wc.hInstance = instance_;
-    wc.hCursor = LoadCursorW(nullptr, IDC_HAND);
-    wc.lpszClassName = kTooltipWindowClass;
-    wc.hbrBackground = nullptr;
-    RegisterClassExW(&wc);
-
-    reminderPanel_ = CreateWindowExW(
-        WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
-        kTooltipWindowClass,
-        text.c_str(),
-        WS_POPUP,
-        x,
-        y,
-        width,
-        height,
-        hwnd_,
-        reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_REMINDER_PANEL)),
-        instance_,
-        nullptr);
-    if (!reminderPanel_) {
-        return;
-    }
-    SendMessageW(reminderPanel_, WM_SETFONT, reinterpret_cast<WPARAM>(reminderPanelFont_), TRUE);
-    const int paddingX = static_cast<int>(std::max(0.0f, Metric(theme_, L"tooltip", L"paddingX", 8.0f)));
-    const int paddingY = static_cast<int>(std::max(0.0f, Metric(theme_, L"tooltip", L"paddingY", 7.0f)));
-    const int lineGap = static_cast<int>(std::max(0.0f, Metric(theme_, L"tooltip", L"lineGap", 4.0f)));
-    const int radius = static_cast<int>(std::max(0.0f, Metric(theme_, L"tooltip", L"radius", 6.0f)));
-    const int borderWidth = static_cast<int>(std::max(0.0f, Metric(theme_, L"tooltip", L"borderWidth", 1.0f)));
-    SetTooltipStyle(reminderPanel_, TooltipStyle{
-        ToColorRef(theme_.color(L"tooltip", L"normal", L"bg")),
-        ToColorRef(theme_.color(L"tooltip", L"normal", L"text")),
-        ToColorRef(theme_.color(L"tooltip", L"normal", L"border")),
-        paddingX, paddingY, lineGap, radius, borderWidth});
-    if (radius > 0) {
-        HRGN region = CreateRoundRectRgn(0, 0, width + 1, height + 1, radius * 2, radius * 2);
-        if (!region || SetWindowRgn(reminderPanel_, region, TRUE) == 0) {
-            if (region) {
-                DeleteObject(region);
-            }
-        }
-    }
-    ShowWindow(reminderPanel_, SW_SHOWNOACTIVATE);
-    SetWindowPos(reminderPanel_, HWND_TOPMOST, x, y, width, height, SWP_NOACTIVATE | SWP_SHOWWINDOW);
-    reminderPanelTimerId_ = SetTimer(hwnd_, ID_TIMER_REMINDER_PANEL, 12000, nullptr);
+    CreateTooltip();
+    if (!embeddedUi_) return;
+    ThemedToastOptions options{};
+    options.anchor = ThemedToastAnchor::ScreenBottomRight;
+    options.role = ThemedToastRole::Info;
+    options.multiline = true;
+    options.durationMs = 12000;
+    options.maxWidth = 340;
+    embeddedUi_->ui().ShowToast(text, options);
 }
 
 void MainWindow::HideTodoReminderPanel() {
-    if (reminderPanelTimerId_ != 0 && hwnd_) {
-        KillTimer(hwnd_, ID_TIMER_REMINDER_PANEL);
-        reminderPanelTimerId_ = 0;
-    }
-    if (reminderPanel_) {
-        DestroyWindow(reminderPanel_);
-        reminderPanel_ = nullptr;
-    }
+    if (embeddedUi_) embeddedUi_->ui().HideToast();
 }
 
 bool MainWindow::EnsureNotificationIcon() {
@@ -5462,12 +5257,12 @@ void MainWindow::ResetLayoutToDefaults() {
     ShowWindowRespectFocusPolicy(hwnd_, SW_SHOWNORMAL);
     SetWindowPos(
         hwnd_,
-        config_.topMost ? HWND_TOPMOST : HWND_NOTOPMOST,
+        MainWindowTopMostInsertAfter(config_.topMost),
         config_.posX,
         config_.posY,
         config_.width,
         config_.height,
-        SWP_SHOWWINDOW);
+        SWP_SHOWWINDOW | SWP_NOACTIVATE);
     ActivateWindow(hwnd_);
     InvalidateRect(hwnd_, nullptr, FALSE);
     ShowToast(L"窗口布局已恢复默认。", ThemedToastRole::Success);
@@ -5916,13 +5711,6 @@ void MainWindow::ApplyTheme(const std::wstring& themeName) {
     if (menuFont_) {
         menuFont_->Reset();
     }
-    if (reminderPanelFont_) {
-        if (reminderPanel_) {
-            SendMessageW(reminderPanel_, WM_SETFONT, 0, TRUE);
-        }
-        DeleteObject(reminderPanelFont_);
-        reminderPanelFont_ = nullptr;
-    }
     embeddedUi_.reset();
     if (noteEdit_) {
         embeddedUi_ = std::make_unique<ThemedWindowUi>(
@@ -5985,7 +5773,7 @@ void MainWindow::UpdateDockState() {
             DockRestore();
         } else if (dockPeek_) {
             SetWindowPos(dockPeek_,
-                         HWND_TOPMOST,
+                         BackgroundAcceptanceMode() ? HWND_BOTTOM : HWND_TOPMOST,
                          0,
                          0,
                          0,
@@ -6051,7 +5839,7 @@ void MainWindow::ShowDockPeek(const RECT& peekRect) {
         }
 
         dockPeek_ = CreateWindowExW(
-            WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+            (BackgroundAcceptanceMode() ? 0u : WS_EX_TOPMOST) | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
             kDockPeekWindowClass,
             L"",
             WS_POPUP,
@@ -6069,7 +5857,7 @@ void MainWindow::ShowDockPeek(const RECT& peekRect) {
     }
 
     SetWindowPos(dockPeek_,
-                 HWND_TOPMOST,
+                 BackgroundAcceptanceMode() ? HWND_BOTTOM : HWND_TOPMOST,
                  peekRect.left,
                  peekRect.top,
                  width,
@@ -7776,9 +7564,12 @@ HRESULT MainWindow::CreateDeviceResources() {
     GetClientRect(hwnd_, &rect);
     const D2D1_SIZE_U size = D2D1::SizeU(rect.right - rect.left, rect.bottom - rect.top);
     const HRESULT hr = d2dFactory_->CreateHwndRenderTarget(
-        D2D1::RenderTargetProperties(D2D1_RENDER_TARGET_TYPE_SOFTWARE),
+        D2D1::RenderTargetProperties(D2D1_RENDER_TARGET_TYPE_DEFAULT),
         D2D1::HwndRenderTargetProperties(hwnd_, size),
         &renderTarget_);
+    if (SUCCEEDED(hr) && renderTarget_) {
+        renderTarget_->SetDpi(static_cast<float>(CurrentDpi()), static_cast<float>(CurrentDpi()));
+    }
     if (!startupFirstPaintLogged_) {
         WriteStartupTiming(L"d2d render target create end", L"hr=" + std::to_wstring(static_cast<long>(hr)));
     }
@@ -9048,10 +8839,9 @@ void MainWindow::ClampScrollOffsets() {
         return;
     }
 
-    RECT client{};
-    GetClientRect(hwnd_, &client);
     D2D1_RECT_F title{}, groups{}, tags{}, links{};
-    BuildLayout(static_cast<float>(client.right - client.left), static_cast<float>(client.bottom - client.top), title, groups, tags, links);
+    const D2D1_SIZE_F client = ClientSizeDip();
+    BuildLayout(client.width, client.height, title, groups, tags, links);
     groupScrollOffset_ = ClampFloat(groupScrollOffset_, 0.0f, MaxGroupScrollOffset(groups));
     tagScrollOffset_ = ClampFloat(tagScrollOffset_, 0.0f, MaxTagScrollOffset(tags));
     linkScrollOffset_ = ClampFloat(linkScrollOffset_, 0.0f, MaxLinkScrollOffset(links));
@@ -9062,10 +8852,9 @@ void MainWindow::ScrollAtPoint(float x, float y, int wheelDelta, bool horizontal
         return;
     }
 
-    RECT client{};
-    GetClientRect(hwnd_, &client);
     D2D1_RECT_F title{}, groups{}, tags{}, links{};
-    BuildLayout(static_cast<float>(client.right - client.left), static_cast<float>(client.bottom - client.top), title, groups, tags, links);
+    const D2D1_SIZE_F client = ClientSizeDip();
+    BuildLayout(client.width, client.height, title, groups, tags, links);
 
     const float step = horizontal ? Metric(theme_, L"scrollbar", L"wheelStepX", 72.0f) : Metric(theme_, L"scrollbar", L"wheelStepY", 80.0f);
     const float amount = -static_cast<float>(wheelDelta) / static_cast<float>(WHEEL_DELTA) * step;
@@ -9176,12 +8965,12 @@ float MainWindow::TodoContentHeight(const D2D1_RECT_F&) const {
 }
 
 void MainWindow::EnsureGroupVisible(int groupId) {
-    RECT client{};
-    if (!hwnd_ || !GetClientRect(hwnd_, &client)) {
+    if (!hwnd_) {
         return;
     }
     D2D1_RECT_F title{}, groupsRect{}, tagsRect{}, linksRect{};
-    BuildLayout(static_cast<float>(client.right - client.left), static_cast<float>(client.bottom - client.top), title, groupsRect, tagsRect, linksRect);
+    const D2D1_SIZE_F client = ClientSizeDip();
+    BuildLayout(client.width, client.height, title, groupsRect, tagsRect, linksRect);
 
     if (Height(groupsRect) > Width(groupsRect)) {
         const float groupPadding = Metric(theme_, L"tabButton", L"groupPadding", 3.0f);
@@ -9226,12 +9015,12 @@ void MainWindow::EnsureGroupVisible(int groupId) {
 }
 
 void MainWindow::EnsureTagVisible(int tagId) {
-    RECT client{};
-    if (!hwnd_ || !GetClientRect(hwnd_, &client)) {
+    if (!hwnd_) {
         return;
     }
     D2D1_RECT_F title{}, groupsRect{}, tagsRect{}, linksRect{};
-    BuildLayout(static_cast<float>(client.right - client.left), static_cast<float>(client.bottom - client.top), title, groupsRect, tagsRect, linksRect);
+    const D2D1_SIZE_F client = ClientSizeDip();
+    BuildLayout(client.width, client.height, title, groupsRect, tagsRect, linksRect);
     const D2D1_RECT_F content = CardContentRectFor(tagsRect);
     const float topInset = Metric(theme_, L"minorNavItem", L"topInset", 2.0f);
     const float itemHeight = Metric(theme_, L"tabButton", L"height", Metric(theme_, L"minorNavItem", L"height", 28.0f));
@@ -9256,12 +9045,12 @@ void MainWindow::EnsureLinkVisible(int linkId) {
     if (linkId <= 0 || !hwnd_) {
         return;
     }
-    RECT client{};
-    if (!GetClientRect(hwnd_, &client)) {
+    if (!hwnd_) {
         return;
     }
     D2D1_RECT_F title{}, groupsRect{}, tagsRect{}, linksRect{};
-    BuildLayout(static_cast<float>(client.right - client.left), static_cast<float>(client.bottom - client.top), title, groupsRect, tagsRect, linksRect);
+    const D2D1_SIZE_F client = ClientSizeDip();
+    BuildLayout(client.width, client.height, title, groupsRect, tagsRect, linksRect);
     auto links = LinksForCurrentTag();
     auto it = std::find_if(links.begin(), links.end(), [linkId](const Link* link) {
         return link && link->id == linkId;
@@ -9291,12 +9080,12 @@ void MainWindow::EnsureTodoVisible(int todoId) {
     if (todoId <= 0 || !hwnd_) {
         return;
     }
-    RECT client{};
-    if (!GetClientRect(hwnd_, &client)) {
+    if (!hwnd_) {
         return;
     }
     D2D1_RECT_F title{}, groupsRect{}, tagsRect{}, linksRect{};
-    BuildLayout(static_cast<float>(client.right - client.left), static_cast<float>(client.bottom - client.top), title, groupsRect, tagsRect, linksRect);
+    const D2D1_SIZE_F client = ClientSizeDip();
+    BuildLayout(client.width, client.height, title, groupsRect, tagsRect, linksRect);
     auto items = TodosForCurrentTag();
     auto it = std::find_if(items.begin(), items.end(), [todoId](const TodoItem* item) {
         return item && item->id == todoId;
@@ -9326,6 +9115,7 @@ MainWindow::HitArea MainWindow::CursorHitArea() const {
     if (!GetCursorPos(&point) || !ScreenToClient(hwnd_, &point)) {
         return {};
     }
+    point = ClientPointToDip(point);
     return HitTest(static_cast<float>(point.x), static_cast<float>(point.y));
 }
 
@@ -9378,12 +9168,10 @@ void MainWindow::UpdateLinkDragTarget(POINT point) {
     linkDragTargetLinkId_ = 0;
     linkDragInsertIndex_ = -1;
 
-    RECT client{};
-    if (!GetClientRect(hwnd_, &client)) {
-        return;
-    }
+    point = ClientPointToDip(point);
     D2D1_RECT_F title{}, groupsRect{}, tagsRect{}, linksRect{};
-    BuildLayout(static_cast<float>(client.right - client.left), static_cast<float>(client.bottom - client.top), title, groupsRect, tagsRect, linksRect);
+    const D2D1_SIZE_F client = ClientSizeDip();
+    BuildLayout(client.width, client.height, title, groupsRect, tagsRect, linksRect);
     const D2D1_RECT_F content = CardContentRectFor(linksRect);
     if (!Contains(content, static_cast<float>(point.x), static_cast<float>(point.y))) {
         return;
@@ -9586,12 +9374,10 @@ void MainWindow::UpdateNavDragTarget(POINT point) {
     navDragMode_ = NavDragMode::None;
     navDragInsertIndex_ = -1;
 
-    RECT client{};
-    if (!GetClientRect(hwnd_, &client)) {
-        return;
-    }
+    point = ClientPointToDip(point);
     D2D1_RECT_F title{}, groupsRect{}, tagsRect{}, linksRect{};
-    BuildLayout(static_cast<float>(client.right - client.left), static_cast<float>(client.bottom - client.top), title, groupsRect, tagsRect, linksRect);
+    const D2D1_SIZE_F client = ClientSizeDip();
+    BuildLayout(client.width, client.height, title, groupsRect, tagsRect, linksRect);
 
     const bool groupDrag = navDragKind_ == NavDragKind::Group;
     const D2D1_RECT_F targetRect = groupDrag ? groupsRect : CardContentRectFor(tagsRect);
@@ -9728,12 +9514,12 @@ void MainWindow::MoveLinkSelection(int dx, int dy) {
     if (links.empty()) {
         return;
     }
-    RECT client{};
-    if (!GetClientRect(hwnd_, &client)) {
+    if (!hwnd_) {
         return;
     }
     D2D1_RECT_F title{}, groupsRect{}, tagsRect{}, linksRect{};
-    BuildLayout(static_cast<float>(client.right - client.left), static_cast<float>(client.bottom - client.top), title, groupsRect, tagsRect, linksRect);
+    const D2D1_SIZE_F client = ClientSizeDip();
+    BuildLayout(client.width, client.height, title, groupsRect, tagsRect, linksRect);
     const Group* tag = FindGroup(currentTagId_);
     const D2D1_RECT_F content = CardContentRectFor(linksRect);
     const LinkLayoutMetrics metrics = MakeLinkLayout(theme_, content, tag);
@@ -10251,10 +10037,10 @@ void MainWindow::HideNoteEdit() {
 
 void MainWindow::EnsureNoteEdit(const D2D1_RECT_F& rect, const Group& tag) {
     RECT frame{
-        static_cast<LONG>(rect.left + 0.5f),
-        static_cast<LONG>(rect.top + 0.5f),
-        static_cast<LONG>(rect.right + 0.5f),
-        static_cast<LONG>(rect.bottom + 0.5f),
+        ClientDipToPx(rect.left),
+        ClientDipToPx(rect.top),
+        ClientDipToPx(rect.right),
+        ClientDipToPx(rect.bottom),
     };
     const NotePage* note = FindNotePage(tag.id);
     const std::wstring content = note ? note->content : L"";
@@ -10310,6 +10096,65 @@ int MainWindow::LinkIdFromHotKeyId(int hotKeyId) const {
         }
     }
     return 0;
+}
+
+UINT MainWindow::CurrentDpi() const {
+    if (dpi_) return dpi_;
+    const UINT dpi = hwnd_ ? GetDpiForWindow(hwnd_) : USER_DEFAULT_SCREEN_DPI;
+    return dpi ? dpi : USER_DEFAULT_SCREEN_DPI;
+}
+
+float MainWindow::ClientPxToDip(int value) const {
+    return static_cast<float>(value) * static_cast<float>(USER_DEFAULT_SCREEN_DPI) /
+        static_cast<float>(CurrentDpi());
+}
+
+LONG MainWindow::ClientDipToPx(float value) const {
+    return static_cast<LONG>(std::lround(
+        value * static_cast<float>(CurrentDpi()) / static_cast<float>(USER_DEFAULT_SCREEN_DPI)));
+}
+
+POINT MainWindow::ClientPointToDip(POINT point) const {
+    point.x = static_cast<LONG>(std::lround(ClientPxToDip(point.x)));
+    point.y = static_cast<LONG>(std::lround(ClientPxToDip(point.y)));
+    return point;
+}
+
+D2D1_SIZE_F MainWindow::ClientSizeDip() const {
+    RECT client{};
+    if (!hwnd_ || !GetClientRect(hwnd_, &client)) return D2D1::SizeF();
+    return D2D1::SizeF(
+        ClientPxToDip(client.right - client.left),
+        ClientPxToDip(client.bottom - client.top));
+}
+
+void MainWindow::ApplyDpiChange(UINT newDpi, const RECT* suggestedWindowRect) {
+    if (!newDpi) return;
+    dpi_ = newDpi;
+    if (renderTarget_) {
+        renderTarget_->SetDpi(static_cast<float>(newDpi), static_cast<float>(newDpi));
+    }
+    iconService_.Clear();
+    ClearUiBitmaps();
+    if (suggestedWindowRect) {
+        SetWindowPos(
+            hwnd_,
+            nullptr,
+            suggestedWindowRect->left,
+            suggestedWindowRect->top,
+            suggestedWindowRect->right - suggestedWindowRect->left,
+            suggestedWindowRect->bottom - suggestedWindowRect->top,
+            SWP_NOACTIVATE | SWP_NOZORDER);
+    }
+    if (embeddedUi_) {
+        LRESULT ignored = 0;
+        embeddedUi_->HandleMessage(
+            WM_DPICHANGED,
+            MAKELONG(newDpi, newDpi),
+            reinterpret_cast<LPARAM>(suggestedWindowRect),
+            ignored);
+    }
+    InvalidateRect(hwnd_, nullptr, TRUE);
 }
 
 void MainWindow::BuildLayout(float width, float height, D2D1_RECT_F& title, D2D1_RECT_F& groups, D2D1_RECT_F& tags, D2D1_RECT_F& links) const {

@@ -502,6 +502,7 @@ private:
 // special cases. New ordinary controls should go through this facade first.
 class ThemedUi {
 public:
+    static COLORREF ListSurfaceColor(const Theme& theme);
     ThemedUi(
         HINSTANCE instance,
         HWND parent,

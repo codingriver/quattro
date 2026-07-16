@@ -1,4 +1,6 @@
 #include "ThemedUi.h"
+#include "ThemedD2D.h"
+#include "ThemedGdiFallback.h"
 
 #include <commctrl.h>
 #include <windowsx.h>
@@ -73,6 +75,10 @@ UINT DpiForScreenPoint(POINT screenPoint, HWND fallbackWindow) {
 }
 } // namespace
 
+COLORREF ThemedUi::ListSurfaceColor(const Theme& theme) {
+    return ThemedControls::ListSurfaceColor(theme);
+}
+
 ThemedMenuFontCache::~ThemedMenuFontCache() {
     Reset();
 }
@@ -116,13 +122,15 @@ SIZE ThemedMenuFontCache::MeasureText(HWND owner, const std::wstring& text) cons
     if (!font_ || text.empty()) {
         return size;
     }
+    size = ThemedD2D::MeasureText(font_, text, 0, false);
+    if (size.cx > 0 && size.cy > 0) {
+        return size;
+    }
     HDC dc = GetDC(owner);
     if (!dc) {
         return size;
     }
-    HGDIOBJ oldFont = SelectObject(dc, font_);
-    GetTextExtentPoint32W(dc, text.c_str(), static_cast<int>(text.size()), &size);
-    SelectObject(dc, oldFont);
+    size = ThemedGdiFallback::MeasureText(dc, font_, text.c_str(), static_cast<int>(text.size()));
     ReleaseDC(owner, dc);
     return size;
 }
@@ -189,16 +197,16 @@ int TextWidth(HWND parent, HFONT font, const std::wstring& text) {
     if (text.empty()) {
         return 0;
     }
+    const int directWriteWidth = ThemedD2D::MeasureTextWidth(font, text);
+    if (directWriteWidth > 0) {
+        return directWriteWidth;
+    }
     HDC dc = GetDC(parent);
     if (!dc) {
         return 0;
     }
-    HGDIOBJ oldFont = font ? SelectObject(dc, font) : nullptr;
-    SIZE size{};
-    GetTextExtentPoint32W(dc, text.c_str(), static_cast<int>(text.size()), &size);
-    if (oldFont) {
-        SelectObject(dc, oldFont);
-    }
+    const SIZE size = ThemedGdiFallback::MeasureText(
+        dc, font, text.c_str(), static_cast<int>(text.size()));
     ReleaseDC(parent, dc);
     return size.cx;
 }
@@ -323,6 +331,9 @@ void ApplyPanelScroll(HWND panel) {
             child.original.bottom - child.original.top,
             SWP_NOACTIVATE | SWP_NOZORDER);
     }
+    if (!it->second.scrollable) {
+        return;
+    }
     SCROLLINFO info{sizeof(info), SIF_RANGE | SIF_PAGE | SIF_POS};
     RECT client{};
     GetClientRect(panel, &client);
@@ -346,13 +357,17 @@ LRESULT CALLBACK PanelRuntimeProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM
     auto it = PanelStates().find(hwnd);
     if (it != PanelStates().end() && it->second.scrollable) {
         if (message == WM_MOUSEWHEEL) {
-            const int step = static_cast<int>(it->second.theme->metric(L"panel", L"scrollStep", 24.0f));
+            const int step = ThemedD2D::ScaleDip(
+                static_cast<int>(it->second.theme->metric(L"panel", L"scrollStep", 24.0f)),
+                ThemedD2D::DpiFor(hwnd, nullptr));
             SetPanelScrollInternal(hwnd, it->second.scrollPosition - GET_WHEEL_DELTA_WPARAM(wParam) / WHEEL_DELTA * step);
             return 0;
         }
         if (message == WM_VSCROLL) {
             int next = it->second.scrollPosition;
-            const int step = static_cast<int>(it->second.theme->metric(L"panel", L"scrollStep", 24.0f));
+            const int step = ThemedD2D::ScaleDip(
+                static_cast<int>(it->second.theme->metric(L"panel", L"scrollStep", 24.0f)),
+                ThemedD2D::DpiFor(hwnd, nullptr));
             switch (LOWORD(wParam)) {
             case SB_LINEUP: next -= step; break;
             case SB_LINEDOWN: next += step; break;
@@ -507,11 +522,16 @@ void LayoutToolBar(HWND toolbar) {
     GetClientRect(toolbar, &client);
     const int width = client.right - client.left;
     const int height = client.bottom - client.top;
-    const int padding = static_cast<int>(state.theme->metric(L"toolbar", L"paddingX", 6.0f));
-    const int gap = static_cast<int>(state.theme->metric(L"toolbar", L"itemGap", 4.0f));
-    const int itemHeight = state.compact
-        ? ThemedControls::CompactButtonHeight(*state.theme)
-        : ThemedControls::ButtonHeight(*state.theme);
+    const UINT dpi = ThemedD2D::DpiFor(toolbar, nullptr);
+    const int padding = ThemedD2D::ScaleDip(
+        static_cast<int>(state.theme->metric(L"toolbar", L"paddingX", 6.0f)), dpi);
+    const int gap = ThemedD2D::ScaleDip(
+        static_cast<int>(state.theme->metric(L"toolbar", L"itemGap", 4.0f)), dpi);
+    const int itemHeight = ThemedD2D::ScaleDip(
+        state.compact
+            ? ThemedControls::CompactButtonHeight(*state.theme)
+            : ThemedControls::ButtonHeight(*state.theme),
+        dpi);
     const int y = std::max(0, (height - itemHeight) / 2);
     const int overflowWidth = itemHeight;
 
@@ -561,9 +581,13 @@ void RecalculateToolWidth(HWND toolbar, ToolRuntimeItem& item) {
     GetClientRect(toolbar, &client);
     ThemedUi nested(state.instance, toolbar, *state.theme, state.font, DialogLayoutKind::Compact, client.right, client.bottom);
     const ThemedButtonSize size = state.compact ? ThemedButtonSize::Compact : ThemedButtonSize::Normal;
-    const int iconSize = static_cast<int>(state.theme->metric(L"toolbarItem", L"iconSize", 16.0f));
-    const int iconGap = static_cast<int>(state.theme->metric(L"toolbarItem", L"iconGap", 6.0f));
-    const int iconPadding = static_cast<int>(state.theme->metric(L"toolbarItem", L"iconPaddingX", 8.0f));
+    const UINT dpi = ThemedD2D::DpiFor(toolbar, nullptr);
+    const int iconSize = ThemedD2D::ScaleDip(
+        static_cast<int>(state.theme->metric(L"toolbarItem", L"iconSize", 16.0f)), dpi);
+    const int iconGap = ThemedD2D::ScaleDip(
+        static_cast<int>(state.theme->metric(L"toolbarItem", L"iconGap", 6.0f)), dpi);
+    const int iconPadding = ThemedD2D::ScaleDip(
+        static_cast<int>(state.theme->metric(L"toolbarItem", L"iconPaddingX", 8.0f)), dpi);
     const std::wstring visibleText = item.display == ThemedToolItemDisplay::IconOnly ? L"" : item.text;
     item.width = nested.buttonWidth(visibleText,
         item.kind == ThemedToolItemKind::Toggle ? ThemedButtonRole::Tab : ThemedButtonRole::Normal,
@@ -594,7 +618,9 @@ bool InsertRuntimeTool(HWND toolbar, int index, const ThemedToolItem& source) {
     item.iconOwnership = source.iconOwnership;
     item.requestedVisible = true;
     if (source.kind == ThemedToolItemKind::Separator) {
-        item.width = static_cast<int>(state.theme->metric(L"toolbar", L"separatorWidth", 9.0f));
+        item.width = ThemedD2D::ScaleDip(
+            static_cast<int>(state.theme->metric(L"toolbar", L"separatorWidth", 9.0f)),
+            ThemedD2D::DpiFor(toolbar, nullptr));
         item.separator = ThemedControls::CreateSeparator(state.instance, toolbar, RECT{0, 0, item.width, 1}, *state.theme, true);
     } else {
         item.display = source.display == ThemedToolItemDisplay::Automatic
@@ -975,7 +1001,7 @@ int ThemedUi::tableHeightForRows(int visibleRows, bool showHeader) const {
     // TableFrameInnerRect currently consumes the physical public frame inset;
     // keep the height helper on that same drawing path so the viewport ends on
     // an exact row boundary at every DPI.
-    const int border = std::max(1, static_cast<int>(theme_.metric(L"table", L"borderWidth", 1.0f)));
+    const int border = std::max(1, scale(static_cast<int>(theme_.metric(L"table", L"borderWidth", 1.0f))));
     const int rowHeight = scale(static_cast<int>(theme_.metric(L"listItem", L"height", 28.0f)));
     const int headerHeight = showHeader
         ? scale(static_cast<int>(theme_.metric(L"tableHeader", L"height", 28.0f)))
@@ -1057,17 +1083,14 @@ HWND ThemedUi::Label(const std::wstring& text, int x, int y, int width, ThemedLa
     } else if (options.lines == ThemedLabelLines::Three) {
         lineCount = 3;
     }
-    if (lineCount == 1) {
-        return ThemedControls::CreateLabelText(
-            instance_, parent_, text.c_str(), x, y, width, theme_, font_, StaticStyle(options.align));
-    }
-    return ThemedControls::CreateStaticText(
-        instance_, parent_, text.c_str(), x, y, width, labelHeight() * lineCount, font_, StaticStyle(options.align));
+    return BindTheme(ThemedControls::CreateLabelText(
+        instance_, parent_, text.c_str(), x, y, width, labelHeight() * lineCount,
+        theme_, font_, StaticStyle(options.align), lineCount > 1));
 }
 
 HWND ThemedUi::StatusText(const std::wstring& text, int x, int y, int width, ThemedStatusTextOptions options) const {
     return BindTheme(ThemedControls::CreateStatusText(
-        instance_, parent_, text.c_str(), x, y, width, theme_, font_, StatusState(options.role), StaticStyle(options.align)));
+        instance_, parent_, text.c_str(), x, y, width, theme_, font_, StatusState(options.role), StaticStyle(options.align), dpi_));
 }
 
 void ThemedUi::SetStatusTextRole(HWND hwnd, ThemedStatusRole role) const {
@@ -1076,7 +1099,7 @@ void ThemedUi::SetStatusTextRole(HWND hwnd, ThemedStatusRole role) const {
 
 HWND ThemedUi::StatusBadge(const std::wstring& text, int x, int y, int width, ThemedStatusRole role) const {
     return BindTheme(ThemedControls::CreateStatusBadge(
-        instance_, parent_, text.c_str(), x, y, width, theme_, font_, StatusState(role)));
+        instance_, parent_, text.c_str(), x, y, width, theme_, font_, StatusState(role), dpi_));
 }
 
 void ThemedUi::SetStatusBadgeRole(HWND hwnd, ThemedStatusRole role) const {
@@ -1084,7 +1107,15 @@ void ThemedUi::SetStatusBadgeRole(HWND hwnd, ThemedStatusRole role) const {
 }
 
 void ThemedUi::SetText(HWND hwnd, const std::wstring& text) {
-    if (hwnd) SetWindowTextW(hwnd, text.c_str());
+    if (!hwnd) {
+        return;
+    }
+    SetWindowTextW(hwnd, text.c_str());
+    RedrawWindow(
+        hwnd,
+        nullptr,
+        nullptr,
+        RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW);
 }
 
 void ThemedUi::SetVisible(HWND hwnd, bool visible) {
@@ -1134,7 +1165,7 @@ void ThemedUi::MoveComboBox(HWND hwnd, int x, int y, int width) const {
         return;
     }
     SetWindowPos(
-        hwnd, nullptr, x, y, width, ThemedControls::ComboBoxDropdownHeight(theme_),
+        hwnd, nullptr, x, y, width, ThemedControls::ComboBoxDropdownHeight(theme_, dpi_),
         SWP_NOACTIVATE | SWP_NOZORDER);
 }
 
@@ -1316,17 +1347,17 @@ HWND ThemedUi::TabControl(
     SetWindowSubclass(tab, TabContainerProc, 2, 0);
 
     const int width = frame.right - frame.left;
-    int padding = static_cast<int>(theme_.metric(L"tabControl", L"paddingX", 4.0f));
-    int gap = static_cast<int>(theme_.metric(L"tabControl", L"itemGap", 2.0f));
+    int padding = scale(static_cast<int>(theme_.metric(L"tabControl", L"paddingX", 4.0f)));
+    int gap = scale(static_cast<int>(theme_.metric(L"tabControl", L"itemGap", 2.0f)));
     if (options.appearance == ThemedTabControlAppearance::MinimalUnderline) {
-        padding = static_cast<int>(theme_.metric(L"tabControl", L"minimalPadding", 4.0f));
-        gap = static_cast<int>(theme_.metric(L"tabControl", L"minimalItemGap", 6.0f));
+        padding = scale(static_cast<int>(theme_.metric(L"tabControl", L"minimalPadding", 4.0f)));
+        gap = scale(static_cast<int>(theme_.metric(L"tabControl", L"minimalItemGap", 6.0f)));
     } else if (options.appearance == ThemedTabControlAppearance::SoftPill) {
-        padding = static_cast<int>(theme_.metric(L"tabControl", L"softPillPadding", 4.0f));
-        gap = static_cast<int>(theme_.metric(L"tabControl", L"softPillItemGap", 6.0f));
+        padding = scale(static_cast<int>(theme_.metric(L"tabControl", L"softPillPadding", 4.0f)));
+        gap = scale(static_cast<int>(theme_.metric(L"tabControl", L"softPillItemGap", 6.0f)));
     } else if (options.appearance == ThemedTabControlAppearance::ConnectedTabs) {
-        padding = static_cast<int>(theme_.metric(L"tabControl", L"connectedPadding", 4.0f));
-        gap = static_cast<int>(theme_.metric(L"tabControl", L"connectedItemGap", 2.0f));
+        padding = scale(static_cast<int>(theme_.metric(L"tabControl", L"connectedPadding", 4.0f)));
+        gap = scale(static_cast<int>(theme_.metric(L"tabControl", L"connectedItemGap", 2.0f)));
     }
     const int tabHeight = buttonHeight(ThemedButtonRole::Tab, ThemedButtonSize::Normal);
     const int frameHeight = std::max(tabHeight, static_cast<int>(frame.bottom - frame.top));
@@ -1373,7 +1404,7 @@ HWND ThemedUi::TabControl(
         int totalWidth = 0;
         std::vector<int> minimumWidths;
         minimumWidths.reserve(items.size());
-        const int textPadding = static_cast<int>(theme_.metric(L"tabButton", L"paddingX", 12.0f)) * 2;
+        const int textPadding = scale(static_cast<int>(theme_.metric(L"tabButton", L"paddingX", 12.0f))) * 2;
         for (const auto& item : items) {
             const int desired = buttonWidth(item.text, ThemedButtonRole::Tab, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
             const int minimum = std::max(24, textWidth(item.text) + textPadding);
@@ -1506,7 +1537,7 @@ HWND ThemedUi::ToolBar(
 
     const int width = frame.right - frame.left;
     const int height = frame.bottom - frame.top;
-    const int separatorWidth = static_cast<int>(theme_.metric(L"toolbar", L"separatorWidth", 9.0f));
+    const int separatorWidth = scale(static_cast<int>(theme_.metric(L"toolbar", L"separatorWidth", 9.0f)));
     const ThemedButtonSize size = options.compact ? ThemedButtonSize::Compact : ThemedButtonSize::Normal;
     const int itemHeight = buttonHeight(ThemedButtonRole::Normal, size);
     const int y = std::max(0, (height - itemHeight) / 2);
@@ -1533,9 +1564,9 @@ HWND ThemedUi::ToolBar(
             display = item.icon ? (item.text.empty() ? ThemedToolItemDisplay::IconOnly : ThemedToolItemDisplay::IconAndText)
                                 : ThemedToolItemDisplay::TextOnly;
         }
-        const int iconSize = static_cast<int>(theme_.metric(L"toolbarItem", L"iconSize", 16.0f));
-        const int iconGap = static_cast<int>(theme_.metric(L"toolbarItem", L"iconGap", 6.0f));
-        const int iconPadding = static_cast<int>(theme_.metric(L"toolbarItem", L"iconPaddingX", 8.0f));
+        const int iconSize = scale(static_cast<int>(theme_.metric(L"toolbarItem", L"iconSize", 16.0f)));
+        const int iconGap = scale(static_cast<int>(theme_.metric(L"toolbarItem", L"iconGap", 6.0f)));
+        const int iconPadding = scale(static_cast<int>(theme_.metric(L"toolbarItem", L"iconPaddingX", 8.0f)));
         const std::wstring displayText = display == ThemedToolItemDisplay::IconOnly ? L"" : item.text;
         int itemWidth = nested.buttonWidth(
             displayText,
@@ -1841,7 +1872,7 @@ HWND ThemedUi::CheckBox(int id, const std::wstring& text, int x, int y, int widt
     const bool multiline = options.size == ThemedCheckBoxSize::TwoLines;
     HWND hwnd = BindTheme(ThemedControls::CreateCheckBox(
         instance_, parent_, id, text.c_str(), x, y, width,
-        ThemedControls::CheckBoxHeight(theme_) * (multiline ? 2 : 1), font_, options.checked));
+        checkBoxHeight(options.size), font_, options.checked));
     if (hwnd) {
         EnableWindow(hwnd, options.enabled ? TRUE : FALSE);
         ThemedControls::SetControlMultiline(hwnd, multiline);
@@ -1861,7 +1892,7 @@ bool ThemedUi::IsChecked(HWND hwnd) {
 
 HWND ThemedUi::Toggle(int id, const std::wstring& text, int x, int y, int width, ThemedToggleOptions options) const {
     HWND hwnd = BindTheme(ThemedControls::CreateToggle(
-        instance_, parent_, id, text.c_str(), x, y, width, font_, theme_, options.checked));
+        instance_, parent_, id, text.c_str(), x, y, width, font_, theme_, options.checked, dpi_));
     if (hwnd) {
         EnableWindow(hwnd, options.enabled ? TRUE : FALSE);
     }
@@ -1870,7 +1901,7 @@ HWND ThemedUi::Toggle(int id, const std::wstring& text, int x, int y, int width,
 
 HWND ThemedUi::RadioButton(int id, const std::wstring& text, int x, int y, int width, ThemedRadioButtonOptions options) const {
     HWND hwnd = BindTheme(ThemedControls::CreateRadioButton(
-        instance_, parent_, id, text.c_str(), x, y, width, font_, theme_, options.group, options.checked));
+        instance_, parent_, id, text.c_str(), x, y, width, font_, theme_, options.group, options.checked, dpi_));
     if (hwnd) {
         EnableWindow(hwnd, options.enabled ? TRUE : FALSE);
     }
@@ -1879,7 +1910,7 @@ HWND ThemedUi::RadioButton(int id, const std::wstring& text, int x, int y, int w
 
 HWND ThemedUi::HotKeyCapture(int id, const std::wstring& text, int x, int y, int width, ThemedHotKeyCaptureOptions options) const {
     HWND hwnd = BindTheme(ThemedControls::CreateHotKeyCapture(
-        instance_, parent_, id, text.c_str(), x, y, width, font_, theme_));
+        instance_, parent_, id, text.c_str(), x, y, width, font_, theme_, dpi_));
     if (hwnd) {
         EnableWindow(hwnd, options.enabled ? TRUE : FALSE);
     }
@@ -1937,7 +1968,8 @@ bool ThemedUi::IsTabSelected(HWND hwnd) {
 // 返回值：创建成功时返回下拉框 HWND，失败时返回 nullptr。
 HWND ThemedUi::ComboBox(int id, int x, int y, int width, ThemedComboBoxOptions options) const {
     HWND hwnd = ThemedControls::CreateComboBox(
-        instance_, parent_, id, x, y, width, ThemedControls::ComboBoxDropdownHeight(theme_), font_, theme_);
+        instance_, parent_, id, x, y, width, ThemedControls::ComboBoxDropdownHeight(theme_, dpi_),
+        font_, theme_, dpi_);
     if (hwnd) {
         EnableWindow(hwnd, options.enabled ? TRUE : FALSE);
     }
@@ -1999,7 +2031,8 @@ HWND ThemedUi::ListBox(int id, int x, int y, int width, int height, ThemedListBo
     if (options.scroll == ThemedListScroll::Both) {
         style |= WS_HSCROLL;
     }
-    HWND hwnd = ThemedControls::CreateListBox(instance_, parent_, id, x, y, width, height, font_, theme_, style);
+    HWND hwnd = ThemedControls::CreateListBox(
+        instance_, parent_, id, x, y, width, height, font_, theme_, style, dpi_);
     if (hwnd) {
         EnableWindow(hwnd, options.enabled ? TRUE : FALSE);
     }
@@ -2007,7 +2040,7 @@ HWND ThemedUi::ListBox(int id, int x, int y, int width, int height, ThemedListBo
 }
 
 HWND ThemedUi::Table(int id, RECT frame, const std::vector<ThemedTableColumn>& columns, ThemedTableOptions options) const {
-    const RECT inner = ThemedControls::TableFrameInnerRect(theme_, frame);
+    const RECT inner = ThemedControls::TableFrameInnerRect(theme_, frame, dpi_);
     DWORD style = WS_CHILD | WS_VISIBLE | WS_TABSTOP | LVS_SHOWSELALWAYS | LVS_SHAREIMAGELISTS;
     style |= options.view == ThemedTableView::Details ? LVS_REPORT : LVS_ICON;
     if (options.selection == ThemedTableSelection::Single) style |= LVS_SINGLESEL;

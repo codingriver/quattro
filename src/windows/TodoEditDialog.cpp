@@ -1203,7 +1203,10 @@ private:
             customX += prefixWidth + itemGap;
             SetFrame(customIntervalEdit_, RECT{customX, y, customX + intervalWidth, y + fieldHeight});
             customX += intervalWidth + itemGap;
-            MoveCombo(customUnitCombo_, customX, y, unitWidth, ThemedControls::ComboBoxDropdownHeight(theme_));
+            MoveCombo(
+                customUnitCombo_, customX, y, unitWidth,
+                ThemedControls::ComboBoxDropdownHeight(
+                    theme_, windowUi_ ? windowUi_->dpi() : USER_DEFAULT_SCREEN_DPI));
             customX += unitWidth + itemGap;
             MoveStatic(customSuffix_, customX, y + labelOffsetY, TextControlWidth(L"重复"), textHeight);
             y += fieldHeight + rowGap;

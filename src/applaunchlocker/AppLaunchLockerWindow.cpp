@@ -251,6 +251,27 @@ int AppLaunchLockerWindow::Run() {
         ThemedWindowUi::ShowMessageBox(nullptr, instance_, theme_, error, L"自启动管理", MB_OK | MB_ICONERROR);
         return 1;
     }
+    wchar_t acceptanceDpiText[16]{};
+    if (GetEnvironmentVariableW(L"QUATTRO_APP_LAUNCH_LOCKER_ACCEPTANCE_DPI", acceptanceDpiText,
+            static_cast<DWORD>(std::size(acceptanceDpiText))) > 0) {
+        const UINT targetDpi = static_cast<UINT>(wcstoul(acceptanceDpiText, nullptr, 10));
+        const UINT currentDpi = windowUi_ ? windowUi_->dpi() : USER_DEFAULT_SCREEN_DPI;
+        if (targetDpi >= 96 && targetDpi <= 480 && targetDpi != currentDpi) {
+            RECT windowRect{};
+            GetWindowRect(hwnd_, &windowRect);
+            const int targetWidth = MulDiv(
+                windowRect.right - windowRect.left, static_cast<int>(targetDpi), static_cast<int>(currentDpi));
+            const int targetHeight = MulDiv(
+                windowRect.bottom - windowRect.top, static_cast<int>(targetDpi), static_cast<int>(currentDpi));
+            const POINT targetPosition = CenterWindowOnOwnerMonitor(nullptr, targetWidth, targetHeight);
+            RECT suggested{
+                targetPosition.x,
+                targetPosition.y,
+                targetPosition.x + targetWidth,
+                targetPosition.y + targetHeight};
+            SendMessageW(hwnd_, WM_DPICHANGED, MAKELONG(targetDpi, targetDpi), reinterpret_cast<LPARAM>(&suggested));
+        }
+    }
     ShowWindow(hwnd_, SW_SHOW);
     UpdateWindow(hwnd_);
     StartScan();

@@ -414,6 +414,12 @@ private:
     int EnsureCurrentTag();
 
     void BuildLayout(float width, float height, D2D1_RECT_F& title, D2D1_RECT_F& groups, D2D1_RECT_F& tags, D2D1_RECT_F& links) const;
+    UINT CurrentDpi() const;
+    float ClientPxToDip(int value) const;
+    LONG ClientDipToPx(float value) const;
+    POINT ClientPointToDip(POINT point) const;
+    D2D1_SIZE_F ClientSizeDip() const;
+    void ApplyDpiChange(UINT newDpi, const RECT* suggestedWindowRect);
     HitArea HitTest(float x, float y) const;
     bool IsHover(HitKind kind, int id) const;
     static bool Contains(const D2D1_RECT_F& rect, float x, float y);
@@ -513,15 +519,13 @@ private:
     bool noteDirty_ = false;
     UINT_PTR noteSaveTimerId_ = 0;
     UINT_PTR reminderScanTimerId_ = 0;
-    UINT_PTR reminderPanelTimerId_ = 0;
-    HWND reminderPanel_ = nullptr;
-    HFONT reminderPanelFont_ = nullptr;
     std::unordered_set<std::wstring> shownReminderKeys_;
 
     ID2D1Factory* d2dFactory_ = nullptr;
     IDWriteFactory* dwriteFactory_ = nullptr;
     IWICImagingFactory* uiWicFactory_ = nullptr;
     ID2D1HwndRenderTarget* renderTarget_ = nullptr;
+    UINT dpi_ = USER_DEFAULT_SCREEN_DPI;
     IDWriteTextFormat* titleFormat_ = nullptr;
     IDWriteTextFormat* textFormat_ = nullptr;
     IDWriteTextFormat* navSelectedFormat_ = nullptr;

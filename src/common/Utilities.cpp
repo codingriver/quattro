@@ -254,15 +254,53 @@ std::optional<int> ParseInt(const std::wstring& value) {
     return std::nullopt;
 }
 
-bool SuppressForegroundActivation() {
+namespace {
+bool EnvironmentFlagEnabled(const wchar_t* name) {
     wchar_t value[16]{};
     constexpr DWORD capacity = static_cast<DWORD>(sizeof(value) / sizeof(value[0]));
-    const DWORD length = GetEnvironmentVariableW(L"QUATTRO_TEST_NO_FOCUS", value, capacity);
+    const DWORD length = GetEnvironmentVariableW(name, value, capacity);
     if (length == 0 || length >= capacity) {
         return false;
     }
     const std::wstring normalized = ToLower(Trim(value));
     return normalized == L"1" || normalized == L"true" || normalized == L"yes" || normalized == L"on";
+}
+}
+
+bool SuppressForegroundActivation() {
+    return EnvironmentFlagEnabled(L"QUATTRO_TEST_NO_FOCUS");
+}
+
+bool QuattroTestMode() {
+    return EnvironmentFlagEnabled(L"QUATTRO_TEST_MODE");
+}
+
+bool BackgroundAcceptanceMode() {
+    wchar_t value[32]{};
+    constexpr DWORD capacity = static_cast<DWORD>(sizeof(value) / sizeof(value[0]));
+    const DWORD length = GetEnvironmentVariableW(L"QUATTRO_ACCEPTANCE_MODE", value, capacity);
+    if (length == 0 || length >= capacity) {
+        return false;
+    }
+    return ToLower(Trim(value)) == L"background";
+}
+
+void ApplyWindowBackgroundPolicy(HWND hwnd) {
+    if (!hwnd || !BackgroundAcceptanceMode()) {
+        return;
+    }
+    HWND target = GetAncestor(hwnd, GA_ROOTOWNER);
+    if (!target) {
+        target = hwnd;
+    }
+    SetWindowPos(
+        target,
+        HWND_BOTTOM,
+        0,
+        0,
+        0,
+        0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
 }
 
 void ActivateWindow(HWND hwnd) {

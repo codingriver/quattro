@@ -18,6 +18,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <string>
 #include <vector>
 
@@ -544,11 +545,67 @@ bool HasPrivilegeRestartArgument() {
 bool HasUpdateRestartArgument() {
     return HasCommandLineArgument(L"--quattro-update-restart");
 }
+
+void WriteTestReadyMarker(const std::filesystem::path& appDirectory, HWND hwnd) {
+    if (!QuattroTestMode()) {
+        return;
+    }
+    const std::filesystem::path logs = appDirectory / L"logs";
+    std::error_code ec;
+    std::filesystem::create_directories(logs, ec);
+    if (ec) {
+        return;
+    }
+    std::ofstream file(logs / L"test-ready.txt", std::ios::binary | std::ios::trunc);
+    if (!file) {
+        return;
+    }
+    wchar_t runId[128]{};
+    const DWORD runIdLength = GetEnvironmentVariableW(
+        L"QUATTRO_TEST_RUN_ID",
+        runId,
+        static_cast<DWORD>(std::size(runId)));
+    file << "pid=" << GetCurrentProcessId() << "\n";
+    file << "hwnd=" << reinterpret_cast<std::uintptr_t>(hwnd) << "\n";
+    if (runIdLength > 0 && runIdLength < std::size(runId)) {
+        file << "run_id=" << WideToUtf8(std::wstring(runId, runIdLength)) << "\n";
+    }
+}
+
+bool ValidateTestEnvironment(std::wstring& error) {
+    if (!QuattroTestMode()) {
+        return true;
+    }
+    const std::filesystem::path root = QuattroUserConfigDirectory();
+    if (root.empty() || !FileExists(root / L".quattro-test-root")) {
+        error = L"测试模式缺少独立运行根目录标记，拒绝回落到正式用户目录。";
+        return false;
+    }
+    return true;
+}
+
+std::wstring TestScopedSingleInstanceName(std::wstring name) {
+    if (!QuattroTestMode()) return name;
+    wchar_t runId[128]{};
+    const DWORD length = GetEnvironmentVariableW(
+        L"QUATTRO_TEST_RUN_ID", runId, static_cast<DWORD>(std::size(runId)));
+    if (length > 0 && length < std::size(runId)) {
+        name += L"_Test_";
+        name.append(runId, length);
+    }
+    return name;
+}
 }
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     ResetStartupTiming();
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+
+    std::wstring testEnvironmentError;
+    if (!ValidateTestEnvironment(testEnvironmentError)) {
+        OutputDebugStringW((testEnvironmentError + L"\n").c_str());
+        return 2;
+    }
 
     const std::filesystem::path moduleDirectory = GetModuleDirectory();
     EmbeddedAssetInstallResult assetInstall = PrepareEmbeddedAssets(moduleDirectory);
@@ -624,8 +681,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     }
 
     Runtime runtime;
-    const std::wstring mutexName = BuildName(L"QuattroMutex_", appDirectory);
-    const std::wstring sharedMemoryName = BuildName(L"QuattroShareMemory_", appDirectory);
+    const std::wstring mutexName = TestScopedSingleInstanceName(BuildName(L"QuattroMutex_", appDirectory));
+    const std::wstring sharedMemoryName = TestScopedSingleInstanceName(BuildName(L"QuattroShareMemory_", appDirectory));
     runtime.mutex = CreateMutexW(nullptr, TRUE, mutexName.c_str());
     const DWORD mutexError = GetLastError();
     WriteStartupTiming(
@@ -757,6 +814,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
         WriteAppLog(L"主窗口已创建，但单实例句柄发布失败。pid=" + CurrentPidText());
         WriteStartupTiming(L"main window handle published", L"ok=0");
     }
+    WriteTestReadyMarker(appDirectory, window.hwnd());
     FinishStartupTiming();
     if (!storageService.sqliteAvailable() && !storageService.lastError().empty()) {
         ShowThemedMessageBox(window.hwnd(), instance, theme, storageService.lastError(), L"数据存储", MB_ICONINFORMATION | MB_OK);

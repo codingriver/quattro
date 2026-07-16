@@ -1,5 +1,6 @@
 #include "ThemedUi.h"
 #include "ThemedWindowUi.h"
+#include "Utilities.h"
 
 #include <memory>
 #include <utility>
@@ -30,7 +31,7 @@ public:
         hwnd_ = ThemedWindowUi::CreateWindowHandle(options);
         if (!hwnd_) return MessageBoxW(owner_, message_.c_str(), title_.c_str(), flags_);
         windowUi_->ShowModal();
-        ShowWindow(hwnd_, SW_SHOW);
+        ShowWindowRespectFocusPolicy(hwnd_, SW_SHOWNORMAL);
         UpdateWindow(hwnd_);
         MSG message{};
         while (!done_ && GetMessageW(&message, nullptr, 0, 0) > 0) {

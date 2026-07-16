@@ -4,6 +4,7 @@
 #include "../src/domain/LinkSorting.h"
 #include "../src/services/ConfigPackageService.h"
 #include "../src/services/ContextMenuProviderIconService.h"
+#include "../src/services/FileLockQueryService.h"
 #include "../src/services/Launcher.h"
 #include "../src/domain/MenuCatalog.h"
 #include "../src/domain/PluginRegistry.h"
@@ -20,6 +21,8 @@
 #include "../src/theme/ThemedUi.h"
 #include "../src/theme/ThemedControls.h"
 #include "../src/theme/ThemedWindowUi.h"
+#include "../src/theme/ThemedD2D.h"
+#include "../src/theme/ThemedGdiFallback.h"
 #include "../src/domain/TodoSchedule.h"
 #include "../src/common/Utilities.h"
 #include "../src/common/EmbeddedExecutableManager.h"
@@ -35,6 +38,8 @@
 
 #include <cmath>
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -131,6 +136,67 @@ int wmain() {
     Check(FormatByteSizeForDisplay(0) == L"0 B", "Byte size display zero");
     Check(FormatByteSizeForDisplay(1024) == L"1.00 KB", "Byte size display kilobytes");
     Check(FormatByteSizeForDisplay(12ull * 1024ull * 1024ull) == L"12.0 MB", "Byte size display megabytes");
+    {
+        const std::filesystem::path fileLockRoot = std::filesystem::temp_directory_path() /
+            (L"quattro_file_lock_unit_" + std::to_wstring(GetCurrentProcessId()));
+        std::filesystem::remove_all(fileLockRoot, ec);
+        std::filesystem::create_directories(fileLockRoot / L"nested");
+        for (int index = 0; index < 48; ++index) {
+            const std::filesystem::path parent = index % 2 == 0 ? fileLockRoot : fileLockRoot / L"nested";
+            std::ofstream(parent / (L"resource-" + std::to_wstring(index) + L".txt"), std::ios::binary) << "unit";
+        }
+
+        std::vector<FileLockQueryProgress> progressEvents;
+        FileLockQueryOptions parallelOptions;
+        parallelOptions.batchSize = 4;
+        parallelOptions.maxWorkers = 4;
+        const FileLockQueryResult parallelResult = QueryFileLocks(
+            fileLockRoot.wstring(),
+            {},
+            [&](const FileLockQueryProgress& progress) { progressEvents.push_back(progress); },
+            parallelOptions);
+        Check(parallelResult.error.empty(), "File lock directory query succeeds");
+        Check(parallelResult.directory, "File lock query identifies directory input");
+        Check(parallelResult.totalPaths == 49 && parallelResult.checkedPaths == 49,
+            "File lock query checks root and every regular file");
+        Check(parallelResult.workerCount >= 2 && parallelResult.workerCount <= 4,
+            "File lock directory query uses bounded parallel workers");
+        Check(
+            std::any_of(progressEvents.begin(), progressEvents.end(), [](const FileLockQueryProgress& progress) {
+                return progress.phase == FileLockQueryPhase::Enumerating;
+            }),
+            "File lock query reports enumeration progress");
+        Check(
+            !progressEvents.empty() && progressEvents.back().phase == FileLockQueryPhase::Completed &&
+                progressEvents.back().checkedPaths == progressEvents.back().totalPaths,
+            "File lock query reports completed progress");
+
+        std::atomic_bool cancelRequested{false};
+        FileLockQueryOptions cancelOptions;
+        cancelOptions.batchSize = 1;
+        cancelOptions.maxWorkers = 2;
+        cancelOptions.batchDelay = std::chrono::milliseconds(3);
+        const FileLockQueryResult cancelledResult = QueryFileLocks(
+            fileLockRoot.wstring(),
+            [&]() { return cancelRequested.load(); },
+            [&](const FileLockQueryProgress& progress) {
+                if (progress.phase == FileLockQueryPhase::Querying && progress.checkedPaths >= 2) {
+                    cancelRequested.store(true);
+                }
+            },
+            cancelOptions);
+        Check(cancelledResult.cancelled, "File lock directory query supports cancellation");
+        Check(cancelledResult.checkedPaths < cancelledResult.totalPaths,
+            "File lock cancellation stops before all paths are checked");
+
+        const FileLockQueryResult fileResult = QueryFileLocks((fileLockRoot / L"resource-0.txt").wstring());
+        Check(fileResult.error.empty() && !fileResult.directory && fileResult.totalPaths == 1 &&
+                fileResult.checkedPaths == 1 && fileResult.workerCount == 1,
+            "File lock single-file query keeps the lightweight one-worker path");
+        const FileLockQueryResult missingResult = QueryFileLocks((fileLockRoot / L"missing.txt").wstring());
+        Check(!missingResult.error.empty(), "File lock query reports a missing path");
+        std::filesystem::remove_all(fileLockRoot, ec);
+    }
     for (const UINT dpi : {96u, 120u, 144u}) {
         const float scale = static_cast<float>(dpi) / 96.0f;
         const float textLeft = 36.0f * scale;
@@ -147,6 +213,20 @@ int wmain() {
     Check(QuattroUserConfigDirectory() == unitUserConfigRoot, "User config env override");
     Check(QuattroEmbeddedExecutableRootDirectory() == unitUserConfigRoot / L"tools",
         "Embedded executable root follows user config override");
+    SetEnvironmentVariableW(L"QUATTRO_TEST_NO_FOCUS", L"1");
+    Check(SuppressForegroundActivation(), "Test no-focus flag accepts enabled value");
+    SetEnvironmentVariableW(L"QUATTRO_TEST_NO_FOCUS", L"off");
+    Check(!SuppressForegroundActivation(), "Test no-focus flag rejects disabled value");
+    SetEnvironmentVariableW(L"QUATTRO_TEST_NO_FOCUS", nullptr);
+    SetEnvironmentVariableW(L"QUATTRO_TEST_MODE", L"yes");
+    Check(QuattroTestMode(), "Quattro test mode accepts enabled value");
+    SetEnvironmentVariableW(L"QUATTRO_TEST_MODE", nullptr);
+    SetEnvironmentVariableW(L"QUATTRO_ACCEPTANCE_MODE", L"background");
+    Check(BackgroundAcceptanceMode(), "Background acceptance mode is detected");
+    ApplyWindowBackgroundPolicy(nullptr);
+    SetEnvironmentVariableW(L"QUATTRO_ACCEPTANCE_MODE", L"interactive");
+    Check(!BackgroundAcceptanceMode(), "Interactive acceptance mode is not background");
+    SetEnvironmentVariableW(L"QUATTRO_ACCEPTANCE_MODE", nullptr);
     Check(
         SelectedPathCopyService::FormatPaths({L"C:\\资料\\报告.docx", L"D:\\项目", L"\\\\server\\share\\文件.txt"}) ==
             L"C:\\资料\\报告.docx\r\nD:\\项目\r\n\\\\server\\share\\文件.txt",
@@ -1184,6 +1264,13 @@ int wmain() {
         "Management window scales logical width at 125 percent DPI");
     Check(ThemedWindowUi::ScaleForDpi(kThemedManagementClientHeight, 144) == 780,
         "Management window scales logical height at 150 percent DPI");
+    Check(ThemedD2D::ScaleDip(28, 120) == 35, "D2D logical metric scales to 125 percent DPI");
+    Check(ThemedD2D::ScaleDip(28, 144) == 42, "D2D logical metric scales to 150 percent DPI");
+    Check(ThemedControls::ComboBoxDropdownHeight(fallbackTheme, 120) == 35 + 35 * 6,
+        "Themed combo dropdown scales item rows at 125 percent DPI");
+    Check(ThemedControls::ComboBoxDropdownHeight(fallbackTheme, 144) == 42 + 42 * 6,
+        "Themed combo dropdown scales item rows at 150 percent DPI");
+    Check(ThemedD2D::IsAvailable(), "Direct2D and DirectWrite factories are available");
     HWND controlParent = CreateWindowExW(
         0, L"STATIC", L"", WS_POPUP,
         0, 0, 320, 200, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
@@ -1293,6 +1380,32 @@ int wmain() {
             ThemedButtonRole::Normal,
             ThemedButtonSize::Compact,
             ThemedButtonWidthMode::Text);
+        {
+            HDC screen = GetDC(nullptr);
+            HDC bitmapDc = screen ? CreateCompatibleDC(screen) : nullptr;
+            HBITMAP bitmap = screen ? CreateCompatibleBitmap(screen, 180, 40) : nullptr;
+            HGDIOBJ oldBitmap = bitmapDc && bitmap ? SelectObject(bitmapDc, bitmap) : nullptr;
+            if (bitmapDc && bitmap) {
+                ThemedGdiFallback::FillSolidRect(bitmapDc, RECT{0, 0, 180, 40}, RGB(255, 255, 255));
+                DRAWITEMSTRUCT draw{};
+                draw.CtlType = ODT_BUTTON;
+                draw.hwndItem = runtimeTooltipButton;
+                draw.hDC = bitmapDc;
+                draw.rcItem = RECT{0, 0, 180, 40};
+                SetEnvironmentVariableW(L"QUATTRO_FORCE_GDI_FALLBACK", L"1");
+                Check(!ThemedD2D::IsAvailable(), "D2D fallback switch disables the visual backend");
+                Check(ThemedControls::Draw(fallbackTheme, &draw),
+                    "Public button draws through isolated GDI fallback");
+                SetEnvironmentVariableW(L"QUATTRO_FORCE_GDI_FALLBACK", nullptr);
+                Check(ThemedD2D::IsAvailable(), "D2D backend recovers after fallback switch is cleared");
+                Check(GetPixel(bitmapDc, 2, 2) != RGB(255, 255, 255),
+                    "Fallback button paint changes the target surface");
+            }
+            if (bitmapDc && oldBitmap) SelectObject(bitmapDc, oldBitmap);
+            if (bitmap) DeleteObject(bitmap);
+            if (bitmapDc) DeleteDC(bitmapDc);
+            if (screen) ReleaseDC(nullptr, screen);
+        }
         ThemedTooltipOptions runtimeTooltipOptions{};
         runtimeTooltipOptions.placement = ThemedTooltipPlacement::Cursor;
         tooltipUi.SetTooltip(runtimeTooltipButton, L"button description", runtimeTooltipOptions);
@@ -1518,6 +1631,11 @@ int wmain() {
             12, 14, 80, 20, controlParent, nullptr, GetModuleHandleW(nullptr), nullptr);
         HWND fixedPanel = controlUi.Panel(7120, RECT{0, 520, 240, 600});
         ThemedUi::BindPanelChildren(fixedPanel, {fixedPanelChild});
+        SCROLLINFO fixedPanelScroll{sizeof(fixedPanelScroll), SIF_RANGE | SIF_PAGE | SIF_POS};
+        GetScrollInfo(fixedPanel, SB_VERT, &fixedPanelScroll);
+        Check((GetWindowLongPtrW(fixedPanel, GWL_STYLE) & WS_VSCROLL) == 0 &&
+                fixedPanelScroll.nMin == 0 && fixedPanelScroll.nMax == 0 && fixedPanelScroll.nPage == 0,
+            "Themed non-scrollable panel binding does not expose a vertical scrollbar range");
         RECT fixedChildBefore{};
         RECT fixedChildAfter{};
         GetWindowRect(fixedPanelChild, &fixedChildBefore);

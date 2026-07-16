@@ -1,10 +1,13 @@
 #include "ThemedWindowUi.h"
+#include "ThemedD2D.h"
+#include "ThemedGdiFallback.h"
 
 #include "ThemedControls.h"
 #include "Utilities.h"
 
 #include <commctrl.h>
 #include <algorithm>
+#include <cstring>
 #include <utility>
 
 namespace {
@@ -54,6 +57,54 @@ bool SameToastOptions(const ThemedToastOptions& left, const ThemedToastOptions& 
            left.enabled == right.enabled &&
            left.durationMs == right.durationMs &&
            left.maxWidth == right.maxWidth;
+}
+
+bool PresentLayeredWindow(HWND hwnd, const std::function<void(HDC)>& paint) {
+    if (!hwnd || !paint) return false;
+    RECT windowRect{};
+    if (!GetWindowRect(hwnd, &windowRect)) return false;
+    const int width = windowRect.right - windowRect.left;
+    const int height = windowRect.bottom - windowRect.top;
+    if (width <= 0 || height <= 0) return false;
+
+    HDC screen = GetDC(nullptr);
+    HDC memory = screen ? CreateCompatibleDC(screen) : nullptr;
+    BITMAPINFO info{};
+    info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    info.bmiHeader.biWidth = width;
+    info.bmiHeader.biHeight = -height;
+    info.bmiHeader.biPlanes = 1;
+    info.bmiHeader.biBitCount = 32;
+    info.bmiHeader.biCompression = BI_RGB;
+    void* pixels = nullptr;
+    HBITMAP bitmap = memory
+        ? CreateDIBSection(memory, &info, DIB_RGB_COLORS, &pixels, nullptr, 0)
+        : nullptr;
+    if (!screen || !memory || !bitmap || !pixels) {
+        if (bitmap) DeleteObject(bitmap);
+        if (memory) DeleteDC(memory);
+        if (screen) ReleaseDC(nullptr, screen);
+        return false;
+    }
+    std::memset(pixels, 0, static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 4);
+    HGDIOBJ oldBitmap = SelectObject(memory, bitmap);
+    paint(memory);
+
+    POINT destination{windowRect.left, windowRect.top};
+    POINT source{};
+    SIZE size{width, height};
+    BLENDFUNCTION blend{};
+    blend.BlendOp = AC_SRC_OVER;
+    blend.SourceConstantAlpha = 255;
+    blend.AlphaFormat = AC_SRC_ALPHA;
+    const BOOL updated = UpdateLayeredWindow(
+        hwnd, screen, &destination, &size, memory, &source, 0, &blend, ULW_ALPHA);
+
+    SelectObject(memory, oldBitmap);
+    DeleteObject(bitmap);
+    DeleteDC(memory);
+    ReleaseDC(nullptr, screen);
+    return updated != FALSE;
 }
 }
 
@@ -173,8 +224,9 @@ HWND ThemedWindowUi::CreateWindowHandle(const ThemedWindowCreateOptions& options
     const int clientHeight = options.scaleForDpi ? ScaleForDpi(options.clientHeight, dpi, options.logicalDpi) : options.clientHeight;
     const SIZE windowSize = AdjustedWindowSize(clientWidth, clientHeight, options.style, options.exStyle, false, dpi);
     const POINT position = WindowPosition(options, windowSize.cx, windowSize.cy);
+    const DWORD exStyle = BackgroundAcceptanceMode() ? (options.exStyle | WS_EX_NOACTIVATE) : options.exStyle;
     HWND hwnd = CreateWindowExW(
-        options.exStyle,
+        exStyle,
         options.className,
         options.title ? options.title : L"",
         options.style,
@@ -239,6 +291,9 @@ void ThemedWindowUi::RestoreModalOwner() {
 }
 
 bool ThemedWindowUi::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam, LRESULT& result) {
+    if (message == WM_SHOWWINDOW && wParam) {
+        ApplyWindowBackgroundPolicy(hwnd_);
+    }
     if (ThemedUi::HandleParentMessage(theme_, message, wParam, lParam, result)) {
         return true;
     }
@@ -299,7 +354,12 @@ bool ThemedWindowUi::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam, L
     case WM_ERASEBKGND: {
         RECT rect{};
         GetClientRect(hwnd_, &rect);
-        FillRect(reinterpret_cast<HDC>(wParam), &rect, BackgroundBrush());
+        HDC dc = reinterpret_cast<HDC>(wParam);
+        ThemedD2D::ScopedHdcPaint d2dPaint(hwnd_, dc);
+        const COLORREF background = ToColorRef(theme_.color(L"dialog", L"normal", L"bg"));
+        if (!ThemedD2D::FillRect(dc, rect, background)) {
+            ThemedGdiFallback::FillSolidRect(dc, rect, background);
+        }
         result = 1;
         return true;
     }
@@ -375,7 +435,23 @@ void ThemedWindowUi::ApplyDpiChange(UINT newDpi, const RECT* suggestedWindowRect
     if (toast_ && IsWindowVisible(toast_)) {
         toastLayoutValid_ = false;
         PositionToast();
-        InvalidateRect(toast_, nullptr, FALSE);
+        if ((GetWindowLongPtrW(toast_, GWL_EXSTYLE) & WS_EX_LAYERED) != 0) {
+            PresentLayeredWindow(toast_, [this](HDC memory) { PaintToast(memory); });
+        } else {
+            InvalidateRect(toast_, nullptr, FALSE);
+        }
+    }
+    if (tooltip_ && IsWindowVisible(tooltip_)) {
+        tooltipSize_ = MeasureTooltip(tooltipText_, tooltipOptions_);
+        tooltipLayoutValid_ = true;
+        SetWindowPos(
+            tooltip_, nullptr, tooltipPosition_.x, tooltipPosition_.y, tooltipSize_.cx, tooltipSize_.cy,
+            SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOOWNERZORDER);
+        if ((GetWindowLongPtrW(tooltip_, GWL_EXSTYLE) & WS_EX_LAYERED) != 0) {
+            PresentLayeredWindow(tooltip_, [this](HDC memory) { PaintTooltip(memory); });
+        } else {
+            InvalidateRect(tooltip_, nullptr, FALSE);
+        }
     }
     if (dpiChangedCallback_) {
         dpiChangedCallback_(newDpi);
@@ -483,8 +559,8 @@ void ThemedWindowUi::MoveEditFrame(HWND child, RECT frame) {
     const RECT oldFrame = editFrame->frame;
     editFrame->frame = frame;
     const RECT childRect = editFrame->options.mode == ThemedEditMode::MultiLine
-        ? ThemedControls::MultiLineEditRect(theme_, frame)
-        : ThemedControls::SingleLineEditRectForFrame(theme_, frame);
+        ? ThemedControls::MultiLineEditRect(theme_, frame, dpi_)
+        : ThemedControls::SingleLineEditRectForFrame(theme_, frame, dpi_);
     SetWindowPos(
         child,
         nullptr,
@@ -575,29 +651,23 @@ bool ThemedWindowUi::EnsureTooltipWindow() {
     wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     wc.lpszClassName = kClassName;
     if (!RegisterClassExW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return false;
+    const DWORD layeredStyle = ThemedD2D::IsAvailable() ? WS_EX_LAYERED : 0u;
     tooltip_ = CreateWindowExW(
-        WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+        (BackgroundAcceptanceMode() ? 0u : WS_EX_TOPMOST) | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | layeredStyle,
         kClassName, L"", WS_POPUP, 0, 0, 0, 0, hwnd_, nullptr, instance_, this);
     return tooltip_ != nullptr;
 }
 
 SIZE ThemedWindowUi::MeasureTooltip(const std::wstring& text, const ThemedTooltipOptions& options) const {
-    HDC dc = GetDC(nullptr);
-    HFONT oldFont = reinterpret_cast<HFONT>(SelectObject(dc, font()));
-    const int maxWidth = options.maxWidth > 0
-        ? options.maxWidth
-        : static_cast<int>(theme_.metric(L"tooltip", L"maxWidth", 420.0f));
-    RECT rect{0, 0, std::max(80, maxWidth), 0};
-    UINT format = DT_CALCRECT | DT_NOPREFIX;
-    format |= options.multiline ? DT_WORDBREAK : DT_SINGLELINE;
-    DrawTextW(dc, text.c_str(), static_cast<int>(text.size()), &rect, format);
-    SelectObject(dc, oldFont);
-    ReleaseDC(nullptr, dc);
-    const int paddingX = static_cast<int>(theme_.metric(L"tooltip", L"paddingX", 8.0f));
-    const int paddingY = static_cast<int>(theme_.metric(L"tooltip", L"paddingY", 7.0f));
+    const int maxWidth = ScaleForDpi(
+        options.maxWidth > 0 ? options.maxWidth : static_cast<int>(theme_.metric(L"tooltip", L"maxWidth", 420.0f)),
+        dpi_);
+    const SIZE measured = ThemedD2D::MeasureText(font(), text, std::max(ScaleForDpi(80, dpi_), maxWidth), options.multiline);
+    const int paddingX = ScaleForDpi(static_cast<int>(theme_.metric(L"tooltip", L"paddingX", 8.0f)), dpi_);
+    const int paddingY = ScaleForDpi(static_cast<int>(theme_.metric(L"tooltip", L"paddingY", 7.0f)), dpi_);
     return SIZE{
-        std::max(80, static_cast<int>(rect.right - rect.left) + paddingX * 2),
-        std::max(24, static_cast<int>(rect.bottom - rect.top) + paddingY * 2)};
+        std::max(ScaleForDpi(80, dpi_), static_cast<int>(measured.cx) + paddingX * 2),
+        std::max(ScaleForDpi(24, dpi_), static_cast<int>(measured.cy) + paddingY * 2)};
 }
 
 void ThemedWindowUi::ShowTooltip(
@@ -619,8 +689,8 @@ void ThemedWindowUi::ShowTooltip(
         tooltipLayoutValid_ = true;
     }
     const SIZE size = tooltipSize_;
-    const int offsetX = static_cast<int>(theme_.metric(L"tooltip", L"cursorOffsetX", 14.0f));
-    const int offsetY = static_cast<int>(theme_.metric(L"tooltip", L"cursorOffsetY", 18.0f));
+    const int offsetX = ScaleForDpi(static_cast<int>(theme_.metric(L"tooltip", L"cursorOffsetX", 14.0f)), dpi_);
+    const int offsetY = ScaleForDpi(static_cast<int>(theme_.metric(L"tooltip", L"cursorOffsetY", 18.0f)), dpi_);
     int x = screenPoint.x + offsetX;
     int y = screenPoint.y + offsetY;
     if (options.placement == ThemedTooltipPlacement::Above) y = screenPoint.y - size.cy - offsetY;
@@ -651,17 +721,17 @@ void ThemedWindowUi::ShowTooltip(
     SetWindowPos(tooltip_, nullptr, x, y, size.cx, size.cy, positionFlags);
     tooltipPosition_ = POINT{x, y};
     tooltipPositionValid_ = true;
-    if (layoutChanged) {
-        const int radius = static_cast<int>(theme_.metric(L"tooltip", L"radius", 6.0f));
-        HRGN region = CreateRoundRectRgn(0, 0, size.cx + 1, size.cy + 1, radius * 2, radius * 2);
-        if (!region || SetWindowRgn(tooltip_, region, FALSE) == 0) {
-            if (region) DeleteObject(region);
-        }
+    const bool layered = (GetWindowLongPtrW(tooltip_, GWL_EXSTYLE) & WS_EX_LAYERED) != 0;
+    if (layoutChanged && !layered) {
+        const int radius = ScaleForDpi(static_cast<int>(theme_.metric(L"tooltip", L"radius", 6.0f)), dpi_);
+        ThemedGdiFallback::ApplyRoundedWindowRegion(tooltip_, size, radius, false);
     }
     if (!IsWindowVisible(tooltip_)) {
         ShowWindow(tooltip_, SW_SHOWNA);
     }
-    if (layoutChanged) {
+    if (layered) {
+        PresentLayeredWindow(tooltip_, [this](HDC memory) { PaintTooltip(memory); });
+    } else if (layoutChanged) {
         InvalidateRect(tooltip_, nullptr, FALSE);
     }
 }
@@ -676,30 +746,37 @@ void ThemedWindowUi::HideTooltip() {
 void ThemedWindowUi::PaintTooltip(HDC dc) const {
     RECT rect{};
     GetClientRect(tooltip_, &rect);
+    const bool layered = (GetWindowLongPtrW(tooltip_, GWL_EXSTYLE) & WS_EX_LAYERED) != 0;
+    ThemedD2D::ScopedHdcPaint d2dPaint(
+        tooltip_, dc, layered ? ThemedD2D::SurfaceKind::Transparent : ThemedD2D::SurfaceKind::Opaque);
     const wchar_t* state = TooltipState(tooltipOptions_.role);
-    HBRUSH brush = CreateSolidBrush(ToColorRef(theme_.color(L"tooltip", state, L"bg")));
-    HPEN pen = CreatePen(
-        PS_SOLID,
-        std::max(1, static_cast<int>(theme_.metric(L"tooltip", L"borderWidth", 1.0f))),
-        ToColorRef(theme_.color(L"tooltip", state, L"border")));
-    HGDIOBJ oldBrush = SelectObject(dc, brush);
-    HGDIOBJ oldPen = SelectObject(dc, pen);
-    const int radius = static_cast<int>(theme_.metric(L"tooltip", L"radius", 6.0f));
-    RoundRect(dc, rect.left, rect.top, rect.right, rect.bottom, radius * 2, radius * 2);
-    SelectObject(dc, oldPen);
-    SelectObject(dc, oldBrush);
-    DeleteObject(pen);
-    DeleteObject(brush);
+    const int borderWidth = std::max(1, ScaleForDpi(
+        static_cast<int>(theme_.metric(L"tooltip", L"borderWidth", 1.0f)), dpi_));
+    const int radius = ScaleForDpi(static_cast<int>(theme_.metric(L"tooltip", L"radius", 6.0f)), dpi_);
+    if (!ThemedD2D::FillRoundedRect(
+            dc,
+            rect,
+            static_cast<float>(radius),
+            ToColorRef(theme_.color(L"tooltip", state, L"bg")),
+            ToColorRef(theme_.color(L"tooltip", state, L"border")),
+            static_cast<float>(borderWidth))) {
+        ThemedGdiFallback::FillRoundedRect(
+            dc, rect, radius,
+            ToColorRef(theme_.color(L"tooltip", state, L"bg")),
+            ToColorRef(theme_.color(L"tooltip", state, L"border")), borderWidth);
+    }
 
-    const int paddingX = static_cast<int>(theme_.metric(L"tooltip", L"paddingX", 8.0f));
-    const int paddingY = static_cast<int>(theme_.metric(L"tooltip", L"paddingY", 7.0f));
+    const int paddingX = ScaleForDpi(static_cast<int>(theme_.metric(L"tooltip", L"paddingX", 8.0f)), dpi_);
+    const int paddingY = ScaleForDpi(static_cast<int>(theme_.metric(L"tooltip", L"paddingY", 7.0f)), dpi_);
     InflateRect(&rect, -paddingX, -paddingY);
-    SetBkMode(dc, TRANSPARENT);
-    SetTextColor(dc, ToColorRef(theme_.color(L"tooltip", state, L"text")));
-    HFONT oldFont = reinterpret_cast<HFONT>(SelectObject(dc, font()));
     UINT format = DT_NOPREFIX | (tooltipOptions_.multiline ? DT_WORDBREAK : DT_SINGLELINE);
-    DrawTextW(dc, tooltipText_.c_str(), static_cast<int>(tooltipText_.size()), &rect, format);
-    SelectObject(dc, oldFont);
+    if (!ThemedD2D::DrawTextLayout(
+            dc, font(), tooltipText_.c_str(), static_cast<int>(tooltipText_.size()), rect, format,
+            ToColorRef(theme_.color(L"tooltip", state, L"text")))) {
+        ThemedGdiFallback::DrawText(
+            dc, font(), tooltipText_.c_str(), static_cast<int>(tooltipText_.size()), rect, format,
+            ToColorRef(theme_.color(L"tooltip", state, L"text")));
+    }
 }
 
 LRESULT CALLBACK ThemedWindowUi::TooltipProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
@@ -746,29 +823,24 @@ bool ThemedWindowUi::EnsureToastWindow() {
     wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     wc.lpszClassName = kClassName;
     if (!RegisterClassExW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return false;
+    const DWORD layeredStyle = ThemedD2D::IsAvailable() ? WS_EX_LAYERED : 0u;
     toast_ = CreateWindowExW(
-        WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+        (BackgroundAcceptanceMode() ? 0u : WS_EX_TOPMOST) | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | layeredStyle,
         kClassName, L"", WS_POPUP, 0, 0, 0, 0, hwnd_, nullptr, instance_, this);
     return toast_ != nullptr;
 }
 
 SIZE ThemedWindowUi::MeasureToast(const std::wstring& text, const ThemedToastOptions& options) const {
-    HDC dc = GetDC(nullptr);
-    HFONT oldFont = reinterpret_cast<HFONT>(SelectObject(dc, font()));
     const int maxWidth = ScaleForDpi(
         options.maxWidth > 0 ? options.maxWidth : static_cast<int>(theme_.metric(L"toast", L"maxWidth", 360.0f)),
         dpi_);
-    RECT rect{0, 0, std::max(ScaleForDpi(120, dpi_), maxWidth), 0};
-    UINT format = DT_CALCRECT | DT_NOPREFIX;
-    format |= options.multiline ? DT_WORDBREAK : DT_SINGLELINE;
-    DrawTextW(dc, text.c_str(), static_cast<int>(text.size()), &rect, format);
-    SelectObject(dc, oldFont);
-    ReleaseDC(nullptr, dc);
+    const SIZE measured = ThemedD2D::MeasureText(
+        font(), text, std::max(ScaleForDpi(120, dpi_), maxWidth), options.multiline);
     const int paddingX = ScaleForDpi(static_cast<int>(theme_.metric(L"toast", L"paddingX", 12.0f)), dpi_);
     const int paddingY = ScaleForDpi(static_cast<int>(theme_.metric(L"toast", L"paddingY", 9.0f)), dpi_);
     return SIZE{
-        std::max(ScaleForDpi(160, dpi_), static_cast<int>(rect.right - rect.left) + paddingX * 2),
-        std::max(ScaleForDpi(32, dpi_), static_cast<int>(rect.bottom - rect.top) + paddingY * 2)};
+        std::max(ScaleForDpi(160, dpi_), static_cast<int>(measured.cx) + paddingX * 2),
+        std::max(ScaleForDpi(32, dpi_), static_cast<int>(measured.cy) + paddingY * 2)};
 }
 
 void ThemedWindowUi::PositionToast() {
@@ -825,11 +897,17 @@ void ThemedWindowUi::PositionToast() {
         y = std::max<int>(info.rcWork.top + marginY, std::min<int>(y, info.rcWork.bottom - toastSize_.cy - marginY));
     }
 
-    SetWindowPos(toast_, HWND_TOPMOST, x, y, toastSize_.cx, toastSize_.cy, SWP_NOACTIVATE);
-    const int radius = ScaleForDpi(static_cast<int>(theme_.metric(L"toast", L"radius", 7.0f)), dpi_);
-    HRGN region = CreateRoundRectRgn(0, 0, toastSize_.cx + 1, toastSize_.cy + 1, radius * 2, radius * 2);
-    if (!region || SetWindowRgn(toast_, region, FALSE) == 0) {
-        if (region) DeleteObject(region);
+    SetWindowPos(
+        toast_,
+        BackgroundAcceptanceMode() ? HWND_BOTTOM : HWND_TOPMOST,
+        x,
+        y,
+        toastSize_.cx,
+        toastSize_.cy,
+        SWP_NOACTIVATE);
+    if ((GetWindowLongPtrW(toast_, GWL_EXSTYLE) & WS_EX_LAYERED) == 0) {
+        const int radius = ScaleForDpi(static_cast<int>(theme_.metric(L"toast", L"radius", 7.0f)), dpi_);
+        ThemedGdiFallback::ApplyRoundedWindowRegion(toast_, toastSize_, radius, false);
     }
 }
 
@@ -850,7 +928,11 @@ void ThemedWindowUi::ShowToast(const std::wstring& text, const ThemedToastOption
     if (!IsWindowVisible(toast_)) {
         ShowWindow(toast_, SW_SHOWNA);
     }
-    InvalidateRect(toast_, nullptr, FALSE);
+    if ((GetWindowLongPtrW(toast_, GWL_EXSTYLE) & WS_EX_LAYERED) != 0) {
+        PresentLayeredWindow(toast_, [this](HDC memory) { PaintToast(memory); });
+    } else {
+        InvalidateRect(toast_, nullptr, FALSE);
+    }
     KillTimer(hwnd_, kToastTimerId);
     if (options.durationMs > 0) {
         SetTimer(hwnd_, kToastTimerId, static_cast<UINT>(options.durationMs), nullptr);
@@ -867,30 +949,37 @@ void ThemedWindowUi::HideToast() {
 void ThemedWindowUi::PaintToast(HDC dc) const {
     RECT rect{};
     GetClientRect(toast_, &rect);
+    const bool layered = (GetWindowLongPtrW(toast_, GWL_EXSTYLE) & WS_EX_LAYERED) != 0;
+    ThemedD2D::ScopedHdcPaint d2dPaint(
+        toast_, dc, layered ? ThemedD2D::SurfaceKind::Transparent : ThemedD2D::SurfaceKind::Opaque);
     const wchar_t* state = ToastState(toastOptions_.role);
-    HBRUSH brush = CreateSolidBrush(ToColorRef(theme_.color(L"toast", state, L"bg")));
-    HPEN pen = CreatePen(
-        PS_SOLID,
-        std::max(1, ScaleForDpi(static_cast<int>(theme_.metric(L"toast", L"borderWidth", 1.0f)), dpi_)),
-        ToColorRef(theme_.color(L"toast", state, L"border")));
-    HGDIOBJ oldBrush = SelectObject(dc, brush);
-    HGDIOBJ oldPen = SelectObject(dc, pen);
+    const int borderWidth = std::max(1, ScaleForDpi(
+        static_cast<int>(theme_.metric(L"toast", L"borderWidth", 1.0f)), dpi_));
     const int radius = ScaleForDpi(static_cast<int>(theme_.metric(L"toast", L"radius", 7.0f)), dpi_);
-    RoundRect(dc, rect.left, rect.top, rect.right, rect.bottom, radius * 2, radius * 2);
-    SelectObject(dc, oldPen);
-    SelectObject(dc, oldBrush);
-    DeleteObject(pen);
-    DeleteObject(brush);
+    if (!ThemedD2D::FillRoundedRect(
+            dc,
+            rect,
+            static_cast<float>(radius),
+            ToColorRef(theme_.color(L"toast", state, L"bg")),
+            ToColorRef(theme_.color(L"toast", state, L"border")),
+            static_cast<float>(borderWidth))) {
+        ThemedGdiFallback::FillRoundedRect(
+            dc, rect, radius,
+            ToColorRef(theme_.color(L"toast", state, L"bg")),
+            ToColorRef(theme_.color(L"toast", state, L"border")), borderWidth);
+    }
 
     const int paddingX = ScaleForDpi(static_cast<int>(theme_.metric(L"toast", L"paddingX", 12.0f)), dpi_);
     const int paddingY = ScaleForDpi(static_cast<int>(theme_.metric(L"toast", L"paddingY", 9.0f)), dpi_);
     InflateRect(&rect, -paddingX, -paddingY);
-    SetBkMode(dc, TRANSPARENT);
-    SetTextColor(dc, ToColorRef(theme_.color(L"toast", state, L"text")));
-    HFONT oldFont = reinterpret_cast<HFONT>(SelectObject(dc, font()));
     UINT format = DT_NOPREFIX | (toastOptions_.multiline ? DT_WORDBREAK : DT_SINGLELINE);
-    DrawTextW(dc, toastText_.c_str(), static_cast<int>(toastText_.size()), &rect, format);
-    SelectObject(dc, oldFont);
+    if (!ThemedD2D::DrawTextLayout(
+            dc, font(), toastText_.c_str(), static_cast<int>(toastText_.size()), rect, format,
+            ToColorRef(theme_.color(L"toast", state, L"text")))) {
+        ThemedGdiFallback::DrawText(
+            dc, font(), toastText_.c_str(), static_cast<int>(toastText_.size()), rect, format,
+            ToColorRef(theme_.color(L"toast", state, L"text")));
+    }
 }
 
 LRESULT CALLBACK ThemedWindowUi::ToastProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
@@ -932,7 +1021,11 @@ void ThemedWindowUi::FillBackground(HDC dc) const {
     }
     RECT rect{};
     GetClientRect(hwnd_, &rect);
-    FillRect(dc, &rect, const_cast<ThemedWindowUi*>(this)->BackgroundBrush());
+    ThemedD2D::ScopedHdcPaint d2dPaint(hwnd_, dc);
+    const COLORREF background = ToColorRef(theme_.color(L"dialog", L"normal", L"bg"));
+    if (!ThemedD2D::FillRect(dc, rect, background)) {
+        ThemedGdiFallback::FillSolidRect(dc, rect, background);
+    }
 }
 
 ThemedWindowUi::EditFrame* ThemedWindowUi::FindEditFrame(HWND child) {

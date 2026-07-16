@@ -1,13 +1,16 @@
 param(
     [string]$Repo = 'E:\work\quattro',
     [string]$AppDir = "$env:TEMP\quattro-sort-shot-run-asc",
-    [string]$OutDir = 'E:\work\quattro\screenshots\sort-acceptance'
+    [string]$OutDir = 'E:\work\quattro\screenshots\sort-acceptance',
+    [switch]$InteractiveVisual
 )
 $ErrorActionPreference = 'Stop'
+if (!$InteractiveVisual) {
+  throw 'This legacy cursor-driven capture must run in an isolated interactive Windows session. Use run-menu-visual-tests.ps1 for background-safe menu screenshots.'
+}
+. (Join-Path $Repo 'tools\QuattroTestHarness.ps1')
 New-Item -ItemType Directory -Force $AppDir | Out-Null
 New-Item -ItemType Directory -Force $OutDir | Out-Null
-$env:QUATTRO_USER_CONFIG_DIR = $AppDir
-Get-Process Quattro -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 Copy-Item "$Repo\build-vcpkg-preset\Release\Quattro.exe" "$AppDir\Quattro.exe" -Force
 Copy-Item "$Repo\icons" "$AppDir\icons" -Recurse -Force
 Copy-Item "$Repo\theme" "$AppDir\theme" -Recurse -Force
@@ -23,7 +26,6 @@ public static class Win32ShotRunAsc {
   [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetClassName(IntPtr hWnd, StringBuilder name, int count);
   [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint pid);
   [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
-  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int cmd);
   [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr hWnd, IntPtr after, int x, int y, int cx, int cy, uint flags);
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
@@ -55,13 +57,13 @@ function Capture-Region($Name, $Rect) {
 }
 if (Test-Path "$AppDir\db") { Remove-Item "$AppDir\db" -Recurse -Force }
 & "$Repo\build-vcpkg-preset\Release\QuattroSortScreenshotSeed.exe" $AppDir run-asc | Out-Null
-$proc = Start-Process -FilePath "$AppDir\Quattro.exe" -WorkingDirectory $AppDir -PassThru
+$proc = Start-QuattroTestProcess -FilePath "$AppDir\Quattro.exe" -WorkingDirectory $AppDir
 $hwnd = [IntPtr]::Zero
 for ($i = 0; $i -lt 80; $i++) { Start-Sleep -Milliseconds 150; $hwnd = Find-MainWindow $proc.Id; if ($hwnd -ne [IntPtr]::Zero) { break } }
 if ($hwnd -eq [IntPtr]::Zero) { throw 'Quattro main window not found' }
-[void][Win32ShotRunAsc]::ShowWindow($hwnd, 9)
-[void][Win32ShotRunAsc]::SetWindowPos($hwnd, [IntPtr]::Zero, 80, 80, 420, 520, 0x0040)
-[void][Win32ShotRunAsc]::SetForegroundWindow($hwnd)
+[void][Win32ShotRunAsc]::ShowWindow($hwnd, 4)
+[void][Win32ShotRunAsc]::SetWindowPos($hwnd, [IntPtr]::new(1), 80, 80, 420, 520, 0x0011)
+Set-QuattroTestWindowBackground -Process $proc -Window $hwnd -Context 'sort menu capture'
 Start-Sleep -Milliseconds 800
 $rect = New-Object Win32ShotRunAsc+RECT
 [void][Win32ShotRunAsc]::GetWindowRect($hwnd, [ref]$rect)
@@ -81,5 +83,5 @@ $menuRect.Bottom = $rect.Top + 610
 $out = Capture-Region '06-menu-sort-icons-run-count-asc.png' $menuRect
 [void][Win32ShotRunAsc]::PostMessage($hwnd, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)
 Start-Sleep -Milliseconds 300
-if (-not $proc.HasExited) { $proc.Kill() }
+Stop-QuattroTestProcess -Process $proc -MainWindow $hwnd -TimeoutMs 2000
 Write-Output $out

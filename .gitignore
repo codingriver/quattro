@@ -21,6 +21,7 @@
 !/docs/Quattro/
 /docs/Quattro/*
 !/docs/Quattro/AppLaunchLocker自启动治理开发方案.md
+!/docs/Quattro/后台测试验收实施说明.md
 
 /screenshots/*
 !/screenshots/list-view-demo.png
@@ -112,3 +113,14 @@ Desktop.ini
 # Root-level Markdown documents (keep the project README)
 /*.md
 !/README.md
+!/AGENTS.md
+toast-danger.png
+toast-delete-tag.png
+toast-import-partial.png
+toast-info.png
+/*.png
+/*.jpg
+/*.jpeg
+/*.gif
+/*.bmp
+/artifacts

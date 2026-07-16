@@ -12,6 +12,7 @@
 #include "../src/windows/TodoEditDialog.h"
 #include "../src/windows/UrlEditDialog.h"
 #include "../src/services/WebDavClient.h"
+#include "../src/services/ShellItemService.h"
 #include "../src/domain/PluginRegistry.h"
 #include "Version.h"
 
@@ -54,9 +55,6 @@ struct Scenario {
     std::wstring activateButtonText;
     bool requireThemedEditFrames = false;
     std::vector<std::wstring> unexpectedVisibleChildTexts;
-    std::wstring hoverButtonText;
-    std::wstring expectedTooltipText;
-    std::wstring tooltipScreenshotName;
     std::wstring actionButtonText;
     DWORD closeDelayMs = 0;
     bool validateHotKeyTableLayout = false;
@@ -64,6 +62,7 @@ struct Scenario {
     UINT forcedDpi = USER_DEFAULT_SCREEN_DPI;
     bool validateProcessToolsTableDpi = false;
     bool waitForContextMenuIconLoad = true;
+    bool validateContextMenuIconTransparency = false;
 };
 
 struct TestState {
@@ -96,9 +95,47 @@ std::vector<ContextMenuProviderIconInfo> AcceptanceContextMenuProviderIcons(std:
             const std::uint32_t green = static_cast<std::uint32_t>(64 + (index * 53) % 160);
             const std::uint32_t blue = static_cast<std::uint32_t>(80 + (index * 29) % 144);
             const std::uint32_t color = 0xFF000000u | (red << 16) | (green << 8) | blue;
-            info.icon.pixels.assign(32 * 32, color);
+            info.icon.pixels.assign(32 * 32, 0);
+            const std::uint32_t translucentColor =
+                0x80000000u | ((red / 2) << 16) | ((green / 2) << 8) | (blue / 2);
+            for (int y = 4; y < 28; ++y) {
+                for (int x = 4; x < 28; ++x) {
+                    const bool opaque = x >= 8 && x < 24 && y >= 8 && y < 24;
+                    info.icon.pixels[static_cast<std::size_t>(y) * 32 + x] =
+                        opaque ? color : translucentColor;
+                }
+            }
         }
         result.push_back(std::move(info));
+    }
+    return result;
+}
+
+std::vector<ContextMenuProviderIconInfo> AcceptanceSystemContextMenuProviderIcons(
+    std::stop_token stopToken) {
+    std::vector<ContextMenuProviderIconInfo> result =
+        AcceptanceContextMenuProviderIcons(stopToken);
+    wchar_t windowsDirectory[MAX_PATH]{};
+    if (GetWindowsDirectoryW(windowsDirectory, static_cast<UINT>(std::size(windowsDirectory))) == 0) {
+        return result;
+    }
+    const std::filesystem::path windows = windowsDirectory;
+    const std::vector<std::filesystem::path> executables{
+        windows / L"System32" / L"cmd.exe",
+        windows / L"System32" / L"notepad.exe",
+        windows / L"regedit.exe",
+        windows / L"System32" / L"taskmgr.exe",
+        windows / L"System32" / L"WindowsPowerShell" / L"v1.0" / L"powershell.exe",
+    };
+    for (std::size_t index = 0; index < result.size() && !stopToken.stop_requested(); ++index) {
+        if (!result[index].installed) continue;
+        ShellContextMenuItem item;
+        const std::filesystem::path& executable = executables[index % executables.size()];
+        if (!ShellItemService::LoadExecutableMenuIcon(executable.wstring(), item)) continue;
+        result[index].icon.width = item.iconWidth;
+        result[index].icon.height = item.iconHeight;
+        result[index].icon.quality = item.iconQuality;
+        result[index].icon.pixels = std::move(item.iconPixels);
     }
     return result;
 }
@@ -293,31 +330,26 @@ BitmapCapture CaptureWindowBitmap(HWND hwnd) {
     FillRect(dc, &fill, magenta);
     DeleteObject(magenta);
 
-    SetForegroundWindow(hwnd);
+    ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+    SetWindowPos(
+        hwnd,
+        HWND_BOTTOM,
+        0,
+        0,
+        0,
+        0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
     RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
     Sleep(120);
     BOOL printed = PrintWindow(hwnd, dc, 0x00000002);
     if (!printed) {
-        BitBlt(dc, 0, 0, width, height, screen, rect.left, rect.top, SRCCOPY);
+        SelectObject(dc, old);
+        DeleteDC(dc);
+        ReleaseDC(nullptr, screen);
+        DeleteObject(bitmap);
+        return BitmapCapture{};
     }
 
-    SelectObject(dc, old);
-    DeleteDC(dc);
-    ReleaseDC(nullptr, screen);
-    return BitmapCapture{bitmap, width, height};
-}
-
-BitmapCapture CaptureVisibleWindowScreenBitmap(HWND hwnd) {
-    RECT rect{};
-    GetWindowRect(hwnd, &rect);
-    const int width = std::max(1, static_cast<int>(rect.right - rect.left));
-    const int height = std::max(1, static_cast<int>(rect.bottom - rect.top));
-
-    HDC screen = GetDC(nullptr);
-    HDC dc = CreateCompatibleDC(screen);
-    HBITMAP bitmap = CreateCompatibleBitmap(screen, width, height);
-    HGDIOBJ old = SelectObject(dc, bitmap);
-    BitBlt(dc, 0, 0, width, height, screen, rect.left, rect.top, SRCCOPY);
     SelectObject(dc, old);
     DeleteDC(dc);
     ReleaseDC(nullptr, screen);
@@ -512,6 +544,37 @@ HWND ChildById(HWND hwnd, int id) {
         return child.id == id;
     });
     return found == children.end() ? nullptr : found->hwnd;
+}
+
+HWND VisibleButtonByText(HWND hwnd, const std::wstring& text) {
+    const auto children = Children(hwnd);
+    const auto found = std::find_if(children.begin(), children.end(), [&](const ChildInfo& child) {
+        return IsWindowVisible(child.hwnd) && child.className == L"Button" && child.text == text;
+    });
+    return found == children.end() ? nullptr : found->hwnd;
+}
+
+bool WindowContainsText(HWND hwnd, const std::wstring& expected) {
+    if (Contains(WindowText(hwnd), expected)) {
+        return true;
+    }
+    for (const ChildInfo& child : Children(hwnd)) {
+        if (IsWindowVisible(child.hwnd) && Contains(WindowText(child.hwnd), expected)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool WaitForWindowText(HWND hwnd, const std::wstring& expected, DWORD timeoutMs) {
+    const ULONGLONG deadline = GetTickCount64() + timeoutMs;
+    while (IsWindow(hwnd) && GetTickCount64() < deadline) {
+        if (WindowContainsText(hwnd, expected)) {
+            return true;
+        }
+        Sleep(20);
+    }
+    return IsWindow(hwnd) && WindowContainsText(hwnd, expected);
 }
 
 std::vector<std::wstring> CollectTexts(HWND hwnd, const std::vector<ChildInfo>& children) {
@@ -851,6 +914,64 @@ void ValidateAndCapture(HWND hwnd, const Scenario& scenario, const std::filesyst
                 }
             }
             state.Check(foundRealProviderIcon, scenario.name + L": installed providers did not display real icons");
+            if (scenario.validateContextMenuIconTransparency && images && ImageList_GetImageCount(images) > 1) {
+                int imageWidth = 0;
+                int imageHeight = 0;
+                const bool hasImageSize = ImageList_GetIconSize(images, &imageWidth, &imageHeight) != FALSE;
+                state.Check(hasImageSize && imageWidth >= 8 && imageHeight >= 8,
+                    scenario.name + L": context-menu provider image size is invalid");
+                if (hasImageSize && imageWidth >= 8 && imageHeight >= 8) {
+                    HDC screen = GetDC(nullptr);
+                    HDC memory = CreateCompatibleDC(screen);
+                    HBITMAP bitmap = CreateCompatibleBitmap(screen, imageWidth, imageHeight);
+                    HGDIOBJ oldBitmap = bitmap ? SelectObject(memory, bitmap) : nullptr;
+                    RECT imageRect{0, 0, imageWidth, imageHeight};
+                    HBRUSH background = CreateSolidBrush(RGB(240, 244, 250));
+                    if (bitmap && oldBitmap && background) {
+                        FillRect(memory, &imageRect, background);
+                        HICON icon = ImageList_GetIcon(images, 1, ILD_TRANSPARENT);
+                        const BOOL drawn = icon
+                            ? DrawIconEx(
+                                memory, 0, 0, icon, imageWidth, imageHeight,
+                                0, nullptr, DI_NORMAL)
+                            : FALSE;
+                        if (icon) DestroyIcon(icon);
+                        state.Check(drawn != FALSE,
+                            scenario.name + L": context-menu provider image could not be drawn");
+                        const COLORREF corner = GetPixel(memory, 0, 0);
+                        const COLORREF translucentEdge = GetPixel(
+                            memory,
+                            std::max(1, imageWidth / 8),
+                            imageHeight / 2);
+                        const COLORREF opaqueCore = GetPixel(
+                            memory,
+                            imageWidth / 4,
+                            imageHeight / 2);
+                        state.Check(
+                            GetRValue(corner) > 220 && GetGValue(corner) > 220 && GetBValue(corner) > 220,
+                            scenario.name + L": transparent provider icon pixels rendered as a dark border");
+                        state.Check(
+                            static_cast<int>(GetRValue(translucentEdge)) +
+                                static_cast<int>(GetGValue(translucentEdge)) +
+                            static_cast<int>(GetBValue(translucentEdge)) > 150,
+                            scenario.name + L": translucent provider icon edge lost alpha blending");
+                        const int opaqueCoreColorDistance =
+                            std::abs(static_cast<int>(GetRValue(opaqueCore)) - 48) +
+                            std::abs(static_cast<int>(GetGValue(opaqueCore)) - 64) +
+                            std::abs(static_cast<int>(GetBValue(opaqueCore)) - 80);
+                        state.Check(
+                            opaqueCoreColorDistance < 48,
+                            scenario.name + L": provider icon core was blurred by inset resampling");
+                    } else {
+                        state.Check(false, scenario.name + L": context-menu transparency probe bitmap failed");
+                    }
+                    if (background) DeleteObject(background);
+                    if (oldBitmap) SelectObject(memory, oldBitmap);
+                    if (bitmap) DeleteObject(bitmap);
+                    if (memory) DeleteDC(memory);
+                    if (screen) ReleaseDC(nullptr, screen);
+                }
+            }
             state.Check(uninstalledRow >= 0, scenario.name + L": no uninstalled provider row found");
             if (uninstalledRow >= 0) {
                 state.Check(
@@ -858,14 +979,12 @@ void ValidateAndCapture(HWND hwnd, const Scenario& scenario, const std::filesyst
                     scenario.name + L": uninstalled provider row is disabled");
                 ThemedUi::SetTableChecked(table, uninstalledRow, false);
                 ThemedUi::SetTableSelectedIndex(table, uninstalledRow);
-                SetFocus(table);
                 SendMessageW(table, WM_KEYDOWN, VK_SPACE, 0);
                 SendMessageW(table, WM_KEYUP, VK_SPACE, 0);
                 state.Check(
                     ThemedUi::IsTableChecked(table, uninstalledRow),
                     scenario.name + L": uninstalled provider row cannot be checked");
                 ThemedUi::SetTableSelectedIndex(table, -1);
-                SetFocus(hwnd);
             }
         }
     }
@@ -963,61 +1082,88 @@ void ValidateAndCapture(HWND hwnd, const Scenario& scenario, const std::filesyst
     }
 
 
-    if (!scenario.expectedTooltipText.empty()) {
-        auto button = std::find_if(children.begin(), children.end(), [&](const ChildInfo& child) {
-            return IsWindowVisible(child.hwnd) && child.className == L"Button" && child.text == scenario.hoverButtonText;
-        });
-        state.Check(button != children.end(), scenario.name + L": tooltip button not found: " + scenario.hoverButtonText);
-        if (button != children.end()) {
-            RECT buttonRect{};
-            GetWindowRect(button->hwnd, &buttonRect);
-            const POINT cursorPoint{
-                buttonRect.left + (buttonRect.right - buttonRect.left) / 2,
-                buttonRect.top + (buttonRect.bottom - buttonRect.top) / 2};
-            SetCursorPos(cursorPoint.x, cursorPoint.y);
-            POINT actualCursor{};
-            GetCursorPos(&actualCursor);
+}
+
+void RunTooltipVisualScenario(
+    HWND owner,
+    HINSTANCE instance,
+    const Theme& theme,
+    const std::filesystem::path& outputDir,
+    TestState& state,
+    UINT dpi) {
+    const std::wstring suffix = std::to_wstring(dpi * 100 / USER_DEFAULT_SCREEN_DPI);
+    const std::wstring scenarioName = L"public-tooltip-" + suffix;
+    const std::wstring tooltipText =
+        L"恢复跟踪开关默认值，并清除全部菜单列表、状态与图标缓存。";
+    AcceptanceLog(L"begin " + scenarioName);
+
+    RECT ownerRect{};
+    GetWindowRect(owner, &ownerRect);
+    ThemedWindowUi tooltipHost(
+        instance,
+        owner,
+        owner,
+        theme,
+        DialogLayoutKind::Compact,
+        ownerRect.right - ownerRect.left,
+        ownerRect.bottom - ownerRect.top);
+    if (dpi != tooltipHost.dpi()) {
+        LRESULT dpiResult = 0;
+        tooltipHost.HandleMessage(
+            WM_DPICHANGED,
+            MAKEWPARAM(dpi, dpi),
+            0,
+            dpiResult);
+    }
+
+    ThemedTooltipOptions options{};
+    options.placement = ThemedTooltipPlacement::Below;
+    const POINT fixedScreenPoint{
+        ownerRect.left + ThemedWindowUi::ScaleForDpi(48, dpi),
+        ownerRect.top + ThemedWindowUi::ScaleForDpi(48, dpi)};
+    tooltipHost.ui().ShowTooltip(tooltipText, fixedScreenPoint, options);
+
+    HWND tooltip = WaitForTopWindow(
+        FindWindowRequest{L"QuattroThemedTooltip", tooltipText, GetCurrentProcessId()},
+        2000);
+    state.Check(tooltip != nullptr, scenarioName + L": themed tooltip did not appear");
+    if (tooltip) {
+        Sleep(160);
+        state.Check(
+            IsWindowVisible(tooltip) != FALSE,
+            scenarioName + L": themed tooltip did not remain visible");
+        const LONG_PTR tooltipStyle = GetWindowLongPtrW(tooltip, GWL_EXSTYLE);
+        state.Check(
+            (tooltipStyle & WS_EX_NOACTIVATE) != 0,
+            scenarioName + L": themed tooltip can activate the acceptance desktop");
+        state.Check(
+            (tooltipStyle & WS_EX_TOPMOST) == 0,
+            scenarioName + L": themed tooltip must remain behind unrelated programs during acceptance");
+        state.Check(
+            (tooltipStyle & WS_EX_TRANSPARENT) == 0,
+            scenarioName + L": themed tooltip must not force transparent bottom-window repainting");
+        state.Check(
+            Contains(WindowText(tooltip), tooltipText),
+            scenarioName + L": themed tooltip text mismatch");
+
+        BitmapCapture tooltipCapture = CaptureWindowBitmap(tooltip);
+        const std::filesystem::path tooltipScreenshot =
+            outputDir / (L"public-tooltip-" + suffix + L".png");
+        state.Check(
+            tooltipCapture.bitmap != nullptr,
+            scenarioName + L": tooltip screenshot bitmap was not created");
+        if (tooltipCapture.bitmap) {
             state.Check(
-                PtInRect(&buttonRect, actualCursor) != FALSE,
-                scenario.name + L": acceptance cursor did not enter the tooltip button");
-            SendMessageW(button->hwnd, WM_MOUSEMOVE, 0, MAKELPARAM(2, 2));
-            HWND tooltip = WaitForTopWindow(
-                FindWindowRequest{L"QuattroThemedTooltip", scenario.expectedTooltipText, GetCurrentProcessId()},
-                2000);
-            state.Check(tooltip != nullptr, scenario.name + L": themed tooltip did not appear");
-            if (tooltip) {
-                Sleep(160);
-                state.Check(
-                    IsWindowVisible(tooltip) != FALSE,
-                    scenario.name + L": themed tooltip did not remain visible for the hover session");
-                const LONG_PTR tooltipStyle = GetWindowLongPtrW(tooltip, GWL_EXSTYLE);
-                state.Check(
-                    (tooltipStyle & WS_EX_TRANSPARENT) == 0,
-                    scenario.name + L": themed tooltip must not force transparent bottom-window repainting");
-                state.Check(
-                    Contains(WindowText(tooltip), scenario.expectedTooltipText),
-                    scenario.name + L": themed tooltip text mismatch");
-                // PrintWindow may report success while returning a black bitmap
-                // for a visible WS_EX_NOACTIVATE popup. Capture the actual screen
-                // pixels for this visual acceptance instead.
-                BitmapCapture tooltipCapture = CaptureVisibleWindowScreenBitmap(tooltip);
-                const std::filesystem::path tooltipScreenshot = outputDir / scenario.tooltipScreenshotName;
-                state.Check(
-                    tooltipCapture.bitmap != nullptr,
-                    scenario.name + L": tooltip screenshot bitmap was not created");
-                if (tooltipCapture.bitmap) {
-                    state.Check(
-                        BitmapHasVisualContent(tooltipCapture.bitmap, tooltipCapture.width, tooltipCapture.height),
-                        scenario.name + L": tooltip screenshot looks blank or too flat");
-                    state.Check(
-                        SavePng(tooltipCapture.bitmap, tooltipScreenshot),
-                        scenario.name + L": tooltip screenshot save failed: " + tooltipScreenshot.wstring());
-                    DeleteObject(tooltipCapture.bitmap);
-                }
-            }
-            SendMessageW(button->hwnd, WM_MOUSELEAVE, 0, 0);
+                BitmapHasVisualContent(tooltipCapture.bitmap, tooltipCapture.width, tooltipCapture.height),
+                scenarioName + L": PrintWindow returned a blank or too-flat tooltip bitmap");
+            state.Check(
+                SavePng(tooltipCapture.bitmap, tooltipScreenshot),
+                scenarioName + L": tooltip screenshot save failed: " + tooltipScreenshot.wstring());
+            DeleteObject(tooltipCapture.bitmap);
         }
     }
+    tooltipHost.ui().HideTooltip();
+    AcceptanceLog(L"end " + scenarioName);
 }
 
 HWND CreateOwnerWindow(HINSTANCE instance) {
@@ -1028,9 +1174,12 @@ HWND CreateOwnerWindow(HINSTANCE instance) {
     wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     wc.lpszClassName = L"QuattroUiAcceptanceOwner";
     RegisterClassExW(&wc);
-    HWND hwnd = CreateWindowExW(0, wc.lpszClassName, L"ui acceptance owner", WS_OVERLAPPEDWINDOW,
+    HWND hwnd = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, wc.lpszClassName, L"ui acceptance owner", WS_OVERLAPPEDWINDOW,
         80, 80, 760, 680, nullptr, nullptr, instance, nullptr);
-    ShowWindow(hwnd, SW_SHOW);
+    ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+    SetWindowPos(
+        hwnd, HWND_BOTTOM, 0, 0, 0, 0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
     UpdateWindow(hwnd);
     return hwnd;
 }
@@ -1077,8 +1226,84 @@ std::filesystem::path ModuleDirectory() {
     return std::filesystem::path(path).parent_path();
 }
 
-void RunMainWindowScenario(const std::filesystem::path& outputDir, const Theme& theme, TestState& state) {
-    AcceptanceLog(L"begin main-window");
+class ScopedAcceptanceChildEnvironment final {
+public:
+    ScopedAcceptanceChildEnvironment() {
+        root_ = std::filesystem::temp_directory_path() /
+            (L"QuattroUiAcceptance_" + std::to_wstring(GetCurrentProcessId()) + L"-" +
+             std::to_wstring(++sequence_));
+        std::error_code ec;
+        std::filesystem::create_directories(root_, ec);
+        std::ofstream marker(root_ / L".quattro-test-root", std::ios::binary | std::ios::trunc);
+        marker << "ui_acceptance=1\n";
+        Set(L"QUATTRO_USER_CONFIG_DIR", root_.wstring());
+        Set(L"QUATTRO_TEST_MODE", L"1");
+        Set(L"QUATTRO_TEST_NO_FOCUS", L"1");
+        Set(L"QUATTRO_ACCEPTANCE_MODE", L"background");
+        Set(L"QUATTRO_TEST_RUN_ID", std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(sequence_));
+    }
+
+    ~ScopedAcceptanceChildEnvironment() {
+        for (auto it = saved_.rbegin(); it != saved_.rend(); ++it) {
+            SetEnvironmentVariableW(it->name.c_str(), it->present ? it->value.c_str() : nullptr);
+        }
+        std::error_code ec;
+        std::filesystem::remove_all(root_, ec);
+    }
+
+    ScopedAcceptanceChildEnvironment(const ScopedAcceptanceChildEnvironment&) = delete;
+    ScopedAcceptanceChildEnvironment& operator=(const ScopedAcceptanceChildEnvironment&) = delete;
+
+private:
+    struct SavedValue {
+        std::wstring name;
+        std::wstring value;
+        bool present = false;
+    };
+
+    static std::wstring Read(const wchar_t* name, bool& present) {
+        std::wstring buffer(256, L'\0');
+        for (;;) {
+            const DWORD copied = GetEnvironmentVariableW(name, buffer.data(), static_cast<DWORD>(buffer.size()));
+            if (copied == 0) {
+                present = false;
+                return {};
+            }
+            if (copied < buffer.size() - 1) {
+                present = true;
+                buffer.resize(copied);
+                return buffer;
+            }
+            buffer.resize(buffer.size() * 2);
+        }
+    }
+
+    void Set(const wchar_t* name, const std::wstring& value) {
+        bool present = false;
+        SavedValue saved;
+        saved.name = name;
+        saved.value = Read(name, present);
+        saved.present = present;
+        saved_.push_back(std::move(saved));
+        SetEnvironmentVariableW(name, value.c_str());
+    }
+
+    std::filesystem::path root_;
+    std::vector<SavedValue> saved_;
+    static std::atomic<std::uint64_t> sequence_;
+};
+
+std::atomic<std::uint64_t> ScopedAcceptanceChildEnvironment::sequence_{0};
+
+std::wstring DpiPercentSuffix(UINT dpi);
+
+void RunMainWindowScenario(
+    const std::filesystem::path& outputDir,
+    const Theme& theme,
+    TestState& state,
+    UINT dpi) {
+    const std::wstring dpiSuffix = DpiPercentSuffix(dpi);
+    AcceptanceLog(L"begin main-window-" + dpiSuffix);
     const std::filesystem::path exe = ModuleDirectory() / L"Quattro.exe";
     if (!std::filesystem::exists(exe)) {
         state.Check(false, L"main-window: Quattro.exe not found beside acceptance executable");
@@ -1086,6 +1311,7 @@ void RunMainWindowScenario(const std::filesystem::path& outputDir, const Theme& 
         return;
     }
     std::wstring command = L"\"" + exe.wstring() + L"\"";
+    ScopedAcceptanceChildEnvironment childEnvironment;
     STARTUPINFOW startup{};
     startup.cb = sizeof(startup);
     PROCESS_INFORMATION process{};
@@ -1104,10 +1330,13 @@ void RunMainWindowScenario(const std::filesystem::path& outputDir, const Theme& 
         const std::wstring markerDisplay = marker.empty() ? std::wstring{} : L"（" + marker + L"）";
         const std::wstring expectedTitle = L"Quattro快速启动器" + markerDisplay;
         state.Check(WindowText(hwnd) == expectedTitle, L"main-window: native title build marker mismatch");
-        const std::wstring screenshotName = marker.empty()
+        const std::wstring baseScreenshotName = marker.empty()
             ? L"main-window-official.png"
             : (marker == L"DEBUG-All" ? L"main-window-debug-all.png" : L"main-window-debug.png");
-        Scenario scenario{L"main-window", L"QuattroMainWindow", L"", screenshotName, {expectedTitle}, {}, 0, 0, false};
+        const std::filesystem::path basePath(baseScreenshotName);
+        const std::wstring screenshotName = basePath.stem().wstring() + L"-" + dpiSuffix + basePath.extension().wstring();
+        Scenario scenario{L"main-window-" + dpiSuffix, L"QuattroMainWindow", L"", screenshotName, {expectedTitle}, {}, 0, 0, false};
+        scenario.forcedDpi = dpi;
         ValidateAndCapture(hwnd, scenario, outputDir, state);
         BitmapCapture titleCapture = CaptureWindowBitmap(hwnd);
         state.Check(titleCapture.bitmap != nullptr, L"main-window: title color capture failed");
@@ -1143,7 +1372,7 @@ void RunMainWindowScenario(const std::filesystem::path& outputDir, const Theme& 
     }
     CloseHandle(process.hThread);
     CloseHandle(process.hProcess);
-    AcceptanceLog(L"end main-window");
+    AcceptanceLog(L"end main-window-" + dpiSuffix);
 }
 
 bool WaitForListViewRows(HWND listView, int minimumRows, DWORD timeoutMs = 6000) {
@@ -1334,15 +1563,16 @@ void RunTableGridLinesScenario(
     wc.lpszClassName = className.c_str();
     RegisterClassExW(&wc);
 
-    HWND hwnd = CreateWindowExW(0, wc.lpszClassName, scenarioName.c_str(), WS_OVERLAPPEDWINDOW,
+    HWND hwnd = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, wc.lpszClassName, scenarioName.c_str(), WS_OVERLAPPEDWINDOW,
         160, 160, 400, 320, nullptr, nullptr, instance, &host);
     if (!hwnd || !host.table_) {
         state.Check(false, scenarioName + L": host window/table creation failed");
         return;
     }
-    ShowWindow(hwnd, SW_SHOW);
+    ShowWindow(hwnd, SW_SHOWNOACTIVATE);
     UpdateWindow(hwnd);
-    SetFocus(host.table_);
+    SetWindowPos(hwnd, HWND_BOTTOM, 0, 0, 0, 0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
     RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW | RDW_ALLCHILDREN);
     Sleep(200);
 
@@ -1439,15 +1669,15 @@ void RunTableAlternatingRowsScenario(const std::filesystem::path& outputDir, Tes
     wc.lpszClassName = L"QuattroTableAlternatingRowsHost";
     RegisterClassExW(&wc);
 
-    HWND hwnd = CreateWindowExW(0, wc.lpszClassName, L"table alternating rows", WS_OVERLAPPEDWINDOW,
+    HWND hwnd = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, wc.lpszClassName, L"table alternating rows", WS_OVERLAPPEDWINDOW,
         120, 120, 400, 320, nullptr, nullptr, instance, &host);
     if (!hwnd || !host.table_) {
         state.Check(false, L"table-alternating-rows: host window/table creation failed");
         return;
     }
-    ShowWindow(hwnd, SW_SHOW);
+    ShowWindow(hwnd, SW_SHOWNOACTIVATE);
     UpdateWindow(hwnd);
-    SetForegroundWindow(hwnd);
+    SetWindowPos(hwnd, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
     RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW | RDW_ALLCHILDREN);
     Sleep(200);
 
@@ -1511,7 +1741,7 @@ void RunCheckableTableScenario(const std::filesystem::path& outputDir, TestState
     wc.lpszClassName = className.c_str();
     RegisterClassExW(&wc);
 
-    HWND hwnd = CreateWindowExW(0, wc.lpszClassName, L"table checkable states", WS_OVERLAPPEDWINDOW,
+    HWND hwnd = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, wc.lpszClassName, L"table checkable states", WS_OVERLAPPEDWINDOW,
         180, 180,
         ThemedWindowUi::ScaleForDpi(400, dpi),
         ThemedWindowUi::ScaleForDpi(240, dpi),
@@ -1520,9 +1750,10 @@ void RunCheckableTableScenario(const std::filesystem::path& outputDir, TestState
         state.Check(false, L"table-checkable-states: host window/table creation failed");
         return;
     }
-    ShowWindow(hwnd, SW_SHOW);
+    ShowWindow(hwnd, SW_SHOWNOACTIVATE);
     UpdateWindow(hwnd);
-    SetFocus(host.table_);
+    SetWindowPos(hwnd, HWND_BOTTOM, 0, 0, 0, 0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
     RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW | RDW_ALLCHILDREN);
     Sleep(150);
 
@@ -1579,9 +1810,6 @@ void RunCheckableTableScenario(const std::filesystem::path& outputDir, TestState
     }
 
     POINT hoverPoint{row0.right - 12, (row0.top + row0.bottom) / 2};
-    POINT hoverScreen = hoverPoint;
-    ClientToScreen(host.table_, &hoverScreen);
-    SetCursorPos(hoverScreen.x, hoverScreen.y);
     SendMessageW(host.table_, WM_MOUSEMOVE, 0, MAKELPARAM(hoverPoint.x, hoverPoint.y));
     UpdateWindow(host.table_);
     Sleep(80);
@@ -1659,7 +1887,7 @@ void RunTableColumnResizeScenario(const std::filesystem::path& outputDir, TestSt
         defaultWc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
         defaultWc.lpszClassName = L"QuattroTableColumnResizeDefaultHost";
         RegisterClassExW(&defaultWc);
-        HWND defaultHwnd = CreateWindowExW(0, defaultWc.lpszClassName, L"table column resize default",
+        HWND defaultHwnd = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, defaultWc.lpszClassName, L"table column resize default",
             WS_OVERLAPPEDWINDOW, 140, 140, 400, 320, nullptr, nullptr, instance, &defaultHost);
         state.Check(defaultHwnd && defaultHost.table_, L"table-column-resize: default host creation failed");
         if (defaultHwnd && defaultHost.table_) {
@@ -1686,15 +1914,15 @@ void RunTableColumnResizeScenario(const std::filesystem::path& outputDir, TestSt
     wc.lpszClassName = L"QuattroTableColumnResizeHost";
     RegisterClassExW(&wc);
 
-    HWND hwnd = CreateWindowExW(0, wc.lpszClassName, L"table column resize", WS_OVERLAPPEDWINDOW,
+    HWND hwnd = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, wc.lpszClassName, L"table column resize", WS_OVERLAPPEDWINDOW,
         140, 140, 400, 320, nullptr, nullptr, instance, &host);
     if (!hwnd || !host.table_) {
         state.Check(false, L"table-column-resize: host window/table creation failed");
         return;
     }
-    ShowWindow(hwnd, SW_SHOW);
+    ShowWindow(hwnd, SW_SHOWNOACTIVATE);
     UpdateWindow(hwnd);
-    SetForegroundWindow(hwnd);
+    SetWindowPos(hwnd, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
     RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW | RDW_ALLCHILDREN);
     Sleep(200);
 
@@ -1784,14 +2012,16 @@ void RunTableHoverRepaintScenario(TestState& state) {
     wc.lpszClassName = L"QuattroTableHoverRepaintHost";
     RegisterClassExW(&wc);
 
-    HWND hwnd = CreateWindowExW(0, wc.lpszClassName, L"table hover repaint", WS_OVERLAPPEDWINDOW,
+    HWND hwnd = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, wc.lpszClassName, L"table hover repaint", WS_OVERLAPPEDWINDOW,
         140, 140, 400, 320, nullptr, nullptr, instance, &host);
     if (!hwnd || !host.table_) {
         state.Check(false, L"table-hover-repaint: host window/table creation failed");
         return;
     }
-    ShowWindow(hwnd, SW_SHOW);
+    ShowWindow(hwnd, SW_SHOWNOACTIVATE);
     UpdateWindow(hwnd);
+    SetWindowPos(hwnd, HWND_BOTTOM, 0, 0, 0, 0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
     Sleep(100);
 
     RECT tableClient{};
@@ -1858,8 +2088,9 @@ void ValidateAppLaunchLockerTables(HWND hwnd, TestState& state) {
     state.Check(!sawNoSizingHeader, L"app-launch-locker: table header unexpectedly disables column resizing");
 }
 
-void RunAppLaunchLockerScenario(const std::filesystem::path& outputDir, TestState& state) {
-    AcceptanceLog(L"begin app-launch-locker");
+void RunAppLaunchLockerScenario(const std::filesystem::path& outputDir, TestState& state, UINT dpi) {
+    const std::wstring dpiSuffix = DpiPercentSuffix(dpi);
+    AcceptanceLog(L"begin app-launch-locker-" + dpiSuffix);
     wchar_t executableOverride[32768]{};
     const DWORD overrideLength = GetEnvironmentVariableW(
         L"QUATTRO_UI_ACCEPTANCE_APP_LAUNCH_LOCKER",
@@ -1878,18 +2109,43 @@ void RunAppLaunchLockerScenario(const std::filesystem::path& outputDir, TestStat
     startup.cb = sizeof(startup);
     PROCESS_INFORMATION process{};
     std::wstring command = L"\"" + exe.wstring() + L"\"";
+    ScopedAcceptanceChildEnvironment childEnvironment;
+    const std::wstring dpiText = std::to_wstring(dpi);
+    SetEnvironmentVariableW(L"QUATTRO_APP_LAUNCH_LOCKER_ACCEPTANCE_DPI", dpiText.c_str());
     if (!CreateProcessW(exe.c_str(), command.data(), nullptr, nullptr, FALSE, 0, nullptr, ModuleDirectory().c_str(), &startup, &process)) {
+        SetEnvironmentVariableW(L"QUATTRO_APP_LAUNCH_LOCKER_ACCEPTANCE_DPI", nullptr);
         state.Check(false, L"app-launch-locker: CreateProcess failed");
         AcceptanceLog(L"create app-launch-locker failed");
         return;
     }
+    SetEnvironmentVariableW(L"QUATTRO_APP_LAUNCH_LOCKER_ACCEPTANCE_DPI", nullptr);
 
     WaitForInputIdle(process.hProcess, 10000);
     AcceptanceLog(L"wait app-launch-locker");
     HWND hwnd = WaitForTopWindow(FindWindowRequest{L"AppLaunchLockerMainWindow", L"自启动管理", process.dwProcessId}, 10000);
     if (hwnd) {
-        ShowWindow(hwnd, SW_SHOWNORMAL);
-        SetForegroundWindow(hwnd);
+        ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+        RECT initialRect{};
+        GetWindowRect(hwnd, &initialRect);
+        HMONITOR monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        MONITORINFO monitorInfo{};
+        monitorInfo.cbSize = sizeof(monitorInfo);
+        int captureX = initialRect.left;
+        int captureY = initialRect.top;
+        if (GetMonitorInfoW(monitor, &monitorInfo)) {
+            const int width = initialRect.right - initialRect.left;
+            const int height = initialRect.bottom - initialRect.top;
+            captureX = std::clamp<int>(
+                monitorInfo.rcWork.left + 16,
+                monitorInfo.rcWork.left,
+                std::max<int>(monitorInfo.rcWork.left, monitorInfo.rcWork.right - width));
+            captureY = std::clamp<int>(
+                monitorInfo.rcWork.top + 96,
+                monitorInfo.rcWork.top,
+                std::max<int>(monitorInfo.rcWork.top, monitorInfo.rcWork.bottom - height));
+        }
+        SetWindowPos(hwnd, HWND_BOTTOM, captureX, captureY, 0, 0,
+            SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
         UpdateWindow(hwnd);
         RECT windowRect{};
         RECT clientRect{};
@@ -1920,12 +2176,20 @@ void RunAppLaunchLockerScenario(const std::filesystem::path& outputDir, TestStat
             }
         }
         state.Check(buttonCount >= 2, L"app-launch-locker: visible button count lower than expected");
+        // Keep cross-process structural assertions separate from the visual
+        // capture. The target HWND remains non-activating and behind unrelated
+        // programs; PrintWindow must produce a valid bitmap without a desktop
+        // pixel fallback or temporary topmost transition.
+        UpdateWindow(hwnd);
+        Sleep(80);
         BitmapCapture capture = CaptureWindowBitmap(hwnd);
+        SetWindowPos(hwnd, HWND_BOTTOM, 0, 0, 0, 0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
         state.Check(capture.bitmap != nullptr, L"app-launch-locker: screenshot bitmap was not created");
         if (capture.bitmap) {
             state.Check(BitmapHasVisualContent(capture.bitmap, capture.width, capture.height),
                 L"app-launch-locker: screenshot looks blank or too flat");
-            SavePng(capture.bitmap, outputDir / L"app-launch-locker.png");
+            SavePng(capture.bitmap, outputDir / (L"app-launch-locker-" + dpiSuffix + L".png"));
             DeleteObject(capture.bitmap);
         }
         PostMessageW(hwnd, WM_CLOSE, 0, 0);
@@ -1939,7 +2203,7 @@ void RunAppLaunchLockerScenario(const std::filesystem::path& outputDir, TestStat
     }
     CloseHandle(process.hThread);
     CloseHandle(process.hProcess);
-    AcceptanceLog(L"end app-launch-locker");
+    AcceptanceLog(L"end app-launch-locker-" + dpiSuffix);
 }
 
 void RunAdBlockScenario(const std::filesystem::path& outputDir, TestState& state) {
@@ -1961,6 +2225,7 @@ void RunAdBlockScenario(const std::filesystem::path& outputDir, TestState& state
     startup.cb = sizeof(startup);
     PROCESS_INFORMATION process{};
     std::wstring command = L"\"" + exe.wstring() + L"\" --ad-block";
+    ScopedAcceptanceChildEnvironment childEnvironment;
     SetEnvironmentVariableW(L"QUATTRO_AD_BLOCK_ACCEPTANCE_DPI", L"96");
     if (!CreateProcessW(exe.c_str(), command.data(), nullptr, nullptr, FALSE, 0, nullptr,
             ModuleDirectory().c_str(), &startup, &process)) {
@@ -1986,8 +2251,8 @@ void RunAdBlockScenario(const std::filesystem::path& outputDir, TestState& state
     };
 
     if (hwnd) {
-        ShowWindow(hwnd, SW_SHOWNORMAL);
-        SetForegroundWindow(hwnd);
+        ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+        SetWindowPos(hwnd, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
         UpdateWindow(hwnd);
 
         HWND pathEdit = ChildById(hwnd, 1210);
@@ -2014,6 +2279,11 @@ void RunAdBlockScenario(const std::filesystem::path& outputDir, TestState& state
                 L"ad-block: connected tab and content panel widths differ");
             state.Check(GetWindow(contentPanel, GW_HWNDNEXT) == nullptr,
                 L"ad-block: connected content panel is above page controls in z-order");
+            SCROLLINFO panelScroll{sizeof(panelScroll), SIF_RANGE | SIF_PAGE | SIF_POS};
+            GetScrollInfo(contentPanel, SB_VERT, &panelScroll);
+            state.Check((GetWindowLongPtrW(contentPanel, GWL_STYLE) & WS_VSCROLL) == 0 &&
+                    panelScroll.nMin == 0 && panelScroll.nMax == 0 && panelScroll.nPage == 0,
+                L"ad-block: non-scrollable content panel exposes a vertical scrollbar range");
         }
         if (contentPanel && pathEdit && scanTable) {
             RECT panelRect{};
@@ -2197,10 +2467,9 @@ void RunAdBlockScenario(const std::filesystem::path& outputDir, TestState& state
             FindWindowRequest{L"AdBlockMainWindow", L"广告拦截", dpiProcess.dwProcessId}, 10000);
         state.Check(dpiWindow != nullptr, L"ad-block: DPI acceptance window did not appear");
         if (dpiWindow) {
-            ShowWindow(dpiWindow, SW_SHOWNORMAL);
-            SetWindowPos(dpiWindow, HWND_TOPMOST, 0, 0, 0, 0,
+            ShowWindow(dpiWindow, SW_SHOWNOACTIVATE);
+            SetWindowPos(dpiWindow, HWND_BOTTOM, 0, 0, 0, 0,
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-            SetForegroundWindow(dpiWindow);
             UpdateWindow(dpiWindow);
             HWND exactMode = ChildById(dpiWindow, 1213);
             HWND nameMode = ChildById(dpiWindow, 1214);
@@ -2273,7 +2542,7 @@ void RunAdBlockScenario(const std::filesystem::path& outputDir, TestState& state
                 state.Check(SavePng(bitmap.bitmap, outputDir / fileName), L"ad-block: DPI screenshot save failed");
                 DeleteObject(bitmap.bitmap);
             }
-            SetWindowPos(dpiWindow, HWND_NOTOPMOST, 0, 0, 0, 0,
+            SetWindowPos(dpiWindow, HWND_BOTTOM, 0, 0, 0, 0,
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
             PostMessageW(dpiWindow, WM_CLOSE, 0, 0);
         }
@@ -2438,6 +2707,175 @@ void RunProcessToolsScenarios(
     run(std::move(fileScenario), L"file-lock-inspector");
 }
 
+void RunProcessToolsFileLockProgressScenario(
+    HWND owner,
+    HINSTANCE instance,
+    const Theme& theme,
+    const std::filesystem::path& outputDir,
+    const std::filesystem::path& scanRoot,
+    TestState& state,
+    UINT dpi) {
+    const std::wstring dpiSuffix = DpiPercentSuffix(dpi);
+    const std::wstring scenarioName = L"builtin-process-tools-file-lock-progress-" + dpiSuffix;
+    AcceptanceLog(L"begin " + scenarioName);
+    PluginRegistry registry(std::filesystem::current_path());
+    AppConfig config;
+    registry.SetSetting(L"quattro.builtin.process-tools", L"path", scanRoot.wstring());
+
+    SetEnvironmentVariableW(L"QUATTRO_TEST_MODE", L"1");
+    SetEnvironmentVariableW(L"QUATTRO_TEST_FILE_LOCK_BATCH_DELAY_MS", L"300");
+    std::atomic_bool inspected{false};
+    std::thread controller([&]() {
+        const auto forceDpi = [dpi](HWND window) {
+            if (!window || dpi == USER_DEFAULT_SCREEN_DPI) {
+                return;
+            }
+            RECT windowRect{};
+            GetWindowRect(window, &windowRect);
+            const int width = windowRect.right - windowRect.left;
+            const int height = windowRect.bottom - windowRect.top;
+            RECT suggested{
+                windowRect.left,
+                windowRect.top,
+                windowRect.left + MulDiv(width, static_cast<int>(dpi), USER_DEFAULT_SCREEN_DPI),
+                windowRect.top + MulDiv(height, static_cast<int>(dpi), USER_DEFAULT_SCREEN_DPI),
+            };
+            SendMessageW(
+                window,
+                WM_DPICHANGED,
+                MAKEWPARAM(dpi, dpi),
+                reinterpret_cast<LPARAM>(&suggested));
+            RedrawWindow(
+                window,
+                nullptr,
+                nullptr,
+                RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+            Sleep(120);
+        };
+
+        HWND mainWindow = WaitForTopWindow(
+            FindWindowRequest{L"QuattroProcessTools", L"进程工具", GetCurrentProcessId()},
+            7000);
+        state.Check(mainWindow != nullptr, scenarioName + L": process tools window did not appear");
+        if (!mainWindow) {
+            inspected = true;
+            CloseTopWindowsForProcess(GetCurrentProcessId(), nullptr);
+            return;
+        }
+
+        forceDpi(mainWindow);
+
+        HWND checkButton = VisibleButtonByText(mainWindow, L"检查(&C)");
+        state.Check(checkButton != nullptr, scenarioName + L": directory check button was not found");
+        if (!checkButton) {
+            inspected = true;
+            PostMessageW(mainWindow, WM_CLOSE, 0, 0);
+            return;
+        }
+        SendMessageW(checkButton, BM_CLICK, 0, 0);
+
+        HWND progressWindow = WaitForTopWindow(
+            FindWindowRequest{L"", L"文件占用检查进度", GetCurrentProcessId()},
+            5000);
+        state.Check(progressWindow != nullptr, scenarioName + L": progress window did not appear");
+        if (!progressWindow) {
+            inspected = true;
+            PostMessageW(mainWindow, WM_CLOSE, 0, 0);
+            return;
+        }
+        forceDpi(progressWindow);
+        state.Check(
+            WaitForWindowText(progressWindow, L"个工作线程", 5000),
+            scenarioName + L": parallel worker progress was not displayed");
+        state.Check(
+            ChildById(progressWindow, 7730) != nullptr,
+            scenarioName + L": shared progress-bar control was not created");
+        Scenario runningScenario{
+            scenarioName + L"-running",
+            L"",
+            L"文件占用检查进度",
+            L"builtin-process-tools-file-lock-progress-running-" + dpiSuffix + L".png",
+            {L"文件占用检查进度", L"正在并行检查目录占用", L"个工作线程", L"停止", L"关闭"},
+            {},
+            0,
+            2};
+        ValidateAndCapture(progressWindow, runningScenario, outputDir, state);
+
+        HWND closeButton = VisibleButtonByText(progressWindow, L"关闭");
+        state.Check(closeButton != nullptr, scenarioName + L": progress close button was not found");
+        if (closeButton) {
+            SendMessageW(closeButton, BM_CLICK, 0, 0);
+        }
+        for (int elapsed = 0; IsWindow(progressWindow) && elapsed < 2000; elapsed += 20) {
+            Sleep(20);
+        }
+        state.Check(!IsWindow(progressWindow), scenarioName + L": close button did not close the progress window");
+        state.Check(
+            WindowContainsText(mainWindow, L"正在后台检查目录占用"),
+            scenarioName + L": closing progress unexpectedly ended the background task");
+
+        checkButton = VisibleButtonByText(mainWindow, L"检查(&C)");
+        if (checkButton) {
+            SendMessageW(checkButton, BM_CLICK, 0, 0);
+        }
+        progressWindow = WaitForTopWindow(
+            FindWindowRequest{L"", L"文件占用检查进度", GetCurrentProcessId()},
+            3000);
+        state.Check(progressWindow != nullptr, scenarioName + L": active progress could not be reopened");
+        if (progressWindow) {
+            forceDpi(progressWindow);
+            HWND stopButton = VisibleButtonByText(progressWindow, L"停止");
+            state.Check(stopButton != nullptr, scenarioName + L": progress stop button was not found");
+            if (stopButton) {
+                SendMessageW(stopButton, BM_CLICK, 0, 0);
+            }
+            state.Check(
+                WaitForWindowText(progressWindow, L"检查已停止", 10000),
+                scenarioName + L": stop request did not terminate the directory check");
+            stopButton = VisibleButtonByText(progressWindow, L"停止");
+            state.Check(
+                stopButton != nullptr && IsWindowEnabled(stopButton) == FALSE,
+                scenarioName + L": stop button remained enabled after cancellation");
+            Scenario stoppedScenario{
+                scenarioName + L"-stopped",
+                L"",
+                L"文件占用检查进度",
+                L"builtin-process-tools-file-lock-progress-stopped-" + dpiSuffix + L".png",
+                {L"文件占用检查进度", L"检查已停止", L"已检查", L"停止", L"关闭"},
+                {},
+                0,
+                2};
+            ValidateAndCapture(progressWindow, stoppedScenario, outputDir, state);
+            if (HWND stoppedClose = VisibleButtonByText(progressWindow, L"关闭")) {
+                SendMessageW(stoppedClose, BM_CLICK, 0, 0);
+            }
+        }
+
+        inspected = true;
+        PostMessageW(mainWindow, WM_CLOSE, 0, 0);
+    });
+
+    ShowBuiltinTool(owner, instance, theme, registry, config, L"file-lock-inspector");
+    controller.join();
+    SetEnvironmentVariableW(L"QUATTRO_TEST_FILE_LOCK_BATCH_DELAY_MS", nullptr);
+    SetEnvironmentVariableW(L"QUATTRO_TEST_MODE", nullptr);
+    state.Check(inspected.load(), scenarioName + L": controller did not finish");
+    AcceptanceLog(L"end " + scenarioName);
+}
+
+std::filesystem::path CreateFileLockProgressAcceptanceRoot() {
+    const std::filesystem::path root = std::filesystem::temp_directory_path() /
+        (L"quattro_file_lock_progress_acceptance_" + std::to_wstring(GetCurrentProcessId()));
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    std::filesystem::create_directories(root / L"nested", ec);
+    for (int index = 0; index < 2048; ++index) {
+        const std::filesystem::path parent = index % 2 == 0 ? root : root / L"nested";
+        std::ofstream(parent / (L"resource-" + std::to_wstring(index) + L".txt"), std::ios::binary) << "acceptance";
+    }
+    return root;
+}
+
 AppModel SampleModel() {
     AppModel model;
     Group group;
@@ -2464,6 +2902,8 @@ AppModel SampleModel() {
 } // namespace
 
 int wmain() {
+    SetEnvironmentVariableW(L"QUATTRO_ACCEPTANCE_MODE", L"background");
+    SetEnvironmentVariableW(L"QUATTRO_TEST_NO_FOCUS", L"1");
     std::ofstream("ui-acceptance-progress.txt", std::ios::binary | std::ios::trunc);
     AcceptanceLog(L"start");
     INITCOMMONCONTROLSEX icc{};
@@ -2494,6 +2934,28 @@ int wmain() {
     config.webDavRemotePath = L"/Quattro/backups/";
     config.webDavUserName = L"acceptance-user";
 
+    wchar_t tooltipOnly[8]{};
+    if (GetEnvironmentVariableW(
+            L"QUATTRO_UI_ACCEPTANCE_TOOLTIP_ONLY",
+            tooltipOnly,
+            static_cast<DWORD>(std::size(tooltipOnly))) > 0) {
+        for (const UINT dpi : {96u, 120u, 144u}) {
+            RunTooltipVisualScenario(owner, instance, theme, outputDir, state, dpi);
+        }
+        DestroyWindow(owner);
+        OleUninitialize();
+        Gdiplus::GdiplusShutdown(gdiplusToken);
+        if (!state.ok) {
+            for (const auto& failure : state.failures) {
+                AcceptanceLog(L"tooltip target failure " + failure);
+                std::wcerr << failure << L"\n";
+            }
+            return 1;
+        }
+        std::wcout << L"ui_tooltip_acceptance=passed screenshots=" << outputDir.wstring() << L"\n";
+        return 0;
+    }
+
     wchar_t adBlockOnly[8]{};
     if (GetEnvironmentVariableW(
             L"QUATTRO_UI_ACCEPTANCE_AD_BLOCK_ONLY",
@@ -2523,6 +2985,12 @@ int wmain() {
         RunProcessToolsScenarios(owner, instance, theme, outputDir, state, 96);
         RunProcessToolsScenarios(owner, instance, theme, outputDir, state, 120);
         RunProcessToolsScenarios(owner, instance, theme, outputDir, state, 144);
+        const std::filesystem::path progressRoot = CreateFileLockProgressAcceptanceRoot();
+        RunProcessToolsFileLockProgressScenario(owner, instance, theme, outputDir, progressRoot, state, 96);
+        RunProcessToolsFileLockProgressScenario(owner, instance, theme, outputDir, progressRoot, state, 120);
+        RunProcessToolsFileLockProgressScenario(owner, instance, theme, outputDir, progressRoot, state, 144);
+        std::error_code progressCleanupError;
+        std::filesystem::remove_all(progressRoot, progressCleanupError);
         DestroyWindow(owner);
         OleUninitialize();
         Gdiplus::GdiplusShutdown(gdiplusToken);
@@ -2537,12 +3005,36 @@ int wmain() {
         return 0;
     }
 
+    wchar_t appLaunchLockerOnly[8]{};
+    if (GetEnvironmentVariableW(
+            L"QUATTRO_UI_ACCEPTANCE_APP_LAUNCH_LOCKER_ONLY",
+            appLaunchLockerOnly,
+            static_cast<DWORD>(std::size(appLaunchLockerOnly))) > 0) {
+        for (const UINT dpi : {96u, 120u, 144u}) {
+            RunAppLaunchLockerScenario(outputDir, state, dpi);
+        }
+        DestroyWindow(owner);
+        OleUninitialize();
+        Gdiplus::GdiplusShutdown(gdiplusToken);
+        if (!state.ok) {
+            for (const auto& failure : state.failures) {
+                AcceptanceLog(L"app-launch-locker target failure " + failure);
+                std::wcerr << failure << L"\n";
+            }
+            return 1;
+        }
+        std::wcout << L"ui_app_launch_locker_acceptance=passed screenshots=" << outputDir.wstring() << L"\n";
+        return 0;
+    }
+
     wchar_t mainWindowOnly[8]{};
     if (GetEnvironmentVariableW(
             L"QUATTRO_UI_ACCEPTANCE_MAIN_WINDOW_ONLY",
             mainWindowOnly,
             static_cast<DWORD>(std::size(mainWindowOnly))) > 0) {
-        RunMainWindowScenario(outputDir, theme, state);
+        for (const UINT dpi : {96u, 120u, 144u}) {
+            RunMainWindowScenario(outputDir, theme, state, dpi);
+        }
         DestroyWindow(owner);
         OleUninitialize();
         Gdiplus::GdiplusShutdown(gdiplusToken);
@@ -2562,6 +3054,11 @@ int wmain() {
             L"QUATTRO_UI_ACCEPTANCE_CONTEXT_MENU_ONLY",
             contextMenuOnly,
             static_cast<DWORD>(std::size(contextMenuOnly))) > 0) {
+        wchar_t contextMenuIconOnly[8]{};
+        const bool contextMenuIconOnlyRequested = GetEnvironmentVariableW(
+            L"QUATTRO_UI_ACCEPTANCE_CONTEXT_MENU_ICON_ONLY",
+            contextMenuIconOnly,
+            static_cast<DWORD>(std::size(contextMenuIconOnly))) > 0;
         Scenario settingsScenario{
             L"settings-dialog-右键菜单",
             L"QuattroSettingsDialog",
@@ -2579,11 +3076,8 @@ int wmain() {
         settingsScenario.unexpectedVisibleChildTexts = {
             L"恢复跟踪开关默认值，并清除全部菜单列表、状态与图标缓存。",
         };
-        settingsScenario.hoverButtonText = L"重置右键菜单";
-        settingsScenario.expectedTooltipText =
-            L"恢复跟踪开关默认值，并清除全部菜单列表、状态与图标缓存。";
-        settingsScenario.tooltipScreenshotName = L"settings-dialog-右键菜单-tooltip.png";
         settingsScenario.validateContextMenuUninstalledRows = true;
+        settingsScenario.validateContextMenuIconTransparency = true;
         std::atomic_int automaticIconLoads{0};
         RunDialogScenario(
             settingsScenario,
@@ -2609,9 +3103,6 @@ int wmain() {
             dpiScenario.name = L"settings-dialog-右键菜单-" + suffix;
             dpiScenario.screenshotName = L"settings-dialog-右键菜单-" + suffix + L".png";
             dpiScenario.forcedDpi = dpi;
-            dpiScenario.hoverButtonText.clear();
-            dpiScenario.expectedTooltipText.clear();
-            dpiScenario.tooltipScreenshotName.clear();
             RunDialogScenario(
                 dpiScenario,
                 outputDir,
@@ -2624,6 +3115,49 @@ int wmain() {
                         nullptr, false, false, false, {}, {}, {}, {}, {},
                         AcceptanceContextMenuProviderIcons);
                 });
+        }
+
+        if (contextMenuIconOnlyRequested) {
+            for (UINT dpi : {96u, 120u, 144u}) {
+                Scenario realIconScenario = settingsScenario;
+                const std::wstring suffix = dpi == USER_DEFAULT_SCREEN_DPI
+                    ? L""
+                    : L"-" + DpiPercentSuffix(dpi);
+                realIconScenario.name = L"settings-dialog-右键菜单-real-icons" + suffix;
+                realIconScenario.screenshotName =
+                    L"settings-dialog-右键菜单-real-icons" + suffix + L".png";
+                realIconScenario.forcedDpi = dpi;
+                realIconScenario.validateContextMenuIconTransparency = false;
+                RunDialogScenario(
+                    realIconScenario,
+                    outputDir,
+                    state,
+                    [&]() {
+                        bool imported = false;
+                        const std::filesystem::path baseDirectory = std::filesystem::current_path();
+                        ShowSettingsDialog(
+                            owner, instance, config, theme, baseDirectory, baseDirectory, &imported,
+                            nullptr, false, false, false, {}, {}, {}, {}, {},
+                            AcceptanceSystemContextMenuProviderIcons);
+                    });
+            }
+            DestroyWindow(owner);
+            OleUninitialize();
+            Gdiplus::GdiplusShutdown(gdiplusToken);
+            if (!state.ok) {
+                for (const auto& failure : state.failures) {
+                    AcceptanceLog(L"context-menu icon target failure " + failure);
+                    std::wcerr << failure << L"\n";
+                }
+                return 1;
+            }
+            std::wcout << L"ui_context_menu_icon_acceptance=passed screenshots="
+                       << outputDir.wstring() << L"\n";
+            return 0;
+        }
+
+        for (const UINT dpi : {96u, 120u, 144u}) {
+            RunTooltipVisualScenario(owner, instance, theme, outputDir, state, dpi);
         }
 
         Scenario nonBlockingScenario{
@@ -2773,7 +3307,9 @@ int wmain() {
         return 0;
     }
 
-    RunMainWindowScenario(outputDir, theme, state);
+    for (const UINT dpi : {96u, 120u, 144u}) {
+        RunMainWindowScenario(outputDir, theme, state, dpi);
+    }
     RunTableAlternatingRowsScenario(outputDir, state);
     RunCheckableTableScenario(outputDir, state, 96);
     RunCheckableTableScenario(outputDir, state, 120);
@@ -2782,7 +3318,9 @@ int wmain() {
     RunTableHoverRepaintScenario(state);
     RunTableGridLinesScenario(outputDir, state, false, L"table-grid-lines-default", L"table-grid-lines-default.png");
     RunTableGridLinesScenario(outputDir, state, true, L"table-grid-lines-enabled", L"table-grid-lines-enabled.png");
-    RunAppLaunchLockerScenario(outputDir, state);
+    for (const UINT dpi : {96u, 120u, 144u}) {
+        RunAppLaunchLockerScenario(outputDir, state, dpi);
+    }
     RunAdBlockScenario(outputDir, state);
 
     RunDialogScenario(
@@ -2907,10 +3445,6 @@ int wmain() {
             settingsScenario.unexpectedVisibleChildTexts = {
                 L"恢复跟踪开关默认值，并清除全部菜单列表、状态与图标缓存。",
             };
-            settingsScenario.hoverButtonText = L"重置右键菜单";
-            settingsScenario.expectedTooltipText =
-                L"恢复跟踪开关默认值，并清除全部菜单列表、状态与图标缓存。";
-            settingsScenario.tooltipScreenshotName = L"settings-dialog-右键菜单-tooltip.png";
         }
         RunDialogScenario(
             settingsScenario,
@@ -2924,6 +3458,10 @@ int wmain() {
                     nullptr, false, false, false, {}, {}, {}, {}, {},
                     AcceptanceContextMenuProviderIcons);
             });
+    }
+
+    for (const UINT dpi : {96u, 120u, 144u}) {
+        RunTooltipVisualScenario(owner, instance, theme, outputDir, state, dpi);
     }
 
     std::vector<Link> quickImportSelected;
@@ -3008,6 +3546,10 @@ int wmain() {
         });
     RunProcessToolsSingletonScenario(owner, instance, theme, state);
     RunProcessToolsScenarios(owner, instance, theme, outputDir, state, 96);
+    const std::filesystem::path progressRoot = CreateFileLockProgressAcceptanceRoot();
+    RunProcessToolsFileLockProgressScenario(owner, instance, theme, outputDir, progressRoot, state, 96);
+    std::error_code progressCleanupError;
+    std::filesystem::remove_all(progressRoot, progressCleanupError);
 
     DestroyWindow(owner);
     OleUninitialize();

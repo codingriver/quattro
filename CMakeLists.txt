@@ -255,6 +255,8 @@ add_library(QuattroThemedUi STATIC
     src/theme/CatalogDialogLayout.cpp
     src/theme/Theme.cpp
     src/theme/ThemedFormLayout.cpp
+    src/theme/ThemedD2D.cpp
+    src/theme/ThemedGdiFallback.cpp
     src/theme/ThemedControls.cpp
     src/theme/ThemedMessageBox.cpp
     src/theme/ThemedUi.cpp
@@ -278,6 +280,8 @@ target_link_libraries(QuattroThemedUi PUBLIC
     pugixml
     user32
     gdi32
+    d2d1
+    dwrite
     comctl32
     msimg32
     shell32
@@ -384,6 +388,7 @@ add_executable(Quattro WIN32
     src/domain/TrackedContextMenuProviders.cpp
     src/services/ConfigPackageService.cpp
     src/services/ContextMenuProviderIconService.cpp
+    src/services/FileLockQueryService.cpp
     src/common/EmbeddedAssetInstaller.cpp
     src/common/Elevation.cpp
     src/windows/HotKeyEditor.cpp
@@ -469,6 +474,7 @@ add_executable(QuattroTests
     src/domain/TrackedContextMenuProviders.cpp
     src/services/ConfigPackageService.cpp
     src/services/ContextMenuProviderIconService.cpp
+    src/services/FileLockQueryService.cpp
     src/services/Launcher.cpp
     src/common/JsonValue.cpp
     src/domain/LinkSorting.cpp
@@ -481,14 +487,8 @@ add_executable(QuattroTests
     src/services/TerminalContextMenuService.cpp
     src/services/Storage.cpp
     src/services/SystemFunctions.cpp
-    src/theme/Theme.cpp
-    src/theme/ThemedControls.cpp
-    src/theme/ThemedFormLayout.cpp
-    src/theme/ThemedUi.cpp
-    src/theme/ThemedWindowUi.cpp
     src/domain/TodoSchedule.cpp
     src/services/UpdateCheckService.cpp
-    src/common/Utilities.cpp
     src/services/WebDavBackupService.cpp
     src/services/WebDavClient.cpp
     src/services/WebDavCredentialService.cpp
@@ -534,10 +534,6 @@ add_executable(QuattroSortScreenshotSeed
 
 add_executable(QuattroThemeStateProbe
     tests/ThemeStateProbe.cpp
-    src/theme/Theme.cpp
-    src/theme/ThemedControls.cpp
-    src/theme/ThemedUi.cpp
-    src/common/Utilities.cpp
 )
 
 add_executable(QuattroToastAcceptance
@@ -552,6 +548,7 @@ add_executable(QuattroUiScreenshotAcceptance
     src/windows/ConfirmDialog.cpp
     src/services/ConfigPackageService.cpp
     src/services/ContextMenuProviderIconService.cpp
+    src/services/FileLockQueryService.cpp
     src/windows/HotKeyEditor.cpp
     src/common/JsonValue.cpp
     src/services/Launcher.cpp
@@ -570,16 +567,10 @@ add_executable(QuattroUiScreenshotAcceptance
     src/windows/SimpleDialogs.cpp
     src/services/Storage.cpp
     src/services/SystemFunctions.cpp
-    src/theme/Theme.cpp
-    src/theme/ThemedControls.cpp
-    src/theme/ThemedFormLayout.cpp
-    src/theme/ThemedUi.cpp
-    src/theme/ThemedWindowUi.cpp
     src/windows/TodoEditDialog.cpp
     src/domain/TodoSchedule.cpp
     src/windows/UpdateCheckDialog.cpp
     src/windows/UrlEditDialog.cpp
-    src/common/Utilities.cpp
     src/services/WebDavBackupService.cpp
     src/services/WebDavClient.cpp
     src/services/WebDavCredentialService.cpp
@@ -767,6 +758,7 @@ target_link_libraries(QuattroToastAcceptance PRIVATE
 )
 
 target_link_libraries(QuattroTests PRIVATE
+    QuattroThemedUi
     sqlite3
     ccronexpr
     advapi32
@@ -816,6 +808,7 @@ target_link_libraries(QuattroSortScreenshotSeed PRIVATE
 )
 
 target_link_libraries(QuattroThemeStateProbe PRIVATE
+    QuattroThemedUi
     comctl32
     gdiplus
     gdi32
@@ -824,6 +817,7 @@ target_link_libraries(QuattroThemeStateProbe PRIVATE
 )
 
 target_link_libraries(QuattroUiScreenshotAcceptance PRIVATE
+    QuattroThemedUi
     sqlite3
     ccronexpr
     advapi32
@@ -866,6 +860,37 @@ if(QUATTRO_WITH_WEBDAV_LIBS)
 endif()
 elseif(QUATTRO_BUILD_TESTS)
     message(WARNING "QUATTRO_BUILD_TESTS is ON, but local tests/ sources were not found. Test targets will be skipped.")
+endif()
+
+if(QUATTRO_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/FileLockQueryServiceTests.cpp")
+add_executable(QuattroFileLockQueryServiceTests
+    tests/FileLockQueryServiceTests.cpp
+    src/services/FileLockQueryService.cpp
+    src/common/Utilities.cpp
+)
+
+target_compile_definitions(QuattroFileLockQueryServiceTests PRIVATE
+    UNICODE
+    _UNICODE
+    WINVER=0x0A00
+    _WIN32_WINNT=0x0A00
+    NOMINMAX
+)
+
+target_compile_options(QuattroFileLockQueryServiceTests PRIVATE
+    $<$<CXX_COMPILER_ID:MSVC>:/W4 /permissive- /EHsc /utf-8>
+)
+
+target_include_directories(QuattroFileLockQueryServiceTests PRIVATE
+    src
+)
+
+target_link_libraries(QuattroFileLockQueryServiceTests PRIVATE
+    rstrtmgr
+    shell32
+    shlwapi
+    user32
+)
 endif()
 
 if(QUATTRO_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/TodoBackupJsonCompatibility.cpp")
@@ -968,6 +993,7 @@ add_executable(QuattroSettingsHttpButtonsAcceptance
     src/windows/ConfirmDialog.cpp
     src/services/ConfigPackageService.cpp
     src/services/ContextMenuProviderIconService.cpp
+    src/services/FileLockQueryService.cpp
     src/windows/HotKeyEditor.cpp
     src/common/JsonValue.cpp
     src/services/Launcher.cpp
@@ -986,16 +1012,10 @@ add_executable(QuattroSettingsHttpButtonsAcceptance
     src/windows/SimpleDialogs.cpp
     src/services/Storage.cpp
     src/services/SystemFunctions.cpp
-    src/theme/Theme.cpp
-    src/theme/ThemedControls.cpp
-    src/theme/ThemedFormLayout.cpp
-    src/theme/ThemedUi.cpp
-    src/theme/ThemedWindowUi.cpp
     src/windows/TodoEditDialog.cpp
     src/domain/TodoSchedule.cpp
     src/windows/UpdateCheckDialog.cpp
     src/windows/UrlEditDialog.cpp
-    src/common/Utilities.cpp
     src/services/WebDavBackupService.cpp
     src/services/WebDavClient.cpp
     src/services/WebDavCredentialService.cpp
@@ -1026,6 +1046,7 @@ target_include_directories(QuattroSettingsHttpButtonsAcceptance PRIVATE
 )
 
 target_link_libraries(QuattroSettingsHttpButtonsAcceptance PRIVATE
+    QuattroThemedUi
     sqlite3
     ccronexpr
     advapi32

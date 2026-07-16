@@ -8,6 +8,8 @@
 
 namespace ThemedControls {
 
+COLORREF ListSurfaceColor(const Theme& theme);
+
 constexpr UINT WM_HOTKEY_CAPTURED = WM_APP + 0x361;
 
 HWND CreateButton(
@@ -70,7 +72,8 @@ HWND CreateToggle(
     int width,
     HFONT font,
     const Theme& theme,
-    bool checked);
+    bool checked,
+    UINT dpi = USER_DEFAULT_SCREEN_DPI);
 
 HWND CreateRadioButton(
     HINSTANCE instance,
@@ -83,7 +86,8 @@ HWND CreateRadioButton(
     HFONT font,
     const Theme& theme,
     int group,
-    bool checked);
+    bool checked,
+    UINT dpi = USER_DEFAULT_SCREEN_DPI);
 
 HWND CreateHotKeyCapture(
     HINSTANCE instance,
@@ -94,7 +98,8 @@ HWND CreateHotKeyCapture(
     int y,
     int width,
     HFONT font,
-    const Theme& theme);
+    const Theme& theme,
+    UINT dpi = USER_DEFAULT_SCREEN_DPI);
 
 HWND CreateLinkText(
     HINSTANCE instance,
@@ -158,7 +163,8 @@ HWND CreateComboBox(
     int width,
     int height,
     HFONT font,
-    const Theme& theme);
+    const Theme& theme,
+    UINT dpi = USER_DEFAULT_SCREEN_DPI);
 
 HWND CreateListBox(
     HINSTANCE instance,
@@ -170,7 +176,8 @@ HWND CreateListBox(
     int height,
     HFONT font,
     const Theme& theme,
-    DWORD extraStyle = LBS_NOTIFY | LBS_HASSTRINGS | WS_VSCROLL);
+    DWORD extraStyle = LBS_NOTIFY | LBS_HASSTRINGS | WS_VSCROLL,
+    UINT dpi = USER_DEFAULT_SCREEN_DPI);
 
 HFONT CreateDialogFont(UINT dpi = USER_DEFAULT_SCREEN_DPI);
 HFONT CreateEditFont(const Theme& theme, UINT dpi = USER_DEFAULT_SCREEN_DPI);
@@ -193,9 +200,11 @@ HWND CreateLabelText(
     int x,
     int y,
     int width,
+    int height,
     const Theme& theme,
     HFONT font,
-    DWORD style = SS_LEFT);
+    DWORD style = SS_LEFT,
+    bool multiline = false);
 
 HWND CreateStatusBadge(
     HINSTANCE instance,
@@ -206,7 +215,8 @@ HWND CreateStatusBadge(
     int width,
     const Theme& theme,
     HFONT font,
-    const wchar_t* state = L"success");
+    const wchar_t* state = L"success",
+    UINT dpi = USER_DEFAULT_SCREEN_DPI);
 
 void SetStatusBadgeState(HWND hwnd, const wchar_t* state);
 
@@ -220,7 +230,8 @@ HWND CreateStatusText(
     const Theme& theme,
     HFONT font,
     const wchar_t* state = L"normal",
-    DWORD style = SS_CENTER);
+    DWORD style = SS_CENTER,
+    UINT dpi = USER_DEFAULT_SCREEN_DPI);
 
 void SetStatusTextState(HWND hwnd, const wchar_t* state);
 
@@ -257,14 +268,14 @@ RECT TabGroupInnerRect(const Theme& theme, RECT frame);
 void DrawTabGroupFrame(const Theme& theme, HDC dc, RECT rect);
 int ComboBoxHeight(const Theme& theme);
 int ComboBoxItemHeight(const Theme& theme);
-int ComboBoxDropdownHeight(const Theme& theme);
+int ComboBoxDropdownHeight(const Theme& theme, UINT dpi = USER_DEFAULT_SCREEN_DPI);
 int ComboBoxContentWidth(const Theme& theme, int textWidth);
 RECT ComboBoxItemTextRect(const Theme& theme, RECT frame);
 int ListBoxItemHeight(const Theme& theme);
 int ListBoxTwoLineItemHeight(const Theme& theme);
 RECT ListItemTextRect(const Theme& theme, RECT frame);
-RECT ListFrameInnerRect(const Theme& theme, RECT frame);
-RECT TableFrameInnerRect(const Theme& theme, RECT frame);
+RECT ListFrameInnerRect(const Theme& theme, RECT frame, UINT dpi = USER_DEFAULT_SCREEN_DPI);
+RECT TableFrameInnerRect(const Theme& theme, RECT frame, UINT dpi = USER_DEFAULT_SCREEN_DPI);
 int LabelHeight(const Theme& theme);
 RECT LabelTextRect(const Theme& theme, RECT frame);
 int FieldFrameHeight(const Theme& theme);
@@ -273,9 +284,9 @@ int EditFrameHeight(const Theme& theme);
 int EditPaddingX(const Theme& theme);
 int EditTextHeight(const Theme& theme);
 int EditFontSizePx(const Theme& theme);
-RECT SingleLineEditRect(const Theme& theme, RECT frame);
-RECT SingleLineEditRectForFrame(const Theme& theme, RECT frame);
-RECT MultiLineEditRect(const Theme& theme, RECT frame);
+RECT SingleLineEditRect(const Theme& theme, RECT frame, UINT dpi = USER_DEFAULT_SCREEN_DPI);
+RECT SingleLineEditRectForFrame(const Theme& theme, RECT frame, UINT dpi = USER_DEFAULT_SCREEN_DPI);
+RECT MultiLineEditRect(const Theme& theme, RECT frame, UINT dpi = USER_DEFAULT_SCREEN_DPI);
 void ConfigureEditBehavior(HWND hwnd, bool selectAllOnFocus);
 
 HWND CreateSingleLineEdit(
