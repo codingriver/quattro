@@ -1129,6 +1129,13 @@ void ThemedWindowUi::PaintEditFrameWindow(HWND frameWindow, HDC dc) const {
     }
     RECT rect{};
     GetClientRect(frameWindow, &rect);
+    const COLORREF background = ToColorRef(theme_.color(L"dialog", L"normal", L"bg"));
+    {
+        ThemedD2D::ScopedHdcPaint d2dPaint(frameWindow, dc);
+        if (!ThemedD2D::FillRect(dc, rect, background)) {
+            ThemedGdiFallback::FillSolidRect(dc, rect, background);
+        }
+    }
     ThemedControls::DrawEditFrame(
         theme_, dc, rect, editFrame->child, editFrame->options.readOnly, editFrame->options.error);
 }
