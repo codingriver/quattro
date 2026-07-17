@@ -2042,6 +2042,7 @@ HWND ThemedUi::Table(int id, RECT frame, const std::vector<ThemedTableColumn>& c
         inner.left, inner.top, inner.right - inner.left, inner.bottom - inner.top,
         parent_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), instance_, nullptr);
     if (!table) return nullptr;
+    ListView_SetView(table, options.view == ThemedTableView::Details ? LV_VIEW_DETAILS : LV_VIEW_ICON);
 
     SendMessageW(table, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
     // Set LVS_EX_CHECKBOXES before RegisterTable so the ListView creates its

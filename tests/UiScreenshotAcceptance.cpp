@@ -1838,6 +1838,8 @@ void RunCheckableTableScenario(const std::filesystem::path& outputDir, TestState
     RECT selectedSecond = TableSubItemRectInHostBitmap(hwnd, host.table_, 1, 1);
     RECT uncheckedFirst = TableSubItemRectInHostBitmap(hwnd, host.table_, 1, 0);
     RECT hoverFirst = TableSubItemRectInHostBitmap(hwnd, host.table_, 0, 0);
+    state.Check((GetWindowLongPtrW(host.table_, GWL_STYLE) & LVS_TYPEMASK) == LVS_REPORT,
+        L"table-checkable-states: details table was created without LVS_REPORT style");
     if (beforeHover.bitmap) {
         const int selectedY = (selectedFirst.top + selectedFirst.bottom) / 2;
         const COLORREF firstSelectedBackground = BitmapPixel(
@@ -1853,6 +1855,14 @@ void RunCheckableTableScenario(const std::filesystem::path& outputDir, TestState
         const int boxCenterY = (uncheckedFirst.top + uncheckedFirst.bottom) / 2;
         state.Check(ColorDistance(BitmapPixel(beforeHover.bitmap, boxCenterX, boxCenterY), RGB(0, 0, 0)) >= 80,
             L"table-checkable-states: unchecked checkbox is rendered as a black block");
+
+        const int checkedBoxCenterX = selectedFirst.left
+            + ThemedWindowUi::ScaleForDpi(static_cast<int>(host.theme_.metric(L"listItem", L"paddingX", 8.0f)), dpi)
+            + ThemedWindowUi::ScaleForDpi(static_cast<int>(host.theme_.metric(L"checkbox", L"boxSize", 16.0f)), dpi) / 2;
+        const int checkedBoxCenterY = (selectedFirst.top + selectedFirst.bottom) / 2;
+        const COLORREF checkedBoxColor = BitmapPixel(beforeHover.bitmap, checkedBoxCenterX, checkedBoxCenterY);
+        state.Check(ColorDistance(checkedBoxColor, firstSelectedBackground) >= 8,
+            L"table-checkable-states: first-column checkbox is not painted at the public column origin");
     }
 
     POINT hoverPoint{row0.right - 12, (row0.top + row0.bottom) / 2};

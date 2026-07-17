@@ -1935,8 +1935,8 @@ bool IsTableDetailsView(HWND table) {
     if (!table) {
         return true;
     }
-    const int view = static_cast<int>(SendMessageW(table, LVM_GETVIEW, 0, 0));
-    return view != LV_VIEW_ICON;
+    const LONG_PTR style = GetWindowLongPtrW(table, GWL_STYLE);
+    return (style & LVS_TYPEMASK) == LVS_REPORT;
 }
 
 bool IsTableRowHovered(HWND table, int row) {
@@ -1975,14 +1975,40 @@ std::wstring ListViewCellText(HWND table, int row, int column) {
 
 RECT TableSubItemRect(HWND table, int row, int column, RECT fallback) {
     RECT rect = fallback;
-    if (column <= 0) {
-        ListView_GetItemRect(table, row, &rect, LVIR_BOUNDS);
+    RECT rowRect{};
+    if (!ListView_GetItemRect(table, row, &rowRect, LVIR_BOUNDS)) {
+        rowRect = fallback;
+    }
+
+    int left = 0;
+    int right = 0;
+    if (HWND header = ListView_GetHeader(table)) {
         RECT headerRect{};
-        if (HWND header = ListView_GetHeader(table); header && Header_GetItemRect(header, 0, &headerRect)) {
-            rect.right = rect.left + (headerRect.right - headerRect.left);
+        if (Header_GetItemRect(header, column, &headerRect)) {
+            POINT leftTop{headerRect.left, 0};
+            POINT rightTop{headerRect.right, 0};
+            MapWindowPoints(header, table, &leftTop, 1);
+            MapWindowPoints(header, table, &rightTop, 1);
+            left = leftTop.x;
+            right = rightTop.x;
         }
+    }
+
+    if (right <= left) {
+        for (int i = 0; i < column; ++i) {
+            left += ListView_GetColumnWidth(table, i);
+        }
+        right = left + ListView_GetColumnWidth(table, column);
+    }
+
+    if (right > left) {
+        rect.left = left;
+        rect.right = right;
+        rect.top = rowRect.top;
+        rect.bottom = rowRect.bottom;
         return rect;
     }
+
     RECT subItem{LVIR_BOUNDS, column, 0, 0};
     return ListView_GetSubItemRect(table, row, column, LVIR_BOUNDS, &subItem) ? subItem : rect;
 }
