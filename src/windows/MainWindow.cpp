@@ -5,6 +5,7 @@
 #include "BuiltinTools.h"
 #include "EmbeddedExecutableManager.h"
 #include "Elevation.h"
+#include "FileDialog.h"
 #include "HotKeyEditor.h"
 #include "LinkEditDialog.h"
 #include "LinkSorting.h"
@@ -3901,18 +3902,17 @@ void MainWindow::AddFile() {
         return;
     }
 
-    std::wstring buffer(32768, L'\0');
-    OPENFILENAMEW ofn{};
-    ofn.lStructSize = sizeof(ofn);
-    ofn.hwndOwner = hwnd_;
-    ofn.lpstrFile = buffer.data();
-    ofn.nMaxFile = static_cast<DWORD>(buffer.size());
-    ofn.lpstrFilter = L"所有文件\0*.*\0";
-    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
-    if (!GetOpenFileNameW(&ofn)) {
+    CommonFileDialogOptions options{};
+    options.owner = hwnd_;
+    options.kind = CommonFileDialogKind::OpenFile;
+    options.context = L"主窗口添加文件";
+    options.defaultPath = appDirectory_.wstring();
+    options.legacyFilter = L"所有文件\0*.*\0";
+    CommonFileDialogResult result{};
+    if (!ShowCommonFileDialog(options, result)) {
         return;
     }
-    ImportPath(buffer.c_str());
+    ImportPath(result.path);
     EnsureLinkVisible(selectedLinkId_);
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
@@ -3922,27 +3922,18 @@ void MainWindow::AddFolder() {
         return;
     }
 
-    IFileDialog* dialog = nullptr;
-    if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog))) || !dialog) {
+    CommonFileDialogOptions options{};
+    options.owner = hwnd_;
+    options.kind = CommonFileDialogKind::PickFolder;
+    options.context = L"主窗口添加文件夹";
+    options.defaultPath = appDirectory_.wstring();
+    CommonFileDialogResult result{};
+    if (!ShowCommonFileDialog(options, result)) {
         return;
     }
-    DWORD options = 0;
-    dialog->GetOptions(&options);
-    dialog->SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM);
-    if (SUCCEEDED(dialog->Show(hwnd_))) {
-        IShellItem* item = nullptr;
-        if (SUCCEEDED(dialog->GetResult(&item)) && item) {
-            PWSTR path = nullptr;
-            if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path)) && path) {
-                ImportPath(path);
-                CoTaskMemFree(path);
-                EnsureLinkVisible(selectedLinkId_);
-                InvalidateRect(hwnd_, nullptr, FALSE);
-            }
-            item->Release();
-        }
-    }
-    dialog->Release();
+    ImportPath(result.path);
+    EnsureLinkVisible(selectedLinkId_);
+    InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
 void MainWindow::AddUrl() {
@@ -6127,16 +6118,15 @@ void MainWindow::ExportConfigPackage() {
 void MainWindow::ImportConfigPackageMerge() {
     SaveCurrentNotePage();
 
-    std::wstring buffer(32768, L'\0');
-    OPENFILENAMEW ofn{};
-    ofn.lStructSize = sizeof(ofn);
-    ofn.hwndOwner = hwnd_;
-    ofn.lpstrFile = buffer.data();
-    ofn.nMaxFile = static_cast<DWORD>(buffer.size());
-    ofn.lpstrFilter = L"Quattro快速启动器 配置包 (*.q4cfg)\0*.q4cfg\0所有文件\0*.*\0";
-    ofn.lpstrDefExt = L"q4cfg";
-    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
-    if (!GetOpenFileNameW(&ofn)) {
+    CommonFileDialogOptions dialogOptions{};
+    dialogOptions.owner = hwnd_;
+    dialogOptions.kind = CommonFileDialogKind::OpenFile;
+    dialogOptions.context = L"配置包合并导入";
+    dialogOptions.defaultPath = appDirectory_.wstring();
+    dialogOptions.legacyFilter = L"Quattro快速启动器 配置包 (*.q4cfg)\0*.q4cfg\0所有文件\0*.*\0";
+    dialogOptions.defaultExtension = L"q4cfg";
+    CommonFileDialogResult result{};
+    if (!ShowCommonFileDialog(dialogOptions, result)) {
         return;
     }
 
@@ -6155,7 +6145,7 @@ void MainWindow::ImportConfigPackageMerge() {
     options.includeUrlIcons = true;
 
     ConfigPackageService service(appDirectory_);
-    const ConfigPackageReport report = service.ImportPackageMerge(buffer.c_str(), options);
+    const ConfigPackageReport report = service.ImportPackageMerge(result.path, options);
     if (report.ok) {
         model_ = storageService_.Load();
         RestoreLegacyBuiltinSystemFunctionKeys();

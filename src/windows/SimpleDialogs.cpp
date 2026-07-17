@@ -6,6 +6,7 @@
 #include "ConfigPackageService.h"
 #include "ContextMenuProviderIconService.h"
 #include "DialogLayout.h"
+#include "FileDialog.h"
 #include "HotKeyEditor.h"
 #include "JsonValue.h"
 #include "LocalHttpServerService.h"
@@ -663,20 +664,27 @@ bool SelectSavePath(HWND owner, const std::wstring& initialPath, const wchar_t* 
     return true;
 }
 
-bool SelectOpenPath(HWND owner, const wchar_t* filter, const wchar_t* defExt, std::wstring& selectedPath) {
-    std::wstring buffer(32768, L'\0');
-    OPENFILENAMEW ofn{};
-    ofn.lStructSize = sizeof(ofn);
-    ofn.hwndOwner = owner;
-    ofn.lpstrFile = buffer.data();
-    ofn.nMaxFile = static_cast<DWORD>(buffer.size());
-    ofn.lpstrFilter = filter;
-    ofn.lpstrDefExt = defExt;
-    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
-    if (!GetOpenFileNameW(&ofn)) {
+bool SelectOpenPath(
+    HWND owner,
+    const wchar_t* context,
+    const wchar_t* filter,
+    const wchar_t* defExt,
+    const std::wstring& defaultPath,
+    std::wstring& selectedPath) {
+    CommonFileDialogOptions options{};
+    options.owner = owner;
+    options.kind = CommonFileDialogKind::OpenFile;
+    options.context = context ? context : L"通用打开文件";
+    options.defaultPath = defaultPath;
+    options.legacyFilter = filter;
+    if (defExt) {
+        options.defaultExtension = defExt;
+    }
+    CommonFileDialogResult result{};
+    if (!ShowCommonFileDialog(options, result)) {
         return false;
     }
-    selectedPath = buffer.c_str();
+    selectedPath = result.path;
     return true;
 }
 
@@ -3362,8 +3370,10 @@ private:
     void ImportConfigPackage() {
         std::wstring packagePath;
         if (!SelectOpenPath(hwnd_,
+                L"设置配置包导入",
                 L"Quattro快速启动器 配置包 (*.q4cfg)\0*.q4cfg\0所有文件\0*.*\0",
                 L"q4cfg",
+                appDirectory_.wstring(),
                 packagePath)) {
             return;
         }
@@ -3416,8 +3426,10 @@ private:
     void ImportTodosJson() {
         std::wstring jsonPath;
         if (!SelectOpenPath(hwnd_,
+                L"待办JSON导入",
                 L"JSON 文件 (*.json)\0*.json\0所有文件\0*.*\0",
                 L"json",
+                appDirectory_.wstring(),
                 jsonPath)) {
             return;
         }
@@ -3518,25 +3530,16 @@ private:
         if (httpServer_ && httpServer_->IsRunning()) {
             return;
         }
-        IFileDialog* dialog = nullptr;
-        if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog)))) {
+        CommonFileDialogOptions options{};
+        options.owner = hwnd_;
+        options.kind = CommonFileDialogKind::PickFolder;
+        options.context = L"HTTP绑定磁盘路径";
+        options.defaultPath = GetText(httpServerRootEdit_);
+        CommonFileDialogResult result{};
+        if (!ShowCommonFileDialog(options, result)) {
             return;
         }
-        DWORD options = 0;
-        dialog->GetOptions(&options);
-        dialog->SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM);
-        if (SUCCEEDED(dialog->Show(hwnd_))) {
-            IShellItem* item = nullptr;
-            if (SUCCEEDED(dialog->GetResult(&item))) {
-                PWSTR path = nullptr;
-                if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path))) {
-                    SetWindowTextW(httpServerRootEdit_, path);
-                    CoTaskMemFree(path);
-                }
-                item->Release();
-            }
-        }
-        dialog->Release();
+        SetWindowTextW(httpServerRootEdit_, result.path.c_str());
     }
 
     void OpenHttpRootDirectory() {

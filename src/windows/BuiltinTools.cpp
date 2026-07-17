@@ -4,6 +4,7 @@
 
 #include "AppLog.h"
 #include "DialogLayout.h"
+#include "FileDialog.h"
 #include "MainHotKey.h"
 #include "SimpleDialogs.h"
 #include "FileLockQueryService.h"
@@ -1760,40 +1761,30 @@ private:
     }
 
     void PickFile() {
-        std::wstring buffer(32768, L'\0');
-        OPENFILENAMEW ofn{};
-        ofn.lStructSize = sizeof(ofn);
-        ofn.hwndOwner = hwnd_;
-        ofn.lpstrFile = buffer.data();
-        ofn.nMaxFile = static_cast<DWORD>(buffer.size());
-        ofn.lpstrFilter = L"所有文件\0*.*\0";
-        ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
-        if (GetOpenFileNameW(&ofn)) {
-            SetText(path_, buffer.c_str());
+        CommonFileDialogOptions options{};
+        options.owner = hwnd_;
+        options.kind = CommonFileDialogKind::OpenFile;
+        options.context = L"文件占用检查文件";
+        options.defaultPath = GetText(path_);
+        options.legacyFilter = L"所有文件\0*.*\0";
+        CommonFileDialogResult result{};
+        if (ShowCommonFileDialog(options, result)) {
+            SetText(path_, result.path);
         }
     }
 
     void PickDirectory() {
-        IFileDialog* dialog = nullptr;
-        if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog))) || !dialog) {
+        CommonFileDialogOptions options{};
+        options.owner = hwnd_;
+        options.kind = CommonFileDialogKind::PickFolder;
+        options.context = L"文件占用检查目录";
+        options.title = L"选择待检查目录";
+        options.defaultPath = GetText(path_);
+        CommonFileDialogResult result{};
+        if (!ShowCommonFileDialog(options, result)) {
             return;
         }
-        DWORD options = 0;
-        dialog->GetOptions(&options);
-        dialog->SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST);
-        dialog->SetTitle(L"选择待检查目录");
-        if (SUCCEEDED(dialog->Show(hwnd_))) {
-            IShellItem* item = nullptr;
-            if (SUCCEEDED(dialog->GetResult(&item)) && item) {
-                PWSTR selected = nullptr;
-                if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &selected)) && selected) {
-                    SetText(path_, selected);
-                    CoTaskMemFree(selected);
-                }
-                item->Release();
-            }
-        }
-        dialog->Release();
+        SetText(path_, result.path);
     }
 
     void Scan() {
@@ -3553,8 +3544,11 @@ private:
         }
         if (fileTable_ && ThemedUi::DecodeTableEvent(fileTable_, lParam, event)) {
             if (event.kind == ThemedTableEventKind::ActionInvoked) {
-                if (ConfirmAndKill(static_cast<DWORD>(event.rowKey), L"文件占用")) {
-                    fileTerminatedPids_.insert(static_cast<DWORD>(event.rowKey));
+                const DWORD pid = static_cast<DWORD>(event.rowKey);
+                if (fileProtectedPids_.find(pid) != fileProtectedPids_.end()) {
+                    SetStatus(fileStatus_, L"系统关键进程已保护，不能结束。", ThemedStatusRole::Warning);
+                } else if (ConfirmAndKill(pid, L"文件占用")) {
+                    fileTerminatedPids_.insert(pid);
                     SetFileProcessRows();
                     SetStatus(fileStatus_, L"进程已结束。", ThemedStatusRole::Success);
                 }
@@ -3572,13 +3566,17 @@ private:
     void SetProcessRows(
         HWND table,
         const std::vector<ProcessDisplayRow>& rows,
-        const std::set<DWORD>& disabledPids = {}) {
+        const std::set<DWORD>& disabledPids = {},
+        const std::set<DWORD>& protectedPids = {}) {
         std::vector<ThemedTableRow> tableRows;
         tableRows.reserve(rows.size());
         for (const auto& row : rows) {
             const ProcessInfo info = QueryProcessInfo(row.pid);
             const std::wstring name = info.name.empty() ? L"未知进程" : info.name;
-            const std::wstring path = info.path.empty() ? row.detail : info.path;
+            std::wstring path = info.path.empty() ? row.detail : info.path;
+            if (protectedPids.find(row.pid) != protectedPids.end()) {
+                path += L"（系统关键进程，已保护）";
+            }
             tableRows.push_back(ThemedTableRow{
                 static_cast<std::intptr_t>(row.pid),
                 {
@@ -3595,17 +3593,30 @@ private:
     }
 
     void SetFileProcessRows() {
-        SetProcessRows(fileTable_, fileRows_, fileTerminatedPids_);
+        std::set<DWORD> disabledPids = fileTerminatedPids_;
+        disabledPids.insert(fileProtectedPids_.begin(), fileProtectedPids_.end());
+        SetProcessRows(fileTable_, fileRows_, disabledPids, fileProtectedPids_);
         UpdateFileKillAllButton();
+    }
+
+    void RefreshFileProtectedPids() {
+        fileProtectedPids_.clear();
+        for (const auto& row : fileRows_) {
+            if (!row.pid || fileProtectedPids_.find(row.pid) != fileProtectedPids_.end()) {
+                continue;
+            }
+            const ProcessInfo info = QueryProcessInfo(row.pid);
+            if (IsBatchKillProtectedSystemProcess(row.pid, info)) {
+                fileProtectedPids_.insert(row.pid);
+            }
+        }
     }
 
     bool HasFileLockKillCandidate() const {
         for (const auto& row : fileRows_) {
-            if (fileTerminatedPids_.find(row.pid) == fileTerminatedPids_.end()) {
-                const ProcessInfo info = QueryProcessInfo(row.pid);
-                if (!IsBatchKillProtectedSystemProcess(row.pid, info)) {
-                    return true;
-                }
+            if (fileTerminatedPids_.find(row.pid) == fileTerminatedPids_.end() &&
+                fileProtectedPids_.find(row.pid) == fileProtectedPids_.end()) {
+                return true;
             }
         }
         return false;
@@ -3637,7 +3648,7 @@ private:
 
     void KillAllFileLockProcesses() {
         std::map<DWORD, ProcessInfo> candidates;
-        std::set<DWORD> skippedProtected;
+        std::set<DWORD> skippedProtected = fileProtectedPids_;
         for (const auto& row : fileRows_) {
             if (!row.pid || fileTerminatedPids_.find(row.pid) != fileTerminatedPids_.end()) {
                 continue;
@@ -3832,40 +3843,30 @@ private:
     }
 
     void PickFile() {
-        std::wstring buffer(32768, L'\0');
-        OPENFILENAMEW dialog{};
-        dialog.lStructSize = sizeof(dialog);
-        dialog.hwndOwner = hwnd_;
-        dialog.lpstrFile = buffer.data();
-        dialog.nMaxFile = static_cast<DWORD>(buffer.size());
-        dialog.lpstrFilter = L"所有文件\0*.*\0";
-        dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
-        if (GetOpenFileNameW(&dialog)) {
-            SetText(filePathInput_, buffer.c_str());
+        CommonFileDialogOptions options{};
+        options.owner = hwnd_;
+        options.kind = CommonFileDialogKind::OpenFile;
+        options.context = L"进程工具文件占用文件";
+        options.defaultPath = GetText(filePathInput_);
+        options.legacyFilter = L"所有文件\0*.*\0";
+        CommonFileDialogResult result{};
+        if (ShowCommonFileDialog(options, result)) {
+            SetText(filePathInput_, result.path);
         }
     }
 
     void PickDirectory() {
-        IFileDialog* dialog = nullptr;
-        if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog))) || !dialog) {
+        CommonFileDialogOptions options{};
+        options.owner = hwnd_;
+        options.kind = CommonFileDialogKind::PickFolder;
+        options.context = L"进程工具文件占用目录";
+        options.title = L"选择待检查目录";
+        options.defaultPath = GetText(filePathInput_);
+        CommonFileDialogResult result{};
+        if (!ShowCommonFileDialog(options, result)) {
             return;
         }
-        DWORD options = 0;
-        dialog->GetOptions(&options);
-        dialog->SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST);
-        dialog->SetTitle(L"选择待检查目录");
-        if (SUCCEEDED(dialog->Show(hwnd_))) {
-            IShellItem* item = nullptr;
-            if (SUCCEEDED(dialog->GetResult(&item)) && item) {
-                PWSTR selected = nullptr;
-                if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &selected)) && selected) {
-                    SetText(filePathInput_, selected);
-                    CoTaskMemFree(selected);
-                }
-                item->Release();
-            }
-        }
-        dialog->Release();
+        SetText(filePathInput_, result.path);
     }
 
     void QueryFileLock() {
@@ -3874,6 +3875,7 @@ private:
             ThemedUi::ClearTable(fileTable_);
             fileRows_.clear();
             fileTerminatedPids_.clear();
+            fileProtectedPids_.clear();
             UpdateFileKillAllButton();
             SetStatus(fileStatus_, L"请输入文件或目录路径。", ThemedStatusRole::Warning);
             return;
@@ -3902,6 +3904,7 @@ private:
         const std::vector<ProcessDisplayRow> rows = QueryFileLockRows(path, detail);
         fileRows_ = rows;
         fileTerminatedPids_.clear();
+        RefreshFileProtectedPids();
         SetFileProcessRows();
         std::wstring status;
         if (rows.empty()) {
@@ -3910,6 +3913,11 @@ private:
                 : (detail.empty() ? L"未发现占用进程。" : detail);
         } else {
             status = L"发现 " + std::to_wstring(rows.size()) + L" 个占用进程。";
+            if (fileProtectedPids_.size() == rows.size()) {
+                status = L"发现 " + std::to_wstring(rows.size()) + L" 个占用进程，均为系统关键进程，已保护。";
+            } else if (!fileProtectedPids_.empty()) {
+                status += L" 其中 " + std::to_wstring(fileProtectedPids_.size()) + L" 个系统关键进程已保护。";
+            }
             if (!detail.empty()) {
                 status += L" " + detail;
             }
@@ -3917,7 +3925,9 @@ private:
         SetStatus(
             fileStatus_,
             status,
-            rows.empty() ? ThemedStatusRole::Normal : ThemedStatusRole::Success);
+            rows.empty()
+                ? ThemedStatusRole::Normal
+                : (fileProtectedPids_.size() == rows.size() ? ThemedStatusRole::Warning : ThemedStatusRole::Success));
     }
 
     void StartDirectoryFileLockQuery(const std::wstring& path) {
@@ -3931,6 +3941,7 @@ private:
         ThemedUi::ClearTable(fileTable_);
         fileRows_.clear();
         fileTerminatedPids_.clear();
+        fileProtectedPids_.clear();
         UpdateFileKillAllButton();
         SetStatus(fileStatus_, L"正在后台检查目录占用…", ThemedStatusRole::Info);
         fileLockScanState_ = std::make_shared<FileLockScanState>();
@@ -3968,6 +3979,7 @@ private:
         const std::vector<ProcessDisplayRow> rows = FileLockRowsFromResult(result);
         fileRows_ = rows;
         fileTerminatedPids_.clear();
+        RefreshFileProtectedPids();
         SetFileProcessRows();
 
         if (!result.error.empty()) {
@@ -3993,19 +4005,32 @@ private:
             std::wstring status = L"检查已停止。";
             if (!rows.empty()) {
                 status += L" 已发现 " + std::to_wstring(rows.size()) + L" 个占用进程。";
+                if (fileProtectedPids_.size() == rows.size()) {
+                    status += L" 均为系统关键进程，已保护。";
+                } else if (!fileProtectedPids_.empty()) {
+                    status += L" 其中 " + std::to_wstring(fileProtectedPids_.size()) + L" 个系统关键进程已保护。";
+                }
             }
             status += L" " + detail;
             SetStatus(fileStatus_, status, ThemedStatusRole::Warning);
             return;
         }
 
-        const std::wstring status = rows.empty()
+        std::wstring status = rows.empty()
             ? L"未发现占用进程。 " + detail
-            : L"发现 " + std::to_wstring(rows.size()) + L" 个占用进程。 " + detail;
+            : L"发现 " + std::to_wstring(rows.size()) + L" 个占用进程。";
+        if (!rows.empty()) {
+            if (fileProtectedPids_.size() == rows.size()) {
+                status = L"发现 " + std::to_wstring(rows.size()) + L" 个占用进程，均为系统关键进程，已保护。";
+            } else if (!fileProtectedPids_.empty()) {
+                status += L" 其中 " + std::to_wstring(fileProtectedPids_.size()) + L" 个系统关键进程已保护。";
+            }
+            status += L" " + detail;
+        }
         SetStatus(
             fileStatus_,
             status,
-            !result.warning.empty()
+            !result.warning.empty() || (!rows.empty() && fileProtectedPids_.size() == rows.size())
                 ? ThemedStatusRole::Warning
                 : (rows.empty() ? ThemedStatusRole::Normal : ThemedStatusRole::Success));
     }
@@ -4058,6 +4083,7 @@ private:
     HWND fileStatus_ = nullptr;
     std::vector<ProcessDisplayRow> fileRows_;
     std::set<DWORD> fileTerminatedPids_;
+    std::set<DWORD> fileProtectedPids_;
     std::shared_ptr<FileLockScanState> fileLockScanState_;
     std::unique_ptr<FileLockProgressDialog> fileLockProgressDialog_;
     std::thread fileLockThread_;

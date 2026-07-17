@@ -4,6 +4,7 @@
 
 #include "AppLog.h"
 #include "DialogLayout.h"
+#include "FileDialog.h"
 #include "HotKeyEditor.h"
 #include "ShellItemService.h"
 #include "SimpleDialogs.h"
@@ -13,7 +14,6 @@
 #include "Utilities.h"
 
 #include <commctrl.h>
-#include <commdlg.h>
 #include <shobjidl.h>
 #include <windowsx.h>
 
@@ -390,17 +390,16 @@ private:
     }
 
     void BrowseFile() {
-        std::wstring buffer(32768, L'\0');
-        OPENFILENAMEW ofn{};
-        ofn.lStructSize = sizeof(ofn);
-        ofn.hwndOwner = hwnd_;
-        ofn.lpstrFile = buffer.data();
-        ofn.nMaxFile = static_cast<DWORD>(buffer.size());
-        ofn.lpstrFilter = L"所有文件\0*.*\0";
-        ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
-        if (GetOpenFileNameW(&ofn)) {
-            SetWindowTextW(pathEdit_, buffer.c_str());
-            SetNameFromPathIfEmpty(buffer.c_str());
+        CommonFileDialogOptions options{};
+        options.owner = hwnd_;
+        options.kind = CommonFileDialogKind::OpenFile;
+        options.context = L"启动项路径";
+        options.defaultPath = GetWindowTextString(pathEdit_);
+        options.legacyFilter = L"所有文件\0*.*\0";
+        CommonFileDialogResult result{};
+        if (ShowCommonFileDialog(options, result)) {
+            SetWindowTextW(pathEdit_, result.path.c_str());
+            SetNameFromPathIfEmpty(result.path);
             if (typeCombo_) {
                 SelectType(0);
             }
@@ -408,16 +407,15 @@ private:
     }
 
     void BrowseIcon() {
-        std::wstring buffer(32768, L'\0');
-        OPENFILENAMEW ofn{};
-        ofn.lStructSize = sizeof(ofn);
-        ofn.hwndOwner = hwnd_;
-        ofn.lpstrFile = buffer.data();
-        ofn.nMaxFile = static_cast<DWORD>(buffer.size());
-        ofn.lpstrFilter = L"图标或程序\0*.ico;*.exe;*.dll\0所有文件\0*.*\0";
-        ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
-        if (GetOpenFileNameW(&ofn)) {
-            SetWindowTextW(iconEdit_, buffer.c_str());
+        CommonFileDialogOptions options{};
+        options.owner = hwnd_;
+        options.kind = CommonFileDialogKind::OpenFile;
+        options.context = L"启动项图标";
+        options.defaultPath = GetWindowTextString(iconEdit_);
+        options.legacyFilter = L"图标或程序\0*.ico;*.exe;*.dll\0所有文件\0*.*\0";
+        CommonFileDialogResult result{};
+        if (ShowCommonFileDialog(options, result)) {
+            SetWindowTextW(iconEdit_, result.path.c_str());
         }
     }
 
@@ -437,56 +435,36 @@ private:
     }
 
     void BrowseFolder(HWND targetEdit) {
-        IFileDialog* dialog = nullptr;
-        if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog)))) {
+        CommonFileDialogOptions options{};
+        options.owner = hwnd_;
+        options.kind = CommonFileDialogKind::PickFolder;
+        options.context = targetEdit == pathEdit_ ? L"启动项文件夹路径" : L"启动项工作目录";
+        options.defaultPath = GetWindowTextString(targetEdit);
+        options.forceFileSystem = targetEdit != pathEdit_;
+        options.allowShellFolderParsingName = targetEdit == pathEdit_;
+        CommonFileDialogResult result{};
+        if (!ShowCommonFileDialog(options, result)) {
             return;
         }
 
-        DWORD options = 0;
-        dialog->GetOptions(&options);
-        DWORD requested = options | FOS_PICKFOLDERS;
-        if (targetEdit != pathEdit_) {
-            requested |= FOS_FORCEFILESYSTEM;
-        }
-        dialog->SetOptions(requested);
-        if (SUCCEEDED(dialog->Show(hwnd_))) {
-            IShellItem* item = nullptr;
-            if (SUCCEEDED(dialog->GetResult(&item))) {
-                PWSTR path = nullptr;
-                HRESULT hr = item->GetDisplayName(SIGDN_FILESYSPATH, &path);
-                if (FAILED(hr) && targetEdit == pathEdit_) {
-                    hr = item->GetDisplayName(SIGDN_DESKTOPABSOLUTEPARSING, &path);
-                }
-                if (SUCCEEDED(hr)) {
-                    SetWindowTextW(targetEdit, path);
-                    if (targetEdit == pathEdit_) {
-                        SetNameFromShellItemIfEmpty(item, path);
-                        if (typeCombo_) {
-                            SelectType(ShellItemService::IsShellParseName(path) ? 3 : 1);
-                        }
-                    }
-                    CoTaskMemFree(path);
-                }
-                item->Release();
+        SetWindowTextW(targetEdit, result.path.c_str());
+        if (targetEdit == pathEdit_) {
+            SetNameFromDialogResultIfEmpty(result);
+            if (typeCombo_) {
+                SelectType(ShellItemService::IsShellParseName(result.path) ? 3 : 1);
             }
         }
-        dialog->Release();
     }
 
-    void SetNameFromShellItemIfEmpty(IShellItem* item, const std::wstring& fallback) {
+    void SetNameFromDialogResultIfEmpty(const CommonFileDialogResult& result) {
         if (!Trim(GetWindowTextString(nameEdit_)).empty()) {
             return;
         }
-        PWSTR displayName = nullptr;
-        if (item && SUCCEEDED(item->GetDisplayName(SIGDN_NORMALDISPLAY, &displayName)) && displayName && *displayName) {
-            SetWindowTextW(nameEdit_, displayName);
-            CoTaskMemFree(displayName);
+        if (!result.displayName.empty()) {
+            SetWindowTextW(nameEdit_, result.displayName.c_str());
             return;
         }
-        if (displayName) {
-            CoTaskMemFree(displayName);
-        }
-        SetNameFromPathIfEmpty(fallback);
+        SetNameFromPathIfEmpty(result.path);
     }
 
     void SetNameFromPathIfEmpty(const std::wstring& path) {

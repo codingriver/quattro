@@ -1,6 +1,7 @@
 #include "QuickImportDialog.h"
 
 #include "DialogLayout.h"
+#include "FileDialog.h"
 #include "ThemedControls.h"
 #include "ThemedUi.h"
 #include "ThemedWindowUi.h"
@@ -12,7 +13,6 @@
 #include <memory>
 #include <shellapi.h>
 #include <shlobj.h>
-#include <shobjidl.h>
 #include <system_error>
 #include <windowsx.h>
 
@@ -113,31 +113,18 @@ HICON ExtractDisplayIcon(const Link& link, bool useSmallIcon) {
 }
 
 bool PickFolder(HWND owner, std::filesystem::path& directory) {
-    IFileDialog* dialog = nullptr;
-    if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog))) || !dialog) {
+    CommonFileDialogOptions options{};
+    options.owner = owner;
+    options.kind = CommonFileDialogKind::PickFolder;
+    options.context = L"快速导入目录";
+    options.title = L"选择快速导入目录";
+    options.defaultPath = directory.wstring();
+    CommonFileDialogResult result{};
+    if (!ShowCommonFileDialog(options, result)) {
         return false;
     }
-
-    DWORD options = 0;
-    dialog->GetOptions(&options);
-    dialog->SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST);
-    dialog->SetTitle(L"选择快速导入目录");
-
-    bool accepted = false;
-    if (SUCCEEDED(dialog->Show(owner))) {
-        IShellItem* item = nullptr;
-        if (SUCCEEDED(dialog->GetResult(&item)) && item) {
-            PWSTR path = nullptr;
-            if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path)) && path) {
-                directory = path;
-                CoTaskMemFree(path);
-                accepted = true;
-            }
-            item->Release();
-        }
-    }
-    dialog->Release();
-    return accepted;
+    directory = result.path;
+    return true;
 }
 
 std::filesystem::path KnownFolderPathOrEmpty(REFKNOWNFOLDERID folderId) {

@@ -388,6 +388,7 @@ add_executable(Quattro WIN32
     src/domain/TrackedContextMenuProviders.cpp
     src/services/ConfigPackageService.cpp
     src/services/ContextMenuProviderIconService.cpp
+    src/common/FileDialog.cpp
     src/services/FileLockQueryService.cpp
     src/common/EmbeddedAssetInstaller.cpp
     src/common/Elevation.cpp
@@ -474,6 +475,7 @@ add_executable(QuattroTests
     src/domain/TrackedContextMenuProviders.cpp
     src/services/ConfigPackageService.cpp
     src/services/ContextMenuProviderIconService.cpp
+    src/common/FileDialog.cpp
     src/services/FileLockQueryService.cpp
     src/services/Launcher.cpp
     src/common/JsonValue.cpp
@@ -548,6 +550,7 @@ add_executable(QuattroUiScreenshotAcceptance
     src/windows/ConfirmDialog.cpp
     src/services/ConfigPackageService.cpp
     src/services/ContextMenuProviderIconService.cpp
+    src/common/FileDialog.cpp
     src/services/FileLockQueryService.cpp
     src/windows/HotKeyEditor.cpp
     src/common/JsonValue.cpp
@@ -830,6 +833,7 @@ target_link_libraries(QuattroUiScreenshotAcceptance PRIVATE
     rstrtmgr
     shell32
     shlwapi
+    uuid
     user32
     wininet
 )
@@ -946,6 +950,39 @@ target_link_libraries(QuattroHttpServerConfigAcceptance PRIVATE
 )
 endif()
 
+if(QUATTRO_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/FileDialogTests.cpp")
+add_executable(QuattroFileDialogTests
+    tests/FileDialogTests.cpp
+    src/common/AppLog.cpp
+    src/common/FileDialog.cpp
+    src/common/Utilities.cpp
+)
+
+target_compile_definitions(QuattroFileDialogTests PRIVATE
+    UNICODE
+    _UNICODE
+    WINVER=0x0A00
+    _WIN32_WINNT=0x0A00
+    NOMINMAX
+)
+
+target_compile_options(QuattroFileDialogTests PRIVATE
+    $<$<CXX_COMPILER_ID:MSVC>:/W4 /permissive- /EHsc /utf-8>
+)
+
+target_include_directories(QuattroFileDialogTests PRIVATE
+    src
+)
+
+target_link_libraries(QuattroFileDialogTests PRIVATE
+    ole32
+    shell32
+    shlwapi
+    uuid
+    user32
+)
+endif()
+
 if(QUATTRO_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/HttpServerRuntimeAcceptance.cpp")
 add_executable(QuattroHttpServerRuntimeAcceptance
     tests/HttpServerRuntimeAcceptance.cpp
@@ -993,6 +1030,7 @@ add_executable(QuattroSettingsHttpButtonsAcceptance
     src/windows/ConfirmDialog.cpp
     src/services/ConfigPackageService.cpp
     src/services/ContextMenuProviderIconService.cpp
+    src/common/FileDialog.cpp
     src/services/FileLockQueryService.cpp
     src/windows/HotKeyEditor.cpp
     src/common/JsonValue.cpp
@@ -1059,6 +1097,7 @@ target_link_libraries(QuattroSettingsHttpButtonsAcceptance PRIVATE
     rstrtmgr
     shell32
     shlwapi
+    uuid
     user32
     wininet
 )
