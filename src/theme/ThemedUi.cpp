@@ -7,6 +7,7 @@
 #include <windowsx.h>
 
 #include <algorithm>
+#include <filesystem>
 #include <unordered_map>
 
 namespace {
@@ -256,6 +257,71 @@ int TextWidth(HWND parent, HFONT font, const std::wstring& text) {
         dc, font, text.c_str(), static_cast<int>(text.size()));
     ReleaseDC(parent, dc);
     return size.cx;
+}
+
+bool EnsureTablerIconFontLoaded() {
+    static std::filesystem::path loadedPath;
+    static bool loaded = false;
+
+    const std::filesystem::path relative = L"icons/menu/tabler/tabler-icons.ttf";
+    const std::filesystem::path candidates[] = {
+        GetModuleDirectory() / relative,
+        std::filesystem::current_path() / relative,
+    };
+    for (const auto& path : candidates) {
+        if (loaded && loadedPath == path) {
+            return true;
+        }
+        if (FileExists(path)) {
+            loadedPath = path;
+            loaded = AddFontResourceExW(path.c_str(), FR_PRIVATE, nullptr) > 0;
+            return loaded;
+        }
+    }
+    return false;
+}
+
+LRESULT CALLBACK SplitButtonMenuProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR id, DWORD_PTR refData) {
+    if (message == WM_NCDESTROY) {
+        HFONT font = reinterpret_cast<HFONT>(refData);
+        if (font) {
+            DeleteObject(font);
+        }
+        RemoveWindowSubclass(hwnd, SplitButtonMenuProc, id);
+    }
+    return DefSubclassProc(hwnd, message, wParam, lParam);
+}
+
+void ApplySplitButtonMenuIcon(HWND button, int buttonHeight) {
+    if (!button || !EnsureTablerIconFontLoaded()) {
+        SetWindowTextW(button, L"⌄");
+        return;
+    }
+
+    HFONT iconFont = CreateFontW(
+        -std::max(12, buttonHeight - 8),
+        0,
+        0,
+        0,
+        FW_NORMAL,
+        FALSE,
+        FALSE,
+        FALSE,
+        DEFAULT_CHARSET,
+        OUT_DEFAULT_PRECIS,
+        CLIP_DEFAULT_PRECIS,
+        CLEARTYPE_QUALITY,
+        DEFAULT_PITCH | FF_DONTCARE,
+        L"tabler-icons");
+    if (!iconFont) {
+        SetWindowTextW(button, L"⌄");
+        return;
+    }
+
+    constexpr wchar_t chevronDown = static_cast<wchar_t>(0xEA5F); // tabler chevron-down
+    SetWindowTextW(button, std::wstring(1, chevronDown).c_str());
+    SendMessageW(button, WM_SETFONT, reinterpret_cast<WPARAM>(iconFont), TRUE);
+    SetWindowSubclass(button, SplitButtonMenuProc, 6, reinterpret_cast<DWORD_PTR>(iconFont));
 }
 
 struct GroupBoxRuntime {
@@ -1878,7 +1944,8 @@ ThemedSplitButton ThemedUi::SplitButton(
     const int primaryWidth = std::max(height, totalWidth - menuWidth);
     ThemedSplitButton split{};
     split.primary = Button(primaryId, text, x, y, role, size, ThemedButtonWidthMode::Fixed, primaryWidth, defaultButton);
-    split.menu = Button(menuId, L"▼", x + primaryWidth, y, role, size, ThemedButtonWidthMode::Fixed, menuWidth);
+    split.menu = Button(menuId, L"", x + primaryWidth, y, role, size, ThemedButtonWidthMode::Fixed, menuWidth);
+    ApplySplitButtonMenuIcon(split.menu, height);
     return split;
 }
 
