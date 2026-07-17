@@ -29,6 +29,15 @@ constexpr int kTabOrientationVertical = 1;
 constexpr int kTabContainerStyleAppearanceDefault = 0;
 constexpr int kTabContainerStyleFramed = 1;
 constexpr int kTabContainerStyleBorderless = 2;
+constexpr wchar_t kThemedButtonIconProp[] = L"QuattroThemedButtonIcon";
+
+HICON ButtonIcon(HWND hwnd) {
+    HICON icon = reinterpret_cast<HICON>(SendMessageW(hwnd, BM_GETIMAGE, IMAGE_ICON, 0));
+    if (!icon) {
+        icon = reinterpret_cast<HICON>(GetPropW(hwnd, kThemedButtonIconProp));
+    }
+    return icon;
+}
 
 enum class ControlKind {
     None,
@@ -1235,7 +1244,7 @@ void DrawButton(const Theme& theme, const DRAWITEMSTRUCT* draw) {
     HGDIOBJ oldFont = font ? SelectObject(draw->hDC, font) : nullptr;
     std::wstring text = ControlText(draw->hwndItem);
     RECT textRect = ThemedControls::ButtonTextRect(theme, rect, pressed);
-    HICON icon = reinterpret_cast<HICON>(SendMessageW(draw->hwndItem, BM_GETIMAGE, IMAGE_ICON, 0));
+    HICON icon = ButtonIcon(draw->hwndItem);
     if (icon) {
         const int iconSize = ActiveScaledMetric(theme, L"toolbarItem", L"iconSize", 16.0f);
         const int iconGap = text.empty() ? 0 : ActiveScaledMetric(theme, L"toolbarItem", L"iconGap", 6.0f);
@@ -1745,7 +1754,7 @@ void DrawTabButton(const Theme& theme, const DRAWITEMSTRUCT* draw) {
     HGDIOBJ oldFont = font ? SelectObject(draw->hDC, font) : nullptr;
     std::wstring text = ControlText(draw->hwndItem);
     RECT textRect = ThemedControls::TabButtonTextRect(theme, rect);
-    HICON icon = reinterpret_cast<HICON>(SendMessageW(draw->hwndItem, BM_GETIMAGE, IMAGE_ICON, 0));
+    HICON icon = ButtonIcon(draw->hwndItem);
     if (icon) {
         const int iconSize = ActiveScaledMetric(theme, L"toolbarItem", L"iconSize", 16.0f);
         const int iconGap = text.empty() ? 0 : ActiveScaledMetric(theme, L"toolbarItem", L"iconGap", 6.0f);

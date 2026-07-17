@@ -7,6 +7,7 @@
 #include <windowsx.h>
 
 #include <algorithm>
+#include <cstdint>
 #include <filesystem>
 #include <unordered_map>
 
@@ -281,25 +282,37 @@ bool EnsureTablerIconFontLoaded() {
     return false;
 }
 
-LRESULT CALLBACK SplitButtonMenuProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR id, DWORD_PTR refData) {
-    if (message == WM_NCDESTROY) {
-        HFONT font = reinterpret_cast<HFONT>(refData);
-        if (font) {
-            DeleteObject(font);
-        }
-        RemoveWindowSubclass(hwnd, SplitButtonMenuProc, id);
-    }
-    return DefSubclassProc(hwnd, message, wParam, lParam);
-}
-
-void ApplySplitButtonMenuIcon(HWND button, int buttonHeight) {
-    if (!button || !EnsureTablerIconFontLoaded()) {
-        SetWindowTextW(button, L"⌄");
-        return;
+HICON CreateTablerIconHandle(wchar_t glyph) {
+    if (glyph == L'\0' || !EnsureTablerIconFontLoaded()) {
+        return nullptr;
     }
 
-    HFONT iconFont = CreateFontW(
-        -std::max(12, buttonHeight - 8),
+    constexpr int size = 64;
+    BITMAPINFO info{};
+    info.bmiHeader.biSize = sizeof(info.bmiHeader);
+    info.bmiHeader.biWidth = size;
+    info.bmiHeader.biHeight = -size;
+    info.bmiHeader.biPlanes = 1;
+    info.bmiHeader.biBitCount = 32;
+    info.bmiHeader.biCompression = BI_RGB;
+
+    void* pixels = nullptr;
+    HDC screen = GetDC(nullptr);
+    HBITMAP color = CreateDIBSection(screen, &info, DIB_RGB_COLORS, &pixels, nullptr, 0);
+    HBITMAP mask = CreateBitmap(size, size, 1, 1, nullptr);
+    HDC dc = CreateCompatibleDC(screen);
+    ReleaseDC(nullptr, screen);
+    if (!color || !mask || !dc || !pixels) {
+        if (dc) DeleteDC(dc);
+        if (mask) DeleteObject(mask);
+        if (color) DeleteObject(color);
+        return nullptr;
+    }
+
+    HGDIOBJ oldBitmap = SelectObject(dc, color);
+    std::fill_n(static_cast<std::uint32_t*>(pixels), size * size, 0);
+    HFONT font = CreateFontW(
+        -52,
         0,
         0,
         0,
@@ -313,15 +326,74 @@ void ApplySplitButtonMenuIcon(HWND button, int buttonHeight) {
         CLEARTYPE_QUALITY,
         DEFAULT_PITCH | FF_DONTCARE,
         L"tabler-icons");
-    if (!iconFont) {
-        SetWindowTextW(button, L"⌄");
+    if (!font) {
+        SelectObject(dc, oldBitmap);
+        DeleteDC(dc);
+        DeleteObject(mask);
+        DeleteObject(color);
+        return nullptr;
+    }
+
+    const int oldBkMode = SetBkMode(dc, TRANSPARENT);
+    const COLORREF oldTextColor = SetTextColor(dc, RGB(31, 41, 55));
+    HGDIOBJ oldFont = SelectObject(dc, font);
+    RECT rect{0, 0, size, size};
+    DrawTextW(dc, &glyph, 1, &rect, DT_SINGLELINE | DT_CENTER | DT_VCENTER | DT_NOCLIP);
+    SelectObject(dc, oldFont);
+    SetTextColor(dc, oldTextColor);
+    SetBkMode(dc, oldBkMode);
+    DeleteObject(font);
+
+    auto* argb = static_cast<std::uint32_t*>(pixels);
+    for (int i = 0; i < size * size; ++i) {
+        const std::uint32_t rgb = argb[i] & 0x00FFFFFFu;
+        if (rgb != 0) {
+            argb[i] = 0xFF000000u | rgb;
+        }
+    }
+
+    SelectObject(dc, oldBitmap);
+    DeleteDC(dc);
+
+    ICONINFO iconInfo{};
+    iconInfo.fIcon = TRUE;
+    iconInfo.hbmColor = color;
+    iconInfo.hbmMask = mask;
+    HICON icon = CreateIconIndirect(&iconInfo);
+    DeleteObject(mask);
+    DeleteObject(color);
+    return icon;
+}
+
+LRESULT CALLBACK SplitButtonMenuProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR id, DWORD_PTR refData) {
+    if (message == WM_NCDESTROY) {
+        RemovePropW(hwnd, L"QuattroThemedButtonIcon");
+        HICON icon = reinterpret_cast<HICON>(refData);
+        if (icon) {
+            DestroyIcon(icon);
+        }
+        RemoveWindowSubclass(hwnd, SplitButtonMenuProc, id);
+    }
+    return DefSubclassProc(hwnd, message, wParam, lParam);
+}
+
+void ApplySplitButtonMenuIcon(HWND button, int buttonHeight) {
+    if (!button) {
         return;
     }
 
     constexpr wchar_t chevronDown = static_cast<wchar_t>(0xEA5F); // tabler chevron-down
-    SetWindowTextW(button, std::wstring(1, chevronDown).c_str());
-    SendMessageW(button, WM_SETFONT, reinterpret_cast<WPARAM>(iconFont), TRUE);
-    SetWindowSubclass(button, SplitButtonMenuProc, 6, reinterpret_cast<DWORD_PTR>(iconFont));
+    HICON icon = CreateTablerIconHandle(chevronDown);
+    if (!icon) {
+        SetWindowTextW(button, L"⌄");
+        return;
+    }
+
+    SetWindowTextW(button, L"");
+    SendMessageW(button, BM_SETIMAGE, IMAGE_ICON, reinterpret_cast<LPARAM>(icon));
+    SetPropW(button, L"QuattroThemedButtonIcon", icon);
+    SetWindowSubclass(button, SplitButtonMenuProc, 6, reinterpret_cast<DWORD_PTR>(icon));
+    (void)buttonHeight;
 }
 
 struct GroupBoxRuntime {
