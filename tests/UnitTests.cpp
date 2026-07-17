@@ -17,6 +17,7 @@
 #include "../src/services/SystemFunctions.h"
 #include "../src/services/UpdateCheckService.h"
 #include "../src/theme/Theme.h"
+#include "../src/theme/CatalogDialogLayout.h"
 #include "../src/theme/ThemedFormLayout.h"
 #include "../src/theme/ThemedUi.h"
 #include "../src/theme/ThemedControls.h"
@@ -1406,6 +1407,27 @@ int wmain() {
             if (bitmapDc) DeleteDC(bitmapDc);
             if (screen) ReleaseDC(nullptr, screen);
         }
+        auto catalogStatusBarPaints = [&](const wchar_t* fallbackFlag) {
+            HDC screen = GetDC(nullptr);
+            HDC bitmapDc = screen ? CreateCompatibleDC(screen) : nullptr;
+            HBITMAP bitmap = screen ? CreateCompatibleBitmap(screen, 320, 120) : nullptr;
+            HGDIOBJ oldBitmap = bitmapDc && bitmap ? SelectObject(bitmapDc, bitmap) : nullptr;
+            bool changed = false;
+            if (bitmapDc && bitmap) {
+                ThemedGdiFallback::FillSolidRect(bitmapDc, RECT{0, 0, 320, 120}, RGB(255, 255, 255));
+                SetEnvironmentVariableW(L"QUATTRO_FORCE_GDI_FALLBACK", fallbackFlag);
+                CatalogDialogLayout().DrawStatusBar(fallbackTheme, bitmapDc, RECT{0, 0, 320, 120});
+                changed = GetPixel(bitmapDc, 10, 96) != RGB(255, 255, 255);
+                SetEnvironmentVariableW(L"QUATTRO_FORCE_GDI_FALLBACK", nullptr);
+            }
+            if (bitmapDc && oldBitmap) SelectObject(bitmapDc, oldBitmap);
+            if (bitmap) DeleteObject(bitmap);
+            if (bitmapDc) DeleteDC(bitmapDc);
+            if (screen) ReleaseDC(nullptr, screen);
+            return changed;
+        };
+        Check(catalogStatusBarPaints(nullptr), "Catalog dialog status bar paints through D2D facade");
+        Check(catalogStatusBarPaints(L"1"), "Catalog dialog status bar paints through GDI fallback");
         ThemedTooltipOptions runtimeTooltipOptions{};
         runtimeTooltipOptions.placement = ThemedTooltipPlacement::Cursor;
         tooltipUi.SetTooltip(runtimeTooltipButton, L"button description", runtimeTooltipOptions);

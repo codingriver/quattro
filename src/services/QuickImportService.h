@@ -8,12 +8,6 @@
 
 class QuickImportService {
 public:
-    enum class Source {
-        Directory,
-        Desktop,
-        StartMenu,
-    };
-
     struct Item {
         Link link;
         std::filesystem::path sourcePath;
@@ -25,10 +19,9 @@ public:
 
     static constexpr int kMaxDepth = 5;
 
-    std::vector<Item> Scan(Source source, const std::filesystem::path& directory, const std::vector<Link>& existingLinks, std::wstring& error) const;
+    std::vector<Item> Scan(const std::filesystem::path& directory, const std::vector<Link>& existingLinks, std::wstring& error) const;
 
 private:
-    std::vector<std::filesystem::path> RootsFor(Source source, const std::filesystem::path& directory) const;
     void ScanRoot(const std::filesystem::path& root, std::vector<Item>& items) const;
     bool TryCreateItem(const std::filesystem::path& path, Item& item) const;
     bool TryCreateShortcutItem(const std::filesystem::path& path, Item& item) const;

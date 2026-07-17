@@ -6,6 +6,7 @@
 #include "Utilities.h"
 
 #include <commctrl.h>
+#include <windowsx.h>
 #include <algorithm>
 #include <cstring>
 #include <utility>
@@ -387,10 +388,18 @@ void ThemedWindowUi::ApplyDpiChange(UINT newDpi, const RECT* suggestedWindowRect
     font();
 
     if (suggestedWindowRect) {
+        const int suggestedWidth = suggestedWindowRect->right - suggestedWindowRect->left;
+        const int suggestedHeight = suggestedWindowRect->bottom - suggestedWindowRect->top;
+        const POINT clamped = ClampWindowToOwnerMonitor(
+            owner_,
+            suggestedWindowRect->left,
+            suggestedWindowRect->top,
+            suggestedWidth,
+            suggestedHeight);
         SetWindowPos(hwnd_, nullptr,
-            suggestedWindowRect->left, suggestedWindowRect->top,
-            suggestedWindowRect->right - suggestedWindowRect->left,
-            suggestedWindowRect->bottom - suggestedWindowRect->top,
+            clamped.x, clamped.y,
+            suggestedWidth,
+            suggestedHeight,
             SWP_NOACTIVATE | SWP_NOZORDER);
     }
 
@@ -826,7 +835,7 @@ bool ThemedWindowUi::EnsureToastWindow() {
     const DWORD layeredStyle = ThemedD2D::IsAvailable() ? WS_EX_LAYERED : 0u;
     toast_ = CreateWindowExW(
         (BackgroundAcceptanceMode() ? 0u : WS_EX_TOPMOST) | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | layeredStyle,
-        kClassName, L"", WS_POPUP, 0, 0, 0, 0, hwnd_, nullptr, instance_, this);
+        kClassName, L"", WS_POPUP, 0, 0, 0, 0, nullptr, nullptr, instance_, this);
     return toast_ != nullptr;
 }
 
@@ -841,6 +850,35 @@ SIZE ThemedWindowUi::MeasureToast(const std::wstring& text, const ThemedToastOpt
     return SIZE{
         std::max(ScaleForDpi(160, dpi_), static_cast<int>(measured.cx) + paddingX * 2),
         std::max(ScaleForDpi(32, dpi_), static_cast<int>(measured.cy) + paddingY * 2)};
+}
+
+RECT ThemedWindowUi::ToastCloseButtonRect() const {
+    RECT rect{};
+    if (!toast_) {
+        return rect;
+    }
+    GetClientRect(toast_, &rect);
+    const int paddingX = ScaleForDpi(static_cast<int>(theme_.metric(L"toast", L"paddingX", 12.0f)), dpi_);
+    const int paddingY = ScaleForDpi(static_cast<int>(theme_.metric(L"toast", L"paddingY", 9.0f)), dpi_);
+    const int visualSize = std::min(
+        ScaleForDpi(static_cast<int>(theme_.metric(L"miniButton", L"height", 24.0f)), dpi_),
+        ScaleForDpi(16, dpi_));
+    rect.left = rect.right - paddingX - visualSize;
+    rect.top = rect.top + paddingY;
+    rect.right = rect.left + visualSize;
+    rect.bottom = rect.top + visualSize;
+    return rect;
+}
+
+void ThemedWindowUi::InvalidateToastWindow() {
+    if (!toast_ || !IsWindow(toast_)) {
+        return;
+    }
+    if ((GetWindowLongPtrW(toast_, GWL_EXSTYLE) & WS_EX_LAYERED) != 0) {
+        PresentLayeredWindow(toast_, [this](HDC memory) { PaintToast(memory); });
+    } else {
+        InvalidateRect(toast_, nullptr, FALSE);
+    }
 }
 
 void ThemedWindowUi::PositionToast() {
@@ -926,15 +964,13 @@ void ThemedWindowUi::ShowToast(const std::wstring& text, const ThemedToastOption
         toastLayoutValid_ = false;
         SetWindowTextW(toast_, toastText_.c_str());
     }
+    toastCloseHovered_ = false;
+    toastClosePressed_ = false;
     PositionToast();
     if (!IsWindowVisible(toast_)) {
         ShowWindow(toast_, SW_SHOWNA);
     }
-    if ((GetWindowLongPtrW(toast_, GWL_EXSTYLE) & WS_EX_LAYERED) != 0) {
-        PresentLayeredWindow(toast_, [this](HDC memory) { PaintToast(memory); });
-    } else {
-        InvalidateRect(toast_, nullptr, FALSE);
-    }
+    InvalidateToastWindow();
     KillTimer(hwnd_, kToastTimerId);
     if (options.durationMs > 0) {
         SetTimer(hwnd_, kToastTimerId, static_cast<UINT>(options.durationMs), nullptr);
@@ -946,6 +982,8 @@ void ThemedWindowUi::HideToast() {
     if (toast_) ShowWindow(toast_, SW_HIDE);
     toastText_.clear();
     toastLayoutValid_ = false;
+    toastCloseHovered_ = false;
+    toastClosePressed_ = false;
 }
 
 void ThemedWindowUi::PaintToast(HDC dc) const {
@@ -973,7 +1011,32 @@ void ThemedWindowUi::PaintToast(HDC dc) const {
 
     const int paddingX = ScaleForDpi(static_cast<int>(theme_.metric(L"toast", L"paddingX", 12.0f)), dpi_);
     const int paddingY = ScaleForDpi(static_cast<int>(theme_.metric(L"toast", L"paddingY", 9.0f)), dpi_);
+    const RECT closeRect = ToastCloseButtonRect();
+    const wchar_t* closeState = toastClosePressed_ ? L"pressed" : (toastCloseHovered_ ? L"hover" : L"normal");
+    ThemedControls::DrawMiniButtonFrame(theme_, dc, closeRect, toastCloseHovered_, toastClosePressed_, false, false);
+    RECT closeGlyphRect = closeRect;
+    const int glyphOffset = toastClosePressed_ ? ScaleForDpi(static_cast<int>(theme_.metric(L"miniButton", L"pressedOffset", 1.0f)), dpi_) : 0;
+    OffsetRect(&closeGlyphRect, glyphOffset, glyphOffset);
+    if (!ThemedD2D::DrawTextLayout(
+            dc,
+            font(),
+            L"\x00D7",
+            1,
+            closeGlyphRect,
+            DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+            ToColorRef(theme_.color(L"miniButton", closeState, L"icon")))) {
+        ThemedGdiFallback::DrawText(
+            dc,
+            font(),
+            L"\x00D7",
+            1,
+            closeGlyphRect,
+            DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+            ToColorRef(theme_.color(L"miniButton", closeState, L"icon")));
+    }
     InflateRect(&rect, -paddingX, -paddingY);
+    const int closeGap = ScaleForDpi(6, dpi_);
+    rect.right = std::max(rect.left, closeRect.left - closeGap);
     UINT format = DT_NOPREFIX | (toastOptions_.multiline ? DT_WORDBREAK : DT_SINGLELINE);
     if (!ThemedD2D::DrawTextLayout(
             dc, font(), toastText_.c_str(), static_cast<int>(toastText_.size()), rect, format,
@@ -985,6 +1048,11 @@ void ThemedWindowUi::PaintToast(HDC dc) const {
 }
 
 LRESULT CALLBACK ThemedWindowUi::ToastProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
+    auto pointFromLParam = [](LPARAM value) -> POINT {
+        return POINT{
+            static_cast<LONG>(static_cast<short>(LOWORD(value))),
+            static_cast<LONG>(static_cast<short>(HIWORD(value)))};
+    };
     ThemedWindowUi* ui = reinterpret_cast<ThemedWindowUi*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
     if (message == WM_NCCREATE) {
         auto* create = reinterpret_cast<CREATESTRUCTW*>(lParam);
@@ -993,9 +1061,78 @@ LRESULT CALLBACK ThemedWindowUi::ToastProc(HWND hwnd, UINT message, WPARAM wPara
     }
     switch (message) {
     case WM_NCHITTEST:
+        if (ui && ui->toast_ == hwnd) {
+            POINT screenPoint = pointFromLParam(lParam);
+            POINT clientPoint = screenPoint;
+            ScreenToClient(hwnd, &clientPoint);
+            const RECT closeRect = ui->ToastCloseButtonRect();
+            if (PtInRect(&closeRect, clientPoint)) {
+                return HTCLIENT;
+            }
+        }
         return HTTRANSPARENT;
     case WM_ERASEBKGND:
         return 1;
+    case WM_MOUSEMOVE:
+        if (ui && ui->toast_ == hwnd) {
+            TRACKMOUSEEVENT track{};
+            track.cbSize = sizeof(track);
+            track.dwFlags = TME_LEAVE;
+            track.hwndTrack = hwnd;
+            TrackMouseEvent(&track);
+            POINT point = pointFromLParam(lParam);
+            const RECT closeRect = ui->ToastCloseButtonRect();
+            const bool hovered = PtInRect(&closeRect, point) != FALSE;
+            if (ui->toastCloseHovered_ != hovered) {
+                ui->toastCloseHovered_ = hovered;
+                if (!hovered) {
+                    ui->toastClosePressed_ = false;
+                }
+                ui->InvalidateToastWindow();
+            }
+            return 0;
+        }
+        break;
+    case WM_MOUSELEAVE:
+        if (ui && ui->toast_ == hwnd) {
+            if (ui->toastCloseHovered_ || ui->toastClosePressed_) {
+                ui->toastCloseHovered_ = false;
+                ui->toastClosePressed_ = false;
+                ui->InvalidateToastWindow();
+            }
+            return 0;
+        }
+        break;
+    case WM_LBUTTONDOWN:
+        if (ui && ui->toast_ == hwnd) {
+            POINT point = pointFromLParam(lParam);
+            const RECT closeRect = ui->ToastCloseButtonRect();
+            if (PtInRect(&closeRect, point)) {
+                ui->toastClosePressed_ = true;
+                ::SetCapture(hwnd);
+                ui->InvalidateToastWindow();
+                return 0;
+            }
+        }
+        break;
+    case WM_LBUTTONUP:
+        if (ui && ui->toast_ == hwnd) {
+            const bool pressed = ui->toastClosePressed_;
+            if (GetCapture() == hwnd) {
+                ReleaseCapture();
+            }
+            ui->toastClosePressed_ = false;
+            POINT point = pointFromLParam(lParam);
+            const RECT closeRect = ui->ToastCloseButtonRect();
+            const bool activateClose = pressed && PtInRect(&closeRect, point) != FALSE;
+            ui->toastCloseHovered_ = PtInRect(&closeRect, point) != FALSE;
+            ui->InvalidateToastWindow();
+            if (activateClose) {
+                ui->HideToast();
+            }
+            return 0;
+        }
+        break;
     case WM_PAINT:
         if (ui) {
             PAINTSTRUCT ps{};
@@ -1007,8 +1144,13 @@ LRESULT CALLBACK ThemedWindowUi::ToastProc(HWND hwnd, UINT message, WPARAM wPara
         break;
     case WM_NCDESTROY:
         if (ui && ui->toast_ == hwnd) {
+            if (GetCapture() == hwnd) {
+                ReleaseCapture();
+            }
             ui->toast_ = nullptr;
             ui->toastLayoutValid_ = false;
+            ui->toastCloseHovered_ = false;
+            ui->toastClosePressed_ = false;
         }
         break;
     default:

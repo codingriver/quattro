@@ -206,7 +206,7 @@ private:
     void ClearDoneTodos();
     void CheckTodoReminders();
     void ShowTodoReminder(const TodoItem& item);
-    void ShowTodoReminderPanel(const TodoItem& item);
+    bool ShowTodoReminderPanel(const TodoItem& item);
     void HideTodoReminderPanel();
     void ShowTodoSystemNotification(const TodoItem& item);
     void ShowClipboardImportNotification(int count, int failedCount = 0, const std::wstring& pathDetail = L"");

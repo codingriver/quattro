@@ -400,6 +400,13 @@ std::wstring CopySelectedPathsHotKeyStatusText(int key, const HotKeyAvailability
     return L"复制选中项绝对路径快捷键 " + FormatGlobalHotKeyText(key) + L" 已被占用。";
 }
 
+void ShowHotKeyConflictMessage(HWND owner, HINSTANCE instance, const Theme& theme, const std::wstring& message) {
+    if (QuattroTestMode()) {
+        return;
+    }
+    ShowThemedMessageBox(owner, instance, theme, message, L"热键冲突", MB_OK | MB_ICONWARNING);
+}
+
 std::wstring GetText(HWND hwnd) {
     const int length = GetWindowTextLengthW(hwnd);
     std::wstring text(static_cast<std::size_t>(length) + 1, L'\0');
@@ -2790,7 +2797,7 @@ private:
         if (!availability.available) {
             draft_.mainHotKey = key;
             UpdateHotKeyLabels();
-            ShowThemedMessageBox(hwnd_, instance_, theme_, MainHotKeyConflictMessage(key, availability), L"热键冲突", MB_OK | MB_ICONWARNING);
+            ShowHotKeyConflictMessage(hwnd_, instance_, theme_, MainHotKeyConflictMessage(key, availability));
             return false;
         }
 
@@ -2819,7 +2826,7 @@ private:
         if (!availability.available) {
             draft_.processLocatorHotKey = key;
             UpdateHotKeyLabels();
-            ShowThemedMessageBox(hwnd_, instance_, theme_, ProcessLocatorHotKeyStatusText(key, availability), L"热键冲突", MB_OK | MB_ICONWARNING);
+            ShowHotKeyConflictMessage(hwnd_, instance_, theme_, ProcessLocatorHotKeyStatusText(key, availability));
             return false;
         }
         draft_.processLocatorHotKey = key;
@@ -2836,9 +2843,7 @@ private:
         if (!availability.available) {
             draft_.copySelectedPathsHotKey = key;
             UpdateHotKeyLabels();
-            ShowThemedMessageBox(
-                hwnd_, instance_, theme_, CopySelectedPathsHotKeyStatusText(key, availability),
-                L"热键冲突", MB_OK | MB_ICONWARNING);
+            ShowHotKeyConflictMessage(hwnd_, instance_, theme_, CopySelectedPathsHotKeyStatusText(key, availability));
             return false;
         }
         draft_.copySelectedPathsHotKey = key;
@@ -2855,26 +2860,26 @@ private:
             draft_.mainHotKey != 0 &&
             draft_.mainHotKey == draft_.processLocatorHotKey) {
             UpdateHotKeyLabels();
-            ShowThemedMessageBox(hwnd_, instance_, theme_, L"主窗口显隐和进程定位器不能使用同一个快捷键。", L"热键冲突", MB_OK | MB_ICONWARNING);
+            ShowHotKeyConflictMessage(hwnd_, instance_, theme_, L"主窗口显隐和进程定位器不能使用同一个快捷键。");
             return false;
         }
         if (!IsDoubleAltMainHotKey(draft_.mainHotKey) &&
             draft_.mainHotKey != 0 &&
             draft_.mainHotKey == draft_.copySelectedPathsHotKey) {
             UpdateHotKeyLabels();
-            ShowThemedMessageBox(hwnd_, instance_, theme_, L"主窗口显隐和复制选中项绝对路径不能使用同一个快捷键。", L"热键冲突", MB_OK | MB_ICONWARNING);
+            ShowHotKeyConflictMessage(hwnd_, instance_, theme_, L"主窗口显隐和复制选中项绝对路径不能使用同一个快捷键。");
             return false;
         }
         if (draft_.processLocatorHotKey != 0 &&
             draft_.processLocatorHotKey == draft_.copySelectedPathsHotKey) {
             UpdateHotKeyLabels();
-            ShowThemedMessageBox(hwnd_, instance_, theme_, L"进程定位器和复制选中项绝对路径不能使用同一个快捷键。", L"热键冲突", MB_OK | MB_ICONWARNING);
+            ShowHotKeyConflictMessage(hwnd_, instance_, theme_, L"进程定位器和复制选中项绝对路径不能使用同一个快捷键。");
             return false;
         }
         const HotKeyAvailability availability = CheckMainHotKeyAvailability(hwnd_, draft_.mainHotKey, CurrentRegisteredMainHotKey());
         UpdateHotKeyLabels();
         if (!availability.available) {
-            ShowThemedMessageBox(hwnd_, instance_, theme_, MainHotKeyConflictMessage(draft_.mainHotKey, availability), L"热键冲突", MB_OK | MB_ICONWARNING);
+            ShowHotKeyConflictMessage(hwnd_, instance_, theme_, MainHotKeyConflictMessage(draft_.mainHotKey, availability));
             return false;
         }
 
@@ -2882,26 +2887,18 @@ private:
             hwnd_, draft_.processLocatorHotKey, CurrentRegisteredProcessLocatorHotKey());
         UpdateHotKeyLabels();
         if (!locatorAvailability.available) {
-            ShowThemedMessageBox(
-                hwnd_,
-                instance_,
-                theme_,
-                ProcessLocatorHotKeyStatusText(draft_.processLocatorHotKey, locatorAvailability),
-                L"热键冲突",
-                MB_OK | MB_ICONWARNING);
+            ShowHotKeyConflictMessage(
+                hwnd_, instance_, theme_,
+                ProcessLocatorHotKeyStatusText(draft_.processLocatorHotKey, locatorAvailability));
             return false;
         }
         const HotKeyAvailability copyAvailability = CheckCtrlAltHotKeyAvailability(
             hwnd_, draft_.copySelectedPathsHotKey, CurrentRegisteredCopySelectedPathsHotKey());
         UpdateHotKeyLabels();
         if (!copyAvailability.available) {
-            ShowThemedMessageBox(
-                hwnd_,
-                instance_,
-                theme_,
-                CopySelectedPathsHotKeyStatusText(draft_.copySelectedPathsHotKey, copyAvailability),
-                L"热键冲突",
-                MB_OK | MB_ICONWARNING);
+            ShowHotKeyConflictMessage(
+                hwnd_, instance_, theme_,
+                CopySelectedPathsHotKeyStatusText(draft_.copySelectedPathsHotKey, copyAvailability));
             return false;
         }
         return true;
@@ -4597,6 +4594,9 @@ bool ShowHotKeyConflictDialog(
     const Theme& theme,
     const std::wstring& message,
     bool& ignoreFutureWarnings) {
+    if (QuattroTestMode()) {
+        return false;
+    }
     HotKeyConflictDialog dialog(owner, instance, theme, message, ignoreFutureWarnings);
     return dialog.Run();
 }

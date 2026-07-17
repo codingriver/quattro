@@ -3,9 +3,7 @@
 #include "Utilities.h"
 
 #include <algorithm>
-#include <optional>
 #include <set>
-#include <shlobj.h>
 #include <shobjidl.h>
 #include <stack>
 #include <system_error>
@@ -32,16 +30,6 @@ std::wstring DisplayNameFromPath(const std::filesystem::path& path) {
     return Trim(name);
 }
 
-std::optional<std::filesystem::path> KnownFolderPath(REFKNOWNFOLDERID folderId) {
-    PWSTR raw = nullptr;
-    if (FAILED(SHGetKnownFolderPath(folderId, KF_FLAG_DEFAULT, nullptr, &raw)) || !raw) {
-        return std::nullopt;
-    }
-    std::filesystem::path path(raw);
-    CoTaskMemFree(raw);
-    return path;
-}
-
 std::wstring ReadInternetShortcutUrl(const std::filesystem::path& path) {
     std::wstring buffer(4096, L'\0');
     const DWORD copied = GetPrivateProfileStringW(L"InternetShortcut", L"URL", L"", buffer.data(), static_cast<DWORD>(buffer.size()), path.c_str());
@@ -54,45 +42,25 @@ std::wstring ReadInternetShortcutUrl(const std::filesystem::path& path) {
 
 }
 
-std::vector<QuickImportService::Item> QuickImportService::Scan(Source source, const std::filesystem::path& directory, const std::vector<Link>& existingLinks, std::wstring& error) const {
+std::vector<QuickImportService::Item> QuickImportService::Scan(const std::filesystem::path& directory, const std::vector<Link>& existingLinks, std::wstring& error) const {
     error.clear();
     std::vector<Item> items;
-    const auto roots = RootsFor(source, directory);
-    if (roots.empty()) {
-        error = L"没有可扫描的来源。";
+    if (directory.empty()) {
+        error = L"请输入要扫描的目录。";
+        return items;
+    }
+    if (!directory.is_absolute()) {
+        error = L"扫描目录必须是绝对路径。";
+        return items;
+    }
+    if (!DirectoryExists(directory)) {
+        error = L"扫描目录不存在或无法访问。";
         return items;
     }
 
-    for (const auto& root : roots) {
-        ScanRoot(root, items);
-    }
+    ScanRoot(directory, items);
     MarkDuplicates(items, existingLinks);
     return items;
-}
-
-std::vector<std::filesystem::path> QuickImportService::RootsFor(Source source, const std::filesystem::path& directory) const {
-    std::vector<std::filesystem::path> roots;
-    if (source == Source::Directory) {
-        if (DirectoryExists(directory)) {
-            roots.push_back(directory);
-        }
-        return roots;
-    }
-
-    const auto addKnown = [&roots](REFKNOWNFOLDERID id) {
-        if (auto path = KnownFolderPath(id); path && DirectoryExists(*path)) {
-            roots.push_back(*path);
-        }
-    };
-
-    if (source == Source::Desktop) {
-        addKnown(FOLDERID_Desktop);
-        addKnown(FOLDERID_PublicDesktop);
-    } else if (source == Source::StartMenu) {
-        addKnown(FOLDERID_StartMenu);
-        addKnown(FOLDERID_CommonStartMenu);
-    }
-    return roots;
 }
 
 void QuickImportService::ScanRoot(const std::filesystem::path& root, std::vector<Item>& items) const {

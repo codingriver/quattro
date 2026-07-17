@@ -200,6 +200,11 @@ int wmain() {
     return 0;
 #else
     const HINSTANCE instance = GetModuleHandleW(nullptr);
+    // Acceptance rule: tests must not steal focus or bring windows to front.
+    // With this flag the settings dialog opens via SW_SHOWNOACTIVATE.
+    SetEnvironmentVariableW(L"QUATTRO_TEST_NO_FOCUS", L"1");
+    SetEnvironmentVariableW(L"QUATTRO_ACCEPTANCE_MODE", L"background");
+    const HWND initialForeground = GetForegroundWindow();
     const auto root = std::filesystem::temp_directory_path() / (L"quattro-settings-http-buttons-" + std::to_wstring(GetCurrentProcessId()));
     const auto userConfig = std::filesystem::temp_directory_path() / (L"quattro-settings-http-user-" + std::to_wstring(GetCurrentProcessId()));
     SetEnvironmentVariableW(L"QUATTRO_USER_CONFIG_DIR", userConfig.c_str());
@@ -225,9 +230,11 @@ int wmain() {
     wc.hInstance = instance;
     wc.lpszClassName = L"QuattroSettingsHttpButtonsOwner";
     RegisterClassExW(&wc);
-    HWND owner = CreateWindowExW(0, wc.lpszClassName, L"owner", WS_OVERLAPPEDWINDOW,
+    HWND owner = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, wc.lpszClassName, L"owner", WS_OVERLAPPEDWINDOW,
         40, 40, 320, 240, nullptr, nullptr, instance, nullptr);
-    ShowWindow(owner, SW_SHOWNORMAL);
+    ShowWindow(owner, SW_SHOWNOACTIVATE);
+    SetWindowPos(owner, HWND_BOTTOM, 0, 0, 0, 0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
 
     AppConfig config;
     config.mainHotKey = VK_F12;
@@ -343,12 +350,19 @@ int wmain() {
     std::filesystem::remove_all(root, ec);
     std::filesystem::remove_all(userConfig, ec);
     SetEnvironmentVariableW(L"QUATTRO_USER_CONFIG_DIR", nullptr);
+    SetEnvironmentVariableW(L"QUATTRO_TEST_NO_FOCUS", nullptr);
+    SetEnvironmentVariableW(L"QUATTRO_ACCEPTANCE_MODE", nullptr);
 
     bool trackingReset = true;
     for (const auto& provider : TrackedContextMenuProviders()) {
         trackingReset = trackingReset && !(config.*(provider.configMember));
     }
-    const bool ok = interactionDone && interactionOk && trackingReset;
+    // Acceptance rule: the test must not have changed foreground ownership.
+    const bool foregroundPreserved = GetForegroundWindow() == initialForeground;
+    if (!foregroundPreserved) {
+        std::wcerr << L"FAIL: foreground window changed during acceptance run\n";
+    }
+    const bool ok = interactionDone && interactionOk && trackingReset && foregroundPreserved;
     if (!ok) {
         return 1;
     }

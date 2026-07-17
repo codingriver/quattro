@@ -77,25 +77,14 @@ bool WaitForNoPopupMenu(DWORD processId, DWORD timeoutMs) {
     return false;
 }
 
-void PressKey(WORD key);
-
 bool ClosePopupMenu(HWND mainWindow, HWND popup, DWORD processId) {
+    // Message-only dismissal: never inject real keyboard/mouse input, so the
+    // test cannot disturb whichever window the user currently has focused.
     PostMessageW(mainWindow, WM_CANCELMODE, 0, 0);
     PostMessageW(popup, WM_CANCELMODE, 0, 0);
     PostMessageW(popup, WM_KEYDOWN, VK_ESCAPE, 0);
     PostMessageW(popup, WM_KEYUP, VK_ESCAPE, 0);
-    PressKey(VK_ESCAPE);
     return WaitForNoPopupMenu(processId, 1000);
-}
-
-void PressKey(WORD key) {
-    INPUT inputs[2]{};
-    inputs[0].type = INPUT_KEYBOARD;
-    inputs[0].ki.wVk = key;
-    inputs[1].type = INPUT_KEYBOARD;
-    inputs[1].ki.wVk = key;
-    inputs[1].ki.dwFlags = KEYEVENTF_KEYUP;
-    SendInput(2, inputs, sizeof(INPUT));
 }
 
 std::filesystem::path ModuleDirectory() {
@@ -215,9 +204,8 @@ PopupResult OpenLinkMenu(HWND mainWindow, DWORD processId, int rowIndex) {
     }
     const int x = 180;
     const int y = 40 + rowIndex * 46;
-    POINT screenPoint{x, y};
-    ClientToScreen(mainWindow, &screenPoint);
-    SetCursorPos(screenPoint.x, screenPoint.y);
+    // Menu position is taken from the WM_RBUTTONUP lparam by the app; do not
+    // move the real cursor (tests must not touch the user's mouse).
 
     const ULONGLONG begin = GetTickCount64();
     PostMessageW(mainWindow, WM_RBUTTONUP, 0, MAKELPARAM(x, y));
@@ -298,7 +286,11 @@ int wmain() {
         return 2;
     }
 
-    SetEnvironmentVariableW(L"QUATTRO_TEST_NO_FOCUS", L"0");
+    // Acceptance rule: tests must not steal focus or bring windows to front.
+    // The app honors this flag and keeps its windows non-activated / bottom-most.
+    SetEnvironmentVariableW(L"QUATTRO_TEST_NO_FOCUS", L"1");
+    SetEnvironmentVariableW(L"QUATTRO_ACCEPTANCE_MODE", L"background");
+    const HWND initialForeground = GetForegroundWindow();
 
     STARTUPINFOW startup{};
     startup.cb = sizeof(startup);
@@ -316,7 +308,8 @@ int wmain() {
         std::cerr << "main window did not appear\n";
         exitCode = 1;
     } else {
-        SetForegroundWindow(mainWindow);
+        // Do not activate or raise the app window; menus are opened and
+        // validated purely through posted messages.
         Sleep(750);
 
         const PopupResult warmup = OpenLinkMenu(mainWindow, process.dwProcessId, 3);
@@ -421,6 +414,12 @@ int wmain() {
     CloseHandle(process.hProcess);
     SetEnvironmentVariableW(L"QUATTRO_USER_CONFIG_DIR", nullptr);
     std::filesystem::remove_all(appDirectory, ec);
+
+    // Acceptance rule: the test must not have changed foreground ownership.
+    if (GetForegroundWindow() != initialForeground) {
+        std::cerr << "foreground window changed during acceptance run\n";
+        exitCode = 1;
+    }
 
     if (exitCode == 0) {
         std::cout << "builtin_system_context_menu_acceptance=passed\n";

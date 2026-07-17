@@ -944,6 +944,11 @@ LRESULT CALLBACK ThemedControlProc(HWND hwnd, UINT message, WPARAM wParam, LPARA
             if (selected >= 0 && !ThemedControls::IsTableRowEnabled(hwnd, selected)) {
                 return 0;
             }
+            if (selected >= 0 && IsWindowEnabled(hwnd)) {
+                const BOOL checked = ListView_GetCheckState(hwnd, selected) != FALSE;
+                ListView_SetCheckState(hwnd, selected, checked ? FALSE : TRUE);
+                return 0;
+            }
         }
         if (KindFor(hwnd) == ControlKind::HotKeyCapture) {
             if (wParam != VK_CONTROL && wParam != VK_MENU && wParam != VK_SHIFT
@@ -1830,14 +1835,14 @@ void DrawTableGridLines(const Theme& theme, HDC dc, RECT rect, bool rowLine, boo
 }
 
 void DrawTableCellGridLines(const Theme& theme, HWND table, const NMLVCUSTOMDRAW* draw, RECT rect) {
-    HWND header = ListView_GetHeader(table);
-    const int columnCount = header ? Header_GetItemCount(header) : 0;
     const bool rowLine = TableShowsRowGridLines(table);
-    const bool columnLine =
-        TableShowsColumnGridLines(table) &&
-        draw->iSubItem >= 0 &&
-        draw->iSubItem < columnCount - 1;
-    DrawTableGridLines(theme, draw->nmcd.hdc, rect, rowLine, columnLine);
+    DrawTableGridLines(theme, draw->nmcd.hdc, rect, rowLine, false);
+    if (!TableShowsColumnGridLines(table) || draw->iSubItem <= 0) {
+        return;
+    }
+    const int width = std::max(1, TableScaledMetric(table, theme, L"table", L"gridWidth", 1.0f));
+    const RECT lineRect{rect.left, rect.top, rect.left + width, rect.bottom};
+    FillThemedRect(draw->nmcd.hdc, lineRect, ToColorRef(theme.color(L"table", L"normal", L"grid")));
 }
 
 void DrawHeaderItem(const Theme& theme, HWND header, const NMCUSTOMDRAW* draw) {
@@ -1924,6 +1929,14 @@ bool UsesNativeTableCellDrawing(HWND, int column, const ThemedControls::TableCel
 bool UsesNativeTableRowDrawing(HWND table, int row) {
     const auto firstCell = TableCellAt(table, row, 0);
     return UsesNativeTableCellDrawing(table, 0, firstCell ? &*firstCell : nullptr);
+}
+
+bool IsTableDetailsView(HWND table) {
+    if (!table) {
+        return true;
+    }
+    const int view = static_cast<int>(SendMessageW(table, LVM_GETVIEW, 0, 0));
+    return view != LV_VIEW_ICON;
 }
 
 bool IsTableRowHovered(HWND table, int row) {
@@ -2183,6 +2196,112 @@ void DrawTableRowCells(
             DrawTableTextCell(theme, table, &cellDraw);
         }
     }
+}
+
+void DrawTableIconTile(
+    const Theme& theme,
+    HWND table,
+    const NMLVCUSTOMDRAW* draw) {
+    const int row = static_cast<int>(draw->nmcd.dwItemSpec);
+    RECT itemRect{};
+    if (!ListView_GetItemRect(table, row, &itemRect, LVIR_BOUNDS)) {
+        itemRect = draw->nmcd.rc;
+    }
+
+    const bool enabled = ThemedControls::IsTableRowEnabled(table, row);
+    const bool selected = ThemedControls::IsTableRowSelected(table, row);
+    const bool hovered = IsTableRowHovered(table, row);
+    const wchar_t* rowState = TableRowState(row, selected, enabled, hovered);
+    FillThemedRect(draw->nmcd.hdc, itemRect, TableRowBackground(theme, rowState));
+
+    const int paddingX = TableScaledMetric(table, theme, L"listItem", L"paddingX", 8.0f);
+    const int paddingY = TableScaledMetric(table, theme, L"listItem", L"paddingY", 8.0f);
+    const int gap = TableScaledMetric(table, theme, L"global", L"denseGap", 4.0f);
+
+    RECT contentRect = itemRect;
+    contentRect.left += paddingX;
+    contentRect.right -= paddingX;
+    contentRect.top += paddingY;
+    contentRect.bottom -= paddingY;
+
+    const auto cell = TableCellAt(table, row, 0);
+    if (ListView_GetExtendedListViewStyle(table) & LVS_EX_CHECKBOXES) {
+        const bool checked = ListView_GetCheckState(table, row) != FALSE;
+        const bool focused = GetFocus() == table && selected;
+        const wchar_t* checkState = !enabled
+            ? L"disabled"
+            : (checked ? (hovered ? L"checkedHover" : L"checked") : (hovered ? L"hover" : L"normal"));
+        const int boxSize = TableScaledMetric(table, theme, L"checkbox", L"boxSize", 16.0f);
+        RECT box{
+            contentRect.left,
+            contentRect.top,
+            contentRect.left + boxSize,
+            contentRect.top + boxSize};
+        FillRoundRect(
+            draw->nmcd.hdc,
+            box,
+            TableScaledMetric(table, theme, L"checkbox", L"radius", 4.0f),
+            ToColorRef(theme.color(L"checkbox", checkState, L"boxBg")),
+            ToColorRef(theme.color(L"checkbox", focused ? L"focused" : checkState, L"border")),
+            TableScaledMetric(table, theme, L"checkbox", L"borderWidth", 1.0f));
+        if (checked) {
+            const int markWidth = TableScaledMetric(table, theme, L"checkbox", L"markWidth", 2.0f);
+            const POINT points[]{
+                POINT{box.left + boxSize / 4, box.top + boxSize / 2},
+                POINT{box.left + boxSize * 7 / 16, box.bottom - boxSize / 4},
+                POINT{box.right - boxSize / 5, box.top + boxSize / 4}};
+            DrawThemedPolyline(
+                draw->nmcd.hdc,
+                points,
+                3,
+                ToColorRef(theme.color(L"checkbox", L"checked", L"mark")),
+                markWidth);
+        }
+        contentRect.left = box.right + gap;
+    }
+
+    const std::wstring text = ListViewCellText(table, row, 0);
+    HFONT font = reinterpret_cast<HFONT>(SendMessageW(table, WM_GETFONT, 0, 0));
+    HGDIOBJ oldFont = font ? SelectObject(draw->nmcd.hdc, font) : nullptr;
+
+    if (cell && cell->hasImage) {
+        LVITEMW lvItem{};
+        lvItem.mask = LVIF_IMAGE;
+        lvItem.iItem = row;
+        HIMAGELIST images = ListView_GetImageList(table, LVSIL_NORMAL);
+        if (images && ListView_GetItem(table, &lvItem) && lvItem.iImage >= 0) {
+            int imageWidth = 0;
+            int imageHeight = 0;
+            if (ImageList_GetIconSize(images, &imageWidth, &imageHeight) && imageWidth > 0 && imageHeight > 0) {
+                const int contentWidth = static_cast<int>(contentRect.right - contentRect.left);
+                const int iconX = static_cast<int>(contentRect.left) + std::max(0, (contentWidth - imageWidth) / 2);
+                const int iconY = static_cast<int>(contentRect.top);
+                if (HICON icon = ImageList_GetIcon(images, lvItem.iImage, ILD_TRANSPARENT)) {
+                    const RECT iconRect{iconX, iconY, iconX + imageWidth, iconY + imageHeight};
+                    if (!ThemedD2D::DrawIcon(draw->nmcd.hdc, icon, iconRect, !enabled)) {
+                        ThemedGdiFallback::DrawIcon(draw->nmcd.hdc, icon, iconRect, !enabled);
+                    }
+                    DestroyIcon(icon);
+                }
+                contentRect.top = iconY + imageHeight + gap;
+            }
+        }
+    }
+
+    SetBkMode(draw->nmcd.hdc, TRANSPARENT);
+    SetTextColor(draw->nmcd.hdc, ToColorRef(theme.color(L"listItem", enabled ? rowState : L"disabled", L"text")));
+    DrawThemedText(
+        draw->nmcd.hdc,
+        font,
+        text.c_str(),
+        static_cast<int>(text.size()),
+        contentRect,
+        DT_CENTER | DT_TOP | DT_WORDBREAK | DT_WORD_ELLIPSIS,
+        GetTextColor(draw->nmcd.hdc));
+    if (oldFont) {
+        SelectObject(draw->nmcd.hdc, oldFont);
+    }
+    DrawTableCellGridLines(theme, table, draw, itemRect);
 }
 }
 
@@ -3624,6 +3743,11 @@ bool HandleListViewCustomDraw(const Theme& theme, LPARAM lParam, LRESULT& result
         return true;
     case CDDS_ITEMPREPAINT: {
         const int row = static_cast<int>(draw->nmcd.dwItemSpec);
+        if (!IsTableDetailsView(header->hwndFrom)) {
+            DrawTableIconTile(theme, header->hwndFrom, draw);
+            result = CDRF_SKIPDEFAULT;
+            return true;
+        }
         const bool selected = IsTableRowSelected(header->hwndFrom, row);
         const bool enabled = IsTableRowEnabled(header->hwndFrom, row);
         const bool hovered = IsTableRowHovered(header->hwndFrom, row);
@@ -3643,6 +3767,10 @@ bool HandleListViewCustomDraw(const Theme& theme, LPARAM lParam, LRESULT& result
         return true;
     }
     case CDDS_ITEMPREPAINT | CDDS_SUBITEM: {
+        if (!IsTableDetailsView(header->hwndFrom)) {
+            result = CDRF_SKIPDEFAULT;
+            return true;
+        }
         const int row = static_cast<int>(draw->nmcd.dwItemSpec);
         const int column = draw->iSubItem;
         const auto cell = TableCellAt(header->hwndFrom, row, column);

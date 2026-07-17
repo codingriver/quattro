@@ -316,6 +316,9 @@ void ShowWindowRespectFocusPolicy(HWND hwnd, int showCommand) {
     }
     if (SuppressForegroundActivation() && (showCommand == SW_SHOWNORMAL || showCommand == SW_RESTORE)) {
         ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+        // Keep acceptance-mode windows at the bottom of the z-order so tests
+        // never cover the user's desktop.
+        ApplyWindowBackgroundPolicy(hwnd);
         return;
     }
     ShowWindow(hwnd, showCommand);

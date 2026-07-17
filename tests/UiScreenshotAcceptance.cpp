@@ -18,6 +18,7 @@
 
 #include <commctrl.h>
 #include <gdiplus.h>
+#include <shlobj.h>
 #include <windows.h>
 
 #ifndef HDS_NOSIZING
@@ -56,11 +57,13 @@ struct Scenario {
     bool requireThemedEditFrames = false;
     std::vector<std::wstring> unexpectedVisibleChildTexts;
     std::wstring actionButtonText;
+    std::vector<std::wstring> actionButtonTexts;
     DWORD closeDelayMs = 0;
     bool validateHotKeyTableLayout = false;
     bool validateContextMenuUninstalledRows = false;
     UINT forcedDpi = USER_DEFAULT_SCREEN_DPI;
     bool validateProcessToolsTableDpi = false;
+    bool validateQuickImportIconLayout = false;
     bool waitForContextMenuIconLoad = true;
     bool validateContextMenuIconTransparency = false;
 };
@@ -710,13 +713,20 @@ void ValidateAndCapture(HWND hwnd, const Scenario& scenario, const std::filesyst
             children = Children(hwnd);
         }
     }
+    std::vector<std::wstring> actionButtonTexts = scenario.actionButtonTexts;
     if (!scenario.actionButtonText.empty()) {
+        actionButtonTexts.push_back(scenario.actionButtonText);
+    }
+    for (const auto& actionButtonText : actionButtonTexts) {
         auto button = std::find_if(children.begin(), children.end(), [&](const ChildInfo& child) {
-            return IsWindowVisible(child.hwnd) && child.className == L"Button" && child.text == scenario.actionButtonText;
+            return IsWindowVisible(child.hwnd) && child.className == L"Button" && child.text == actionButtonText;
         });
-        state.Check(button != children.end(), scenario.name + L": action button not found: " + scenario.actionButtonText);
+        state.Check(button != children.end(), scenario.name + L": action button not found: " + actionButtonText);
         if (button != children.end()) {
             SendMessageW(button->hwnd, BM_CLICK, 0, 0);
+            if (actionButtonText == L"扫描") {
+                WaitForWindowText(hwnd, L"扫描到", 7000);
+            }
             Sleep(80);
             RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW);
             children = Children(hwnd);
@@ -755,6 +765,32 @@ void ValidateAndCapture(HWND hwnd, const Scenario& scenario, const std::filesyst
                     actionWidth >= MulDiv(72, static_cast<int>(scenario.forcedDpi), USER_DEFAULT_SCREEN_DPI),
                     scenario.name + L": action column did not scale with DPI");
             }
+        }
+    }
+
+    if (scenario.validateQuickImportIconLayout) {
+        HWND table = nullptr;
+        for (const auto& child : children) {
+            if (IsWindowVisible(child.hwnd) && child.className == L"SysListView32") {
+                table = child.hwnd;
+                break;
+            }
+        }
+        state.Check(table != nullptr, scenario.name + L": quick import table not found");
+        if (table) {
+            const int view = static_cast<int>(SendMessageW(table, LVM_GETVIEW, 0, 0));
+            const int rowCount = ListView_GetItemCount(table);
+            const DWORD spacing = static_cast<DWORD>(SendMessageW(table, LVM_GETITEMSPACING, FALSE, 0));
+            const int spacingX = LOWORD(spacing);
+            const int spacingY = HIWORD(spacing);
+            state.Check(view == LV_VIEW_ICON, scenario.name + L": quick import table did not switch to icon view");
+            state.Check(rowCount > 0, scenario.name + L": quick import icon view has no scanned rows");
+            state.Check(
+                spacingX >= MulDiv(120, static_cast<int>(scenario.forcedDpi), USER_DEFAULT_SCREEN_DPI),
+                scenario.name + L": quick import icon spacing X is too narrow");
+            state.Check(
+                spacingY >= MulDiv(104, static_cast<int>(scenario.forcedDpi), USER_DEFAULT_SCREEN_DPI),
+                scenario.name + L": quick import icon spacing Y is too short");
         }
     }
 
@@ -1184,7 +1220,12 @@ HWND CreateOwnerWindow(HINSTANCE instance) {
     return hwnd;
 }
 
-void RunDialogScenario(const Scenario& scenario, const std::filesystem::path& outputDir, TestState& state, const std::function<void()>& runDialog) {
+void RunDialogScenario(
+    const Scenario& scenario,
+    const std::filesystem::path& outputDir,
+    TestState& state,
+    const std::function<void()>& runDialog,
+    const std::function<void()>& beforeCloseRequest = {}) {
     std::atomic<bool> inspected = false;
     AcceptanceLog(L"begin " + scenario.name);
     std::wcout << L"ui_scenario_begin=" << scenario.name << L"\n";
@@ -1203,6 +1244,9 @@ void RunDialogScenario(const Scenario& scenario, const std::filesystem::path& ou
         inspected = true;
         if (scenario.closeDelayMs > 0) {
             Sleep(scenario.closeDelayMs);
+        }
+        if (beforeCloseRequest) {
+            beforeCloseRequest();
         }
         if (!scenario.cancelOnly) {
             PostMessageW(hwnd, WM_COMMAND, MAKEWPARAM(IDOK, BN_CLICKED), 0);
@@ -1574,6 +1618,7 @@ void RunTableGridLinesScenario(
     SetWindowPos(hwnd, HWND_BOTTOM, 0, 0, 0, 0,
         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
     RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW | RDW_ALLCHILDREN);
+    RedrawWindow(host.table_, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW | RDW_ALLCHILDREN);
     Sleep(200);
 
     BitmapCapture capture = CaptureWindowBitmap(hwnd);
@@ -1679,6 +1724,7 @@ void RunTableAlternatingRowsScenario(const std::filesystem::path& outputDir, Tes
     UpdateWindow(hwnd);
     SetWindowPos(hwnd, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
     RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW | RDW_ALLCHILDREN);
+    RedrawWindow(host.table_, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW | RDW_ALLCHILDREN);
     Sleep(200);
 
     // Row layout under TableRowState: row%2==0 -> "alternate", else "normal".
@@ -2899,6 +2945,107 @@ AppModel SampleModel() {
     return model;
 }
 
+std::wstring AcceptanceKnownFolderPath(REFKNOWNFOLDERID folderId) {
+    PWSTR raw = nullptr;
+    if (FAILED(SHGetKnownFolderPath(folderId, KF_FLAG_DEFAULT, nullptr, &raw)) || !raw) {
+        return {};
+    }
+    std::wstring path(raw);
+    CoTaskMemFree(raw);
+    return path;
+}
+
+void ValidateQuickImportService(
+    const std::filesystem::path& outputDir,
+    TestState& state) {
+    const std::filesystem::path root = outputDir / L"quick-import-service";
+    std::error_code ec;
+    std::filesystem::create_directories(root / L"nested", ec);
+    std::ofstream(root / L"root.exe", std::ios::binary) << "test";
+    std::ofstream(root / L"nested" / L"nested.exe", std::ios::binary) << "test";
+
+    QuickImportService service;
+    std::wstring error;
+    const auto relativeItems = service.Scan(L"relative", {}, error);
+    state.Check(relativeItems.empty() && error == L"扫描目录必须是绝对路径。", L"quick-import-service: relative path validation failed");
+
+    const auto missingItems = service.Scan(root / L"missing", {}, error);
+    state.Check(missingItems.empty() && error == L"扫描目录不存在或无法访问。", L"quick-import-service: missing path validation failed");
+
+    const auto items = service.Scan(root, {}, error);
+    state.Check(error.empty(), L"quick-import-service: valid directory returned an error");
+    state.Check(items.size() == 2, L"quick-import-service: explicit directory scan returned unexpected items");
+
+    std::filesystem::remove_all(root, ec);
+}
+
+void RunQuickImportScenarios(
+    HWND owner,
+    HINSTANCE instance,
+    const Theme& theme,
+    const AppModel& model,
+    const std::filesystem::path& outputDir,
+    TestState& state) {
+    ValidateQuickImportService(outputDir, state);
+    for (const UINT dpi : {96u, 120u, 144u}) {
+        const std::wstring dpiSuffix = DpiPercentSuffix(dpi);
+        const bool switchToStartMenu = dpi != USER_DEFAULT_SCREEN_DPI;
+        std::vector<Link> selected;
+        Scenario scenario{
+            L"quick-import-dialog-" + dpiSuffix,
+            L"QuattroQuickImportDialog",
+            L"快速导入",
+            L"quick-import-dialog-" + dpiSuffix + L".png",
+            {L"快速导入", L"桌面", L"开始菜单", L"选择目录", L"扫描", L"列表", L"图标", L"全选", L"清空", L"导入选中", L"取消"},
+            {},
+            1,
+            7,
+            false,
+            true,
+            true};
+        scenario.expectedEditTexts = {
+            AcceptanceKnownFolderPath(switchToStartMenu ? FOLDERID_StartMenu : FOLDERID_Desktop)};
+        if (switchToStartMenu) {
+            scenario.actionButtonText = L"开始菜单";
+        }
+        scenario.forcedDpi = dpi;
+        scenario.requireThemedEditFrames = true;
+        RunDialogScenario(
+            scenario,
+            outputDir,
+            state,
+            [&]() {
+                QuickImportDialog::Show(owner, instance, theme, model.links, selected);
+            });
+
+        std::vector<Link> iconSelected;
+        Scenario iconScenario{
+            L"quick-import-dialog-icon-" + dpiSuffix,
+            L"QuattroQuickImportDialog",
+            L"快速导入",
+            L"quick-import-dialog-icon-" + dpiSuffix + L".png",
+            {L"快速导入", L"桌面", L"开始菜单", L"选择目录", L"扫描", L"列表", L"图标", L"导入选中", L"取消", L"扫描到"},
+            {},
+            1,
+            7,
+            false,
+            true,
+            true};
+        iconScenario.expectedEditTexts = {AcceptanceKnownFolderPath(FOLDERID_Desktop)};
+        iconScenario.forcedDpi = dpi;
+        iconScenario.requireThemedEditFrames = true;
+        iconScenario.actionButtonTexts = {L"扫描", L"图标"};
+        iconScenario.validateQuickImportIconLayout = true;
+        RunDialogScenario(
+            iconScenario,
+            outputDir,
+            state,
+            [&]() {
+                QuickImportDialog::Show(owner, instance, theme, model.links, iconSelected);
+            });
+    }
+}
+
 } // namespace
 
 int wmain() {
@@ -2933,6 +3080,26 @@ int wmain() {
     config.webDavUrl = L"https://dav.example.test/remote.php/dav/files/demo";
     config.webDavRemotePath = L"/Quattro/backups/";
     config.webDavUserName = L"acceptance-user";
+
+    wchar_t quickImportOnly[8]{};
+    if (GetEnvironmentVariableW(
+            L"QUATTRO_UI_ACCEPTANCE_QUICK_IMPORT_ONLY",
+            quickImportOnly,
+            static_cast<DWORD>(std::size(quickImportOnly))) > 0) {
+        RunQuickImportScenarios(owner, instance, theme, model, outputDir, state);
+        DestroyWindow(owner);
+        OleUninitialize();
+        Gdiplus::GdiplusShutdown(gdiplusToken);
+        if (!state.ok) {
+            for (const auto& failure : state.failures) {
+                AcceptanceLog(L"quick-import target failure " + failure);
+                std::wcerr << failure << L"\n";
+            }
+            return 1;
+        }
+        std::wcout << L"ui_quick_import_acceptance=passed screenshots=" << outputDir.wstring() << L"\n";
+        return 0;
+    }
 
     wchar_t tooltipOnly[8]{};
     if (GetEnvironmentVariableW(
@@ -3176,7 +3343,8 @@ int wmain() {
             L"右键菜单"};
         nonBlockingScenario.waitForContextMenuIconLoad = false;
         std::atomic_bool slowIconRunnerStarted{false};
-        std::chrono::milliseconds closeDuration{};
+        std::atomic<std::int64_t> closeRequestedAt{};
+        std::atomic<std::int64_t> dialogReturnedAt{};
         RunDialogScenario(
             nonBlockingScenario,
             outputDir,
@@ -3184,7 +3352,6 @@ int wmain() {
             [&]() {
                 bool imported = false;
                 const std::filesystem::path baseDirectory = std::filesystem::current_path();
-                const auto started = std::chrono::steady_clock::now();
                 ShowSettingsDialog(
                     owner, instance, config, theme, baseDirectory, baseDirectory, &imported,
                     nullptr, false, false, false, {}, {}, {}, {}, {},
@@ -3193,12 +3360,24 @@ int wmain() {
                         std::this_thread::sleep_for(std::chrono::seconds(2));
                         return AcceptanceContextMenuProviderIcons({});
                     });
-                closeDuration = std::chrono::duration_cast<std::chrono::milliseconds>(
-                    std::chrono::steady_clock::now() - started);
+                dialogReturnedAt = std::chrono::steady_clock::now().time_since_epoch().count();
+            },
+            [&]() {
+                closeRequestedAt = std::chrono::steady_clock::now().time_since_epoch().count();
             });
         state.Check(slowIconRunnerStarted.load(),
             L"settings context-menu slow icon runner did not start");
-        state.Check(closeDuration < std::chrono::milliseconds(1500),
+        const auto closeRequestedTicks = closeRequestedAt.load();
+        const auto dialogReturnedTicks = dialogReturnedAt.load();
+        state.Check(closeRequestedTicks > 0,
+            L"settings context-menu close request was not observed");
+        state.Check(dialogReturnedTicks >= closeRequestedTicks,
+            L"settings context-menu dialog returned before the close request");
+        const auto closeDuration = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::duration(dialogReturnedTicks - closeRequestedTicks));
+        state.Check(closeRequestedTicks > 0 &&
+                dialogReturnedTicks >= closeRequestedTicks &&
+                closeDuration < std::chrono::milliseconds(1500),
             L"settings context-menu close waited for the background icon runner");
 
         AppConfig refreshConfig = config;
@@ -3464,25 +3643,7 @@ int wmain() {
         RunTooltipVisualScenario(owner, instance, theme, outputDir, state, dpi);
     }
 
-    std::vector<Link> quickImportSelected;
-    RunDialogScenario(
-        Scenario{
-            L"quick-import-dialog",
-            L"QuattroQuickImportDialog",
-            L"快速导入",
-            L"quick-import-dialog.png",
-            {L"快速导入", L"来源", L"选择目录", L"扫描", L"全选", L"清空", L"导入选中", L"取消"},
-            {},
-            0,
-            5,
-            false,
-            true,
-            true},
-        outputDir,
-        state,
-        [&]() {
-            QuickImportDialog::Show(owner, instance, theme, model.links, quickImportSelected);
-        });
+    RunQuickImportScenarios(owner, instance, theme, model, outputDir, state);
 
     Link link;
     link.name = L"验收启动项";

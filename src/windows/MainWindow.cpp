@@ -4913,15 +4913,17 @@ void MainWindow::CheckTodoReminders() {
 }
 
 void MainWindow::ShowTodoReminder(const TodoItem& item) {
-    ShowTodoReminderPanel(item);
-    ShowTodoSystemNotification(item);
+    const bool panelShown = ShowTodoReminderPanel(item);
+    if (!panelShown || !IsWindowVisible(hwnd_) || IsIconic(hwnd_)) {
+        ShowTodoSystemNotification(item);
+    }
 }
 
-void MainWindow::ShowTodoReminderPanel(const TodoItem& item) {
+bool MainWindow::ShowTodoReminderPanel(const TodoItem& item) {
     const std::wstring text = L"待办提醒\r\n" + LimitNotificationText(item.title, 80) +
         (Trim(item.content).empty() ? L"" : (L"\r\n" + LimitNotificationText(Trim(item.content), 160)));
     CreateTooltip();
-    if (!embeddedUi_) return;
+    if (!embeddedUi_) return false;
     ThemedToastOptions options{};
     options.anchor = ThemedToastAnchor::ScreenBottomRight;
     options.role = ThemedToastRole::Info;
@@ -4929,6 +4931,7 @@ void MainWindow::ShowTodoReminderPanel(const TodoItem& item) {
     options.durationMs = 12000;
     options.maxWidth = 340;
     embeddedUi_->ui().ShowToast(text, options);
+    return true;
 }
 
 void MainWindow::HideTodoReminderPanel() {
@@ -6532,7 +6535,10 @@ void MainWindow::ShowHotKeyConflictWarning(const std::wstring& failures) {
     if (failures.empty()) {
         return;
     }
-    if (hotKeyConflictWarningShown_ || config_.ignoreHotKeyConflictWarning) {
+    // Acceptance rule: never open a modal dialog while a test drives the app
+    // (QUATTRO_TEST_NO_FOCUS). A startup modal loop would also swallow the
+    // WM_QUIT posted by ID_MENU_EXIT and leave the process hanging.
+    if (hotKeyConflictWarningShown_ || config_.ignoreHotKeyConflictWarning || SuppressForegroundActivation()) {
         ShowToast(L"部分热键注册失败，可能被其他程序占用。", ThemedToastRole::Warning, 5000);
         return;
     }

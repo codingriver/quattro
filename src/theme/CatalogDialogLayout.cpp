@@ -1,6 +1,8 @@
 #include "CatalogDialogLayout.h"
 
 #include "ThemedControls.h"
+#include "ThemedD2D.h"
+#include "ThemedGdiFallback.h"
 
 #include <algorithm>
 
@@ -24,18 +26,23 @@ COLORREF Blend(COLORREF a, COLORREF b, float t) {
 }
 
 void FillRectColor(HDC dc, const RECT& rect, COLORREF color) {
-    HBRUSH brush = CreateSolidBrush(color);
-    FillRect(dc, &rect, brush);
-    DeleteObject(brush);
+    if (!ThemedD2D::FillRect(dc, rect, color)) {
+        ThemedGdiFallback::FillSolidRect(dc, rect, color);
+    }
 }
 
 void DrawLine(HDC dc, int x1, int y1, int x2, int y2, COLORREF color) {
-    HPEN pen = CreatePen(PS_SOLID, 1, color);
-    HGDIOBJ oldPen = SelectObject(dc, pen);
-    MoveToEx(dc, x1, y1, nullptr);
-    LineTo(dc, x2, y2);
-    SelectObject(dc, oldPen);
-    DeleteObject(pen);
+    if (!ThemedD2D::DrawLine(
+            dc,
+            static_cast<float>(x1),
+            static_cast<float>(y1),
+            static_cast<float>(x2),
+            static_cast<float>(y2),
+            color,
+            1.0f,
+            true)) {
+        ThemedGdiFallback::DrawLine(dc, x1, y1, x2, y2, color, 1);
+    }
 }
 }
 
@@ -165,6 +172,7 @@ void CatalogDialogLayout::Layout(HWND parent, const RECT& client, const CatalogD
 }
 
 void CatalogDialogLayout::DrawStatusBar(const Theme& theme, HDC dc, const RECT& client) const {
+    ThemedD2D::ScopedHdcPaint d2dPaint(WindowFromDC(dc), dc);
     const CatalogDialogGeometry geometry = Calculate(client, 1);
     const COLORREF line = ToColorRef(theme.color(L"separator", L"normal", L"line"));
     const COLORREF panel = Blend(

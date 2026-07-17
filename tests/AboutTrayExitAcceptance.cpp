@@ -98,26 +98,6 @@ HWND WaitForPopupMenu(DWORD timeoutMs) {
     return nullptr;
 }
 
-void ClickAt(int x, int y) {
-    SetCursorPos(x, y);
-    INPUT inputs[2]{};
-    inputs[0].type = INPUT_MOUSE;
-    inputs[0].mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
-    inputs[1].type = INPUT_MOUSE;
-    inputs[1].mi.dwFlags = MOUSEEVENTF_LEFTUP;
-    SendInput(2, inputs, sizeof(INPUT));
-}
-
-void PressKey(WORD key) {
-    INPUT inputs[2]{};
-    inputs[0].type = INPUT_KEYBOARD;
-    inputs[0].ki.wVk = key;
-    inputs[1].type = INPUT_KEYBOARD;
-    inputs[1].ki.wVk = key;
-    inputs[1].ki.dwFlags = KEYEVENTF_KEYUP;
-    SendInput(2, inputs, sizeof(INPUT));
-}
-
 std::filesystem::path ModuleDirectory() {
     wchar_t path[MAX_PATH]{};
     GetModuleFileNameW(nullptr, path, MAX_PATH);
@@ -142,12 +122,9 @@ bool ExerciseAboutTwice(HWND mainWindow, DWORD processId) {
     return true;
 }
 
-bool ExitThroughTrayMenu(HWND mainWindow, HANDLE processHandle) {
-    RECT rect{};
-    GetWindowRect(mainWindow, &rect);
-    const int menuX = rect.left + 24;
-    const int menuY = rect.top + 24;
-    SetCursorPos(menuX, menuY);
+bool ExitThroughTrayMenu(HWND mainWindow, HANDLE processHandle, DWORD processId) {
+    // Open the tray menu via the tray callback message; do not move the real
+    // cursor or inject real input (acceptance rule: no focus, no mouse hijack).
     PostMessageW(mainWindow, WM_QUATTRO_TRAY, 0, WM_RBUTTONUP);
     HWND menu = WaitForPopupMenu(2000);
     if (!menu) {
@@ -156,14 +133,22 @@ bool ExitThroughTrayMenu(HWND mainWindow, HANDLE processHandle) {
     }
     HMENU menuHandle = reinterpret_cast<HMENU>(SendMessageW(menu, kGetMenuHandleMessage, 0, 0));
     const int itemCount = menuHandle ? GetMenuItemCount(menuHandle) : 0;
-    RECT exitRect{};
-    if (itemCount > 0 && GetMenuItemRect(mainWindow, menuHandle, static_cast<UINT>(itemCount - 1), &exitRect)) {
-        ClickAt((exitRect.left + exitRect.right) / 2, (exitRect.top + exitRect.bottom) / 2);
-    } else {
-        PressKey(VK_END);
-        Sleep(100);
-        PressKey(VK_RETURN);
+    const UINT exitCommand = itemCount > 0
+        ? GetMenuItemID(menuHandle, itemCount - 1)
+        : 0;
+    if (exitCommand != ID_MENU_EXIT) {
+        std::cerr << "tray menu last item is not the exit command\n";
+        return false;
     }
+    // Dismiss the modal menu with messages, then invoke the exit command the
+    // same way TrackPopupMenu's TPM_RETURNCMD path does (WM_COMMAND).
+    PostMessageW(mainWindow, WM_CANCELMODE, 0, 0);
+    PostMessageW(menu, WM_CANCELMODE, 0, 0);
+    if (!WaitForNoTopWindow(FindWindowRequest{L"#32768", L"", processId}, 2000)) {
+        std::cerr << "tray popup menu did not close\n";
+        return false;
+    }
+    PostMessageW(mainWindow, WM_COMMAND, MAKEWPARAM(exitCommand, 0), 0);
     return WaitForSingleObject(processHandle, 5000) != WAIT_TIMEOUT;
 }
 }
@@ -175,7 +160,10 @@ int wmain() {
         return 2;
     }
 
-    SetEnvironmentVariableW(L"QUATTRO_TEST_NO_FOCUS", L"0");
+    // Acceptance rule: tests must not steal focus or bring windows to front.
+    SetEnvironmentVariableW(L"QUATTRO_TEST_NO_FOCUS", L"1");
+    SetEnvironmentVariableW(L"QUATTRO_ACCEPTANCE_MODE", L"background");
+    const HWND initialForeground = GetForegroundWindow();
 
     STARTUPINFOW startup{};
     startup.cb = sizeof(startup);
@@ -193,7 +181,7 @@ int wmain() {
         result = 1;
     } else if (!ExerciseAboutTwice(mainWindow, process.dwProcessId)) {
         result = 1;
-    } else if (!ExitThroughTrayMenu(mainWindow, process.hProcess)) {
+    } else if (!ExitThroughTrayMenu(mainWindow, process.hProcess, process.dwProcessId)) {
         std::cerr << "process did not exit through tray menu after about dialogs\n";
         result = 1;
     }
@@ -203,6 +191,13 @@ int wmain() {
     }
     CloseHandle(process.hThread);
     CloseHandle(process.hProcess);
+
+    // Acceptance rule: the test must not have changed foreground ownership.
+    const HWND finalForeground = GetForegroundWindow();
+    if (initialForeground != finalForeground) {
+        std::cerr << "foreground window changed during acceptance run\n";
+        result = 1;
+    }
 
     if (result == 0) {
         std::cout << "about_tray_exit_acceptance=passed\n";

@@ -20,6 +20,8 @@
 /docs/*
 !/docs/Quattro/
 /docs/Quattro/*
+!/docs/Quattro/00-文档索引.md
+!/docs/Quattro/公共层D2D-DWrite渲染架构.md
 !/docs/Quattro/AppLaunchLocker自启动治理开发方案.md
 !/docs/Quattro/后台测试验收实施说明.md
 
@@ -77,6 +79,7 @@
 
 # Local/manual test scripts
 /tests/*
+!/tests/ToastAcceptance.cpp
 !/tests/AboutTrayExitAcceptance.cpp
 !/tests/BuiltinSystemContextMenuAcceptance.cpp
 !/tests/HttpServerConfigAcceptance.cpp

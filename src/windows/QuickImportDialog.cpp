@@ -28,26 +28,26 @@ constexpr int IdCancel = IDCANCEL;
 constexpr int IdSelectAll = 1004;
 constexpr int IdSelectNone = 1005;
 constexpr int IdPickDirectory = 1006;
-constexpr int IdViewList = 1007;
-constexpr int IdViewIcon = 1008;
-constexpr int IdActionToolbar = 1009;
+constexpr int IdViewMode = 1009;
+constexpr int IdDirectory = 1010;
+constexpr int IdSourceDesktop = 1011;
+constexpr int IdSourceStartMenu = 1012;
+constexpr int IdViewListTab = 1013;
+constexpr int IdViewIconTab = 1014;
 
 enum class ImportViewMode {
     List,
     Icon,
 };
 
-std::wstring SourceText(QuickImportService::Source source) {
-    switch (source) {
-    case QuickImportService::Source::Directory:
-        return L"选择目录";
-    case QuickImportService::Source::Desktop:
-        return L"桌面";
-    case QuickImportService::Source::StartMenu:
-        return L"开始菜单";
-    default:
-        return L"选择目录";
+std::wstring GetText(HWND hwnd) {
+    const int length = GetWindowTextLengthW(hwnd);
+    std::wstring text(static_cast<std::size_t>(length) + 1, L'\0');
+    if (length > 0) {
+        GetWindowTextW(hwnd, text.data(), length + 1);
     }
+    text.resize(static_cast<std::size_t>(length));
+    return text;
 }
 
 std::wstring TypeText(int type) {
@@ -146,6 +146,16 @@ bool PickFolder(HWND owner, std::filesystem::path& directory) {
     return accepted;
 }
 
+std::filesystem::path KnownFolderPathOrEmpty(REFKNOWNFOLDERID folderId) {
+    PWSTR raw = nullptr;
+    if (FAILED(SHGetKnownFolderPath(folderId, KF_FLAG_DEFAULT, nullptr, &raw)) || !raw) {
+        return {};
+    }
+    std::filesystem::path path(raw);
+    CoTaskMemFree(raw);
+    return path;
+}
+
 class DialogWindow {
 public:
     DialogWindow(HWND owner, HINSTANCE instance, const Theme& theme, const std::vector<Link>& existingLinks, std::vector<Link>& selectedLinks)
@@ -208,6 +218,9 @@ private:
         case WM_CREATE:
             windowUi_ = std::make_unique<ThemedWindowUi>(
                 instance_, owner_, hwnd_, theme_, DialogLayoutKind::Compact, kDialogWidth, kDialogHeight);
+            windowUi_->SetDpiChangedCallback([this](UINT) {
+                LayoutControls();
+            });
             CreateControls();
             return 0;
         case WM_PAINT: {
@@ -231,7 +244,18 @@ private:
             switch (LOWORD(wParam)) {
             case IdSource:
                 if (HIWORD(wParam) == CBN_SELCHANGE) {
-                    UpdateSourceControls();
+                    ApplySelectedSource();
+                }
+                return 0;
+            case IdViewMode:
+                if (HIWORD(wParam) == CBN_SELCHANGE) {
+                    SwitchView(ThemedUi::ActiveTab(viewTabs_) == 0 ? ImportViewMode::List : ImportViewMode::Icon);
+                }
+                return 0;
+            case IdDirectory:
+                if (HIWORD(wParam) == EN_CHANGE && status_) {
+                    windowUi_->SetEditFrameState(directoryText_, false, false);
+                    SetWindowTextW(status_, L"尚未扫描");
                 }
                 return 0;
             case IdPickDirectory:
@@ -239,12 +263,6 @@ private:
                 return 0;
             case IdScan:
                 Scan();
-                return 0;
-            case IdViewList:
-                SwitchView(ImportViewMode::List);
-                return 0;
-            case IdViewIcon:
-                SwitchView(ImportViewMode::Icon);
                 return 0;
             case IdSelectAll:
                 SetAllChecks(true);
@@ -278,72 +296,77 @@ private:
         const int clientHeight = client.bottom - client.top;
         const ThemedUi ui = windowUi_->ui();
         const int labelHeight = ui.labelHeight();
-        const int fieldHeight = ui.comboBoxHeight();
+        const int fieldHeight = ui.editHeight();
         const int buttonHeight = ui.footerButtonHeight();
         const int tabHeight = ui.tabButtonHeight();
         const int topY = layout_.contentInsetY;
-        const int labelOffset = std::max(0, (fieldHeight - labelHeight) / 2);
-        const int sourceWidth = ui.scale(150);
-        const int directoryWidth = ui.scale(250);
-        const int pickDirectoryWidth = ui.scale(86);
-        const int scanWidth = ui.scale(86);
-        const int selectAllWidth = ui.scale(64);
-        const int selectNoneWidth = ui.scale(64);
-        const int viewButtonWidth = ui.scale(52);
-        const int toolbarWidth =
-            layout_.labelWidth +
-            layout_.labelGap +
-            sourceWidth +
-            layout_.controlGapX +
-            directoryWidth +
-            layout_.controlGapX +
-            pickDirectoryWidth +
-            layout_.controlGapX +
-            scanWidth;
-        const int toolbarX = layout_.CenteredGroupX(clientWidth, toolbarWidth);
-        const int sourceX = toolbarX + layout_.labelWidth + layout_.labelGap;
+        const int sourceWidth = ui.scale(180);
+        const int pickDirectoryWidth = ui.buttonWidth(L"选择目录", ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
+        const int scanWidth = ui.buttonWidth(L"扫描", ThemedButtonRole::Primary, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
+        const int selectAllWidth = ui.buttonWidth(L"全选", ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Text);
+        const int selectNoneWidth = ui.buttonWidth(L"清空", ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Text);
+        const int contentLeft = layout_.contentInsetX;
+        const int contentRight = clientWidth - layout_.contentInsetX;
 
-        sourceLabel_ = ui.Label(L"来源", toolbarX, topY + labelOffset, layout_.labelWidth);
-        sourceCombo_ = ui.ComboBox(IdSource, sourceX, topY, sourceWidth);
-        ComboBox_AddString(sourceCombo_, SourceText(QuickImportService::Source::Directory).c_str());
-        ComboBox_AddString(sourceCombo_, SourceText(QuickImportService::Source::Desktop).c_str());
-        ComboBox_AddString(sourceCombo_, SourceText(QuickImportService::Source::StartMenu).c_str());
-        ComboBox_SetCurSel(sourceCombo_, 0);
+        ThemedTabControlOptions sourceOptions{};
+        sourceOptions.activeIndex = 0;
+        sourceOptions.equalWidth = true;
+        sourceOptions.appearance = ThemedTabControlAppearance::SoftPill;
+        sourceOptions.orientation = ThemedTabControlOrientation::Horizontal;
+        sourceOptions.containerStyle = ThemedTabControlContainerStyle::Borderless;
+        sourceTabs_ = ui.TabControl(
+            IdSource,
+            RECT{contentLeft, topY, contentLeft + sourceWidth, topY + tabHeight},
+            {
+                ThemedTabItem{IdSourceDesktop, L"桌面", true},
+                ThemedTabItem{IdSourceStartMenu, L"开始菜单", true},
+            },
+            sourceOptions);
 
-        directoryFrame_ = RECT{sourceX + sourceWidth + layout_.controlGapX, topY, sourceX + sourceWidth + layout_.controlGapX + directoryWidth, topY + fieldHeight};
+        selectedDirectory_ = KnownFolderPathOrEmpty(FOLDERID_Desktop);
+        const int directoryX = contentLeft + sourceWidth + layout_.controlGapX;
+        const int directoryWidth = std::max(
+            ui.scale(120),
+            contentRight - directoryX - pickDirectoryWidth - scanWidth - layout_.controlGapX * 2);
+        directoryFrame_ = RECT{directoryX, topY, directoryX + directoryWidth, topY + fieldHeight};
         ThemedEditOptions directoryOptions{};
-        directoryOptions.readOnly = true;
-        directoryText_ = ui.Edit(IdPickDirectory + 100, directoryFrame_, L"未选择目录", directoryOptions);
+        directoryOptions.placeholder = L"输入要扫描的绝对路径";
+        directoryText_ = ui.Edit(IdDirectory, directoryFrame_, selectedDirectory_.wstring(), directoryOptions);
         pickDirectoryButton_ = ui.Button(IdPickDirectory, L"选择目录", directoryFrame_.right + layout_.controlGapX, topY, ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, pickDirectoryWidth);
-        scanButton_ = ui.Button(IdScan, L"扫描", directoryFrame_.right + layout_.controlGapX + pickDirectoryWidth + layout_.controlGapX, topY, ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, scanWidth);
+        scanButton_ = ui.Button(IdScan, L"扫描", directoryFrame_.right + layout_.controlGapX + pickDirectoryWidth + layout_.controlGapX, topY, ThemedButtonRole::Primary, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, scanWidth);
 
         const int statusRowY = topY + fieldHeight + layout_.rowGap;
-        const int statusRowHeight = std::max({buttonHeight, tabHeight, labelHeight});
-        const int actionWidth =
-            viewButtonWidth * 2 +
-            layout_.controlGapX +
-            selectAllWidth +
-            layout_.controlGapX +
-            selectNoneWidth;
-        const int actionX = clientWidth - layout_.contentInsetX - actionWidth;
+        const int statusRowHeight = std::max({ui.compactButtonHeight(), tabHeight, labelHeight});
+        const int viewWidth = ui.scale(132);
+        ThemedTabControlOptions viewOptions{};
+        viewOptions.activeIndex = 0;
+        viewOptions.equalWidth = true;
+        viewOptions.appearance = ThemedTabControlAppearance::SoftPill;
+        viewOptions.orientation = ThemedTabControlOrientation::Horizontal;
+        viewOptions.containerStyle = ThemedTabControlContainerStyle::Borderless;
+        viewTabs_ = ui.TabControl(
+            IdViewMode,
+            RECT{contentLeft, statusRowY, contentLeft + viewWidth, statusRowY + statusRowHeight},
+            {
+                ThemedTabItem{IdViewListTab, L"列表", true},
+                ThemedTabItem{IdViewIconTab, L"图标", true},
+            },
+            viewOptions);
+
+        const int actionWidth = selectAllWidth + layout_.controlGapX + selectNoneWidth;
+        const int actionX = contentRight - actionWidth;
+        const int actionY = statusRowY + std::max(0, (statusRowHeight - ui.compactButtonHeight()) / 2);
+        selectAllButton_ = ui.Button(IdSelectAll, L"全选", actionX, actionY, ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Fixed, selectAllWidth);
+        selectNoneButton_ = ui.Button(IdSelectNone, L"清空", actionX + selectAllWidth + layout_.controlGapX, actionY, ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Fixed, selectNoneWidth);
+
+        const int statusX = contentLeft + viewWidth + layout_.controlGapX;
         const int statusY = statusRowY + std::max(0, (statusRowHeight - labelHeight) / 2);
         status_ = ui.StatusText(
-            L"请选择目录后扫描。",
-            layout_.contentInsetX,
+            L"尚未扫描",
+            statusX,
             statusY,
-            actionX - layout_.contentInsetX - layout_.controlGapX,
+            std::max(0, actionX - layout_.controlGapX - statusX),
             ThemedStatusTextOptions{ThemedStatusRole::Normal, ThemedTextAlign::Start});
-
-        actionToolbar_ = ui.ToolBar(
-            IdActionToolbar,
-            RECT{actionX, statusRowY, actionX + actionWidth, statusRowY + statusRowHeight},
-            {
-                ThemedToolItem{IdViewList, L"列表", ThemedToolItemKind::Toggle, ThemedToolItemAlignment::Leading, true, true},
-                ThemedToolItem{IdViewIcon, L"图标", ThemedToolItemKind::Toggle},
-                ThemedToolItem{0, L"", ThemedToolItemKind::Separator},
-                ThemedToolItem{IdSelectAll, L"全选"},
-                ThemedToolItem{IdSelectNone, L"清空"},
-            });
 
         listFrame_ = RECT{layout_.contentInsetX, statusRowY + statusRowHeight + layout_.rowGap, clientWidth - layout_.contentInsetX, clientHeight - layout_.footerInsetY - buttonHeight - layout_.footerGap};
         ThemedTableOptions tableOptions{};
@@ -363,81 +386,94 @@ private:
         const int footerY = layout_.FooterButtonY(clientHeight, buttonHeight);
         const int buttonGroupWidth = layout_.footerButtonWidth * 2 + layout_.footerButtonGap;
         const int buttonX = layout_.CenteredGroupX(clientWidth, buttonGroupWidth);
-        ui.Button(IdImport, L"导入选中", buttonX, footerY, ThemedButtonRole::Primary, ThemedButtonSize::Large, ThemedButtonWidthMode::Fixed, layout_.footerButtonWidth, true);
-        ui.Button(IdCancel, L"取消", buttonX + layout_.footerButtonWidth + layout_.footerButtonGap, footerY, ThemedButtonRole::Normal, ThemedButtonSize::Large, ThemedButtonWidthMode::Fixed, layout_.footerButtonWidth);
+        importButton_ = ui.Button(IdImport, L"导入选中", buttonX, footerY, ThemedButtonRole::Primary, ThemedButtonSize::Large, ThemedButtonWidthMode::Fixed, layout_.footerButtonWidth, true);
+        cancelButton_ = ui.Button(IdCancel, L"取消", buttonX + layout_.footerButtonWidth + layout_.footerButtonGap, footerY, ThemedButtonRole::Normal, ThemedButtonSize::Large, ThemedButtonWidthMode::Fixed, layout_.footerButtonWidth);
 
-        UpdateSourceControls();
+        LayoutControls();
         ApplyViewMode();
     }
 
-    void LayoutSourceRow(bool directorySource) {
+    void LayoutControls() {
+        if (!windowUi_ || !sourceTabs_) {
+            return;
+        }
+
+        const ThemedUi ui = windowUi_->ui();
+        layout_ = ui.layout();
         RECT client{};
         GetClientRect(hwnd_, &client);
         const int clientWidth = client.right - client.left;
-        const ThemedUi ui = windowUi_->ui();
+        const int clientHeight = client.bottom - client.top;
         const int labelHeight = ui.labelHeight();
-        const int fieldHeight = ui.comboBoxHeight();
+        const int fieldHeight = ui.editHeight();
+        const int buttonHeight = ui.footerButtonHeight();
+        const int tabHeight = ui.tabButtonHeight();
         const int topY = layout_.contentInsetY;
-        const int labelOffset = std::max(0, (fieldHeight - labelHeight) / 2);
-        const int sourceWidth = ui.scale(150);
-        const int directoryWidth = ui.scale(250);
-        const int pickDirectoryWidth = ui.scale(86);
-        const int scanWidth = ui.scale(86);
-        const int directoryPartWidth = directorySource
-            ? directoryWidth + layout_.controlGapX + pickDirectoryWidth + layout_.controlGapX
-            : 0;
-        const int toolbarWidth =
-            layout_.labelWidth +
-            layout_.labelGap +
-            sourceWidth +
-            layout_.controlGapX +
-            directoryPartWidth +
-            scanWidth;
-        const int toolbarX = layout_.CenteredGroupX(clientWidth, toolbarWidth);
-        const int sourceX = toolbarX + layout_.labelWidth + layout_.labelGap;
+        const int contentLeft = layout_.contentInsetX;
+        const int contentRight = clientWidth - layout_.contentInsetX;
+        const int sourceWidth = ui.scale(180);
+        const int pickDirectoryWidth = ui.buttonWidth(L"选择目录", ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
+        const int scanWidth = ui.buttonWidth(L"扫描", ThemedButtonRole::Primary, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
+        const int selectAllWidth = ui.buttonWidth(L"全选", ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Text);
+        const int selectNoneWidth = ui.buttonWidth(L"清空", ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Text);
 
-        ui.MoveControl(sourceLabel_, toolbarX, topY + labelOffset, layout_.labelWidth);
-        ui.MoveComboBox(sourceCombo_, sourceX, topY, sourceWidth);
+        ui.MoveControl(sourceTabs_, contentLeft, topY, sourceWidth);
 
-        int nextX = sourceX + sourceWidth + layout_.controlGapX;
-        if (directorySource) {
-            directoryFrame_ = RECT{nextX, topY, nextX + directoryWidth, topY + fieldHeight};
-            windowUi_->MoveEditFrame(directoryText_, directoryFrame_);
-            ShowWindow(directoryText_, SW_SHOWNA);
-            nextX = directoryFrame_.right + layout_.controlGapX;
-            ui.MoveControl(pickDirectoryButton_, nextX, topY, pickDirectoryWidth);
-            ShowWindow(pickDirectoryButton_, SW_SHOWNA);
-            nextX += pickDirectoryWidth + layout_.controlGapX;
-        } else {
-            ShowWindow(directoryText_, SW_HIDE);
-            ShowWindow(pickDirectoryButton_, SW_HIDE);
-            directoryFrame_ = {};
-        }
+        const int directoryX = contentLeft + sourceWidth + layout_.controlGapX;
+        const int directoryWidth = std::max(
+            ui.scale(120),
+            contentRight - directoryX - pickDirectoryWidth - scanWidth - layout_.controlGapX * 2);
+        directoryFrame_ = RECT{directoryX, topY, directoryX + directoryWidth, topY + fieldHeight};
+        windowUi_->MoveEditFrame(directoryText_, directoryFrame_);
+        ui.MoveControl(pickDirectoryButton_, directoryFrame_.right + layout_.controlGapX, topY, pickDirectoryWidth);
+        ui.MoveControl(scanButton_, directoryFrame_.right + layout_.controlGapX + pickDirectoryWidth + layout_.controlGapX, topY, scanWidth);
 
-        ui.MoveControl(scanButton_, nextX, topY, scanWidth);
+        const int statusRowY = topY + fieldHeight + layout_.rowGap;
+        const int statusRowHeight = std::max({ui.compactButtonHeight(), tabHeight, labelHeight});
+        const int viewWidth = ui.scale(132);
+        ui.MoveControl(viewTabs_, contentLeft, statusRowY, viewWidth);
+
+        const int actionWidth = selectAllWidth + layout_.controlGapX + selectNoneWidth;
+        const int actionX = contentRight - actionWidth;
+        const int actionY = statusRowY + std::max(0, (statusRowHeight - ui.compactButtonHeight()) / 2);
+        ui.MoveControl(selectAllButton_, actionX, actionY, selectAllWidth);
+        ui.MoveControl(selectNoneButton_, actionX + selectAllWidth + layout_.controlGapX, actionY, selectNoneWidth);
+
+        const int statusX = contentLeft + viewWidth + layout_.controlGapX;
+        const int statusY = statusRowY + std::max(0, (statusRowHeight - labelHeight) / 2);
+        ui.MoveControl(status_, statusX, statusY, std::max(0, actionX - layout_.controlGapX - statusX));
+
+        listFrame_ = RECT{
+            layout_.contentInsetX,
+            statusRowY + statusRowHeight + layout_.rowGap,
+            clientWidth - layout_.contentInsetX,
+            clientHeight - layout_.footerInsetY - buttonHeight - layout_.footerGap};
+        SetWindowPos(
+            list_,
+            nullptr,
+            listFrame_.left,
+            listFrame_.top,
+            listFrame_.right - listFrame_.left,
+            listFrame_.bottom - listFrame_.top,
+            SWP_NOACTIVATE | SWP_NOZORDER);
+        windowUi_->RegisterTableFrame(list_, listFrame_);
+
+        const int footerY = layout_.FooterButtonY(clientHeight, buttonHeight);
+        const int buttonGroupWidth = layout_.footerButtonWidth * 2 + layout_.footerButtonGap;
+        const int buttonX = layout_.CenteredGroupX(clientWidth, buttonGroupWidth);
+        ui.MoveControl(importButton_, buttonX, footerY, layout_.footerButtonWidth);
+        ui.MoveControl(cancelButton_, buttonX + layout_.footerButtonWidth + layout_.footerButtonGap, footerY, layout_.footerButtonWidth);
+
+        ApplyViewMode();
         InvalidateRect(hwnd_, nullptr, TRUE);
     }
 
-    std::wstring DirectoryDisplayText() const {
-        return selectedDirectory_.empty() ? L"未选择目录" : selectedDirectory_.wstring();
-    }
-
-    void UpdateDirectoryText() {
-        if (directoryText_) {
-            SetWindowTextW(directoryText_, DirectoryDisplayText().c_str());
-        }
-    }
-
-    void UpdateSourceControls() {
-        const bool directorySource = SelectedSource() == QuickImportService::Source::Directory;
-        LayoutSourceRow(directorySource);
-        UpdateDirectoryText();
-        if (directorySource) {
-            const std::wstring status = selectedDirectory_.empty() ? L"请选择目录后扫描。" : L"将扫描：" + selectedDirectory_.wstring();
-            SetWindowTextW(status_, status.c_str());
-        } else {
-            SetWindowTextW(status_, L"选择来源后扫描，最多递归 5 层目录。");
-        }
+    void ApplySelectedSource() {
+        REFKNOWNFOLDERID folderId = ThemedUi::ActiveTab(sourceTabs_) == 0 ? FOLDERID_Desktop : FOLDERID_StartMenu;
+        selectedDirectory_ = KnownFolderPathOrEmpty(folderId);
+        SetWindowTextW(directoryText_, selectedDirectory_.wstring().c_str());
+        windowUi_->SetEditFrameState(directoryText_, false, selectedDirectory_.empty());
+        SetWindowTextW(status_, selectedDirectory_.empty() ? L"无法定位所选目录" : L"尚未扫描");
     }
 
     bool PickScanDirectory() {
@@ -446,8 +482,9 @@ private:
             return false;
         }
         selectedDirectory_ = std::move(directory);
-        UpdateDirectoryText();
-        SetWindowTextW(status_, (L"将扫描：" + selectedDirectory_.wstring()).c_str());
+        SetWindowTextW(directoryText_, selectedDirectory_.wstring().c_str());
+        windowUi_->SetEditFrameState(directoryText_, false, false);
+        SetWindowTextW(status_, L"尚未扫描");
         return true;
     }
 
@@ -522,9 +559,9 @@ private:
             return;
         }
         ThemedUi::SetTableView(list_, viewMode_ == ImportViewMode::List ? ThemedTableView::Details : ThemedTableView::Icons);
-        ThemedUi::SetTableIconSpacing(list_, 96, 72);
-        ThemedUi::SetToolChecked(actionToolbar_, IdViewList, viewMode_ == ImportViewMode::List);
-        ThemedUi::SetToolChecked(actionToolbar_, IdViewIcon, viewMode_ == ImportViewMode::Icon);
+        const ThemedUi ui = windowUi_->ui();
+        ThemedUi::SetTableIconSpacing(list_, ui.scale(128), ui.scale(112));
+        ThemedUi::SetActiveTab(viewTabs_, viewMode_ == ImportViewMode::List ? 0 : 1, false);
         SetWindowPos(list_, nullptr, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
         InvalidateRect(list_, nullptr, TRUE);
     }
@@ -582,39 +619,22 @@ private:
         }
     }
 
-    QuickImportService::Source SelectedSource() const {
-        switch (ComboBox_GetCurSel(sourceCombo_)) {
-        case 1:
-            return QuickImportService::Source::Desktop;
-        case 2:
-            return QuickImportService::Source::StartMenu;
-        case 0:
-        default:
-            return QuickImportService::Source::Directory;
-        }
-    }
-
     void Scan() {
-        std::filesystem::path directory;
-        const auto source = SelectedSource();
-        if (source == QuickImportService::Source::Directory) {
-            if (selectedDirectory_.empty() && !PickScanDirectory()) {
-                SetWindowTextW(status_, L"请选择要扫描的目录。");
-                return;
-            }
-            directory = selectedDirectory_;
-        }
+        const std::wstring directoryText = Trim(GetText(directoryText_));
+        const std::filesystem::path directory(directoryText);
 
         SetWindowTextW(status_, L"正在扫描，请稍候……");
+        windowUi_->SetEditFrameState(directoryText_, false, false);
         EnableWindow(scanButton_, FALSE);
         UpdateWindow(hwnd_);
 
         std::wstring error;
-        items_ = scanner_.Scan(source, directory, existingLinks_, error);
+        items_ = scanner_.Scan(directory, existingLinks_, error);
         RebuildImageLists();
         PopulateList();
 
         EnableWindow(scanButton_, TRUE);
+        windowUi_->SetEditFrameState(directoryText_, false, !error.empty());
         const int selected = SelectedCount();
         std::wstring status = L"扫描到 " + std::to_wstring(items_.size()) + L" 项，可导入 " + std::to_wstring(selected) + L" 项。";
         if (!error.empty()) {
@@ -680,6 +700,7 @@ private:
     }
 
     void Paint(HDC dc) {
+        windowUi_->FillBackground(dc);
         windowUi_->DrawRegisteredEditFrames(dc);
         windowUi_->DrawRegisteredTableFrames(dc);
     }
@@ -703,12 +724,15 @@ private:
     std::vector<int> itemImageIndexes_;
     std::filesystem::path selectedDirectory_;
     ImportViewMode viewMode_ = ImportViewMode::List;
-    HWND sourceLabel_ = nullptr;
-    HWND sourceCombo_ = nullptr;
+    HWND sourceTabs_ = nullptr;
     HWND directoryText_ = nullptr;
     HWND pickDirectoryButton_ = nullptr;
     HWND scanButton_ = nullptr;
-    HWND actionToolbar_ = nullptr;
+    HWND viewTabs_ = nullptr;
+    HWND selectAllButton_ = nullptr;
+    HWND selectNoneButton_ = nullptr;
+    HWND importButton_ = nullptr;
+    HWND cancelButton_ = nullptr;
     HWND list_ = nullptr;
     HWND status_ = nullptr;
     RECT directoryFrame_{};

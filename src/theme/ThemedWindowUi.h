@@ -160,6 +160,8 @@ private:
     SIZE MeasureToast(const std::wstring& text, const ThemedToastOptions& options) const;
     void PositionToast();
     void PaintToast(HDC dc) const;
+    RECT ToastCloseButtonRect() const;
+    void InvalidateToastWindow();
     static LRESULT CALLBACK EditFrameProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
     static LRESULT CALLBACK EditChildProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR id, DWORD_PTR data);
     static LRESULT CALLBACK TableFrameProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
@@ -196,4 +198,6 @@ private:
     ThemedToastOptions toastOptions_{};
     SIZE toastSize_{};
     bool toastLayoutValid_ = false;
+    bool toastCloseHovered_ = false;
+    bool toastClosePressed_ = false;
 };
