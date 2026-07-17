@@ -365,6 +365,60 @@ HICON CreateTablerIconHandle(wchar_t glyph) {
     return icon;
 }
 
+HICON CreateChevronFallbackIcon() {
+    constexpr int size = 64;
+    BITMAPINFO info{};
+    info.bmiHeader.biSize = sizeof(info.bmiHeader);
+    info.bmiHeader.biWidth = size;
+    info.bmiHeader.biHeight = -size;
+    info.bmiHeader.biPlanes = 1;
+    info.bmiHeader.biBitCount = 32;
+    info.bmiHeader.biCompression = BI_RGB;
+
+    void* pixels = nullptr;
+    HDC screen = GetDC(nullptr);
+    HBITMAP color = CreateDIBSection(screen, &info, DIB_RGB_COLORS, &pixels, nullptr, 0);
+    HBITMAP mask = CreateBitmap(size, size, 1, 1, nullptr);
+    HDC dc = CreateCompatibleDC(screen);
+    ReleaseDC(nullptr, screen);
+    if (!color || !mask || !dc || !pixels) {
+        if (dc) DeleteDC(dc);
+        if (mask) DeleteObject(mask);
+        if (color) DeleteObject(color);
+        return nullptr;
+    }
+
+    HGDIOBJ oldBitmap = SelectObject(dc, color);
+    std::fill_n(static_cast<std::uint32_t*>(pixels), size * size, 0);
+    HPEN pen = CreatePen(PS_SOLID, 5, RGB(31, 41, 55));
+    HGDIOBJ oldPen = SelectObject(dc, pen);
+    MoveToEx(dc, 20, 26, nullptr);
+    LineTo(dc, 32, 38);
+    LineTo(dc, 44, 26);
+    SelectObject(dc, oldPen);
+    if (pen) DeleteObject(pen);
+
+    auto* argb = static_cast<std::uint32_t*>(pixels);
+    for (int i = 0; i < size * size; ++i) {
+        const std::uint32_t rgb = argb[i] & 0x00FFFFFFu;
+        if (rgb != 0) {
+            argb[i] = 0xFF000000u | rgb;
+        }
+    }
+
+    SelectObject(dc, oldBitmap);
+    DeleteDC(dc);
+
+    ICONINFO iconInfo{};
+    iconInfo.fIcon = TRUE;
+    iconInfo.hbmColor = color;
+    iconInfo.hbmMask = mask;
+    HICON icon = CreateIconIndirect(&iconInfo);
+    DeleteObject(mask);
+    DeleteObject(color);
+    return icon;
+}
+
 LRESULT CALLBACK SplitButtonMenuProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR id, DWORD_PTR refData) {
     if (message == WM_NCDESTROY) {
         RemovePropW(hwnd, L"QuattroThemedButtonIcon");
@@ -385,7 +439,10 @@ void ApplySplitButtonMenuIcon(HWND button, int buttonHeight) {
     constexpr wchar_t chevronDown = static_cast<wchar_t>(0xEA5F); // tabler chevron-down
     HICON icon = CreateTablerIconHandle(chevronDown);
     if (!icon) {
-        SetWindowTextW(button, L"⌄");
+        icon = CreateChevronFallbackIcon();
+    }
+    if (!icon) {
+        SetWindowTextW(button, L"");
         return;
     }
 

@@ -323,6 +323,8 @@ add_executable(AppLaunchLocker WIN32
     src/applaunchlocker/AppLaunchLockerMain.cpp
     src/applaunchlocker/AppLaunchLockerWindow.cpp
     src/applaunchlocker/AdBlockWindow.cpp
+    src/common/AppLog.cpp
+    src/common/FileDialog.cpp
 )
 set_target_properties(AppLaunchLocker PROPERTIES
     EXCLUDE_FROM_ALL TRUE

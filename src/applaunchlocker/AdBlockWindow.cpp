@@ -1,5 +1,6 @@
 #include "AdBlockWindow.h"
 
+#include "FileDialog.h"
 #include "ThemedUi.h"
 #include "ThemedWindowUi.h"
 #include "ToastFeedback.h"
@@ -8,7 +9,6 @@
 
 #include <commctrl.h>
 #include <shellapi.h>
-#include <shobjidl.h>
 
 #include <algorithm>
 #include <string>
@@ -21,6 +21,8 @@ constexpr int ID_TAB_BLOCKED = 1202;
 constexpr int ID_CONTENT_PANEL = 1203;
 constexpr int ID_PATH_EDIT = 1210;
 constexpr int ID_PICK_PATH = 1211;
+constexpr int ID_PICK_PATH_MENU = 1218;
+constexpr int ID_PICK_FOLDER = 1219;
 constexpr int ID_MODE_EXACT = 1213;
 constexpr int ID_MODE_NAME = 1214;
 constexpr int ID_MODE_STARTUP = 1212;
@@ -29,7 +31,6 @@ constexpr int ID_BLOCK_SELECTED = 1216;
 constexpr int ID_CLEAR_RESULTS = 1217;
 constexpr int ID_BLOCKED_TABLE = 1220;
 constexpr int ID_UNBLOCK = 1221;
-constexpr DWORD ID_PICK_CURRENT_FOLDER = 1300;
 
 constexpr UINT WM_APP_SCAN_COMPLETE = WM_APP + 0x160;
 constexpr UINT WM_APP_BLOCKED_COMPLETE = WM_APP + 0x161;
@@ -48,98 +49,6 @@ struct BlockedPayload {
 struct OperationPayload {
     OperationResult result;
     bool rescan = false;
-};
-
-bool FileSystemFolderPath(IShellItem* item, std::wstring& path) {
-    if (!item) return false;
-    PWSTR selected = nullptr;
-    if (FAILED(item->GetDisplayName(SIGDN_FILESYSPATH, &selected)) || !selected) return false;
-    path = selected;
-    CoTaskMemFree(selected);
-    const DWORD attributes = GetFileAttributesW(path.c_str());
-    if (attributes == INVALID_FILE_ATTRIBUTES || (attributes & FILE_ATTRIBUTE_DIRECTORY) == 0) {
-        path.clear();
-        return false;
-    }
-    return true;
-}
-
-class PathDialogEvents final : public IFileDialogEvents, public IFileDialogControlEvents {
-public:
-    explicit PathDialogEvents(IFileDialog* dialog) : dialog_(dialog) {
-        if (dialog_) dialog_->AddRef();
-    }
-
-    ~PathDialogEvents() {
-        if (dialog_) dialog_->Release();
-    }
-
-    const std::wstring& selectedFolder() const { return selectedFolder_; }
-
-    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** object) override {
-        if (!object) return E_POINTER;
-        *object = nullptr;
-        if (iid == IID_IUnknown || iid == __uuidof(IFileDialogEvents)) {
-            *object = static_cast<IFileDialogEvents*>(this);
-        } else if (iid == __uuidof(IFileDialogControlEvents)) {
-            *object = static_cast<IFileDialogControlEvents*>(this);
-        } else {
-            return E_NOINTERFACE;
-        }
-        AddRef();
-        return S_OK;
-    }
-
-    ULONG STDMETHODCALLTYPE AddRef() override {
-        return static_cast<ULONG>(InterlockedIncrement(&references_));
-    }
-
-    ULONG STDMETHODCALLTYPE Release() override {
-        const ULONG remaining = static_cast<ULONG>(InterlockedDecrement(&references_));
-        if (!remaining) delete this;
-        return remaining;
-    }
-
-    HRESULT STDMETHODCALLTYPE OnFileOk(IFileDialog*) override { return S_OK; }
-    HRESULT STDMETHODCALLTYPE OnFolderChanging(IFileDialog*, IShellItem*) override { return S_OK; }
-    HRESULT STDMETHODCALLTYPE OnFolderChange(IFileDialog*) override { return S_OK; }
-    HRESULT STDMETHODCALLTYPE OnSelectionChange(IFileDialog*) override { return S_OK; }
-    HRESULT STDMETHODCALLTYPE OnShareViolation(
-        IFileDialog*, IShellItem*, FDE_SHAREVIOLATION_RESPONSE* response) override {
-        if (response) *response = FDESVR_DEFAULT;
-        return S_OK;
-    }
-    HRESULT STDMETHODCALLTYPE OnTypeChange(IFileDialog*) override { return S_OK; }
-    HRESULT STDMETHODCALLTYPE OnOverwrite(
-        IFileDialog*, IShellItem*, FDE_OVERWRITE_RESPONSE* response) override {
-        if (response) *response = FDEOR_DEFAULT;
-        return S_OK;
-    }
-
-    HRESULT STDMETHODCALLTYPE OnItemSelected(IFileDialogCustomize*, DWORD, DWORD) override { return S_OK; }
-
-    HRESULT STDMETHODCALLTYPE OnButtonClicked(IFileDialogCustomize*, DWORD controlId) override {
-        if (controlId != ID_PICK_CURRENT_FOLDER || !dialog_) return S_OK;
-        IShellItem* item = nullptr;
-        if (SUCCEEDED(dialog_->GetCurrentSelection(&item)) && item) {
-            FileSystemFolderPath(item, selectedFolder_);
-            item->Release();
-        }
-        if (selectedFolder_.empty() && SUCCEEDED(dialog_->GetFolder(&item)) && item) {
-            FileSystemFolderPath(item, selectedFolder_);
-            item->Release();
-        }
-        if (!selectedFolder_.empty()) dialog_->Close(HRESULT_FROM_WIN32(ERROR_CANCELLED));
-        return S_OK;
-    }
-
-    HRESULT STDMETHODCALLTYPE OnCheckButtonToggled(IFileDialogCustomize*, DWORD, BOOL) override { return S_OK; }
-    HRESULT STDMETHODCALLTYPE OnControlActivating(IFileDialogCustomize*, DWORD) override { return S_OK; }
-
-private:
-    LONG references_ = 1;
-    IFileDialog* dialog_ = nullptr;
-    std::wstring selectedFolder_;
 };
 
 std::wstring QuoteArgument(const std::wstring& value) {
@@ -335,7 +244,17 @@ LRESULT AdBlockWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam) {
         if (id == ID_TAB_CONTROL && HIWORD(wParam) == CBN_SELCHANGE) {
             SelectTab(ThemedUi::ActiveTab(tabControl_));
         } else if (id == ID_PICK_PATH) {
-            PickPath();
+            PickFile();
+        } else if (id == ID_PICK_PATH_MENU) {
+            const UINT command = ThemedUi::ShowSplitButtonMenu(
+                hwnd_,
+                pickPathSplit_.menu,
+                {{ID_PICK_FOLDER, L"选择文件夹"}});
+            if (command != 0) {
+                SendMessageW(hwnd_, WM_COMMAND, MAKEWPARAM(command, BN_CLICKED), 0);
+            }
+        } else if (id == ID_PICK_FOLDER) {
+            PickFolder();
         } else if (id == ID_CLEAR_RESULTS) {
             ClearScanResults();
         } else if (id == ID_BLOCK_SELECTED) {
@@ -425,7 +344,7 @@ void AdBlockWindow::CreateControls() {
 
     // ---- 拦截页控件 ----
     const int labelHeight = ui.labelHeight();
-    const int pickWidth = ui.buttonWidth(L"选择", ThemedButtonRole::Normal, ThemedButtonSize::Normal,
+    const int pickWidth = ui.splitButtonWidth(L"文件", ThemedButtonRole::Normal, ThemedButtonSize::Normal,
         ThemedButtonWidthMode::Text);
     const int clearWidth = ui.buttonWidth(L"Clear", ThemedButtonRole::Normal, ThemedButtonSize::Normal,
         ThemedButtonWidthMode::Text);
@@ -436,8 +355,8 @@ void AdBlockWindow::CreateControls() {
         ThemedEditOptions{ThemedEditMode::SingleLine, ThemedEditContent::Text, false, true, false, false, true, 0, L"选择要扫描的文件或文件夹"});
     clearButton_ = ui.Button(ID_CLEAR_RESULTS, L"Clear", pageContent.left + editWidth + gapX, pathY,
         ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
-    pickPathButton_ = ui.Button(ID_PICK_PATH, L"选择", pageContent.right - pickWidth, pathY,
-        ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
+    pickPathSplit_ = ui.SplitButton(ID_PICK_PATH, ID_PICK_PATH_MENU, L"文件", pageContent.right - pickWidth, pathY,
+        ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, pickWidth);
 
     const int listTop = ui.nextRowY(pathY, std::max(editHeight, labelHeight));
     const int modeY = footerY + (ui.footerButtonHeight() - ui.checkBoxHeight()) / 2;
@@ -487,7 +406,7 @@ void AdBlockWindow::CreateControls() {
     unblockButton_ = ui.FooterButton(ID_UNBLOCK, L"解除拦截", 0, 1, true, true);
 
     const std::vector<HWND> panelChildren{
-        pathEdit_, clearButton_, pickPathButton_, scanTable_, blockedTable_};
+        pathEdit_, clearButton_, pickPathSplit_.primary, pickPathSplit_.menu, scanTable_, blockedTable_};
     for (HWND child : panelChildren) {
         ThemedUi::SetControlSurface(child, ThemedControlSurface::Panel);
     }
@@ -495,7 +414,7 @@ void AdBlockWindow::CreateControls() {
 
     // 绑定标签页可见性
     ThemedUi::BindTabPage(tabControl_, 0,
-        {pathEdit_, clearButton_, pickPathButton_, modeLabel, modeExactRadio_, modeNameRadio_, modeStartupRadio_, scanTable_});
+        {pathEdit_, clearButton_, pickPathSplit_.primary, pickPathSplit_.menu, modeLabel, modeExactRadio_, modeNameRadio_, modeStartupRadio_, scanTable_});
     ThemedUi::BindTabPage(tabControl_, 1, {blockedTable_});
     ThemedUi::SetActiveTab(tabControl_, 0, false);
 
@@ -511,53 +430,33 @@ std::wstring AdBlockWindow::SelectedMode() const {
     return ThemedUi::IsChecked(modeNameRadio_) ? L"name" : L"exact";
 }
 
-void AdBlockWindow::PickPath() {
-    IFileOpenDialog* dialog = nullptr;
-    if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
-            IID_PPV_ARGS(&dialog))) || !dialog) return;
+void AdBlockWindow::PickFile() {
+    CommonFileDialogOptions options{};
+    options.owner = hwnd_;
+    options.mode = CommonFileDialogMode::FileOnly;
+    options.context = L"应用拦截扫描文件";
+    options.title = L"选择要扫描的文件";
+    options.defaultPath = GetText(pathEdit_);
+    options.legacyFilter = L"可启动文件\0*.exe;*.com;*.scr;*.bat;*.cmd;*.ps1;*.vbs;*.js;*.lnk\0所有文件\0*.*\0";
 
-    DWORD options = 0;
-    dialog->GetOptions(&options);
-    dialog->SetOptions(options | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST | FOS_FILEMUSTEXIST);
-    dialog->SetTitle(L"选择要扫描的文件或文件夹");
-    const COMDLG_FILTERSPEC filters[] = {
-        {L"可启动文件", L"*.exe;*.com;*.scr;*.bat;*.cmd;*.ps1;*.vbs;*.js;*.lnk"},
-        {L"所有文件", L"*.*"},
-    };
-    dialog->SetFileTypes(static_cast<UINT>(std::size(filters)), filters);
-
-    auto* events = new PathDialogEvents(dialog);
-    DWORD cookie = 0;
-    const bool advised = SUCCEEDED(dialog->Advise(events, &cookie));
-    IFileDialogCustomize* customize = nullptr;
-    if (advised && SUCCEEDED(dialog->QueryInterface(IID_PPV_ARGS(&customize))) && customize) {
-        if (SUCCEEDED(customize->AddPushButton(ID_PICK_CURRENT_FOLDER, L"选择此文件夹"))) {
-            customize->MakeProminent(ID_PICK_CURRENT_FOLDER);
-        }
+    CommonFileDialogResult result{};
+    if (ShowCommonFileDialog(options, result)) {
+        ThemedUi::SetText(pathEdit_, result.path);
+        StartScan();
     }
+}
 
-    std::wstring path;
-    const HRESULT showResult = dialog->Show(hwnd_);
-    path = events->selectedFolder();
-    if (path.empty() && SUCCEEDED(showResult)) {
-            IShellItem* selected = nullptr;
-            if (SUCCEEDED(dialog->GetResult(&selected)) && selected) {
-                PWSTR selectedPath = nullptr;
-                if (SUCCEEDED(selected->GetDisplayName(SIGDN_FILESYSPATH, &selectedPath)) && selectedPath) {
-                    path = selectedPath;
-                    CoTaskMemFree(selectedPath);
-                }
-                selected->Release();
-            }
-    }
+void AdBlockWindow::PickFolder() {
+    CommonFileDialogOptions options{};
+    options.owner = hwnd_;
+    options.mode = CommonFileDialogMode::FolderOnly;
+    options.context = L"应用拦截扫描文件夹";
+    options.title = L"选择要扫描的文件夹";
+    options.defaultPath = GetText(pathEdit_);
 
-    if (customize) customize->Release();
-    if (advised) dialog->Unadvise(cookie);
-    events->Release();
-    dialog->Release();
-
-    if (!path.empty()) {
-        ThemedUi::SetText(pathEdit_, path);
+    CommonFileDialogResult result{};
+    if (ShowCommonFileDialog(options, result)) {
+        ThemedUi::SetText(pathEdit_, result.path);
         StartScan();
     }
 }

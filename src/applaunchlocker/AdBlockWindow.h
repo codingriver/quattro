@@ -2,6 +2,7 @@
 
 #include "AppLaunchLockerCore.h"
 #include "Theme.h"
+#include "ThemedUi.h"
 
 #include <windows.h>
 
@@ -25,7 +26,8 @@ private:
     static LRESULT CALLBACK Proc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
     LRESULT Handle(UINT message, WPARAM wParam, LPARAM lParam);
     void CreateControls();
-    void PickPath();
+    void PickFile();
+    void PickFolder();
     void StartScan();
     void ClearScanResults();
     void StartBlockSelected();
@@ -49,7 +51,7 @@ private:
     HWND tabControl_ = nullptr;
     HWND contentPanel_ = nullptr;
     HWND pathEdit_ = nullptr;
-    HWND pickPathButton_ = nullptr;
+    ThemedSplitButton pickPathSplit_{};
     HWND clearButton_ = nullptr;
     HWND modeExactRadio_ = nullptr;
     HWND modeNameRadio_ = nullptr;

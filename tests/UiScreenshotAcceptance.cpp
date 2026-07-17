@@ -2329,6 +2329,7 @@ void RunAdBlockScenario(const std::filesystem::path& outputDir, TestState& state
 
         HWND pathEdit = ChildById(hwnd, 1210);
         HWND pickPath = ChildById(hwnd, 1211);
+        HWND pickPathMenu = ChildById(hwnd, 1218);
         HWND clearResults = ChildById(hwnd, 1217);
         HWND tabControl = ChildById(hwnd, 1200);
         HWND contentPanel = ChildById(hwnd, 1203);
@@ -2336,9 +2337,9 @@ void RunAdBlockScenario(const std::filesystem::path& outputDir, TestState& state
         HWND nameMode = ChildById(hwnd, 1214);
         HWND scanTable = ChildById(hwnd, 1215);
         HWND blockButton = ChildById(hwnd, 1216);
-        state.Check(pathEdit && pickPath && clearResults && tabControl && contentPanel && exactMode && nameMode && scanTable && blockButton,
+        state.Check(pathEdit && pickPath && pickPathMenu && clearResults && tabControl && contentPanel && exactMode && nameMode && scanTable && blockButton,
             L"ad-block: block page controls are incomplete");
-        state.Check(!pathEdit || (IsWindowVisible(pathEdit) && IsWindowVisible(pickPath) && IsWindowVisible(clearResults)),
+        state.Check(!pathEdit || (IsWindowVisible(pathEdit) && IsWindowVisible(pickPath) && IsWindowVisible(pickPathMenu) && IsWindowVisible(clearResults)),
             L"ad-block: connected panel obscured the path action row");
         if (tabControl && contentPanel) {
             RECT tabRect{};
@@ -2368,24 +2369,29 @@ void RunAdBlockScenario(const std::filesystem::path& outputDir, TestState& state
                     tableRect.left > panelRect.left && tableRect.right < panelRect.right,
                 L"ad-block: connected content controls do not respect panel insets");
         }
-        state.Check(pickPath && WindowText(pickPath) == L"选择",
-            L"ad-block: merged file and folder entry label is incorrect");
+        state.Check(pickPath && WindowText(pickPath) == L"文件",
+            L"ad-block: file picker split-button label is incorrect");
+        state.Check(pickPathMenu && WindowText(pickPathMenu).empty(),
+            L"ad-block: folder picker menu segment should use only the public icon");
         state.Check(clearResults && WindowText(clearResults) == L"Clear",
             L"ad-block: clear-results action label is incorrect");
         state.Check(!clearResults || !IsWindowEnabled(clearResults),
             L"ad-block: clear-results action should start disabled");
-        if (pathEdit && clearResults && pickPath) {
+        if (pathEdit && clearResults && pickPath && pickPathMenu) {
             RECT pathRect{};
             RECT clearRect{};
             RECT pickRect{};
+            RECT menuRect{};
             GetWindowRect(pathEdit, &pathRect);
             GetWindowRect(clearResults, &clearRect);
             GetWindowRect(pickPath, &pickRect);
-            state.Check(pathRect.right < clearRect.left && clearRect.right < pickRect.left,
-                L"ad-block: path, Clear, and picker controls overlap or are out of order");
+            GetWindowRect(pickPathMenu, &menuRect);
+            state.Check(pathRect.right < clearRect.left && clearRect.right < pickRect.left && pickRect.right <= menuRect.left,
+                L"ad-block: path, Clear, file picker, and folder menu controls overlap or are out of order");
             state.Check(std::max(pathRect.top, clearRect.top) < std::min(pathRect.bottom, clearRect.bottom) &&
-                    std::max(clearRect.top, pickRect.top) < std::min(clearRect.bottom, pickRect.bottom),
-                L"ad-block: path, Clear, and picker controls are not aligned on one row");
+                    std::max(clearRect.top, pickRect.top) < std::min(clearRect.bottom, pickRect.bottom) &&
+                    std::max(pickRect.top, menuRect.top) < std::min(pickRect.bottom, menuRect.bottom),
+                L"ad-block: path, Clear, file picker, and folder menu controls are not aligned on one row");
         }
 
         auto validateActionRow = [&](const std::wstring& scenario) {
@@ -2452,48 +2458,6 @@ void RunAdBlockScenario(const std::filesystem::path& outputDir, TestState& state
             Sleep(200);
         }
 
-        if (pickPath) {
-            PostMessageW(pickPath, BM_CLICK, 0, 0);
-            HWND picker = WaitForTopWindow(
-                FindWindowRequest{L"#32770", L"", process.dwProcessId}, 5000);
-            state.Check(picker != nullptr, L"ad-block: direct file and folder picker did not open");
-            if (picker) {
-                capture(picker, L"ad-block-path-picker.png", L"ad-block path picker");
-                HWND chooseFolder = nullptr;
-                for (const auto& child : Children(picker)) {
-                    if (child.className == L"Button" && child.text == L"选择此文件夹") {
-                        chooseFolder = child.hwnd;
-                        break;
-                    }
-                }
-                state.Check(chooseFolder != nullptr,
-                    L"ad-block: modern picker does not expose the direct folder action");
-                HWND cancelButton = nullptr;
-                for (const auto& child : Children(picker)) {
-                    if (child.className == L"Button" && child.text == L"取消") {
-                        cancelButton = child.hwnd;
-                        break;
-                    }
-                }
-                if (cancelButton) {
-                    DWORD_PTR cancelResult = 0;
-                    SendMessageTimeoutW(cancelButton, BM_CLICK, 0, 0,
-                        SMTO_ABORTIFHUNG, 5000, &cancelResult);
-                } else {
-                    PostMessageW(picker, WM_COMMAND, IDCANCEL, 0);
-                }
-                const auto closeBegin = GetTickCount64();
-                while (IsWindow(picker) && GetTickCount64() - closeBegin < 5000) Sleep(50);
-                if (IsWindow(picker)) {
-                    PostMessageW(picker, WM_CLOSE, 0, 0);
-                    const auto fallbackBegin = GetTickCount64();
-                    while (IsWindow(picker) && GetTickCount64() - fallbackBegin < 2000) Sleep(50);
-                }
-                state.Check(!IsWindow(picker), L"ad-block: modern picker did not close after cancellation");
-                Sleep(300);
-            }
-        }
-
         HWND blockedTab = ChildById(hwnd, 1202);
         state.Check(blockedTab != nullptr, L"ad-block: blocked tab is missing");
         if (blockedTab) {
@@ -2549,10 +2513,11 @@ void RunAdBlockScenario(const std::filesystem::path& outputDir, TestState& state
             HWND contentPanel = ChildById(dpiWindow, 1203);
             HWND pathEdit = ChildById(dpiWindow, 1210);
             HWND pickPath = ChildById(dpiWindow, 1211);
+            HWND pickPathMenu = ChildById(dpiWindow, 1218);
             HWND clearResults = ChildById(dpiWindow, 1217);
             HWND scanTable = ChildById(dpiWindow, 1215);
             HWND blockButton = ChildById(dpiWindow, 1216);
-            state.Check(exactMode && nameMode && tabControl && contentPanel && pathEdit && pickPath && clearResults && scanTable && blockButton,
+            state.Check(exactMode && nameMode && tabControl && contentPanel && pathEdit && pickPath && pickPathMenu && clearResults && scanTable && blockButton,
                 L"ad-block: DPI action row controls are incomplete");
             if (tabControl && contentPanel) {
                 RECT tabRect{};
@@ -2564,18 +2529,21 @@ void RunAdBlockScenario(const std::filesystem::path& outputDir, TestState& state
                 state.Check(panelRect.left == tabRect.left && panelRect.right == tabRect.right,
                     L"ad-block: DPI connected tab and panel widths differ");
             }
-            if (pathEdit && clearResults && pickPath) {
+            if (pathEdit && clearResults && pickPath && pickPathMenu) {
                 RECT pathRect{};
                 RECT clearRect{};
                 RECT pickRect{};
+                RECT menuRect{};
                 RECT tableRect{};
                 GetWindowRect(pathEdit, &pathRect);
                 GetWindowRect(clearResults, &clearRect);
                 GetWindowRect(pickPath, &pickRect);
+                GetWindowRect(pickPathMenu, &menuRect);
                 GetWindowRect(scanTable, &tableRect);
-                state.Check(pathRect.right < clearRect.left && clearRect.right < pickRect.left,
+                state.Check(pathRect.right < clearRect.left && clearRect.right < pickRect.left && pickRect.right <= menuRect.left,
                     L"ad-block: DPI path row controls overlap or are out of order");
-                state.Check(pathRect.bottom <= tableRect.top && clearRect.bottom <= tableRect.top && pickRect.bottom <= tableRect.top,
+                state.Check(pathRect.bottom <= tableRect.top && clearRect.bottom <= tableRect.top &&
+                        pickRect.bottom <= tableRect.top && menuRect.bottom <= tableRect.top,
                     L"ad-block: DPI connected panel moved the path row behind the result table");
                 bool visibleEditFrame = false;
                 for (const auto& child : Children(dpiWindow)) {
