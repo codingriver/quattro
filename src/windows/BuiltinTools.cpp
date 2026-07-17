@@ -25,6 +25,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cwctype>
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -87,6 +88,7 @@ constexpr int ID_FILE_LOCK_PATH = 7601;
 constexpr int ID_FILE_LOCK_PICK_FILE = 7602;
 constexpr int ID_FILE_LOCK_PICK_DIR = 7603;
 constexpr int ID_FILE_LOCK_SCAN = 7604;
+constexpr int ID_FILE_LOCK_KILL_ALL = 7605;
 constexpr int ID_FILE_LOCK_KILL_BASE = 7610;
 constexpr int ID_PROCESS_TOOLS_TAB = 7700;
 constexpr int ID_PROCESS_TOOLS_TAB_BASE = 7710;
@@ -628,6 +630,39 @@ bool IsExplorerProcess(DWORD pid) {
     }
     const ProcessInfo info = QueryProcessInfo(pid);
     return _wcsicmp(info.name.c_str(), L"explorer.exe") == 0;
+}
+
+std::wstring LowerAscii(std::wstring value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](wchar_t ch) {
+        return static_cast<wchar_t>(std::towlower(ch));
+    });
+    return value;
+}
+
+bool IsBatchKillProtectedSystemProcess(DWORD pid, const ProcessInfo& info) {
+    if (pid == 0 || pid == 4 || pid == GetCurrentProcessId()) {
+        return true;
+    }
+    const std::wstring name = LowerAscii(info.name);
+    static const std::set<std::wstring> protectedNames{
+        L"system",
+        L"system idle process",
+        L"registry",
+        L"smss.exe",
+        L"csrss.exe",
+        L"wininit.exe",
+        L"winlogon.exe",
+        L"services.exe",
+        L"lsass.exe",
+        L"lsm.exe",
+        L"svchost.exe",
+        L"explorer.exe",
+        L"dwm.exe",
+        L"sihost.exe",
+        L"shellhost.exe",
+        L"fontdrvhost.exe",
+    };
+    return protectedNames.find(name) != protectedNames.end();
 }
 
 struct HoveredProcessResult {
@@ -3421,11 +3456,27 @@ private:
             page, ID_FILE_LOCK_SCAN, L"检查(&C)", buttonX, pageTop + buttonOffsetY,
             ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, checkWidth, true);
 
+        const int killAllWidth = ui.buttonWidth(
+            L"结束全部", ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
+        const int killAllY = StatusY() - layout.rowGap - ui.buttonHeight();
+        RECT tableFrame = ResultsFrame(pageTop + rowHeight + layout.sectionGap);
+        tableFrame.bottom = killAllY - layout.rowGap;
         fileTable_ = AddProcessTable(
             page,
             ID_PROCESS_TOOLS_FILE_TABLE,
-            ResultsFrame(pageTop + rowHeight + layout.sectionGap));
+            tableFrame);
+        fileKillAll_ = AddButton(
+            page,
+            ID_FILE_LOCK_KILL_ALL,
+            L"结束全部",
+            ui.clientWidth() - left - killAllWidth,
+            killAllY,
+            ThemedButtonRole::Normal,
+            ThemedButtonSize::Normal,
+            ThemedButtonWidthMode::Fixed,
+            killAllWidth);
         fileStatus_ = AddStatus(page, L"输入文件或目录路径后点击检查。", left, StatusY(), ui.contentWidth());
+        UpdateFileKillAllButton();
     }
 
     void ShowPage(Page page) {
@@ -3470,6 +3521,9 @@ private:
             break;
         case ID_FILE_LOCK_SCAN:
             QueryFileLock();
+            break;
+        case ID_FILE_LOCK_KILL_ALL:
+            KillAllFileLockProcesses();
             break;
         case IDCANCEL:
             DestroyWindow(hwnd_);
@@ -3542,6 +3596,25 @@ private:
 
     void SetFileProcessRows() {
         SetProcessRows(fileTable_, fileRows_, fileTerminatedPids_);
+        UpdateFileKillAllButton();
+    }
+
+    bool HasFileLockKillCandidate() const {
+        for (const auto& row : fileRows_) {
+            if (fileTerminatedPids_.find(row.pid) == fileTerminatedPids_.end()) {
+                const ProcessInfo info = QueryProcessInfo(row.pid);
+                if (!IsBatchKillProtectedSystemProcess(row.pid, info)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    void UpdateFileKillAllButton() {
+        if (fileKillAll_) {
+            Ui().SetEnabled(fileKillAll_, HasFileLockKillCandidate());
+        }
     }
 
     bool ConfirmAndKill(DWORD pid, const wchar_t* title) {
@@ -3560,6 +3633,72 @@ private:
             return false;
         }
         return true;
+    }
+
+    void KillAllFileLockProcesses() {
+        std::map<DWORD, ProcessInfo> candidates;
+        std::set<DWORD> skippedProtected;
+        for (const auto& row : fileRows_) {
+            if (!row.pid || fileTerminatedPids_.find(row.pid) != fileTerminatedPids_.end()) {
+                continue;
+            }
+            if (candidates.find(row.pid) != candidates.end() ||
+                skippedProtected.find(row.pid) != skippedProtected.end()) {
+                continue;
+            }
+            const ProcessInfo info = QueryProcessInfo(row.pid);
+            if (IsBatchKillProtectedSystemProcess(row.pid, info)) {
+                skippedProtected.insert(row.pid);
+                continue;
+            }
+            candidates.emplace(row.pid, info);
+        }
+
+        if (candidates.empty()) {
+            SetStatus(
+                fileStatus_,
+                skippedProtected.empty()
+                    ? L"当前结果中没有可结束的进程。"
+                    : L"当前结果中没有可结束的非系统关键进程。",
+                ThemedStatusRole::Warning);
+            UpdateFileKillAllButton();
+            return;
+        }
+
+        std::wstring message = L"确认结束当前结果中的 " + std::to_wstring(candidates.size()) + L" 个进程？";
+        if (!skippedProtected.empty()) {
+            message += L"\n已忽略 " + std::to_wstring(skippedProtected.size()) + L" 个系统关键进程。";
+        }
+        message += L"\n此操作不会自动重新检查。";
+        if (ShowThemedMessageBox(hwnd_, instance_, theme_, message, L"文件占用", MB_OKCANCEL | MB_ICONWARNING) != IDOK) {
+            return;
+        }
+
+        std::size_t successCount = 0;
+        std::size_t failureCount = 0;
+        for (const auto& [pid, info] : candidates) {
+            const std::wstring error = KillProcessById(pid);
+            if (error.empty()) {
+                fileTerminatedPids_.insert(pid);
+                ++successCount;
+            } else {
+                ++failureCount;
+                WriteAppLog(
+                    L"文件占用批量结束进程失败: pid=" + std::to_wstring(pid) +
+                    L", name=" + info.name + L", error=" + error);
+            }
+        }
+
+        SetFileProcessRows();
+        std::wstring status = L"已结束 " + std::to_wstring(successCount) + L" 个进程";
+        if (failureCount > 0) {
+            status += L"，失败 " + std::to_wstring(failureCount) + L" 个";
+        }
+        if (!skippedProtected.empty()) {
+            status += L"，已忽略 " + std::to_wstring(skippedProtected.size()) + L" 个系统关键进程";
+        }
+        status += L"。";
+        SetStatus(fileStatus_, status, failureCount > 0 ? ThemedStatusRole::Warning : ThemedStatusRole::Success);
     }
 
     std::wstring LocatorHotKeyText() const {
@@ -3735,6 +3874,7 @@ private:
             ThemedUi::ClearTable(fileTable_);
             fileRows_.clear();
             fileTerminatedPids_.clear();
+            UpdateFileKillAllButton();
             SetStatus(fileStatus_, L"请输入文件或目录路径。", ThemedStatusRole::Warning);
             return;
         }
@@ -3791,6 +3931,7 @@ private:
         ThemedUi::ClearTable(fileTable_);
         fileRows_.clear();
         fileTerminatedPids_.clear();
+        UpdateFileKillAllButton();
         SetStatus(fileStatus_, L"正在后台检查目录占用…", ThemedStatusRole::Info);
         fileLockScanState_ = std::make_shared<FileLockScanState>();
         fileLockProgressDialog_ = std::make_unique<FileLockProgressDialog>(
@@ -3913,6 +4054,7 @@ private:
     HWND portStatus_ = nullptr;
     HWND filePathInput_ = nullptr;
     HWND fileTable_ = nullptr;
+    HWND fileKillAll_ = nullptr;
     HWND fileStatus_ = nullptr;
     std::vector<ProcessDisplayRow> fileRows_;
     std::set<DWORD> fileTerminatedPids_;

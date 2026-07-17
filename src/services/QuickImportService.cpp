@@ -2,8 +2,6 @@
 
 #include "Utilities.h"
 
-#include <algorithm>
-#include <set>
 #include <shobjidl.h>
 #include <stack>
 #include <system_error>
@@ -13,13 +11,6 @@ namespace {
 
 std::wstring LowerExtension(const std::filesystem::path& path) {
     return ToLower(path.extension().wstring());
-}
-
-std::wstring LinkKey(const Link& link) {
-    if (Trim(link.path).empty()) {
-        return {};
-    }
-    return ToLower(Trim(link.path)) + L"\n" + ToLower(Trim(link.parameter)) + L"\n" + ToLower(Trim(link.workDir));
 }
 
 std::wstring DisplayNameFromPath(const std::filesystem::path& path) {
@@ -42,7 +33,7 @@ std::wstring ReadInternetShortcutUrl(const std::filesystem::path& path) {
 
 }
 
-std::vector<QuickImportService::Item> QuickImportService::Scan(const std::filesystem::path& directory, const std::vector<Link>& existingLinks, std::wstring& error) const {
+std::vector<QuickImportService::Item> QuickImportService::Scan(const std::filesystem::path& directory, std::wstring& error) const {
     error.clear();
     std::vector<Item> items;
     if (directory.empty()) {
@@ -59,7 +50,6 @@ std::vector<QuickImportService::Item> QuickImportService::Scan(const std::filesy
     }
 
     ScanRoot(directory, items);
-    MarkDuplicates(items, existingLinks);
     return items;
 }
 
@@ -197,26 +187,4 @@ bool QuickImportService::TryCreateExecutableItem(const std::filesystem::path& pa
     item.sourceName = L"程序";
     item.status = L"可导入";
     return true;
-}
-
-void QuickImportService::MarkDuplicates(std::vector<Item>& items, const std::vector<Link>& existingLinks) const {
-    std::set<std::wstring> existing;
-    for (const auto& link : existingLinks) {
-        const std::wstring key = LinkKey(link);
-        if (!Trim(key).empty()) {
-            existing.insert(key);
-        }
-    }
-
-    std::set<std::wstring> scanned;
-    for (auto& item : items) {
-        const std::wstring key = LinkKey(item.link);
-        if (key.empty() || existing.find(key) != existing.end() || scanned.find(key) != scanned.end()) {
-            item.duplicate = true;
-            item.selected = false;
-            item.status = L"已存在";
-        } else {
-            scanned.insert(key);
-        }
-    }
 }

@@ -33,12 +33,6 @@ constexpr int IdDirectory = 1010;
 constexpr int IdSourceDesktop = 1011;
 constexpr int IdSourceStartMenu = 1012;
 constexpr int IdViewListTab = 1013;
-constexpr int IdViewIconTab = 1014;
-
-enum class ImportViewMode {
-    List,
-    Icon,
-};
 
 std::wstring GetText(HWND hwnd) {
     const int length = GetWindowTextLengthW(hwnd);
@@ -158,8 +152,8 @@ std::filesystem::path KnownFolderPathOrEmpty(REFKNOWNFOLDERID folderId) {
 
 class DialogWindow {
 public:
-    DialogWindow(HWND owner, HINSTANCE instance, const Theme& theme, const std::vector<Link>& existingLinks, std::vector<Link>& selectedLinks)
-        : owner_(owner), instance_(instance), theme_(theme), existingLinks_(existingLinks), selectedLinks_(selectedLinks) {}
+    DialogWindow(HWND owner, HINSTANCE instance, const Theme& theme, const std::vector<Link>&, std::vector<Link>& selectedLinks)
+        : owner_(owner), instance_(instance), theme_(theme), selectedLinks_(selectedLinks) {}
 
     ~DialogWindow() {
         DestroyImageLists();
@@ -248,9 +242,6 @@ private:
                 }
                 return 0;
             case IdViewMode:
-                if (HIWORD(wParam) == CBN_SELCHANGE) {
-                    SwitchView(ThemedUi::ActiveTab(viewTabs_) == 0 ? ImportViewMode::List : ImportViewMode::Icon);
-                }
                 return 0;
             case IdDirectory:
                 if (HIWORD(wParam) == EN_CHANGE && status_) {
@@ -337,7 +328,7 @@ private:
 
         const int statusRowY = topY + fieldHeight + layout_.rowGap;
         const int statusRowHeight = std::max({ui.compactButtonHeight(), tabHeight, labelHeight});
-        const int viewWidth = ui.scale(132);
+        const int viewWidth = ui.scale(64);
         ThemedTabControlOptions viewOptions{};
         viewOptions.activeIndex = 0;
         viewOptions.equalWidth = true;
@@ -349,7 +340,6 @@ private:
             RECT{contentLeft, statusRowY, contentLeft + viewWidth, statusRowY + statusRowHeight},
             {
                 ThemedTabItem{IdViewListTab, L"列表", true},
-                ThemedTabItem{IdViewIconTab, L"图标", true},
             },
             viewOptions);
 
@@ -375,7 +365,7 @@ private:
         tableOptions.reserveScrollBarGutter = true;
         const int nameColumnWidth = ui.scale(170);
         const int typeColumnWidth = ui.tableColumnWidth({L"程序", L"文件夹", L"网址"});
-        const int statusColumnWidth = ui.tableColumnWidth({L"可导入", L"已存在"});
+        const int statusColumnWidth = ui.tableColumnWidth(L"可导入");
         list_ = ui.Table(
             IdList,
             listFrame_,
@@ -435,7 +425,7 @@ private:
 
         const int statusRowY = topY + fieldHeight + layout_.rowGap;
         const int statusRowHeight = std::max({ui.compactButtonHeight(), tabHeight, labelHeight});
-        const int viewWidth = ui.scale(132);
+        const int viewWidth = ui.scale(64);
         ui.MoveControl(viewTabs_, contentLeft, statusRowY, viewWidth);
 
         const int actionWidth = selectAllWidth + layout_.controlGapX + selectNoneWidth;
@@ -493,14 +483,6 @@ private:
         return true;
     }
 
-    void SwitchView(ImportViewMode mode) {
-        if (viewMode_ == mode) {
-            return;
-        }
-        viewMode_ = mode;
-        ApplyViewMode();
-    }
-
     bool HandleListNotify(LPARAM lParam, LRESULT& result) {
         ThemedTableEvent event{};
         if (!ThemedUi::DecodeTableEvent(list_, lParam, event)) return false;
@@ -521,7 +503,7 @@ private:
     void ToggleClickedListItem(POINT point) {
         bool stateIcon = false;
         const int index = ThemedUi::TableHitTest(
-            list_, point, viewMode_ == ImportViewMode::List, &stateIcon);
+            list_, point, true, &stateIcon);
         if (index < 0 || index >= ThemedUi::TableRowCount(list_)) {
             return;
         }
@@ -551,8 +533,7 @@ private:
             return;
         }
 
-        const bool canSelect = !items_[itemIndex].duplicate;
-        ThemedUi::SetTableChecked(list_, index, checked && canSelect);
+        ThemedUi::SetTableChecked(list_, index, checked);
     }
 
     void RefreshSelectedStatus() {
@@ -563,10 +544,10 @@ private:
         if (!list_) {
             return;
         }
-        ThemedUi::SetTableView(list_, viewMode_ == ImportViewMode::List ? ThemedTableView::Details : ThemedTableView::Icons);
+        ThemedUi::SetTableView(list_, ThemedTableView::Details);
         const ThemedUi ui = windowUi_->ui();
         ThemedUi::SetTableIconSpacing(list_, ui.scale(128), ui.scale(112));
-        ThemedUi::SetActiveTab(viewTabs_, viewMode_ == ImportViewMode::List ? 0 : 1, false);
+        ThemedUi::SetActiveTab(viewTabs_, 0, false);
         SetWindowPos(list_, nullptr, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
         InvalidateRect(list_, nullptr, TRUE);
     }
@@ -634,7 +615,7 @@ private:
         UpdateWindow(hwnd_);
 
         std::wstring error;
-        items_ = scanner_.Scan(directory, existingLinks_, error);
+        items_ = scanner_.Scan(directory, error);
         RebuildImageLists();
         PopulateList();
 
@@ -656,7 +637,7 @@ private:
             ThemedTableRow row{};
             row.key = static_cast<std::intptr_t>(i);
             row.checked = item.selected;
-            row.enabled = !item.duplicate;
+            row.enabled = true;
             row.cells = {
                 ThemedTableCell{item.link.name, i < itemImageIndexes_.size() ? itemImageIndexes_[i] : -1},
                 ThemedTableCell{TypeText(item.link.type)},
@@ -678,7 +659,7 @@ private:
     int SelectedCount() const {
         int count = 0;
         for (int i = 0; i < ThemedUi::TableRowCount(list_); ++i) {
-            if (!items_[static_cast<std::size_t>(i)].duplicate && ThemedUi::IsTableChecked(list_, i)) {
+            if (ThemedUi::IsTableChecked(list_, i)) {
                 ++count;
             }
         }
@@ -689,7 +670,7 @@ private:
         selectedLinks_.clear();
         for (int i = 0; i < ThemedUi::TableRowCount(list_); ++i) {
             const auto& item = items_[static_cast<std::size_t>(i)];
-            if (!item.duplicate && ThemedUi::IsTableChecked(list_, i)) {
+            if (ThemedUi::IsTableChecked(list_, i)) {
                 selectedLinks_.push_back(item.link);
             }
         }
@@ -721,14 +702,12 @@ private:
     HWND hwnd_ = nullptr;
     HINSTANCE instance_ = nullptr;
     const Theme& theme_;
-    const std::vector<Link>& existingLinks_;
     std::vector<Link>& selectedLinks_;
     QuickImportService scanner_;
     DialogLayoutMetrics layout_{};
     std::vector<QuickImportService::Item> items_;
     std::vector<int> itemImageIndexes_;
     std::filesystem::path selectedDirectory_;
-    ImportViewMode viewMode_ = ImportViewMode::List;
     HWND sourceTabs_ = nullptr;
     HWND directoryText_ = nullptr;
     HWND pickDirectoryButton_ = nullptr;

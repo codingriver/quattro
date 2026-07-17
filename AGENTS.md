@@ -99,6 +99,7 @@
 - Toggle、RadioButton、Slider 必须分别使用 `ThemedToggleOptions`、`ThemedRadioButtonOptions`、`ThemedSliderOptions` 和 `ThemedUi` 公共接口；Radio 分组只能使用公共 `group` 语义，Slider 范围、步长和值只能通过公共 options 与 `SetSliderValue`/`SliderValue` 管理。禁止界面自行绘制轨道、thumb、圆点或直接使用 Trackbar style/message。
 - Table 必须使用 `ThemedUi::Table`、`ThemedTableColumn`、`ThemedTableRow` 和公共状态接口；禁止窗口直接使用 `WC_LISTVIEW`、`LVS_*`、`LVCOLUMN`、`LVITEM` 或 `ListView_*` 创建和维护表格。Link 文本必须使用 `ThemedUi::LinkText` 与 `ThemedLinkOptions`，禁止页面自行定义链接颜色、下划线、hover 或 hand cursor。Tooltip 必须通过 `ThemedUi::ShowTooltip/HideTooltip` 及 `ThemedTooltipOptions` 托管，禁止页面自行计算 tooltip 字体、padding、圆角、边框、尺寸和显示器避让。
 - `ThemedUi::Table` 公共接口默认必须禁用左右滑动/横向滚动；表格列应优先通过公共布局、列宽策略、内容截断或纵向信息结构适配可用宽度。确需启用左右滑动时，需求方案或实现说明必须明确说明为什么该表格需要横向滚动，并显式调用公共接口打开该能力；禁止窗口层通过底层 style、消息或私有滚动条绕过默认禁用语义。
+- Table 的 `ThemedTableColumnWidth::Remaining` 只能用于某个真实内容列，表示该列吸收固定列之后的剩余宽度；禁止为了填满表格新增空白占位列、空标题列或无业务含义的 filler 列。通常应选择信息最长、最适合截断的内容列作为唯一 Remaining 列，其它短文本列使用固定宽度。
 - TabControl、ToolBar、GroupBox 必须分别通过 `ThemedUi::TabControl`、`ThemedUi::ToolBar`、`ThemedUi::GroupBox` 创建，并使用公共页面绑定、工具项状态和分组子控件接口；禁止应用界面直接使用 `WC_TABCONTROL`、`TCM_*`、`TabCtrl_*`、`TOOLBARCLASSNAME`、`TB_*`、`BS_GROUPBOX`，也禁止界面用 `DrawTabGroupFrame`/`DrawPanelFrame` 或散落 Button 手工模拟这些公共组件。读取操作系统已有 Toolbar（例如系统托盘检查）属于系统集成例外，但不得用于创建应用界面。
 - 新增或改造标签组时必须先按功能语义选择一种公共 `ThemedTabControlAppearance`，并显式设置横向或纵向方向；禁止仅凭个人视觉偏好选择样式，也禁止在窗口层混合、覆写或手绘第五种之外的页面私有标签样式。同一种功能语义在不同界面应保持相同样式；确因空间结构需要改变方向时可以保留样式，仅切换公共 orientation。
 - `Standard` 用于表单内部、局部设置或紧凑工具区域中的互斥选项组，强调每一项均可点击，但不承担窗口主导航；例如重复规则、对齐方式、局部模式选择。不得用 `Standard` 模拟主要页面导航或内容容器标题栏。

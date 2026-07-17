@@ -2989,15 +2989,19 @@ void ValidateQuickImportService(
 
     QuickImportService service;
     std::wstring error;
-    const auto relativeItems = service.Scan(L"relative", {}, error);
+    const auto relativeItems = service.Scan(L"relative", error);
     state.Check(relativeItems.empty() && error == L"扫描目录必须是绝对路径。", L"quick-import-service: relative path validation failed");
 
-    const auto missingItems = service.Scan(root / L"missing", {}, error);
+    const auto missingItems = service.Scan(root / L"missing", error);
     state.Check(missingItems.empty() && error == L"扫描目录不存在或无法访问。", L"quick-import-service: missing path validation failed");
 
-    const auto items = service.Scan(root, {}, error);
+    const auto items = service.Scan(root, error);
     state.Check(error.empty(), L"quick-import-service: valid directory returned an error");
     state.Check(items.size() == 2, L"quick-import-service: explicit directory scan returned unexpected items");
+    state.Check(std::all_of(items.begin(), items.end(), [](const QuickImportService::Item& item) {
+            return item.selected && item.status == L"可导入";
+        }),
+        L"quick-import-service: scanned items should stay importable without automatic duplicate filtering");
 
     std::filesystem::remove_all(root, ec);
 }
@@ -3019,7 +3023,7 @@ void RunQuickImportScenarios(
             L"QuattroQuickImportDialog",
             L"快速导入",
             L"quick-import-dialog-" + dpiSuffix + L".png",
-            {L"快速导入", L"桌面", L"开始菜单", L"选择目录", L"扫描", L"列表", L"图标", L"全选", L"清空", L"导入选中", L"取消"},
+            {L"快速导入", L"桌面", L"开始菜单", L"选择目录", L"扫描", L"列表", L"全选", L"清空", L"导入选中", L"取消"},
             {},
             1,
             7,
@@ -3039,32 +3043,6 @@ void RunQuickImportScenarios(
             state,
             [&]() {
                 QuickImportDialog::Show(owner, instance, theme, model.links, selected);
-            });
-
-        std::vector<Link> iconSelected;
-        Scenario iconScenario{
-            L"quick-import-dialog-icon-" + dpiSuffix,
-            L"QuattroQuickImportDialog",
-            L"快速导入",
-            L"quick-import-dialog-icon-" + dpiSuffix + L".png",
-            {L"快速导入", L"桌面", L"开始菜单", L"选择目录", L"扫描", L"列表", L"图标", L"导入选中", L"取消", L"扫描到"},
-            {},
-            1,
-            7,
-            false,
-            true,
-            true};
-        iconScenario.expectedEditTexts = {AcceptanceKnownFolderPath(FOLDERID_Desktop)};
-        iconScenario.forcedDpi = dpi;
-        iconScenario.requireThemedEditFrames = true;
-        iconScenario.actionButtonTexts = {L"扫描", L"图标"};
-        iconScenario.validateQuickImportIconLayout = true;
-        RunDialogScenario(
-            iconScenario,
-            outputDir,
-            state,
-            [&]() {
-                QuickImportDialog::Show(owner, instance, theme, model.links, iconSelected);
             });
     }
 }
