@@ -673,7 +673,7 @@ bool SelectOpenPath(
     std::wstring& selectedPath) {
     CommonFileDialogOptions options{};
     options.owner = owner;
-    options.kind = CommonFileDialogKind::OpenFile;
+    options.mode = CommonFileDialogMode::FileOnly;
     options.context = context ? context : L"通用打开文件";
     options.defaultPath = defaultPath;
     options.legacyFilter = filter;
@@ -3532,7 +3532,7 @@ private:
         }
         CommonFileDialogOptions options{};
         options.owner = hwnd_;
-        options.kind = CommonFileDialogKind::PickFolder;
+        options.mode = CommonFileDialogMode::FolderOnly;
         options.context = L"HTTP绑定磁盘路径";
         options.defaultPath = GetText(httpServerRootEdit_);
         CommonFileDialogResult result{};

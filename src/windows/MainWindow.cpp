@@ -691,14 +691,15 @@ LRESULT CALLBACK DockPeekWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPAR
     }
     case WM_ERASEBKGND:
         return 1;
+    case WM_SETCURSOR:
     case WM_MOUSEMOVE:
     case WM_LBUTTONDOWN:
     case WM_LBUTTONUP: {
         HWND owner = reinterpret_cast<HWND>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
         if (owner) {
-            PostMessageW(owner, WM_QUATTRO_DOCK_PEEK_ACTIVATE, 0, 0);
+            SendMessageW(owner, WM_QUATTRO_DOCK_PEEK_ACTIVATE, 0, 0);
         }
-        return 0;
+        return message == WM_SETCURSOR ? TRUE : 0;
     }
     case WM_PAINT: {
         PAINTSTRUCT ps{};
@@ -2358,6 +2359,10 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             DockRestore();
         }
         return 0;
+    case WM_QUATTRO_TEST_DOCK_HIDE:
+        return QuattroTestMode() && DockHide(false) ? TRUE : FALSE;
+    case WM_QUATTRO_TEST_DOCK_HIDDEN:
+        return QuattroTestMode() && dockHidden_ ? TRUE : FALSE;
     case WM_QUATTRO_EXIT_INSTANCE:
         WriteAppLog(L"收到同路径实例退出通知，销毁主窗口。");
         DestroyWindow(hwnd_);
@@ -2425,7 +2430,7 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         // cursor and the window can never restore. Make the main strip an
         // equivalent restore target so either window reliably reveals it.
         if (dockHidden_) {
-            PostMessageW(hwnd_, WM_QUATTRO_DOCK_PEEK_ACTIVATE, 0, 0);
+            SendMessageW(hwnd_, WM_QUATTRO_DOCK_PEEK_ACTIVATE, 0, 0);
             return HTCLIENT;
         }
 
@@ -2519,6 +2524,19 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             WakeUp();
         }
         return 0;
+    case WM_ACTIVATE:
+        if (LOWORD(wParam) != WA_INACTIVE && dockHidden_) {
+            WakeUp();
+        }
+        return DefWindowProcW(hwnd_, message, wParam, lParam);
+    case WM_SYSCOMMAND: {
+        const UINT command = static_cast<UINT>(wParam) & 0xFFF0u;
+        if (dockHidden_ && (command == SC_MINIMIZE || command == SC_RESTORE)) {
+            WakeUp();
+            return 0;
+        }
+        return DefWindowProcW(hwnd_, message, wParam, lParam);
+    }
     case WM_TIMER:
         if (embeddedUi_) {
             LRESULT handled = 0;
@@ -2527,7 +2545,12 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             }
         }
         if (wParam == ID_TIMER_DOCK) {
-            UpdateDockState();
+            // Background acceptance must not inspect the user's real cursor.
+            // Dock transitions are driven through the isolated semantic test
+            // messages above instead.
+            if (!BackgroundAcceptanceMode()) {
+                UpdateDockState();
+            }
             return 0;
         }
         if (wParam == ID_TIMER_HOVER_ACTIVATE) {
@@ -3904,7 +3927,7 @@ void MainWindow::AddFile() {
 
     CommonFileDialogOptions options{};
     options.owner = hwnd_;
-    options.kind = CommonFileDialogKind::OpenFile;
+    options.mode = CommonFileDialogMode::FileOnly;
     options.context = L"主窗口添加文件";
     options.defaultPath = appDirectory_.wstring();
     options.legacyFilter = L"所有文件\0*.*\0";
@@ -3924,7 +3947,7 @@ void MainWindow::AddFolder() {
 
     CommonFileDialogOptions options{};
     options.owner = hwnd_;
-    options.kind = CommonFileDialogKind::PickFolder;
+    options.mode = CommonFileDialogMode::FolderOnly;
     options.context = L"主窗口添加文件夹";
     options.defaultPath = appDirectory_.wstring();
     CommonFileDialogResult result{};
@@ -4610,12 +4633,14 @@ void MainWindow::ShowWindowsContextMenu(int linkId, POINT screenPoint) {
     ShellContextMenuTrackingOptions nativeTracking = tracking;
     nativeTracking.terminal = false;
     ShellContextMenuSnapshot snapshot;
+    BeginPopupMenuSession();
     ShellItemService::ShowNativeContextMenu(
         hwnd_,
         *link,
         screenPoint,
         nativeTracking,
         &snapshot);
+    EndPopupMenuSession();
     shellContextMenuCache_.Update(*link, snapshot, nativeTracking);
     if (tracking.terminal) {
         ShellContextMenuTrackingOptions terminalOnly;
@@ -5687,13 +5712,43 @@ bool MainWindow::TryRepairLinkTarget(Link& link) {
     return true;
 }
 
+UINT MainWindow::TrackMainPopupMenu(
+    HMENU menu,
+    POINT screenPoint,
+    bool returnCommand,
+    ThemedPopupMenuSource source) {
+    ThemedPopupMenuOptions options{};
+    options.source = source;
+    options.returnCommand = returnCommand;
+    BeginPopupMenuSession();
+    const ThemedPopupMenuResult result = ThemedUi::ShowPopupMenu(hwnd_, menu, screenPoint, options);
+    EndPopupMenuSession();
+    if (!result.foregroundReady && !result.foregroundSuppressed) {
+        WriteAppLog(L"弹出菜单前台准备失败，菜单可能受 Windows 前台仲裁限制。");
+    }
+    return result.command;
+}
+
+void MainWindow::BeginPopupMenuSession() {
+    ++popupMenuDepth_;
+}
+
+void MainWindow::EndPopupMenuSession() {
+    if (popupMenuDepth_ > 0) {
+        --popupMenuDepth_;
+    }
+    if (popupMenuDepth_ == 0 && popupWakePending_) {
+        popupWakePending_ = false;
+        WakeUp();
+    }
+}
+
 void MainWindow::ShowThemeMenu(POINT screenPoint) {
     DockAutoHidePause dockPause(*this);
     ResetMenuVisuals(screenPoint);
     HMENU menu = CreatePopupMenu();
     AppendThemeItemsToMenu(menu);
-    ActivateWindow(hwnd_);
-    TrackPopupMenu(menu, TPM_RIGHTBUTTON, screenPoint.x, screenPoint.y, 0, hwnd_, nullptr);
+    TrackMainPopupMenu(menu, screenPoint);
     DestroyMenu(menu);
 }
 
@@ -5866,7 +5921,7 @@ void MainWindow::HideDockPeek() {
     }
 }
 
-bool MainWindow::DockHide() {
+bool MainWindow::DockHide(bool persistWindowState) {
     HideItemTooltip();
     if (dockHidden_) {
         return true;
@@ -5893,7 +5948,9 @@ bool MainWindow::DockHide() {
     const int height = hidden.bottom - hidden.top;
     config_.posX = dockRestoreRect_.left;
     config_.posY = dockRestoreRect_.top;
-    configService_.SaveWindowState(config_);
+    if (persistWindowState) {
+        configService_.SaveWindowState(config_);
+    }
 
     dockHidden_ = true;
     if (!SetWindowPos(hwnd_,
@@ -6120,7 +6177,7 @@ void MainWindow::ImportConfigPackageMerge() {
 
     CommonFileDialogOptions dialogOptions{};
     dialogOptions.owner = hwnd_;
-    dialogOptions.kind = CommonFileDialogKind::OpenFile;
+    dialogOptions.mode = CommonFileDialogMode::FileOnly;
     dialogOptions.context = L"配置包合并导入";
     dialogOptions.defaultPath = appDirectory_.wstring();
     dialogOptions.legacyFilter = L"Quattro快速启动器 配置包 (*.q4cfg)\0*.q4cfg\0所有文件\0*.*\0";
@@ -6631,9 +6688,7 @@ void MainWindow::ShowTrayMenu(POINT screenPoint) {
     AppendThemedMenuItem(menu, MF_STRING | (updateDownloadActive_ ? MF_GRAYED : 0), ID_MENU_CHECK_UPDATE, L"检查更新");
     AppendThemedSeparator(menu);
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_EXIT, L"退出");
-    ActivateWindow(hwnd_);
-    const UINT command = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, screenPoint.x, screenPoint.y, 0, hwnd_, nullptr);
-    PostMessageW(hwnd_, WM_NULL, 0, 0);
+    const UINT command = TrackMainPopupMenu(menu, screenPoint, true, ThemedPopupMenuSource::TrayIcon);
     DestroyMenu(menu);
     if (command != 0) {
         SendMessageW(hwnd_, WM_COMMAND, MAKEWPARAM(command, 0), 0);
@@ -6673,8 +6728,7 @@ void MainWindow::ShowMainMenu(POINT screenPoint) {
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_ABOUT, L"关于");
     AppendThemedMenuItem(menu, MF_STRING | (updateDownloadActive_ ? MF_GRAYED : 0), ID_MENU_CHECK_UPDATE, L"检查更新");
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_EXIT, L"关闭退出");
-    ActivateWindow(hwnd_);
-    TrackPopupMenu(menu, TPM_RIGHTBUTTON, screenPoint.x, screenPoint.y, 0, hwnd_, nullptr);
+    TrackMainPopupMenu(menu, screenPoint);
     DestroyMenu(menu);
 }
 
@@ -6683,8 +6737,7 @@ void MainWindow::ShowToolMenu(POINT screenPoint) {
     ResetMenuVisuals(screenPoint);
     HMENU menu = CreatePopupMenu();
     AppendToolItems(menu);
-    ActivateWindow(hwnd_);
-    TrackPopupMenu(menu, TPM_RIGHTBUTTON, screenPoint.x, screenPoint.y, 0, hwnd_, nullptr);
+    TrackMainPopupMenu(menu, screenPoint);
     DestroyMenu(menu);
 }
 
@@ -6699,9 +6752,7 @@ void MainWindow::ShowLinkMenu(int linkId, POINT screenPoint) {
     selectedLinkId_ = linkId;
     menuContextKind_ = HitKind::Link;
     menuContextId_ = linkId;
-    ActivateWindow(hwnd_);
-    const UINT command = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, screenPoint.x, screenPoint.y, 0, hwnd_, nullptr);
-    PostMessageW(hwnd_, WM_NULL, 0, 0);
+    const UINT command = TrackMainPopupMenu(menu, screenPoint, true);
     DestroyMenu(menu);
     if (command != 0) {
         SendMessageW(hwnd_, WM_COMMAND, MAKEWPARAM(command, 0), 0);
@@ -6909,8 +6960,7 @@ void MainWindow::ShowTodoMenu(int todoId, POINT screenPoint) {
     selectedTodoId_ = todoId;
     menuContextKind_ = HitKind::Todo;
     menuContextId_ = todoId;
-    ActivateWindow(hwnd_);
-    TrackPopupMenu(menu, TPM_RIGHTBUTTON, screenPoint.x, screenPoint.y, 0, hwnd_, nullptr);
+    TrackMainPopupMenu(menu, screenPoint);
     DestroyMenu(menu);
 }
 
@@ -7126,8 +7176,7 @@ void MainWindow::ShowGroupMenu(int groupId, POINT screenPoint) {
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_MOVE_DOWN, L"右移(Shift+→)");
     menuContextKind_ = HitKind::Group;
     menuContextId_ = groupId;
-    ActivateWindow(hwnd_);
-    TrackPopupMenu(menu, TPM_RIGHTBUTTON, screenPoint.x, screenPoint.y, 0, hwnd_, nullptr);
+    TrackMainPopupMenu(menu, screenPoint);
     DestroyMenu(menu);
 }
 
@@ -7138,8 +7187,7 @@ void MainWindow::ShowGroupBlankMenu(POINT screenPoint) {
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_ADD_GROUP, L"新建分组");
     menuContextKind_ = HitKind::None;
     menuContextId_ = 0;
-    ActivateWindow(hwnd_);
-    TrackPopupMenu(menu, TPM_RIGHTBUTTON, screenPoint.x, screenPoint.y, 0, hwnd_, nullptr);
+    TrackMainPopupMenu(menu, screenPoint);
     DestroyMenu(menu);
 }
 
@@ -7176,8 +7224,7 @@ void MainWindow::ShowTagMenu(int tagId, POINT screenPoint) {
     }
     menuContextKind_ = HitKind::Tag;
     menuContextId_ = tagId;
-    ActivateWindow(hwnd_);
-    TrackPopupMenu(menu, TPM_RIGHTBUTTON, screenPoint.x, screenPoint.y, 0, hwnd_, nullptr);
+    TrackMainPopupMenu(menu, screenPoint);
     DestroyMenu(menu);
 }
 
@@ -7190,8 +7237,7 @@ void MainWindow::ShowTagBlankMenu(POINT screenPoint) {
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_ADD_TODO_TAG, L"新建待办事项标签页");
     menuContextKind_ = HitKind::Group;
     menuContextId_ = currentGroupId_;
-    ActivateWindow(hwnd_);
-    TrackPopupMenu(menu, TPM_RIGHTBUTTON, screenPoint.x, screenPoint.y, 0, hwnd_, nullptr);
+    TrackMainPopupMenu(menu, screenPoint);
     DestroyMenu(menu);
 }
 
@@ -7216,8 +7262,7 @@ void MainWindow::ShowBackgroundMenu(POINT screenPoint) {
         }
         AppendThemedMenuItem(menu, MF_STRING, ID_MENU_CLEAR_TAG_LINKS, L"清空本页应用");
     }
-    ActivateWindow(hwnd_);
-    TrackPopupMenu(menu, TPM_RIGHTBUTTON, screenPoint.x, screenPoint.y, 0, hwnd_, nullptr);
+    TrackMainPopupMenu(menu, screenPoint);
     DestroyMenu(menu);
 }
 
@@ -7491,6 +7536,10 @@ void MainWindow::SaveWindowState() {
 }
 
 void MainWindow::WakeUp() {
+    if (popupMenuDepth_ > 0) {
+        popupWakePending_ = true;
+        return;
+    }
     if (dockHidden_) {
         DockRestore();
     }

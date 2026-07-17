@@ -1,6 +1,7 @@
 #include "ThemedUi.h"
 #include "ThemedD2D.h"
 #include "ThemedGdiFallback.h"
+#include "Utilities.h"
 
 #include <commctrl.h>
 #include <windowsx.h>
@@ -81,6 +82,52 @@ COLORREF ThemedUi::ListSurfaceColor(const Theme& theme) {
 
 ThemedMenuFontCache::~ThemedMenuFontCache() {
     Reset();
+}
+
+ThemedPopupMenuResult ThemedUi::ShowPopupMenu(
+    HWND notificationWindow,
+    HMENU menu,
+    POINT screenPoint,
+    const ThemedPopupMenuOptions& options) {
+    ThemedPopupMenuResult result{};
+    if (!notificationWindow || !menu) {
+        return result;
+    }
+
+    HWND rootOwner = GetAncestor(notificationWindow, GA_ROOT);
+    if (!rootOwner) {
+        rootOwner = notificationWindow;
+    }
+
+    result.foregroundSuppressed = SuppressForegroundActivation();
+    if (result.foregroundSuppressed) {
+        result.foregroundReady = false;
+    } else {
+        const HWND foreground = GetForegroundWindow();
+        const HWND foregroundRoot = foreground ? GetAncestor(foreground, GA_ROOT) : nullptr;
+        result.foregroundReady = foregroundRoot == rootOwner || ActivateWindow(rootOwner);
+    }
+
+    UINT flags = 0;
+    if (options.rightButton) flags |= TPM_RIGHTBUTTON;
+    if (options.returnCommand) flags |= TPM_RETURNCMD;
+    flags |= options.horizontalAlign == ThemedPopupMenuHorizontalAlign::Right
+        ? TPM_RIGHTALIGN
+        : TPM_LEFTALIGN;
+    flags |= options.verticalAlign == ThemedPopupMenuVerticalAlign::Bottom
+        ? TPM_BOTTOMALIGN
+        : TPM_TOPALIGN;
+
+    result.opened = true;
+    result.command = static_cast<UINT>(::TrackPopupMenuEx(
+        menu,
+        flags,
+        screenPoint.x,
+        screenPoint.y,
+        notificationWindow,
+        nullptr));
+    PostMessageW(rootOwner, WM_NULL, 0, 0);
+    return result;
 }
 
 HFONT ThemedMenuFontCache::FontForScreenPoint(POINT screenPoint, HWND fallbackWindow) {
@@ -661,7 +708,16 @@ void ShowToolBarOverflow(HWND toolbar) {
     }
     RECT button{};
     GetWindowRect(state.overflowButton, &button);
-    const int command = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTALIGN | TPM_TOPALIGN, button.right, button.bottom, 0, toolbar, nullptr);
+    ThemedPopupMenuOptions options{};
+    options.source = ThemedPopupMenuSource::ToolBar;
+    options.horizontalAlign = ThemedPopupMenuHorizontalAlign::Right;
+    options.returnCommand = true;
+    const HWND notificationWindow = state.owner ? state.owner : toolbar;
+    const int command = static_cast<int>(ThemedUi::ShowPopupMenu(
+        notificationWindow,
+        menu,
+        POINT{button.right, button.bottom},
+        options).command);
     DestroyMenu(menu);
     if (command != 0) {
         auto item = state.items.find(command);
@@ -958,6 +1014,18 @@ int ThemedUi::buttonWidth(
         return std::max({measured, minTextWidth + paddingX * 2, minWidth});
     }
     return std::max(measured, minWidth);
+}
+
+int ThemedUi::splitButtonWidth(
+    const std::wstring& text,
+    ThemedButtonRole role,
+    ThemedButtonSize size,
+    ThemedButtonWidthMode widthMode,
+    int fixedWidth) const {
+    if (widthMode == ThemedButtonWidthMode::Fixed && fixedWidth > 0) {
+        return fixedWidth;
+    }
+    return buttonWidth(text, role, size, ThemedButtonWidthMode::Text) + buttonHeight(role, size);
 }
 
 int ThemedUi::textWidth(const std::wstring& text) const {
@@ -1791,6 +1859,55 @@ HWND ThemedUi::Button(
     default:
         return NormalButton(id, text, x, y, width, height, defaultButton);
     }
+}
+
+ThemedSplitButton ThemedUi::SplitButton(
+    int primaryId,
+    int menuId,
+    const std::wstring& text,
+    int x,
+    int y,
+    ThemedButtonRole role,
+    ThemedButtonSize size,
+    ThemedButtonWidthMode widthMode,
+    int fixedWidth,
+    bool defaultButton) const {
+    const int height = buttonHeight(role, size);
+    const int totalWidth = splitButtonWidth(text, role, size, widthMode, fixedWidth);
+    const int menuWidth = height;
+    const int primaryWidth = std::max(height, totalWidth - menuWidth);
+    ThemedSplitButton split{};
+    split.primary = Button(primaryId, text, x, y, role, size, ThemedButtonWidthMode::Fixed, primaryWidth, defaultButton);
+    split.menu = Button(menuId, L"▼", x + primaryWidth, y, role, size, ThemedButtonWidthMode::Fixed, menuWidth);
+    return split;
+}
+
+UINT ThemedUi::ShowSplitButtonMenu(
+    HWND notificationWindow,
+    HWND menuButton,
+    const std::vector<ThemedSplitButtonMenuItem>& items) {
+    if (!notificationWindow || !menuButton || items.empty()) {
+        return 0;
+    }
+    HMENU menu = CreatePopupMenu();
+    if (!menu) {
+        return 0;
+    }
+    for (const auto& item : items) {
+        UINT flags = MF_STRING;
+        if (!item.enabled) {
+            flags |= MF_GRAYED;
+        }
+        AppendMenuW(menu, flags, static_cast<UINT_PTR>(item.id), item.text.c_str());
+    }
+    RECT button{};
+    GetWindowRect(menuButton, &button);
+    ThemedPopupMenuOptions options{};
+    options.horizontalAlign = ThemedPopupMenuHorizontalAlign::Right;
+    options.returnCommand = true;
+    const UINT command = ShowPopupMenu(notificationWindow, menu, POINT{button.right, button.bottom}, options).command;
+    DestroyMenu(menu);
+    return command;
 }
 
 // 创建主题普通按钮，并绑定当前主题（内部 helper，高度由模板决定）。

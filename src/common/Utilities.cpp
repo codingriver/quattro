@@ -303,11 +303,17 @@ void ApplyWindowBackgroundPolicy(HWND hwnd) {
         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
 }
 
-void ActivateWindow(HWND hwnd) {
+bool ActivateWindow(HWND hwnd) {
     if (!hwnd || SuppressForegroundActivation()) {
-        return;
+        return false;
     }
-    SetForegroundWindow(hwnd);
+    const HWND target = GetAncestor(hwnd, GA_ROOT);
+    if (!SetForegroundWindow(target ? target : hwnd)) {
+        return false;
+    }
+    const HWND foreground = GetForegroundWindow();
+    const HWND foregroundRoot = foreground ? GetAncestor(foreground, GA_ROOT) : nullptr;
+    return foregroundRoot == (target ? target : hwnd);
 }
 
 void ShowWindowRespectFocusPolicy(HWND hwnd, int showCommand) {

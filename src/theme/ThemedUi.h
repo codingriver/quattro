@@ -398,6 +398,17 @@ struct ThemedToolBarOptions {
     bool automaticOverflow = true;
 };
 
+struct ThemedSplitButton {
+    HWND primary = nullptr;
+    HWND menu = nullptr;
+};
+
+struct ThemedSplitButtonMenuItem {
+    int id = 0;
+    std::wstring text;
+    bool enabled = true;
+};
+
 enum class ThemedEditMode {
     SingleLine,
     MultiLine,
@@ -489,6 +500,38 @@ private:
     UINT dpi_ = USER_DEFAULT_SCREEN_DPI;
 };
 
+enum class ThemedPopupMenuSource {
+    ClientArea,
+    TrayIcon,
+    ToolBar,
+    NativeShell,
+};
+
+enum class ThemedPopupMenuHorizontalAlign {
+    Left,
+    Right,
+};
+
+enum class ThemedPopupMenuVerticalAlign {
+    Top,
+    Bottom,
+};
+
+struct ThemedPopupMenuOptions {
+    ThemedPopupMenuSource source = ThemedPopupMenuSource::ClientArea;
+    ThemedPopupMenuHorizontalAlign horizontalAlign = ThemedPopupMenuHorizontalAlign::Left;
+    ThemedPopupMenuVerticalAlign verticalAlign = ThemedPopupMenuVerticalAlign::Top;
+    bool rightButton = true;
+    bool returnCommand = false;
+};
+
+struct ThemedPopupMenuResult {
+    UINT command = 0;
+    bool opened = false;
+    bool foregroundReady = false;
+    bool foregroundSuppressed = false;
+};
+
 // ThemedUi is the preferred facade for dialog/tool-window UI code.
 //
 // It keeps three responsibilities together:
@@ -504,6 +547,11 @@ private:
 class ThemedUi {
 public:
     static COLORREF ListSurfaceColor(const Theme& theme);
+    static ThemedPopupMenuResult ShowPopupMenu(
+        HWND notificationWindow,
+        HMENU menu,
+        POINT screenPoint,
+        const ThemedPopupMenuOptions& options = {});
     ThemedUi(
         HINSTANCE instance,
         HWND parent,
@@ -547,6 +595,12 @@ public:
     int progressBarHeight() const;
     int editHeight(ThemedEditMode mode = ThemedEditMode::SingleLine) const;
     int buttonWidth(
+        const std::wstring& text,
+        ThemedButtonRole role,
+        ThemedButtonSize size,
+        ThemedButtonWidthMode widthMode,
+        int fixedWidth = 0) const;
+    int splitButtonWidth(
         const std::wstring& text,
         ThemedButtonRole role,
         ThemedButtonSize size,
@@ -640,6 +694,21 @@ public:
         int fixedWidth = 0,
         bool defaultButton = false,
         bool selected = false) const;
+    ThemedSplitButton SplitButton(
+        int primaryId,
+        int menuId,
+        const std::wstring& text,
+        int x,
+        int y,
+        ThemedButtonRole role = ThemedButtonRole::Normal,
+        ThemedButtonSize size = ThemedButtonSize::Normal,
+        ThemedButtonWidthMode widthMode = ThemedButtonWidthMode::Fixed,
+        int fixedWidth = 0,
+        bool defaultButton = false) const;
+    static UINT ShowSplitButtonMenu(
+        HWND notificationWindow,
+        HWND menuButton,
+        const std::vector<ThemedSplitButtonMenuItem>& items);
 
     // FooterButton uses DialogLayoutMetrics::FooterButtonX/Y internally, so
     // every dialog gets the same compact footer alignment and spacing.

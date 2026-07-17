@@ -90,6 +90,7 @@ constexpr int ID_FILE_LOCK_PICK_FILE = 7602;
 constexpr int ID_FILE_LOCK_PICK_DIR = 7603;
 constexpr int ID_FILE_LOCK_SCAN = 7604;
 constexpr int ID_FILE_LOCK_KILL_ALL = 7605;
+constexpr int ID_FILE_LOCK_PICK_MENU = 7606;
 constexpr int ID_FILE_LOCK_KILL_BASE = 7610;
 constexpr int ID_PROCESS_TOOLS_TAB = 7700;
 constexpr int ID_PROCESS_TOOLS_TAB_BASE = 7710;
@@ -1655,17 +1656,26 @@ private:
         const int left = layout.contentInsetX;
         const int row0 = layout.contentInsetY;
         const int fieldX = layout.fieldX;
-        const int pickW = 54;
+        const int pickW = ui.splitButtonWidth(
+            L"文件", ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
         const int scanW = layout.footerButtonWidth;
-        const int actionsW = pickW * 2 + scanW + layout.controlGapX * 3;
+        const int actionsW = pickW + scanW + layout.controlGapX * 2;
         const int fieldW = width_ - fieldX - actionsW - left;
 
         ui.Label(L"路径", left, row0 + labelOffsetY, layout.labelWidth);
         pathFrame_ = ui.editFrame(fieldX, row0, fieldW);
         path_ = ui.Edit(ID_FILE_LOCK_PATH, pathFrame_, registry_.GetSetting(L"quattro.builtin.file-lock-inspector", L"path", L""));
-        ui.Button(ID_FILE_LOCK_PICK_FILE, L"文件", fieldX + fieldW + layout.controlGapX, row0 + 1, ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, pickW);
-        ui.Button(ID_FILE_LOCK_PICK_DIR, L"目录", fieldX + fieldW + layout.controlGapX * 2 + pickW, row0 + 1, ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, pickW);
-        ui.Button(ID_FILE_LOCK_SCAN, L"检查(&C)", fieldX + fieldW + layout.controlGapX * 3 + pickW * 2, row0 + 1, ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, scanW, true);
+        pickSplit_ = ui.SplitButton(
+            ID_FILE_LOCK_PICK_FILE,
+            ID_FILE_LOCK_PICK_MENU,
+            L"文件",
+            fieldX + fieldW + layout.controlGapX,
+            row0 + 1,
+            ThemedButtonRole::Normal,
+            ThemedButtonSize::Normal,
+            ThemedButtonWidthMode::Fixed,
+            pickW);
+        ui.Button(ID_FILE_LOCK_SCAN, L"检查(&C)", fieldX + fieldW + layout.controlGapX * 2 + pickW, row0 + 1, ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, scanW, true);
 
         const int frameTop = row0 + layout.RowStep(bh) + layout.rowGap;
         const int statusY = height_ - layout.contentInsetY - labelHeight;
@@ -1686,6 +1696,16 @@ private:
         }
         if (id == ID_FILE_LOCK_PICK_DIR) {
             PickDirectory();
+            return;
+        }
+        if (id == ID_FILE_LOCK_PICK_MENU) {
+            const UINT command = ThemedUi::ShowSplitButtonMenu(
+                hwnd_,
+                pickSplit_.menu,
+                {{ID_FILE_LOCK_PICK_DIR, L"选择目录"}});
+            if (command != 0) {
+                SendMessageW(hwnd_, WM_COMMAND, MAKEWPARAM(command, BN_CLICKED), 0);
+            }
             return;
         }
         if (id == ID_FILE_LOCK_SCAN) {
@@ -1763,7 +1783,7 @@ private:
     void PickFile() {
         CommonFileDialogOptions options{};
         options.owner = hwnd_;
-        options.kind = CommonFileDialogKind::OpenFile;
+        options.mode = CommonFileDialogMode::FileOnly;
         options.context = L"文件占用检查文件";
         options.defaultPath = GetText(path_);
         options.legacyFilter = L"所有文件\0*.*\0";
@@ -1776,7 +1796,7 @@ private:
     void PickDirectory() {
         CommonFileDialogOptions options{};
         options.owner = hwnd_;
-        options.kind = CommonFileDialogKind::PickFolder;
+        options.mode = CommonFileDialogMode::FolderOnly;
         options.context = L"文件占用检查目录";
         options.title = L"选择待检查目录";
         options.defaultPath = GetText(path_);
@@ -1827,6 +1847,7 @@ private:
     HWND hwnd_ = nullptr;
     HWND path_ = nullptr;
     HWND status_ = nullptr;
+    ThemedSplitButton pickSplit_{};
     RECT pathFrame_{};
     RECT resultsFrame_{};
     std::wstring emptyText_;
@@ -3150,6 +3171,24 @@ private:
         return control;
     }
 
+    ThemedSplitButton AddSplitButton(
+        Page page,
+        int primaryId,
+        int menuId,
+        const std::wstring& text,
+        int x,
+        int y,
+        ThemedButtonRole role,
+        ThemedButtonSize size,
+        ThemedButtonWidthMode widthMode,
+        int width,
+        bool defaultButton = false) {
+        ThemedSplitButton split = Ui().SplitButton(primaryId, menuId, text, x, y, role, size, widthMode, width, defaultButton);
+        AddPageControl(page, split.primary);
+        AddPageControl(page, split.menu);
+        return split;
+    }
+
     HWND AddEdit(Page page, int id, RECT frame, const std::wstring& value, ThemedEditOptions options = {}) {
         HWND control = Ui().Edit(id, frame, value, options);
         AddPageControl(page, control);
@@ -3412,13 +3451,11 @@ private:
         const DialogLayoutMetrics& layout = ui.layout();
         const int left = ui.contentLeft();
         const int fieldX = left + layout.labelWidth + layout.labelGap;
-        const int fileWidth = ui.buttonWidth(
+        const int pickWidth = ui.splitButtonWidth(
             L"文件", ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
-        const int directoryWidth = ui.buttonWidth(
-            L"目录", ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
         const int checkWidth = ui.buttonWidth(
             L"检查(&C)", ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
-        const int actionWidth = fileWidth + directoryWidth + checkWidth + layout.controlGapX * 3;
+        const int actionWidth = pickWidth + checkWidth + layout.controlGapX * 2;
         const int fieldWidth = ui.clientWidth() - left - fieldX - actionWidth;
         const int rowHeight = std::max(ui.editHeight(), ui.buttonHeight());
         const int labelOffsetY = std::max(0, (rowHeight - ui.labelHeight()) / 2);
@@ -3435,14 +3472,18 @@ private:
                 L"path",
                 registry_.GetSetting(L"quattro.builtin.file-lock-inspector", L"path", L"")));
         int buttonX = fieldX + fieldWidth + layout.controlGapX;
-        AddButton(
-            page, ID_FILE_LOCK_PICK_FILE, L"文件", buttonX, pageTop + buttonOffsetY,
-            ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, fileWidth);
-        buttonX += fileWidth + layout.controlGapX;
-        AddButton(
-            page, ID_FILE_LOCK_PICK_DIR, L"目录", buttonX, pageTop + buttonOffsetY,
-            ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, directoryWidth);
-        buttonX += directoryWidth + layout.controlGapX;
+        filePickSplit_ = AddSplitButton(
+            page,
+            ID_FILE_LOCK_PICK_FILE,
+            ID_FILE_LOCK_PICK_MENU,
+            L"文件",
+            buttonX,
+            pageTop + buttonOffsetY,
+            ThemedButtonRole::Normal,
+            ThemedButtonSize::Normal,
+            ThemedButtonWidthMode::Fixed,
+            pickWidth);
+        buttonX += pickWidth + layout.controlGapX;
         AddButton(
             page, ID_FILE_LOCK_SCAN, L"检查(&C)", buttonX, pageTop + buttonOffsetY,
             ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, checkWidth, true);
@@ -3510,6 +3551,16 @@ private:
         case ID_FILE_LOCK_PICK_DIR:
             PickDirectory();
             break;
+        case ID_FILE_LOCK_PICK_MENU: {
+            const UINT command = ThemedUi::ShowSplitButtonMenu(
+                hwnd_,
+                filePickSplit_.menu,
+                {{ID_FILE_LOCK_PICK_DIR, L"选择目录"}});
+            if (command != 0) {
+                SendMessageW(hwnd_, WM_COMMAND, MAKEWPARAM(command, BN_CLICKED), 0);
+            }
+            break;
+        }
         case ID_FILE_LOCK_SCAN:
             QueryFileLock();
             break;
@@ -3845,7 +3896,7 @@ private:
     void PickFile() {
         CommonFileDialogOptions options{};
         options.owner = hwnd_;
-        options.kind = CommonFileDialogKind::OpenFile;
+        options.mode = CommonFileDialogMode::FileOnly;
         options.context = L"进程工具文件占用文件";
         options.defaultPath = GetText(filePathInput_);
         options.legacyFilter = L"所有文件\0*.*\0";
@@ -3858,7 +3909,7 @@ private:
     void PickDirectory() {
         CommonFileDialogOptions options{};
         options.owner = hwnd_;
-        options.kind = CommonFileDialogKind::PickFolder;
+        options.mode = CommonFileDialogMode::FolderOnly;
         options.context = L"进程工具文件占用目录";
         options.title = L"选择待检查目录";
         options.defaultPath = GetText(filePathInput_);
@@ -4078,6 +4129,7 @@ private:
     HWND portTable_ = nullptr;
     HWND portStatus_ = nullptr;
     HWND filePathInput_ = nullptr;
+    ThemedSplitButton filePickSplit_{};
     HWND fileTable_ = nullptr;
     HWND fileKillAll_ = nullptr;
     HWND fileStatus_ = nullptr;

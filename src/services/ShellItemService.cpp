@@ -1,5 +1,6 @@
 #include "ShellItemService.h"
 
+#include "ThemedUi.h"
 #include "Utilities.h"
 
 #include <shlobj.h>
@@ -1393,15 +1394,14 @@ bool ShellItemService::ShowNativeContextMenu(
         NativeContextMenuSubclassProc,
         kContextMenuSubclassId,
         reinterpret_cast<DWORD_PTR>(&session));
-    ActivateWindow(owner);
-    const UINT command = TrackPopupMenu(
-        session.menu,
-        TPM_RETURNCMD | TPM_RIGHTBUTTON,
-        screenPoint.x,
-        screenPoint.y,
-        0,
+    ThemedPopupMenuOptions menuOptions{};
+    menuOptions.source = ThemedPopupMenuSource::NativeShell;
+    menuOptions.returnCommand = true;
+    const UINT command = ThemedUi::ShowPopupMenu(
         owner,
-        nullptr);
+        session.menu,
+        screenPoint,
+        menuOptions).command;
     RemoveWindowSubclass(owner, NativeContextMenuSubclassProc, kContextMenuSubclassId);
 
     if (snapshot) {

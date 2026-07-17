@@ -155,7 +155,10 @@ bool SeedAcceptanceData(const std::filesystem::path& appDirectory) {
     WriteConfigValue(configPath, L"bShowGroup", L"0");
     WriteConfigValue(configPath, L"bShowTag", L"0");
     WriteConfigValue(configPath, L"bHideOnStart", L"0");
-    WriteConfigValue(configPath, L"bTopMost", L"0");
+    // Exercise the official-build default semantics while the dedicated
+    // background acceptance entry point still keeps the test window at the
+    // bottom of the user's desktop.
+    WriteConfigValue(configPath, L"bTopMost", L"1");
     WriteConfigValue(configPath, L"bLoggingEnabled", L"0");
     WriteConfigValue(configPath, L"nWidth", L"620");
     WriteConfigValue(configPath, L"nHeight", L"420");

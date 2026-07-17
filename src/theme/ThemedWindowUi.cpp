@@ -662,7 +662,7 @@ bool ThemedWindowUi::EnsureTooltipWindow() {
     if (!RegisterClassExW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return false;
     const DWORD layeredStyle = ThemedD2D::IsAvailable() ? WS_EX_LAYERED : 0u;
     tooltip_ = CreateWindowExW(
-        (BackgroundAcceptanceMode() ? 0u : WS_EX_TOPMOST) | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | layeredStyle,
+        WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | layeredStyle,
         kClassName, L"", WS_POPUP, 0, 0, 0, 0, hwnd_, nullptr, instance_, this);
     return tooltip_ != nullptr;
 }
@@ -834,8 +834,8 @@ bool ThemedWindowUi::EnsureToastWindow() {
     if (!RegisterClassExW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return false;
     const DWORD layeredStyle = ThemedD2D::IsAvailable() ? WS_EX_LAYERED : 0u;
     toast_ = CreateWindowExW(
-        (BackgroundAcceptanceMode() ? 0u : WS_EX_TOPMOST) | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | layeredStyle,
-        kClassName, L"", WS_POPUP, 0, 0, 0, 0, nullptr, nullptr, instance_, this);
+        WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | layeredStyle,
+        kClassName, L"", WS_POPUP, 0, 0, 0, 0, hwnd_, nullptr, instance_, this);
     return toast_ != nullptr;
 }
 

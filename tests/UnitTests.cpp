@@ -1239,6 +1239,15 @@ int wmain() {
     toastOptions.durationMs = 1500;
     Check(toastOptions.role == ThemedToastRole::Success && toastOptions.anchor == ThemedToastAnchor::ScreenBottomRight && toastOptions.durationMs == 1500,
         "Themed toast options compose");
+    ThemedPopupMenuOptions popupOptions{};
+    popupOptions.source = ThemedPopupMenuSource::ToolBar;
+    popupOptions.horizontalAlign = ThemedPopupMenuHorizontalAlign::Right;
+    popupOptions.returnCommand = true;
+    Check(
+        popupOptions.source == ThemedPopupMenuSource::ToolBar &&
+            popupOptions.horizontalAlign == ThemedPopupMenuHorizontalAlign::Right &&
+            popupOptions.returnCommand,
+        "Themed popup menu options compose");
     const ImportToastSummary importSuccess{3, 0};
     Check(
         ImportToastRole(importSuccess) == ThemedToastRole::Success &&

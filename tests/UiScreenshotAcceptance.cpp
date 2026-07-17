@@ -1168,6 +1168,9 @@ void RunTooltipVisualScenario(
         state.Check(
             IsWindowVisible(tooltip) != FALSE,
             scenarioName + L": themed tooltip did not remain visible");
+        state.Check(
+            GetWindow(tooltip, GW_OWNER) == owner,
+            scenarioName + L": themed tooltip is not owned by its host window");
         const LONG_PTR tooltipStyle = GetWindowLongPtrW(tooltip, GWL_EXSTYLE);
         state.Check(
             (tooltipStyle & WS_EX_NOACTIVATE) != 0,

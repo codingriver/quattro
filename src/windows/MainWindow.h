@@ -33,6 +33,7 @@
 class ThemedWindowUi;
 class ThemedMenuFontCache;
 enum class ThemedToastRole;
+enum class ThemedPopupMenuSource;
 
 constexpr UINT WM_QUATTRO_WAKEUP = WM_APP + 0x65;
 constexpr UINT WM_QUATTRO_TRAY = WM_APP + 0x66;
@@ -41,6 +42,8 @@ constexpr UINT WM_QUATTRO_DOCK_PEEK_ACTIVATE = WM_APP + 0x68;
 constexpr UINT WM_QUATTRO_EXIT_INSTANCE = WM_APP + 0x69;
 constexpr UINT WM_QUATTRO_STARTUP_ACTIVATE = WM_APP + 0x6A;
 constexpr UINT WM_QUATTRO_STARTUP_DEFERRED = WM_APP + 0x6B;
+constexpr UINT WM_QUATTRO_TEST_DOCK_HIDE = WM_APP + 0x6D;
+constexpr UINT WM_QUATTRO_TEST_DOCK_HIDDEN = WM_APP + 0x6E;
 
 class OleDropTarget;
 
@@ -248,7 +251,7 @@ private:
     void EndDockAutoHidePause();
     bool DockAutoHidePaused() const;
     void UpdateDockState();
-    bool DockHide();
+    bool DockHide(bool persistWindowState = true);
     void DockRestore();
     void ShowDockPeek(const RECT& peekRect);
     void HideDockPeek();
@@ -352,6 +355,13 @@ private:
     float MeasureTextWidth(const std::wstring& text, IDWriteTextFormat* format, float maxWidth = 1000.0f) const;
     void DrawTextBlock(const std::wstring& text, IDWriteTextFormat* format, const D2D1_RECT_F& rect, const Color& color);
     void DrawLinkName(const std::wstring& text, IDWriteTextFormat* format, const D2D1_RECT_F& rect, const Color& color);
+    UINT TrackMainPopupMenu(
+        HMENU menu,
+        POINT screenPoint,
+        bool returnCommand = false,
+        ThemedPopupMenuSource source = static_cast<ThemedPopupMenuSource>(0));
+    void BeginPopupMenuSession();
+    void EndPopupMenuSession();
     void ResetMenuVisuals(POINT screenPoint);
     void AppendThemedMenuItem(HMENU menu, UINT flags, UINT_PTR id, const std::wstring& text, bool submenu = false, int systemImageIndex = -1, int stockIcon = -1, int menuIcon = 0);
     void InsertThemedMenuItem(HMENU menu, UINT position, UINT flags, UINT_PTR id, const std::wstring& text, bool submenu = false, int systemImageIndex = -1, int stockIcon = -1, int menuIcon = 0);
@@ -508,6 +518,8 @@ private:
     UINT_PTR dockTimerId_ = 0;
     ULONGLONG dockHideDueTick_ = 0;
     int dockAutoHidePauseDepth_ = 0;
+    int popupMenuDepth_ = 0;
+    bool popupWakePending_ = false;
     HitKind pendingHoverActivationKind_ = HitKind::None;
     int pendingHoverActivationId_ = 0;
     UINT_PTR hoverActivationTimerId_ = 0;

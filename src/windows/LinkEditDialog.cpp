@@ -36,7 +36,9 @@ enum ControlId {
     IdName,
     IdPath,
     IdBrowseFile,
-    IdBrowseFolder,
+    IdBrowsePathMenu,
+    IdBrowsePathFolder,
+    IdBrowseIcon,
     IdParameter,
     IdWorkDir,
     IdBrowseWorkDir,
@@ -50,7 +52,7 @@ enum ControlId {
     IdCustomColorEdit,
     IdOk,
     IdCancel,
-    IdPickColor = 1020,
+    IdPickColor = 1030,
 };
 
 struct TagChoice {
@@ -196,14 +198,25 @@ private:
             switch (LOWORD(wParam)) {
             case IdBrowseFile:
                 if (!LooksLikeUrl(link_)) {
-                    if (link_.type == 1) {
-                        BrowseFolder(pathEdit_);
-                    } else {
-                        BrowseFile();
-                    }
+                    BrowseFile();
                 }
                 return 0;
-            case IdBrowseFolder:
+            case IdBrowsePathMenu: {
+                const UINT command = ThemedUi::ShowSplitButtonMenu(
+                    hwnd_,
+                    pathBrowseSplit_.menu,
+                    {{IdBrowsePathFolder, L"选择文件夹"}});
+                if (command != 0) {
+                    SendMessageW(hwnd_, WM_COMMAND, MAKEWPARAM(command, BN_CLICKED), 0);
+                }
+                return 0;
+            }
+            case IdBrowsePathFolder:
+                if (!LooksLikeUrl(link_)) {
+                    BrowseFolder(pathEdit_);
+                }
+                return 0;
+            case IdBrowseIcon:
                 BrowseIcon();
                 return 0;
             case IdBrowseWorkDir:
@@ -262,21 +275,34 @@ private:
         const int rowStep = layout.RowStep(ui.editHeight());
         const int fieldWidth = ui.clientWidth() - layout.fieldX - layout.contentInsetX;
         const int browseButtonWidth = ui.scale(32);
+        const int pathBrowseButtonWidth = ui.splitButtonWidth(
+            L"文件", ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
         const int browseFieldWidth = fieldWidth - browseButtonWidth - layout.controlGapX;
+        const int pathBrowseFieldWidth = fieldWidth - pathBrowseButtonWidth - layout.controlGapX;
         const int browseButtonX = layout.fieldX + browseFieldWidth + layout.controlGapX;
+        const int pathBrowseButtonX = layout.fieldX + pathBrowseFieldWidth + layout.controlGapX;
         int y = layout.contentInsetY;
         Label(L"名称 *", layout.contentInsetX, y, layout.labelWidth);
         nameEdit_ = Edit(IdName, layout.fieldX, y, fieldWidth, link_.name);
 
         y += rowStep;
         Label(isUrl ? L"网址 *" : L"路径 *", layout.contentInsetX, y, layout.labelWidth);
-        pathEdit_ = Edit(IdPath, layout.fieldX, y, browseFieldWidth, link_.path);
-        Button(IdBrowseFile, L"...", browseButtonX, y + ui.scale(1), browseButtonWidth);
+        pathEdit_ = Edit(IdPath, layout.fieldX, y, pathBrowseFieldWidth, link_.path);
+        pathBrowseSplit_ = ui.SplitButton(
+            IdBrowseFile,
+            IdBrowsePathMenu,
+            L"文件",
+            pathBrowseButtonX,
+            y + ui.scale(1),
+            ThemedButtonRole::Normal,
+            ThemedButtonSize::Normal,
+            ThemedButtonWidthMode::Fixed,
+            pathBrowseButtonWidth);
 
         y += rowStep;
         Label(L"图标", layout.contentInsetX, y, layout.labelWidth);
         iconEdit_ = Edit(IdIcon, layout.fieldX, y, browseFieldWidth, link_.icon.empty() ? (isUrl ? L"#url" : L"默认系统缓存图标") : link_.icon);
-        Button(IdBrowseFolder, L"...", browseButtonX, y + ui.scale(1), browseButtonWidth);
+        Button(IdBrowseIcon, L"...", browseButtonX, y + ui.scale(1), browseButtonWidth);
 
         y += rowStep;
         Label(L"参数", layout.contentInsetX, y, layout.labelWidth);
@@ -392,7 +418,7 @@ private:
     void BrowseFile() {
         CommonFileDialogOptions options{};
         options.owner = hwnd_;
-        options.kind = CommonFileDialogKind::OpenFile;
+        options.mode = CommonFileDialogMode::FileOnly;
         options.context = L"启动项路径";
         options.defaultPath = GetWindowTextString(pathEdit_);
         options.legacyFilter = L"所有文件\0*.*\0";
@@ -409,7 +435,7 @@ private:
     void BrowseIcon() {
         CommonFileDialogOptions options{};
         options.owner = hwnd_;
-        options.kind = CommonFileDialogKind::OpenFile;
+        options.mode = CommonFileDialogMode::FileOnly;
         options.context = L"启动项图标";
         options.defaultPath = GetWindowTextString(iconEdit_);
         options.legacyFilter = L"图标或程序\0*.ico;*.exe;*.dll\0所有文件\0*.*\0";
@@ -437,7 +463,7 @@ private:
     void BrowseFolder(HWND targetEdit) {
         CommonFileDialogOptions options{};
         options.owner = hwnd_;
-        options.kind = CommonFileDialogKind::PickFolder;
+        options.mode = CommonFileDialogMode::FolderOnly;
         options.context = targetEdit == pathEdit_ ? L"启动项文件夹路径" : L"启动项工作目录";
         options.defaultPath = GetWindowTextString(targetEdit);
         options.forceFileSystem = targetEdit != pathEdit_;
@@ -601,6 +627,7 @@ private:
     HWND hotKeyText_ = nullptr;
     HWND remarkEdit_ = nullptr;
     HWND adminCheck_ = nullptr;
+    ThemedSplitButton pathBrowseSplit_{};
     HWND customColorCheck_ = nullptr;
     HWND customColorEdit_ = nullptr;
     int capturedHotKey_ = 0;

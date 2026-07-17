@@ -115,7 +115,7 @@ HICON ExtractDisplayIcon(const Link& link, bool useSmallIcon) {
 bool PickFolder(HWND owner, std::filesystem::path& directory) {
     CommonFileDialogOptions options{};
     options.owner = owner;
-    options.kind = CommonFileDialogKind::PickFolder;
+    options.mode = CommonFileDialogMode::FolderOnly;
     options.context = L"快速导入目录";
     options.title = L"选择快速导入目录";
     options.defaultPath = directory.wstring();

@@ -81,6 +81,7 @@
 /tests/*
 !/tests/ToastAcceptance.cpp
 !/tests/AboutTrayExitAcceptance.cpp
+!/tests/DockActivationAcceptance.cpp
 !/tests/BuiltinSystemContextMenuAcceptance.cpp
 !/tests/HttpServerConfigAcceptance.cpp
 !/tests/HttpServerRuntimeAcceptance.cpp

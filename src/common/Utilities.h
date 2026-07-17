@@ -31,7 +31,7 @@ bool SuppressForegroundActivation();
 bool QuattroTestMode();
 bool BackgroundAcceptanceMode();
 void ApplyWindowBackgroundPolicy(HWND hwnd);
-void ActivateWindow(HWND hwnd);
+bool ActivateWindow(HWND hwnd);
 void ShowWindowRespectFocusPolicy(HWND hwnd, int showCommand);
 POINT ClampWindowToOwnerMonitor(HWND owner, int x, int y, int width, int height);
 POINT CenterWindowOnOwnerMonitor(HWND owner, int width, int height);

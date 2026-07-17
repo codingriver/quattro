@@ -81,10 +81,10 @@ HWND FindToastWindow(HWND host) {
     return data.match;
 }
 
-bool RequireToastWindowPolicy(HWND toast) {
+bool RequireToastWindowPolicy(HWND host, HWND toast) {
     const LONG_PTR exStyle = GetWindowLongPtrW(toast, GWL_EXSTYLE);
     bool ok = true;
-    ok &= Require(GetWindow(toast, GW_OWNER) == nullptr, L"toast should not be owned by the host window");
+    ok &= Require(GetWindow(toast, GW_OWNER) == host, L"toast should be owned by the host window");
     ok &= Require((exStyle & WS_EX_NOACTIVATE) != 0, L"toast should not activate the desktop");
     ok &= Require((exStyle & WS_EX_TOOLWINDOW) != 0, L"toast should stay out of the taskbar");
     ok &= Require((exStyle & WS_EX_APPWINDOW) == 0, L"toast should not request a taskbar button");
@@ -259,7 +259,7 @@ int wmain(int argc, wchar_t** argv) {
         }
         ok &= Require(IsWindowVisible(toast) != FALSE, L"toast window visible");
         ok &= Require(WindowText(toast) == roleCase.text, L"toast text matches");
-        ok &= RequireToastWindowPolicy(toast);
+        ok &= RequireToastWindowPolicy(host, toast);
         const std::filesystem::path shot = outputDir / (std::wstring(L"toast-") + roleCase.name + L".png");
         ok &= Require(CaptureWindowPng(toast, shot), L"toast screenshot saved");
         std::wcout << L"captured " << shot.wstring() << L"\n";
@@ -298,6 +298,7 @@ int wmain(int argc, wchar_t** argv) {
 
     DestroyWindow(host);
     PumpMessages(60);
+    ok &= Require(FindToastWindow(host) == nullptr, L"destroying the host destroys its owned toast");
     g_windowUi.reset();
     Gdiplus::GdiplusShutdown(gdiplusToken);
 
