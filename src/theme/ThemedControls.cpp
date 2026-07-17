@@ -88,6 +88,8 @@ struct ControlState {
     int tableHotRow = -1;
     int tableHotColumn = -1;
     bool tableAllowColumnResize = false;
+    bool tableAllowHorizontalScroll = false;
+    bool tableReserveScrollBarGutter = false;
     bool tableShowRowGridLines = false;
     bool tableShowColumnGridLines = false;
     std::vector<int> tableColumnWidthModes;
@@ -755,6 +757,9 @@ void RelayoutTableRemainingColumns(HWND table, int draggedIndex, int draggedWidt
     if (!GetClientRect(table, &client)) {
         return;
     }
+    const int reservedGutter = state->tableAllowHorizontalScroll || !state->tableReserveScrollBarGutter
+        ? 0
+        : GetSystemMetricsForDpi(SM_CXVSCROLL, state->tableDpi ? state->tableDpi : USER_DEFAULT_SCREEN_DPI);
     int otherColumnsWidth = 0;
     for (int i = 0; i < static_cast<int>(modes.size()); ++i) {
         if (i == adjustIndex) {
@@ -764,8 +769,12 @@ void RelayoutTableRemainingColumns(HWND table, int draggedIndex, int draggedWidt
             ? draggedWidth
             : ListView_GetColumnWidth(table, i);
     }
-    const int width = std::max(24L, client.right - client.left - otherColumnsWidth);
+    const int minimumWidth = state->tableAllowHorizontalScroll ? 24 : 1;
+    const int width = std::max(minimumWidth, static_cast<int>(client.right - client.left - reservedGutter - otherColumnsWidth));
     ListView_SetColumnWidth(table, adjustIndex, width);
+    if (!state->tableAllowHorizontalScroll) {
+        ShowScrollBar(table, SB_HORZ, FALSE);
+    }
 }
 
 void InvalidateTableRow(HWND list, int row) {
@@ -820,6 +829,14 @@ LRESULT CALLBACK ThemedControlProc(HWND hwnd, UINT message, WPARAM wParam, LPARA
         }
     }
     switch (message) {
+    case WM_SIZE:
+        if (KindFor(hwnd) == ControlKind::Table) {
+            if (auto state = FindState(hwnd); state && !state->tableAllowHorizontalScroll) {
+                RelayoutTableRemainingColumns(hwnd, -1, -1);
+                ShowScrollBar(hwnd, SB_HORZ, FALSE);
+            }
+        }
+        break;
     case WM_SETCURSOR:
         if (KindFor(hwnd) == ControlKind::Link && IsWindowEnabled(hwnd)) {
             SetCursor(LoadCursorW(nullptr, IDC_HAND));
@@ -3468,6 +3485,21 @@ void SetTableColumnResizeEnabled(HWND table, bool enabled) {
     }
     SetWindowLongPtrW(header, GWL_STYLE, style);
     SetWindowPos(header, nullptr, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+}
+
+void SetTableHorizontalScrollEnabled(HWND table, bool enabled) {
+    if (!table) return;
+    StateFor(table).tableAllowHorizontalScroll = enabled;
+    if (!enabled) {
+        RelayoutTableRemainingColumns(table, -1, -1);
+        ShowScrollBar(table, SB_HORZ, FALSE);
+    }
+}
+
+void SetTableScrollBarGutterReserved(HWND table, bool reserved) {
+    if (!table) return;
+    StateFor(table).tableReserveScrollBarGutter = reserved;
+    RelayoutTableRemainingColumns(table, -1, -1);
 }
 
 void SetTableRowEnabledStates(HWND table, const std::vector<bool>& enabled) {

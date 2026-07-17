@@ -1805,6 +1805,19 @@ void RunCheckableTableScenario(const std::filesystem::path& outputDir, TestState
 
     RECT tableClient{};
     GetClientRect(host.table_, &tableClient);
+    const int tableColumnWidth =
+        ListView_GetColumnWidth(host.table_, 0) + ListView_GetColumnWidth(host.table_, 1);
+    state.Check(tableColumnWidth <= tableClient.right - tableClient.left,
+        L"table-checkable-states: public table columns exceed the client width");
+    SCROLLINFO horizontalScroll{};
+    horizontalScroll.cbSize = sizeof(horizontalScroll);
+    horizontalScroll.fMask = SIF_RANGE | SIF_PAGE | SIF_POS;
+    if (GetScrollInfo(host.table_, SB_HORZ, &horizontalScroll)) {
+        const int lastScrollablePosition = horizontalScroll.nMax
+            - std::max<int>(static_cast<int>(horizontalScroll.nPage) - 1, 0);
+        state.Check(lastScrollablePosition <= horizontalScroll.nMin,
+            L"table-checkable-states: public table exposes a horizontal scroll range");
+    }
     RECT row0{LVIR_BOUNDS, 0, 0, 0};
     RECT row2{LVIR_BOUNDS, 0, 0, 0};
     SendMessageW(host.table_, LVM_GETITEMRECT, 0, reinterpret_cast<LPARAM>(&row0));

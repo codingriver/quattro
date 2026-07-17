@@ -1708,8 +1708,12 @@ private:
         const std::wstring error = KillProcessById(row.pid);
         if (!error.empty()) {
             ShowThemedMessageBox(hwnd_, instance_, theme_, error, L"文件占用检查", MB_OK | MB_ICONWARNING);
+            return;
         }
-        Scan();
+        if (index < rowButtons_.size() && rowButtons_[index]) {
+            windowUi_->ui().SetEnabled(rowButtons_[index], false);
+        }
+        SetText(status_, L"进程已结束。");
     }
 
     void Paint() {
@@ -3496,7 +3500,9 @@ private:
         if (fileTable_ && ThemedUi::DecodeTableEvent(fileTable_, lParam, event)) {
             if (event.kind == ThemedTableEventKind::ActionInvoked) {
                 if (ConfirmAndKill(static_cast<DWORD>(event.rowKey), L"文件占用")) {
-                    QueryFileLock();
+                    fileTerminatedPids_.insert(static_cast<DWORD>(event.rowKey));
+                    SetFileProcessRows();
+                    SetStatus(fileStatus_, L"进程已结束。", ThemedStatusRole::Success);
                 }
             }
             return true;
@@ -3509,7 +3515,10 @@ private:
         Ui().SetStatusTextRole(status, role);
     }
 
-    void SetProcessRows(HWND table, const std::vector<ProcessDisplayRow>& rows) {
+    void SetProcessRows(
+        HWND table,
+        const std::vector<ProcessDisplayRow>& rows,
+        const std::set<DWORD>& disabledPids = {}) {
         std::vector<ThemedTableRow> tableRows;
         tableRows.reserve(rows.size());
         for (const auto& row : rows) {
@@ -3524,9 +3533,15 @@ private:
                     ThemedTableCell{path},
                     ThemedTableCell{L"结束", -1, ThemedTableCellRole::DestructiveAction, 1},
                 },
+                false,
+                disabledPids.find(row.pid) == disabledPids.end(),
             });
         }
         ThemedUi::SetTableRows(table, tableRows);
+    }
+
+    void SetFileProcessRows() {
+        SetProcessRows(fileTable_, fileRows_, fileTerminatedPids_);
     }
 
     bool ConfirmAndKill(DWORD pid, const wchar_t* title) {
@@ -3718,6 +3733,8 @@ private:
         const std::wstring path = Trim(GetText(filePathInput_));
         if (path.empty()) {
             ThemedUi::ClearTable(fileTable_);
+            fileRows_.clear();
+            fileTerminatedPids_.clear();
             SetStatus(fileStatus_, L"请输入文件或目录路径。", ThemedStatusRole::Warning);
             return;
         }
@@ -3743,7 +3760,9 @@ private:
 
         std::wstring detail;
         const std::vector<ProcessDisplayRow> rows = QueryFileLockRows(path, detail);
-        SetProcessRows(fileTable_, rows);
+        fileRows_ = rows;
+        fileTerminatedPids_.clear();
+        SetFileProcessRows();
         std::wstring status;
         if (rows.empty()) {
             status = detail.starts_with(L"已检查")
@@ -3770,6 +3789,8 @@ private:
         }
 
         ThemedUi::ClearTable(fileTable_);
+        fileRows_.clear();
+        fileTerminatedPids_.clear();
         SetStatus(fileStatus_, L"正在后台检查目录占用…", ThemedStatusRole::Info);
         fileLockScanState_ = std::make_shared<FileLockScanState>();
         fileLockProgressDialog_ = std::make_unique<FileLockProgressDialog>(
@@ -3804,7 +3825,9 @@ private:
 
         const FileLockQueryResult result = fileLockScanState_->ReadResult();
         const std::vector<ProcessDisplayRow> rows = FileLockRowsFromResult(result);
-        SetProcessRows(fileTable_, rows);
+        fileRows_ = rows;
+        fileTerminatedPids_.clear();
+        SetFileProcessRows();
 
         if (!result.error.empty()) {
             SetStatus(fileStatus_, result.error, ThemedStatusRole::Danger);
@@ -3891,6 +3914,8 @@ private:
     HWND filePathInput_ = nullptr;
     HWND fileTable_ = nullptr;
     HWND fileStatus_ = nullptr;
+    std::vector<ProcessDisplayRow> fileRows_;
+    std::set<DWORD> fileTerminatedPids_;
     std::shared_ptr<FileLockScanState> fileLockScanState_;
     std::unique_ptr<FileLockProgressDialog> fileLockProgressDialog_;
     std::thread fileLockThread_;

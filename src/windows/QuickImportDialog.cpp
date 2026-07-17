@@ -371,14 +371,19 @@ private:
         listFrame_ = RECT{layout_.contentInsetX, statusRowY + statusRowHeight + layout_.rowGap, clientWidth - layout_.contentInsetX, clientHeight - layout_.footerInsetY - buttonHeight - layout_.footerGap};
         ThemedTableOptions tableOptions{};
         tableOptions.checkable = true;
+        tableOptions.allowHorizontalScroll = false;
+        tableOptions.reserveScrollBarGutter = true;
+        const int nameColumnWidth = ui.scale(170);
+        const int typeColumnWidth = ui.tableColumnWidth({L"程序", L"文件夹", L"网址"});
+        const int statusColumnWidth = ui.tableColumnWidth({L"可导入", L"已存在"});
         list_ = ui.Table(
             IdList,
             listFrame_,
             {
-                ThemedTableColumn{L"name", L"名称", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, 170},
-                ThemedTableColumn{L"type", L"类型", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, 68},
+                ThemedTableColumn{L"name", L"名称", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, nameColumnWidth},
+                ThemedTableColumn{L"type", L"类型", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, typeColumnWidth},
                 ThemedTableColumn{L"path", L"路径", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Remaining},
-                ThemedTableColumn{L"status", L"状态", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, 88},
+                ThemedTableColumn{L"status", L"状态", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, statusColumnWidth},
             },
             tableOptions);
         RebuildImageLists();

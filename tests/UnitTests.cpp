@@ -1481,6 +1481,12 @@ int wmain() {
         Check(ThemedUi::IsTableChecked(runtimeTable, 1), "Themed table preserves disabled checked state");
         ThemedUi::SetTableChecked(runtimeTable, 1, false);
         Check(ThemedUi::IsTableChecked(runtimeTable, 1), "Themed table public setter leaves disabled rows unchanged");
+        RECT runtimeTableClient{};
+        GetClientRect(runtimeTable, &runtimeTableClient);
+        const int runtimeTableColumnWidth =
+            ListView_GetColumnWidth(runtimeTable, 0) + ListView_GetColumnWidth(runtimeTable, 1);
+        Check(runtimeTableColumnWidth <= runtimeTableClient.right - runtimeTableClient.left,
+            "Themed table keeps public facade columns inside the client width by default");
         HWND noResizeTable = controlUi.Table(
             7110, RECT{0, 270, 360, 360},
             {ThemedTableColumn{L"name", L"Name", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, 120},

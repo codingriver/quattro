@@ -179,6 +179,7 @@ struct ThemedTableOptions {
     bool enabled = true;
     bool showHeader = true;
     bool allowColumnResize = false;
+    bool allowHorizontalScroll = false;
     bool showRowGridLines = false;
     bool showColumnGridLines = false;
     // 行数会超出可见高度、必然出现垂直滚动条时置 true：

@@ -409,6 +409,8 @@ void RegisterTable(HWND table, const Theme& theme, UINT dpi = 0);
 void ConfigureTableColumns(HWND table, const std::vector<int>& widthModes);
 void ConfigureTableGridLines(HWND table, bool rowGridLines, bool columnGridLines);
 void SetTableColumnResizeEnabled(HWND table, bool enabled);
+void SetTableHorizontalScrollEnabled(HWND table, bool enabled);
+void SetTableScrollBarGutterReserved(HWND table, bool reserved);
 void SetTableRowEnabledStates(HWND table, const std::vector<bool>& enabled);
 void SetTableCells(HWND table, const std::vector<std::vector<TableCellRuntime>>& cells);
 void RestoreTableDefaultImageList(HWND table);

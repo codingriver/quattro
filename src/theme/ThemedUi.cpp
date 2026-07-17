@@ -2059,6 +2059,8 @@ HWND ThemedUi::Table(int id, RECT frame, const std::vector<ThemedTableColumn>& c
         ThemedControls::CreateSystemCheckBoxImages(table);
     }
     ThemedControls::SetTableColumnResizeEnabled(table, options.allowColumnResize);
+    ThemedControls::SetTableHorizontalScrollEnabled(table, options.allowHorizontalScroll);
+    ThemedControls::SetTableScrollBarGutterReserved(table, options.reserveScrollBarGutter);
     ThemedControls::ConfigureTableGridLines(table, options.showRowGridLines, options.showColumnGridLines);
     EnableWindow(table, options.enabled ? TRUE : FALSE);
 
@@ -2097,6 +2099,7 @@ HWND ThemedUi::Table(int id, RECT frame, const std::vector<ThemedTableColumn>& c
         ListView_InsertColumn(table, static_cast<int>(i), &column);
     }
     ThemedControls::ConfigureTableColumns(table, widthModes);
+    ThemedControls::SetTableHorizontalScrollEnabled(table, options.allowHorizontalScroll);
     // The native header can be created lazily when columns are inserted, so
     // apply the resize policy again after column creation.
     ThemedControls::SetTableColumnResizeEnabled(table, options.allowColumnResize);
