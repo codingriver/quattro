@@ -76,6 +76,23 @@ UINT DpiForScreenPoint(POINT screenPoint, HWND fallbackWindow) {
     const UINT dpi = fallbackWindow ? GetDpiForWindow(fallbackWindow) : GetDpiForSystem();
     return dpi ? dpi : USER_DEFAULT_SCREEN_DPI;
 }
+
+class ScopedTableRowsUpdate {
+public:
+    explicit ScopedTableRowsUpdate(HWND table) : table_(table) {
+        ThemedControls::BeginTableRowsUpdate(table_);
+    }
+
+    ~ScopedTableRowsUpdate() {
+        ThemedControls::EndTableRowsUpdate(table_);
+    }
+
+    ScopedTableRowsUpdate(const ScopedTableRowsUpdate&) = delete;
+    ScopedTableRowsUpdate& operator=(const ScopedTableRowsUpdate&) = delete;
+
+private:
+    HWND table_ = nullptr;
+};
 } // namespace
 
 COLORREF ThemedUi::ListSurfaceColor(const Theme& theme) {
@@ -530,6 +547,7 @@ constexpr UINT_PTR kControlTooltipSubclassId = 0x51545450;
 
 LRESULT CALLBACK ToolItemProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR id, DWORD_PTR refData);
 LRESULT CALLBACK ControlTooltipProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR id, DWORD_PTR refData);
+LRESULT CALLBACK TabPageNavigationProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR id, DWORD_PTR refData);
 
 std::unordered_map<HWND, GroupBoxRuntime>& GroupBoxStates() {
     static std::unordered_map<HWND, GroupBoxRuntime> states;
@@ -645,30 +663,123 @@ std::unordered_map<HWND, ToolBarRuntime>& ToolBarStates() {
     return states;
 }
 
+void SetTabChildrenVisibleAtomically(const std::vector<std::pair<HWND, bool>>& changes) {
+    if (changes.empty()) return;
+
+    const UINT commonFlags =
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_NOACTIVATE | SWP_NOREDRAW;
+    HDWP deferred = BeginDeferWindowPos(static_cast<int>(changes.size()));
+    if (deferred) {
+        for (const auto& [child, visible] : changes) {
+            deferred = DeferWindowPos(
+                deferred,
+                child,
+                nullptr,
+                0,
+                0,
+                0,
+                0,
+                commonFlags | (visible ? SWP_SHOWWINDOW : SWP_HIDEWINDOW));
+            if (!deferred) break;
+        }
+    }
+    if (deferred && EndDeferWindowPos(deferred)) {
+        return;
+    }
+
+    // Preserve correct final visibility if the deferred batch could not be
+    // allocated. SWP_NOREDRAW still prevents individual child repaints; the
+    // caller submits one complete parent redraw after every child is updated.
+    for (const auto& [child, visible] : changes) {
+        SetWindowPos(
+            child,
+            nullptr,
+            0,
+            0,
+            0,
+            0,
+            commonFlags | (visible ? SWP_SHOWWINDOW : SWP_HIDEWINDOW));
+    }
+}
+
+void RedrawTabOwner(HWND owner) {
+    if (!owner || !IsWindowVisible(owner)) return;
+    RedrawWindow(
+        owner,
+        nullptr,
+        nullptr,
+        RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+}
+
 void ApplyActiveTab(HWND tabControl, int index, bool notify) {
     auto it = TabControlStates().find(tabControl);
     if (it == TabControlStates().end() || index < 0 || index >= static_cast<int>(it->second.buttons.size())) return;
     auto& state = it->second;
+    if (state.activeIndex == index) {
+        if (notify && state.owner) {
+            SendMessageW(state.owner, WM_COMMAND, MAKEWPARAM(state.controlId, CBN_SELCHANGE), reinterpret_cast<LPARAM>(tabControl));
+        }
+        return;
+    }
     state.activeIndex = index;
+    std::vector<std::pair<HWND, bool>> visibilityChanges;
     for (int i = 0; i < static_cast<int>(state.buttons.size()); ++i) {
         ThemedControls::SetTabButtonSelected(state.buttons[static_cast<std::size_t>(i)], i == index);
         if (i < static_cast<int>(state.pages.size())) {
             for (HWND child : state.pages[static_cast<std::size_t>(i)]) {
-                if (child) ShowWindow(child, i == index ? SW_SHOWNA : SW_HIDE);
-            }
-            if (i == index) {
-                for (HWND child : state.pages[static_cast<std::size_t>(i)]) {
-                    if (child && GroupBoxStates().find(child) != GroupBoxStates().end()) {
-                        SetWindowPos(child, HWND_BOTTOM, 0, 0, 0, 0,
-                            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-                    }
+                if (!child) continue;
+                const bool visible = i == index;
+                const bool currentlyVisible = (GetWindowLongPtrW(child, GWL_STYLE) & WS_VISIBLE) != 0;
+                if (currentlyVisible != visible) {
+                    visibilityChanges.emplace_back(child, visible);
                 }
             }
         }
     }
+    SetTabChildrenVisibleAtomically(visibilityChanges);
+    if (index < static_cast<int>(state.pages.size())) {
+        for (HWND child : state.pages[static_cast<std::size_t>(index)]) {
+            if (child && GroupBoxStates().find(child) != GroupBoxStates().end()) {
+                SetWindowPos(child, HWND_BOTTOM, 0, 0, 0, 0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOREDRAW);
+            }
+        }
+    }
+    RedrawTabOwner(state.owner);
     if (notify && state.owner) {
         SendMessageW(state.owner, WM_COMMAND, MAKEWPARAM(state.controlId, CBN_SELCHANGE), reinterpret_cast<LPARAM>(tabControl));
     }
+}
+
+void BindTabChildren(HWND tabControl, int index, const std::vector<HWND>& children) {
+    auto it = TabControlStates().find(tabControl);
+    if (it == TabControlStates().end() || index < 0 || index >= static_cast<int>(it->second.pages.size())) return;
+    auto& state = it->second;
+    state.pages[static_cast<std::size_t>(index)] = children;
+    std::vector<std::pair<HWND, bool>> visibilityChanges;
+    const bool visible = index == state.activeIndex;
+    for (HWND child : children) {
+        if (!child) continue;
+        const bool currentlyVisible = (GetWindowLongPtrW(child, GWL_STYLE) & WS_VISIBLE) != 0;
+        if (currentlyVisible != visible) {
+            visibilityChanges.emplace_back(child, visible);
+        }
+    }
+    SetTabChildrenVisibleAtomically(visibilityChanges);
+    for (HWND child : children) {
+        if (child) {
+            SetWindowSubclass(child, TabPageNavigationProc, 4, reinterpret_cast<DWORD_PTR>(tabControl));
+        }
+    }
+    if (visible) {
+        for (HWND child : children) {
+            if (child && GroupBoxStates().find(child) != GroupBoxStates().end()) {
+                SetWindowPos(child, HWND_BOTTOM, 0, 0, 0, 0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOREDRAW);
+            }
+        }
+    }
+    RedrawTabOwner(state.owner);
 }
 
 bool NavigateTabControl(HWND tabControl, int direction, bool focusTabButton) {
@@ -1691,23 +1802,7 @@ HWND ThemedUi::TabControl(
 }
 
 void ThemedUi::BindTabPage(HWND tabControl, int index, const std::vector<HWND>& children) {
-    auto it = TabControlStates().find(tabControl);
-    if (it == TabControlStates().end() || index < 0 || index >= static_cast<int>(it->second.pages.size())) return;
-    it->second.pages[static_cast<std::size_t>(index)] = children;
-    for (HWND child : children) {
-        if (child) {
-            ShowWindow(child, index == it->second.activeIndex ? SW_SHOWNA : SW_HIDE);
-            SetWindowSubclass(child, TabPageNavigationProc, 4, reinterpret_cast<DWORD_PTR>(tabControl));
-        }
-    }
-    if (index == it->second.activeIndex) {
-        for (HWND child : children) {
-            if (child && GroupBoxStates().find(child) != GroupBoxStates().end()) {
-                SetWindowPos(child, HWND_BOTTOM, 0, 0, 0, 0,
-                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-            }
-        }
-    }
+    BindTabChildren(tabControl, index, children);
 }
 
 void ThemedUi::BindTabPageRoot(HWND tabControl, int index, HWND pageRoot) {
@@ -2422,7 +2517,6 @@ HWND ThemedUi::Table(int id, RECT frame, const std::vector<ThemedTableColumn>& c
 
 void ThemedUi::SetTableRows(HWND table, const std::vector<ThemedTableRow>& rows) {
     if (!table) return;
-    ListView_DeleteAllItems(table);
     std::vector<bool> enabledStates;
     std::vector<std::vector<ThemedControls::TableCellRuntime>> cellStates;
     enabledStates.reserve(rows.size());
@@ -2439,6 +2533,13 @@ void ThemedUi::SetTableRows(HWND table, const std::vector<ThemedTableRow>& rows)
         }
         cellStates.push_back(std::move(cells));
     }
+
+    // Native ListView checkbox state initialization emits synchronous
+    // LVN_ITEMCHANGED notifications. Treat the complete model replacement as
+    // one atomic public operation so callers do not mistake those internal
+    // notifications for user input.
+    const ScopedTableRowsUpdate update(table);
+    ListView_DeleteAllItems(table);
     ThemedControls::SetTableRowEnabledStates(table, enabledStates);
     ThemedControls::SetTableCells(table, cellStates);
     for (std::size_t index = 0; index < rows.size(); ++index) {
@@ -2548,6 +2649,9 @@ void ThemedUi::SetTableImageLists(HWND table, HIMAGELIST smallImages, HIMAGELIST
 bool ThemedUi::DecodeTableEvent(HWND table, LPARAM lParam, ThemedTableEvent& event) {
     auto* header = reinterpret_cast<NMHDR*>(lParam);
     if (!table || !header || header->hwndFrom != table) return false;
+    if (header->code == LVN_ITEMCHANGED && ThemedControls::IsTableRowsUpdating(table)) {
+        return false;
+    }
     if (header->code == NM_CLICK || header->code == NM_DBLCLK) {
         auto* activate = reinterpret_cast<NMITEMACTIVATE*>(lParam);
         event.kind = header->code == NM_DBLCLK ? ThemedTableEventKind::Activated : ThemedTableEventKind::Click;

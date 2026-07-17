@@ -928,6 +928,9 @@ void ValidateAndCapture(HWND hwnd, const Scenario& scenario, const std::filesyst
         }
         state.Check(table != nullptr, scenario.name + L": visible context-menu table not found");
         if (table) {
+            state.Check(
+                ListView_GetTopIndex(table) == 0,
+                scenario.name + L": context-menu table did not keep the initial viewport at the first row");
             int uninstalledRow = -1;
             const int rowCount = ListView_GetItemCount(table);
             HIMAGELIST images = ListView_GetImageList(table, LVSIL_SMALL);

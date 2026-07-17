@@ -3518,10 +3518,6 @@ private:
         }
         ThemedUi::SetActiveTab(tabs_, index, false);
         registry_.SetSetting(L"quattro.builtin.process-tools", L"active-tab", std::to_wstring(index));
-        RECT content{};
-        GetClientRect(hwnd_, &content);
-        content.top = tabStripRect_.bottom;
-        RedrawWindow(hwnd_, &content, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
     }
 
     void HandleCommand(int id, int notify) {

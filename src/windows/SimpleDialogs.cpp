@@ -2339,16 +2339,6 @@ private:
             return;
         }
 
-        RECT contentRect{};
-        GetClientRect(hwnd_, &contentRect);
-        contentRect.top = std::max(contentRect.top, tabStripRect_.bottom);
-        if (okButton_) {
-            RECT footerRect{};
-            GetWindowRect(okButton_, &footerRect);
-            MapWindowPoints(HWND_DESKTOP, hwnd_, reinterpret_cast<POINT*>(&footerRect), 2);
-            contentRect.bottom = std::min(contentRect.bottom, footerRect.top);
-        }
-
         const HWND focus = GetFocus();
         bool focusMovesToTab = false;
         for (const auto& child : tabChildren_) {
@@ -2360,9 +2350,6 @@ private:
         currentTab_ = tab;
         ThemedUi::SetActiveTab(settingsTabs_, tab, false);
         if (focusMovesToTab && settingsTabs_) SetFocus(settingsTabs_);
-        if (contentRect.bottom > contentRect.top) {
-            RedrawWindow(hwnd_, &contentRect, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
-        }
         if (currentTab_ == TabHttp) {
             UpdateHttpButtons();
         }

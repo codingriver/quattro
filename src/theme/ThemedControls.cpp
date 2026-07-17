@@ -101,6 +101,7 @@ struct ControlState {
     bool tableReserveScrollBarGutter = false;
     bool tableShowRowGridLines = false;
     bool tableShowColumnGridLines = false;
+    int tableRowsUpdateDepth = 0;
     std::vector<int> tableColumnWidthModes;
     std::vector<bool> tableRowEnabled;
     std::vector<std::vector<ThemedControls::TableCellRuntime>> tableCells;
@@ -3519,6 +3520,22 @@ void SetTableRowEnabledStates(HWND table, const std::vector<bool>& enabled) {
 void SetTableCells(HWND table, const std::vector<std::vector<TableCellRuntime>>& cells) {
     if (!table) return;
     StateFor(table).tableCells = cells;
+}
+
+void BeginTableRowsUpdate(HWND table) {
+    if (!table) return;
+    ++StateFor(table).tableRowsUpdateDepth;
+}
+
+void EndTableRowsUpdate(HWND table) {
+    if (!table) return;
+    auto& state = StateFor(table);
+    state.tableRowsUpdateDepth = std::max(0, state.tableRowsUpdateDepth - 1);
+}
+
+bool IsTableRowsUpdating(HWND table) {
+    const auto state = FindState(table);
+    return state && state->tableRowsUpdateDepth > 0;
 }
 
 bool IsTableRowEnabled(HWND table, int index) {

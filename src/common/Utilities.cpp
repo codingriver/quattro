@@ -265,6 +265,42 @@ bool EnvironmentFlagEnabled(const wchar_t* name) {
     const std::wstring normalized = ToLower(Trim(value));
     return normalized == L"1" || normalized == L"true" || normalized == L"yes" || normalized == L"on";
 }
+
+void DisableWindowShowTransitions(HWND hwnd) {
+    if (!hwnd) {
+        return;
+    }
+
+    using DwmSetWindowAttributeFn = HRESULT(WINAPI*)(HWND, DWORD, LPCVOID, DWORD);
+    static const DwmSetWindowAttributeFn setWindowAttribute = []() -> DwmSetWindowAttributeFn {
+        HMODULE module = LoadLibraryW(L"dwmapi.dll");
+        return module
+            ? reinterpret_cast<DwmSetWindowAttributeFn>(GetProcAddress(module, "DwmSetWindowAttribute"))
+            : nullptr;
+    }();
+    if (!setWindowAttribute) {
+        return;
+    }
+
+    // DWMWA_TRANSITIONS_FORCEDISABLED. Keep modal dialogs out of DWM's
+    // translucent show transition so an uncommitted first client frame can
+    // never expose the window behind it.
+    constexpr DWORD transitionsForcedDisabled = 3;
+    const BOOL disabled = TRUE;
+    setWindowAttribute(hwnd, transitionsForcedDisabled, &disabled, sizeof(disabled));
+}
+
+void PaintWindowSynchronously(HWND hwnd) {
+    if (!hwnd) {
+        return;
+    }
+    RedrawWindow(
+        hwnd,
+        nullptr,
+        nullptr,
+        RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+    UpdateWindow(hwnd);
+}
 }
 
 bool SuppressForegroundActivation() {
@@ -381,7 +417,14 @@ bool ShowModalWindow(HWND owner, HWND hwnd) {
         return false;
     }
 
+    DisableWindowShowTransitions(hwnd);
+    // Build the complete themed client surface while the top-level window is
+    // still hidden, then synchronously refresh once more immediately after it
+    // becomes visible. This prevents DWM from presenting the class' empty
+    // initial backing surface before WM_ERASEBKGND/WM_PAINT and child paints.
+    PaintWindowSynchronously(hwnd);
     ShowWindowRespectFocusPolicy(hwnd, SW_SHOWNORMAL);
+    PaintWindowSynchronously(hwnd);
     ActivateWindow(hwnd);
 
     if (!owner || !IsWindow(owner) || !IsWindowEnabled(owner)) {

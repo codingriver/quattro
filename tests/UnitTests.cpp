@@ -119,6 +119,33 @@ public:
     int showCount = 0;
     int hideCount = 0;
 };
+
+struct TableUpdateNotificationProbe {
+    HWND table = nullptr;
+    int checkChangedCount = 0;
+};
+
+LRESULT CALLBACK TableUpdateNotificationParentProc(
+    HWND hwnd,
+    UINT message,
+    WPARAM wParam,
+    LPARAM lParam,
+    UINT_PTR,
+    DWORD_PTR referenceData) {
+    auto* probe = reinterpret_cast<TableUpdateNotificationProbe*>(referenceData);
+    if (message == WM_NOTIFY && probe && probe->table) {
+        ThemedTableEvent event{};
+        if (ThemedUi::DecodeTableEvent(probe->table, lParam, event) &&
+            event.kind == ThemedTableEventKind::CheckChanged) {
+            ++probe->checkChangedCount;
+            // Mirror the settings context-menu page behavior that exposed the
+            // regression: user checkbox changes select and reveal their row.
+            ThemedUi::SetTableSelectedIndex(probe->table, event.row);
+            return 0;
+        }
+    }
+    return DefSubclassProc(hwnd, message, wParam, lParam);
+}
 }
 
 int wmain() {
@@ -1490,6 +1517,42 @@ int wmain() {
         Check(ThemedUi::IsTableChecked(runtimeTable, 1), "Themed table preserves disabled checked state");
         ThemedUi::SetTableChecked(runtimeTable, 1, false);
         Check(ThemedUi::IsTableChecked(runtimeTable, 1), "Themed table public setter leaves disabled rows unchanged");
+
+        ThemedTableOptions updateNotificationOptions{};
+        updateNotificationOptions.checkable = true;
+        updateNotificationOptions.showHeader = false;
+        updateNotificationOptions.fullRowSelect = true;
+        HWND updateNotificationTable = controlUi.Table(
+            7107, RECT{0, 0, 320, controlUi.tableHeightForRows(3, false)},
+            {ThemedTableColumn{
+                L"name", L"Name", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Remaining}},
+            updateNotificationOptions);
+        TableUpdateNotificationProbe updateProbe{updateNotificationTable};
+        SetWindowSubclass(
+            controlParent,
+            TableUpdateNotificationParentProc,
+            17,
+            reinterpret_cast<DWORD_PTR>(&updateProbe));
+        std::vector<ThemedTableRow> updateRows;
+        for (int index = 0; index < 10; ++index) {
+            updateRows.push_back(ThemedTableRow{
+                index + 1,
+                {{L"row " + std::to_wstring(index)}},
+                index % 2 == 0,
+                true});
+        }
+        ThemedUi::SetTableRows(updateNotificationTable, updateRows);
+        Check(updateProbe.checkChangedCount == 0,
+            "Themed table row replacement suppresses internal checkbox notifications");
+        Check(ThemedUi::TableSelectedIndex(updateNotificationTable) == -1,
+            "Themed table row replacement does not create a selection");
+        Check(ListView_GetTopIndex(updateNotificationTable) == 0,
+            "Themed table row replacement keeps the initial viewport at the first row");
+        ThemedUi::SetTableChecked(updateNotificationTable, 1, true);
+        Check(updateProbe.checkChangedCount == 1 && ThemedUi::TableSelectedIndex(updateNotificationTable) == 1,
+            "Themed table standalone checkbox update preserves existing notification behavior");
+        RemoveWindowSubclass(controlParent, TableUpdateNotificationParentProc, 17);
+
         RECT runtimeTableClient{};
         GetClientRect(runtimeTable, &runtimeTableClient);
         const int runtimeTableColumnWidth =
@@ -1528,18 +1591,25 @@ int wmain() {
         ThemedUi::SetGroupEnabled(runtimeGroup, false);
         Check(!IsWindowEnabled(groupChild), "Themed group box propagates enabled state");
         HWND page0 = CreateWindowExW(0, L"STATIC", L"page0", WS_CHILD | WS_VISIBLE, 0, 0, 40, 20, controlParent, nullptr, GetModuleHandleW(nullptr), nullptr);
+        HWND page0Second = CreateWindowExW(0, L"STATIC", L"page0-second", WS_CHILD | WS_VISIBLE, 45, 0, 40, 20, controlParent, nullptr, GetModuleHandleW(nullptr), nullptr);
         HWND page1 = CreateWindowExW(0, L"STATIC", L"page1", WS_CHILD | WS_VISIBLE, 0, 0, 40, 20, controlParent, nullptr, GetModuleHandleW(nullptr), nullptr);
+        HWND page1Second = CreateWindowExW(0, L"STATIC", L"page1-second", WS_CHILD | WS_VISIBLE, 45, 0, 40, 20, controlParent, nullptr, GetModuleHandleW(nullptr), nullptr);
         ThemedTabControlOptions runtimeTabOptions{};
         runtimeTabOptions.appearance = ThemedTabControlAppearance::EmphasizedSegmented;
         HWND runtimeTabs = controlUi.TabControl(
             513, RECT{380, 130, 700, 190},
             {{601, L"One", true}, {602, L"Two", true}}, runtimeTabOptions);
-        ThemedUi::BindTabPage(runtimeTabs, 0, {page0});
-        ThemedUi::BindTabPage(runtimeTabs, 1, {page1});
+        ThemedUi::BindTabPage(runtimeTabs, 0, {page0, page0Second});
+        ThemedUi::BindTabPage(runtimeTabs, 1, {page1, page1Second});
         ThemedUi::SetActiveTab(runtimeTabs, 1);
         const bool page0Visible = (GetWindowLongW(page0, GWL_STYLE) & WS_VISIBLE) != 0;
+        const bool page0SecondVisible = (GetWindowLongW(page0Second, GWL_STYLE) & WS_VISIBLE) != 0;
         const bool page1Visible = (GetWindowLongW(page1, GWL_STYLE) & WS_VISIBLE) != 0;
-        Check(ThemedUi::ActiveTab(runtimeTabs) == 1 && !page0Visible && page1Visible, "Themed tab control binds page visibility");
+        const bool page1SecondVisible = (GetWindowLongW(page1Second, GWL_STYLE) & WS_VISIBLE) != 0;
+        Check(
+            ThemedUi::ActiveTab(runtimeTabs) == 1 && !page0Visible && !page0SecondVisible &&
+                page1Visible && page1SecondVisible,
+            "Themed tab control commits complete page visibility");
         ThemedTabControlOptions minimalTabOptions{};
         minimalTabOptions.appearance = ThemedTabControlAppearance::MinimalUnderline;
         ThemedTabControlOptions softPillTabOptions{};

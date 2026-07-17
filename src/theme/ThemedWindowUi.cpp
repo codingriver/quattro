@@ -1405,8 +1405,10 @@ LRESULT CALLBACK ThemedWindowUi::EditChildProc(
     const LRESULT result = DefSubclassProc(hwnd, message, wParam, lParam);
     if (ui) {
         if (EditFrame* editFrame = ui->FindEditFrame(hwnd)) {
-            if (message == WM_SHOWWINDOW && editFrame->frameWindow && IsWindow(editFrame->frameWindow)) {
-                if (wParam) {
+            if ((message == WM_SHOWWINDOW || message == WM_WINDOWPOSCHANGED) &&
+                editFrame->frameWindow && IsWindow(editFrame->frameWindow)) {
+                const bool visible = (GetWindowLongPtrW(editFrame->child, GWL_STYLE) & WS_VISIBLE) != 0;
+                if (visible) {
                     EnableWindow(editFrame->frameWindow, IsWindowEnabled(editFrame->child));
                     SetWindowPos(
                         editFrame->frameWindow,
@@ -1415,10 +1417,18 @@ LRESULT CALLBACK ThemedWindowUi::EditChildProc(
                         editFrame->frame.top,
                         editFrame->frame.right - editFrame->frame.left,
                         editFrame->frame.bottom - editFrame->frame.top,
-                        SWP_NOACTIVATE | SWP_SHOWWINDOW);
+                        SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_NOREDRAW);
                     InvalidateRect(editFrame->frameWindow, nullptr, FALSE);
                 } else {
-                    ShowWindow(editFrame->frameWindow, SW_HIDE);
+                    SetWindowPos(
+                        editFrame->frameWindow,
+                        nullptr,
+                        0,
+                        0,
+                        0,
+                        0,
+                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE |
+                            SWP_HIDEWINDOW | SWP_NOREDRAW);
                 }
             } else if (message == WM_ENABLE || message == WM_SETFOCUS || message == WM_KILLFOCUS ||
                        message == WM_MOUSEMOVE || message == WM_MOUSELEAVE) {
@@ -1448,11 +1458,21 @@ LRESULT CALLBACK ThemedWindowUi::TableChildProc(
     const LRESULT result = DefSubclassProc(hwnd, message, wParam, lParam);
     if (ui) {
         if (TableFrame* tableFrame = ui->FindTableFrame(hwnd)) {
-            if (message == WM_SHOWWINDOW && tableFrame->frameWindow && IsWindow(tableFrame->frameWindow)) {
-                if (wParam) {
+            if ((message == WM_SHOWWINDOW || message == WM_WINDOWPOSCHANGED) &&
+                tableFrame->frameWindow && IsWindow(tableFrame->frameWindow)) {
+                const bool visible = (GetWindowLongPtrW(tableFrame->child, GWL_STYLE) & WS_VISIBLE) != 0;
+                if (visible) {
                     ui->SyncTableFrameWindow(*tableFrame);
                 } else {
-                    ShowWindow(tableFrame->frameWindow, SW_HIDE);
+                    SetWindowPos(
+                        tableFrame->frameWindow,
+                        nullptr,
+                        0,
+                        0,
+                        0,
+                        0,
+                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE |
+                            SWP_HIDEWINDOW | SWP_NOREDRAW);
                 }
             } else if (message == WM_ENABLE || message == WM_SETFOCUS || message == WM_KILLFOCUS ||
                        message == WM_MOUSEMOVE || message == WM_MOUSELEAVE) {
