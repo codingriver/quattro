@@ -117,6 +117,11 @@ int MenuIconFor(UINT_PTR id, const std::wstring& text) {
     case ID_MENU_TOGGLE_TODO_DONE: return MenuIconList;
     case ID_MENU_TOGGLE_TODO_ENABLED:
         return text.find(L"禁用") != std::wstring::npos ? MenuIconEyeOff : MenuIconEye;
+    case ID_MENU_TODO_REMINDER_VIEWED: return MenuIconEye;
+    case ID_MENU_TODO_REMINDER_IGNORE: return MenuIconClear;
+    case ID_MENU_TODO_REMINDER_SNOOZE_5:
+    case ID_MENU_TODO_REMINDER_SNOOZE_30:
+    case ID_MENU_TODO_REMINDER_SNOOZE_60: return MenuIconHistory;
     case ID_MENU_EDIT_TODO_ITEM: return MenuIconEdit;
     case ID_MENU_DELETE_TODO_ITEM: return MenuIconDelete;
     case ID_MENU_CLEAR_DONE_TODOS: return MenuIconClear;

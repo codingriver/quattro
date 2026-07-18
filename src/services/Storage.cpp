@@ -12,7 +12,7 @@
 #include <vector>
 
 namespace {
-constexpr int kSchemaVersion = 20002;
+constexpr int kSchemaVersion = 20003;
 
 class SQLiteDatabase {
 public:
@@ -181,6 +181,12 @@ void CreateSchema(sqlite3* db, std::wstring& error) {
          "AnchorAt TEXT NOT NULL DEFAULT '',"
          "NextDueAt TEXT NOT NULL DEFAULT '',"
          "CompletedAt TEXT NOT NULL DEFAULT '',"
+         "LastNotifiedDueAt TEXT NOT NULL DEFAULT '',"
+         "LastNotifiedAt TEXT NOT NULL DEFAULT '',"
+         "LastViewedDueAt TEXT NOT NULL DEFAULT '',"
+         "LastViewedAt TEXT NOT NULL DEFAULT '',"
+         "IgnoredDueAt TEXT NOT NULL DEFAULT '',"
+         "SnoozedUntil TEXT NOT NULL DEFAULT '',"
          "POS INTEGER DEFAULT 0,"
          "CreatedAt TEXT NOT NULL DEFAULT '',"
          "UpdatedAt TEXT NOT NULL DEFAULT '');",
@@ -239,7 +245,13 @@ bool NeedsSchemaMigration(sqlite3* db) {
            !HasColumn(db, L"TodoItems", L"RepeatMode") ||
            !HasColumn(db, L"TodoItems", L"RepeatLimit") ||
            !HasColumn(db, L"TodoItems", L"RepeatFinished") ||
-           !HasColumn(db, L"TodoItems", L"CronExpression");
+           !HasColumn(db, L"TodoItems", L"CronExpression") ||
+           !HasColumn(db, L"TodoItems", L"LastNotifiedDueAt") ||
+           !HasColumn(db, L"TodoItems", L"LastNotifiedAt") ||
+           !HasColumn(db, L"TodoItems", L"LastViewedDueAt") ||
+           !HasColumn(db, L"TodoItems", L"LastViewedAt") ||
+           !HasColumn(db, L"TodoItems", L"IgnoredDueAt") ||
+           !HasColumn(db, L"TodoItems", L"SnoozedUntil");
 }
 
 std::wstring MigrationTimestamp() {
@@ -306,6 +318,12 @@ void MigrateSchema(sqlite3* db, std::wstring& error) {
          "AnchorAt TEXT NOT NULL DEFAULT '',"
          "NextDueAt TEXT NOT NULL DEFAULT '',"
          "CompletedAt TEXT NOT NULL DEFAULT '',"
+         "LastNotifiedDueAt TEXT NOT NULL DEFAULT '',"
+         "LastNotifiedAt TEXT NOT NULL DEFAULT '',"
+         "LastViewedDueAt TEXT NOT NULL DEFAULT '',"
+         "LastViewedAt TEXT NOT NULL DEFAULT '',"
+         "IgnoredDueAt TEXT NOT NULL DEFAULT '',"
+         "SnoozedUntil TEXT NOT NULL DEFAULT '',"
          "POS INTEGER DEFAULT 0,"
          "CreatedAt TEXT NOT NULL DEFAULT '',"
          "UpdatedAt TEXT NOT NULL DEFAULT '');",
@@ -328,6 +346,24 @@ void MigrateSchema(sqlite3* db, std::wstring& error) {
     }
     if (!HasColumn(db, L"TodoItems", L"CronExpression")) {
         Exec(db, "ALTER TABLE TodoItems ADD COLUMN CronExpression TEXT NOT NULL DEFAULT '';", error);
+    }
+    if (!HasColumn(db, L"TodoItems", L"LastNotifiedDueAt")) {
+        Exec(db, "ALTER TABLE TodoItems ADD COLUMN LastNotifiedDueAt TEXT NOT NULL DEFAULT '';", error);
+    }
+    if (!HasColumn(db, L"TodoItems", L"LastNotifiedAt")) {
+        Exec(db, "ALTER TABLE TodoItems ADD COLUMN LastNotifiedAt TEXT NOT NULL DEFAULT '';", error);
+    }
+    if (!HasColumn(db, L"TodoItems", L"LastViewedDueAt")) {
+        Exec(db, "ALTER TABLE TodoItems ADD COLUMN LastViewedDueAt TEXT NOT NULL DEFAULT '';", error);
+    }
+    if (!HasColumn(db, L"TodoItems", L"LastViewedAt")) {
+        Exec(db, "ALTER TABLE TodoItems ADD COLUMN LastViewedAt TEXT NOT NULL DEFAULT '';", error);
+    }
+    if (!HasColumn(db, L"TodoItems", L"IgnoredDueAt")) {
+        Exec(db, "ALTER TABLE TodoItems ADD COLUMN IgnoredDueAt TEXT NOT NULL DEFAULT '';", error);
+    }
+    if (!HasColumn(db, L"TodoItems", L"SnoozedUntil")) {
+        Exec(db, "ALTER TABLE TodoItems ADD COLUMN SnoozedUntil TEXT NOT NULL DEFAULT '';", error);
     }
 }
 
@@ -427,6 +463,12 @@ bool NormalizeTodoForSave(sqlite3* db, TodoItem& item, bool isNew) {
     item.anchorAt = NormalizeTodoTimestamp(item.anchorAt);
     item.nextDueAt = NormalizeTodoTimestamp(item.nextDueAt);
     item.completedAt = NormalizeTodoTimestamp(item.completedAt);
+    item.lastNotifiedDueAt = NormalizeTodoTimestamp(item.lastNotifiedDueAt);
+    item.lastNotifiedAt = NormalizeTodoTimestamp(item.lastNotifiedAt);
+    item.lastViewedDueAt = NormalizeTodoTimestamp(item.lastViewedDueAt);
+    item.lastViewedAt = NormalizeTodoTimestamp(item.lastViewedAt);
+    item.ignoredDueAt = NormalizeTodoTimestamp(item.ignoredDueAt);
+    item.snoozedUntil = NormalizeTodoTimestamp(item.snoozedUntil);
     if (item.title.empty() || item.tagId <= 0) {
         return false;
     }
@@ -447,6 +489,7 @@ bool NormalizeTodoForSave(sqlite3* db, TodoItem& item, bool isNew) {
         item.nextDueAt.clear();
         item.cronExpression.clear();
         item.repeatFinished = 0;
+        ResetTodoReminderState(item);
     } else if (item.scheduleKind == TodoScheduleKind::Cron) {
         item.anchorAt.clear();
         if (!IsValidTodoCronExpression(item.cronExpression)) {
@@ -634,7 +677,7 @@ AppModel StorageService::Load() {
 
     {
         SQLiteStatement statement(db.get(),
-            L"SELECT ID,TagId,Title,Content,Enabled,ScheduleKind,RepeatMode,RepeatInterval,RepeatLimit,RepeatFinished,CronExpression,AnchorAt,NextDueAt,CompletedAt,POS,CreatedAt,UpdatedAt "
+            L"SELECT ID,TagId,Title,Content,Enabled,ScheduleKind,RepeatMode,RepeatInterval,RepeatLimit,RepeatFinished,CronExpression,AnchorAt,NextDueAt,CompletedAt,LastNotifiedDueAt,LastNotifiedAt,LastViewedDueAt,LastViewedAt,IgnoredDueAt,SnoozedUntil,POS,CreatedAt,UpdatedAt "
             L"FROM TodoItems ORDER BY TagId,CompletedAt,POS,ID;");
         if (statement.ok()) {
             while (statement.step() == SQLITE_ROW) {
@@ -653,9 +696,15 @@ AppModel StorageService::Load() {
                 item.anchorAt = statement.columnText(11);
                 item.nextDueAt = statement.columnText(12);
                 item.completedAt = statement.columnText(13);
-                item.pos = statement.columnInt(14);
-                item.createdAt = statement.columnText(15);
-                item.updatedAt = statement.columnText(16);
+                item.lastNotifiedDueAt = statement.columnText(14);
+                item.lastNotifiedAt = statement.columnText(15);
+                item.lastViewedDueAt = statement.columnText(16);
+                item.lastViewedAt = statement.columnText(17);
+                item.ignoredDueAt = statement.columnText(18);
+                item.snoozedUntil = statement.columnText(19);
+                item.pos = statement.columnInt(20);
+                item.createdAt = statement.columnText(21);
+                item.updatedAt = statement.columnText(22);
                 model.todos.push_back(std::move(item));
             }
         }
@@ -1010,8 +1059,8 @@ bool StorageService::InsertTodoItem(TodoItem& item) {
     }
 
     SQLiteStatement statement(db.get(),
-        L"INSERT INTO TodoItems(TagId,Title,Content,Enabled,ScheduleKind,RepeatMode,RepeatInterval,RepeatLimit,RepeatFinished,CronExpression,AnchorAt,NextDueAt,CompletedAt,POS,CreatedAt,UpdatedAt) "
-        L"VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);");
+        L"INSERT INTO TodoItems(TagId,Title,Content,Enabled,ScheduleKind,RepeatMode,RepeatInterval,RepeatLimit,RepeatFinished,CronExpression,AnchorAt,NextDueAt,CompletedAt,LastNotifiedDueAt,LastNotifiedAt,LastViewedDueAt,LastViewedAt,IgnoredDueAt,SnoozedUntil,POS,CreatedAt,UpdatedAt) "
+        L"VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);");
     if (!statement.ok()) {
         lastError_ = L"新增待办事项 SQL 准备失败。";
         return false;
@@ -1029,9 +1078,15 @@ bool StorageService::InsertTodoItem(TodoItem& item) {
     statement.bindText(11, item.anchorAt);
     statement.bindText(12, item.nextDueAt);
     statement.bindText(13, item.completedAt);
-    statement.bindInt(14, item.pos);
-    statement.bindText(15, item.createdAt);
-    statement.bindText(16, item.updatedAt);
+    statement.bindText(14, item.lastNotifiedDueAt);
+    statement.bindText(15, item.lastNotifiedAt);
+    statement.bindText(16, item.lastViewedDueAt);
+    statement.bindText(17, item.lastViewedAt);
+    statement.bindText(18, item.ignoredDueAt);
+    statement.bindText(19, item.snoozedUntil);
+    statement.bindInt(20, item.pos);
+    statement.bindText(21, item.createdAt);
+    statement.bindText(22, item.updatedAt);
     if (statement.step() != SQLITE_DONE) {
         const void* message = sqlite3_errmsg16(db.get());
         lastError_ = message ? static_cast<const wchar_t*>(message) : L"新增待办事项失败。";
@@ -1060,7 +1115,7 @@ bool StorageService::UpdateTodoItem(const TodoItem& source) {
 
     SQLiteStatement statement(db.get(),
         L"UPDATE TodoItems SET TagId=?,Title=?,Content=?,Enabled=?,ScheduleKind=?,RepeatMode=?,RepeatInterval=?,RepeatLimit=?,RepeatFinished=?,CronExpression=?,AnchorAt=?,NextDueAt=?,"
-        L"CompletedAt=?,POS=?,CreatedAt=?,UpdatedAt=? WHERE ID=?;");
+        L"CompletedAt=?,LastNotifiedDueAt=?,LastNotifiedAt=?,LastViewedDueAt=?,LastViewedAt=?,IgnoredDueAt=?,SnoozedUntil=?,POS=?,CreatedAt=?,UpdatedAt=? WHERE ID=?;");
     if (!statement.ok()) {
         lastError_ = L"更新待办事项 SQL 准备失败。";
         return false;
@@ -1078,10 +1133,16 @@ bool StorageService::UpdateTodoItem(const TodoItem& source) {
     statement.bindText(11, item.anchorAt);
     statement.bindText(12, item.nextDueAt);
     statement.bindText(13, item.completedAt);
-    statement.bindInt(14, item.pos);
-    statement.bindText(15, item.createdAt);
-    statement.bindText(16, item.updatedAt);
-    statement.bindInt(17, item.id);
+    statement.bindText(14, item.lastNotifiedDueAt);
+    statement.bindText(15, item.lastNotifiedAt);
+    statement.bindText(16, item.lastViewedDueAt);
+    statement.bindText(17, item.lastViewedAt);
+    statement.bindText(18, item.ignoredDueAt);
+    statement.bindText(19, item.snoozedUntil);
+    statement.bindInt(20, item.pos);
+    statement.bindText(21, item.createdAt);
+    statement.bindText(22, item.updatedAt);
+    statement.bindInt(23, item.id);
     if (statement.step() != SQLITE_DONE) {
         const void* message = sqlite3_errmsg16(db.get());
         lastError_ = message ? static_cast<const wchar_t*>(message) : L"更新待办事项失败。";
@@ -1125,7 +1186,7 @@ bool StorageService::SetTodoCompleted(int todoId, bool completed) {
     TodoItem item;
     {
         SQLiteStatement query(db.get(),
-            L"SELECT ID,TagId,Title,Content,Enabled,ScheduleKind,RepeatMode,RepeatInterval,RepeatLimit,RepeatFinished,CronExpression,AnchorAt,NextDueAt,CompletedAt,POS,CreatedAt,UpdatedAt "
+            L"SELECT ID,TagId,Title,Content,Enabled,ScheduleKind,RepeatMode,RepeatInterval,RepeatLimit,RepeatFinished,CronExpression,AnchorAt,NextDueAt,CompletedAt,LastNotifiedDueAt,LastNotifiedAt,LastViewedDueAt,LastViewedAt,IgnoredDueAt,SnoozedUntil,POS,CreatedAt,UpdatedAt "
             L"FROM TodoItems WHERE ID=?;");
         if (!query.ok()) {
             lastError_ = L"查询待办事项 SQL 准备失败。";
@@ -1150,9 +1211,15 @@ bool StorageService::SetTodoCompleted(int todoId, bool completed) {
         item.anchorAt = query.columnText(11);
         item.nextDueAt = query.columnText(12);
         item.completedAt = query.columnText(13);
-        item.pos = query.columnInt(14);
-        item.createdAt = query.columnText(15);
-        item.updatedAt = query.columnText(16);
+        item.lastNotifiedDueAt = query.columnText(14);
+        item.lastNotifiedAt = query.columnText(15);
+        item.lastViewedDueAt = query.columnText(16);
+        item.lastViewedAt = query.columnText(17);
+        item.ignoredDueAt = query.columnText(18);
+        item.snoozedUntil = query.columnText(19);
+        item.pos = query.columnInt(20);
+        item.createdAt = query.columnText(21);
+        item.updatedAt = query.columnText(22);
     }
 
     const std::wstring now = CurrentTodoTimestamp();
@@ -1171,9 +1238,10 @@ bool StorageService::SetTodoCompleted(int todoId, bool completed) {
             item.nextDueAt = ComputeNextTodoDueAt(item, now);
         }
     }
+    ResetTodoReminderState(item);
     item.updatedAt = now;
 
-    SQLiteStatement statement(db.get(), L"UPDATE TodoItems SET NextDueAt=?,CompletedAt=?,RepeatFinished=?,UpdatedAt=? WHERE ID=?;");
+    SQLiteStatement statement(db.get(), L"UPDATE TodoItems SET NextDueAt=?,CompletedAt=?,RepeatFinished=?,LastNotifiedDueAt='',LastNotifiedAt='',LastViewedDueAt='',LastViewedAt='',IgnoredDueAt='',SnoozedUntil='',UpdatedAt=? WHERE ID=?;");
     if (!statement.ok()) {
         lastError_ = L"更新待办完成状态 SQL 准备失败。";
         return false;
@@ -1201,7 +1269,8 @@ bool StorageService::SetTodoEnabled(int todoId, bool enabled) {
     CreateSchema(db.get(), lastError_);
     MigrateSchema(db.get(), lastError_);
 
-    SQLiteStatement statement(db.get(), L"UPDATE TodoItems SET Enabled=?,UpdatedAt=? WHERE ID=?;");
+    SQLiteStatement statement(db.get(),
+        L"UPDATE TodoItems SET Enabled=?,LastNotifiedDueAt='',LastNotifiedAt='',LastViewedDueAt='',LastViewedAt='',IgnoredDueAt='',SnoozedUntil='',UpdatedAt=? WHERE ID=?;");
     if (!statement.ok()) {
         lastError_ = L"更新待办启用状态 SQL 准备失败。";
         return false;
@@ -1212,6 +1281,38 @@ bool StorageService::SetTodoEnabled(int todoId, bool enabled) {
     if (statement.step() != SQLITE_DONE) {
         const void* message = sqlite3_errmsg16(db.get());
         lastError_ = message ? static_cast<const wchar_t*>(message) : L"更新待办启用状态失败。";
+        return false;
+    }
+    return sqlite3_changes(db.get()) > 0;
+}
+
+bool StorageService::UpdateTodoReminderState(const TodoItem& item) {
+    lastError_.clear();
+    SQLiteDatabase db(appDirectory_ / L"db" / L"link.db");
+    if (!db.ok()) {
+        lastError_ = db.Error();
+        return false;
+    }
+    CreateSchema(db.get(), lastError_);
+    MigrateSchema(db.get(), lastError_);
+
+    SQLiteStatement statement(db.get(),
+        L"UPDATE TodoItems SET LastNotifiedDueAt=?,LastNotifiedAt=?,LastViewedDueAt=?,LastViewedAt=?,IgnoredDueAt=?,SnoozedUntil=?,UpdatedAt=? WHERE ID=?;");
+    if (!statement.ok()) {
+        lastError_ = L"更新待办提醒状态 SQL 准备失败。";
+        return false;
+    }
+    statement.bindText(1, NormalizeTodoTimestamp(item.lastNotifiedDueAt));
+    statement.bindText(2, NormalizeTodoTimestamp(item.lastNotifiedAt));
+    statement.bindText(3, NormalizeTodoTimestamp(item.lastViewedDueAt));
+    statement.bindText(4, NormalizeTodoTimestamp(item.lastViewedAt));
+    statement.bindText(5, NormalizeTodoTimestamp(item.ignoredDueAt));
+    statement.bindText(6, NormalizeTodoTimestamp(item.snoozedUntil));
+    statement.bindText(7, CurrentTodoTimestamp());
+    statement.bindInt(8, item.id);
+    if (statement.step() != SQLITE_DONE) {
+        const void* message = sqlite3_errmsg16(db.get());
+        lastError_ = message ? static_cast<const wchar_t*>(message) : L"更新待办提醒状态失败。";
         return false;
     }
     return sqlite3_changes(db.get()) > 0;

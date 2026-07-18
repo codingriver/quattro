@@ -23,6 +23,7 @@ public:
     bool DeleteTodoItem(int todoId);
     bool SetTodoCompleted(int todoId, bool completed);
     bool SetTodoEnabled(int todoId, bool enabled);
+    bool UpdateTodoReminderState(const TodoItem& item);
     const std::wstring& lastError() const { return lastError_; }
     bool sqliteAvailable() const { return sqliteAvailable_; }
 

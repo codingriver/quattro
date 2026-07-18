@@ -80,6 +80,34 @@ constexpr const wchar_t* kDockPeekWindowClass = L"QuattroDockPeekWindow";
 constexpr const wchar_t* kAppDisplayName = L"Quattro快速启动器";
 constexpr DWORD kDoubleAltMaxIntervalMs = 450;
 
+bool SuppressTrayForIsolatedTest() {
+    wchar_t value[8]{};
+    const DWORD length = GetEnvironmentVariableW(
+        L"QUATTRO_TEST_SUPPRESS_TRAY", value, static_cast<DWORD>(std::size(value)));
+    return length > 0 && length < std::size(value) && value[0] != L'0';
+}
+
+bool FailFirstReminderForIsolatedTest() {
+    if (!QuattroTestMode()) return false;
+    wchar_t value[8]{};
+    const DWORD length = GetEnvironmentVariableW(
+        L"QUATTRO_TEST_REMINDER_FAIL_ONCE", value, static_cast<DWORD>(std::size(value)));
+    return length > 0 && length < std::size(value) && value[0] != L'0';
+}
+
+ULONGLONG ReminderRetryDelayMs() {
+    if (QuattroTestMode()) {
+        wchar_t value[16]{};
+        const DWORD length = GetEnvironmentVariableW(
+            L"QUATTRO_TEST_REMINDER_RETRY_MS", value, static_cast<DWORD>(std::size(value)));
+        if (length > 0 && length < std::size(value)) {
+            const int parsed = _wtoi(value);
+            if (parsed >= 50) return static_cast<ULONGLONG>(parsed);
+        }
+    }
+    return 15000;
+}
+
 std::wstring BuildMarkerDisplayText() {
     const std::wstring marker = QuattroBuildMarkerText();
     return marker.empty() ? std::wstring{} : L"（" + marker + L"）";
@@ -1282,23 +1310,6 @@ bool IsTodoOverdue(const TodoItem& item) {
            CompareFileTime(&dueFile, &nowFile) < 0;
 }
 
-bool IsTodoDueForReminder(const TodoItem& item) {
-    if (!item.enabled || !item.completedAt.empty() || item.nextDueAt.empty()) {
-        return false;
-    }
-    SYSTEMTIME due{};
-    SYSTEMTIME now{};
-    if (!TryParseTodoTimestamp(item.nextDueAt, due)) {
-        return false;
-    }
-    GetLocalTime(&now);
-    FILETIME dueFile{};
-    FILETIME nowFile{};
-    return SystemTimeToFileTime(&due, &dueFile) &&
-           SystemTimeToFileTime(&now, &nowFile) &&
-           CompareFileTime(&dueFile, &nowFile) <= 0;
-}
-
 std::optional<std::int64_t> TodoRemainingSeconds(const TodoItem& item) {
     if (!item.enabled || !item.completedAt.empty() || item.nextDueAt.empty()) {
         return std::nullopt;
@@ -1364,7 +1375,7 @@ std::wstring TodoRemainingText(const TodoItem& item) {
 }
 
 std::wstring TodoReminderKey(const TodoItem& item) {
-    return std::to_wstring(item.id) + L"|" + item.nextDueAt;
+    return std::to_wstring(item.id) + L"|" + EffectiveTodoReminderDueAt(item);
 }
 
 std::wstring TodoReminderText(const TodoItem& item) {
@@ -2363,6 +2374,34 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         return QuattroTestMode() && DockHide(false) ? TRUE : FALSE;
     case WM_QUATTRO_TEST_DOCK_HIDDEN:
         return QuattroTestMode() && dockHidden_ ? TRUE : FALSE;
+    case WM_QUATTRO_TEST_TODO_MENU:
+        if (QuattroTestMode()) {
+            RECT rect{};
+            GetWindowRect(hwnd_, &rect);
+            ShowTodoMenu(static_cast<int>(wParam), POINT{rect.left + 80, rect.top + 120});
+            return TRUE;
+        }
+        return FALSE;
+    case WM_QUATTRO_TEST_REMINDER_STATE:
+        if (!QuattroTestMode()) {
+            return 0;
+        }
+        if (wParam == 0) return lastReminderChannel_;
+        if (wParam == 1) return lastReminderBatchCount_;
+        if (wParam == 2) return static_cast<LRESULT>(pendingReminderTodoIds_.size());
+        if (wParam == 3) return testReminderFailureConsumed_ ? TRUE : FALSE;
+        return 0;
+    case WM_QUATTRO_TEST_REMINDER_ACTION:
+        if (!QuattroTestMode()) {
+            return FALSE;
+        }
+        if (wParam == 1) MarkTodoReminderViewed(static_cast<int>(lParam));
+        else if (wParam == 2) IgnoreTodoReminder(static_cast<int>(lParam));
+        else if (wParam == 3) SnoozeTodoReminder(static_cast<int>(lParam), 5);
+        else if (wParam == 4) SnoozeTodoReminder(static_cast<int>(lParam), 30);
+        else if (wParam == 5) SnoozeTodoReminder(static_cast<int>(lParam), 60);
+        else return FALSE;
+        return TRUE;
     case WM_QUATTRO_EXIT_INSTANCE:
         WriteAppLog(L"收到同路径实例退出通知，销毁主窗口。");
         DestroyWindow(hwnd_);
@@ -2407,6 +2446,10 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
     case WM_NCACTIVATE:
         return TRUE;
     case WM_QUATTRO_TRAY:
+        if (LOWORD(lParam) == NIN_BALLOONUSERCLICK) {
+            ViewPendingTodoReminders();
+            return 0;
+        }
         if (LOWORD(lParam) == WM_LBUTTONUP) {
             WakeUp();
             return 0;
@@ -3085,6 +3128,21 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             return 0;
         case ID_MENU_TOGGLE_TODO_ENABLED:
             ToggleTodoEnabled(CommandTodoId());
+            return 0;
+        case ID_MENU_TODO_REMINDER_VIEWED:
+            MarkTodoReminderViewed(CommandTodoId());
+            return 0;
+        case ID_MENU_TODO_REMINDER_IGNORE:
+            IgnoreTodoReminder(CommandTodoId());
+            return 0;
+        case ID_MENU_TODO_REMINDER_SNOOZE_5:
+            SnoozeTodoReminder(CommandTodoId(), 5);
+            return 0;
+        case ID_MENU_TODO_REMINDER_SNOOZE_30:
+            SnoozeTodoReminder(CommandTodoId(), 30);
+            return 0;
+        case ID_MENU_TODO_REMINDER_SNOOZE_60:
+            SnoozeTodoReminder(CommandTodoId(), 60);
             return 0;
         case ID_MENU_CLEAR_DONE_TODOS:
             ClearDoneTodos();
@@ -4789,6 +4847,11 @@ void MainWindow::EditTodoItem(int todoId) {
     edited.tagId = item->tagId;
     edited.pos = item->pos;
     edited.createdAt = item->createdAt;
+    if (edited.nextDueAt != item->nextDueAt || edited.scheduleKind != item->scheduleKind ||
+        edited.cronExpression != item->cronExpression || edited.repeatMode != item->repeatMode ||
+        edited.repeatInterval != item->repeatInterval) {
+        ResetTodoReminderState(edited);
+    }
     if (!storageService_.UpdateTodoItem(edited)) {
         MessageBoxW(hwnd_, storageService_.lastError().c_str(), L"编辑待办事项", MB_OK | MB_ICONWARNING);
         return;
@@ -4852,6 +4915,7 @@ void MainWindow::ToggleTodoDone(int todoId) {
             item->nextDueAt = ComputeNextTodoDueAt(*item, now);
         }
     }
+    ResetTodoReminderState(*item);
     item->updatedAt = now;
     selectedTodoId_ = todoId;
     InvalidateRect(hwnd_, nullptr, FALSE);
@@ -4868,6 +4932,7 @@ void MainWindow::ToggleTodoEnabled(int todoId) {
         return;
     }
     item->enabled = enable;
+    ResetTodoReminderState(*item);
     item->updatedAt = CurrentTodoTimestamp();
     selectedTodoId_ = todoId;
     if (enable) {
@@ -4877,6 +4942,113 @@ void MainWindow::ToggleTodoEnabled(int todoId) {
     ShowToast(
         enable ? (L"已启用“" + item->title + L"”的提醒。") : (L"已暂停“" + item->title + L"”的提醒。"),
         enable ? ThemedToastRole::Success : ThemedToastRole::Info);
+}
+
+bool MainWindow::SaveTodoReminderState(TodoItem& item, const wchar_t* context) {
+    item.updatedAt = CurrentTodoTimestamp();
+    if (storageService_.UpdateTodoReminderState(item)) {
+        return true;
+    }
+    WriteAppLog(
+        std::wstring(L"待办提醒状态保存失败。context=") + (context ? context : L"") +
+        L", todo_id=" + std::to_wstring(item.id) + L", error=" + storageService_.lastError());
+    return false;
+}
+
+void MainWindow::MarkTodoReminderViewed(int todoId) {
+    TodoItem* item = FindTodoItem(todoId);
+    if (!item || EffectiveTodoReminderDueAt(*item).empty()) {
+        return;
+    }
+    const TodoItem previous = *item;
+    ::MarkTodoReminderViewed(*item, CurrentTodoTimestamp());
+    if (!SaveTodoReminderState(*item, L"标记已查看")) {
+        *item = previous;
+        ShowToast(L"保存提醒状态失败。", ThemedToastRole::Danger);
+        return;
+    }
+    InvalidateRect(hwnd_, nullptr, FALSE);
+    ShowToast(L"已标记“" + item->title + L"”的本次提醒为已查看。", ThemedToastRole::Success);
+}
+
+void MainWindow::IgnoreTodoReminder(int todoId) {
+    TodoItem* item = FindTodoItem(todoId);
+    const std::wstring now = CurrentTodoTimestamp();
+    if (!item || !IsTodoReminderDue(*item, now)) {
+        return;
+    }
+    const TodoItem previous = *item;
+    IgnoreTodoReminderOccurrence(*item);
+    if (!SaveTodoReminderState(*item, L"忽略本次")) {
+        *item = previous;
+        ShowToast(L"保存提醒状态失败。", ThemedToastRole::Danger);
+        return;
+    }
+    HideTodoReminderPanel();
+    InvalidateRect(hwnd_, nullptr, FALSE);
+    ShowToast(L"已忽略“" + item->title + L"”的本次提醒。", ThemedToastRole::Info);
+}
+
+void MainWindow::SnoozeTodoReminder(int todoId, int minutes) {
+    TodoItem* item = FindTodoItem(todoId);
+    const std::wstring now = CurrentTodoTimestamp();
+    if (!item || !IsTodoReminderDue(*item, now)) {
+        return;
+    }
+    const TodoItem previous = *item;
+    if (!::SnoozeTodoReminder(*item, now, minutes)) return;
+    if (!SaveTodoReminderState(*item, L"稍后提醒")) {
+        *item = previous;
+        ShowToast(L"保存稍后提醒时间失败。", ThemedToastRole::Danger);
+        return;
+    }
+    HideTodoReminderPanel();
+    InvalidateRect(hwnd_, nullptr, FALSE);
+    ShowToast(
+        L"将在 " + item->snoozedUntil + L" 再次提醒“" + item->title + L"”。",
+        ThemedToastRole::Info,
+        5000);
+}
+
+void MainWindow::ViewPendingTodoReminders() {
+    if (pendingReminderTodoIds_.empty()) {
+        WakeUp();
+        return;
+    }
+
+    const std::vector<int> todoIds = pendingReminderTodoIds_;
+    pendingReminderTodoIds_.clear();
+    WakeUp();
+    TodoItem* first = nullptr;
+    const std::wstring now = CurrentTodoTimestamp();
+    for (int todoId : todoIds) {
+        TodoItem* item = FindTodoItem(todoId);
+        if (!item) {
+            continue;
+        }
+        if (!first) {
+            first = item;
+        }
+        const TodoItem previous = *item;
+        ::MarkTodoReminderViewed(*item, now);
+        if (!SaveTodoReminderState(*item, L"系统通知点击查看")) {
+            *item = previous;
+        }
+    }
+    if (!first) {
+        return;
+    }
+    if (const Group* tag = FindGroup(first->tagId)) {
+        if (currentGroupId_ != tag->parentGroup) {
+            SelectGroup(tag->parentGroup);
+        }
+        if (currentTagId_ != tag->id) {
+            SelectTag(tag->id);
+        }
+    }
+    selectedTodoId_ = first->id;
+    EnsureTodoVisible(selectedTodoId_);
+    InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
 void MainWindow::ClearDoneTodos() {
@@ -4914,32 +5086,80 @@ void MainWindow::ClearDoneTodos() {
 }
 
 void MainWindow::CheckTodoReminders() {
-    for (const auto& item : model_.todos) {
-        if (!IsTodoDueForReminder(item)) {
+    const std::wstring now = CurrentTodoTimestamp();
+    const ULONGLONG tick = GetTickCount64();
+    std::vector<TodoItem*> dueItems;
+    for (auto& item : model_.todos) {
+        if (!IsTodoReminderDue(item, now) || IsTodoReminderDelivered(item)) {
             continue;
         }
         const std::wstring key = TodoReminderKey(item);
-        if (shownReminderKeys_.find(key) != shownReminderKeys_.end()) {
+        const auto retry = reminderRetryAfter_.find(key);
+        if (retry != reminderRetryAfter_.end() && tick < retry->second) {
             continue;
         }
-        shownReminderKeys_.insert(key);
-        ShowTodoReminder(item);
+        dueItems.push_back(&item);
+    }
+    if (dueItems.empty()) {
         return;
     }
-}
 
-void MainWindow::ShowTodoReminder(const TodoItem& item) {
-    const bool panelShown = ShowTodoReminderPanel(item);
-    if (!panelShown || !IsWindowVisible(hwnd_) || IsIconic(hwnd_)) {
-        ShowTodoSystemNotification(item);
+    const bool useAppToast = IsWindowVisible(hwnd_) && !IsIconic(hwnd_) && !dockHidden_;
+    lastReminderChannel_ = useAppToast ? 1 : 2;
+    lastReminderBatchCount_ = static_cast<int>(dueItems.size());
+    bool delivered = useAppToast
+        ? ShowTodoReminderPanel(dueItems)
+        : ShowTodoSystemNotification(dueItems);
+    if (FailFirstReminderForIsolatedTest() && !testReminderFailureConsumed_) {
+        testReminderFailureConsumed_ = true;
+        delivered = false;
+        WriteAppLog(L"后台验收已注入一次待办提醒发送失败。count=" + std::to_wstring(dueItems.size()));
+    }
+    if (!delivered) {
+        const ULONGLONG retryDelayMs = ReminderRetryDelayMs();
+        for (const auto* item : dueItems) {
+            reminderRetryAfter_[TodoReminderKey(*item)] = tick + retryDelayMs;
+        }
+        WriteAppLog(L"待办提醒发送失败，将在 " + std::to_wstring(retryDelayMs) +
+                    L" 毫秒后重试。count=" + std::to_wstring(dueItems.size()));
+        return;
+    }
+
+    for (auto* item : dueItems) {
+        reminderRetryAfter_.erase(TodoReminderKey(*item));
+        const TodoItem previous = *item;
+        ::MarkTodoReminderSent(*item, now);
+        if (!SaveTodoReminderState(*item, L"发送提醒")) {
+            *item = previous;
+            reminderRetryAfter_[TodoReminderKey(*item)] = tick + ReminderRetryDelayMs();
+        }
     }
 }
 
-bool MainWindow::ShowTodoReminderPanel(const TodoItem& item) {
-    const std::wstring text = L"待办提醒\r\n" + LimitNotificationText(item.title, 80) +
-        (Trim(item.content).empty() ? L"" : (L"\r\n" + LimitNotificationText(Trim(item.content), 160)));
+bool MainWindow::ShowTodoReminderPanel(const std::vector<TodoItem*>& items) {
+    if (items.empty()) {
+        return false;
+    }
+    std::wstring text;
+    if (items.size() == 1) {
+        const TodoItem& item = *items.front();
+        text = L"待办提醒\r\n" + LimitNotificationText(item.title, 80) +
+            (Trim(item.content).empty() ? L"" : (L"\r\n" + LimitNotificationText(Trim(item.content), 160)));
+    } else {
+        text = L"有 " + std::to_wstring(items.size()) + L" 项待办已到期";
+        const std::size_t previewCount = std::min<std::size_t>(3, items.size());
+        for (std::size_t index = 0; index < previewCount; ++index) {
+            text += L"\r\n• " + LimitNotificationText(items[index]->title, 60);
+        }
+        if (items.size() > previewCount) {
+            text += L"\r\n另有 " + std::to_wstring(items.size() - previewCount) + L" 项";
+        }
+        text += L"\r\n可在待办事项中查看或稍后提醒。";
+    }
     CreateTooltip();
-    if (!embeddedUi_) return false;
+    if (!embeddedUi_) {
+        return false;
+    }
     ThemedToastOptions options{};
     options.anchor = ThemedToastAnchor::ScreenBottomRight;
     options.role = ThemedToastRole::Info;
@@ -4973,9 +5193,24 @@ bool MainWindow::EnsureNotificationIcon() {
     return trayIconVisible_;
 }
 
-void MainWindow::ShowTodoSystemNotification(const TodoItem& item) {
+bool MainWindow::ShowTodoSystemNotification(const std::vector<TodoItem*>& items) {
+    if (items.empty()) {
+        return false;
+    }
+    auto rememberPendingItems = [&]() {
+        pendingReminderTodoIds_.clear();
+        pendingReminderTodoIds_.reserve(items.size());
+        for (const auto* item : items) {
+            pendingReminderTodoIds_.push_back(item->id);
+        }
+    };
+    if (SuppressTrayForIsolatedTest()) {
+        rememberPendingItems();
+        WriteAppLog(L"后台验收已记录系统待办通知意图，未调用 Shell_NotifyIcon。count=" + std::to_wstring(items.size()));
+        return true;
+    }
     if (!EnsureNotificationIcon()) {
-        return;
+        return false;
     }
 
     NOTIFYICONDATAW data{};
@@ -4984,11 +5219,31 @@ void MainWindow::ShowTodoSystemNotification(const TodoItem& item) {
     data.uID = kTrayIconId;
     data.uFlags = NIF_INFO;
     data.dwInfoFlags = NIIF_INFO;
-    const std::wstring title = LimitNotificationText(item.title, 63);
-    const std::wstring body = LimitNotificationText(Trim(item.content).empty() ? TodoReminderText(item) : Trim(item.content), 255);
+    std::wstring title;
+    std::wstring body;
+    if (items.size() == 1) {
+        const TodoItem& item = *items.front();
+        title = LimitNotificationText(item.title, 63);
+        body = LimitNotificationText(Trim(item.content).empty() ? TodoReminderText(item) : Trim(item.content), 255);
+    } else {
+        title = std::to_wstring(items.size()) + L" 项待办已到期";
+        const std::size_t previewCount = std::min<std::size_t>(3, items.size());
+        for (std::size_t index = 0; index < previewCount; ++index) {
+            if (!body.empty()) body += L"；";
+            body += items[index]->title;
+        }
+        if (items.size() > previewCount) {
+            body += L"；另有 " + std::to_wstring(items.size() - previewCount) + L" 项";
+        }
+        body = LimitNotificationText(body, 255);
+    }
     wcscpy_s(data.szInfoTitle, title.empty() ? L"待办提醒" : title.c_str());
     wcscpy_s(data.szInfo, body.empty() ? L"待办事项时间到了。" : body.c_str());
-    Shell_NotifyIconW(NIM_MODIFY, &data);
+    if (!Shell_NotifyIconW(NIM_MODIFY, &data)) {
+        return false;
+    }
+    rememberPendingItems();
+    return true;
 }
 
 void MainWindow::ShowClipboardImportNotification(int count, int failedCount, const std::wstring& pathDetail) {
@@ -6649,7 +6904,7 @@ void MainWindow::UpdateTrayTooltip() {
 }
 
 void MainWindow::InitializeTrayIcon() {
-    if (trayIconVisible_ || config_.hideNotifyIcon) {
+    if (trayIconVisible_ || config_.hideNotifyIcon || SuppressTrayForIsolatedTest()) {
         return;
     }
 
@@ -6949,9 +7204,40 @@ void MainWindow::ShowTodoMenu(int todoId, POINT screenPoint) {
     const TodoItem* item = FindTodoItem(todoId);
     const bool done = item && !item->completedAt.empty();
     const bool enabled = !item || item->enabled;
+    const std::wstring now = CurrentTodoTimestamp();
+    const bool reminderDue = item && IsTodoReminderDue(*item, now);
+    const bool reminderSent = item && !EffectiveTodoReminderDueAt(*item).empty() &&
+        item->lastNotifiedDueAt == EffectiveTodoReminderDueAt(*item);
+    const bool reminderViewed = item && !EffectiveTodoReminderDueAt(*item).empty() &&
+        item->lastViewedDueAt == EffectiveTodoReminderDueAt(*item);
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_EDIT_TODO_ITEM, L"编辑待办事项");
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_TOGGLE_TODO_DONE, done ? L"标记为未完成" : L"标记为完成");
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_TOGGLE_TODO_ENABLED, enabled ? L"禁用待办事项" : L"启用待办事项");
+    AppendThemedSeparator(menu);
+    AppendThemedMenuItem(
+        menu,
+        MF_STRING | ((!reminderSent || reminderViewed) ? MF_GRAYED : 0),
+        ID_MENU_TODO_REMINDER_VIEWED,
+        reminderViewed ? L"本次提醒已查看" : L"标记本次提醒为已查看");
+    AppendThemedMenuItem(
+        menu,
+        MF_STRING | (!reminderDue ? MF_GRAYED : 0),
+        ID_MENU_TODO_REMINDER_IGNORE,
+        L"忽略本次提醒");
+    HMENU snoozeMenu = CreatePopupMenu();
+    AppendThemedMenuItem(snoozeMenu, MF_STRING, ID_MENU_TODO_REMINDER_SNOOZE_5, L"5 分钟后");
+    AppendThemedMenuItem(snoozeMenu, MF_STRING, ID_MENU_TODO_REMINDER_SNOOZE_30, L"30 分钟后");
+    AppendThemedMenuItem(snoozeMenu, MF_STRING, ID_MENU_TODO_REMINDER_SNOOZE_60, L"1 小时后");
+    AppendThemedMenuItem(
+        menu,
+        MF_POPUP | (!reminderDue ? MF_GRAYED : 0),
+        reinterpret_cast<UINT_PTR>(snoozeMenu),
+        L"稍后提醒",
+        true,
+        -1,
+        -1,
+        MenuIconHistory);
+    AppendThemedSeparator(menu);
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_DELETE_TODO_ITEM, L"删除待办事项");
     AppendThemedSeparator(menu);
     AppendTodoSortItems(menu, FindGroup(currentTagId_));
@@ -7079,6 +7365,18 @@ std::wstring MainWindow::TodoTooltipText(const TodoItem& item) const {
         status = L"已逾期";
     }
     appendLine(text, L"状态: " + status);
+
+    std::wstring reminderStatus;
+    switch (GetTodoReminderStatus(item, CurrentTodoTimestamp())) {
+    case TodoReminderStatus::Sent: reminderStatus = L"已发送"; break;
+    case TodoReminderStatus::Viewed: reminderStatus = L"已查看"; break;
+    case TodoReminderStatus::Ignored: reminderStatus = L"已忽略本次"; break;
+    case TodoReminderStatus::Snoozed: reminderStatus = L"稍后提醒至 " + item.snoozedUntil; break;
+    case TodoReminderStatus::Completed: reminderStatus = L"已完成"; break;
+    case TodoReminderStatus::Disabled: reminderStatus = L"未启用"; break;
+    case TodoReminderStatus::Pending: reminderStatus = L"待提醒"; break;
+    }
+    appendLine(text, L"提醒: " + reminderStatus);
 
     const bool recurring = IsRecurringTodoSchedule(item.scheduleKind);
     if (recurring) {
@@ -8647,7 +8945,11 @@ void MainWindow::ResetMenuVisuals(POINT screenPoint) {
     if (!menuFont_) {
         menuFont_ = std::make_unique<ThemedMenuFontCache>();
     }
-    menuFont_->FontForScreenPoint(screenPoint, hwnd_);
+    if (QuattroTestMode() && BackgroundAcceptanceMode()) {
+        menuFont_->FontForDpi(CurrentDpi());
+    } else {
+        menuFont_->FontForScreenPoint(screenPoint, hwnd_);
+    }
 }
 
 void MainWindow::AppendThemedMenuItem(HMENU menu, UINT flags, UINT_PTR id, const std::wstring& text, bool submenu, int systemImageIndex, int stockIcon, int menuIcon) {

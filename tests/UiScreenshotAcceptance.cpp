@@ -13,6 +13,8 @@
 #include "../src/windows/UrlEditDialog.h"
 #include "../src/services/WebDavClient.h"
 #include "../src/services/ShellItemService.h"
+#include "../src/services/Storage.h"
+#include "../src/domain/Config.h"
 #include "../src/domain/PluginRegistry.h"
 #include "Version.h"
 
@@ -39,6 +41,8 @@
 #include <vector>
 
 namespace {
+
+std::filesystem::path gAcceptanceOutputDir;
 
 struct Scenario {
     std::wstring name;
@@ -191,8 +195,11 @@ std::string NarrowDiagnostic(const std::wstring& text) {
 }
 
 void AcceptanceLog(const std::wstring& text) {
-    std::filesystem::create_directories("screenshots/acceptance");
-    std::ofstream log("screenshots/acceptance/ui-acceptance-progress.txt", std::ios::binary | std::ios::app);
+    const std::filesystem::path directory = gAcceptanceOutputDir.empty()
+        ? std::filesystem::current_path() / L"screenshots" / L"acceptance"
+        : gAcceptanceOutputDir;
+    std::filesystem::create_directories(directory);
+    std::ofstream log(directory / L"ui-acceptance-progress.txt", std::ios::binary | std::ios::app);
     log << NarrowDiagnostic(text) << "\n";
 }
 
@@ -1291,6 +1298,7 @@ public:
         Set(L"QUATTRO_TEST_NO_FOCUS", L"1");
         Set(L"QUATTRO_ACCEPTANCE_MODE", L"background");
         Set(L"QUATTRO_TEST_RUN_ID", std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(sequence_));
+        Set(L"QUATTRO_TEST_SUPPRESS_TRAY", L"1");
     }
 
     ~ScopedAcceptanceChildEnvironment() {
@@ -1303,6 +1311,8 @@ public:
 
     ScopedAcceptanceChildEnvironment(const ScopedAcceptanceChildEnvironment&) = delete;
     ScopedAcceptanceChildEnvironment& operator=(const ScopedAcceptanceChildEnvironment&) = delete;
+
+    const std::filesystem::path& root() const { return root_; }
 
 private:
     struct SavedValue {
@@ -1354,19 +1364,55 @@ void RunMainWindowScenario(
     UINT dpi) {
     const std::wstring dpiSuffix = DpiPercentSuffix(dpi);
     AcceptanceLog(L"begin main-window-" + dpiSuffix);
-    const std::filesystem::path exe = ModuleDirectory() / L"Quattro.exe";
-    if (!std::filesystem::exists(exe)) {
+    const std::filesystem::path sourceExe = ModuleDirectory() / L"Quattro.exe";
+    if (!std::filesystem::exists(sourceExe)) {
         state.Check(false, L"main-window: Quattro.exe not found beside acceptance executable");
         AcceptanceLog(L"missing main-window exe");
         return;
     }
-    std::wstring command = L"\"" + exe.wstring() + L"\"";
     ScopedAcceptanceChildEnvironment childEnvironment;
+    const std::filesystem::path exe = childEnvironment.root() / L"Quattro.exe";
+    std::error_code copyError;
+    std::filesystem::copy_file(sourceExe, exe, std::filesystem::copy_options::overwrite_existing, copyError);
+    state.Check(!copyError, L"main-window: failed to copy isolated Quattro.exe");
+    std::wstring command = L"\"" + exe.wstring() + L"\"";
+    StorageService storage(childEnvironment.root());
+    storage.Load();
+    Group reminderGroup;
+    reminderGroup.name = L"提醒验收分组";
+    reminderGroup.pos = -1;
+    state.Check(storage.InsertGroup(reminderGroup), L"todo-reminder-menu: seed group failed");
+    Group reminderTag;
+    reminderTag.name = L"待办提醒";
+    reminderTag.parentGroup = reminderGroup.id;
+    reminderTag.type = 4;
+    reminderTag.content = L"todoItems";
+    reminderTag.pos = -1;
+    state.Check(storage.InsertGroup(reminderTag), L"todo-reminder-menu: seed tag failed");
+    TodoItem reminderTodo;
+    reminderTodo.tagId = reminderTag.id;
+    reminderTodo.title = L"提交季度复盘";
+    reminderTodo.content = L"整理指标、结论和后续行动项";
+    reminderTodo.scheduleKind = TodoScheduleKind::Once;
+    reminderTodo.anchorAt = L"2020-01-01 09:00:00";
+    reminderTodo.nextDueAt = reminderTodo.anchorAt;
+    reminderTodo.pos = -1;
+    state.Check(storage.InsertTodoItem(reminderTodo), L"todo-reminder-menu: seed todo failed");
+    ConfigService childConfig(childEnvironment.root() / L"conf.ini");
+    AppConfig childSettings = childConfig.Load();
+    childSettings.currentGroupId = reminderGroup.id;
+    childSettings.currentTagId = reminderTag.id;
+    childSettings.autoDock = false;
+    childSettings.hideWhenInactive = false;
+    childSettings.globalHotKeysEnabled = false;
+    childSettings.width = 720;
+    childSettings.height = 560;
+    childConfig.Save(childSettings);
     STARTUPINFOW startup{};
     startup.cb = sizeof(startup);
     PROCESS_INFORMATION process{};
     std::wstring mutableCommand = command;
-    if (!CreateProcessW(exe.c_str(), mutableCommand.data(), nullptr, nullptr, FALSE, 0, nullptr, ModuleDirectory().c_str(), &startup, &process)) {
+    if (!CreateProcessW(exe.c_str(), mutableCommand.data(), nullptr, nullptr, FALSE, 0, nullptr, childEnvironment.root().c_str(), &startup, &process)) {
         state.Check(false, L"main-window: CreateProcess failed");
         AcceptanceLog(L"create main-window failed");
         return;
@@ -1411,6 +1457,28 @@ void RunMainWindowScenario(
                     : L"main-window: development marker is not rendered with the danger semantic color");
             DeleteObject(titleCapture.bitmap);
         }
+
+        std::thread menuThread([&]() {
+            constexpr UINT kTestTodoMenuMessage = WM_APP + 0x6F;
+            SendMessageW(hwnd, kTestTodoMenuMessage, static_cast<WPARAM>(reminderTodo.id), 0);
+        });
+        HWND popup = WaitForTopWindow(FindWindowRequest{L"#32768", L"", process.dwProcessId}, 5000);
+        state.Check(popup != nullptr, L"todo-reminder-menu: popup did not appear");
+        if (popup) {
+            BitmapCapture popupCapture = CaptureWindowBitmap(popup);
+            state.Check(
+                popupCapture.bitmap && BitmapHasVisualContent(popupCapture.bitmap, popupCapture.width, popupCapture.height),
+                L"todo-reminder-menu: popup screenshot is invalid");
+            if (popupCapture.bitmap) {
+                state.Check(
+                    SavePng(popupCapture.bitmap, outputDir / (L"todo-reminder-menu-" + dpiSuffix + L".png")),
+                    L"todo-reminder-menu: screenshot save failed");
+                DeleteObject(popupCapture.bitmap);
+            }
+            PostMessageW(popup, WM_CANCELMODE, 0, 0);
+            PostMessageW(hwnd, WM_CANCELMODE, 0, 0);
+        }
+        menuThread.join();
         PostMessageW(hwnd, WM_COMMAND, MAKEWPARAM(ID_MENU_EXIT, 0), 0);
     } else {
         state.Check(false, L"main-window: window did not appear");
@@ -3026,7 +3094,16 @@ void RunQuickImportScenarios(
 int wmain() {
     SetEnvironmentVariableW(L"QUATTRO_ACCEPTANCE_MODE", L"background");
     SetEnvironmentVariableW(L"QUATTRO_TEST_NO_FOCUS", L"1");
-    std::ofstream("ui-acceptance-progress.txt", std::ios::binary | std::ios::trunc);
+    wchar_t outputOverride[32768]{};
+    const DWORD outputLength = GetEnvironmentVariableW(
+        L"QUATTRO_UI_ACCEPTANCE_OUTPUT_DIR",
+        outputOverride,
+        static_cast<DWORD>(std::size(outputOverride)));
+    gAcceptanceOutputDir = outputLength > 0 && outputLength < std::size(outputOverride)
+        ? std::filesystem::path(std::wstring(outputOverride, outputLength))
+        : std::filesystem::current_path() / L"screenshots" / L"acceptance";
+    std::filesystem::create_directories(gAcceptanceOutputDir);
+    std::ofstream(gAcceptanceOutputDir / L"ui-acceptance-progress.txt", std::ios::binary | std::ios::trunc);
     AcceptanceLog(L"start");
     INITCOMMONCONTROLSEX icc{};
     icc.dwSize = sizeof(icc);
@@ -3041,7 +3118,7 @@ int wmain() {
     }
     OleInitialize(nullptr);
 
-    const std::filesystem::path outputDir = std::filesystem::current_path() / L"screenshots" / L"acceptance";
+    const std::filesystem::path outputDir = gAcceptanceOutputDir;
     std::filesystem::create_directories(outputDir);
 
     TestState state;

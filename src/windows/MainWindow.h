@@ -44,6 +44,9 @@ constexpr UINT WM_QUATTRO_STARTUP_ACTIVATE = WM_APP + 0x6A;
 constexpr UINT WM_QUATTRO_STARTUP_DEFERRED = WM_APP + 0x6B;
 constexpr UINT WM_QUATTRO_TEST_DOCK_HIDE = WM_APP + 0x6D;
 constexpr UINT WM_QUATTRO_TEST_DOCK_HIDDEN = WM_APP + 0x6E;
+constexpr UINT WM_QUATTRO_TEST_TODO_MENU = WM_APP + 0x6F;
+constexpr UINT WM_QUATTRO_TEST_REMINDER_STATE = WM_APP + 0x70;
+constexpr UINT WM_QUATTRO_TEST_REMINDER_ACTION = WM_APP + 0x71;
 
 class OleDropTarget;
 
@@ -206,12 +209,16 @@ private:
     void DeleteTodoItem(int todoId);
     void ToggleTodoDone(int todoId);
     void ToggleTodoEnabled(int todoId);
+    void MarkTodoReminderViewed(int todoId);
+    void IgnoreTodoReminder(int todoId);
+    void SnoozeTodoReminder(int todoId, int minutes);
+    void ViewPendingTodoReminders();
     void ClearDoneTodos();
     void CheckTodoReminders();
-    void ShowTodoReminder(const TodoItem& item);
-    bool ShowTodoReminderPanel(const TodoItem& item);
+    bool ShowTodoReminderPanel(const std::vector<TodoItem*>& items);
     void HideTodoReminderPanel();
-    void ShowTodoSystemNotification(const TodoItem& item);
+    bool ShowTodoSystemNotification(const std::vector<TodoItem*>& items);
+    bool SaveTodoReminderState(TodoItem& item, const wchar_t* context);
     void ShowClipboardImportNotification(int count, int failedCount = 0, const std::wstring& pathDetail = L"");
     bool EnsureNotificationIcon();
     void OpenSettings();
@@ -531,7 +538,11 @@ private:
     bool noteDirty_ = false;
     UINT_PTR noteSaveTimerId_ = 0;
     UINT_PTR reminderScanTimerId_ = 0;
-    std::unordered_set<std::wstring> shownReminderKeys_;
+    std::unordered_map<std::wstring, ULONGLONG> reminderRetryAfter_;
+    std::vector<int> pendingReminderTodoIds_;
+    int lastReminderChannel_ = 0;
+    int lastReminderBatchCount_ = 0;
+    bool testReminderFailureConsumed_ = false;
 
     ID2D1Factory* d2dFactory_ = nullptr;
     IDWriteFactory* dwriteFactory_ = nullptr;

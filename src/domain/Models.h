@@ -179,6 +179,12 @@ struct TodoItem {
     std::wstring anchorAt;
     std::wstring nextDueAt;
     std::wstring completedAt;
+    std::wstring lastNotifiedDueAt;
+    std::wstring lastNotifiedAt;
+    std::wstring lastViewedDueAt;
+    std::wstring lastViewedAt;
+    std::wstring ignoredDueAt;
+    std::wstring snoozedUntil;
     int pos = 0;
     std::wstring createdAt;
     std::wstring updatedAt;

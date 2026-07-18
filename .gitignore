@@ -80,6 +80,7 @@
 # Local/manual test scripts
 /tests/*
 !/tests/ToastAcceptance.cpp
+!/tests/TodoReminderAcceptance.cpp
 !/tests/AboutTrayExitAcceptance.cpp
 !/tests/DockActivationAcceptance.cpp
 !/tests/BuiltinSystemContextMenuAcceptance.cpp

@@ -354,3 +354,102 @@ std::wstring ComputeNextTodoDueAt(const TodoItem& item, const std::wstring& afte
     }
     return ComputeNextTodoDueAt(item.scheduleKind, item.repeatMode, item.repeatInterval, item.anchorAt, afterAt);
 }
+
+std::wstring OffsetTodoTimestamp(const std::wstring& value, int seconds) {
+    SYSTEMTIME parsed{};
+    if (!TryParseTodoTimestamp(value, parsed)) {
+        return {};
+    }
+    return FormatTodoTimestamp(AddSeconds(parsed, seconds));
+}
+
+std::wstring EffectiveTodoReminderDueAt(const TodoItem& item) {
+    return item.snoozedUntil.empty() ? item.nextDueAt : item.snoozedUntil;
+}
+
+bool IsTodoReminderDue(const TodoItem& item, const std::wstring& now) {
+    if (!item.enabled || !item.completedAt.empty()) {
+        return false;
+    }
+    const std::wstring dueAt = EffectiveTodoReminderDueAt(item);
+    SYSTEMTIME due{};
+    SYSTEMTIME current{};
+    if (!TryParseTodoTimestamp(dueAt, due) || !TryParseTodoTimestamp(now, current)) {
+        return false;
+    }
+    const std::time_t dueTime = ToTimeT(due);
+    const std::time_t currentTime = ToTimeT(current);
+    return dueTime != static_cast<std::time_t>(-1) &&
+           currentTime != static_cast<std::time_t>(-1) &&
+           dueTime <= currentTime;
+}
+
+bool IsTodoReminderDelivered(const TodoItem& item) {
+    const std::wstring dueAt = EffectiveTodoReminderDueAt(item);
+    return !dueAt.empty() &&
+           (item.lastNotifiedDueAt == dueAt || item.ignoredDueAt == dueAt);
+}
+
+TodoReminderStatus GetTodoReminderStatus(const TodoItem& item, const std::wstring& now) {
+    if (!item.completedAt.empty()) {
+        return TodoReminderStatus::Completed;
+    }
+    if (!item.enabled || item.nextDueAt.empty()) {
+        return TodoReminderStatus::Disabled;
+    }
+    const std::wstring dueAt = EffectiveTodoReminderDueAt(item);
+    if (!dueAt.empty() && item.ignoredDueAt == dueAt) {
+        return TodoReminderStatus::Ignored;
+    }
+    if (!dueAt.empty() && item.lastViewedDueAt == dueAt) {
+        return TodoReminderStatus::Viewed;
+    }
+    if (!dueAt.empty() && item.lastNotifiedDueAt == dueAt) {
+        return TodoReminderStatus::Sent;
+    }
+    if (!item.snoozedUntil.empty() && !IsTodoReminderDue(item, now)) {
+        return TodoReminderStatus::Snoozed;
+    }
+    return TodoReminderStatus::Pending;
+}
+
+void ResetTodoReminderState(TodoItem& item) {
+    item.lastNotifiedDueAt.clear();
+    item.lastNotifiedAt.clear();
+    item.lastViewedDueAt.clear();
+    item.lastViewedAt.clear();
+    item.ignoredDueAt.clear();
+    item.snoozedUntil.clear();
+}
+
+void MarkTodoReminderSent(TodoItem& item, const std::wstring& now) {
+    item.lastNotifiedDueAt = EffectiveTodoReminderDueAt(item);
+    item.lastNotifiedAt = NormalizeTodoTimestamp(now);
+}
+
+void MarkTodoReminderViewed(TodoItem& item, const std::wstring& now) {
+    const std::wstring dueAt = EffectiveTodoReminderDueAt(item);
+    item.lastViewedDueAt = dueAt;
+    item.lastViewedAt = NormalizeTodoTimestamp(now);
+}
+
+void IgnoreTodoReminderOccurrence(TodoItem& item) {
+    item.ignoredDueAt = EffectiveTodoReminderDueAt(item);
+}
+
+bool SnoozeTodoReminder(TodoItem& item, const std::wstring& now, int minutes) {
+    if (minutes <= 0 || !item.completedAt.empty() || !item.enabled || item.nextDueAt.empty()) {
+        return false;
+    }
+    const std::wstring snoozedUntil = OffsetTodoTimestamp(now, minutes * 60);
+    if (snoozedUntil.empty()) {
+        return false;
+    }
+    item.snoozedUntil = snoozedUntil;
+    item.lastNotifiedDueAt.clear();
+    item.lastNotifiedAt.clear();
+    item.lastViewedDueAt.clear();
+    item.lastViewedAt.clear();
+    item.ignoredDueAt.clear();
+    return true;
+}

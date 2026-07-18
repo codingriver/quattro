@@ -825,6 +825,12 @@ std::wstring BuildTodoExportJson(const AppModel& model, const TodoExportOptions&
         out << L"        \"anchorAt\": \"" << JsonEscape(todo.anchorAt) << L"\",\n";
         out << L"        \"nextDueAt\": \"" << JsonEscape(todo.nextDueAt) << L"\",\n";
         out << L"        \"completedAt\": \"" << JsonEscape(todo.completedAt) << L"\",\n";
+        out << L"        \"lastNotifiedDueAt\": \"" << JsonEscape(todo.lastNotifiedDueAt) << L"\",\n";
+        out << L"        \"lastNotifiedAt\": \"" << JsonEscape(todo.lastNotifiedAt) << L"\",\n";
+        out << L"        \"lastViewedDueAt\": \"" << JsonEscape(todo.lastViewedDueAt) << L"\",\n";
+        out << L"        \"lastViewedAt\": \"" << JsonEscape(todo.lastViewedAt) << L"\",\n";
+        out << L"        \"ignoredDueAt\": \"" << JsonEscape(todo.ignoredDueAt) << L"\",\n";
+        out << L"        \"snoozedUntil\": \"" << JsonEscape(todo.snoozedUntil) << L"\",\n";
         out << L"        \"createdAt\": \"" << JsonEscape(todo.createdAt) << L"\",\n";
         out << L"        \"updatedAt\": \"" << JsonEscape(todo.updatedAt) << L"\"\n";
         out << L"      },\n";
@@ -944,6 +950,12 @@ TodoJsonImportReport ImportTodoJsonFile(const std::filesystem::path& appDirector
         item.anchorAt = JsonStringField(quattro, L"anchorAt", JsonStringField(entry, L"anchorAt"));
         item.nextDueAt = JsonStringField(quattro, L"nextDueAt", JsonStringField(entry, L"nextDueAt"));
         item.completedAt = JsonStringField(quattro, L"completedAt", JsonStringField(entry, L"completedAt"));
+        item.lastNotifiedDueAt = JsonStringField(quattro, L"lastNotifiedDueAt");
+        item.lastNotifiedAt = JsonStringField(quattro, L"lastNotifiedAt");
+        item.lastViewedDueAt = JsonStringField(quattro, L"lastViewedDueAt");
+        item.lastViewedAt = JsonStringField(quattro, L"lastViewedAt");
+        item.ignoredDueAt = JsonStringField(quattro, L"ignoredDueAt");
+        item.snoozedUntil = JsonStringField(quattro, L"snoozedUntil");
         item.createdAt = JsonStringField(quattro, L"createdAt", JsonStringField(entry, L"createdAt"));
         item.updatedAt = JsonStringField(quattro, L"updatedAt", JsonStringField(entry, L"updatedAt"));
         if (!quattro && item.scheduleKind == TodoScheduleKind::None && !JsonStringField(entry, L"dueAt").empty()) {

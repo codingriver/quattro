@@ -512,6 +512,17 @@ add_executable(QuattroNoteTodoAcceptance
     src/common/Utilities.cpp
 )
 
+add_executable(QuattroTodoReminderAcceptance
+    tests/TodoReminderAcceptance.cpp
+    src/common/AppLog.cpp
+    src/domain/Config.cpp
+    src/domain/MenuCatalog.cpp
+    src/domain/TrackedContextMenuProviders.cpp
+    src/services/Storage.cpp
+    src/domain/TodoSchedule.cpp
+    src/common/Utilities.cpp
+)
+
 add_executable(QuattroDbProbe
     tests/DbProbe.cpp
     src/common/AppLog.cpp
@@ -550,6 +561,7 @@ add_executable(QuattroUiScreenshotAcceptance
     src/windows/AboutDialog.cpp
     src/windows/BuiltinTools.cpp
     src/windows/ConfirmDialog.cpp
+    src/domain/Config.cpp
     src/services/ConfigPackageService.cpp
     src/services/ContextMenuProviderIconService.cpp
     src/common/FileDialog.cpp
@@ -626,6 +638,14 @@ if(QUATTRO_WITH_CURL)
 endif()
 
 target_compile_definitions(QuattroNoteTodoAcceptance PRIVATE
+    UNICODE
+    _UNICODE
+    WINVER=0x0A00
+    _WIN32_WINNT=0x0A00
+    NOMINMAX
+)
+
+target_compile_definitions(QuattroTodoReminderAcceptance PRIVATE
     UNICODE
     _UNICODE
     WINVER=0x0A00
@@ -719,6 +739,10 @@ target_compile_options(QuattroNoteTodoAcceptance PRIVATE
     $<$<CXX_COMPILER_ID:MSVC>:/W4 /permissive- /EHsc /utf-8>
 )
 
+target_compile_options(QuattroTodoReminderAcceptance PRIVATE
+    $<$<CXX_COMPILER_ID:MSVC>:/W4 /permissive- /EHsc /utf-8>
+)
+
 target_compile_options(QuattroDbProbe PRIVATE
     $<$<CXX_COMPILER_ID:MSVC>:/W4 /permissive- /EHsc /utf-8>
 )
@@ -762,6 +786,10 @@ target_compile_options(QuattroWebDavAcceptance PRIVATE
 target_include_directories(QuattroTests PRIVATE
     src
     "${CMAKE_CURRENT_BINARY_DIR}/generated"
+)
+
+target_include_directories(QuattroTodoReminderAcceptance PRIVATE
+    src
 )
 
 target_include_directories(QuattroThemeStateProbe PRIVATE
@@ -808,6 +836,15 @@ target_link_libraries(QuattroNoteTodoAcceptance PRIVATE
     shlwapi
     user32
     wininet
+)
+
+target_link_libraries(QuattroTodoReminderAcceptance PRIVATE
+    sqlite3
+    ccronexpr
+    bcrypt
+    shell32
+    shlwapi
+    user32
 )
 
 target_link_libraries(QuattroDbProbe PRIVATE
