@@ -1223,23 +1223,16 @@ bool StorageService::SetTodoCompleted(int todoId, bool completed) {
     }
 
     const std::wstring now = CurrentTodoTimestamp();
-    if (completed && IsRecurringTodoSchedule(item.scheduleKind)) {
-        ++item.repeatFinished;
-        if (item.repeatLimit > 0 && item.repeatFinished >= item.repeatLimit) {
-            item.completedAt = now;
-            item.nextDueAt.clear();
-        } else {
-            item.completedAt.clear();
-            item.nextDueAt = ComputeNextTodoDueAt(item, now);
-        }
+    if (completed) {
+        CompleteTodoOccurrence(item, now);
     } else {
-        item.completedAt = completed ? now : L"";
-        if (!completed && IsRecurringTodoSchedule(item.scheduleKind) && item.nextDueAt.empty()) {
+        item.completedAt.clear();
+        if (IsRecurringTodoSchedule(item.scheduleKind) && item.nextDueAt.empty()) {
             item.nextDueAt = ComputeNextTodoDueAt(item, now);
         }
+        ResetTodoReminderState(item);
+        item.updatedAt = now;
     }
-    ResetTodoReminderState(item);
-    item.updatedAt = now;
 
     SQLiteStatement statement(db.get(), L"UPDATE TodoItems SET NextDueAt=?,CompletedAt=?,RepeatFinished=?,LastNotifiedDueAt='',LastNotifiedAt='',LastViewedDueAt='',LastViewedAt='',IgnoredDueAt='',SnoozedUntil='',UpdatedAt=? WHERE ID=?;");
     if (!statement.ok()) {
@@ -1257,6 +1250,130 @@ bool StorageService::SetTodoCompleted(int todoId, bool completed) {
         return false;
     }
     return sqlite3_changes(db.get()) > 0;
+}
+
+bool StorageService::CompleteOverdueTodos(int tagId, const std::wstring& now, TodoBatchCompleteResult& result) {
+    result = {};
+    lastError_.clear();
+    const std::wstring normalizedNow = NormalizeTodoTimestamp(now);
+    if (tagId <= 0 || normalizedNow.empty()) {
+        lastError_ = L"批量完成逾期待办参数无效。";
+        return false;
+    }
+
+    SQLiteDatabase db(appDirectory_ / L"db" / L"link.db");
+    if (!db.ok()) {
+        lastError_ = db.Error();
+        return false;
+    }
+    CreateSchema(db.get(), lastError_);
+    MigrateSchema(db.get(), lastError_);
+    if (!lastError_.empty() || !Exec(db.get(), "BEGIN IMMEDIATE;", lastError_)) {
+        return false;
+    }
+    auto rollback = [&]() {
+        std::wstring ignored;
+        Exec(db.get(), "ROLLBACK;", ignored);
+    };
+
+    std::vector<TodoItem> overdueItems;
+    SQLiteStatement query(db.get(),
+        L"SELECT ID,TagId,Title,Content,Enabled,ScheduleKind,RepeatMode,RepeatInterval,RepeatLimit,RepeatFinished,CronExpression,AnchorAt,NextDueAt,CompletedAt,LastNotifiedDueAt,LastNotifiedAt,LastViewedDueAt,LastViewedAt,IgnoredDueAt,SnoozedUntil,POS,CreatedAt,UpdatedAt "
+        L"FROM TodoItems WHERE TagId=? ORDER BY POS,ID;");
+    if (!query.ok()) {
+        lastError_ = L"查询逾期待办 SQL 准备失败。";
+        rollback();
+        return false;
+    }
+    query.bindInt(1, tagId);
+    for (;;) {
+        const int step = query.step();
+        if (step == SQLITE_DONE) break;
+        if (step != SQLITE_ROW) {
+            const void* message = sqlite3_errmsg16(db.get());
+            lastError_ = message ? static_cast<const wchar_t*>(message) : L"查询逾期待办失败。";
+            rollback();
+            return false;
+        }
+        TodoItem item;
+        item.id = query.columnInt(0);
+        item.tagId = query.columnInt(1);
+        item.title = query.columnText(2);
+        item.content = query.columnText(3);
+        item.enabled = query.columnInt(4) != 0;
+        item.scheduleKind = static_cast<TodoScheduleKind>(query.columnInt(5));
+        item.repeatMode = static_cast<TodoRepeatMode>(query.columnInt(6));
+        item.repeatInterval = std::max(1, query.columnInt(7));
+        item.repeatLimit = std::max(0, query.columnInt(8));
+        item.repeatFinished = std::max(0, query.columnInt(9));
+        item.cronExpression = query.columnText(10);
+        item.anchorAt = query.columnText(11);
+        item.nextDueAt = query.columnText(12);
+        item.completedAt = query.columnText(13);
+        item.lastNotifiedDueAt = query.columnText(14);
+        item.lastNotifiedAt = query.columnText(15);
+        item.lastViewedDueAt = query.columnText(16);
+        item.lastViewedAt = query.columnText(17);
+        item.ignoredDueAt = query.columnText(18);
+        item.snoozedUntil = query.columnText(19);
+        item.pos = query.columnInt(20);
+        item.createdAt = query.columnText(21);
+        item.updatedAt = query.columnText(22);
+        if (IsTodoOverdueAt(item, normalizedNow)) {
+            overdueItems.push_back(std::move(item));
+        }
+    }
+
+    int failAfter = 0;
+    if (QuattroTestMode()) {
+        wchar_t value[16]{};
+        const DWORD length = GetEnvironmentVariableW(
+            L"QUATTRO_TEST_TODO_BATCH_FAIL_AFTER", value, static_cast<DWORD>(std::size(value)));
+        if (length > 0 && length < std::size(value)) failAfter = std::max(0, _wtoi(value));
+    }
+
+    int updatedCount = 0;
+    for (auto& item : overdueItems) {
+        const TodoCompletionOutcome outcome = CompleteTodoOccurrence(item, normalizedNow);
+        SQLiteStatement update(db.get(),
+            L"UPDATE TodoItems SET NextDueAt=?,CompletedAt=?,RepeatFinished=?,LastNotifiedDueAt='',LastNotifiedAt='',LastViewedDueAt='',LastViewedAt='',IgnoredDueAt='',SnoozedUntil='',UpdatedAt=? WHERE ID=?;");
+        if (!update.ok()) {
+            lastError_ = L"批量完成逾期待办 SQL 准备失败。";
+            rollback();
+            return false;
+        }
+        update.bindText(1, item.nextDueAt);
+        update.bindText(2, item.completedAt);
+        update.bindInt(3, item.repeatFinished);
+        update.bindText(4, item.updatedAt);
+        update.bindInt(5, item.id);
+        if (update.step() != SQLITE_DONE) {
+            const void* message = sqlite3_errmsg16(db.get());
+            lastError_ = message ? static_cast<const wchar_t*>(message) : L"批量完成逾期待办失败。";
+            rollback();
+            return false;
+        }
+        ++updatedCount;
+        if (outcome == TodoCompletionOutcome::AdvancedRecurring) {
+            ++result.advancedRecurringCount;
+        } else if (outcome == TodoCompletionOutcome::Completed) {
+            ++result.completedCount;
+        }
+        result.updatedItems.push_back(item);
+        if (failAfter > 0 && updatedCount >= failAfter) {
+            lastError_ = L"测试注入：批量完成逾期待办事务失败。";
+            rollback();
+            result = {};
+            return false;
+        }
+    }
+
+    if (!Exec(db.get(), "COMMIT;", lastError_)) {
+        rollback();
+        result = {};
+        return false;
+    }
+    return true;
 }
 
 bool StorageService::SetTodoEnabled(int todoId, bool enabled) {

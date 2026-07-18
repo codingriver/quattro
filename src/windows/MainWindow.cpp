@@ -1294,20 +1294,7 @@ std::wstring TodoScheduleText(const TodoItem& item) {
 }
 
 bool IsTodoOverdue(const TodoItem& item) {
-    if (!item.enabled || !item.completedAt.empty() || item.nextDueAt.empty()) {
-        return false;
-    }
-    SYSTEMTIME due{};
-    SYSTEMTIME now{};
-    if (!TryParseTodoTimestamp(item.nextDueAt, due)) {
-        return false;
-    }
-    GetLocalTime(&now);
-    FILETIME dueFile{};
-    FILETIME nowFile{};
-    return SystemTimeToFileTime(&due, &dueFile) &&
-           SystemTimeToFileTime(&now, &nowFile) &&
-           CompareFileTime(&dueFile, &nowFile) < 0;
+    return IsTodoOverdueAt(item, CurrentTodoTimestamp());
 }
 
 std::optional<std::int64_t> TodoRemainingSeconds(const TodoItem& item) {
@@ -2402,6 +2389,30 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         else if (wParam == 5) SnoozeTodoReminder(static_cast<int>(lParam), 60);
         else return FALSE;
         return TRUE;
+    case WM_QUATTRO_TEST_COMPLETE_OVERDUE:
+        if (!QuattroTestMode()) return FALSE;
+        CompleteOverdueTodosInTag(static_cast<int>(wParam), false);
+        return TRUE;
+    case WM_QUATTRO_TEST_TODO_TAG_MENU:
+        if (QuattroTestMode()) {
+            RECT rect{};
+            GetWindowRect(hwnd_, &rect);
+            ShowTagMenu(static_cast<int>(wParam), POINT{rect.left + 80, rect.top + 120});
+            return TRUE;
+        }
+        return FALSE;
+    case WM_QUATTRO_TEST_SYSTEM_REMINDER:
+        if (QuattroTestMode()) {
+            std::vector<TodoItem*> items;
+            const std::wstring now = CurrentTodoTimestamp();
+            for (auto& item : model_.todos) {
+                if (IsTodoReminderDue(item, now)) items.push_back(&item);
+            }
+            lastReminderChannel_ = 2;
+            lastReminderBatchCount_ = static_cast<int>(items.size());
+            return ShowTodoSystemNotification(items) ? TRUE : FALSE;
+        }
+        return FALSE;
     case WM_QUATTRO_EXIT_INSTANCE:
         WriteAppLog(L"收到同路径实例退出通知，销毁主窗口。");
         DestroyWindow(hwnd_);
@@ -3146,6 +3157,9 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             return 0;
         case ID_MENU_CLEAR_DONE_TODOS:
             ClearDoneTodos();
+            return 0;
+        case ID_MENU_COMPLETE_OVERDUE_TODOS:
+            CompleteOverdueTodosInTag(CommandTagId());
             return 0;
         case ID_MENU_TODO_SORT_DUE:
             SetCurrentTodoSort(0);
@@ -4897,26 +4911,19 @@ void MainWindow::ToggleTodoDone(int todoId) {
         MessageBoxW(hwnd_, storageService_.lastError().c_str(), L"待办事项", MB_OK | MB_ICONWARNING);
         return;
     }
-    if (complete && IsRecurringTodoSchedule(item->scheduleKind)) {
-        ++item->repeatFinished;
-        if (item->repeatLimit > 0 && item->repeatFinished >= item->repeatLimit) {
-            item->completedAt = now;
-            item->nextDueAt.clear();
-        } else {
-            item->completedAt.clear();
-            item->nextDueAt = ComputeNextTodoDueAt(*item, now);
-            if (!item->nextDueAt.empty()) {
-                ShowToast(L"本次已完成，下次提醒：" + item->nextDueAt, ThemedToastRole::Info);
-            }
+    if (complete) {
+        const TodoCompletionOutcome outcome = CompleteTodoOccurrence(*item, now);
+        if (outcome == TodoCompletionOutcome::AdvancedRecurring && !item->nextDueAt.empty()) {
+            ShowToast(L"本次已完成，下次提醒：" + item->nextDueAt, ThemedToastRole::Info);
         }
     } else {
-        item->completedAt = complete ? now : L"";
-        if (!complete && IsRecurringTodoSchedule(item->scheduleKind) && item->nextDueAt.empty()) {
+        item->completedAt.clear();
+        if (IsRecurringTodoSchedule(item->scheduleKind) && item->nextDueAt.empty()) {
             item->nextDueAt = ComputeNextTodoDueAt(*item, now);
         }
+        ResetTodoReminderState(*item);
+        item->updatedAt = now;
     }
-    ResetTodoReminderState(*item);
-    item->updatedAt = now;
     selectedTodoId_ = todoId;
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
@@ -5083,6 +5090,82 @@ void MainWindow::ClearDoneTodos() {
     }
     InvalidateRect(hwnd_, nullptr, FALSE);
     ShowToast(L"已清空 " + std::to_wstring(doneIds.size()) + L" 项已完成待办。", ThemedToastRole::Success);
+}
+
+int MainWindow::OverdueTodoCount(int tagId, int* recurringCount, const std::wstring& now) const {
+    int count = 0;
+    int recurring = 0;
+    const std::wstring effectiveNow = now.empty() ? CurrentTodoTimestamp() : now;
+    for (const auto& item : model_.todos) {
+        if (item.tagId != tagId || !IsTodoOverdueAt(item, effectiveNow)) continue;
+        ++count;
+        if (IsRecurringTodoSchedule(item.scheduleKind)) ++recurring;
+    }
+    if (recurringCount) *recurringCount = recurring;
+    return count;
+}
+
+void MainWindow::CompleteOverdueTodosInTag(int tagId, bool confirm) {
+    Group* tag = FindGroup(tagId);
+    if (!tag || !IsTodoItemsTag(*tag)) return;
+
+    const std::wstring now = CurrentTodoTimestamp();
+    int recurringCount = 0;
+    const int overdueCount = OverdueTodoCount(tagId, &recurringCount, now);
+    if (overdueCount <= 0) {
+        ShowToast(L"当前标签没有逾期待办。", ThemedToastRole::Info);
+        return;
+    }
+    if (confirm) {
+        std::wstring message = L"将完成当前标签中的 " + std::to_wstring(overdueCount) + L" 项逾期待办。";
+        if (recurringCount > 0) {
+            message += L"\n其中 " + std::to_wstring(recurringCount) +
+                L" 项为重复待办；未达到重复上限的项目将推进到下一次提醒。";
+        }
+        message += L"\n\n是否继续？";
+        if (MessageBoxW(hwnd_, message.c_str(), L"完成全部逾期待办", MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) != IDYES) {
+            return;
+        }
+    }
+
+    TodoBatchCompleteResult result;
+    if (!storageService_.CompleteOverdueTodos(tagId, now, result)) {
+        MessageBoxW(hwnd_, storageService_.lastError().c_str(), L"完成全部逾期待办", MB_OK | MB_ICONWARNING);
+        return;
+    }
+    if (result.updatedItems.empty()) {
+        ShowToast(L"当前标签没有逾期待办。", ThemedToastRole::Info);
+        return;
+    }
+
+    std::unordered_set<int> updatedIds;
+    for (const auto& updated : result.updatedItems) {
+        updatedIds.insert(updated.id);
+        if (TodoItem* item = FindTodoItem(updated.id)) *item = updated;
+    }
+    std::erase_if(pendingReminderTodoIds_, [&](int id) { return updatedIds.contains(id); });
+    std::erase_if(reminderRetryAfter_, [&](const auto& entry) {
+        for (int id : updatedIds) {
+            if (entry.first.starts_with(std::to_wstring(id) + L"|")) return true;
+        }
+        return false;
+    });
+    HideTodoReminderPanel();
+    InvalidateRect(hwnd_, nullptr, FALSE);
+
+    std::wstring summary = L"已处理 " + std::to_wstring(result.updatedItems.size()) + L" 项逾期待办";
+    if (result.completedCount > 0 || result.advancedRecurringCount > 0) {
+        summary += L"：";
+        if (result.completedCount > 0) {
+            summary += std::to_wstring(result.completedCount) + L" 项已完成";
+        }
+        if (result.advancedRecurringCount > 0) {
+            if (result.completedCount > 0) summary += L"，";
+            summary += std::to_wstring(result.advancedRecurringCount) + L" 项已推进到下一次提醒";
+        }
+    }
+    summary += L"。";
+    ShowToast(summary, ThemedToastRole::Success, 5000);
 }
 
 void MainWindow::CheckTodoReminders() {
@@ -7506,9 +7589,7 @@ void MainWindow::ShowTagMenu(int tagId, POINT screenPoint) {
     AppendThemedMenuItem(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(moveMenu), L"移动到", true);
     if (tag && IsTodoItemsTag(*tag)) {
         AppendThemedSeparator(menu);
-        AppendThemedMenuItem(menu, MF_STRING, ID_MENU_ADD_TODO_ITEM, L"新增待办事项");
-        AppendTodoSortItems(menu, tag);
-        AppendThemedMenuItem(menu, MF_STRING, ID_MENU_CLEAR_DONE_TODOS, L"清空已完成");
+        AppendTodoPageItems(menu, tag);
     } else if (!tag || !IsNoteTag(*tag)) {
         AppendThemedSeparator(menu);
         AppendAddLinkItems(menu);
@@ -7547,9 +7628,7 @@ void MainWindow::ShowBackgroundMenu(POINT screenPoint) {
     HMENU menu = CreatePopupMenu();
     Group* tag = FindGroup(currentTagId_);
     if (tag && IsTodoItemsTag(*tag)) {
-        AppendThemedMenuItem(menu, MF_STRING, ID_MENU_ADD_TODO_ITEM, L"新增待办事项");
-        AppendTodoSortItems(menu, tag);
-        AppendThemedMenuItem(menu, MF_STRING, ID_MENU_CLEAR_DONE_TODOS, L"清空已完成");
+        AppendTodoPageItems(menu, tag);
     } else if (!tag || !IsNoteTag(*tag)) {
         AppendAddLinkItems(menu);
         AppendThemedSeparator(menu);
@@ -7615,6 +7694,19 @@ void MainWindow::AppendTodoSortItems(HMENU menu, const Group* tag) {
     AppendThemedStateMenuItem(sortMenu, MF_STRING, ID_MENU_TODO_SORT_TITLE, L"按标题", sort == 2, MenuIconSort);
     AppendThemedStateMenuItem(sortMenu, MF_STRING, ID_MENU_TODO_SORT_STATUS, L"按完成状态", sort == 3, MenuIconSort);
     AppendThemedMenuItem(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(sortMenu), L"排序方式", true);
+}
+
+void MainWindow::AppendTodoPageItems(HMENU menu, const Group* tag) {
+    AppendThemedMenuItem(menu, MF_STRING, ID_MENU_ADD_TODO_ITEM, L"新增待办事项");
+    AppendTodoSortItems(menu, tag);
+    AppendThemedSeparator(menu);
+    const int overdueCount = tag ? OverdueTodoCount(tag->id) : 0;
+    AppendThemedMenuItem(
+        menu,
+        MF_STRING | (overdueCount <= 0 ? MF_GRAYED : 0),
+        ID_MENU_COMPLETE_OVERDUE_TODOS,
+        L"标记全部逾期项为完成（" + std::to_wstring(overdueCount) + L" 项）");
+    AppendThemedMenuItem(menu, MF_STRING, ID_MENU_CLEAR_DONE_TODOS, L"清空已完成");
 }
 
 void MainWindow::AppendUnifiedViewOptionItems(HMENU menu) {

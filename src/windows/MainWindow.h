@@ -47,6 +47,9 @@ constexpr UINT WM_QUATTRO_TEST_DOCK_HIDDEN = WM_APP + 0x6E;
 constexpr UINT WM_QUATTRO_TEST_TODO_MENU = WM_APP + 0x6F;
 constexpr UINT WM_QUATTRO_TEST_REMINDER_STATE = WM_APP + 0x70;
 constexpr UINT WM_QUATTRO_TEST_REMINDER_ACTION = WM_APP + 0x71;
+constexpr UINT WM_QUATTRO_TEST_COMPLETE_OVERDUE = WM_APP + 0x72;
+constexpr UINT WM_QUATTRO_TEST_TODO_TAG_MENU = WM_APP + 0x73;
+constexpr UINT WM_QUATTRO_TEST_SYSTEM_REMINDER = WM_APP + 0x74;
 
 class OleDropTarget;
 
@@ -214,6 +217,11 @@ private:
     void SnoozeTodoReminder(int todoId, int minutes);
     void ViewPendingTodoReminders();
     void ClearDoneTodos();
+    void CompleteOverdueTodosInTag(int tagId, bool confirm = true);
+    int OverdueTodoCount(
+        int tagId,
+        int* recurringCount = nullptr,
+        const std::wstring& now = {}) const;
     void CheckTodoReminders();
     bool ShowTodoReminderPanel(const std::vector<TodoItem*>& items);
     void HideTodoReminderPanel();
@@ -317,6 +325,7 @@ private:
     void AppendAddLinkItems(HMENU menu);
     void AppendViewOptionItems(HMENU menu, const Group* tag);
     void AppendTodoSortItems(HMENU menu, const Group* tag);
+    void AppendTodoPageItems(HMENU menu, const Group* tag);
     void AppendUnifiedViewOptionItems(HMENU menu);
     void AppendSystemFunctionItems(HMENU menu, UINT commandBase = ID_MENU_SYSTEM_FUNCTION_BASE);
     void AppendToolItems(HMENU menu);

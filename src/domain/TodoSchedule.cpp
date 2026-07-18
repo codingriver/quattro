@@ -384,6 +384,22 @@ bool IsTodoReminderDue(const TodoItem& item, const std::wstring& now) {
            dueTime <= currentTime;
 }
 
+bool IsTodoOverdueAt(const TodoItem& item, const std::wstring& now) {
+    if (!item.enabled || !item.completedAt.empty() || item.nextDueAt.empty()) {
+        return false;
+    }
+    SYSTEMTIME due{};
+    SYSTEMTIME current{};
+    if (!TryParseTodoTimestamp(item.nextDueAt, due) || !TryParseTodoTimestamp(now, current)) {
+        return false;
+    }
+    const std::time_t dueTime = ToTimeT(due);
+    const std::time_t currentTime = ToTimeT(current);
+    return dueTime != static_cast<std::time_t>(-1) &&
+           currentTime != static_cast<std::time_t>(-1) &&
+           dueTime < currentTime;
+}
+
 bool IsTodoReminderDelivered(const TodoItem& item) {
     const std::wstring dueAt = EffectiveTodoReminderDueAt(item);
     return !dueAt.empty() &&
@@ -452,4 +468,29 @@ bool SnoozeTodoReminder(TodoItem& item, const std::wstring& now, int minutes) {
     item.lastViewedAt.clear();
     item.ignoredDueAt.clear();
     return true;
+}
+
+TodoCompletionOutcome CompleteTodoOccurrence(TodoItem& item, const std::wstring& now) {
+    if (!item.completedAt.empty()) {
+        return TodoCompletionOutcome::NoChange;
+    }
+    if (IsRecurringTodoSchedule(item.scheduleKind)) {
+        ++item.repeatFinished;
+        if (item.repeatLimit > 0 && item.repeatFinished >= item.repeatLimit) {
+            item.completedAt = now;
+            item.nextDueAt.clear();
+            ResetTodoReminderState(item);
+            item.updatedAt = now;
+            return TodoCompletionOutcome::Completed;
+        }
+        item.completedAt.clear();
+        item.nextDueAt = ComputeNextTodoDueAt(item, now);
+        ResetTodoReminderState(item);
+        item.updatedAt = now;
+        return TodoCompletionOutcome::AdvancedRecurring;
+    }
+    item.completedAt = now;
+    ResetTodoReminderState(item);
+    item.updatedAt = now;
+    return TodoCompletionOutcome::Completed;
 }

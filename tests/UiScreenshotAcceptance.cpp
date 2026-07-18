@@ -1398,6 +1398,21 @@ void RunMainWindowScenario(
     reminderTodo.nextDueAt = reminderTodo.anchorAt;
     reminderTodo.pos = -1;
     state.Check(storage.InsertTodoItem(reminderTodo), L"todo-reminder-menu: seed todo failed");
+    Group futureTag;
+    futureTag.name = L"未逾期待办";
+    futureTag.parentGroup = reminderGroup.id;
+    futureTag.type = 4;
+    futureTag.content = L"todoItems";
+    futureTag.pos = -1;
+    state.Check(storage.InsertGroup(futureTag), L"todo-tag-overdue-menu: seed future tag failed");
+    TodoItem futureTodo;
+    futureTodo.tagId = futureTag.id;
+    futureTodo.title = L"尚未到期的待办";
+    futureTodo.scheduleKind = TodoScheduleKind::Once;
+    futureTodo.anchorAt = L"2099-01-01 09:00:00";
+    futureTodo.nextDueAt = futureTodo.anchorAt;
+    futureTodo.pos = -1;
+    state.Check(storage.InsertTodoItem(futureTodo), L"todo-tag-overdue-menu: seed future todo failed");
     ConfigService childConfig(childEnvironment.root() / L"conf.ini");
     AppConfig childSettings = childConfig.Load();
     childSettings.currentGroupId = reminderGroup.id;
@@ -1479,6 +1494,52 @@ void RunMainWindowScenario(
             PostMessageW(hwnd, WM_CANCELMODE, 0, 0);
         }
         menuThread.join();
+
+        Sleep(100);
+        std::thread tagMenuThread([&]() {
+            constexpr UINT kTestTodoTagMenuMessage = WM_APP + 0x73;
+            SendMessageW(hwnd, kTestTodoTagMenuMessage, static_cast<WPARAM>(reminderTag.id), 0);
+        });
+        HWND tagPopup = WaitForTopWindow(FindWindowRequest{L"#32768", L"", process.dwProcessId}, 5000);
+        state.Check(tagPopup != nullptr, L"todo-tag-overdue-menu: popup did not appear");
+        if (tagPopup) {
+            BitmapCapture popupCapture = CaptureWindowBitmap(tagPopup);
+            state.Check(
+                popupCapture.bitmap && BitmapHasVisualContent(popupCapture.bitmap, popupCapture.width, popupCapture.height),
+                L"todo-tag-overdue-menu: popup screenshot is invalid");
+            if (popupCapture.bitmap) {
+                state.Check(
+                    SavePng(popupCapture.bitmap, outputDir / (L"todo-tag-overdue-menu-" + dpiSuffix + L".png")),
+                    L"todo-tag-overdue-menu: screenshot save failed");
+                DeleteObject(popupCapture.bitmap);
+            }
+            PostMessageW(tagPopup, WM_CANCELMODE, 0, 0);
+            PostMessageW(hwnd, WM_CANCELMODE, 0, 0);
+        }
+        tagMenuThread.join();
+
+        Sleep(100);
+        std::thread noOverdueMenuThread([&]() {
+            constexpr UINT kTestTodoTagMenuMessage = WM_APP + 0x73;
+            SendMessageW(hwnd, kTestTodoTagMenuMessage, static_cast<WPARAM>(futureTag.id), 0);
+        });
+        HWND noOverduePopup = WaitForTopWindow(FindWindowRequest{L"#32768", L"", process.dwProcessId}, 5000);
+        state.Check(noOverduePopup != nullptr, L"todo-tag-no-overdue-menu: popup did not appear");
+        if (noOverduePopup) {
+            BitmapCapture popupCapture = CaptureWindowBitmap(noOverduePopup);
+            state.Check(
+                popupCapture.bitmap && BitmapHasVisualContent(popupCapture.bitmap, popupCapture.width, popupCapture.height),
+                L"todo-tag-no-overdue-menu: popup screenshot is invalid");
+            if (popupCapture.bitmap) {
+                state.Check(
+                    SavePng(popupCapture.bitmap, outputDir / (L"todo-tag-no-overdue-menu-" + dpiSuffix + L".png")),
+                    L"todo-tag-no-overdue-menu: screenshot save failed");
+                DeleteObject(popupCapture.bitmap);
+            }
+            PostMessageW(noOverduePopup, WM_CANCELMODE, 0, 0);
+            PostMessageW(hwnd, WM_CANCELMODE, 0, 0);
+        }
+        noOverdueMenuThread.join();
         PostMessageW(hwnd, WM_COMMAND, MAKEWPARAM(ID_MENU_EXIT, 0), 0);
     } else {
         state.Check(false, L"main-window: window did not appear");

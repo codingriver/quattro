@@ -5,6 +5,12 @@
 #include <filesystem>
 #include <string>
 
+struct TodoBatchCompleteResult {
+    int completedCount = 0;
+    int advancedRecurringCount = 0;
+    std::vector<TodoItem> updatedItems;
+};
+
 class StorageService {
 public:
     explicit StorageService(std::filesystem::path appDirectory);
@@ -22,6 +28,7 @@ public:
     bool UpdateTodoItem(const TodoItem& item);
     bool DeleteTodoItem(int todoId);
     bool SetTodoCompleted(int todoId, bool completed);
+    bool CompleteOverdueTodos(int tagId, const std::wstring& now, TodoBatchCompleteResult& result);
     bool SetTodoEnabled(int todoId, bool enabled);
     bool UpdateTodoReminderState(const TodoItem& item);
     const std::wstring& lastError() const { return lastError_; }

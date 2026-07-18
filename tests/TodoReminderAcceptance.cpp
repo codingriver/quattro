@@ -11,12 +11,15 @@
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
 constexpr UINT kReminderStateMessage = WM_APP + 0x70;
 constexpr UINT kTrayMessage = WM_APP + 0x66;
 constexpr UINT kReminderActionMessage = WM_APP + 0x71;
+constexpr UINT kCompleteOverdueMessage = WM_APP + 0x72;
+constexpr UINT kSystemReminderMessage = WM_APP + 0x74;
 int failures = 0;
 
 void Check(bool condition, const char* name) {
@@ -54,6 +57,8 @@ void CheckReminderDomainRules() {
           "ignore command uses semantic icon");
     Check(MenuIconFor(ID_MENU_TODO_REMINDER_SNOOZE_30, L"30 分钟后") == MenuIconHistory,
           "snooze command uses semantic icon");
+    Check(MenuIconFor(ID_MENU_COMPLETE_OVERDUE_TODOS, L"标记全部逾期项为完成") == MenuIconList,
+          "bulk overdue completion uses semantic icon");
 }
 
 bool Exec(sqlite3* db, const char* sql) {
@@ -138,6 +143,45 @@ HWND WaitForMainWindow(DWORD processId, DWORD timeoutMs = 10000) {
         if (HWND hwnd = FindProcessWindow(processId)) {
             return hwnd;
         }
+        Sleep(50);
+    }
+    return nullptr;
+}
+
+HWND FindProcessWindowByClass(DWORD processId, const std::wstring& expectedClass, const std::wstring& expectedTitle = {}) {
+    struct Context {
+        DWORD processId = 0;
+        const std::wstring* expectedClass = nullptr;
+        const std::wstring* expectedTitle = nullptr;
+        HWND result = nullptr;
+    } context{processId, &expectedClass, &expectedTitle, nullptr};
+    EnumWindows([](HWND hwnd, LPARAM value) -> BOOL {
+        auto* context = reinterpret_cast<Context*>(value);
+        DWORD ownerProcessId = 0;
+        GetWindowThreadProcessId(hwnd, &ownerProcessId);
+        if (ownerProcessId != context->processId) return TRUE;
+        wchar_t className[128]{};
+        wchar_t title[256]{};
+        GetClassNameW(hwnd, className, static_cast<int>(std::size(className)));
+        GetWindowTextW(hwnd, title, static_cast<int>(std::size(title)));
+        if (std::wstring(className) == *context->expectedClass &&
+            (context->expectedTitle->empty() || std::wstring(title) == *context->expectedTitle)) {
+            context->result = hwnd;
+            return FALSE;
+        }
+        return TRUE;
+    }, reinterpret_cast<LPARAM>(&context));
+    return context.result;
+}
+
+HWND WaitForProcessWindowByClass(
+    DWORD processId,
+    const std::wstring& expectedClass,
+    const std::wstring& expectedTitle,
+    DWORD timeoutMs = 5000) {
+    const ULONGLONG started = GetTickCount64();
+    while (GetTickCount64() - started < timeoutMs) {
+        if (HWND hwnd = FindProcessWindowByClass(processId, expectedClass, expectedTitle)) return hwnd;
         Sleep(50);
     }
     return nullptr;
@@ -302,6 +346,101 @@ const TodoItem* FindTodo(const AppModel& model, int id) {
     return nullptr;
 }
 
+void CheckBatchCompletion(const std::filesystem::path& root) {
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    StorageService storage(root);
+    storage.Load();
+    Group group;
+    group.name = L"BatchCompletion";
+    group.pos = -1;
+    Check(storage.InsertGroup(group), "batch completion seed group");
+    Group tag;
+    tag.name = L"BatchTodos";
+    tag.parentGroup = group.id;
+    tag.type = 4;
+    tag.content = L"todoItems";
+    tag.pos = -1;
+    Check(storage.InsertGroup(tag), "batch completion seed tag");
+
+    auto insertOnce = [&](const wchar_t* title, const wchar_t* dueAt, bool enabled = true) {
+        TodoItem item;
+        item.tagId = tag.id;
+        item.title = title;
+        item.enabled = enabled;
+        item.scheduleKind = TodoScheduleKind::Once;
+        item.anchorAt = dueAt;
+        item.nextDueAt = dueAt;
+        item.pos = -1;
+        Check(storage.InsertTodoItem(item), "batch completion seed once todo");
+        return item;
+    };
+
+    TodoItem overdue = insertOnce(L"BatchOverdue", L"2020-01-01 09:00:00");
+    overdue.lastNotifiedDueAt = overdue.nextDueAt;
+    overdue.lastNotifiedAt = L"2020-01-01 09:00:01";
+    Check(storage.UpdateTodoReminderState(overdue), "batch completion seed reminder state");
+    TodoItem snoozed = insertOnce(L"BatchSnoozed", L"2020-01-02 09:00:00");
+    snoozed.snoozedUntil = L"2099-01-01 09:00:00";
+    Check(storage.UpdateTodoReminderState(snoozed), "batch completion seed snoozed state");
+    TodoItem disabled = insertOnce(L"BatchDisabled", L"2020-01-03 09:00:00", false);
+    TodoItem future = insertOnce(L"BatchFuture", L"2099-01-01 09:00:00");
+    TodoItem boundary = insertOnce(L"BatchBoundary", L"2026-07-18 12:00:00");
+    TodoItem alreadyDone = insertOnce(L"BatchAlreadyDone", L"2020-01-04 09:00:00");
+    Check(storage.SetTodoCompleted(alreadyDone.id, true), "batch completion seed completed todo");
+
+    TodoItem recurring;
+    recurring.tagId = tag.id;
+    recurring.title = L"BatchRecurring";
+    recurring.scheduleKind = TodoScheduleKind::Daily;
+    recurring.repeatMode = TodoRepeatMode::FixedPoint;
+    recurring.anchorAt = L"2020-01-05 09:00:00";
+    recurring.nextDueAt = recurring.anchorAt;
+    recurring.lastNotifiedDueAt = recurring.nextDueAt;
+    recurring.lastNotifiedAt = L"2020-01-05 09:00:01";
+    recurring.pos = -1;
+    Check(storage.InsertTodoItem(recurring), "batch completion seed recurring todo");
+
+    TodoBatchCompleteResult result;
+    const std::wstring now = L"2026-07-18 12:00:00";
+    Check(storage.CompleteOverdueTodos(tag.id, now, result), "batch completion transaction succeeds");
+    Check(result.updatedItems.size() == 3 && result.completedCount == 2 && result.advancedRecurringCount == 1,
+          "batch completion reports completed and advanced counts");
+
+    AppModel model = storage.Load();
+    const TodoItem* loadedOverdue = FindTodo(model, overdue.id);
+    const TodoItem* loadedSnoozed = FindTodo(model, snoozed.id);
+    const TodoItem* loadedRecurring = FindTodo(model, recurring.id);
+    const TodoItem* loadedDisabled = FindTodo(model, disabled.id);
+    const TodoItem* loadedFuture = FindTodo(model, future.id);
+    const TodoItem* loadedBoundary = FindTodo(model, boundary.id);
+    Check(loadedOverdue && !loadedOverdue->completedAt.empty() && loadedOverdue->lastNotifiedDueAt.empty(),
+          "batch completion completes one-time overdue todo and clears reminder state");
+    Check(loadedSnoozed && !loadedSnoozed->completedAt.empty() && loadedSnoozed->snoozedUntil.empty(),
+          "batch completion includes snoozed todo whose schedule is overdue");
+    Check(loadedRecurring && loadedRecurring->completedAt.empty() && loadedRecurring->repeatFinished == 1 &&
+              loadedRecurring->nextDueAt > now && loadedRecurring->lastNotifiedDueAt.empty(),
+          "batch completion advances recurring todo once and clears reminder state");
+    Check(loadedDisabled && loadedDisabled->completedAt.empty(), "batch completion excludes disabled todo");
+    Check(loadedFuture && loadedFuture->completedAt.empty(), "batch completion excludes future todo");
+    Check(loadedBoundary && loadedBoundary->completedAt.empty(), "batch completion excludes exact-time boundary");
+
+    TodoItem rollbackA = insertOnce(L"BatchRollbackA", L"2020-02-01 09:00:00");
+    TodoItem rollbackB = insertOnce(L"BatchRollbackB", L"2020-02-02 09:00:00");
+    SetEnvironmentVariableW(L"QUATTRO_TEST_MODE", L"1");
+    SetEnvironmentVariableW(L"QUATTRO_TEST_TODO_BATCH_FAIL_AFTER", L"1");
+    TodoBatchCompleteResult failedResult;
+    const bool failed = storage.CompleteOverdueTodos(tag.id, now, failedResult);
+    SetEnvironmentVariableW(L"QUATTRO_TEST_TODO_BATCH_FAIL_AFTER", nullptr);
+    SetEnvironmentVariableW(L"QUATTRO_TEST_MODE", nullptr);
+    Check(!failed && failedResult.updatedItems.empty(), "batch completion injected failure returns no result");
+    model = storage.Load();
+    Check(FindTodo(model, rollbackA.id) && FindTodo(model, rollbackA.id)->completedAt.empty() &&
+              FindTodo(model, rollbackB.id) && FindTodo(model, rollbackB.id)->completedAt.empty(),
+          "batch completion rolls back every update after failure");
+    std::filesystem::remove_all(root, ec);
+}
+
 bool WaitForDeliveredState(const std::filesystem::path& root, const std::vector<TodoItem>& todos, DWORD timeoutMs = 5000) {
     const ULONGLONG started = GetTickCount64();
     while (GetTickCount64() - started < timeoutMs) {
@@ -348,6 +487,22 @@ bool WaitForUserActionState(const std::filesystem::path& root, int snoozedId, in
     }
     return false;
 }
+
+bool WaitForCompletedState(const std::filesystem::path& root, const std::vector<TodoItem>& todos, DWORD timeoutMs = 5000) {
+    const ULONGLONG started = GetTickCount64();
+    while (GetTickCount64() - started < timeoutMs) {
+        StorageService storage(root);
+        const AppModel model = storage.Load();
+        bool allCompleted = true;
+        for (const auto& seed : todos) {
+            const TodoItem* item = FindTodo(model, seed.id);
+            allCompleted = allCompleted && item && !item->completedAt.empty();
+        }
+        if (allCompleted) return true;
+        Sleep(50);
+    }
+    return false;
+}
 }
 
 int wmain() {
@@ -358,6 +513,7 @@ int wmain() {
     const std::filesystem::path visibleRoot = base / L"visible";
     const std::filesystem::path hiddenRoot = base / L"hidden";
     CheckReminderSchemaMigration(base / L"migration");
+    CheckBatchCompletion(base / L"batch");
     const auto visibleTodos = SeedReminderRoot(visibleRoot, false);
 
     ChildProcess visible = StartQuattro(visibleRoot, 1);
@@ -404,6 +560,8 @@ int wmain() {
               "hidden reminder retries after injected delivery failure");
         Check(WaitForDeliveredState(hiddenRoot, hiddenTodos),
               "hidden reminder retry eventually persists delivery");
+        Check(SendMessageW(hidden.window, kSystemReminderMessage, 0, 0) == TRUE,
+              "isolated system reminder semantic entry succeeds");
         Check(WaitForPendingCount(hidden.window, 2),
               "hidden reminder batch retains notification targets");
         SendMessageW(hidden.window, kTrayMessage, 0, static_cast<LPARAM>(NIN_BALLOONUSERCLICK));
@@ -412,6 +570,26 @@ int wmain() {
         SendMessageW(hidden.window, kReminderActionMessage, 2, hiddenTodos[1].id);
         Check(WaitForUserActionState(hiddenRoot, hiddenTodos[0].id, hiddenTodos[1].id),
               "snooze and ignore commands persist user reminder semantics");
+        std::thread confirmationThread([&]() {
+            SendMessageW(hidden.window, WM_COMMAND, MAKEWPARAM(ID_MENU_COMPLETE_OVERDUE_TODOS, 0), 0);
+        });
+        HWND confirmation = WaitForProcessWindowByClass(
+            hidden.process.dwProcessId, L"QuattroThemedMessageDialog", L"完成全部逾期待办");
+        Check(confirmation != nullptr, "bulk overdue completion shows confirmation dialog");
+        if (confirmation) SendMessageW(confirmation, WM_COMMAND, MAKEWPARAM(IDNO, 0), 0);
+        confirmationThread.join();
+        StorageService cancelledStorage(hiddenRoot);
+        const AppModel cancelledModel = cancelledStorage.Load();
+        Check(FindTodo(cancelledModel, hiddenTodos[0].id) &&
+                  FindTodo(cancelledModel, hiddenTodos[0].id)->completedAt.empty() &&
+                  FindTodo(cancelledModel, hiddenTodos[1].id) &&
+                  FindTodo(cancelledModel, hiddenTodos[1].id)->completedAt.empty(),
+              "cancelling bulk overdue confirmation leaves todos unchanged");
+        SendMessageW(hidden.window, kCompleteOverdueMessage, hiddenTodos[0].tagId, 0);
+        Check(WaitForCompletedState(hiddenRoot, hiddenTodos),
+              "main window bulk command completes every overdue todo in the tag");
+        Check(WaitForPendingCount(hidden.window, 0),
+              "main window bulk command removes completed todos from pending notification targets");
     }
     StopQuattro(hidden);
 
