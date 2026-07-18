@@ -70,6 +70,7 @@ jobs:
     env:
       VCPKG_ROOT: ${{ github.workspace }}\.vcpkg-root
       VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}\.vcpkg-cache
+      VCPKG_COMMIT: 6da16a9600492fbcb7713560d993ac76823290de
 
     steps:
       - name: Checkout
@@ -127,16 +128,15 @@ jobs:
           "release_tag=$releaseTag" >> $env:GITHUB_OUTPUT
           "version=$version" >> $env:GITHUB_OUTPUT
 
-      - name: Cache vcpkg sources and packages
+      - name: Cache vcpkg packages
         uses: actions/cache@v4
         with:
           path: |
-            .vcpkg-root
             .vcpkg-cache
             vcpkg_installed
-          key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json') }}
+          key: vcpkg-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
           restore-keys: |
-            vcpkg-${{ runner.os }}-
+            vcpkg-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-
 
       - name: Prepare vcpkg binary cache
         run: |
@@ -147,13 +147,15 @@ jobs:
 
       - name: Bootstrap vcpkg
         run: |
-          if (!(Test-Path "$env:VCPKG_ROOT\vcpkg.exe")) {
-            if (Test-Path "$env:VCPKG_ROOT") {
-              Remove-Item -LiteralPath "$env:VCPKG_ROOT" -Recurse -Force
-            }
-            git clone --depth 1 https://github.com/microsoft/vcpkg "$env:VCPKG_ROOT"
-            & "$env:VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics
+          if (Test-Path "$env:VCPKG_ROOT") {
+            Remove-Item -LiteralPath "$env:VCPKG_ROOT" -Recurse -Force
           }
+          New-Item -ItemType Directory -Force -Path "$env:VCPKG_ROOT" | Out-Null
+          git -C "$env:VCPKG_ROOT" init
+          git -C "$env:VCPKG_ROOT" remote add origin https://github.com/microsoft/vcpkg
+          git -C "$env:VCPKG_ROOT" fetch --depth 1 origin "$env:VCPKG_COMMIT"
+          git -C "$env:VCPKG_ROOT" checkout --detach FETCH_HEAD
+          & "$env:VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics
 
       - name: Cache build directories
         uses: actions/cache@v4

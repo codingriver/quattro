@@ -155,6 +155,31 @@ function Assert-ReleasePlan {
         $workflow -match '"-Backend", "vcpkg"') {
         throw "GitHub Actions Package step must use the shared -Release entry point."
     }
+
+    $manifest = Get-Content -LiteralPath (Join-Path $root "vcpkg.json") -Raw | ConvertFrom-Json
+    $expectedVcpkgCommit = [string]$manifest.'builtin-baseline'
+    if ($expectedVcpkgCommit -notmatch '^[0-9a-f]{40}$') {
+        throw "vcpkg.json must contain a full 40-character builtin-baseline commit."
+    }
+    if ($workflow -notmatch "VCPKG_COMMIT:\s*$expectedVcpkgCommit" -or
+        $workflow -notmatch 'fetch --depth 1 origin "\$env:VCPKG_COMMIT"' -or
+        $workflow -notmatch 'checkout --detach FETCH_HEAD') {
+        throw "GitHub Actions must fetch and check out the same vcpkg commit as builtin-baseline."
+    }
+    $vcpkgCacheStep = [regex]::Match(
+        $workflow,
+        '(?s)- name: Cache vcpkg packages.*?(?=\r?\n\s{6}- name:)').Value
+    if ([string]::IsNullOrWhiteSpace($vcpkgCacheStep) -or
+        $vcpkgCacheStep -match '(?m)^\s*\.vcpkg-root\s*$' -or
+        $vcpkgCacheStep -notmatch '\$\{\{ env\.VCPKG_COMMIT \}\}') {
+        throw "The vcpkg cache must exclude the tool checkout and include the pinned commit in its key."
+    }
+    $httpDependency = @($manifest.dependencies) |
+        Where-Object { $_.name -eq 'cpp-httplib' } |
+        Select-Object -First 1
+    if (!$httpDependency -or $httpDependency.'default-features' -ne $false) {
+        throw "cpp-httplib default features must remain disabled to avoid an unused Brotli dependency."
+    }
 }
 
 New-Item -ItemType Directory -Force -Path $resolvedBuildRoot | Out-Null
