@@ -64,7 +64,8 @@ function Test-EmbeddedAssetFile {
 
     $name = [System.IO.Path]::GetFileName($RelativePath)
     return !$name.Equals("README.md", [System.StringComparison]::OrdinalIgnoreCase) -and
-        !$name.Equals("LICENSE", [System.StringComparison]::OrdinalIgnoreCase)
+        !$name.Equals("LICENSE", [System.StringComparison]::OrdinalIgnoreCase) -and
+        !$RelativePath.Equals("icons/menu/tabler/tabler-icons.css", [System.StringComparison]::OrdinalIgnoreCase)
 }
 
 function Compress-XpressHuff {

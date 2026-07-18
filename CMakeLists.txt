@@ -1247,6 +1247,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/icons")
         COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/icons" "$<TARGET_FILE_DIR:Quattro>/icons"
         COMMAND ${CMAKE_COMMAND} -E rm -f "$<TARGET_FILE_DIR:Quattro>/icons/menu/tabler/README.md"
         COMMAND ${CMAKE_COMMAND} -E rm -f "$<TARGET_FILE_DIR:Quattro>/icons/menu/tabler/LICENSE"
+        COMMAND ${CMAKE_COMMAND} -E rm -f "$<TARGET_FILE_DIR:Quattro>/icons/menu/tabler/tabler-icons.css"
     )
 endif()
 

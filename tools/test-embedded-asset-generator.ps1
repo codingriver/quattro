@@ -29,11 +29,11 @@ try {
     if ($rawMagic -ne "QARCAT01" -or $rawBytes.Length -ge 4096) {
         throw "Raw mode must emit a small catalog without copied asset payloads."
     }
-    if ([regex]::Matches($rawResourceText, "(?m)^\d+ RCDATA ").Count -ne 3 -or
+    if ([regex]::Matches($rawResourceText, "(?m)^\d+ RCDATA ").Count -ne 2 -or
         !$rawResourceText.Contains("theme/default.xml") -or
-        !$rawResourceText.Contains("tabler-icons.css") -or
-        !$rawResourceText.Contains("tabler-icons.ttf")) {
-        throw "Raw mode must reference the three original files as individual RCDATA resources."
+        !$rawResourceText.Contains("tabler-icons.ttf") -or
+        $rawResourceText.Contains("tabler-icons.css")) {
+        throw "Raw mode must reference only the runtime theme and icon font resources."
     }
 
     $xpressPack = Join-Path $temporaryRoot "EmbeddedAssets.xpress.pack"
@@ -45,7 +45,6 @@ try {
     $xpressMagic = [System.Text.Encoding]::ASCII.GetString($xpressBytes, 0, 8)
     $assetBytes = (Get-Item `
         (Join-Path $root "theme\default.xml"), `
-        (Join-Path $root "icons\menu\tabler\tabler-icons.css"), `
         (Join-Path $root "icons\menu\tabler\tabler-icons.ttf") |
         Measure-Object Length -Sum).Sum
     if ($xpressMagic -ne "QASPACK1" -or $xpressBytes.Length -ge $assetBytes) {

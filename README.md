@@ -144,6 +144,7 @@ GitHub Actions 的手动发布会优先使用仓库 Secret `RELEASE_TOKEN`，未
 ## 图标说明
 
 - 菜单本地图标库使用 Tabler Icons Webfont 3.44.0，项目内文件位于 `icons/menu/tabler/`。
+- 运行时只打包 `tabler-icons.ttf`；`tabler-icons.css` 仅作为开发期图标名称与码点参考，不嵌入程序，也不复制到发布目录。
 - Tabler Icons 使用 MIT License；许可证文本随图标库保存为 `icons/menu/tabler/LICENSE`。
 - 图标来源参考：https://tabler.io/icons 和 https://www.jsdelivr.com/package/npm/@tabler/icons-webfont
 # UI 尺寸与间距规范

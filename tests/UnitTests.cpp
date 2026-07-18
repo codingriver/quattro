@@ -603,13 +603,12 @@ int wmain() {
         std::filesystem::create_directories(assetModuleRoot, ec);
         EmbeddedAssetInstallResult firstInstall = PrepareEmbeddedAssets(assetModuleRoot);
         const std::filesystem::path defaultThemePath = firstInstall.appDirectory / L"theme" / L"default.xml";
-        const std::filesystem::path embeddedCssPath = firstInstall.appDirectory / L"icons" / L"menu" / L"tabler" / L"tabler-icons.css";
         const std::filesystem::path embeddedFontPath = firstInstall.appDirectory / L"icons" / L"menu" / L"tabler" / L"tabler-icons.ttf";
         const std::filesystem::path customThemePath = firstInstall.appDirectory / L"theme" / L"custom.xml";
         const std::wstring embeddedDefaultTheme = LoadUtf8File(defaultThemePath);
         const bool expectCompressedAssets = QuattroUsesCompressedEmbeddedAssets();
         Check(firstInstall.failures == 0, "Embedded assets first install succeeds");
-        Check(firstInstall.rawAssets + firstInstall.compressedAssets == firstInstall.filesWritten && firstInstall.filesWritten >= 3,
+        Check(firstInstall.rawAssets + firstInstall.compressedAssets == firstInstall.filesWritten && firstInstall.filesWritten >= 2,
             "Embedded asset catalog covers every installed file");
         Check(
             expectCompressedAssets
@@ -618,8 +617,6 @@ int wmain() {
             "Embedded asset storage follows the build configuration");
         Check(FileExists(defaultThemePath) && embeddedDefaultTheme.find(L"version=\"2\"") != std::wstring::npos,
             "Embedded assets install default theme");
-        Check(FileExists(embeddedCssPath) && std::filesystem::file_size(embeddedCssPath, ec) > 0,
-            "Embedded assets install icon stylesheet");
         Check(FileExists(embeddedFontPath) && std::filesystem::file_size(embeddedFontPath, ec) > 0,
             "Embedded assets install icon font");
 
@@ -2027,7 +2024,7 @@ int wmain() {
     Check(MenuIconFor(ID_MENU_ALL_LAYOUT_LIST, L"列表") == MenuIconList, "List layout icon");
     Check(MenuIconFor(ID_MENU_ALL_LAYOUT_TILE, L"平铺") == MenuIconTile, "Tile layout icon");
     Check(std::filesystem::exists(L"icons/menu/tabler/tabler-icons.ttf"), "Local menu icon font exists");
-    Check(std::filesystem::exists(L"icons/menu/tabler/tabler-icons.css"), "Local menu icon css exists");
+    Check(std::filesystem::exists(L"icons/menu/tabler/tabler-icons.css"), "Development menu icon css reference exists");
     Check(std::filesystem::exists(L"icons/menu/tabler/LICENSE"), "Local menu icon license exists");
 
     const std::filesystem::path pluginRoot = std::filesystem::temp_directory_path() / L"quattro_plugin_unit";
