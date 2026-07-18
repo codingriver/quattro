@@ -2440,15 +2440,18 @@ void RunAdBlockScenario(const std::filesystem::path& outputDir, TestState& state
     ScopedAcceptanceChildEnvironment childEnvironment;
     SetEnvironmentVariableW(L"QUATTRO_AD_BLOCK_ACCEPTANCE_DPI", L"96");
     SetEnvironmentVariableW(L"QUATTRO_TEST_AD_BLOCK_BATCH_DELAY_MS", L"200");
+    SetEnvironmentVariableW(L"QUATTRO_TEST_AD_BLOCK_SHOW_CONFIRMATION", L"1");
     if (!CreateProcessW(exe.c_str(), command.data(), nullptr, nullptr, FALSE, 0, nullptr,
             ModuleDirectory().c_str(), &startup, &process)) {
         SetEnvironmentVariableW(L"QUATTRO_AD_BLOCK_ACCEPTANCE_DPI", nullptr);
         SetEnvironmentVariableW(L"QUATTRO_TEST_AD_BLOCK_BATCH_DELAY_MS", nullptr);
+        SetEnvironmentVariableW(L"QUATTRO_TEST_AD_BLOCK_SHOW_CONFIRMATION", nullptr);
         state.Check(false, L"ad-block: CreateProcess failed");
         return;
     }
     SetEnvironmentVariableW(L"QUATTRO_AD_BLOCK_ACCEPTANCE_DPI", nullptr);
     SetEnvironmentVariableW(L"QUATTRO_TEST_AD_BLOCK_BATCH_DELAY_MS", nullptr);
+    SetEnvironmentVariableW(L"QUATTRO_TEST_AD_BLOCK_SHOW_CONFIRMATION", nullptr);
 
     WaitForInputIdle(process.hProcess, 10000);
     HWND hwnd = WaitForTopWindow(FindWindowRequest{L"AdBlockMainWindow", L"广告拦截", process.dwProcessId}, 10000);
@@ -2607,6 +2610,24 @@ void RunAdBlockScenario(const std::filesystem::path& outputDir, TestState& state
             }
             state.Check(WindowText(checkPath) == L"检查",
                 L"ad-block: check action did not return to its idle label");
+            HWND confirmationWindow = WaitForTopWindow(
+                FindWindowRequest{L"QuattroCommonThemedMessageBox", L"确认拦截", process.dwProcessId}, 5000);
+            state.Check(confirmationWindow != nullptr, L"ad-block: confirmation dialog did not appear");
+            if (confirmationWindow) {
+                ShowWindow(confirmationWindow, SW_SHOWNOACTIVATE);
+                SetWindowPos(confirmationWindow, HWND_BOTTOM, 0, 0, 0, 0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+                state.Check(WindowContainsText(confirmationWindow, L"确定拦截所选 1 个程序？") &&
+                        WindowContainsText(confirmationWindow, L"模式：精确路径（仅拦截所选文件）") &&
+                        WindowContainsText(confirmationWindow, L"需要管理员权限；可随时在“已拦截”中解除。"),
+                    L"ad-block: confirmation dialog text is incomplete");
+                capture(confirmationWindow, L"ad-block-confirmation.png", L"ad-block confirmation");
+                HWND noButton = ChildById(confirmationWindow, IDNO);
+                if (noButton) {
+                    DWORD_PTR noResult = 0;
+                    SendMessageTimeoutW(noButton, BM_CLICK, 0, 0, SMTO_ABORTIFHUNG, 5000, &noResult);
+                }
+            }
             state.Check(IsWindowEnabled(clearResults) != FALSE,
                 L"ad-block: clear-results action was not enabled after scanning");
             if (progressWindow) {
@@ -2622,6 +2643,14 @@ void RunAdBlockScenario(const std::filesystem::path& outputDir, TestState& state
                     SendMessageTimeoutW(closeProgress, BM_CLICK, 0, 0, SMTO_ABORTIFHUNG, 5000, &closeResult);
                 }
             }
+            PostMessageW(hwnd, WM_APP + 0x164, 0, 0);
+            Sleep(500);
+            HWND unexpectedProgress = FindTopWindow(
+                FindWindowRequest{L"", L"广告拦截检查进度", process.dwProcessId});
+            state.Check(unexpectedProgress == nullptr,
+                L"ad-block: operation completion unexpectedly started another check");
+            state.Check(WindowText(checkPath) == L"检查",
+                L"ad-block: operation completion changed the explicit check action state");
             capture(hwnd, L"ad-block-manual-path-result.png", L"ad-block manual path result");
 
             DWORD_PTR clearResult = 0;

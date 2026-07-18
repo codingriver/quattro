@@ -3930,7 +3930,12 @@ void MainWindow::AddFile() {
     if (!ShowCommonFileDialog(options, result)) {
         return;
     }
-    ImportPath(result.path);
+    const ULONGLONG importStarted = GetTickCount64();
+    WriteAppLog(L"主窗口添加文件 后处理开始: pickerElapsedMs=" + std::to_wstring(result.elapsedMs) +
+                L", selected=\"" + result.path + L"\"");
+    const bool imported = ImportPath(result.path);
+    WriteAppLog(L"主窗口添加文件 后处理完成: imported=" + std::wstring(imported ? L"1" : L"0") +
+                L", elapsedMs=" + std::to_wstring(GetTickCount64() - importStarted));
     EnsureLinkVisible(selectedLinkId_);
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
@@ -3949,7 +3954,12 @@ void MainWindow::AddFolder() {
     if (!ShowCommonFileDialog(options, result)) {
         return;
     }
-    ImportPath(result.path);
+    const ULONGLONG importStarted = GetTickCount64();
+    WriteAppLog(L"主窗口添加文件夹 后处理开始: pickerElapsedMs=" + std::to_wstring(result.elapsedMs) +
+                L", selected=\"" + result.path + L"\"");
+    const bool imported = ImportPath(result.path);
+    WriteAppLog(L"主窗口添加文件夹 后处理完成: imported=" + std::wstring(imported ? L"1" : L"0") +
+                L", elapsedMs=" + std::to_wstring(GetTickCount64() - importStarted));
     EnsureLinkVisible(selectedLinkId_);
     InvalidateRect(hwnd_, nullptr, FALSE);
 }

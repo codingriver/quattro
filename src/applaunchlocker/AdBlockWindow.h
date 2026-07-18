@@ -37,7 +37,7 @@ private:
     void LoadBlockedAsync();
     void CompleteScan(AdBlockScanResult scan);
     void CompleteBlocked(std::vector<DisabledRecord> blocked, std::wstring storeError);
-    void CompleteOperation(OperationResult result, bool rescan);
+    void CompleteOperation(OperationResult result);
     void SelectTab(int index);
     void RebuildScanRows();
     void RebuildBlockedRows();
@@ -73,6 +73,7 @@ private:
     std::atomic<bool> closing_{false};
     bool busy_ = false;
     bool scanRunning_ = false;
+    bool testConfirmationShown_ = false;
     bool storeAvailable_ = true;
     int activeTab_ = 0;
 };

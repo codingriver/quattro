@@ -69,6 +69,8 @@ constexpr int ID_CHECK_PATH = 1222;
 constexpr UINT WM_APP_SCAN_COMPLETE = WM_APP + 0x160;
 constexpr UINT WM_APP_BLOCKED_COMPLETE = WM_APP + 0x161;
 constexpr UINT WM_APP_OPERATION_COMPLETE = WM_APP + 0x162;
+constexpr UINT WM_APP_TEST_SHOW_CONFIRMATION = WM_APP + 0x163;
+constexpr UINT WM_APP_TEST_OPERATION_COMPLETE = WM_APP + 0x164;
 
 constexpr int kClientWidth = 780;
 constexpr int kClientHeight = 448;
@@ -82,7 +84,6 @@ struct BlockedPayload {
 };
 struct OperationPayload {
     OperationResult result;
-    bool rescan = false;
 };
 
 std::wstring QuoteArgument(const std::wstring& value) {
@@ -176,6 +177,26 @@ std::wstring ScanStatusText(const StartupItem& item) {
     if (status == L"script") return L"脚本（仅提示）";
     if (status == L"unresolved") return L"无法解析";
     return L"仅查看";
+}
+
+std::wstring BlockConfirmationPrompt(std::size_t targetCount, const std::wstring& mode, int skippedNoAutoStart) {
+    std::wstring modeText;
+    std::wstring detailText;
+    if (mode == L"startup") {
+        modeText = L"禁止自启（不影响手动运行）";
+        detailText = L"将关闭系统启动项；可随时在“已拦截”中解除。";
+    } else if (mode == L"name") {
+        modeText = L"同名程序（拦截所有同名 EXE）";
+        detailText = L"需要管理员权限；可随时在“已拦截”中解除。";
+    } else {
+        modeText = L"精确路径（仅拦截所选文件）";
+        detailText = L"需要管理员权限；可随时在“已拦截”中解除。";
+    }
+    std::wstring prompt = L"确定拦截所选 " + std::to_wstring(targetCount) + L" 个程序？";
+    if (skippedNoAutoStart > 0) {
+        prompt += L"（无自启动项跳过 " + std::to_wstring(skippedNoAutoStart) + L" 个）";
+    }
+    return prompt + L"\n模式：" + modeText + L"\n" + detailText;
 }
 
 ThemedTaskProgressSnapshot AdBlockTaskProgressSnapshot(const std::shared_ptr<AdBlockScanState>& state) {
@@ -411,9 +432,24 @@ LRESULT AdBlockWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam) {
     case WM_APP_OPERATION_COMPLETE: {
         std::unique_ptr<OperationPayload> payload(reinterpret_cast<OperationPayload*>(lParam));
         JoinWorker();
-        CompleteOperation(std::move(payload->result), payload->rescan);
+        CompleteOperation(std::move(payload->result));
         return 0;
     }
+    case WM_APP_TEST_SHOW_CONFIRMATION:
+        if (QuattroTestMode() && !testConfirmationShown_) {
+            wchar_t enabled[8]{};
+            if (GetEnvironmentVariableW(L"QUATTRO_TEST_AD_BLOCK_SHOW_CONFIRMATION", enabled,
+                    static_cast<DWORD>(std::size(enabled))) > 0) {
+                testConfirmationShown_ = true;
+                ThemedWindowUi::ShowMessageBox(
+                    hwnd_, instance_, theme_, BlockConfirmationPrompt(1, L"exact", 0),
+                    L"确认拦截", MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2);
+            }
+        }
+        return 0;
+    case WM_APP_TEST_OPERATION_COMPLETE:
+        if (QuattroTestMode()) CompleteOperation({true, L"测试操作完成。"});
+        return 0;
     case WM_CLOSE:
         DestroyWindow(hwnd_);
         return 0;
@@ -674,23 +710,7 @@ void AdBlockWindow::StartBlockSelected() {
             MB_OK | MB_ICONINFORMATION);
         return;
     }
-    std::wstring modeText;
-    std::wstring mechanismText;
-    if (mode == L"startup") {
-        modeText = L"禁止自启（仅禁止开机/登录自启动，不阻止手动运行）";
-        mechanismText = L"\n写入系统「启动」开关，与任务管理器→启动同步，可随时在「已拦截」中解除。";
-    } else if (mode == L"name") {
-        modeText = L"同名程序（拦截所有同名 exe）";
-        mechanismText = L"\n拦截写入系统 IFEO，需要管理员权限，可随时在「已拦截」中解除。";
-    } else {
-        modeText = L"精确路径（仅拦截所选文件）";
-        mechanismText = L"\n拦截写入系统 IFEO，需要管理员权限，可随时在「已拦截」中解除。";
-    }
-    std::wstring prompt = L"确定拦截所选 " + std::to_wstring(targets.size()) + L" 个程序？\n\n模式：" + modeText +
-        mechanismText;
-    if (skippedNoAutoStart > 0) {
-        prompt += L"\n（已跳过 " + std::to_wstring(skippedNoAutoStart) + L" 个无自启动项的所选程序）";
-    }
+    const std::wstring prompt = BlockConfirmationPrompt(targets.size(), mode, skippedNoAutoStart);
     if (ThemedWindowUi::ShowMessageBox(hwnd_, instance_, theme_, prompt, L"确认拦截",
             MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) != IDYES) return;
 
@@ -704,7 +724,6 @@ void AdBlockWindow::StartBlockSelected() {
     const HWND target = hwnd_;
     worker_ = std::thread([target, targets, mode, elevate]() {
         auto payload = std::make_unique<OperationPayload>();
-        payload->rescan = true;
         int ok = 0;
         int fail = 0;
         std::wstring lastError;
@@ -738,7 +757,6 @@ void AdBlockWindow::StartUnblock() {
     const HWND target = hwnd_;
     worker_ = std::thread([target, recordId, elevate]() {
         auto payload = std::make_unique<OperationPayload>();
-        payload->rescan = false;
         if (elevate) payload->result = RunElevated(L"unblock --record-id " + QuoteArgument(recordId));
         else payload->result = AdBlockManager().Unblock(recordId);
         if (!PostMessageW(target, WM_APP_OPERATION_COMPLETE, 0, reinterpret_cast<LPARAM>(payload.get()))) return;
@@ -774,6 +792,9 @@ void AdBlockWindow::CompleteScan(AdBlockScanResult scan) {
     }
     ThemedUi::SetText(statusText_, status);
     UpdateButtons();
+    if (QuattroTestMode() && !testConfirmationShown_) {
+        PostMessageW(hwnd_, WM_APP_TEST_SHOW_CONFIRMATION, 0, 0);
+    }
 }
 
 void AdBlockWindow::CompleteBlocked(std::vector<DisabledRecord> blocked, std::wstring storeError) {
@@ -790,7 +811,7 @@ void AdBlockWindow::CompleteBlocked(std::vector<DisabledRecord> blocked, std::ws
     UpdateButtons();
 }
 
-void AdBlockWindow::CompleteOperation(OperationResult result, bool rescan) {
+void AdBlockWindow::CompleteOperation(OperationResult result) {
     busy_ = false;
     if (!result.success) {
         AppendAppLaunchLockerLog(L"广告拦截操作失败：" + result.message);
@@ -801,9 +822,8 @@ void AdBlockWindow::CompleteOperation(OperationResult result, bool rescan) {
         if (result.partial) toast.durationMs = 5000;
         windowUi_->ui().ShowToast(result.message.empty() ? L"操作完成。" : result.message, toast);
     }
-    // 重新扫描以刷新已拦截列表；若在拦截页则也刷新扫描列表。
+    // 操作完成后只刷新“已拦截”数据。目录检查只能由用户点击“检查”或在路径框按 Enter 触发。
     LoadBlockedAsync();
-    if (rescan && !Trim(GetText(pathEdit_)).empty()) StartScan();
 }
 
 void AdBlockWindow::LoadBlockedAsync() {
