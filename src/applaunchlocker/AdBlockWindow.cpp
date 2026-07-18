@@ -226,8 +226,8 @@ ThemedTaskProgressSnapshot AdBlockTaskProgressSnapshot(const std::shared_ptr<AdB
     case AdBlockScanPhase::Analyzing:
         output.status = snapshot.stopRequested ? L"正在停止检查…" : L"正在并行检查可启动程序…";
         output.detail = L"已检查 " + std::to_wstring(progress.checkedCandidates) + L" / " +
-            std::to_wstring(progress.totalCandidates) + L" 个候选，发现 " +
-            std::to_wstring(progress.autoStartMatches) + L" 个含自启动项，" +
+            std::to_wstring(progress.totalCandidates) + L" 个可启动候选，其中 " +
+            std::to_wstring(progress.autoStartMatches) + L" 个已注册开机/登录自启动，" +
             std::to_wstring(progress.workerCount) + L" 个工作线程。";
         output.role = snapshot.stopRequested ? ThemedStatusRole::Warning : ThemedStatusRole::Info;
         output.indeterminate = false;
@@ -236,8 +236,8 @@ ThemedTaskProgressSnapshot AdBlockTaskProgressSnapshot(const std::shared_ptr<AdB
         break;
     case AdBlockScanPhase::Completed:
         output.status = L"检查完成";
-        output.detail = L"已检查 " + std::to_wstring(progress.checkedCandidates) + L" 个候选，发现 " +
-            std::to_wstring(progress.autoStartMatches) + L" 个含自启动项。";
+        output.detail = L"发现 " + std::to_wstring(progress.checkedCandidates) + L" 个可启动程序，其中 " +
+            std::to_wstring(progress.autoStartMatches) + L" 个已注册开机/登录自启动。";
         output.role = ThemedStatusRole::Success;
         output.indeterminate = false;
         output.value = 1.0;
@@ -245,7 +245,8 @@ ThemedTaskProgressSnapshot AdBlockTaskProgressSnapshot(const std::shared_ptr<AdB
     case AdBlockScanPhase::Cancelled:
         output.status = L"检查已停止";
         output.detail = L"已检查 " + std::to_wstring(progress.checkedCandidates) + L" / " +
-            std::to_wstring(progress.totalCandidates) + L" 个候选，结果可能不完整。";
+            std::to_wstring(progress.totalCandidates) + L" 个可启动候选，其中 " +
+            std::to_wstring(progress.autoStartMatches) + L" 个已注册开机/登录自启动；结果可能不完整。";
         output.role = ThemedStatusRole::Warning;
         output.indeterminate = false;
         output.value = progress.totalCandidates == 0 ? 0.0
@@ -611,6 +612,7 @@ void AdBlockWindow::StartScan() {
     progressOptions.className = L"AppLaunchLockerAdBlockProgress_" +
         std::to_wstring(GetCurrentProcessId()) + L"_" + std::to_wstring(GetTickCount64());
     progressOptions.title = L"广告拦截检查进度";
+    progressOptions.clientWidth = 520;
     progressOptions.readSnapshot = [state = scanState_]() { return AdBlockTaskProgressSnapshot(state); };
     progressOptions.requestStop = [state = scanState_]() { state->cancelRequested.store(true); };
     scanProgressDialog_ = std::make_unique<ThemedTaskProgressDialog>(std::move(progressOptions));
@@ -760,7 +762,8 @@ void AdBlockWindow::CompleteScan(AdBlockScanResult scan) {
             std::to_wstring(scanItems_.size()) + L" 个可启动文件，结果可能不完整。";
     } else {
         status = L"检查完成：枚举 " + std::to_wstring(scan.enumeratedFiles) + L" 个文件，发现 " +
-            std::to_wstring(scanItems_.size()) + L" 个可启动文件，其中 " +
+            std::to_wstring(scanItems_.size()) + L" 个可启动程序，其中 " +
+            std::to_wstring(scan.autoStartMatches) + L" 个已注册开机/登录自启动，" +
             std::to_wstring(blockable) + L" 个可拦截";
         if (scan.workerCount > 0) status += L"，使用 " + std::to_wstring(scan.workerCount) + L" 个工作线程";
         status += L"。";

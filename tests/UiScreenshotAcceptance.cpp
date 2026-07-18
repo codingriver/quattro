@@ -2586,6 +2586,8 @@ void RunAdBlockScenario(const std::filesystem::path& outputDir, TestState& state
                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
                 state.Check(WaitForWindowText(progressWindow, L"个工作线程", 5000),
                     L"ad-block: progress dialog did not report parallel workers");
+                state.Check(WindowContainsText(progressWindow, L"已注册开机/登录自启动"),
+                    L"ad-block: progress dialog did not distinguish registered auto-start entries");
                 state.Check(WindowText(checkPath) == L"查看进度",
                     L"ad-block: running check action did not switch to view-progress state");
                 capture(progressWindow, L"ad-block-progress-running.png", L"ad-block running progress");
@@ -2595,7 +2597,9 @@ void RunAdBlockScenario(const std::filesystem::path& outputDir, TestState& state
                    GetTickCount64() - scanBegin < 10000) {
                 Sleep(50);
             }
-            state.Check(Contains(WindowText(statusText), L"检查完成") && Contains(WindowText(statusText), L"个可启动文件"),
+            state.Check(Contains(WindowText(statusText), L"检查完成") &&
+                    Contains(WindowText(statusText), L"个可启动程序") &&
+                    Contains(WindowText(statusText), L"已注册开机/登录自启动"),
                 L"ad-block: check button did not complete recursive directory checking");
             const auto checkLabelBegin = GetTickCount64();
             while (WindowText(checkPath) != L"检查" && GetTickCount64() - checkLabelBegin < 2000) {
@@ -2608,6 +2612,9 @@ void RunAdBlockScenario(const std::filesystem::path& outputDir, TestState& state
             if (progressWindow) {
                 state.Check(WaitForWindowText(progressWindow, L"检查完成", 3000),
                     L"ad-block: progress dialog did not enter completed state");
+                state.Check(WindowContainsText(progressWindow, L"个可启动程序") &&
+                        WindowContainsText(progressWindow, L"已注册开机/登录自启动"),
+                    L"ad-block: completed progress summary is ambiguous");
                 capture(progressWindow, L"ad-block-progress-completed.png", L"ad-block completed progress");
                 HWND closeProgress = ChildById(progressWindow, 3);
                 if (closeProgress) {
