@@ -1,5 +1,7 @@
 #include "MenuCatalog.h"
 
+#include "TablerIconManifest.h"
+
 #include <array>
 #include <cwchar>
 
@@ -245,66 +247,12 @@ bool MenuIconIsRenderable(MenuIcon icon) {
     return icon != MenuIconNone;
 }
 
+TablerIconManifest::Id MenuIconTablerId(MenuIcon icon) {
+    return TablerIconManifest::FromName(MenuIconName(icon));
+}
+
 wchar_t MenuIconGlyph(MenuIcon icon) {
-    switch (icon) {
-    case MenuIconFile: return static_cast<wchar_t>(0xEAA4); // file
-    case MenuIconFolder: return static_cast<wchar_t>(0xEAAD); // folder
-    case MenuIconUrl: return static_cast<wchar_t>(0xEB54); // world
-    case MenuIconSystem: return static_cast<wchar_t>(0xEBB6); // apps
-    case MenuIconShield: return static_cast<wchar_t>(0xEB24); // shield
-    case MenuIconOpenFolder: return static_cast<wchar_t>(0xFAF7); // folder-open
-    case MenuIconWindows: return static_cast<wchar_t>(0xECD8); // brand-windows
-    case MenuIconShortcut: return static_cast<wchar_t>(0xEA99); // external-link
-    case MenuIconRefresh: return static_cast<wchar_t>(0xEB13); // refresh
-    case MenuIconMove: return static_cast<wchar_t>(0xF22F); // arrows-move
-    case MenuIconCopy: return static_cast<wchar_t>(0xEA7A); // copy
-    case MenuIconCut: return static_cast<wchar_t>(0xEB1B); // scissors
-    case MenuIconPaste: return static_cast<wchar_t>(0xEA6F); // clipboard
-    case MenuIconEdit: return static_cast<wchar_t>(0xEA98); // edit
-    case MenuIconInfo: return static_cast<wchar_t>(0xEAC5); // info-circle
-    case MenuIconDelete: return static_cast<wchar_t>(0xEB41); // trash
-    case MenuIconGroup: return static_cast<wchar_t>(0xEAAE); // folders
-    case MenuIconTag: return static_cast<wchar_t>(0xEF86); // tags
-    case MenuIconTheme: return static_cast<wchar_t>(0xEC0A); // shirt
-    case MenuIconSize: return static_cast<wchar_t>(0xF291); // ruler-measure
-    case MenuIconView: return static_cast<wchar_t>(0xEA03); // adjustments
-    case MenuIconList: return static_cast<wchar_t>(0xEC14); // layout-list
-    case MenuIconTile: return static_cast<wchar_t>(0xEDBA); // layout-grid
-    case MenuIconSort: return static_cast<wchar_t>(0xEB5A); // arrows-sort
-    case MenuIconSortAsc: return static_cast<wchar_t>(0xEB26); // sort-ascending
-    case MenuIconSortDesc: return static_cast<wchar_t>(0xEB27); // sort-descending
-    case MenuIconClear: return static_cast<wchar_t>(0xEF88); // trash-x
-    case MenuIconEye: return static_cast<wchar_t>(0xEA9A); // eye
-    case MenuIconEyeOff: return static_cast<wchar_t>(0xECF0); // eye-off
-    case MenuIconAbout: return static_cast<wchar_t>(0xEAC5); // info-circle
-    case MenuIconExit: return static_cast<wchar_t>(0xEB55); // x
-    case MenuIconRun: return static_cast<wchar_t>(0xED46); // player-play
-    case MenuIconPin: return static_cast<wchar_t>(0xEC9C); // pin
-    case MenuIconPinOff: return static_cast<wchar_t>(0xED60); // pinned
-    case MenuIconSettings: return static_cast<wchar_t>(0xEB20); // settings
-    case MenuIconHelp: return static_cast<wchar_t>(0xF91D); // help-circle
-    case MenuIconReward: return static_cast<wchar_t>(0xEB68); // gift
-    case MenuIconPower: return static_cast<wchar_t>(0xEB0D); // power
-    case MenuIconRestart: return static_cast<wchar_t>(0xEB13); // refresh
-    case MenuIconLogout: return static_cast<wchar_t>(0xEBA8); // logout
-    case MenuIconLock: return static_cast<wchar_t>(0xEAE2); // lock
-    case MenuIconSleep: return static_cast<wchar_t>(0xF228); // zzz
-    case MenuIconMonitor: return static_cast<wchar_t>(0xEA89); // device-desktop
-    case MenuIconVolumeUp: return static_cast<wchar_t>(0xEB51); // volume
-    case MenuIconVolumeDown: return static_cast<wchar_t>(0xEB4F); // volume-2
-    case MenuIconVolumeMute: return static_cast<wchar_t>(0xF1C3); // volume-off
-    case MenuIconTools: return static_cast<wchar_t>(0xEBCA); // tools
-    case MenuIconCalculator: return static_cast<wchar_t>(0xEB80); // calculator
-    case MenuIconTerminal: return static_cast<wchar_t>(0xEBEF); // terminal-2
-    case MenuIconNotebook: return static_cast<wchar_t>(0xEB96); // notebook
-    case MenuIconEnvironment: return static_cast<wchar_t>(0xEF05); // variable
-    case MenuIconUser: return static_cast<wchar_t>(0xEB4D); // user
-    case MenuIconHistory: return static_cast<wchar_t>(0xEBEA); // history
-    case MenuIconCertificate: return static_cast<wchar_t>(0xED76); // certificate
-    case MenuIconComputer: return static_cast<wchar_t>(0xEA89); // device-desktop
-    case MenuIconDownload: return static_cast<wchar_t>(0xEA96); // download
-    default: return L'\0';
-    }
+    return TablerIconManifest::Glyph(MenuIconTablerId(icon));
 }
 
 std::wstring MenuIconLinkIconValue(MenuIcon icon) {

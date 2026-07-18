@@ -9,6 +9,7 @@ param(
     [string]$ResourceHeader,
     [Parameter(Mandatory = $true)]
     [string]$ResourceName,
+    [string]$TablerFontOverride = "",
     [ValidateSet("raw", "xpress")]
     [string]$Mode = "raw"
 )
@@ -157,6 +158,11 @@ $rootPrefix = $rootPath.TrimEnd("\") + "\"
 $packPath = [System.IO.Path]::GetFullPath($PackOutput)
 $resourcePath = [System.IO.Path]::GetFullPath($ResourceOutput)
 $resourceHeaderPath = [System.IO.Path]::GetFullPath($ResourceHeader)
+$tablerFontOverridePath = if ([string]::IsNullOrWhiteSpace($TablerFontOverride)) {
+    ""
+} else {
+    [System.IO.Path]::GetFullPath($TablerFontOverride)
+}
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $packPath) | Out-Null
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $resourcePath) | Out-Null
 
@@ -182,6 +188,10 @@ try {
     for ($index = 0; $index -lt $relativeFiles.Count; ++$index) {
         $relative = $relativeFiles[$index]
         $sourcePath = Join-Path $rootPath $relative.Replace("/", "\")
+        if ($relative.Equals("icons/menu/tabler/tabler-icons.ttf", [System.StringComparison]::OrdinalIgnoreCase) -and
+            ![string]::IsNullOrWhiteSpace($tablerFontOverridePath)) {
+            $sourcePath = $tablerFontOverridePath
+        }
         $bytes = [System.IO.File]::ReadAllBytes($sourcePath)
         $compressed = if ($Mode -eq "xpress") { Compress-XpressHuff -Bytes $bytes } else { $null }
         $entries.Add([pscustomobject]@{

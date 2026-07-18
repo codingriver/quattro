@@ -1,5 +1,7 @@
 #pragma once
 
+#include "TablerIconManifest.h"
+
 #include <span>
 #include <string>
 #include <windows.h>
@@ -174,6 +176,7 @@ struct MenuVisualRequirement {
 int MenuIconFor(UINT_PTR id, const std::wstring& text);
 const wchar_t* MenuIconName(MenuIcon icon);
 bool MenuIconIsRenderable(MenuIcon icon);
+TablerIconManifest::Id MenuIconTablerId(MenuIcon icon);
 wchar_t MenuIconGlyph(MenuIcon icon);
 std::wstring MenuIconLinkIconValue(MenuIcon icon);
 bool TryParseMenuIconLinkIcon(const std::wstring& value, MenuIcon& icon);

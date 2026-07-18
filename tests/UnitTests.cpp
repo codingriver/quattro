@@ -619,6 +619,23 @@ int wmain() {
             "Embedded assets install default theme");
         Check(FileExists(embeddedFontPath) && std::filesystem::file_size(embeddedFontPath, ec) > 0,
             "Embedded assets install icon font");
+        Check(EnsureTablerIconFontLoaded(firstInstall.appDirectory),
+              "Embedded Tabler icon font loads through the shared facade");
+        for (int iconValue = MenuIconFile; iconValue <= MenuIconDownload; ++iconValue) {
+            const MenuIcon icon = static_cast<MenuIcon>(iconValue);
+            HICON handle = CreateTablerIconHandle(firstInstall.appDirectory, MenuIconTablerId(icon));
+            Check(handle != nullptr, "Embedded Tabler subset renders every menu glyph");
+            if (handle) {
+                DestroyIcon(handle);
+            }
+        }
+        for (const TablerIconId extra : {TablerIconId::ChevronDown, TablerIconId::ChevronRight}) {
+            HICON handle = CreateTablerIconHandle(firstInstall.appDirectory, extra);
+            Check(handle != nullptr, "Embedded Tabler subset renders every extra glyph");
+            if (handle) {
+                DestroyIcon(handle);
+            }
+        }
 
         EmbeddedAssetInstallResult unchangedInstall = PrepareEmbeddedAssets(assetModuleRoot);
         Check(unchangedInstall.failures == 0 && unchangedInstall.filesDecompressed == 0,
@@ -2020,6 +2037,15 @@ int wmain() {
     Check(std::wstring(MenuIconName(MenuIconSortDesc)) == L"sort-desc", "Sort descending icon name");
     Check(MenuIconGlyph(MenuIconSortAsc) == static_cast<wchar_t>(0xEB26), "Sort ascending tabler glyph");
     Check(MenuIconGlyph(MenuIconSortDesc) == static_cast<wchar_t>(0xEB27), "Sort descending tabler glyph");
+    for (int iconValue = MenuIconFile; iconValue <= MenuIconDownload; ++iconValue) {
+        const MenuIcon icon = static_cast<MenuIcon>(iconValue);
+        Check(TablerIconGlyph(MenuIconTablerId(icon)) != L'\0',
+              "Every registered menu icon has a Tabler glyph");
+    }
+    Check(TablerIconGlyph(TablerIconId::ChevronDown) != L'\0',
+          "Tabler manifest contains split-button chevron");
+    Check(TablerIconGlyph(TablerIconId::ChevronRight) != L'\0',
+          "Tabler manifest contains submenu chevron");
     Check(MenuIconFor(ID_MENU_TOOL_BASE + 2, L"秒表") == MenuIconTools, "Builtin tool dynamic icon");
     Check(MenuIconFor(ID_MENU_ALL_LAYOUT_LIST, L"列表") == MenuIconList, "List layout icon");
     Check(MenuIconFor(ID_MENU_ALL_LAYOUT_TILE, L"平铺") == MenuIconTile, "Tile layout icon");

@@ -2,12 +2,35 @@
 
 #include "DialogLayout.h"
 #include "ThemedControls.h"
+#include "TablerIconManifest.h"
 
 #include <string>
+#include <string_view>
 #include <cstdint>
 #include <vector>
 #include <commctrl.h>
+#include <filesystem>
 #include <windows.h>
+
+// Shared Tabler icon font facade. Callers provide a semantic icon name from
+// tools/tabler-icons.json; font loading and glyph rendering stay in the theme
+// layer so local full fonts and official subset fonts use the same API.
+using TablerIconId = TablerIconManifest::Id;
+
+bool EnsureTablerIconFontLoaded(const std::filesystem::path& appDirectory = {});
+wchar_t TablerIconGlyph(TablerIconId id);
+HICON CreateTablerIconHandle(
+    const std::filesystem::path& appDirectory,
+    TablerIconId id,
+    int fontHeight = 52,
+    COLORREF color = RGB(31, 41, 55));
+bool DrawTablerIcon(
+    HDC dc,
+    const RECT& rect,
+    const std::filesystem::path& appDirectory,
+    TablerIconId id,
+    COLORREF color,
+    int fontHeight = 0);
 
 enum class ThemedButtonRole {
     Normal,

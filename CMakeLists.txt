@@ -17,6 +17,12 @@ option(QUATTRO_DEFAULT_TOP_MOST_ENABLED "Keep the main window topmost by default
 option(QUATTRO_BUNDLE_OPTIONAL_EXECUTABLES "Embed AppLaunchLocker and QuattroUpdater in Quattro" OFF)
 option(QUATTRO_OFFICIAL_BUILD "Build an official package without a development title marker" OFF)
 option(QUATTRO_COMPRESS_EMBEDDED_ASSETS "Compress built-in theme and icon resources" OFF)
+option(QUATTRO_SUBSET_TABLER_FONT "Validate, subset, and embed the Tabler runtime font" OFF)
+
+set(QUATTRO_SUBSET_TABLER_FONT_ENABLED ${QUATTRO_SUBSET_TABLER_FONT})
+if(QUATTRO_OFFICIAL_BUILD)
+    set(QUATTRO_SUBSET_TABLER_FONT_ENABLED ON)
+endif()
 
 set(QUATTRO_BUILD_MARKER "")
 set(QUATTRO_OFFICIAL_BUILD_VALUE 0)
@@ -146,6 +152,89 @@ set(QUATTRO_SOURCE_INCLUDE_DIRS
 
 include_directories(${QUATTRO_SOURCE_INCLUDE_DIRS})
 
+set(QUATTRO_TABLER_ICON_MANIFEST_HEADER "${CMAKE_CURRENT_BINARY_DIR}/generated/TablerIconManifest.h")
+set(QUATTRO_TABLER_ICON_CODEPOINTS "${CMAKE_CURRENT_BINARY_DIR}/generated/TablerIconCodepoints.txt")
+add_custom_command(
+    OUTPUT "${QUATTRO_TABLER_ICON_MANIFEST_HEADER}" "${QUATTRO_TABLER_ICON_CODEPOINTS}"
+    COMMAND powershell -ExecutionPolicy Bypass -File "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate-tabler-icon-manifest.ps1"
+            -Config "${CMAKE_CURRENT_SOURCE_DIR}/tools/tabler-icons.json"
+            -HeaderOutput "${QUATTRO_TABLER_ICON_MANIFEST_HEADER}"
+            -CodepointsOutput "${QUATTRO_TABLER_ICON_CODEPOINTS}"
+    DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate-tabler-icon-manifest.ps1"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tools/tabler-icons.json"
+    COMMENT "Generating Tabler icon manifest"
+    VERBATIM
+)
+add_custom_target(QuattroTablerIconManifest
+    DEPENDS "${QUATTRO_TABLER_ICON_MANIFEST_HEADER}" "${QUATTRO_TABLER_ICON_CODEPOINTS}"
+)
+
+file(GLOB_RECURSE QUATTRO_TABLER_COVERAGE_SOURCES CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/*.h"
+)
+add_custom_target(QuattroTablerIconCoverage
+    COMMAND powershell -ExecutionPolicy Bypass -File "${CMAKE_CURRENT_SOURCE_DIR}/tools/validate-tabler-icon-coverage.ps1"
+            -Root "${CMAKE_CURRENT_SOURCE_DIR}"
+            -Config "${CMAKE_CURRENT_SOURCE_DIR}/tools/tabler-icons.json"
+            -GeneratedHeader "${QUATTRO_TABLER_ICON_MANIFEST_HEADER}"
+    DEPENDS
+        QuattroTablerIconManifest
+        "${CMAKE_CURRENT_SOURCE_DIR}/tools/validate-tabler-icon-coverage.ps1"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tools/tabler-icons.json"
+        "${QUATTRO_TABLER_ICON_MANIFEST_HEADER}"
+        ${QUATTRO_TABLER_COVERAGE_SOURCES}
+    COMMENT "Preflighting Tabler icon references before font subsetting"
+    VERBATIM
+)
+
+set(QUATTRO_TABLER_FONT_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/icons/menu/tabler/tabler-icons.ttf")
+if(QUATTRO_SUBSET_TABLER_FONT_ENABLED)
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    set(QUATTRO_TABLER_FONT_SUBSET "${CMAKE_CURRENT_BINARY_DIR}/generated/tabler-icons.runtime.ttf")
+    add_custom_command(
+        OUTPUT "${QUATTRO_TABLER_FONT_SUBSET}"
+        COMMAND powershell -ExecutionPolicy Bypass -File "${CMAKE_CURRENT_SOURCE_DIR}/tools/subset-tabler-font.ps1"
+                -InputFont "${CMAKE_CURRENT_SOURCE_DIR}/icons/menu/tabler/tabler-icons.ttf"
+                -OutputFont "${QUATTRO_TABLER_FONT_SUBSET}"
+                -Codepoints "${QUATTRO_TABLER_ICON_CODEPOINTS}"
+        DEPENDS
+            QuattroTablerIconCoverage
+            "${CMAKE_CURRENT_SOURCE_DIR}/tools/subset-tabler-font.ps1"
+            "${CMAKE_CURRENT_SOURCE_DIR}/icons/menu/tabler/tabler-icons.ttf"
+            "${QUATTRO_TABLER_ICON_CODEPOINTS}"
+        COMMENT "Subsetting Tabler icon font after reference preflight"
+        VERBATIM
+    )
+    add_custom_target(QuattroTablerIconFontSubset
+        DEPENDS "${QUATTRO_TABLER_FONT_SUBSET}"
+    )
+    set(QUATTRO_TABLER_FONT_SOURCE "${QUATTRO_TABLER_FONT_SUBSET}")
+    add_custom_target(QuattroTablerIconFontValidation
+        COMMAND powershell -ExecutionPolicy Bypass -File "${CMAKE_CURRENT_SOURCE_DIR}/tools/validate-tabler-icon-coverage.ps1"
+                -Root "${CMAKE_CURRENT_SOURCE_DIR}"
+                -Config "${CMAKE_CURRENT_SOURCE_DIR}/tools/tabler-icons.json"
+                -GeneratedHeader "${QUATTRO_TABLER_ICON_MANIFEST_HEADER}"
+                -FontPath "${QUATTRO_TABLER_FONT_SUBSET}"
+        DEPENDS
+            QuattroTablerIconFontSubset
+            "${CMAKE_CURRENT_SOURCE_DIR}/tools/validate-tabler-icon-coverage.ps1"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tools/tabler-icons.json"
+            "${QUATTRO_TABLER_ICON_MANIFEST_HEADER}"
+            "${QUATTRO_TABLER_FONT_SUBSET}"
+        COMMENT "Validating subset Tabler font cmap and family"
+        VERBATIM
+    )
+    add_custom_target(QuattroTablerIconReady
+        DEPENDS QuattroTablerIconFontValidation
+    )
+else()
+    add_custom_target(QuattroTablerIconReady
+        DEPENDS QuattroTablerIconCoverage
+    )
+endif()
+
 add_executable(QuattroUpdater WIN32
     resources/QuattroUpdater.rc
     src/updater/UpdaterMain.cpp
@@ -191,10 +280,16 @@ add_custom_command(
             -ResourceOutput "${EMBEDDED_ASSET_RESOURCE}"
             -ResourceHeader "${CMAKE_CURRENT_SOURCE_DIR}/resources/resource.h"
             -ResourceName IDR_QUATTRO_ASSET_PACK
+            -TablerFontOverride "${QUATTRO_TABLER_FONT_SOURCE}"
             -Mode "${EMBEDDED_ASSET_MODE}"
     DEPENDS
         "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate-embedded-asset-pack.ps1"
         "${CMAKE_CURRENT_SOURCE_DIR}/resources/resource.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate-tabler-icon-manifest.ps1"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tools/tabler-icons.json"
+        "${QUATTRO_TABLER_ICON_MANIFEST_HEADER}"
+        "${QUATTRO_TABLER_ICON_CODEPOINTS}"
+        "${QUATTRO_TABLER_FONT_SOURCE}"
         ${EMBEDDED_ASSET_INPUTS}
     COMMENT "Generating ${EMBEDDED_ASSET_MODE} embedded assets"
     VERBATIM
@@ -261,9 +356,11 @@ add_library(QuattroThemedUi STATIC
     src/theme/ThemedMessageBox.cpp
     src/theme/ThemedTaskProgressDialog.cpp
     src/theme/ThemedUi.cpp
+    src/theme/TablerIconFacade.cpp
     src/theme/ThemedWindowUi.cpp
     src/common/Utilities.cpp
 )
+add_dependencies(QuattroThemedUi QuattroTablerIconReady)
 
 target_compile_definitions(QuattroThemedUi PUBLIC
     UNICODE
@@ -1251,6 +1348,14 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/icons")
     )
 endif()
 
+if(QUATTRO_SUBSET_TABLER_FONT_ENABLED)
+    add_custom_command(TARGET Quattro POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${QUATTRO_TABLER_FONT_SOURCE}"
+            "$<TARGET_FILE_DIR:Quattro>/icons/menu/tabler/tabler-icons.ttf"
+    )
+endif()
+
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/theme")
     add_custom_command(TARGET Quattro POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E rm -rf "$<TARGET_FILE_DIR:Quattro>/theme"
@@ -1268,5 +1373,17 @@ endif()
 foreach(TARGET_NAME Quattro AppLaunchLocker QuattroTests QuattroUiScreenshotAcceptance)
     if(TARGET ${TARGET_NAME})
         add_dependencies(${TARGET_NAME} QuattroThemeFacadeLint)
+    endif()
+endforeach()
+
+get_property(QUATTRO_ALL_TARGETS DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
+foreach(TARGET_NAME IN LISTS QUATTRO_ALL_TARGETS)
+    if(TARGET ${TARGET_NAME} AND
+       NOT TARGET_NAME STREQUAL "QuattroTablerIconManifest" AND
+       NOT TARGET_NAME STREQUAL "QuattroTablerIconCoverage" AND
+       NOT TARGET_NAME STREQUAL "QuattroTablerIconFontSubset" AND
+       NOT TARGET_NAME STREQUAL "QuattroTablerIconFontValidation" AND
+       NOT TARGET_NAME STREQUAL "QuattroTablerIconReady")
+        add_dependencies(${TARGET_NAME} QuattroTablerIconReady)
     endif()
 endforeach()

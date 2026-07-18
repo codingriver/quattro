@@ -25,13 +25,15 @@ function Assert-Plan {
         [string]$ExpectedMarker,
         [string]$ExpectedEmbeddedAssets,
         [string]$ExpectedProfile,
-        [string]$ExpectedDirectories)
+        [string]$ExpectedDirectories,
+        [string]$ExpectedSubsetTablerFont = "OFF")
     $parameters = @{ PlanOnly = $true }
     if ($Arguments -contains "-All") { $parameters.All = $true }
     if ($Arguments -contains "-Complete") { $parameters.Complete = $true }
     if ($Arguments -contains "-Minimal") { $parameters.Minimal = $true }
     if ($Arguments -contains "-OfficialBuild") { $parameters.OfficialBuild = $true }
     if ($Arguments -contains "-CompressEmbeddedAssets") { $parameters.CompressEmbeddedAssets = $true }
+    if ($Arguments -contains "-SubsetTablerFont") { $parameters.SubsetTablerFont = $true }
     $platformIndex = [Array]::IndexOf($Arguments, "-Platform")
     if ($platformIndex -ge 0 -and $platformIndex + 1 -lt $Arguments.Count) {
         $parameters.Platform = $Arguments[$platformIndex + 1]
@@ -40,6 +42,7 @@ function Assert-Plan {
     if ($lines -notcontains "official_build=$ExpectedOfficial" -or
         $lines -notcontains "build_marker=$ExpectedMarker" -or
         $lines -notcontains "embedded_assets=$ExpectedEmbeddedAssets" -or
+        $lines -notcontains "subset_tabler_font=$ExpectedSubsetTablerFont" -or
         $lines -notcontains "build_profile=$ExpectedProfile" -or
         $lines -notcontains "build_directories=$ExpectedDirectories") {
         throw "Unexpected build plan: $($lines -join '; ')"
@@ -89,6 +92,7 @@ function Assert-ReleasePlan {
         "bundle_optional_executables=ON",
         "official_build=ON",
         "embedded_assets=raw",
+        "subset_tabler_font=ON",
         "configuration=Release",
         "backend=vcpkg",
         "no_zip=ON",
@@ -203,10 +207,16 @@ Assert-Plan -Arguments @("-All") -ExpectedOfficial "OFF" -ExpectedMarker "DEBUG-
     -ExpectedProfile "complete" -ExpectedDirectories "build-vcpkg-x86-complete,build-vcpkg-x64-complete"
 Assert-Plan -Arguments @("-All", "-OfficialBuild") -ExpectedOfficial "ON" -ExpectedMarker "none" `
     -ExpectedEmbeddedAssets "raw" `
-    -ExpectedProfile "official-complete" -ExpectedDirectories "build-vcpkg-x86-official-complete,build-vcpkg-x64-official-complete"
+    -ExpectedProfile "official-complete" -ExpectedDirectories "build-vcpkg-x86-official-complete,build-vcpkg-x64-official-complete" `
+    -ExpectedSubsetTablerFont "ON"
 Assert-Plan -Arguments @("-All", "-OfficialBuild", "-CompressEmbeddedAssets") -ExpectedOfficial "ON" -ExpectedMarker "none" `
     -ExpectedEmbeddedAssets "xpress" `
-    -ExpectedProfile "official-complete" -ExpectedDirectories "build-vcpkg-x86-official-complete,build-vcpkg-x64-official-complete"
+    -ExpectedProfile "official-complete" -ExpectedDirectories "build-vcpkg-x86-official-complete,build-vcpkg-x64-official-complete" `
+    -ExpectedSubsetTablerFont "ON"
+Assert-Plan -Arguments @("-Platform", "x64", "-Complete", "-SubsetTablerFont") -ExpectedOfficial "OFF" -ExpectedMarker "DEBUG-All" `
+    -ExpectedEmbeddedAssets "raw" `
+    -ExpectedProfile "subset-complete" -ExpectedDirectories "build-vcpkg-x64-subset-complete" `
+    -ExpectedSubsetTablerFont "ON"
 Assert-ReleasePlan
 Assert-GeneratedIdentity -Name "debug" -BundleOptionalExecutables $false -OfficialBuild $false -CompressEmbeddedAssets $false -ExpectedMarker "DEBUG" -ExpectedOfficial 0 -ExpectedCompressedAssets 0
 Assert-GeneratedIdentity -Name "debug-all" -BundleOptionalExecutables $true -OfficialBuild $false -CompressEmbeddedAssets $false -ExpectedMarker "DEBUG-All" -ExpectedOfficial 0 -ExpectedCompressedAssets 0

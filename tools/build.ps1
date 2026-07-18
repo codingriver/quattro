@@ -15,6 +15,7 @@
     [switch]$NoUpx,
     [string]$UpxPath = "upx",
     [switch]$CompressEmbeddedAssets,
+    [switch]$SubsetTablerFont,
     [switch]$PlanOnly,
     [switch]$Release,
     [switch]$OfficialBuild,
@@ -70,6 +71,10 @@ if ($Release) {
     }
 }
 
+if ($OfficialBuild) {
+    $SubsetTablerFont = $true
+}
+
 if ($All -and $Minimal) {
     throw "-All already represents a complete multi-platform build and cannot be combined with -Minimal."
 }
@@ -96,12 +101,15 @@ $completeBuild = $All -or $Complete
 $bundleOptionalExecutables = if ($completeBuild) { "ON" } else { "OFF" }
 $officialBuildEnabled = if ($OfficialBuild) { "ON" } else { "OFF" }
 $embeddedAssetCompressionCmake = if ($CompressEmbeddedAssets) { "ON" } else { "OFF" }
+$subsetTablerFontCmake = if ($SubsetTablerFont) { "ON" } else { "OFF" }
 $buildMarker = if ($OfficialBuild) { "none" } elseif ($completeBuild) { "DEBUG-All" } else { "DEBUG" }
 $buildScope = if ($completeBuild) { "complete" } else { "minimal" }
 $buildProfile = if ($OfficialBuild) {
     "official-$buildScope"
 } elseif ($Test) {
-    "tests-$buildScope"
+    if ($SubsetTablerFont) { "tests-subset-$buildScope" } else { "tests-$buildScope" }
+} elseif ($SubsetTablerFont) {
+    "subset-$buildScope"
 } elseif ($completeBuild) {
     "complete"
 } else {
@@ -181,13 +189,18 @@ Quattro 中文构建与打包工具
       使用 XPRESS Huffman 压缩内置主题和图标资源。所有构建默认直接嵌入原始资源；
       仅在需要比较资源压缩效果或生成兼容包时显式启用。
 
+  -SubsetTablerFont
+      先检查所有 Tabler 图标引用和 JSON 清单，检查通过后生成字体子集，
+      再校验子集 cmap 与字体名称，并将验证后的子集字体嵌入包体。
+      普通本地构建默认关闭；-OfficialBuild 和 -Release 强制启用且不得回退到全量字体。
+
   -PlanOnly
       仅输出解析后的架构、构建身份、可选组件状态和构建目录，不编译、不打包。
 
   -OfficialBuild
       构建正式版，不显示 DEBUG 标记，主要供 GitHub Actions 正式发布使用。
       正式完整包通常组合使用 -OfficialBuild -All。
-      正式版与本地 DEBUG/DEBUG-All 均默认直接嵌入原始主题和图标资源。
+      主题和其它图标资源保持原始嵌入模式，但 Tabler 字体会强制检查并使用验证后的子集。
 
   -Release
       使用与 GitHub Actions Package 步骤一致的正式打包参数：vcpkg、OfficialBuild、NoZip。
@@ -235,6 +248,9 @@ Quattro 中文构建与打包工具
   # 查看将使用的构建目录和组件范围
   powershell -ExecutionPolicy Bypass -File .\tools\$scriptName -All -PlanOnly
 
+  # 本地构建并检查、剥离、复检和嵌入 Tabler 字体子集
+  powershell -ExecutionPolicy Bypass -File .\tools\$scriptName -Platform x64 -Complete -SubsetTablerFont
+
   # 构建指定版本的 GitHub 正式完整包
   powershell -ExecutionPolicy Bypass -File .\tools\$scriptName -Release -Version 1.2.3
 
@@ -261,6 +277,59 @@ function Format-PackageTimestamp {
     param([datetime]$Time)
 
     return $Time.ToString("yyyy-MM-dd HH:mm:ss")
+}
+
+function Format-FileSize {
+    param([long]$Bytes)
+
+    $units = @("B", "KiB", "MiB", "GiB", "TiB")
+    $value = [double]$Bytes
+    $unitIndex = 0
+    while ($value -ge 1024 -and $unitIndex -lt $units.Count - 1) {
+        $value /= 1024
+        $unitIndex++
+    }
+
+    if ($unitIndex -eq 0) {
+        return [string]::Format(
+            [System.Globalization.CultureInfo]::InvariantCulture,
+            "{0} {1}",
+            $Bytes,
+            $units[$unitIndex])
+    }
+    return [string]::Format(
+        [System.Globalization.CultureInfo]::InvariantCulture,
+        "{0:F2} {1}",
+        $value,
+        $units[$unitIndex])
+}
+
+function Get-ArtifactSizeInfo {
+    param([string]$Path)
+
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+    if ($item.PSIsContainer) {
+        $files = @(Get-ChildItem -LiteralPath $item.FullName -File -Recurse -Force -ErrorAction Stop)
+        [long]$bytes = 0
+        foreach ($file in $files) {
+            $bytes += $file.Length
+        }
+        return [pscustomobject]@{
+            Kind = "dir"
+            Path = $item.FullName
+            Bytes = $bytes
+            FileCount = $files.Count
+            DisplaySize = Format-FileSize -Bytes $bytes
+        }
+    }
+
+    return [pscustomobject]@{
+        Kind = "file"
+        Path = $item.FullName
+        Bytes = [long]$item.Length
+        FileCount = 1
+        DisplaySize = Format-FileSize -Bytes $item.Length
+    }
 }
 
 function New-ArchitectureList {
@@ -421,6 +490,7 @@ function Ensure-Configured {
     $configureArgs += "-DQUATTRO_BUNDLE_OPTIONAL_EXECUTABLES=$bundleOptionalExecutables"
     $configureArgs += "-DQUATTRO_OFFICIAL_BUILD=$officialBuildEnabled"
     $configureArgs += "-DQUATTRO_COMPRESS_EMBEDDED_ASSETS=$embeddedAssetCompressionCmake"
+    $configureArgs += "-DQUATTRO_SUBSET_TABLER_FONT=$subsetTablerFontCmake"
     Invoke-NativeCommand -Description "CMake configure" -Command "cmake" -Arguments $configureArgs
 }
 
@@ -472,7 +542,11 @@ function Get-ProcessesByExecutablePath {
 function Format-ProcessList {
     param($Processes)
 
-    $items = @($Processes)
+    $items = @($Processes | Where-Object {
+        $null -ne $_ -and
+        $null -ne $_.ProcessId -and
+        [int64]$_.ProcessId -gt 0
+    })
     if ($items.Count -eq 0) {
         return ""
     }
@@ -534,7 +608,7 @@ function Remove-FileRobust {
     }
 
     $lastError = $null
-    for ($attempt = 1; $attempt -le 5; $attempt++) {
+    for ($attempt = 1; $attempt -le 10; $attempt++) {
         try {
             Remove-Item -LiteralPath $Path -Force
             return
@@ -578,10 +652,56 @@ function Invoke-UpxCompress {
     }
 
     $before = (Get-Item -LiteralPath $ExePath).Length
-    & $UpxPath "--best" "--lzma" $ExePath
-    if ($LASTEXITCODE -ne 0) {
-        throw "UPX failed for: $ExePath"
+    $targetDirectory = Split-Path -Parent $ExePath
+    $stagingDirectory = Join-Path $targetDirectory (".quattro-upx-" + [Guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Path $stagingDirectory | Out-Null
+
+    $packedPath = $null
+    $upxExitCode = $null
+    try {
+        for ($attempt = 1; $attempt -le 5; $attempt++) {
+            $candidatePath = Join-Path $stagingDirectory "packed-$attempt.exe"
+            & $UpxPath "--best" "--lzma" "-o" $candidatePath $ExePath
+            $upxExitCode = $LASTEXITCODE
+            if ($upxExitCode -eq 0 -and (Test-Path -LiteralPath $candidatePath)) {
+                $packedPath = $candidatePath
+                break
+            }
+
+            if ($attempt -lt 5) {
+                Write-Warning "UPX attempt $attempt failed for $ExePath (exit code $upxExitCode); retrying."
+                Start-Sleep -Milliseconds (300 * $attempt)
+            }
+        }
+
+        if ([string]::IsNullOrWhiteSpace($packedPath)) {
+            throw "UPX failed for: $ExePath (exit code $upxExitCode after 5 attempts)"
+        }
+
+        Remove-FileRobust -Path $ExePath -Purpose "uncompressed package before UPX replacement"
+        $lastReplaceError = $null
+        $replacementSucceeded = $false
+        for ($attempt = 1; $attempt -le 5; $attempt++) {
+            try {
+                Move-Item -LiteralPath $packedPath -Destination $ExePath -Force -ErrorAction Stop
+                $packedPath = $null
+                $replacementSucceeded = $true
+                break
+            } catch {
+                $lastReplaceError = $_
+                Start-Sleep -Milliseconds (200 * $attempt)
+            }
+        }
+        if (!$replacementSucceeded) {
+            $replaceMessage = if ($lastReplaceError) { $lastReplaceError.Exception.Message } else { "unknown replacement error" }
+            throw "Cannot publish UPX output: $ExePath. $replaceMessage"
+        }
+    } finally {
+        if (Test-Path -LiteralPath $stagingDirectory) {
+            Remove-Item -LiteralPath $stagingDirectory -Recurse -Force -ErrorAction SilentlyContinue
+        }
     }
+
     $after = (Get-Item -LiteralPath $ExePath).Length
     $saved = $before - $after
     $percent = if ($before -gt 0) { [math]::Round(($saved * 100.0) / $before, 1) } else { 0 }
@@ -784,6 +904,7 @@ if ($PlanOnly) {
     "bundle_optional_executables=$bundleOptionalExecutables"
     "official_build=$officialBuildEnabled"
     "embedded_assets=$(if ($embeddedAssetCompressionCmake -eq 'ON') { 'xpress' } else { 'raw' })"
+    "subset_tabler_font=$subsetTablerFontCmake"
     "configuration=$Configuration"
     "backend=$Backend"
     "no_zip=$(if ($NoZip) { 'ON' } else { 'OFF' })"
@@ -876,8 +997,26 @@ $packageEndTime = Get-Date
 "package duration: $([int][math]::Round(($packageEndTime - $packageStartTime).TotalSeconds))s"
 "package complete"
 "artifacts:"
+$artifactTotalBytes = [long]0
+$artifactFileCount = 0
 foreach ($output in $outputs) {
     if (Test-Path $output) {
-        (Resolve-Path -LiteralPath $output).Path
+        $artifact = Get-ArtifactSizeInfo -Path $output
+        $exactBytes = [string]::Format(
+            [System.Globalization.CultureInfo]::InvariantCulture,
+            "{0:N0}",
+            $artifact.Bytes)
+        if ($artifact.Kind -eq "dir") {
+            "[dir] $($artifact.DisplaySize) ($exactBytes bytes, files=$($artifact.FileCount)) $($artifact.Path)"
+        } else {
+            "[file] $($artifact.DisplaySize) ($exactBytes bytes) $($artifact.Path)"
+        }
+        $artifactTotalBytes += $artifact.Bytes
+        $artifactFileCount += $artifact.FileCount
     }
 }
+$artifactTotalExactBytes = [string]::Format(
+    [System.Globalization.CultureInfo]::InvariantCulture,
+    "{0:N0}",
+    $artifactTotalBytes)
+"artifact total: $(Format-FileSize -Bytes $artifactTotalBytes) ($artifactTotalExactBytes bytes), files=$artifactFileCount"

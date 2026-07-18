@@ -1594,19 +1594,6 @@ bool DrawSystemImageListIcon(HDC dc, const RECT& rect, int imageIndex, bool disa
     return ImageList_Draw(imageList, imageIndex, dc, x, y, disabled ? ILD_BLEND50 : ILD_NORMAL) != FALSE;
 }
 
-bool EnsureMenuIconFontLoaded(const std::filesystem::path& appDirectory) {
-    static std::filesystem::path loadedPath;
-    static bool loaded = false;
-
-    const std::filesystem::path fontPath = appDirectory / L"icons" / L"menu" / L"tabler" / L"tabler-icons.ttf";
-    if (loaded && loadedPath == fontPath) {
-        return true;
-    }
-    loadedPath = fontPath;
-    loaded = FileExists(fontPath) && AddFontResourceExW(fontPath.c_str(), FR_PRIVATE, nullptr) > 0;
-    return loaded;
-}
-
 struct MenuIconPalette {
     COLORREF accent = RGB(0, 153, 215);
     COLORREF danger = RGB(228, 48, 58);
@@ -1618,81 +1605,18 @@ struct MenuIconPalette {
 };
 
 bool DrawLocalMenuIcon(HDC dc, const RECT& rc, int icon, bool disabled, COLORREF color, const MenuIconPalette& palette, const std::filesystem::path& appDirectory) {
-    const wchar_t glyph = MenuIconGlyph(static_cast<MenuIcon>(icon));
-    if (glyph == L'\0' || !EnsureMenuIconFontLoaded(appDirectory)) {
-        return false;
-    }
-
-    const int size = std::min(rc.right - rc.left, rc.bottom - rc.top);
-    HFONT font = CreateFontW(
-        -std::max(12, size + 1),
-        0,
-        0,
-        0,
-        FW_NORMAL,
-        FALSE,
-        FALSE,
-        FALSE,
-        DEFAULT_CHARSET,
-        OUT_DEFAULT_PRECIS,
-        CLIP_DEFAULT_PRECIS,
-        CLEARTYPE_QUALITY,
-        DEFAULT_PITCH | FF_DONTCARE,
-        L"tabler-icons");
-    if (!font) {
-        return false;
-    }
-
     const COLORREF accent = disabled ? palette.disabled :
         (icon == MenuIconDelete || icon == MenuIconClear || icon == MenuIconExit || icon == MenuIconPower ? palette.danger : palette.accent);
-    const int oldBkMode = SetBkMode(dc, TRANSPARENT);
-    const COLORREF oldTextColor = SetTextColor(dc, color == CLR_INVALID ? accent : color);
-    HGDIOBJ oldFont = SelectObject(dc, font);
-    RECT textRect = rc;
-    DrawTextW(dc, &glyph, 1, &textRect, DT_SINGLELINE | DT_CENTER | DT_VCENTER | DT_NOCLIP);
-    SelectObject(dc, oldFont);
-    SetTextColor(dc, oldTextColor);
-    SetBkMode(dc, oldBkMode);
-    DeleteObject(font);
-    return true;
+    return DrawTablerIcon(
+        dc,
+        rc,
+        appDirectory,
+        MenuIconTablerId(static_cast<MenuIcon>(icon)),
+        color == CLR_INVALID ? accent : color);
 }
 
 bool DrawMenuChevronRight(HDC dc, const RECT& rc, COLORREF color, const std::filesystem::path& appDirectory) {
-    if (!EnsureMenuIconFontLoaded(appDirectory)) {
-        return false;
-    }
-
-    constexpr wchar_t chevronRight = static_cast<wchar_t>(0xEA61); // tabler chevron-right
-    const int size = std::min(rc.right - rc.left, rc.bottom - rc.top);
-    HFONT font = CreateFontW(
-        -std::max(12, size + 1),
-        0,
-        0,
-        0,
-        FW_NORMAL,
-        FALSE,
-        FALSE,
-        FALSE,
-        DEFAULT_CHARSET,
-        OUT_DEFAULT_PRECIS,
-        CLIP_DEFAULT_PRECIS,
-        CLEARTYPE_QUALITY,
-        DEFAULT_PITCH | FF_DONTCARE,
-        L"tabler-icons");
-    if (!font) {
-        return false;
-    }
-
-    const int oldBkMode = SetBkMode(dc, TRANSPARENT);
-    const COLORREF oldTextColor = SetTextColor(dc, color);
-    HGDIOBJ oldFont = SelectObject(dc, font);
-    RECT textRect = rc;
-    DrawTextW(dc, &chevronRight, 1, &textRect, DT_SINGLELINE | DT_CENTER | DT_VCENTER | DT_NOCLIP);
-    SelectObject(dc, oldFont);
-    SetTextColor(dc, oldTextColor);
-    SetBkMode(dc, oldBkMode);
-    DeleteObject(font);
-    return true;
+    return DrawTablerIcon(dc, rc, appDirectory, TablerIconId::ChevronRight, color);
 }
 
 void DrawFallbackMenuIcon(HDC dc, const RECT& rc, int icon, bool disabled, COLORREF color, const MenuIconPalette& palette) {

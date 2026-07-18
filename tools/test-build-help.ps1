@@ -22,13 +22,14 @@ $requiredText = @(
     "-Minimal",
     "-NoUpx",
     "-CompressEmbeddedAssets",
+    "-SubsetTablerFont",
     "-PlanOnly",
     "-NoZip",
     "-Backend vcpkg|classic",
     "主窗口显示红色（DEBUG）标记",
     "主窗口显示红色（DEBUG-All）标记",
     "所有构建默认直接嵌入原始资源",
-    "正式版与本地 DEBUG/DEBUG-All 均默认直接嵌入原始主题和图标资源",
+    "Tabler 字体会强制检查并使用验证后的子集",
     "默认启用 UPX"
 )
 
@@ -50,6 +51,7 @@ $allPlan = (& $buildScript --all -PlanOnly) -join "`n"
 if (!$allPlan.Contains("architectures=x86,x64") -or
     !$allPlan.Contains("bundle_optional_executables=ON") -or
     !$allPlan.Contains("embedded_assets=raw") -or
+    !$allPlan.Contains("subset_tabler_font=OFF") -or
     !$allPlan.Contains("build_marker=DEBUG-All")) {
     throw "--all 未正确启用完整开发版构建计划。"
 }
@@ -113,8 +115,17 @@ try {
 $officialPlan = (& $buildScript -OfficialBuild -PlanOnly) -join "`n"
 if (!$officialPlan.Contains("official_build=ON") -or
     !$officialPlan.Contains("embedded_assets=raw") -or
+    !$officialPlan.Contains("subset_tabler_font=ON") -or
     !$officialPlan.Contains("build_marker=none")) {
-    throw "-OfficialBuild 未正确启用正式原始资源计划。"
+    throw "-OfficialBuild 未正确启用正式字体子集计划。"
+}
+
+$subsetPlan = (& $buildScript -Platform x64 -Complete -SubsetTablerFont -PlanOnly) -join "`n"
+if (!$subsetPlan.Contains("official_build=OFF") -or
+    !$subsetPlan.Contains("subset_tabler_font=ON") -or
+    !$subsetPlan.Contains("build_profile=subset-complete") -or
+    !$subsetPlan.Contains("build_directories=build-vcpkg-x64-subset-complete")) {
+    throw "-SubsetTablerFont 未正确启用隔离的本地字体子集计划。"
 }
 
 $compressedPlan = (& $buildScript -OfficialBuild -CompressEmbeddedAssets -PlanOnly) -join "`n"

@@ -277,111 +277,6 @@ int TextWidth(HWND parent, HFONT font, const std::wstring& text) {
     return size.cx;
 }
 
-bool EnsureTablerIconFontLoaded() {
-    static std::filesystem::path loadedPath;
-    static bool loaded = false;
-
-    const std::filesystem::path relative = L"icons/menu/tabler/tabler-icons.ttf";
-    const std::filesystem::path candidates[] = {
-        GetModuleDirectory() / relative,
-        std::filesystem::current_path() / relative,
-    };
-    for (const auto& path : candidates) {
-        if (loaded && loadedPath == path) {
-            return true;
-        }
-        if (FileExists(path)) {
-            loadedPath = path;
-            loaded = AddFontResourceExW(path.c_str(), FR_PRIVATE, nullptr) > 0;
-            return loaded;
-        }
-    }
-    return false;
-}
-
-HICON CreateTablerIconHandle(wchar_t glyph) {
-    if (glyph == L'\0' || !EnsureTablerIconFontLoaded()) {
-        return nullptr;
-    }
-
-    constexpr int size = 64;
-    BITMAPINFO info{};
-    info.bmiHeader.biSize = sizeof(info.bmiHeader);
-    info.bmiHeader.biWidth = size;
-    info.bmiHeader.biHeight = -size;
-    info.bmiHeader.biPlanes = 1;
-    info.bmiHeader.biBitCount = 32;
-    info.bmiHeader.biCompression = BI_RGB;
-
-    void* pixels = nullptr;
-    HDC screen = GetDC(nullptr);
-    HBITMAP color = CreateDIBSection(screen, &info, DIB_RGB_COLORS, &pixels, nullptr, 0);
-    HBITMAP mask = CreateBitmap(size, size, 1, 1, nullptr);
-    HDC dc = CreateCompatibleDC(screen);
-    ReleaseDC(nullptr, screen);
-    if (!color || !mask || !dc || !pixels) {
-        if (dc) DeleteDC(dc);
-        if (mask) DeleteObject(mask);
-        if (color) DeleteObject(color);
-        return nullptr;
-    }
-
-    HGDIOBJ oldBitmap = SelectObject(dc, color);
-    std::fill_n(static_cast<std::uint32_t*>(pixels), size * size, 0);
-    HFONT font = CreateFontW(
-        -52,
-        0,
-        0,
-        0,
-        FW_NORMAL,
-        FALSE,
-        FALSE,
-        FALSE,
-        DEFAULT_CHARSET,
-        OUT_DEFAULT_PRECIS,
-        CLIP_DEFAULT_PRECIS,
-        CLEARTYPE_QUALITY,
-        DEFAULT_PITCH | FF_DONTCARE,
-        L"tabler-icons");
-    if (!font) {
-        SelectObject(dc, oldBitmap);
-        DeleteDC(dc);
-        DeleteObject(mask);
-        DeleteObject(color);
-        return nullptr;
-    }
-
-    const int oldBkMode = SetBkMode(dc, TRANSPARENT);
-    const COLORREF oldTextColor = SetTextColor(dc, RGB(31, 41, 55));
-    HGDIOBJ oldFont = SelectObject(dc, font);
-    RECT rect{0, 0, size, size};
-    DrawTextW(dc, &glyph, 1, &rect, DT_SINGLELINE | DT_CENTER | DT_VCENTER | DT_NOCLIP);
-    SelectObject(dc, oldFont);
-    SetTextColor(dc, oldTextColor);
-    SetBkMode(dc, oldBkMode);
-    DeleteObject(font);
-
-    auto* argb = static_cast<std::uint32_t*>(pixels);
-    for (int i = 0; i < size * size; ++i) {
-        const std::uint32_t rgb = argb[i] & 0x00FFFFFFu;
-        if (rgb != 0) {
-            argb[i] = 0xFF000000u | rgb;
-        }
-    }
-
-    SelectObject(dc, oldBitmap);
-    DeleteDC(dc);
-
-    ICONINFO iconInfo{};
-    iconInfo.fIcon = TRUE;
-    iconInfo.hbmColor = color;
-    iconInfo.hbmMask = mask;
-    HICON icon = CreateIconIndirect(&iconInfo);
-    DeleteObject(mask);
-    DeleteObject(color);
-    return icon;
-}
-
 HICON CreateChevronFallbackIcon() {
     constexpr int size = 64;
     BITMAPINFO info{};
@@ -453,8 +348,7 @@ void ApplySplitButtonMenuIcon(HWND button, int buttonHeight) {
         return;
     }
 
-    constexpr wchar_t chevronDown = static_cast<wchar_t>(0xEA5F); // tabler chevron-down
-    HICON icon = CreateTablerIconHandle(chevronDown);
+    HICON icon = CreateTablerIconHandle({}, TablerIconId::ChevronDown);
     if (!icon) {
         icon = CreateChevronFallbackIcon();
     }

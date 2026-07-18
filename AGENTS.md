@@ -9,6 +9,14 @@
 ## Packaging Rules
 
 - 内置资源 XPRESS 压缩默认不得启用。本地开发、自动化测试和普通验收构建无需资源压缩，不得传入 `-CompressEmbeddedAssets`，也不得把 `QUATTRO_COMPRESS_EMBEDDED_ASSETS` 默认值改为 `ON`。正式发布包已经使用 UPX 压缩，必须保持 XPRESS 关闭，禁止默认叠加两层压缩。只有需求明确针对 XPRESS 本身进行专项测试、体积对比，或明确生成不使用 UPX 的特殊产物时，才允许在隔离构建目录中显式启用，并应清楚标记该产物的压缩方式。
+- Tabler 图标字体必须由正式版构建阶段按实际 glyph 子集化；本地开发和测试可继续使用完整 `icons/menu/tabler/tabler-icons.ttf`，需要本地验证正式字体流程时必须显式使用 `-SubsetTablerFont`。`-OfficialBuild` 和 `-Release` 必须强制启用该流程且不得提供关闭或回退到全量字体的参数。流程顺序必须固定为源码/JSON 引用预检通过后生成子集，再校验子集 cmap 与字体名称，最后才允许生成嵌入资源和打包；任一步失败必须终止构建。
+
+## Tabler Icon Rules
+
+- 所有使用 `icons/menu/tabler/tabler-icons.ttf` 的代码必须通过主题公共层提供的统一 Tabler 图标接口完成字体加载、glyph 查询、图标绘制和 HICON/位图创建；接口只接受由 JSON 生成的强类型 `TablerIconId`，业务窗口、服务和测试代码禁止直接调用 `AddFontResourceExW`、以 `L"tabler-icons"` 创建字体、传入任意图标字符串或散落硬编码 glyph。
+- Tabler 图标的唯一配置源必须是 `tools/tabler-icons.json`。新增、删除、替换图标或新增字体 glyph 引用时，必须在同一变更中更新 JSON；不得单独维护容易漂移的手写 TXT、C++ 常量或子集列表。C++ 映射、强类型 `TablerIconId`、正式版子集码点清单和相关测试均应由 JSON 生成或校验。
+- `tools/tabler-icons.json` 必须覆盖所有当前 `MenuIconGlyph` 值、菜单 `chevron-down`/`chevron-right` 以及系统图标失败时的 Tabler 后备 glyph。所有构建必须运行 Tabler 覆盖扫描；正式构建及显式 `-SubsetTablerFont` 构建还必须执行“源码引用集合 = JSON 清单 = 子集字体 cmap”校验，发现缺失、重复冲突、未登记 glyph、绕过公共接口或硬编码码点时必须失败，不得依赖运行时回退掩盖裁剪错误。
+- Tabler 字体统一接口和 JSON 清单属于公共基础设施；修改后必须运行直接相关的字体加载、所有图标 glyph 绘制/回退、100%/125%/150% DPI 以及正式版子集包体验收。完整字体仅允许作为本地开发/测试输入，正式包不得回退使用完整字体。
 
 ## Acceptance Rules
 
