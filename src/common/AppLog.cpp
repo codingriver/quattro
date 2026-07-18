@@ -37,8 +37,9 @@ std::wstring Timestamp() {
     SYSTEMTIME time{};
     GetLocalTime(&time);
     wchar_t buffer[64]{};
-    swprintf_s(buffer, L"%04u-%02u-%02u %02u:%02u:%02u",
-               time.wYear, time.wMonth, time.wDay, time.wHour, time.wMinute, time.wSecond);
+    swprintf_s(buffer, L"%04u-%02u-%02u %02u:%02u:%02u.%03u",
+               time.wYear, time.wMonth, time.wDay, time.wHour, time.wMinute, time.wSecond,
+               time.wMilliseconds);
     return buffer;
 }
 }

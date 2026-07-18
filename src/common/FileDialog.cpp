@@ -8,6 +8,7 @@
 #include <cwchar>
 #include <sstream>
 #include <system_error>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -82,6 +83,82 @@ void SetDefaultFolder(IFileDialog* dialog, const std::filesystem::path& initialD
 std::wstring DialogLogPrefix(const CommonFileDialogOptions& options) {
     return L"文件选择器[" + (options.context.empty() ? L"未命名" : options.context) + L"]";
 }
+
+class FileDialogOpenEventLogger final : public IFileDialogEvents {
+public:
+    FileDialogOpenEventLogger(std::wstring prefix, LARGE_INTEGER started, LARGE_INTEGER frequency)
+        : prefix_(std::move(prefix)), started_(started), frequency_(frequency) {}
+
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** object) override {
+        if (!object) {
+            return E_POINTER;
+        }
+        *object = nullptr;
+        if (iid == IID_IUnknown || iid == IID_IFileDialogEvents) {
+            *object = static_cast<IFileDialogEvents*>(this);
+            AddRef();
+            return S_OK;
+        }
+        return E_NOINTERFACE;
+    }
+
+    ULONG STDMETHODCALLTYPE AddRef() override {
+        return static_cast<ULONG>(InterlockedIncrement(&referenceCount_));
+    }
+
+    ULONG STDMETHODCALLTYPE Release() override {
+        const LONG remaining = InterlockedDecrement(&referenceCount_);
+        if (remaining == 0) {
+            delete this;
+        }
+        return static_cast<ULONG>(remaining);
+    }
+
+    HRESULT STDMETHODCALLTYPE OnFileOk(IFileDialog*) override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE OnFolderChanging(IFileDialog*, IShellItem*) override { return S_OK; }
+
+    HRESULT STDMETHODCALLTYPE OnFolderChange(IFileDialog*) override {
+        if (InterlockedCompareExchange(&openReadyObserved_, 1, 0) == 0) {
+            LARGE_INTEGER ready{};
+            QueryPerformanceCounter(&ready);
+            openElapsedMs_ = ElapsedMilliseconds(started_, ready, frequency_);
+            WriteAppLog(prefix_ + L" 打开完成: elapsedMs=" + std::to_wstring(openElapsedMs_) +
+                        L", readyEvent=folderChanged");
+        }
+        return S_OK;
+    }
+
+    HRESULT STDMETHODCALLTYPE OnSelectionChange(IFileDialog*) override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE OnShareViolation(IFileDialog*, IShellItem*, FDE_SHAREVIOLATION_RESPONSE* response) override {
+        if (response) {
+            *response = FDESVR_DEFAULT;
+        }
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE OnTypeChange(IFileDialog*) override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE OnOverwrite(IFileDialog*, IShellItem*, FDE_OVERWRITE_RESPONSE* response) override {
+        if (response) {
+            *response = FDEOR_DEFAULT;
+        }
+        return S_OK;
+    }
+
+    bool openReadyObserved() const {
+        return openReadyObserved_ != 0;
+    }
+
+    long long openElapsedMs() const { return openElapsedMs_; }
+
+private:
+    ~FileDialogOpenEventLogger() = default;
+
+    volatile LONG referenceCount_ = 1;
+    volatile LONG openReadyObserved_ = 0;
+    std::wstring prefix_;
+    LARGE_INTEGER started_{};
+    LARGE_INTEGER frequency_{};
+    long long openElapsedMs_ = 0;
+};
 
 bool AppendShellItemResult(
     IShellItem* item,
@@ -271,6 +348,14 @@ bool ShowCommonFileDialog(const CommonFileDialogOptions& options, CommonFileDial
         }
     }
 
+    FileDialogOpenEventLogger* openEventLogger =
+        new FileDialogOpenEventLogger(DialogLogPrefix(options), started, frequency);
+    DWORD eventCookie = 0;
+    const HRESULT adviseResult = dialog->Advise(openEventLogger, &eventCookie);
+    if (FAILED(adviseResult)) {
+        WriteAppLog(DialogLogPrefix(options) + L" 打开事件监听注册失败: hr=" + HResultText(adviseResult));
+    }
+
     hr = dialog->Show(options.owner);
     result.dialogResult = hr;
     result.accepted = SUCCEEDED(hr);
@@ -287,6 +372,12 @@ bool ShowCommonFileDialog(const CommonFileDialogOptions& options, CommonFileDial
             result.displayName = result.displayNames.front();
         }
     }
+    const bool openReadyObserved = openEventLogger->openReadyObserved();
+    const long long openElapsedMs = openEventLogger->openElapsedMs();
+    if (SUCCEEDED(adviseResult)) {
+        dialog->Unadvise(eventCookie);
+    }
+    openEventLogger->Release();
     dialog->Release();
 
     LARGE_INTEGER ended{};
@@ -296,6 +387,8 @@ bool ShowCommonFileDialog(const CommonFileDialogOptions& options, CommonFileDial
         DialogLogPrefix(options) + L" 关闭: accepted=" + std::wstring(result.accepted ? L"1" : L"0") +
         L", hr=" + HResultText(result.dialogResult) +
         L", elapsedMs=" + std::to_wstring(result.elapsedMs) +
+        L", openReadyObserved=" + std::wstring(openReadyObserved ? L"1" : L"0") +
+        L", openElapsedMs=" + std::to_wstring(openElapsedMs) +
         L", selectedCount=" + std::to_wstring(result.paths.size()) +
         L", selected=\"" + result.path + L"\"");
     return result.accepted && !result.path.empty();

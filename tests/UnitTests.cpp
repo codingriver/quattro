@@ -1,6 +1,8 @@
 #include "../src/domain/Config.h"
 #include "../src/domain/ConfigVersion.h"
 #include "../src/common/EmbeddedAssetInstaller.h"
+#include "../src/common/AppLog.h"
+#include "../src/common/FileDialog.h"
 #include "../src/domain/LinkSorting.h"
 #include "../src/services/ConfigPackageService.h"
 #include "../src/services/ContextMenuProviderIconService.h"
@@ -2521,6 +2523,32 @@ int wmain() {
     Check(FileExists(packageTargetRoot / L"icons" / L"url" / L"example.png"), "Package merge imports url icon");
     Check(!FileExists(packageTargetRoot / L"theme" / L"source.xml"), "Package merge does not import theme");
     Check(DirectoryExists(packageTargetRoot / L"backups"), "Package merge creates backup");
+
+    const std::filesystem::path appLogRoot = std::filesystem::temp_directory_path() /
+                                             (L"quattro_app_log_tests_" + std::to_wstring(GetCurrentProcessId()));
+    std::filesystem::remove_all(appLogRoot, ec);
+    InitializeAppLog(appLogRoot);
+    CommonFileDialogOptions unsupportedDialogOptions{};
+    unsupportedDialogOptions.mode = CommonFileDialogMode::FileOrFolder;
+    unsupportedDialogOptions.context = L"unit-test-no-native-dialog";
+    CommonFileDialogResult unsupportedDialogResult{};
+    Check(!ShowCommonFileDialog(unsupportedDialogOptions, unsupportedDialogResult),
+          "File dialog unsupported mode does not open native GUI");
+    Check(unsupportedDialogResult.dialogResult == E_NOTIMPL,
+          "File dialog unsupported mode returns E_NOTIMPL");
+    {
+        std::ifstream appLog(appLogRoot / L"logs" / L"app.log", std::ios::binary);
+        const std::string contents((std::istreambuf_iterator<char>(appLog)), std::istreambuf_iterator<char>());
+        Check(contents.size() > 23 && contents[19] == '.' && contents[23] == ' ' &&
+                  contents[20] >= '0' && contents[20] <= '9' &&
+                  contents[21] >= '0' && contents[21] <= '9' &&
+                  contents[22] >= '0' && contents[22] <= '9',
+              "App log timestamp includes millisecond precision");
+        Check(contents.find("elapsedMs=") != std::string::npos,
+              "File dialog terminal log includes elapsed milliseconds");
+    }
+    std::filesystem::remove_all(appLogRoot, ec);
+
     std::filesystem::remove_all(packageSourceRoot, ec);
     std::filesystem::remove_all(packageTargetRoot, ec);
     std::filesystem::remove(packagePath, ec);
