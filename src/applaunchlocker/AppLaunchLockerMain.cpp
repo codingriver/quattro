@@ -2,7 +2,9 @@
 #include "AppLaunchLockerWindow.h"
 #include "AdBlockWindow.h"
 
+#include "AppLog.h"
 #include "Theme.h"
+#include "Utilities.h"
 #include "Version.h"
 #include "../../resources/resource.h"
 
@@ -27,6 +29,49 @@ std::filesystem::path ModuleDirectory() {
         }
         path.resize(path.size() * 2);
     }
+}
+
+std::filesystem::path GuiLogDirectory() {
+    if (QuattroTestMode()) {
+        return QuattroUserConfigDirectory();
+    }
+    const std::filesystem::path moduleDirectory = ModuleDirectory();
+    if (FileExists(moduleDirectory / L"CMakeCache.txt") ||
+        FileExists(moduleDirectory.parent_path() / L"CMakeCache.txt")) {
+        return moduleDirectory;
+    }
+    return QuattroUserConfigDirectory();
+}
+
+template <typename RunWindow>
+int RunGui(const wchar_t* mode, RunWindow&& runWindow) {
+    const std::filesystem::path logDirectory = GuiLogDirectory();
+    InitializeAppLog(logDirectory, true);
+    WriteAppLog(
+        L"AppLaunchLocker GUI 启动: mode=" + std::wstring(mode) +
+        L", pid=" + std::to_wstring(GetCurrentProcessId()) +
+        L", moduleDir=\"" + ModuleDirectory().wstring() + L"\"" +
+        L", logRoot=\"" + logDirectory.wstring() + L"\"");
+
+    const HRESULT ole = OleInitialize(nullptr);
+    WriteAppLog(
+        L"AppLaunchLocker OLE 初始化: hr=0x" +
+        [&]() {
+            std::wostringstream output;
+            output << std::hex << static_cast<unsigned long>(ole);
+            return output.str();
+        }());
+    if (FAILED(ole)) {
+        WriteAppLog(L"AppLaunchLocker GUI 启动失败: OLE/STA 初始化不可用");
+        return 1;
+    }
+
+    const int result = runWindow();
+    WriteAppLog(
+        L"AppLaunchLocker GUI 退出: mode=" + std::wstring(mode) +
+        L", result=" + std::to_wstring(result));
+    OleUninitialize();
+    return result;
 }
 
 std::wstring EscapeJson(const std::wstring& value) {
@@ -268,29 +313,37 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int) {
         LocalFree(rawArguments);
         return 0;
     }
-    // 广告拦截简化窗口入口：工具箱「广告拦截」以 --ad-block 拉起本 exe。
-    if (argumentCount == 2 && rawArguments && wcscmp(rawArguments[1], L"--ad-block") == 0) {
-        LocalFree(rawArguments);
-        INITCOMMONCONTROLSEX adControls{};
-        adControls.dwSize = sizeof(adControls);
-        adControls.dwICC = ICC_STANDARD_CLASSES | ICC_LISTVIEW_CLASSES | ICC_TAB_CLASSES | ICC_PROGRESS_CLASS;
-        InitCommonControlsEx(&adControls);
-        const Theme adTheme = Theme::Load(
-            ModuleDirectory() / L"theme", L"default", instance, IDR_QUATTRO_DEFAULT_THEME);
-        AdBlockWindow adWindow(instance, adTheme);
-        return adWindow.Run();
-    }
+    const bool adBlockMode =
+        argumentCount == 2 && rawArguments && wcscmp(rawArguments[1], L"--ad-block") == 0;
     std::vector<std::wstring> arguments;
-    for (int index = 1; rawArguments && index < argumentCount; ++index) arguments.emplace_back(rawArguments[index]);
+    if (!adBlockMode) {
+        for (int index = 1; rawArguments && index < argumentCount; ++index) arguments.emplace_back(rawArguments[index]);
+    }
     if (rawArguments) LocalFree(rawArguments);
     if (!arguments.empty()) return RunCli(arguments);
 
-    INITCOMMONCONTROLSEX controls{};
-    controls.dwSize = sizeof(controls);
-    controls.dwICC = ICC_STANDARD_CLASSES | ICC_LISTVIEW_CLASSES | ICC_TAB_CLASSES | ICC_PROGRESS_CLASS;
-    InitCommonControlsEx(&controls);
-    const Theme theme = Theme::Load(
-        ModuleDirectory() / L"theme", L"default", instance, IDR_QUATTRO_DEFAULT_THEME);
-    AppLaunchLockerWindow window(instance, theme);
-    return window.Run();
+    // 广告拦截简化窗口入口：工具箱「广告拦截」以 --ad-block 拉起本 exe。
+    if (adBlockMode) {
+        return RunGui(L"ad-block", [&]() {
+            INITCOMMONCONTROLSEX adControls{};
+            adControls.dwSize = sizeof(adControls);
+            adControls.dwICC = ICC_STANDARD_CLASSES | ICC_LISTVIEW_CLASSES | ICC_TAB_CLASSES | ICC_PROGRESS_CLASS;
+            InitCommonControlsEx(&adControls);
+            const Theme adTheme = Theme::Load(
+                ModuleDirectory() / L"theme", L"default", instance, IDR_QUATTRO_DEFAULT_THEME);
+            AdBlockWindow adWindow(instance, adTheme);
+            return adWindow.Run();
+        });
+    }
+
+    return RunGui(L"startup-manager", [&]() {
+        INITCOMMONCONTROLSEX controls{};
+        controls.dwSize = sizeof(controls);
+        controls.dwICC = ICC_STANDARD_CLASSES | ICC_LISTVIEW_CLASSES | ICC_TAB_CLASSES | ICC_PROGRESS_CLASS;
+        InitCommonControlsEx(&controls);
+        const Theme theme = Theme::Load(
+            ModuleDirectory() / L"theme", L"default", instance, IDR_QUATTRO_DEFAULT_THEME);
+        AppLaunchLockerWindow window(instance, theme);
+        return window.Run();
+    });
 }

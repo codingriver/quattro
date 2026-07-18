@@ -9,6 +9,7 @@
 #include "../src/theme/Theme.h"
 #include "../src/theme/ThemedUi.h"
 #include "../src/theme/ThemedWindowUi.h"
+#include "../src/common/Utilities.h"
 #include "../src/windows/TodoEditDialog.h"
 #include "../src/windows/UrlEditDialog.h"
 #include "../src/services/WebDavClient.h"
@@ -505,6 +506,33 @@ int ColorDistance(COLORREF a, COLORREF b) {
     return std::abs(static_cast<int>(GetRValue(a)) - static_cast<int>(GetRValue(b))) +
         std::abs(static_cast<int>(GetGValue(a)) - static_cast<int>(GetGValue(b))) +
         std::abs(static_cast<int>(GetBValue(a)) - static_cast<int>(GetBValue(b)));
+}
+
+std::size_t CountChangedPixelSamples(
+    const BitmapCapture& first,
+    const BitmapCapture& second,
+    int minimumColorDistance = 8,
+    int sampleStep = 2) {
+    if (!first.bitmap || !second.bitmap || first.width != second.width || first.height != second.height) {
+        return 0;
+    }
+    HDC firstDc = CreateCompatibleDC(nullptr);
+    HDC secondDc = CreateCompatibleDC(nullptr);
+    HGDIOBJ oldFirst = SelectObject(firstDc, first.bitmap);
+    HGDIOBJ oldSecond = SelectObject(secondDc, second.bitmap);
+    std::size_t changed = 0;
+    for (int y = 0; y < first.height; y += std::max(1, sampleStep)) {
+        for (int x = 0; x < first.width; x += std::max(1, sampleStep)) {
+            if (ColorDistance(GetPixel(firstDc, x, y), GetPixel(secondDc, x, y)) >= minimumColorDistance) {
+                ++changed;
+            }
+        }
+    }
+    SelectObject(firstDc, oldFirst);
+    SelectObject(secondDc, oldSecond);
+    DeleteDC(firstDc);
+    DeleteDC(secondDc);
+    return changed;
 }
 
 std::size_t CountPixelsNearColor(
@@ -1378,6 +1406,20 @@ void RunMainWindowScenario(
     std::wstring command = L"\"" + exe.wstring() + L"\"";
     StorageService storage(childEnvironment.root());
     storage.Load();
+    Group linkGroup;
+    linkGroup.name = L"启动项验收分组";
+    linkGroup.pos = -1;
+    state.Check(storage.InsertGroup(linkGroup), L"main-window-link-hover: seed group failed");
+    Group linkTag;
+    linkTag.name = L"普通标签";
+    linkTag.parentGroup = linkGroup.id;
+    linkTag.pos = -1;
+    state.Check(storage.InsertGroup(linkTag), L"main-window-link-hover: seed tag failed");
+    Link visualLink;
+    visualLink.name = L"仅悬浮高亮";
+    visualLink.parentGroup = linkTag.id;
+    visualLink.path = childEnvironment.root().wstring();
+    state.Check(storage.InsertLink(visualLink), L"main-window-link-hover: seed link failed");
     Group reminderGroup;
     reminderGroup.name = L"提醒验收分组";
     reminderGroup.pos = -1;
@@ -1415,8 +1457,8 @@ void RunMainWindowScenario(
     state.Check(storage.InsertTodoItem(futureTodo), L"todo-tag-overdue-menu: seed future todo failed");
     ConfigService childConfig(childEnvironment.root() / L"conf.ini");
     AppConfig childSettings = childConfig.Load();
-    childSettings.currentGroupId = reminderGroup.id;
-    childSettings.currentTagId = reminderTag.id;
+    childSettings.currentGroupId = linkGroup.id;
+    childSettings.currentTagId = linkTag.id;
     childSettings.autoDock = false;
     childSettings.hideWhenInactive = false;
     childSettings.globalHotKeysEnabled = false;
@@ -1449,6 +1491,54 @@ void RunMainWindowScenario(
         Scenario scenario{L"main-window-" + dpiSuffix, L"QuattroMainWindow", L"", screenshotName, {expectedTitle}, {}, 0, 0, false};
         scenario.forcedDpi = dpi;
         ValidateAndCapture(hwnd, scenario, outputDir, state);
+
+        constexpr UINT kTestLinkVisualStateMessage = WM_APP + 0x75;
+        state.Check(
+            SendMessageW(hwnd, kTestLinkVisualStateMessage, static_cast<WPARAM>(visualLink.id), 0) == TRUE,
+            L"main-window-link-hover: failed to set clicked state");
+        BitmapCapture clickedCapture = CaptureWindowBitmap(hwnd);
+        state.Check(clickedCapture.bitmap != nullptr, L"main-window-link-hover: clicked capture failed");
+        if (clickedCapture.bitmap) {
+            state.Check(
+                SavePng(clickedCapture.bitmap, outputDir / (L"main-window-link-clicked-" + dpiSuffix + L".png")),
+                L"main-window-link-hover: clicked screenshot save failed");
+        }
+
+        state.Check(
+            SendMessageW(hwnd, kTestLinkVisualStateMessage, static_cast<WPARAM>(visualLink.id), 1) == TRUE,
+            L"main-window-link-hover: failed to set hover state");
+        BitmapCapture hoveredCapture = CaptureWindowBitmap(hwnd);
+        state.Check(hoveredCapture.bitmap != nullptr, L"main-window-link-hover: hover capture failed");
+        if (hoveredCapture.bitmap) {
+            state.Check(
+                SavePng(hoveredCapture.bitmap, outputDir / (L"main-window-link-hovered-" + dpiSuffix + L".png")),
+                L"main-window-link-hover: hover screenshot save failed");
+        }
+
+        state.Check(
+            SendMessageW(hwnd, kTestLinkVisualStateMessage, static_cast<WPARAM>(visualLink.id), 0) == TRUE,
+            L"main-window-link-hover: failed to clear hover state");
+        BitmapCapture leftCapture = CaptureWindowBitmap(hwnd);
+        state.Check(leftCapture.bitmap != nullptr, L"main-window-link-hover: mouse-leave capture failed");
+        if (leftCapture.bitmap) {
+            state.Check(
+                SavePng(leftCapture.bitmap, outputDir / (L"main-window-link-mouse-left-" + dpiSuffix + L".png")),
+                L"main-window-link-hover: mouse-leave screenshot save failed");
+        }
+        if (clickedCapture.bitmap && hoveredCapture.bitmap && leftCapture.bitmap) {
+            const std::size_t hoverChanged = CountChangedPixelSamples(clickedCapture, hoveredCapture);
+            const std::size_t leaveChanged = CountChangedPixelSamples(clickedCapture, leftCapture);
+            AcceptanceLog(
+                L"main-window-link-hover dpi=" + dpiSuffix +
+                L" hoverChanged=" + std::to_wstring(hoverChanged) +
+                L" leaveChanged=" + std::to_wstring(leaveChanged));
+            state.Check(hoverChanged >= 100, L"main-window-link-hover: hover has no visible highlight");
+            state.Check(leaveChanged <= 20, L"main-window-link-hover: clicked item remains visibly selected after mouse leave");
+        }
+        if (clickedCapture.bitmap) DeleteObject(clickedCapture.bitmap);
+        if (hoveredCapture.bitmap) DeleteObject(hoveredCapture.bitmap);
+        if (leftCapture.bitmap) DeleteObject(leftCapture.bitmap);
+
         BitmapCapture titleCapture = CaptureWindowBitmap(hwnd);
         state.Check(titleCapture.bitmap != nullptr, L"main-window: title color capture failed");
         if (titleCapture.bitmap) {
@@ -2691,6 +2781,13 @@ void RunAdBlockScenario(const std::filesystem::path& outputDir, TestState& state
     if (WaitForSingleObject(process.hProcess, 5000) == WAIT_TIMEOUT) {
         TerminateProcess(process.hProcess, 2);
     }
+    const std::filesystem::path appLogPath = childEnvironment.root() / L"logs" / L"app.log";
+    const std::wstring appLog = LoadUtf8File(appLogPath);
+    state.Check(!appLog.empty(), L"ad-block: AppLaunchLocker did not create the isolated app.log");
+    state.Check(Contains(appLog, L"AppLaunchLocker GUI 启动: mode=ad-block"),
+        L"ad-block: AppLaunchLocker GUI startup log is missing");
+    state.Check(Contains(appLog, L"AppLaunchLocker OLE 初始化: hr=0x0"),
+        L"ad-block: AppLaunchLocker did not initialize the GUI thread as an OLE/STA apartment");
     CloseHandle(process.hThread);
     CloseHandle(process.hProcess);
 

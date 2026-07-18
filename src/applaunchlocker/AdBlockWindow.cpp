@@ -1,5 +1,6 @@
 #include "AdBlockWindow.h"
 
+#include "AppLog.h"
 #include "FileDialog.h"
 #include "ThemedTaskProgressDialog.h"
 #include "ThemedUi.h"
@@ -599,10 +600,20 @@ void AdBlockWindow::PickFile() {
     options.legacyFilter = L"可启动文件\0*.exe;*.com;*.scr;*.bat;*.cmd;*.ps1;*.vbs;*.js;*.lnk\0所有文件\0*.*\0";
 
     CommonFileDialogResult result{};
-    if (ShowCommonFileDialog(options, result)) {
+    WriteAppLog(L"广告拦截 文件选择开始");
+    const bool selected = ShowCommonFileDialog(options, result);
+    WriteAppLog(
+        L"广告拦截 文件选择返回: selected=" + std::wstring(selected ? L"1" : L"0") +
+        L", elapsedMs=" + std::to_wstring(result.elapsedMs));
+    if (selected) {
+        const ULONGLONG updateStarted = GetTickCount64();
+        WriteAppLog(L"广告拦截 文件选择后界面更新开始");
         ThemedUi::SetText(pathEdit_, result.path);
         ThemedUi::SetText(statusText_, L"已选择文件，点击“检查”开始。" );
         UpdateButtons();
+        WriteAppLog(
+            L"广告拦截 文件选择后界面更新完成: elapsedMs=" +
+            std::to_wstring(GetTickCount64() - updateStarted));
     }
 }
 
@@ -615,10 +626,20 @@ void AdBlockWindow::PickFolder() {
     options.defaultPath = GetText(pathEdit_);
 
     CommonFileDialogResult result{};
-    if (ShowCommonFileDialog(options, result)) {
+    WriteAppLog(L"广告拦截 文件夹选择开始");
+    const bool selected = ShowCommonFileDialog(options, result);
+    WriteAppLog(
+        L"广告拦截 文件夹选择返回: selected=" + std::wstring(selected ? L"1" : L"0") +
+        L", elapsedMs=" + std::to_wstring(result.elapsedMs));
+    if (selected) {
+        const ULONGLONG updateStarted = GetTickCount64();
+        WriteAppLog(L"广告拦截 文件夹选择后界面更新开始");
         ThemedUi::SetText(pathEdit_, result.path);
         ThemedUi::SetText(statusText_, L"已选择文件夹，点击“检查”开始。" );
         UpdateButtons();
+        WriteAppLog(
+            L"广告拦截 文件夹选择后界面更新完成: elapsedMs=" +
+            std::to_wstring(GetTickCount64() - updateStarted));
     }
 }
 

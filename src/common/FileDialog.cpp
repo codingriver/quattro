@@ -84,6 +84,15 @@ std::wstring DialogLogPrefix(const CommonFileDialogOptions& options) {
     return L"文件选择器[" + (options.context.empty() ? L"未命名" : options.context) + L"]";
 }
 
+std::wstring CurrentComApartmentText() {
+    APTTYPE apartmentType = APTTYPE_CURRENT;
+    APTTYPEQUALIFIER qualifier = APTTYPEQUALIFIER_NONE;
+    const HRESULT hr = CoGetApartmentType(&apartmentType, &qualifier);
+    return L"hr=" + HResultText(hr) +
+        L", type=" + std::to_wstring(static_cast<int>(apartmentType)) +
+        L", qualifier=" + std::to_wstring(static_cast<int>(qualifier));
+}
+
 class FileDialogLifecycleEventLogger final : public IFileDialogEvents {
 public:
     FileDialogLifecycleEventLogger(std::wstring prefix, LARGE_INTEGER started, LARGE_INTEGER frequency)
@@ -301,7 +310,8 @@ bool ShowCommonFileDialog(const CommonFileDialogOptions& options, CommonFileDial
         DialogLogPrefix(options) + L" 打开请求: mode=" + CommonFileDialogModeName(options.mode) +
         L", multiSelect=" + std::wstring(options.allowMultiSelect ? L"1" : L"0") +
         L", defaultPath=\"" + options.defaultPath + L"\"" +
-        L", threadId=" + std::to_wstring(GetCurrentThreadId()));
+        L", threadId=" + std::to_wstring(GetCurrentThreadId()) +
+        L", apartment={" + CurrentComApartmentText() + L"}");
 
     LARGE_INTEGER initialDirectoryStarted{};
     LARGE_INTEGER initialDirectoryEnded{};

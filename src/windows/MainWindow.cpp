@@ -2344,6 +2344,17 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             return ShowTodoSystemNotification(items) ? TRUE : FALSE;
         }
         return FALSE;
+    case WM_QUATTRO_TEST_LINK_VISUAL_STATE:
+        if (QuattroTestMode()) {
+            const int linkId = static_cast<int>(wParam);
+            selectedLinkId_ = linkId;
+            selectionByKeyboard_ = false;
+            hover_ = lParam != 0 ? HitArea{HitKind::Link, linkId, {}} : HitArea{};
+            InvalidateRect(hwnd_, nullptr, FALSE);
+            UpdateWindow(hwnd_);
+            return TRUE;
+        }
+        return FALSE;
     case WM_QUATTRO_EXIT_INSTANCE:
         WriteAppLog(L"收到同路径实例退出通知，销毁主窗口。");
         DestroyWindow(hwnd_);
@@ -8460,17 +8471,12 @@ void MainWindow::DrawLinks(D2D1_RECT_F rect) {
         }
 
         const bool linkHovered = IsHover(HitKind::Link, link->id);
-        const bool anyLinkHovered = hover_.kind == HitKind::Link;
-        const bool linkSelected = link->id == selectedLinkId_ && !anyLinkHovered;
 
         if (linkDragActive_ && link->id == linkDragTargetLinkId_ && linkDragMode_ == LinkDragMode::Swap) {
             FillRoundedRect(item, theme_.color(L"linkItem", L"hover", L"bg"), itemRadius);
             DrawRoundedRect(Inset(item, 1.5f, 1.5f), theme_.color(L"linkItem", L"selected", L"accent"), itemRadius, 2.0f);
-        } else if (linkHovered || linkSelected) {
+        } else if (linkHovered) {
             FillRoundedRect(item, theme_.color(L"linkItem", L"selected", L"bg"), itemRadius);
-            if (linkSelected && selectionByKeyboard_) {
-                DrawRoundedRect(Inset(item, 1.5f, 1.5f), theme_.color(L"linkItem", L"selected", L"accent"), itemRadius, 1.0f);
-            }
         }
         if (link->isCustomColor) {
             if (auto color = ParseCustomColor(link->customColor)) {
