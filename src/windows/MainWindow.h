@@ -269,10 +269,13 @@ private:
     bool DockHide(bool persistWindowState = true);
     void DockRestore();
     void ShowDockPeek(const RECT& peekRect);
+    void EnsureDockPeekZOrder(bool showWindow);
     void HideDockPeek();
     bool SnapDockWindowRect(RECT& window) const;
     bool IsNearDockEdge(POINT screenPoint) const;
     bool IsEffectivelyVisible() const;
+    bool IsMainWindowForeground() const;
+    void ToggleMainWindowFromHotKey();
     void HideMainWindowAfterLink();
     void HideMainWindow();
     bool ImportPath(const std::wstring& path, bool showError = true);

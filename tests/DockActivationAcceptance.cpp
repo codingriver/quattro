@@ -140,6 +140,16 @@ bool WriteTestRootMarker(const std::filesystem::path& root, const std::string& r
     return marker.good();
 }
 
+bool WriteTestConfig(const std::filesystem::path& root) {
+    std::ofstream config(root / L"conf.ini", std::ios::binary | std::ios::trunc);
+    config << "[main]\n"
+           << "bAutoDock=1\n"
+           << "nDockDelay=0\n"
+           << "bTopMost=0\n"
+           << "bGlobalHotKeysEnabled=0\n";
+    return config.good();
+}
+
 bool ForegroundBelongsToProcess(HWND foreground, DWORD processId) {
     DWORD foregroundProcessId = 0;
     if (foreground) {
@@ -163,7 +173,7 @@ int wmain() {
         std::filesystem::temp_directory_path() / (L"quattro-" + runId);
     std::error_code ec;
     std::filesystem::create_directories(root, ec);
-    if (ec || !WriteTestRootMarker(root, runIdText)) {
+    if (ec || !WriteTestRootMarker(root, runIdText) || !WriteTestConfig(root)) {
         std::cerr << "unable to create isolated test root\n";
         return 2;
     }
@@ -178,6 +188,7 @@ int wmain() {
     SetEnvironmentVariableW(L"QUATTRO_TEST_MODE", L"1");
     SetEnvironmentVariableW(L"QUATTRO_TEST_NO_FOCUS", L"1");
     SetEnvironmentVariableW(L"QUATTRO_ACCEPTANCE_MODE", L"background");
+    SetEnvironmentVariableW(L"QUATTRO_TEST_SUPPRESS_TRAY", L"1");
     SetEnvironmentVariableW(L"QUATTRO_TEST_RUN_ID", runId.c_str());
     SetEnvironmentVariableW(L"QUATTRO_USER_CONFIG_DIR", root.c_str());
 
@@ -215,6 +226,14 @@ int wmain() {
         }
     }
 
+    if (result == 0) {
+        SendMessageW(mainWindow, WM_HOTKEY, 1, 0);
+        if (!IsWindowVisible(mainWindow) || IsIconic(mainWindow) || IsDockHidden(mainWindow)) {
+            std::cerr << "main hotkey hid a visible background main window instead of waking it\n";
+            result = 1;
+        }
+    }
+
     if (result == 0 && !DockAtAvailableEdge(mainWindow)) {
         std::cerr << "unable to enter dock-hidden state\n";
         result = 1;
@@ -225,6 +244,23 @@ int wmain() {
             std::cerr << "dock peek window did not appear\n";
             result = 1;
         } else {
+            const LONG_PTR peekExStyle = GetWindowLongPtrW(peek, GWL_EXSTYLE);
+            if ((peekExStyle & WS_EX_NOACTIVATE) == 0) {
+                std::cerr << "dock peek window can activate the desktop\n";
+                result = 1;
+            }
+            if (result == 0) {
+                SendMessageW(mainWindow, WM_COMMAND, MAKEWPARAM(ID_MENU_TOGGLE_TOPMOST, 0), 0);
+                SendMessageW(mainWindow, WM_COMMAND, MAKEWPARAM(ID_MENU_TOGGLE_TOPMOST, 0), 0);
+                if (!IsWindowVisible(peek) || !IsDockHidden(mainWindow)) {
+                    std::cerr << "dock peek state changed after main topmost changes: visible="
+                              << (IsWindowVisible(peek) ? 1 : 0)
+                              << " dock_hidden=" << (IsDockHidden(mainWindow) ? 1 : 0) << "\n";
+                    result = 1;
+                }
+            }
+        }
+        if (result == 0) {
             SendMessageW(peek, WM_SETCURSOR, reinterpret_cast<WPARAM>(peek), MAKELPARAM(HTCLIENT, WM_MOUSEMOVE));
             if (IsDockHidden(mainWindow)) {
                 std::cerr << "edge hover did not restore the main window\n";

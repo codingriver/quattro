@@ -504,6 +504,13 @@ HWND MainWindowMoveInsertAfter(bool topMost) {
     return topMost ? HWND_TOPMOST : nullptr;
 }
 
+HWND MainWindowActivationInsertAfter(bool topMost) {
+    if (BackgroundAcceptanceMode()) {
+        return HWND_BOTTOM;
+    }
+    return topMost ? HWND_TOPMOST : HWND_TOP;
+}
+
 UINT MainWindowMoveFlags(bool topMost, UINT flags) {
     if (topMost) {
         return flags & ~SWP_NOZORDER;
@@ -2520,11 +2527,7 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
     }
     case WM_HOTKEY:
         if (wParam == ID_HOTKEY_MAIN) {
-            if (IsEffectivelyVisible()) {
-                HideMainWindow();
-            } else {
-                WakeUp();
-            }
+            ToggleMainWindowFromHotKey();
             return 0;
         }
         if (wParam == ID_HOTKEY_PROCESS_LOCATOR) {
@@ -2545,11 +2548,7 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         return 0;
     case WM_QUATTRO_DOUBLE_ALT_HOTKEY:
         if (IsDoubleAltMainHotKey(config_.mainHotKey)) {
-            if (IsEffectivelyVisible()) {
-                HideMainWindow();
-            } else {
-                WakeUp();
-            }
+            ToggleMainWindowFromHotKey();
         }
         return 0;
     case WM_PAINT:
@@ -6148,25 +6147,19 @@ void MainWindow::UpdateDockState() {
         HideDockPeek();
         return;
     }
-    if (IsFullScreenForegroundWindow()) {
-        dockHideDueTick_ = 0;
-        return;
-    }
-
     POINT cursor{};
     GetCursorPos(&cursor);
     if (dockHidden_) {
         if (IsNearDockEdge(cursor)) {
             DockRestore();
-        } else if (dockPeek_) {
-            SetWindowPos(dockPeek_,
-                         BackgroundAcceptanceMode() ? HWND_BOTTOM : HWND_TOPMOST,
-                         0,
-                         0,
-                         0,
-                         0,
-                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        } else {
+            EnsureDockPeekZOrder(true);
         }
+        dockHideDueTick_ = 0;
+        return;
+    }
+
+    if (IsFullScreenForegroundWindow()) {
         dockHideDueTick_ = 0;
         return;
     }
@@ -6251,6 +6244,24 @@ void MainWindow::ShowDockPeek(const RECT& peekRect) {
                  height,
                  SWP_NOACTIVATE | SWP_SHOWWINDOW);
     InvalidateRect(dockPeek_, nullptr, TRUE);
+}
+
+void MainWindow::EnsureDockPeekZOrder(bool showWindow) {
+    if (!dockPeek_) {
+        return;
+    }
+    UINT flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE;
+    if (showWindow) {
+        flags |= SWP_SHOWWINDOW;
+    }
+    SetWindowPos(
+        dockPeek_,
+        BackgroundAcceptanceMode() ? HWND_BOTTOM : HWND_TOPMOST,
+        0,
+        0,
+        0,
+        0,
+        flags);
 }
 
 void MainWindow::HideDockPeek() {
@@ -6794,7 +6805,10 @@ void MainWindow::ApplyConfigRuntimeChanges(const AppConfig& previous) {
                  0,
                  0,
                  0,
-                 SWP_NOMOVE | SWP_NOSIZE);
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    if (dockHidden_ && dockPeek_) {
+        EnsureDockPeekZOrder(true);
+    }
     if (previous.showTooltip != config_.showTooltip && !config_.showTooltip) {
         HideItemTooltip();
     }
@@ -7937,19 +7951,41 @@ void MainWindow::WakeUp() {
     if (!IsWindowVisible(hwnd_)) {
         ShowWindowRespectFocusPolicy(hwnd_, SW_SHOWNORMAL);
     }
-    SetWindowPos(hwnd_,
-                 MainWindowMoveInsertAfter(config_.topMost),
-                 0,
-                 0,
-                 0,
-                 0,
-                 MainWindowMoveFlags(config_.topMost, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED));
     ShowWindowRespectFocusPolicy(hwnd_, SW_RESTORE);
-    ActivateWindow(hwnd_);
+    SetWindowPos(hwnd_,
+                 MainWindowActivationInsertAfter(config_.topMost),
+                 0,
+                 0,
+                 0,
+                 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+    const bool activated = ActivateWindow(hwnd_);
+    WriteAppLog(
+        L"主窗口唤起完成: topmost=" + std::wstring(config_.topMost ? L"1" : L"0") +
+        L", dock_hidden=" + std::wstring(dockHidden_ ? L"1" : L"0") +
+        L", activated=" + std::wstring(activated ? L"1" : L"0"));
 }
 
 bool MainWindow::IsEffectivelyVisible() const {
     return IsWindowVisible(hwnd_) && !dockHidden_;
+}
+
+bool MainWindow::IsMainWindowForeground() const {
+    if (!IsEffectivelyVisible() || IsIconic(hwnd_)) {
+        return false;
+    }
+    const HWND foreground = GetForegroundWindow();
+    const HWND foregroundRoot = foreground ? GetAncestor(foreground, GA_ROOT) : nullptr;
+    const HWND mainRoot = GetAncestor(hwnd_, GA_ROOT);
+    return foregroundRoot && foregroundRoot == (mainRoot ? mainRoot : hwnd_);
+}
+
+void MainWindow::ToggleMainWindowFromHotKey() {
+    if (IsMainWindowForeground()) {
+        HideMainWindow();
+        return;
+    }
+    WakeUp();
 }
 
 void MainWindow::HideMainWindowAfterLink() {
