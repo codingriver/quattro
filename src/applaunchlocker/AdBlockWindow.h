@@ -12,6 +12,8 @@
 #include <vector>
 
 class ThemedWindowUi;
+class ThemedTaskProgressDialog;
+struct AdBlockScanState;
 
 // 广告拦截（简化版）窗口：选文件/文件夹 → 扫描可启动文件 → 勾选 → 一键拦截；
 // 「已拦截」页可解除。与「自启动管理」窗口独立，机制为 IFEO 禁止运行。
@@ -33,7 +35,7 @@ private:
     void StartBlockSelected();
     void StartUnblock();
     void LoadBlockedAsync();
-    void CompleteScan(ScanResult scan);
+    void CompleteScan(AdBlockScanResult scan);
     void CompleteBlocked(std::vector<DisabledRecord> blocked, std::wstring storeError);
     void CompleteOperation(OperationResult result, bool rescan);
     void SelectTab(int index);
@@ -53,6 +55,7 @@ private:
     HWND pathEdit_ = nullptr;
     ThemedSplitButton pickPathSplit_{};
     HWND clearButton_ = nullptr;
+    HWND checkButton_ = nullptr;
     HWND modeExactRadio_ = nullptr;
     HWND modeNameRadio_ = nullptr;
     HWND modeStartupRadio_ = nullptr;
@@ -65,8 +68,11 @@ private:
     std::vector<StartupItem> scanItems_;
     std::vector<DisabledRecord> blocked_;
     std::thread worker_;
+    std::shared_ptr<AdBlockScanState> scanState_;
+    std::unique_ptr<ThemedTaskProgressDialog> scanProgressDialog_;
     std::atomic<bool> closing_{false};
     bool busy_ = false;
+    bool scanRunning_ = false;
     bool storeAvailable_ = true;
     int activeTab_ = 0;
 };

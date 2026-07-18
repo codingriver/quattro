@@ -13,13 +13,17 @@
 #include <softpub.h>
 
 #include <algorithm>
+#include <atomic>
 #include <array>
 #include <cwctype>
 #include <fstream>
 #include <iomanip>
 #include <memory>
+#include <mutex>
+#include <set>
 #include <sstream>
 #include <system_error>
+#include <thread>
 
 namespace {
 template <typename T>
@@ -2031,40 +2035,120 @@ AdBlockManager::AdBlockManager(DisabledItemStore store)
     : store_(std::move(store)) {}
 
 ScanResult AdBlockManager::ScanPath(const std::wstring& fileOrDir) const {
-    ScanResult result;
+    AdBlockScanResult detailed = ScanPathDetailed(fileOrDir);
+    if (!detailed.error.empty()) detailed.scan.warnings.push_back(detailed.error);
+    return std::move(detailed.scan);
+}
+
+AdBlockScanResult AdBlockManager::ScanPathDetailed(
+    const std::wstring& fileOrDir,
+    const AdBlockCancelCheck& shouldCancel,
+    const AdBlockProgressCallback& reportProgress,
+    AdBlockScanOptions options) const {
+    AdBlockScanResult result;
+    auto cancelled = [&]() { return shouldCancel && shouldCancel(); };
+    auto report = [&](AdBlockScanProgress progress) {
+        if (reportProgress) reportProgress(progress);
+    };
+    report(AdBlockScanProgress{AdBlockScanPhase::Validating});
     if (fileOrDir.empty()) {
-        result.warnings.push_back(L"未提供路径。");
+        result.error = L"未提供路径。";
         return result;
     }
-    bool uninitialize = false;
-    if (!InitializeComForScan(uninitialize)) result.warnings.push_back(L"COM 初始化失败，快捷方式可能无法解析。");
 
-    std::vector<std::wstring> candidates;
     const DWORD attributes = GetFileAttributesW(fileOrDir.c_str());
     if (attributes == INVALID_FILE_ATTRIBUTES) {
-        result.warnings.push_back(L"路径不存在：" + fileOrDir);
-        if (uninitialize) CoUninitialize();
+        result.error = L"路径不存在：" + fileOrDir;
         return result;
     }
-    if (attributes & FILE_ATTRIBUTE_DIRECTORY) {
-        std::wstring pattern = fileOrDir;
-        if (!pattern.empty() && pattern.back() != L'\\') pattern.push_back(L'\\');
-        WIN32_FIND_DATAW find{};
-        HANDLE handle = FindFirstFileW((pattern + L"*").c_str(), &find);
-        if (handle != INVALID_HANDLE_VALUE) {
+    result.directory = (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+
+    std::vector<std::wstring> candidates;
+    std::set<std::wstring> candidateKeys;
+    if (!result.directory) {
+        candidates.push_back(fileOrDir);
+        candidateKeys.insert(Lower(fileOrDir));
+        result.enumeratedFiles = 1;
+    } else {
+        std::vector<std::wstring> pending{fileOrDir};
+        std::size_t lastReportedFiles = 0;
+        report(AdBlockScanProgress{AdBlockScanPhase::Enumerating});
+        while (!pending.empty()) {
+            if (cancelled()) {
+                result.cancelled = true;
+                break;
+            }
+            std::wstring directory = std::move(pending.back());
+            pending.pop_back();
+            std::wstring prefix = directory;
+            if (!prefix.empty() && prefix.back() != L'\\') prefix.push_back(L'\\');
+            WIN32_FIND_DATAW find{};
+            HANDLE handle = FindFirstFileW((prefix + L"*").c_str(), &find);
+            if (handle == INVALID_HANDLE_VALUE) {
+                ++result.inaccessibleDirectories;
+                continue;
+            }
             do {
-                if (find.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;  // 不递归子目录
-                const std::wstring fileName = find.cFileName;
-                if (IsStartableCandidate(fileName)) candidates.push_back(pattern + fileName);
+                if (cancelled()) {
+                    result.cancelled = true;
+                    break;
+                }
+                const std::wstring name = find.cFileName;
+                if (name == L"." || name == L"..") continue;
+                const std::wstring path = prefix + name;
+                if (find.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+                    if (find.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) continue;
+                    pending.push_back(path);
+                    continue;
+                }
+                ++result.enumeratedFiles;
+                if (IsStartableCandidate(name)) {
+                    const std::wstring key = Lower(path);
+                    if (candidateKeys.insert(key).second) candidates.push_back(path);
+                }
+                if (result.enumeratedFiles - lastReportedFiles >= 64) {
+                    lastReportedFiles = result.enumeratedFiles;
+                    report(AdBlockScanProgress{
+                        AdBlockScanPhase::Enumerating,
+                        result.enumeratedFiles,
+                        candidates.size(),
+                        0,
+                        0,
+                        0,
+                        result.inaccessibleDirectories,
+                        0});
+                }
             } while (FindNextFileW(handle, &find));
             FindClose(handle);
+            if (result.cancelled) break;
         }
-    } else {
-        candidates.push_back(fileOrDir);
     }
 
-    // 预先索引可经系统“启动”开关禁用的自启动项（全局仅扫一次），供逐项标注“含自启动项”。
-    // 值为 true 表示至少有一个匹配的自启动注册位于 HKLM（解除/拦截需管理员）。
+    result.totalCandidates = candidates.size();
+    if (result.cancelled) {
+        report(AdBlockScanProgress{
+            AdBlockScanPhase::Cancelled,
+            result.enumeratedFiles,
+            result.totalCandidates,
+            0,
+            result.totalCandidates,
+            0,
+            result.inaccessibleDirectories,
+            0});
+        return result;
+    }
+
+    report(AdBlockScanProgress{
+        AdBlockScanPhase::IndexingStartup,
+        result.enumeratedFiles,
+        result.totalCandidates,
+        0,
+        result.totalCandidates,
+        0,
+        result.inaccessibleDirectories,
+        0});
+
+    // 只建立一次系统自启动索引，供全部工作线程只读匹配。
     std::map<std::wstring, bool> autoStartExeLower;
     {
         ScanResult startup;
@@ -2082,21 +2166,57 @@ ScanResult AdBlockManager::ScanPath(const std::wstring& fileOrDir) const {
         }
     }
 
-    for (const std::wstring& candidate : candidates) {
+    if (cancelled()) {
+        result.cancelled = true;
+        report(AdBlockScanProgress{
+            AdBlockScanPhase::Cancelled,
+            result.enumeratedFiles,
+            result.totalCandidates,
+            0,
+            result.totalCandidates,
+            0,
+            result.inaccessibleDirectories,
+            0});
+        return result;
+    }
+
+    options.batchSize = std::max<std::size_t>(1, options.batchSize);
+    const std::size_t batchCount = (candidates.size() + options.batchSize - 1) / options.batchSize;
+    const std::size_t hardware = std::max<std::size_t>(1, std::thread::hardware_concurrency());
+    const std::size_t configured = options.maxWorkers == 0 ? hardware : options.maxWorkers;
+    result.workerCount = candidates.empty() ? 0 : (result.directory
+        ? std::max<std::size_t>(1, std::min({batchCount, hardware, configured}))
+        : 1);
+    report(AdBlockScanProgress{
+        AdBlockScanPhase::Analyzing,
+        result.enumeratedFiles,
+        result.totalCandidates,
+        0,
+        result.totalCandidates,
+        0,
+        result.inaccessibleDirectories,
+        result.workerCount});
+
+    std::atomic_size_t nextIndex{0};
+    std::atomic_size_t checkedCandidates{0};
+    std::atomic_size_t autoStartMatches{0};
+    std::atomic_bool comUnavailable{false};
+    std::mutex resultMutex;
+    std::mutex progressMutex;
+
+    auto analyzeCandidate = [&](const std::wstring& candidate, ScanResult& local) {
         const std::wstring displayName = FileNameOf(candidate);
         const LaunchTarget target = ResolveLaunchTarget(candidate);
         if (!target.valid) {
-            // 无法解析（如断链快捷方式）：列出但仅查看。
-            AddItem(result, StartupSourceType::Ifeo, displayName, candidate, L"", true, false,
+            AddItem(local, StartupSourceType::Ifeo, displayName, candidate, L"", true, false,
                 {{L"adBlockStatus", L"unresolved"}});
-            continue;
+            return;
         }
         if (target.category != L"exe") {
-            // 脚本/其它：仅提示，不提供 IFEO（脚本由解释器加载，直接 IFEO 无效）。
-            AddItem(result, StartupSourceType::Ifeo, displayName, candidate, target.path, true, false,
+            AddItem(local, StartupSourceType::Ifeo, displayName, candidate, target.path, true, false,
                 {{L"adBlockStatus", target.category == L"script" ? L"script" : L"other"},
                  {L"targetPath", target.path}});
-            continue;
+            return;
         }
         const GuardVerdict guard = EvaluateGuard(target.path, target.imageName);
         std::map<std::wstring, std::wstring> original = {
@@ -2109,16 +2229,75 @@ ScanResult AdBlockManager::ScanPath(const std::wstring& fileOrDir) const {
         if (autoStartIt != autoStartExeLower.end()) {
             original[L"hasAutoStart"] = L"1";
             if (autoStartIt->second) original[L"autoStartRequiresAdmin"] = L"1";
+            autoStartMatches.fetch_add(1);
         }
-        AddItem(result, StartupSourceType::Ifeo, displayName, candidate, target.path,
+        AddItem(local, StartupSourceType::Ifeo, displayName, candidate, target.path,
             true, guard.allow, std::move(original));
-    }
+    };
 
-    if (uninitialize) CoUninitialize();
-    std::sort(result.items.begin(), result.items.end(), [](const StartupItem& left, const StartupItem& right) {
+    auto worker = [&]() {
+        ComApartment apartment;
+        if (!apartment.usable()) comUnavailable.store(true);
+        ScanResult local;
+        while (!cancelled()) {
+            const std::size_t begin = nextIndex.fetch_add(options.batchSize);
+            if (begin >= candidates.size()) break;
+            const std::size_t finish = std::min(candidates.size(), begin + options.batchSize);
+            if (options.batchDelay.count() > 0) std::this_thread::sleep_for(options.batchDelay);
+            for (std::size_t index = begin; index < finish && !cancelled(); ++index) {
+                analyzeCandidate(candidates[index], local);
+                checkedCandidates.fetch_add(1);
+            }
+            if (reportProgress) {
+                std::lock_guard progressLock(progressMutex);
+                report(AdBlockScanProgress{
+                    AdBlockScanPhase::Analyzing,
+                    result.enumeratedFiles,
+                    result.totalCandidates,
+                    std::min(checkedCandidates.load(), result.totalCandidates),
+                    result.totalCandidates,
+                    autoStartMatches.load(),
+                    result.inaccessibleDirectories,
+                    result.workerCount});
+            }
+        }
+        std::lock_guard resultLock(resultMutex);
+        result.scan.items.insert(result.scan.items.end(),
+            std::make_move_iterator(local.items.begin()), std::make_move_iterator(local.items.end()));
+        result.scan.warnings.insert(result.scan.warnings.end(),
+            std::make_move_iterator(local.warnings.begin()), std::make_move_iterator(local.warnings.end()));
+    };
+
+    std::vector<std::thread> workers;
+    workers.reserve(result.workerCount);
+    for (std::size_t index = 0; index < result.workerCount; ++index) workers.emplace_back(worker);
+    for (std::thread& thread : workers) thread.join();
+
+    result.checkedCandidates = std::min(checkedCandidates.load(), result.totalCandidates);
+    result.autoStartMatches = autoStartMatches.load();
+    result.cancelled = cancelled() && result.checkedCandidates < result.totalCandidates;
+    if (comUnavailable.load()) result.scan.warnings.push_back(L"COM 初始化失败，部分快捷方式可能无法解析。");
+    if (result.inaccessibleDirectories > 0) {
+        result.scan.warnings.push_back(
+            L"有 " + std::to_wstring(result.inaccessibleDirectories) + L" 个目录无法访问，已跳过。");
+    }
+    std::sort(result.scan.items.begin(), result.scan.items.end(), [](const StartupItem& left, const StartupItem& right) {
         if (left.canDisable != right.canDisable) return left.canDisable > right.canDisable;
-        return Lower(left.name) < Lower(right.name);
+        const std::wstring leftName = Lower(left.name);
+        const std::wstring rightName = Lower(right.name);
+        if (leftName != rightName) return leftName < rightName;
+        return Lower(left.location) < Lower(right.location);
     });
+
+    report(AdBlockScanProgress{
+        result.cancelled ? AdBlockScanPhase::Cancelled : AdBlockScanPhase::Completed,
+        result.enumeratedFiles,
+        result.totalCandidates,
+        result.checkedCandidates,
+        result.totalCandidates,
+        result.autoStartMatches,
+        result.inaccessibleDirectories,
+        result.workerCount});
     return result;
 }
 

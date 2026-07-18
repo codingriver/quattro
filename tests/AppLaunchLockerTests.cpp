@@ -2,6 +2,7 @@
 
 #include <windows.h>
 
+#include <atomic>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -115,8 +116,12 @@ int wmain() {
         // 造一个脚本与一个未签名 exe，验证分类与守卫（脚本仅提示，未签名 exe 可拦截并告警）。
         const std::filesystem::path scriptPath = adDir / L"sample.bat";
         const std::filesystem::path exePath = adDir / L"sample.exe";
+        const std::filesystem::path nestedDir = adDir / L"nested" / L"deeper";
+        const std::filesystem::path nestedExePath = nestedDir / L"nested.exe";
+        std::filesystem::create_directories(nestedDir, cleanupError);
         { std::ofstream(scriptPath, std::ios::binary) << "@echo off\n"; }
         { std::ofstream(exePath, std::ios::binary) << "not-a-real-pe"; }
+        { std::ofstream(nestedExePath, std::ios::binary) << "not-a-real-pe"; }
 
         auto fieldOf = [](const StartupItem& item, const wchar_t* key) -> std::wstring {
             const auto found = item.original.find(key);
@@ -126,6 +131,7 @@ int wmain() {
         const ScanResult scanDir = adBlock.ScanPath(adDir.wstring());
         bool sawScript = false;
         bool sawExe = false;
+        bool sawNestedExe = false;
         for (const auto& item : scanDir.items) {
             if (fieldOf(item, L"adBlockStatus") == L"script") {
                 sawScript = true;
@@ -136,9 +142,55 @@ int wmain() {
                 ok &= Check(fieldOf(item, L"adBlockStatus") == L"blockable-warn", L"unsigned exe should be blockable with warning");
                 ok &= Check(item.canDisable, L"unsigned exe should be blockable");
             }
+            if (item.name == L"nested.exe") sawNestedExe = true;
         }
         ok &= Check(sawScript, L"scan should list the script entry");
         ok &= Check(sawExe, L"scan should list the exe entry");
+        ok &= Check(sawNestedExe, L"directory scan should recurse into nested directories");
+
+        // 详细扫描：枚举后并行分析，并持续报告确定进度。
+        std::vector<AdBlockScanProgress> progressEvents;
+        AdBlockScanOptions parallelOptions;
+        parallelOptions.batchSize = 1;
+        parallelOptions.maxWorkers = 4;
+        const AdBlockScanResult detailed = adBlock.ScanPathDetailed(
+            adDir.wstring(),
+            {},
+            [&](const AdBlockScanProgress& progress) { progressEvents.push_back(progress); },
+            parallelOptions);
+        ok &= Check(!detailed.cancelled && detailed.error.empty(), L"detailed recursive scan should complete");
+        ok &= Check(detailed.totalCandidates >= 3 && detailed.checkedCandidates == detailed.totalCandidates,
+            L"detailed scan should check every discovered candidate");
+        ok &= Check(detailed.workerCount >= 2 && detailed.workerCount <= 4,
+            L"directory scan should use bounded parallel workers");
+        ok &= Check(!progressEvents.empty() && progressEvents.front().phase == AdBlockScanPhase::Validating &&
+                progressEvents.back().phase == AdBlockScanPhase::Completed,
+            L"detailed scan should report validating through completed phases");
+
+        // 取消：保留已完成的部分结果并以 Cancelled 结束。
+        const std::filesystem::path cancelDir = adDir / L"cancel";
+        std::filesystem::create_directories(cancelDir, cleanupError);
+        for (int index = 0; index < 48; ++index) {
+            std::ofstream(cancelDir / (L"candidate-" + std::to_wstring(index) + L".exe"), std::ios::binary)
+                << "not-a-real-pe";
+        }
+        std::atomic_bool cancelRequested{false};
+        AdBlockScanOptions cancelOptions;
+        cancelOptions.batchSize = 1;
+        cancelOptions.maxWorkers = 2;
+        cancelOptions.batchDelay = std::chrono::milliseconds(5);
+        const AdBlockScanResult cancelled = adBlock.ScanPathDetailed(
+            cancelDir.wstring(),
+            [&]() { return cancelRequested.load(); },
+            [&](const AdBlockScanProgress& progress) {
+                if (progress.phase == AdBlockScanPhase::Analyzing && progress.checkedCandidates >= 2) {
+                    cancelRequested.store(true);
+                }
+            },
+            cancelOptions);
+        ok &= Check(cancelled.cancelled, L"detailed scan should honor cancellation");
+        ok &= Check(cancelled.checkedCandidates > 0 && cancelled.checkedCandidates < cancelled.totalCandidates,
+            L"cancelled scan should retain partial checked results");
 
         // 拒绝分支：未知模式、路径不存在、脚本目标——均不得写入注册表。
         ok &= Check(!adBlock.Block(exePath.wstring(), L"bogus").success, L"unknown block mode rejected");

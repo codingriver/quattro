@@ -2412,6 +2412,14 @@ void RunAppLaunchLockerScenario(const std::filesystem::path& outputDir, TestStat
 
 void RunAdBlockScenario(const std::filesystem::path& outputDir, TestState& state) {
     AcceptanceLog(L"begin ad-block");
+    const std::filesystem::path progressRoot = outputDir / L"ad-block-progress-input";
+    std::error_code progressError;
+    std::filesystem::create_directories(progressRoot / L"nested", progressError);
+    for (int index = 0; index < 256; ++index) {
+        const std::filesystem::path parent = index % 2 == 0 ? progressRoot : progressRoot / L"nested";
+        std::ofstream(parent / (L"candidate-" + std::to_wstring(index) + L".exe"), std::ios::binary)
+            << "not-a-real-pe";
+    }
     wchar_t executableOverride[32768]{};
     const DWORD overrideLength = GetEnvironmentVariableW(
         L"QUATTRO_UI_ACCEPTANCE_APP_LAUNCH_LOCKER",
@@ -2431,13 +2439,16 @@ void RunAdBlockScenario(const std::filesystem::path& outputDir, TestState& state
     std::wstring command = L"\"" + exe.wstring() + L"\" --ad-block";
     ScopedAcceptanceChildEnvironment childEnvironment;
     SetEnvironmentVariableW(L"QUATTRO_AD_BLOCK_ACCEPTANCE_DPI", L"96");
+    SetEnvironmentVariableW(L"QUATTRO_TEST_AD_BLOCK_BATCH_DELAY_MS", L"200");
     if (!CreateProcessW(exe.c_str(), command.data(), nullptr, nullptr, FALSE, 0, nullptr,
             ModuleDirectory().c_str(), &startup, &process)) {
         SetEnvironmentVariableW(L"QUATTRO_AD_BLOCK_ACCEPTANCE_DPI", nullptr);
+        SetEnvironmentVariableW(L"QUATTRO_TEST_AD_BLOCK_BATCH_DELAY_MS", nullptr);
         state.Check(false, L"ad-block: CreateProcess failed");
         return;
     }
     SetEnvironmentVariableW(L"QUATTRO_AD_BLOCK_ACCEPTANCE_DPI", nullptr);
+    SetEnvironmentVariableW(L"QUATTRO_TEST_AD_BLOCK_BATCH_DELAY_MS", nullptr);
 
     WaitForInputIdle(process.hProcess, 10000);
     HWND hwnd = WaitForTopWindow(FindWindowRequest{L"AdBlockMainWindow", L"广告拦截", process.dwProcessId}, 10000);
@@ -2463,13 +2474,14 @@ void RunAdBlockScenario(const std::filesystem::path& outputDir, TestState& state
         HWND pickPath = ChildById(hwnd, 1211);
         HWND pickPathMenu = ChildById(hwnd, 1218);
         HWND clearResults = ChildById(hwnd, 1217);
+        HWND checkPath = ChildById(hwnd, 1222);
         HWND tabControl = ChildById(hwnd, 1200);
         HWND contentPanel = ChildById(hwnd, 1203);
         HWND exactMode = ChildById(hwnd, 1213);
         HWND nameMode = ChildById(hwnd, 1214);
         HWND scanTable = ChildById(hwnd, 1215);
         HWND blockButton = ChildById(hwnd, 1216);
-        state.Check(pathEdit && pickPath && pickPathMenu && clearResults && tabControl && contentPanel && exactMode && nameMode && scanTable && blockButton,
+        state.Check(pathEdit && pickPath && pickPathMenu && clearResults && checkPath && tabControl && contentPanel && exactMode && nameMode && scanTable && blockButton,
             L"ad-block: block page controls are incomplete");
         state.Check(!pathEdit || (IsWindowVisible(pathEdit) && IsWindowVisible(pickPath) && IsWindowVisible(pickPathMenu) && IsWindowVisible(clearResults)),
             L"ad-block: connected panel obscured the path action row");
@@ -2505,25 +2517,31 @@ void RunAdBlockScenario(const std::filesystem::path& outputDir, TestState& state
             L"ad-block: file picker split-button label is incorrect");
         state.Check(pickPathMenu && WindowText(pickPathMenu).empty(),
             L"ad-block: folder picker menu segment should use only the public icon");
-        state.Check(clearResults && WindowText(clearResults) == L"Clear",
+        state.Check(clearResults && WindowText(clearResults) == L"清空",
             L"ad-block: clear-results action label is incorrect");
+        state.Check(checkPath && WindowText(checkPath) == L"检查",
+            L"ad-block: check action label is incorrect");
         state.Check(!clearResults || !IsWindowEnabled(clearResults),
             L"ad-block: clear-results action should start disabled");
-        if (pathEdit && clearResults && pickPath && pickPathMenu) {
+        if (pathEdit && clearResults && pickPath && pickPathMenu && checkPath) {
             RECT pathRect{};
             RECT clearRect{};
             RECT pickRect{};
             RECT menuRect{};
+            RECT checkRect{};
             GetWindowRect(pathEdit, &pathRect);
             GetWindowRect(clearResults, &clearRect);
             GetWindowRect(pickPath, &pickRect);
             GetWindowRect(pickPathMenu, &menuRect);
-            state.Check(pathRect.right < clearRect.left && clearRect.right < pickRect.left && pickRect.right <= menuRect.left,
-                L"ad-block: path, Clear, file picker, and folder menu controls overlap or are out of order");
+            GetWindowRect(checkPath, &checkRect);
+            state.Check(pathRect.right < clearRect.left && clearRect.right < pickRect.left &&
+                    pickRect.right <= menuRect.left && menuRect.right < checkRect.left,
+                L"ad-block: path, clear, file picker, folder menu, and check controls overlap or are out of order");
             state.Check(std::max(pathRect.top, clearRect.top) < std::min(pathRect.bottom, clearRect.bottom) &&
                     std::max(clearRect.top, pickRect.top) < std::min(clearRect.bottom, pickRect.bottom) &&
-                    std::max(pickRect.top, menuRect.top) < std::min(pickRect.bottom, menuRect.bottom),
-                L"ad-block: path, Clear, file picker, and folder menu controls are not aligned on one row");
+                    std::max(pickRect.top, menuRect.top) < std::min(pickRect.bottom, menuRect.bottom) &&
+                    std::max(menuRect.top, checkRect.top) < std::min(menuRect.bottom, checkRect.bottom),
+                L"ad-block: path action controls are not aligned on one row");
         }
 
         auto validateActionRow = [&](const std::wstring& scenario) {
@@ -2545,49 +2563,71 @@ void RunAdBlockScenario(const std::filesystem::path& outputDir, TestState& state
 
         HWND statusText = nullptr;
         for (const auto& child : Children(hwnd)) {
-            if (child.text == L"选择文件或文件夹后开始扫描。") {
+            if (child.text == L"输入或选择文件、文件夹后点击“检查”。") {
                 statusText = child.hwnd;
                 break;
             }
         }
         state.Check(statusText != nullptr, L"ad-block: scan status text is missing");
-        if (pathEdit && statusText && clearResults) {
-            for (const wchar_t character : exe.wstring()) {
+        if (pathEdit && statusText && clearResults && checkPath) {
+            for (const wchar_t character : progressRoot.wstring()) {
                 DWORD_PTR typeResult = 0;
                 SendMessageTimeoutW(pathEdit, WM_CHAR, character, 1,
                     SMTO_ABORTIFHUNG, 5000, &typeResult);
             }
-            PostMessageW(pathEdit, WM_KEYDOWN, VK_RETURN, 0);
+            DWORD_PTR checkResult = 0;
+            SendMessageTimeoutW(checkPath, BM_CLICK, 0, 0, SMTO_ABORTIFHUNG, 5000, &checkResult);
+            HWND progressWindow = WaitForTopWindow(
+                FindWindowRequest{L"", L"广告拦截检查进度", process.dwProcessId}, 5000);
+            state.Check(progressWindow != nullptr, L"ad-block: progress dialog did not appear");
+            if (progressWindow) {
+                ShowWindow(progressWindow, SW_SHOWNOACTIVATE);
+                SetWindowPos(progressWindow, HWND_BOTTOM, 0, 0, 0, 0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+                state.Check(WaitForWindowText(progressWindow, L"个工作线程", 5000),
+                    L"ad-block: progress dialog did not report parallel workers");
+                state.Check(WindowText(checkPath) == L"查看进度",
+                    L"ad-block: running check action did not switch to view-progress state");
+                capture(progressWindow, L"ad-block-progress-running.png", L"ad-block running progress");
+            }
             const auto scanBegin = GetTickCount64();
-            while (!Contains(WindowText(statusText), L"个可启动文件") &&
+            while (!Contains(WindowText(statusText), L"检查完成") &&
                    GetTickCount64() - scanBegin < 10000) {
                 Sleep(50);
             }
-            state.Check(Contains(WindowText(statusText), L"个可启动文件"),
-                L"ad-block: Enter in the manually entered path did not start scanning");
+            state.Check(Contains(WindowText(statusText), L"检查完成") && Contains(WindowText(statusText), L"个可启动文件"),
+                L"ad-block: check button did not complete recursive directory checking");
+            const auto checkLabelBegin = GetTickCount64();
+            while (WindowText(checkPath) != L"检查" && GetTickCount64() - checkLabelBegin < 2000) {
+                Sleep(25);
+            }
+            state.Check(WindowText(checkPath) == L"检查",
+                L"ad-block: check action did not return to its idle label");
             state.Check(IsWindowEnabled(clearResults) != FALSE,
                 L"ad-block: clear-results action was not enabled after scanning");
+            if (progressWindow) {
+                state.Check(WaitForWindowText(progressWindow, L"检查完成", 3000),
+                    L"ad-block: progress dialog did not enter completed state");
+                capture(progressWindow, L"ad-block-progress-completed.png", L"ad-block completed progress");
+                HWND closeProgress = ChildById(progressWindow, 3);
+                if (closeProgress) {
+                    DWORD_PTR closeResult = 0;
+                    SendMessageTimeoutW(closeProgress, BM_CLICK, 0, 0, SMTO_ABORTIFHUNG, 5000, &closeResult);
+                }
+            }
             capture(hwnd, L"ad-block-manual-path-result.png", L"ad-block manual path result");
 
             DWORD_PTR clearResult = 0;
             SendMessageTimeoutW(clearResults, BM_CLICK, 0, 0, SMTO_ABORTIFHUNG, 5000, &clearResult);
             Sleep(200);
-            state.Check(WindowText(statusText) == L"选择文件或文件夹后开始扫描。",
+            state.Check(WindowText(statusText) == L"输入或选择文件、文件夹后点击“检查”。",
                 L"ad-block: clearing displayed results did not restore the initial status");
+            state.Check(WindowText(pathEdit).empty(),
+                L"ad-block: clearing did not clear the entered path");
             state.Check(IsWindowEnabled(clearResults) == FALSE,
                 L"ad-block: clear-results action remained enabled after clearing");
             capture(hwnd, L"ad-block-cleared-results.png", L"ad-block cleared results");
 
-            PostMessageW(pathEdit, WM_KEYDOWN, VK_RETURN, 0);
-            const auto rescanBegin = GetTickCount64();
-            while (!Contains(WindowText(statusText), L"个可启动文件") &&
-                   GetTickCount64() - rescanBegin < 10000) {
-                Sleep(50);
-            }
-            state.Check(Contains(WindowText(statusText), L"个可启动文件"),
-                L"ad-block: Clear removed the entered path instead of only clearing displayed results");
-            SendMessageTimeoutW(clearResults, BM_CLICK, 0, 0, SMTO_ABORTIFHUNG, 5000, &clearResult);
-            Sleep(200);
         }
 
         HWND blockedTab = ChildById(hwnd, 1202);
@@ -2647,9 +2687,10 @@ void RunAdBlockScenario(const std::filesystem::path& outputDir, TestState& state
             HWND pickPath = ChildById(dpiWindow, 1211);
             HWND pickPathMenu = ChildById(dpiWindow, 1218);
             HWND clearResults = ChildById(dpiWindow, 1217);
+            HWND checkPath = ChildById(dpiWindow, 1222);
             HWND scanTable = ChildById(dpiWindow, 1215);
             HWND blockButton = ChildById(dpiWindow, 1216);
-            state.Check(exactMode && nameMode && tabControl && contentPanel && pathEdit && pickPath && pickPathMenu && clearResults && scanTable && blockButton,
+            state.Check(exactMode && nameMode && tabControl && contentPanel && pathEdit && pickPath && pickPathMenu && clearResults && checkPath && scanTable && blockButton,
                 L"ad-block: DPI action row controls are incomplete");
             if (tabControl && contentPanel) {
                 RECT tabRect{};
@@ -2661,21 +2702,24 @@ void RunAdBlockScenario(const std::filesystem::path& outputDir, TestState& state
                 state.Check(panelRect.left == tabRect.left && panelRect.right == tabRect.right,
                     L"ad-block: DPI connected tab and panel widths differ");
             }
-            if (pathEdit && clearResults && pickPath && pickPathMenu) {
+            if (pathEdit && clearResults && pickPath && pickPathMenu && checkPath) {
                 RECT pathRect{};
                 RECT clearRect{};
                 RECT pickRect{};
                 RECT menuRect{};
+                RECT checkRect{};
                 RECT tableRect{};
                 GetWindowRect(pathEdit, &pathRect);
                 GetWindowRect(clearResults, &clearRect);
                 GetWindowRect(pickPath, &pickRect);
                 GetWindowRect(pickPathMenu, &menuRect);
+                GetWindowRect(checkPath, &checkRect);
                 GetWindowRect(scanTable, &tableRect);
-                state.Check(pathRect.right < clearRect.left && clearRect.right < pickRect.left && pickRect.right <= menuRect.left,
+                state.Check(pathRect.right < clearRect.left && clearRect.right < pickRect.left &&
+                        pickRect.right <= menuRect.left && menuRect.right < checkRect.left,
                     L"ad-block: DPI path row controls overlap or are out of order");
                 state.Check(pathRect.bottom <= tableRect.top && clearRect.bottom <= tableRect.top &&
-                        pickRect.bottom <= tableRect.top && menuRect.bottom <= tableRect.top,
+                        pickRect.bottom <= tableRect.top && menuRect.bottom <= tableRect.top && checkRect.bottom <= tableRect.top,
                     L"ad-block: DPI connected panel moved the path row behind the result table");
                 bool visibleEditFrame = false;
                 for (const auto& child : Children(dpiWindow)) {

@@ -1,6 +1,7 @@
 #include "AdBlockWindow.h"
 
 #include "FileDialog.h"
+#include "ThemedTaskProgressDialog.h"
 #include "ThemedUi.h"
 #include "ThemedWindowUi.h"
 #include "ToastFeedback.h"
@@ -11,8 +12,40 @@
 #include <shellapi.h>
 
 #include <algorithm>
+#include <mutex>
 #include <string>
 #include <utility>
+
+struct AdBlockScanState {
+    struct Snapshot {
+        AdBlockScanProgress progress;
+        bool finished = false;
+        bool stopRequested = false;
+        std::wstring error;
+    };
+
+    Snapshot ReadSnapshot() const {
+        std::lock_guard lock(mutex);
+        return Snapshot{progress, finished, cancelRequested.load(), error};
+    }
+
+    void UpdateProgress(const AdBlockScanProgress& value) {
+        std::lock_guard lock(mutex);
+        progress = value;
+    }
+
+    void Complete(const AdBlockScanResult& result) {
+        std::lock_guard lock(mutex);
+        error = result.error;
+        finished = true;
+    }
+
+    mutable std::mutex mutex;
+    AdBlockScanProgress progress{};
+    bool finished = false;
+    std::wstring error;
+    std::atomic_bool cancelRequested{false};
+};
 
 namespace {
 constexpr int ID_TAB_CONTROL = 1200;
@@ -31,6 +64,7 @@ constexpr int ID_BLOCK_SELECTED = 1216;
 constexpr int ID_CLEAR_RESULTS = 1217;
 constexpr int ID_BLOCKED_TABLE = 1220;
 constexpr int ID_UNBLOCK = 1221;
+constexpr int ID_CHECK_PATH = 1222;
 
 constexpr UINT WM_APP_SCAN_COMPLETE = WM_APP + 0x160;
 constexpr UINT WM_APP_BLOCKED_COMPLETE = WM_APP + 0x161;
@@ -40,7 +74,7 @@ constexpr int kClientWidth = 780;
 constexpr int kClientHeight = 448;
 
 struct ScanPayload {
-    ScanResult scan;
+    AdBlockScanResult scan;
 };
 struct BlockedPayload {
     std::vector<DisabledRecord> blocked;
@@ -143,6 +177,83 @@ std::wstring ScanStatusText(const StartupItem& item) {
     if (status == L"unresolved") return L"无法解析";
     return L"仅查看";
 }
+
+ThemedTaskProgressSnapshot AdBlockTaskProgressSnapshot(const std::shared_ptr<AdBlockScanState>& state) {
+    ThemedTaskProgressSnapshot output;
+    if (!state) {
+        output.status = L"检查失败";
+        output.detail = L"检查状态不可用。";
+        output.role = ThemedStatusRole::Danger;
+        output.indeterminate = false;
+        output.finished = true;
+        return output;
+    }
+    const AdBlockScanState::Snapshot snapshot = state->ReadSnapshot();
+    output.finished = snapshot.finished;
+    output.stopRequested = snapshot.stopRequested;
+    if (snapshot.finished && !snapshot.error.empty()) {
+        output.status = L"检查失败";
+        output.detail = snapshot.error;
+        output.role = ThemedStatusRole::Danger;
+        output.indeterminate = false;
+        return output;
+    }
+    const AdBlockScanProgress& progress = snapshot.progress;
+    switch (progress.phase) {
+    case AdBlockScanPhase::Validating:
+        output.status = snapshot.stopRequested ? L"正在停止检查…" : L"正在准备检查…";
+        output.detail = L"正在读取路径信息。";
+        output.role = snapshot.stopRequested ? ThemedStatusRole::Warning : ThemedStatusRole::Info;
+        output.indeterminate = true;
+        break;
+    case AdBlockScanPhase::Enumerating:
+        output.status = snapshot.stopRequested ? L"正在停止检查…" : L"正在枚举目录内容…";
+        output.detail = L"已枚举 " + std::to_wstring(progress.enumeratedFiles) + L" 个文件，发现 " +
+            std::to_wstring(progress.discoveredCandidates) + L" 个可启动候选";
+        if (progress.inaccessibleDirectories > 0) {
+            output.detail += L"，跳过 " + std::to_wstring(progress.inaccessibleDirectories) + L" 个目录";
+        }
+        output.detail += L"。";
+        output.role = snapshot.stopRequested ? ThemedStatusRole::Warning : ThemedStatusRole::Info;
+        output.indeterminate = true;
+        break;
+    case AdBlockScanPhase::IndexingStartup:
+        output.status = snapshot.stopRequested ? L"正在停止检查…" : L"正在读取开机/登录自启动项…";
+        output.detail = L"已发现 " + std::to_wstring(progress.discoveredCandidates) + L" 个可启动候选。";
+        output.role = snapshot.stopRequested ? ThemedStatusRole::Warning : ThemedStatusRole::Info;
+        output.indeterminate = true;
+        break;
+    case AdBlockScanPhase::Analyzing:
+        output.status = snapshot.stopRequested ? L"正在停止检查…" : L"正在并行检查可启动程序…";
+        output.detail = L"已检查 " + std::to_wstring(progress.checkedCandidates) + L" / " +
+            std::to_wstring(progress.totalCandidates) + L" 个候选，发现 " +
+            std::to_wstring(progress.autoStartMatches) + L" 个含自启动项，" +
+            std::to_wstring(progress.workerCount) + L" 个工作线程。";
+        output.role = snapshot.stopRequested ? ThemedStatusRole::Warning : ThemedStatusRole::Info;
+        output.indeterminate = false;
+        output.value = progress.totalCandidates == 0 ? 1.0
+            : static_cast<double>(progress.checkedCandidates) / static_cast<double>(progress.totalCandidates);
+        break;
+    case AdBlockScanPhase::Completed:
+        output.status = L"检查完成";
+        output.detail = L"已检查 " + std::to_wstring(progress.checkedCandidates) + L" 个候选，发现 " +
+            std::to_wstring(progress.autoStartMatches) + L" 个含自启动项。";
+        output.role = ThemedStatusRole::Success;
+        output.indeterminate = false;
+        output.value = 1.0;
+        break;
+    case AdBlockScanPhase::Cancelled:
+        output.status = L"检查已停止";
+        output.detail = L"已检查 " + std::to_wstring(progress.checkedCandidates) + L" / " +
+            std::to_wstring(progress.totalCandidates) + L" 个候选，结果可能不完整。";
+        output.role = ThemedStatusRole::Warning;
+        output.indeterminate = false;
+        output.value = progress.totalCandidates == 0 ? 0.0
+            : static_cast<double>(progress.checkedCandidates) / static_cast<double>(progress.totalCandidates);
+        break;
+    }
+    return output;
+}
 }
 
 AdBlockWindow::AdBlockWindow(HINSTANCE instance, Theme theme)
@@ -150,6 +261,8 @@ AdBlockWindow::AdBlockWindow(HINSTANCE instance, Theme theme)
 
 AdBlockWindow::~AdBlockWindow() {
     closing_ = true;
+    if (scanState_) scanState_->cancelRequested.store(true);
+    if (scanProgressDialog_) scanProgressDialog_->Close();
     JoinWorker();
 }
 
@@ -219,6 +332,8 @@ LRESULT AdBlockWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam) {
     if (ThemedWindowUi::HandleCommonMessage(windowUi_, message, wParam, lParam, result)) {
         if (message == WM_DESTROY) {
             closing_ = true;
+            if (scanState_) scanState_->cancelRequested.store(true);
+            if (scanProgressDialog_) scanProgressDialog_->Close();
             JoinWorker();
             PostQuitMessage(0);
         }
@@ -257,6 +372,8 @@ LRESULT AdBlockWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam) {
             PickFolder();
         } else if (id == ID_CLEAR_RESULTS) {
             ClearScanResults();
+        } else if (id == ID_CHECK_PATH) {
+            StartScan();
         } else if (id == ID_BLOCK_SELECTED) {
             StartBlockSelected();
         } else if (id == ID_UNBLOCK) {
@@ -346,17 +463,22 @@ void AdBlockWindow::CreateControls() {
     const int labelHeight = ui.labelHeight();
     const int pickWidth = ui.splitButtonWidth(L"文件", ThemedButtonRole::Normal, ThemedButtonSize::Normal,
         ThemedButtonWidthMode::Text);
-    const int clearWidth = ui.buttonWidth(L"Clear", ThemedButtonRole::Normal, ThemedButtonSize::Normal,
+    const int clearWidth = ui.buttonWidth(L"清空", ThemedButtonRole::Normal, ThemedButtonSize::Normal,
+        ThemedButtonWidthMode::Text);
+    const int checkWidth = ui.buttonWidth(L"查看进度", ThemedButtonRole::Primary, ThemedButtonSize::Normal,
         ThemedButtonWidthMode::Text);
     const int editHeight = ui.editHeight();
     const int pathY = bodyTop;
-    const int editWidth = pageContent.right - pageContent.left - clearWidth - pickWidth - gapX * 2;
+    const int editWidth = pageContent.right - pageContent.left - clearWidth - pickWidth - checkWidth - gapX * 3;
     pathEdit_ = ui.Edit(ID_PATH_EDIT, ui.editFrame(pageContent.left, pathY, editWidth), L"",
-        ThemedEditOptions{ThemedEditMode::SingleLine, ThemedEditContent::Text, false, true, false, false, true, 0, L"选择要扫描的文件或文件夹"});
-    clearButton_ = ui.Button(ID_CLEAR_RESULTS, L"Clear", pageContent.left + editWidth + gapX, pathY,
+        ThemedEditOptions{ThemedEditMode::SingleLine, ThemedEditContent::Text, false, true, false, false, true, 0, L"输入或选择要检查的文件或文件夹"});
+    clearButton_ = ui.Button(ID_CLEAR_RESULTS, L"清空", pageContent.left + editWidth + gapX, pathY,
         ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
-    pickPathSplit_ = ui.SplitButton(ID_PICK_PATH, ID_PICK_PATH_MENU, L"文件", pageContent.right - pickWidth, pathY,
+    pickPathSplit_ = ui.SplitButton(ID_PICK_PATH, ID_PICK_PATH_MENU, L"文件",
+        pageContent.left + editWidth + gapX + clearWidth + gapX, pathY,
         ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, pickWidth);
+    checkButton_ = ui.Button(ID_CHECK_PATH, L"检查", pageContent.right - checkWidth, pathY,
+        ThemedButtonRole::Primary, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, checkWidth, true);
 
     const int listTop = ui.nextRowY(pathY, std::max(editHeight, labelHeight));
     const int modeY = footerY + (ui.footerButtonHeight() - ui.checkBoxHeight()) / 2;
@@ -399,14 +521,14 @@ void AdBlockWindow::CreateControls() {
          {L"time", L"拦截时间", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, ui.tableColumnWidth(L"2026-07-15")}},
         blockedOptions);
 
-    statusText_ = ui.StatusText(L"选择文件或文件夹后开始扫描。", content.left, statusY,
+    statusText_ = ui.StatusText(L"输入或选择文件、文件夹后点击“检查”。", content.left, statusY,
         content.right - content.left, {ThemedStatusRole::Info, ThemedTextAlign::Start});
 
     blockButton_ = ui.FooterButton(ID_BLOCK_SELECTED, L"拦截所选", 0, 1, true, true);
     unblockButton_ = ui.FooterButton(ID_UNBLOCK, L"解除拦截", 0, 1, true, true);
 
     const std::vector<HWND> panelChildren{
-        pathEdit_, clearButton_, pickPathSplit_.primary, pickPathSplit_.menu, scanTable_, blockedTable_};
+        pathEdit_, clearButton_, pickPathSplit_.primary, pickPathSplit_.menu, checkButton_, scanTable_, blockedTable_};
     for (HWND child : panelChildren) {
         ThemedUi::SetControlSurface(child, ThemedControlSurface::Panel);
     }
@@ -414,7 +536,7 @@ void AdBlockWindow::CreateControls() {
 
     // 绑定标签页可见性
     ThemedUi::BindTabPage(tabControl_, 0,
-        {pathEdit_, clearButton_, pickPathSplit_.primary, pickPathSplit_.menu, modeLabel, modeExactRadio_, modeNameRadio_, modeStartupRadio_, scanTable_});
+        {pathEdit_, clearButton_, pickPathSplit_.primary, pickPathSplit_.menu, checkButton_, modeLabel, modeExactRadio_, modeNameRadio_, modeStartupRadio_, scanTable_});
     ThemedUi::BindTabPage(tabControl_, 1, {blockedTable_});
     ThemedUi::SetActiveTab(tabControl_, 0, false);
 
@@ -435,14 +557,15 @@ void AdBlockWindow::PickFile() {
     options.owner = hwnd_;
     options.mode = CommonFileDialogMode::FileOnly;
     options.context = L"应用拦截扫描文件";
-    options.title = L"选择要扫描的文件";
+    options.title = L"选择要检查的文件";
     options.defaultPath = GetText(pathEdit_);
     options.legacyFilter = L"可启动文件\0*.exe;*.com;*.scr;*.bat;*.cmd;*.ps1;*.vbs;*.js;*.lnk\0所有文件\0*.*\0";
 
     CommonFileDialogResult result{};
     if (ShowCommonFileDialog(options, result)) {
         ThemedUi::SetText(pathEdit_, result.path);
-        StartScan();
+        ThemedUi::SetText(statusText_, L"已选择文件，点击“检查”开始。" );
+        UpdateButtons();
     }
 }
 
@@ -451,17 +574,22 @@ void AdBlockWindow::PickFolder() {
     options.owner = hwnd_;
     options.mode = CommonFileDialogMode::FolderOnly;
     options.context = L"应用拦截扫描文件夹";
-    options.title = L"选择要扫描的文件夹";
+    options.title = L"选择要检查的文件夹";
     options.defaultPath = GetText(pathEdit_);
 
     CommonFileDialogResult result{};
     if (ShowCommonFileDialog(options, result)) {
         ThemedUi::SetText(pathEdit_, result.path);
-        StartScan();
+        ThemedUi::SetText(statusText_, L"已选择文件夹，点击“检查”开始。" );
+        UpdateButtons();
     }
 }
 
 void AdBlockWindow::StartScan() {
+    if (scanRunning_) {
+        if (scanProgressDialog_) scanProgressDialog_->Show();
+        return;
+    }
     if (busy_) return;
     const std::wstring path = Trim(GetText(pathEdit_));
     if (path.empty()) {
@@ -470,12 +598,40 @@ void AdBlockWindow::StartScan() {
     }
     JoinWorker();
     busy_ = true;
-    ThemedUi::SetText(statusText_, L"正在扫描…");
+    scanRunning_ = true;
+    scanItems_.clear();
+    ThemedUi::ClearTable(scanTable_);
+    ThemedUi::SetText(statusText_, L"正在后台递归检查目录…");
+    scanState_ = std::make_shared<AdBlockScanState>();
+    ThemedTaskProgressDialogOptions progressOptions{};
+    progressOptions.owner = hwnd_;
+    progressOptions.instance = instance_;
+    progressOptions.theme = theme_;
+    progressOptions.icon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_QUATTRO_APP_ICON));
+    progressOptions.className = L"AppLaunchLockerAdBlockProgress_" +
+        std::to_wstring(GetCurrentProcessId()) + L"_" + std::to_wstring(GetTickCount64());
+    progressOptions.title = L"广告拦截检查进度";
+    progressOptions.readSnapshot = [state = scanState_]() { return AdBlockTaskProgressSnapshot(state); };
+    progressOptions.requestStop = [state = scanState_]() { state->cancelRequested.store(true); };
+    scanProgressDialog_ = std::make_unique<ThemedTaskProgressDialog>(std::move(progressOptions));
+    scanProgressDialog_->Show();
     UpdateButtons();
     const HWND target = hwnd_;
-    worker_ = std::thread([target, path]() {
+    const std::shared_ptr<AdBlockScanState> state = scanState_;
+    worker_ = std::thread([target, path, state]() {
         auto payload = std::make_unique<ScanPayload>();
-        payload->scan = AdBlockManager().ScanPath(path);
+        AdBlockScanOptions options{};
+        wchar_t delayText[32]{};
+        if (GetEnvironmentVariableW(L"QUATTRO_TEST_AD_BLOCK_BATCH_DELAY_MS", delayText,
+                static_cast<DWORD>(std::size(delayText))) > 0) {
+            options.batchDelay = std::chrono::milliseconds(std::min<unsigned long>(wcstoul(delayText, nullptr, 10), 1000));
+        }
+        payload->scan = AdBlockManager().ScanPathDetailed(
+            path,
+            [state]() { return state->cancelRequested.load(); },
+            [state](const AdBlockScanProgress& progress) { state->UpdateProgress(progress); },
+            options);
+        state->Complete(payload->scan);
         if (!PostMessageW(target, WM_APP_SCAN_COMPLETE, 0, reinterpret_cast<LPARAM>(payload.get()))) return;
         payload.release();
     });
@@ -485,7 +641,8 @@ void AdBlockWindow::ClearScanResults() {
     if (busy_ || activeTab_ != 0) return;
     scanItems_.clear();
     ThemedUi::ClearTable(scanTable_);
-    ThemedUi::SetText(statusText_, L"选择文件或文件夹后开始扫描。");
+    ThemedUi::SetText(pathEdit_, L"");
+    ThemedUi::SetText(statusText_, L"输入或选择文件、文件夹后点击“检查”。");
     UpdateButtons();
 }
 
@@ -587,16 +744,29 @@ void AdBlockWindow::StartUnblock() {
     });
 }
 
-void AdBlockWindow::CompleteScan(ScanResult scan) {
+void AdBlockWindow::CompleteScan(AdBlockScanResult scan) {
     busy_ = false;
-    scanItems_ = std::move(scan.items);
+    scanRunning_ = false;
+    scanItems_ = std::move(scan.scan.items);
     RebuildScanRows();
     const int blockable = static_cast<int>(std::count_if(scanItems_.begin(), scanItems_.end(),
         [](const StartupItem& item) { return item.canDisable; }));
-    std::wstring status = L"共 " + std::to_wstring(scanItems_.size()) + L" 个可启动文件，其中 " +
-        std::to_wstring(blockable) + L" 个可拦截。";
-    if (!scan.warnings.empty()) {
-        for (const auto& warning : scan.warnings) AppendAppLaunchLockerLog(L"广告拦截扫描警告：" + warning);
+    std::wstring status;
+    if (!scan.error.empty()) {
+        status = scan.error;
+    } else if (scan.cancelled) {
+        status = L"检查已停止：已检查 " + std::to_wstring(scan.checkedCandidates) + L" / " +
+            std::to_wstring(scan.totalCandidates) + L" 个候选，当前发现 " +
+            std::to_wstring(scanItems_.size()) + L" 个可启动文件，结果可能不完整。";
+    } else {
+        status = L"检查完成：枚举 " + std::to_wstring(scan.enumeratedFiles) + L" 个文件，发现 " +
+            std::to_wstring(scanItems_.size()) + L" 个可启动文件，其中 " +
+            std::to_wstring(blockable) + L" 个可拦截";
+        if (scan.workerCount > 0) status += L"，使用 " + std::to_wstring(scan.workerCount) + L" 个工作线程";
+        status += L"。";
+    }
+    if (!scan.scan.warnings.empty()) {
+        for (const auto& warning : scan.scan.warnings) AppendAppLaunchLockerLog(L"广告拦截扫描警告：" + warning);
         status += L" 部分项目未能读取。";
     }
     ThemedUi::SetText(statusText_, status);
@@ -689,7 +859,13 @@ void AdBlockWindow::UpdateButtons() {
     ThemedUi::SetVisible(blockButton_, blockTab);
     ThemedUi::SetVisible(unblockButton_, !blockTab);
     ui.SetEnabled(blockButton_, blockTab && !busy_);
-    ui.SetEnabled(clearButton_, blockTab && !busy_ && !scanItems_.empty());
+    ui.SetEnabled(clearButton_, blockTab && !busy_ && (!scanItems_.empty() || !Trim(GetText(pathEdit_)).empty()));
+    ui.SetEnabled(pickPathSplit_.primary, blockTab && !busy_);
+    ui.SetEnabled(pickPathSplit_.menu, blockTab && !busy_);
+    windowUi_->SetEditReadOnly(pathEdit_, busy_);
+    ui.SetEnabled(checkButton_, blockTab && (!busy_ || scanRunning_));
+    ThemedUi::SetText(checkButton_, scanRunning_ ? L"查看进度" : L"检查");
+    ThemedUi::SetTabEnabled(tabControl_, 1, !scanRunning_);
     const int selected = ThemedUi::TableSelectedIndex(blockedTable_);
     ui.SetEnabled(unblockButton_, !blockTab && !busy_ && storeAvailable_ &&
         selected >= 0 && static_cast<std::size_t>(selected) < blocked_.size());

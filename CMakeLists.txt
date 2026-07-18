@@ -259,6 +259,7 @@ add_library(QuattroThemedUi STATIC
     src/theme/ThemedGdiFallback.cpp
     src/theme/ThemedControls.cpp
     src/theme/ThemedMessageBox.cpp
+    src/theme/ThemedTaskProgressDialog.cpp
     src/theme/ThemedUi.cpp
     src/theme/ThemedWindowUi.cpp
     src/common/Utilities.cpp

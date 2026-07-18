@@ -9,6 +9,7 @@
 #include "SimpleDialogs.h"
 #include "FileLockQueryService.h"
 #include "ThemedControls.h"
+#include "ThemedTaskProgressDialog.h"
 #include "ThemedUi.h"
 #include "ThemedWindowUi.h"
 #include "Utilities.h"
@@ -2734,256 +2735,86 @@ FileLockQueryOptions BackgroundFileLockQueryOptions() {
     return options;
 }
 
-class FileLockProgressDialog final {
-public:
-    FileLockProgressDialog(
-        HWND owner,
-        HINSTANCE instance,
-        const Theme& theme,
-        std::shared_ptr<FileLockScanState> state)
-        : owner_(owner), instance_(instance), theme_(theme), state_(std::move(state)) {}
-
-    ~FileLockProgressDialog() {
-        Close();
+ThemedTaskProgressSnapshot FileLockTaskProgressSnapshot(const std::shared_ptr<FileLockScanState>& state) {
+    ThemedTaskProgressSnapshot output;
+    if (!state) {
+        output.status = L"检查失败";
+        output.detail = L"检查状态不可用。";
+        output.role = ThemedStatusRole::Danger;
+        output.finished = true;
+        output.indeterminate = false;
+        return output;
     }
-
-    bool Show() {
-        if (IsWindow(hwnd_)) {
-            ShowWindowRespectFocusPolicy(hwnd_, SW_SHOWNORMAL);
-            ActivateWindow(hwnd_);
-            return true;
-        }
-
-        const std::wstring className = L"QuattroFileLockProgress_" +
-            std::to_wstring(GetCurrentProcessId()) + L"_" + std::to_wstring(GetTickCount64());
-        HICON icon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_QUATTRO_APP_ICON));
-        ThemedWindowCreateOptions options = ThemedWindowUi::DialogOptions(
-            instance_, owner_, className.c_str(), kFileLockProgressWindowTitle,
-            FileLockProgressDialog::Proc, this, icon, icon);
-        options.clientWidth = kClientWidth;
-        options.clientHeight = kClientHeight;
-        std::wstring error;
-        hwnd_ = ThemedWindowUi::CreateWindowHandle(options, &error);
-        if (!hwnd_) {
-            WriteAppLog(L"文件占用检查进度窗口创建失败: " + error);
-            return false;
-        }
-        ShowWindowRespectFocusPolicy(hwnd_, SW_SHOWNORMAL);
-        UpdateWindow(hwnd_);
-        return true;
+    const FileLockScanState::Snapshot snapshot = state->ReadSnapshot();
+    output.finished = snapshot.finished;
+    output.stopRequested = snapshot.stopRequested;
+    if (snapshot.finished && !snapshot.error.empty()) {
+        output.status = L"检查失败";
+        output.detail = snapshot.error;
+        output.role = ThemedStatusRole::Danger;
+        output.indeterminate = false;
+        return output;
     }
-
-    void Close() {
-        if (IsWindow(hwnd_)) {
-            DestroyWindow(hwnd_);
+    switch (snapshot.progress.phase) {
+    case FileLockQueryPhase::Validating:
+        output.status = snapshot.stopRequested ? L"正在停止检查…" : L"正在准备检查…";
+        output.detail = L"正在读取路径信息。";
+        output.role = snapshot.stopRequested ? ThemedStatusRole::Warning : ThemedStatusRole::Info;
+        output.indeterminate = true;
+        break;
+    case FileLockQueryPhase::Enumerating:
+        output.status = snapshot.stopRequested ? L"正在停止检查…" : L"正在统计目录内容…";
+        output.detail = L"已发现 " + std::to_wstring(snapshot.progress.discoveredPaths) + L" 个路径。";
+        output.role = snapshot.stopRequested ? ThemedStatusRole::Warning : ThemedStatusRole::Info;
+        output.indeterminate = true;
+        break;
+    case FileLockQueryPhase::Querying:
+        output.status = snapshot.stopRequested ? L"正在停止检查…" : L"正在并行检查目录占用…";
+        output.detail = L"已检查 " + std::to_wstring(snapshot.progress.checkedPaths) + L" / " +
+            std::to_wstring(snapshot.progress.totalPaths) + L" 个路径，" +
+            std::to_wstring(snapshot.progress.workerCount) + L" 个工作线程。";
+        output.role = snapshot.stopRequested ? ThemedStatusRole::Warning : ThemedStatusRole::Info;
+        output.indeterminate = false;
+        output.value = snapshot.progress.totalPaths == 0 ? 0.0
+            : static_cast<double>(snapshot.progress.checkedPaths) /
+                static_cast<double>(snapshot.progress.totalPaths);
+        break;
+    case FileLockQueryPhase::ScanningHandles:
+        output.status = snapshot.stopRequested ? L"正在停止检查…" : L"正在检查目录句柄…";
+        output.detail = L"已检查 " + std::to_wstring(snapshot.progress.checkedProcesses) + L" / " +
+            std::to_wstring(snapshot.progress.totalProcesses) + L" 个进程";
+        if (snapshot.progress.inaccessibleProcesses > 0) {
+            output.detail += L"，" + std::to_wstring(snapshot.progress.inaccessibleProcesses) +
+                L" 个高权限进程无法访问";
         }
-        hwnd_ = nullptr;
+        output.detail += L"。";
+        output.role = snapshot.stopRequested ? ThemedStatusRole::Warning : ThemedStatusRole::Info;
+        output.indeterminate = false;
+        output.value = snapshot.progress.totalProcesses == 0 ? 1.0
+            : static_cast<double>(snapshot.progress.checkedProcesses) /
+                static_cast<double>(snapshot.progress.totalProcesses);
+        break;
+    case FileLockQueryPhase::Completed:
+        output.status = L"检查完成";
+        output.detail = L"已检查 " + std::to_wstring(snapshot.progress.checkedPaths) + L" 个路径、" +
+            std::to_wstring(snapshot.progress.checkedProcesses) + L" 个进程。";
+        output.role = ThemedStatusRole::Success;
+        output.indeterminate = false;
+        output.value = 1.0;
+        break;
+    case FileLockQueryPhase::Cancelled:
+        output.status = L"检查已停止";
+        output.detail = L"已检查 " + std::to_wstring(snapshot.progress.checkedPaths) + L" / " +
+            std::to_wstring(snapshot.progress.totalPaths) + L" 个路径。";
+        output.role = ThemedStatusRole::Warning;
+        output.indeterminate = false;
+        output.value = snapshot.progress.totalPaths == 0 ? 0.0
+            : static_cast<double>(snapshot.progress.checkedPaths) /
+                static_cast<double>(snapshot.progress.totalPaths);
+        break;
     }
-
-private:
-    static constexpr int kClientWidth = 420;
-    static constexpr int kClientHeight = 164;
-    static constexpr UINT_PTR kRefreshTimer = 1;
-
-    static LRESULT CALLBACK Proc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
-        FileLockProgressDialog* dialog = nullptr;
-        if (message == WM_NCCREATE) {
-            auto* create = reinterpret_cast<CREATESTRUCTW*>(lParam);
-            dialog = static_cast<FileLockProgressDialog*>(create->lpCreateParams);
-            SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(dialog));
-            dialog->hwnd_ = hwnd;
-        } else {
-            dialog = reinterpret_cast<FileLockProgressDialog*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
-        }
-        return dialog ? dialog->Handle(message, wParam, lParam) : DefWindowProcW(hwnd, message, wParam, lParam);
-    }
-
-    LRESULT Handle(UINT message, WPARAM wParam, LPARAM lParam) {
-        LRESULT commonResult = 0;
-        if (ThemedWindowUi::HandleCommonMessage(windowUi_, message, wParam, lParam, commonResult)) {
-            if (message == WM_DESTROY) {
-                KillTimer(hwnd_, kRefreshTimer);
-                hwnd_ = nullptr;
-            }
-            return commonResult;
-        }
-        switch (message) {
-        case WM_CREATE:
-            windowUi_ = std::make_unique<ThemedWindowUi>(
-                instance_, owner_, hwnd_, theme_, DialogLayoutKind::Compact, kClientWidth, kClientHeight);
-            CreateControls();
-            SetTimer(hwnd_, kRefreshTimer, 80, nullptr);
-            Refresh();
-            return 0;
-        case WM_TIMER:
-            if (wParam == kRefreshTimer) {
-                Refresh();
-                return 0;
-            }
-            break;
-        case WM_COMMAND:
-            if (LOWORD(wParam) == ID_FILE_LOCK_PROGRESS_STOP) {
-                state_->cancelRequested.store(true);
-                Refresh();
-                return 0;
-            }
-            if (LOWORD(wParam) == ID_FILE_LOCK_PROGRESS_CLOSE || LOWORD(wParam) == IDCANCEL) {
-                DestroyWindow(hwnd_);
-                return 0;
-            }
-            break;
-        case WM_PAINT: {
-            PAINTSTRUCT paint{};
-            HDC dc = BeginPaint(hwnd_, &paint);
-            windowUi_->FillBackground(dc);
-            EndPaint(hwnd_, &paint);
-            return 0;
-        }
-        case WM_CLOSE:
-            DestroyWindow(hwnd_);
-            return 0;
-        case WM_DESTROY:
-            KillTimer(hwnd_, kRefreshTimer);
-            hwnd_ = nullptr;
-            return 0;
-        default:
-            break;
-        }
-        return DefWindowProcW(hwnd_, message, wParam, lParam);
-    }
-
-    void CreateControls() {
-        const ThemedUi ui = windowUi_->ui();
-        // A progress dialog can be closed and reopened for the same scan.
-        // New controls start enabled, so reset the cached state before the
-        // first Refresh() applies the current snapshot.
-        stopEnabled_ = true;
-        const DialogLayoutMetrics& layout = ui.layout();
-        const int left = ui.contentLeft();
-        int y = layout.contentInsetY;
-        ThemedStatusTextOptions statusOptions{};
-        statusOptions.role = ThemedStatusRole::Info;
-        statusOptions.align = ThemedTextAlign::Center;
-        status_ = ui.StatusText(L"正在准备检查…", left, y, ui.contentWidth(), statusOptions);
-        y = ui.nextRowY(y, ui.labelHeight());
-        detail_ = ui.Label(L"正在读取路径信息。", left, y, ui.contentWidth());
-        y += ui.labelHeight() + layout.sectionGap;
-        progress_ = ui.ProgressBar(
-            ID_FILE_LOCK_PROGRESS_BAR,
-            left,
-            y,
-            ui.contentWidth(),
-            ThemedProgressBarOptions{0.0, true, true});
-        stop_ = ui.FooterButton(ID_FILE_LOCK_PROGRESS_STOP, L"停止", 0, 2, false, false);
-        close_ = ui.FooterButton(ID_FILE_LOCK_PROGRESS_CLOSE, L"关闭", 1, 2, true, true);
-    }
-
-    void Refresh() {
-        if (!windowUi_ || !state_) {
-            return;
-        }
-        const FileLockScanState::Snapshot snapshot = state_->ReadSnapshot();
-        const ThemedUi ui = windowUi_->ui();
-        std::wstring status;
-        std::wstring detail;
-        ThemedStatusRole role = ThemedStatusRole::Info;
-        bool indeterminate = false;
-        double value = 0.0;
-
-        if (snapshot.finished && !snapshot.error.empty()) {
-            status = L"检查失败";
-            detail = snapshot.error;
-            role = ThemedStatusRole::Danger;
-        } else {
-            switch (snapshot.progress.phase) {
-            case FileLockQueryPhase::Validating:
-                status = snapshot.stopRequested ? L"正在停止检查…" : L"正在准备检查…";
-                detail = L"正在读取路径信息。";
-                role = snapshot.stopRequested ? ThemedStatusRole::Warning : ThemedStatusRole::Info;
-                indeterminate = true;
-                break;
-            case FileLockQueryPhase::Enumerating:
-                status = snapshot.stopRequested ? L"正在停止检查…" : L"正在统计目录内容…";
-                detail = L"已发现 " + std::to_wstring(snapshot.progress.discoveredPaths) + L" 个路径。";
-                role = snapshot.stopRequested ? ThemedStatusRole::Warning : ThemedStatusRole::Info;
-                indeterminate = true;
-                break;
-            case FileLockQueryPhase::Querying:
-                status = snapshot.stopRequested ? L"正在停止检查…" : L"正在并行检查目录占用…";
-                detail = L"已检查 " + std::to_wstring(snapshot.progress.checkedPaths) + L" / " +
-                    std::to_wstring(snapshot.progress.totalPaths) + L" 个路径，" +
-                    std::to_wstring(snapshot.progress.workerCount) + L" 个工作线程。";
-                role = snapshot.stopRequested ? ThemedStatusRole::Warning : ThemedStatusRole::Info;
-                value = snapshot.progress.totalPaths == 0
-                    ? 0.0
-                    : static_cast<double>(snapshot.progress.checkedPaths) /
-                        static_cast<double>(snapshot.progress.totalPaths);
-                break;
-            case FileLockQueryPhase::ScanningHandles:
-                status = snapshot.stopRequested ? L"正在停止检查…" : L"正在检查目录句柄…";
-                detail = L"已检查 " + std::to_wstring(snapshot.progress.checkedProcesses) + L" / " +
-                    std::to_wstring(snapshot.progress.totalProcesses) + L" 个进程";
-                if (snapshot.progress.inaccessibleProcesses > 0) {
-                    detail += L"，" + std::to_wstring(snapshot.progress.inaccessibleProcesses) +
-                        L" 个高权限进程无法访问";
-                }
-                detail += L"。";
-                role = snapshot.stopRequested ? ThemedStatusRole::Warning : ThemedStatusRole::Info;
-                value = snapshot.progress.totalProcesses == 0
-                    ? 1.0
-                    : static_cast<double>(snapshot.progress.checkedProcesses) /
-                        static_cast<double>(snapshot.progress.totalProcesses);
-                break;
-            case FileLockQueryPhase::Completed:
-                status = L"检查完成";
-                detail = L"已检查 " + std::to_wstring(snapshot.progress.checkedPaths) + L" 个路径、" +
-                    std::to_wstring(snapshot.progress.checkedProcesses) + L" 个进程。";
-                role = ThemedStatusRole::Success;
-                value = 1.0;
-                break;
-            case FileLockQueryPhase::Cancelled:
-                status = L"检查已停止";
-                detail = L"已检查 " + std::to_wstring(snapshot.progress.checkedPaths) + L" / " +
-                    std::to_wstring(snapshot.progress.totalPaths) + L" 个路径。";
-                role = ThemedStatusRole::Warning;
-                value = snapshot.progress.totalPaths == 0
-                    ? 0.0
-                    : static_cast<double>(snapshot.progress.checkedPaths) /
-                        static_cast<double>(snapshot.progress.totalPaths);
-                break;
-            }
-        }
-
-        ui.SetStatusTextRole(status_, role);
-        ThemedUi::SetText(status_, status);
-        ThemedUi::SetText(detail_, detail);
-        ThemedUi::SetProgress(progress_, value, indeterminate);
-        const bool stopEnabled = !snapshot.finished && !snapshot.stopRequested;
-        // Refresh runs on a short timer. Avoid re-disabling/repainting the
-        // button on every tick after a stop request; doing so repeatedly
-        // invalidates the owner-draw button and makes its disabled state flash.
-        if (stopEnabled_ != stopEnabled) {
-            stopEnabled_ = stopEnabled;
-            if (!stopEnabled && GetFocus() == stop_) {
-                SetFocus(close_);
-            }
-            ui.SetEnabled(stop_, stopEnabled);
-        }
-    }
-
-    HWND owner_ = nullptr;
-    HINSTANCE instance_ = nullptr;
-    const Theme& theme_;
-    std::shared_ptr<FileLockScanState> state_;
-    HWND hwnd_ = nullptr;
-    HWND status_ = nullptr;
-    HWND detail_ = nullptr;
-    HWND progress_ = nullptr;
-    HWND stop_ = nullptr;
-    HWND close_ = nullptr;
-    bool stopEnabled_ = true;
-    std::unique_ptr<ThemedWindowUi> windowUi_;
-};
+    return output;
+}
 
 class ProcessToolsDialog final {
 public:
@@ -3992,8 +3823,24 @@ private:
         UpdateFileKillAllButton();
         SetStatus(fileStatus_, L"正在后台检查目录占用…", ThemedStatusRole::Info);
         fileLockScanState_ = std::make_shared<FileLockScanState>();
-        fileLockProgressDialog_ = std::make_unique<FileLockProgressDialog>(
-            hwnd_, instance_, theme_, fileLockScanState_);
+        ThemedTaskProgressDialogOptions progressOptions{};
+        progressOptions.owner = hwnd_;
+        progressOptions.instance = instance_;
+        progressOptions.theme = theme_;
+        progressOptions.icon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_QUATTRO_APP_ICON));
+        progressOptions.className = L"QuattroFileLockProgress_" +
+            std::to_wstring(GetCurrentProcessId()) + L"_" + std::to_wstring(GetTickCount64());
+        progressOptions.title = kFileLockProgressWindowTitle;
+        progressOptions.progressBarId = ID_FILE_LOCK_PROGRESS_BAR;
+        progressOptions.stopButtonId = ID_FILE_LOCK_PROGRESS_STOP;
+        progressOptions.closeButtonId = ID_FILE_LOCK_PROGRESS_CLOSE;
+        progressOptions.readSnapshot = [state = fileLockScanState_]() {
+            return FileLockTaskProgressSnapshot(state);
+        };
+        progressOptions.requestStop = [state = fileLockScanState_]() {
+            state->cancelRequested.store(true);
+        };
+        fileLockProgressDialog_ = std::make_unique<ThemedTaskProgressDialog>(std::move(progressOptions));
         fileLockProgressDialog_->Show();
 
         const std::shared_ptr<FileLockScanState> state = fileLockScanState_;
@@ -4133,7 +3980,7 @@ private:
     std::set<DWORD> fileTerminatedPids_;
     std::set<DWORD> fileProtectedPids_;
     std::shared_ptr<FileLockScanState> fileLockScanState_;
-    std::unique_ptr<FileLockProgressDialog> fileLockProgressDialog_;
+    std::unique_ptr<ThemedTaskProgressDialog> fileLockProgressDialog_;
     std::thread fileLockThread_;
 };
 }

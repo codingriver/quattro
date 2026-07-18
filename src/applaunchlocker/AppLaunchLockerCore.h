@@ -1,6 +1,9 @@
 #pragma once
 
+#include <chrono>
+#include <cstddef>
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <string>
 #include <vector>
@@ -50,6 +53,49 @@ struct ScanResult {
     std::vector<std::wstring> warnings;
 };
 
+enum class AdBlockScanPhase {
+    Validating,
+    Enumerating,
+    IndexingStartup,
+    Analyzing,
+    Completed,
+    Cancelled,
+};
+
+struct AdBlockScanProgress {
+    AdBlockScanPhase phase = AdBlockScanPhase::Validating;
+    std::size_t enumeratedFiles = 0;
+    std::size_t discoveredCandidates = 0;
+    std::size_t checkedCandidates = 0;
+    std::size_t totalCandidates = 0;
+    std::size_t autoStartMatches = 0;
+    std::size_t inaccessibleDirectories = 0;
+    std::size_t workerCount = 0;
+};
+
+struct AdBlockScanResult {
+    ScanResult scan;
+    std::size_t enumeratedFiles = 0;
+    std::size_t checkedCandidates = 0;
+    std::size_t totalCandidates = 0;
+    std::size_t autoStartMatches = 0;
+    std::size_t inaccessibleDirectories = 0;
+    std::size_t workerCount = 0;
+    bool directory = false;
+    bool cancelled = false;
+    std::wstring error;
+};
+
+struct AdBlockScanOptions {
+    std::size_t batchSize = 16;
+    std::size_t maxWorkers = 4;
+    // Acceptance tests may use this to keep the progress window observable.
+    std::chrono::milliseconds batchDelay{0};
+};
+
+using AdBlockCancelCheck = std::function<bool()>;
+using AdBlockProgressCallback = std::function<void(const AdBlockScanProgress&)>;
+
 struct OperationResult {
     bool success = false;
     std::wstring message;
@@ -96,8 +142,14 @@ public:
     AdBlockManager();
     explicit AdBlockManager(DisabledItemStore store);
 
-    // 扫描给定文件或文件夹下的可启动文件（不递归子目录）；每项 canDisable 已由守卫判定。
+    // 兼容入口；目录扫描会递归所有子目录。
     ScanResult ScanPath(const std::wstring& fileOrDir) const;
+    // 带进度、取消和并行处理的详细扫描入口；GUI、CLI 和测试应优先复用此接口。
+    AdBlockScanResult ScanPathDetailed(
+        const std::wstring& fileOrDir,
+        const AdBlockCancelCheck& shouldCancel = {},
+        const AdBlockProgressCallback& reportProgress = {},
+        AdBlockScanOptions options = {}) const;
     // mode = L"exact"（精确路径）| L"name"（同名程序）| L"startup"（仅禁自启，系统开关）。
     OperationResult Block(const std::wstring& targetPath, const std::wstring& mode) const;
     OperationResult Unblock(const std::wstring& recordId) const;
