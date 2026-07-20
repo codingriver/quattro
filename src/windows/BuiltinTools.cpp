@@ -38,6 +38,7 @@
 #include <set>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 namespace {
@@ -109,12 +110,14 @@ constexpr UINT WM_QUATTRO_TOOL_TIMER_AUTOMATION = WM_APP + 0x81;
 constexpr UINT WM_QUATTRO_PROCESS_TOOLS_ACTIVATE = WM_APP + 0x82;
 constexpr UINT WM_QUATTRO_FILE_LOCK_COMPLETE = WM_APP + 0x83;
 constexpr UINT WM_QUATTRO_CLOCK_ACTIVATE = WM_APP + 0x84;
+constexpr UINT WM_QUATTRO_TOOL_ACTIVATE = WM_APP + 0x85;
 constexpr wchar_t kProcessToolsWindowClass[] = L"QuattroProcessTools";
 constexpr wchar_t kClockWindowClass[] = L"QuattroClockTool";
 constexpr wchar_t kFileLockProgressWindowTitle[] = L"文件占用检查进度";
 constexpr UINT kTimerDisplayIntervalMs = 33;
 std::atomic<HWND> gProcessToolsWindow{nullptr};
 std::atomic<HWND> gClockWindow{nullptr};
+std::unordered_map<std::wstring, HWND> gBuiltinToolWindows;
 #ifndef AF_INET6
 constexpr ULONG AF_INET6 = 23;
 #endif
@@ -138,6 +141,48 @@ std::wstring GetText(HWND hwnd) {
     }
     text.resize(static_cast<std::size_t>(length));
     return text;
+}
+
+std::filesystem::path ToolWindowStatePath() {
+    return QuattroUserConfigDirectory() / L"tool-window-state.ini";
+}
+
+std::optional<POINT> LoadToolWindowPosition(const std::wstring& toolId, int width, int height) {
+    const std::filesystem::path path = ToolWindowStatePath();
+    if (!FileExists(path)) {
+        return std::nullopt;
+    }
+    wchar_t xBuffer[32]{};
+    wchar_t yBuffer[32]{};
+    GetPrivateProfileStringW(toolId.c_str(), L"x", L"", xBuffer, _countof(xBuffer), path.c_str());
+    GetPrivateProfileStringW(toolId.c_str(), L"y", L"", yBuffer, _countof(yBuffer), path.c_str());
+    const std::optional<int> x = ParseInt(xBuffer);
+    const std::optional<int> y = ParseInt(yBuffer);
+    if (!x || !y) {
+        return std::nullopt;
+    }
+    return ThemedWindowUi::RestoredWindowPosition(*x, *y, width, height);
+}
+
+void SaveToolWindowPosition(const std::wstring& toolId, HWND hwnd) {
+    if (toolId.empty() || !hwnd || !IsWindow(hwnd) || IsIconic(hwnd)) {
+        return;
+    }
+    RECT rect{};
+    if (!GetWindowRect(hwnd, &rect)) {
+        return;
+    }
+    const std::filesystem::path path = ToolWindowStatePath();
+    std::error_code ec;
+    std::filesystem::create_directories(path.parent_path(), ec);
+    WritePrivateProfileStringW(toolId.c_str(), L"version", L"1", path.c_str());
+    WritePrivateProfileStringW(toolId.c_str(), L"x", std::to_wstring(rect.left).c_str(), path.c_str());
+    WritePrivateProfileStringW(toolId.c_str(), L"y", std::to_wstring(rect.top).c_str(), path.c_str());
+    WritePrivateProfileStringW(toolId.c_str(), L"dpi", std::to_wstring(GetDpiForWindow(hwnd)).c_str(), path.c_str());
+}
+
+bool IsRegisteredBuiltinToolWindow(HWND root, const MSG& message) {
+    return root && IsWindow(root) && (message.hwnd == root || IsChild(root, message.hwnd));
 }
 
 int ReadIntField(HWND hwnd, int fallback, int minValue, int maxValue) {
@@ -749,10 +794,41 @@ std::wstring OpenProcessLocation(const std::wstring& path) {
 
 class ToolDialogBase {
 public:
-    ToolDialogBase(HWND owner, HINSTANCE instance, const Theme& theme, PluginRegistry& registry, std::wstring title, int width, int height)
-        : owner_(owner), instance_(instance), theme_(theme), registry_(registry), title_(std::move(title)), width_(width), height_(height) {}
+    ToolDialogBase(
+        HWND owner,
+        HINSTANCE instance,
+        const Theme& theme,
+        PluginRegistry& registry,
+        std::wstring toolId,
+        std::wstring title,
+        int width,
+        int height)
+        : owner_(owner),
+          instance_(instance),
+          theme_(theme),
+          registry_(registry),
+          toolId_(std::move(toolId)),
+          title_(std::move(title)),
+          width_(width),
+          height_(height) {}
+
+    virtual ~ToolDialogBase() = default;
+
+    bool PreTranslate(const MSG& message) {
+        return IsToolKeyMessage(message) && OnShortcutKey(message);
+    }
 
     bool Run() {
+        const auto existingIt = gBuiltinToolWindows.find(toolId_);
+        if (existingIt != gBuiltinToolWindows.end()) {
+            const HWND existing = existingIt->second;
+            if (IsWindow(existing)) {
+                PostMessageW(existing, WM_QUATTRO_TOOL_ACTIVATE, 0, 0);
+                return true;
+            }
+            gBuiltinToolWindows.erase(existingIt);
+        }
+
         const std::wstring className = L"QuattroBuiltinTool_" +
             std::to_wstring(GetCurrentProcessId()) + L"_" + std::to_wstring(GetTickCount64());
         auto options = ThemedWindowUi::DialogOptions(
@@ -776,18 +852,10 @@ public:
             return false;
         }
 
-        windowUi_->ShowModal();
+        gBuiltinToolWindows[toolId_] = hwnd_;
+        deleteOnDestroy_ = true;
+        windowUi_->ShowModeless();
         RedrawWindow(hwnd_, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
-        MSG message{};
-        while (!done_ && GetMessageW(&message, nullptr, 0, 0) > 0) {
-            if (IsToolKeyMessage(message) && OnShortcutKey(message)) {
-                continue;
-            }
-            if (!ThemedUi::PreTranslateMessage(message) && !IsDialogMessageW(hwnd_, &message)) {
-                TranslateMessage(&message);
-                DispatchMessageW(&message);
-            }
-        }
         return true;
     }
 
@@ -802,7 +870,17 @@ protected:
         } else {
             dialog = reinterpret_cast<ToolDialogBase*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
         }
-        return dialog ? dialog->Handle(message, wParam, lParam) : DefWindowProcW(hwnd, message, wParam, lParam);
+        if (!dialog) {
+            return DefWindowProcW(hwnd, message, wParam, lParam);
+        }
+        const LRESULT result = dialog->Handle(message, wParam, lParam);
+        if (message == WM_NCDESTROY) {
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+            if (dialog->deleteOnDestroy_) {
+                delete dialog;
+            }
+        }
+        return result;
     }
 
     LRESULT Handle(UINT message, WPARAM wParam, LPARAM lParam) {
@@ -812,7 +890,12 @@ protected:
                 OnDpiChanged();
             }
             if (message == WM_DESTROY) {
+                SaveToolWindowPosition(toolId_, hwnd_);
                 OnDestroy();
+                auto it = gBuiltinToolWindows.find(toolId_);
+                if (it != gBuiltinToolWindows.end() && it->second == hwnd_) {
+                    gBuiltinToolWindows.erase(it);
+                }
                 done_ = true;
             }
             return commonResult;
@@ -823,6 +906,7 @@ protected:
             windowUi_ = std::make_unique<ThemedWindowUi>(
                 instance_, owner_, hwnd_, theme_, DialogLayoutKind::Compact, width_, height_);
             OnCreate();
+            RestoreWindowPosition();
             return 0;
         case WM_COMMAND:
             if (OnCommand(LOWORD(wParam), HIWORD(wParam))) {
@@ -841,6 +925,11 @@ protected:
         case WM_QUATTRO_TOOL_TIMER_AUTOMATION:
             if (OnAutomationTimer(static_cast<UINT_PTR>(wParam))) {
                 return 1;
+            }
+            return 0;
+        case WM_QUATTRO_TOOL_ACTIVATE:
+            if (windowUi_) {
+                windowUi_->ShowModeless();
             }
             return 0;
         case WM_TIMER:
@@ -919,6 +1008,30 @@ protected:
         windowUi_->ui().ShowToast(text, options);
     }
 
+    void RestoreWindowPosition() {
+        if (!hwnd_) {
+            return;
+        }
+        RECT rect{};
+        if (!GetWindowRect(hwnd_, &rect)) {
+            return;
+        }
+        const int width = rect.right - rect.left;
+        const int height = rect.bottom - rect.top;
+        const std::optional<POINT> restored = LoadToolWindowPosition(toolId_, width, height);
+        if (!restored) {
+            return;
+        }
+        SetWindowPos(
+            hwnd_,
+            nullptr,
+            restored->x,
+            restored->y,
+            0,
+            0,
+            SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+    }
+
     HWND CreateEdit(int id, int x, int y, int width, const std::wstring& value, DWORD extraStyle = ES_AUTOHSCROLL) {
         ThemedEditOptions options{};
         options.content = (extraStyle & ES_NUMBER) != 0 ? ThemedEditContent::Integer : ThemedEditContent::Text;
@@ -944,17 +1057,19 @@ protected:
     const Theme& theme_;
     PluginRegistry& registry_;
     HWND hwnd_ = nullptr;
+    std::wstring toolId_;
     std::wstring title_;
     int width_ = 0;
     int height_ = 0;
     std::unique_ptr<ThemedWindowUi> windowUi_;
     bool done_ = false;
+    bool deleteOnDestroy_ = false;
 };
 
 class ClickerDialog final : public ToolDialogBase {
 public:
     ClickerDialog(HWND owner, HINSTANCE instance, const Theme& theme, PluginRegistry& registry)
-        : ToolDialogBase(owner, instance, theme, registry, L"连点器", 390, 246) {}
+        : ToolDialogBase(owner, instance, theme, registry, L"quattro.builtin.clicker", L"连点器", 390, 246) {}
 
 private:
     void OnCreate() override {
@@ -1304,8 +1419,16 @@ private:
 
 class ProcessRowsDialogBase : public ToolDialogBase {
 public:
-    ProcessRowsDialogBase(HWND owner, HINSTANCE instance, const Theme& theme, PluginRegistry& registry, std::wstring title, int width, int height)
-        : ToolDialogBase(owner, instance, theme, registry, std::move(title), width, height) {}
+    ProcessRowsDialogBase(
+        HWND owner,
+        HINSTANCE instance,
+        const Theme& theme,
+        PluginRegistry& registry,
+        std::wstring toolId,
+        std::wstring title,
+        int width,
+        int height)
+        : ToolDialogBase(owner, instance, theme, registry, std::move(toolId), std::move(title), width, height) {}
 
 protected:
     void RebuildRowButtons(int baseId) {
@@ -1381,7 +1504,7 @@ protected:
 class PortInspectorDialog final : public ProcessRowsDialogBase {
 public:
     PortInspectorDialog(HWND owner, HINSTANCE instance, const Theme& theme, PluginRegistry& registry)
-        : ProcessRowsDialogBase(owner, instance, theme, registry, L"端口占用检查", 620, 380) {}
+        : ProcessRowsDialogBase(owner, instance, theme, registry, L"quattro.builtin.port-inspector", L"端口占用检查", 620, 380) {}
 
 private:
     void OnCreate() override {
@@ -1460,7 +1583,7 @@ private:
 class ProcessInspectorDialog final : public ProcessRowsDialogBase {
 public:
     ProcessInspectorDialog(HWND owner, HINSTANCE instance, const Theme& theme, PluginRegistry& registry)
-        : ProcessRowsDialogBase(owner, instance, theme, registry, L"进程ID查询", 560, 230) {}
+        : ProcessRowsDialogBase(owner, instance, theme, registry, L"quattro.builtin.process-inspector", L"进程ID查询", 560, 230) {}
 
 private:
     void OnCreate() override {
@@ -1870,6 +1993,7 @@ private:
             WriteAppLog(L"时钟窗口创建失败: " + error);
             return false;
         }
+        RestoreWindowPosition();
         gClockWindow.store(hwnd_);
         windowUi_->ShowModeless();
         return true;
@@ -1902,6 +2026,7 @@ private:
         LRESULT commonResult = 0;
         if (ThemedWindowUi::HandleCommonMessage(windowUi_, message, wParam, lParam, commonResult)) {
             if (message == WM_DESTROY) {
+                SaveToolWindowPosition(L"quattro.builtin.clock", hwnd_);
                 KillTimer(hwnd_, ID_CLOCK_REFRESH);
                 HWND expected = hwnd_;
                 gClockWindow.compare_exchange_strong(expected, nullptr);
@@ -2030,6 +2155,28 @@ private:
         UpdateDisplayAndSchedule();
     }
 
+    void RestoreWindowPosition() {
+        RECT rect{};
+        if (!hwnd_ || !GetWindowRect(hwnd_, &rect)) {
+            return;
+        }
+        const std::optional<POINT> restored = LoadToolWindowPosition(
+            L"quattro.builtin.clock",
+            rect.right - rect.left,
+            rect.bottom - rect.top);
+        if (!restored) {
+            return;
+        }
+        SetWindowPos(
+            hwnd_,
+            nullptr,
+            restored->x,
+            restored->y,
+            0,
+            0,
+            SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+    }
+
     HWND owner_ = nullptr;
     HINSTANCE instance_ = nullptr;
     const Theme& theme_;
@@ -2046,7 +2193,7 @@ private:
 class TimerDialog final : public ToolDialogBase {
 public:
     TimerDialog(HWND owner, HINSTANCE instance, const Theme& theme, PluginRegistry& registry)
-        : ToolDialogBase(owner, instance, theme, registry, L"计时器", 300, 206) {}
+        : ToolDialogBase(owner, instance, theme, registry, L"quattro.builtin.timer", L"计时器", 300, 206) {}
 
 private:
     void OnCreate() override {
@@ -2324,7 +2471,7 @@ private:
 class StopwatchDialog final : public ToolDialogBase {
 public:
     StopwatchDialog(HWND owner, HINSTANCE instance, const Theme& theme, PluginRegistry& registry)
-        : ToolDialogBase(owner, instance, theme, registry, L"秒表", 220, 310) {}
+        : ToolDialogBase(owner, instance, theme, registry, L"quattro.builtin.stopwatch", L"秒表", 220, 310) {}
 
 private:
     void OnCreate() override {
@@ -3109,16 +3256,11 @@ public:
             return false;
         }
         gProcessToolsWindow.store(hwnd_);
+        RestoreWindowPosition();
+        deleteOnDestroy_ = true;
 
-        windowUi_->ShowModal();
+        windowUi_->ShowModeless();
         UpdateWindow(hwnd_);
-        MSG message{};
-        while (!done_ && GetMessageW(&message, nullptr, 0, 0) > 0) {
-            if (!ThemedUi::PreTranslateMessage(message) && !IsDialogMessageW(hwnd_, &message)) {
-                TranslateMessage(&message);
-                DispatchMessageW(&message);
-            }
-        }
         return true;
     }
 
@@ -3137,13 +3279,24 @@ private:
         } else {
             dialog = reinterpret_cast<ProcessToolsDialog*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
         }
-        return dialog ? dialog->Handle(message, wParam, lParam) : DefWindowProcW(hwnd, message, wParam, lParam);
+        if (!dialog) {
+            return DefWindowProcW(hwnd, message, wParam, lParam);
+        }
+        const LRESULT result = dialog->Handle(message, wParam, lParam);
+        if (message == WM_NCDESTROY) {
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+            if (dialog->deleteOnDestroy_) {
+                delete dialog;
+            }
+        }
+        return result;
     }
 
     LRESULT Handle(UINT message, WPARAM wParam, LPARAM lParam) {
         LRESULT commonResult = 0;
         if (ThemedWindowUi::HandleCommonMessage(windowUi_, message, wParam, lParam, commonResult)) {
             if (message == WM_DESTROY) {
+                SaveToolWindowPosition(L"quattro.builtin.process-tools", hwnd_);
                 CancelFileLockQueryAndWait();
                 if (gProcessToolsWindow.load() == hwnd_) {
                     gProcessToolsWindow.store(nullptr);
@@ -3204,6 +3357,28 @@ private:
 
     ThemedUi Ui() const {
         return windowUi_->ui();
+    }
+
+    void RestoreWindowPosition() {
+        RECT rect{};
+        if (!hwnd_ || !GetWindowRect(hwnd_, &rect)) {
+            return;
+        }
+        const std::optional<POINT> restored = LoadToolWindowPosition(
+            L"quattro.builtin.process-tools",
+            rect.right - rect.left,
+            rect.bottom - rect.top);
+        if (!restored) {
+            return;
+        }
+        SetWindowPos(
+            hwnd_,
+            nullptr,
+            restored->x,
+            restored->y,
+            0,
+            0,
+            SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
     }
 
     void AddPageControl(Page page, HWND control) {
@@ -4195,6 +4370,7 @@ private:
     Page initialPage_ = Page::Locator;
     bool locateOnOpen_ = false;
     bool done_ = false;
+    bool deleteOnDestroy_ = false;
     int nextGeneratedControlId_ = 7780;
 
     HWND locatorHotKey_ = nullptr;
@@ -4228,11 +4404,34 @@ private:
 
 bool PreTranslateBuiltinToolMessage(const MSG& message) {
     HWND clock = gClockWindow.load();
-    if (!clock || !IsWindow(clock) || (message.hwnd != clock && !IsChild(clock, message.hwnd))) {
-        return false;
+    if (IsRegisteredBuiltinToolWindow(clock, message)) {
+        MSG translated = message;
+        return IsDialogMessageW(clock, &translated) != FALSE;
     }
-    MSG translated = message;
-    return IsDialogMessageW(clock, &translated) != FALSE;
+    HWND processTools = gProcessToolsWindow.load();
+    if (IsRegisteredBuiltinToolWindow(processTools, message)) {
+        MSG translated = message;
+        return IsDialogMessageW(processTools, &translated) != FALSE;
+    }
+    for (auto it = gBuiltinToolWindows.begin(); it != gBuiltinToolWindows.end();) {
+        HWND tool = it->second;
+        if (!IsWindow(tool)) {
+            it = gBuiltinToolWindows.erase(it);
+            continue;
+        }
+        if (IsRegisteredBuiltinToolWindow(tool, message)) {
+            if (message.message == WM_KEYDOWN || message.message == WM_SYSKEYDOWN) {
+                auto* dialog = reinterpret_cast<ToolDialogBase*>(GetWindowLongPtrW(tool, GWLP_USERDATA));
+                if (dialog && dialog->PreTranslate(message)) {
+                    return true;
+                }
+            }
+            MSG translated = message;
+            return IsDialogMessageW(tool, &translated) != FALSE;
+        }
+        ++it;
+    }
+    return false;
 }
 
 bool ShowBuiltinTool(
@@ -4244,19 +4443,31 @@ bool ShowBuiltinTool(
     const std::wstring& engine,
     bool locateProcessOnOpen) {
     if (engine == L"clicker") {
-        ClickerDialog dialog(owner, instance, theme, registry);
-        return dialog.Run();
+        auto dialog = std::make_unique<ClickerDialog>(owner, instance, theme, registry);
+        if (!dialog->Run()) {
+            return false;
+        }
+        dialog.release();
+        return true;
     }
     if (engine == L"clock") {
         return ClockWindow::Open(owner, instance, theme, registry);
     }
     if (engine == L"timer") {
-        TimerDialog dialog(owner, instance, theme, registry);
-        return dialog.Run();
+        auto dialog = std::make_unique<TimerDialog>(owner, instance, theme, registry);
+        if (!dialog->Run()) {
+            return false;
+        }
+        dialog.release();
+        return true;
     }
     if (engine == L"stopwatch") {
-        StopwatchDialog dialog(owner, instance, theme, registry);
-        return dialog.Run();
+        auto dialog = std::make_unique<StopwatchDialog>(owner, instance, theme, registry);
+        if (!dialog->Run()) {
+            return false;
+        }
+        dialog.release();
+        return true;
     }
     if (engine == L"process-tools" ||
         engine == L"port-inspector" ||
@@ -4276,8 +4487,12 @@ bool ShowBuiltinTool(
         } else if (engine == L"file-lock-inspector") {
             page = ProcessToolsDialog::Page::FileLock;
         }
-        ProcessToolsDialog dialog(owner, instance, theme, registry, config, page, locateProcessOnOpen);
-        return dialog.Run();
+        auto dialog = std::make_unique<ProcessToolsDialog>(owner, instance, theme, registry, config, page, locateProcessOnOpen);
+        if (!dialog->Run()) {
+            return false;
+        }
+        dialog.release();
+        return true;
     }
     ShowThemedMessageBox(owner, instance, theme, L"这个内置工具暂不可用。", L"工具箱", MB_OK | MB_ICONINFORMATION);
     return false;

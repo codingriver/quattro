@@ -4,6 +4,7 @@
 
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -76,6 +77,7 @@ public:
     static DWORD EffectiveExStyle(const ThemedWindowCreateOptions& options, bool backgroundMode);
     static int ScaleForDpi(int logicalPixels, UINT dpi, UINT logicalDpi = USER_DEFAULT_SCREEN_DPI);
     static POINT WindowPosition(const ThemedWindowCreateOptions& options, int windowWidth, int windowHeight);
+    static std::optional<POINT> RestoredWindowPosition(int x, int y, int windowWidth, int windowHeight);
     static ThemedWindowCreateOptions DialogOptions(
         HINSTANCE instance,
         HWND owner,

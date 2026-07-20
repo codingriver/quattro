@@ -270,6 +270,9 @@ private:
     void BeginDockAutoHidePause(bool restoreHidden);
     void EndDockAutoHidePause();
     bool DockAutoHidePaused() const;
+    bool IsAtDockTarget() const;
+    void RequestMainWindowHideAfterToolOpen();
+    void CancelPendingToolOpenHide();
     void UpdateDockState();
     bool DockHide(bool persistWindowState = true);
     void DockRestore();
@@ -541,6 +544,7 @@ private:
     HWND dockPeek_ = nullptr;
     UINT_PTR dockTimerId_ = 0;
     ULONGLONG dockHideDueTick_ = 0;
+    bool toolOpenHideTimerActive_ = false;
     int dockAutoHidePauseDepth_ = 0;
     int popupMenuDepth_ = 0;
     bool popupWakePending_ = false;

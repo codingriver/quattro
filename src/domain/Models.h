@@ -42,6 +42,7 @@ struct AppConfig {
 #endif
     bool hideAfterLink = true;
     bool hideWhenInactive = false;
+    bool hideMainAfterToolOpen = false;
 
     bool doubleClickToRun = false;
     bool deleteConfirm = true;

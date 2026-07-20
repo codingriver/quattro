@@ -94,6 +94,7 @@ constexpr int ID_LOGGING_ENABLED = 432;
 constexpr int ID_RESET_CONTEXT_MENU = 440;
 constexpr int ID_REFRESH_CONTEXT_MENU_FROM_NATIVE = 449;
 constexpr int ID_CONTEXT_MENU_TABLE = 447;
+constexpr int ID_HIDE_MAIN_AFTER_TOOL_OPEN = 451;
 constexpr int ID_MESSAGE_TEXT = 501;
 constexpr int ID_HOTKEY_CONFLICT_IGNORE = 502;
 constexpr int ID_MAIN_HOTKEY_PROBE = 0x5148;
@@ -2575,6 +2576,7 @@ private:
         case TabBehavior:
             value.autoDock = ThemedUi::IsChecked(autoDock_);
             value.hideWhenInactive = ThemedUi::IsChecked(hideInactive_);
+            value.hideMainAfterToolOpen = ThemedUi::IsChecked(hideMainAfterToolOpen_);
             value.hideAfterLink = ThemedUi::IsChecked(hideAfterLink_);
             value.hideOnStart = ThemedUi::IsChecked(hideOnStart_);
             value.hideNotifyIcon = false;
@@ -3607,7 +3609,7 @@ private:
             const ThemedSectionGeometry behaviorWindowSection = behaviorForm.section(
                 behaviorFrameLeft, behaviorWindowFrameTop, behaviorFrameWidth,
                 {behaviorForm.sectionRow({ThemedSectionItemKind::CheckBox, ThemedSectionItemKind::Label, ThemedSectionItemKind::Edit}),
-                 behaviorForm.sectionRow({ThemedSectionItemKind::CheckBox})});
+                 behaviorForm.sectionRow({ThemedSectionItemKind::CheckBox, ThemedSectionItemKind::CheckBox})});
             HWND behaviorWindowGroup = AddSectionFrame(TabBehavior, L"窗口行为", behaviorWindowSection.frame);
             const int behaviorWindowCheckY = behaviorForm.sectionItemY(behaviorWindowSection, 0, behaviorCheckHeight);
             const int behaviorWindowLabelY = behaviorForm.sectionItemY(behaviorWindowSection, 0, settingsUi.labelHeight());
@@ -3631,7 +3633,13 @@ private:
                 TabBehavior, 106, L"失焦隐藏", behaviorLeft,
                 behaviorForm.sectionItemY(behaviorWindowSection, 1, behaviorCheckHeight),
                 draft_.hideWhenInactive, behaviorCheckWidth);
-            ThemedUi::BindGroupChildren(behaviorWindowGroup, {autoDock_, dockDelayLabel, dockDelayEdit_, dockDelayUnit, hideInactive_});
+            hideMainAfterToolOpen_ = CheckBox(
+                TabBehavior, ID_HIDE_MAIN_AFTER_TOOL_OPEN, L"未贴边时，打开工具后隐藏主窗口",
+                behaviorRight, behaviorForm.sectionItemY(behaviorWindowSection, 1, behaviorCheckHeight),
+                draft_.hideMainAfterToolOpen, behaviorColumnWidth);
+            ThemedUi::BindGroupChildren(
+                behaviorWindowGroup,
+                {autoDock_, dockDelayLabel, dockDelayEdit_, dockDelayUnit, hideInactive_, hideMainAfterToolOpen_});
 
             const int behaviorRunFrameTop = behaviorWindowSection.frame.bottom + behaviorFrameGap;
             const ThemedSectionGeometry behaviorRunSection = behaviorForm.section(
@@ -4317,6 +4325,7 @@ private:
     HWND showTag_ = nullptr;
     HWND autoDock_ = nullptr;
     HWND hideInactive_ = nullptr;
+    HWND hideMainAfterToolOpen_ = nullptr;
     HWND hideAfterLink_ = nullptr;
     HWND hideOnStart_ = nullptr;
     HWND doubleClick_ = nullptr;

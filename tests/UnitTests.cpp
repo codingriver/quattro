@@ -536,6 +536,7 @@ int wmain() {
     Check(!config.topMost, "Local config default is not top most");
     Check(config.hideAfterLink, "Config default hide after link");
     Check(!config.hideWhenInactive, "Config default hide inactive");
+    Check(!config.hideMainAfterToolOpen, "Config default keep main after tool open");
     Check(!config.hideOnStart, "Config default hide on start");
     Check(!config.autoRun, "Config default auto run");
     Check(config.loggingEnabled, "Config default logging enabled");
@@ -556,6 +557,7 @@ int wmain() {
     config.webDavUserName = L"unit";
     config.webDavKeepCount = 7;
     config.loggingEnabled = false;
+    config.hideMainAfterToolOpen = true;
     for (const auto& provider : TrackedContextMenuProviders()) {
         config.*(provider.configMember) = true;
     }
@@ -579,6 +581,7 @@ int wmain() {
     Check(loaded.webDavUserName == L"unit", "Config webdav user");
     Check(loaded.webDavKeepCount == 7, "Config webdav keep count");
     Check(!loaded.loggingEnabled, "Config logging enabled");
+    Check(loaded.hideMainAfterToolOpen, "Config hide main after tool open round trip");
     for (const auto& provider : TrackedContextMenuProviders()) {
         Check(loaded.*(provider.configMember), "Config context menu tracking round trip");
     }
@@ -597,6 +600,20 @@ int wmain() {
     Check(savedConfigText.find(L"bTrackGitContextMenu") == std::wstring::npos, "Config removes legacy context menu fields");
     Check(savedConfigText.find(L"password") == std::wstring::npos && savedConfigText.find(L"Password") == std::wstring::npos, "Config does not persist webdav password");
     std::filesystem::remove(temp, ec);
+
+    RECT workArea{};
+    if (SystemParametersInfoW(SPI_GETWORKAREA, 0, &workArea, 0)) {
+        const int savedX = workArea.left + 16;
+        const int savedY = workArea.top + 16;
+        const std::optional<POINT> restored = ThemedWindowUi::RestoredWindowPosition(savedX, savedY, 240, 160);
+        Check(restored && restored->x == savedX && restored->y == savedY, "Themed window restores an onscreen saved position");
+        const std::optional<POINT> offscreen = ThemedWindowUi::RestoredWindowPosition(
+            workArea.right + 20000,
+            workArea.bottom + 20000,
+            240,
+            160);
+        Check(!offscreen, "Themed window rejects an offscreen saved position");
+    }
 
     const std::filesystem::path migrateConfigPath = std::filesystem::temp_directory_path() / L"quattro_unit_conf_migrate.ini";
     std::filesystem::remove(migrateConfigPath, ec);

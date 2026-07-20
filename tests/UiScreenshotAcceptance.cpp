@@ -3420,6 +3420,26 @@ void PumpModelessBuiltinTool(HWND hwnd) {
     }
 }
 
+void OpenAndPumpModelessBuiltinTool(
+    HWND owner,
+    HINSTANCE instance,
+    const Theme& theme,
+    PluginRegistry& registry,
+    const AppConfig& config,
+    const std::wstring& engine,
+    const std::wstring& title,
+    TestState& state,
+    const std::wstring& scenarioName) {
+    state.Check(
+        ShowBuiltinTool(owner, instance, theme, registry, config, engine),
+        scenarioName + L": open request failed");
+    HWND tool = WaitForTopWindow(FindWindowRequest{L"", title, GetCurrentProcessId()}, 3000);
+    state.Check(tool != nullptr, scenarioName + L": modeless window was not found");
+    if (tool) {
+        PumpModelessBuiltinTool(tool);
+    }
+}
+
 void ValidateTimeDisplayScale(HWND hwnd, TestState& state, const std::wstring& name, bool expectDate) {
     const auto children = Children(hwnd);
     HWND display = nullptr;
@@ -3584,7 +3604,8 @@ void RunClockScenarios(
                 outputDir,
                 state,
                 [&]() {
-                    ShowBuiltinTool(owner, instance, theme, registry, config, engine);
+                    OpenAndPumpModelessBuiltinTool(
+                        owner, instance, theme, registry, config, engine, scenario.title, state, scenario.name);
                 },
                 [&]() {
                     HWND tool = FindTopWindow(
@@ -3666,7 +3687,15 @@ void RunProcessToolsSingletonScenario(
         PostMessageW(firstWindow, WM_CLOSE, 0, 0);
     });
 
-    ShowBuiltinTool(owner, instance, theme, registry, config, L"process-locator");
+    state.Check(
+        ShowBuiltinTool(owner, instance, theme, registry, config, L"process-locator"),
+        L"process-tools-singleton: initial open request failed");
+    HWND firstWindow = WaitForTopWindow(
+        FindWindowRequest{L"QuattroProcessTools", L"进程工具", GetCurrentProcessId()},
+        3000);
+    if (firstWindow) {
+        PumpModelessBuiltinTool(firstWindow);
+    }
     controller.join();
     state.Check(inspected.load(), L"process-tools-singleton: controller did not complete");
     AcceptanceLog(L"end process-tools-singleton");
@@ -3691,7 +3720,8 @@ void RunProcessToolsScenarios(
             outputDir,
             state,
             [&]() {
-                ShowBuiltinTool(owner, instance, theme, registry, config, engine);
+                OpenAndPumpModelessBuiltinTool(
+                    owner, instance, theme, registry, config, engine, L"进程工具", state, scenario.name);
             });
     };
 
@@ -3913,7 +3943,15 @@ void RunProcessToolsFileLockProgressScenario(
         PostMessageW(mainWindow, WM_CLOSE, 0, 0);
     });
 
-    ShowBuiltinTool(owner, instance, theme, registry, config, L"file-lock-inspector");
+    state.Check(
+        ShowBuiltinTool(owner, instance, theme, registry, config, L"file-lock-inspector"),
+        scenarioName + L": open request failed");
+    HWND mainWindow = WaitForTopWindow(
+        FindWindowRequest{L"QuattroProcessTools", L"进程工具", GetCurrentProcessId()},
+        3000);
+    if (mainWindow) {
+        PumpModelessBuiltinTool(mainWindow);
+    }
     controller.join();
     SetEnvironmentVariableW(L"QUATTRO_TEST_FILE_LOCK_BATCH_DELAY_MS", nullptr);
     SetEnvironmentVariableW(L"QUATTRO_TEST_MODE", nullptr);
@@ -4763,7 +4801,7 @@ int wmain() {
 
     const std::vector<std::pair<std::wstring, std::vector<std::wstring>>> settingsPages{
         {L"显示", {L"界面元素", L"布局与外观", L"显示标题栏", L"透明度", L"标签文字", L"分组宽度"}},
-        {L"行为", {L"窗口行为", L"运行与数据", L"系统集成", L"启动后隐藏", L"开机启动", L"启用日志"}},
+        {L"行为", {L"窗口行为", L"未贴边时，打开工具后隐藏主窗口", L"运行与数据", L"系统集成", L"启动后隐藏", L"开机启动", L"启用日志"}},
         {L"右键菜单", {L"自动跟踪", L"缓存维护", L"重置右键菜单"}},
         {L"交互", {L"启动操作", L"悬停激活", L"双击运行", L"分组激活延迟", L"标签激活延迟"}},
         {L"热键", {L"全局快捷键", L"启用全局快捷键", L"主窗口显隐", L"进程定位器", L"复制选中项绝对路径"}},
@@ -4851,21 +4889,24 @@ int wmain() {
         outputDir,
         state,
         [&]() {
-            ShowBuiltinTool(owner, instance, theme, registry, builtinToolConfig, L"clicker");
+            OpenAndPumpModelessBuiltinTool(
+                owner, instance, theme, registry, builtinToolConfig, L"clicker", L"连点器", state, L"builtin-clicker");
         });
     RunDialogScenario(
         Scenario{L"builtin-timer", L"", L"计时器", L"builtin-timer.png", {L"计时器", L"开始(&S)", L"暂停(&P)", L"重置(&R)"}, {}, 3, 3, false},
         outputDir,
         state,
         [&]() {
-            ShowBuiltinTool(owner, instance, theme, registry, builtinToolConfig, L"timer");
+            OpenAndPumpModelessBuiltinTool(
+                owner, instance, theme, registry, builtinToolConfig, L"timer", L"计时器", state, L"builtin-timer");
         });
     RunDialogScenario(
         Scenario{L"builtin-stopwatch", L"", L"秒表", L"builtin-stopwatch.png", {L"秒表", L"开始(&S)", L"暂停(&P)", L"导出(&E)"}, {}, 0, 5, false},
         outputDir,
         state,
         [&]() {
-            ShowBuiltinTool(owner, instance, theme, registry, builtinToolConfig, L"stopwatch");
+            OpenAndPumpModelessBuiltinTool(
+                owner, instance, theme, registry, builtinToolConfig, L"stopwatch", L"秒表", state, L"builtin-stopwatch");
         });
     RunProcessToolsSingletonScenario(owner, instance, theme, state);
     RunProcessToolsScenarios(owner, instance, theme, outputDir, state, 96);

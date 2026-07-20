@@ -13,7 +13,9 @@
 #include <shellapi.h>
 
 #include <algorithm>
+#include <filesystem>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -151,6 +153,54 @@ OperationResult RunElevated(const std::wstring& parameters) {
     GetExitCodeProcess(info.hProcess, &exitCode);
     CloseHandle(info.hProcess);
     return exitCode == 0 ? OperationResult{true, L"操作完成。"} : OperationResult{false, L"管理员操作失败，请刷新后重试。"};
+}
+
+std::filesystem::path WindowStatePath() {
+    return QuattroUserConfigDirectory() / L"ad-block-window.ini";
+}
+
+void RestoreWindowPosition(HWND hwnd) {
+    RECT rect{};
+    if (!hwnd || !GetWindowRect(hwnd, &rect)) {
+        return;
+    }
+    const std::filesystem::path path = WindowStatePath();
+    wchar_t xBuffer[32]{};
+    wchar_t yBuffer[32]{};
+    GetPrivateProfileStringW(L"window", L"x", L"", xBuffer, _countof(xBuffer), path.c_str());
+    GetPrivateProfileStringW(L"window", L"y", L"", yBuffer, _countof(yBuffer), path.c_str());
+    const std::optional<int> x = ParseInt(xBuffer);
+    const std::optional<int> y = ParseInt(yBuffer);
+    if (!x || !y) {
+        return;
+    }
+    const std::optional<POINT> restored = ThemedWindowUi::RestoredWindowPosition(
+        *x,
+        *y,
+        rect.right - rect.left,
+        rect.bottom - rect.top);
+    if (!restored) {
+        return;
+    }
+    SetWindowPos(hwnd, nullptr, restored->x, restored->y, 0, 0,
+        SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+}
+
+void SaveWindowPosition(HWND hwnd) {
+    if (!hwnd || !IsWindow(hwnd) || IsIconic(hwnd)) {
+        return;
+    }
+    RECT rect{};
+    if (!GetWindowRect(hwnd, &rect)) {
+        return;
+    }
+    const std::filesystem::path path = WindowStatePath();
+    std::error_code ec;
+    std::filesystem::create_directories(path.parent_path(), ec);
+    WritePrivateProfileStringW(L"window", L"version", L"1", path.c_str());
+    WritePrivateProfileStringW(L"window", L"x", std::to_wstring(rect.left).c_str(), path.c_str());
+    WritePrivateProfileStringW(L"window", L"y", std::to_wstring(rect.top).c_str(), path.c_str());
+    WritePrivateProfileStringW(L"window", L"dpi", std::to_wstring(GetDpiForWindow(hwnd)).c_str(), path.c_str());
 }
 
 std::wstring MapField(const std::map<std::wstring, std::wstring>& values, const wchar_t* key) {
@@ -321,6 +371,7 @@ int AdBlockWindow::Run() {
             SendMessageW(hwnd_, WM_DPICHANGED, MAKELONG(targetDpi, targetDpi), reinterpret_cast<LPARAM>(&suggested));
         }
     }
+    RestoreWindowPosition(hwnd_);
     ShowWindow(hwnd_, SW_SHOW);
     UpdateWindow(hwnd_);
     MSG message{};
@@ -354,6 +405,7 @@ LRESULT AdBlockWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam) {
     LRESULT result = 0;
     if (ThemedWindowUi::HandleCommonMessage(windowUi_, message, wParam, lParam, result)) {
         if (message == WM_DESTROY) {
+            SaveWindowPosition(hwnd_);
             closing_ = true;
             if (scanState_) scanState_->cancelRequested.store(true);
             if (scanProgressDialog_) scanProgressDialog_->Close();

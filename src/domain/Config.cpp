@@ -41,6 +41,7 @@ AppConfig ConfigService::Load() const {
     config.topMost = ReadBool(L"bTopMost", config.topMost);
     config.hideAfterLink = ReadBool(L"bHideAfterLink", config.hideAfterLink);
     config.hideWhenInactive = ReadBool(L"bHideUnhot", config.hideWhenInactive);
+    config.hideMainAfterToolOpen = ReadBool(L"bHideMainAfterToolOpen", config.hideMainAfterToolOpen);
 
     config.doubleClickToRun = ReadBool(L"bDoubleClick", config.doubleClickToRun);
     config.deleteConfirm = ReadBool(L"bDelConfirm", config.deleteConfirm);
@@ -206,6 +207,7 @@ AppConfig ConfigService::LoadForSchemaUpgrade(int targetVersion, bool& compatibl
     readBool(L"bTopMost", config.topMost);
     readBool(L"bHideAfterLink", config.hideAfterLink);
     readBool(L"bHideUnhot", config.hideWhenInactive);
+    readBool(L"bHideMainAfterToolOpen", config.hideMainAfterToolOpen);
     readBool(L"bDoubleClick", config.doubleClickToRun);
     readBool(L"bDelConfirm", config.deleteConfirm);
     readBool(L"bSaveRunCount", config.saveRunCount);
@@ -330,6 +332,7 @@ void ConfigService::SaveWindowState(const AppConfig& config) const {
     WriteInt(L"bLnkNameSingleline", config.linkNameSingleLine ? 1 : 0);
     WriteInt(L"bShowTooltip", config.showTooltip ? 1 : 0);
     WriteInt(L"bHideAfterLink", config.hideAfterLink ? 1 : 0);
+    WriteInt(L"bHideMainAfterToolOpen", config.hideMainAfterToolOpen ? 1 : 0);
     WriteInt(L"bHideOnStart", config.hideOnStart ? 1 : 0);
     WriteInt(L"bTopMost", config.topMost ? 1 : 0);
     WriteInt(L"bRunCount", config.showRunCount ? 1 : 0);
@@ -376,6 +379,7 @@ void ConfigService::Save(const AppConfig& config) const {
     WriteInt(L"nDockDelay", config.dockDelay);
     WriteInt(L"bHideOnStart", config.hideOnStart ? 1 : 0);
     WriteInt(L"bHideUnhot", config.hideWhenInactive ? 1 : 0);
+    WriteInt(L"bHideMainAfterToolOpen", config.hideMainAfterToolOpen ? 1 : 0);
     WriteInt(L"bDelConfirm", config.deleteConfirm ? 1 : 0);
     WriteInt(L"bSaveRunCount", config.saveRunCount ? 1 : 0);
     WriteInt(L"bPreferAdminRun", config.preferAdminRun ? 1 : 0);

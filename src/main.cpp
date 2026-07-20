@@ -502,6 +502,7 @@ void WriteStartupReport(
     file << "top_most=" << (config.topMost ? 1 : 0) << "\n";
     file << "hide_after_link=" << (config.hideAfterLink ? 1 : 0) << "\n";
     file << "hide_when_inactive=" << (config.hideWhenInactive ? 1 : 0) << "\n";
+    file << "hide_main_after_tool_open=" << (config.hideMainAfterToolOpen ? 1 : 0) << "\n";
     file << "double_click_to_run=" << (config.doubleClickToRun ? 1 : 0) << "\n";
     file << "delete_confirm=" << (config.deleteConfirm ? 1 : 0) << "\n";
     file << "save_run_count=" << (config.saveRunCount ? 1 : 0) << "\n";

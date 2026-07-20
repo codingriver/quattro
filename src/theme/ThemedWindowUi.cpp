@@ -60,6 +60,17 @@ bool SameToastOptions(const ThemedToastOptions& left, const ThemedToastOptions& 
            left.maxWidth == right.maxWidth;
 }
 
+int RectIntersectionArea(const RECT& left, const RECT& right) {
+    const LONG x1 = std::max(left.left, right.left);
+    const LONG y1 = std::max(left.top, right.top);
+    const LONG x2 = std::min(left.right, right.right);
+    const LONG y2 = std::min(left.bottom, right.bottom);
+    if (x2 <= x1 || y2 <= y1) {
+        return 0;
+    }
+    return static_cast<int>((x2 - x1) * (y2 - y1));
+}
+
 bool PresentLayeredWindow(HWND hwnd, const std::function<void(HDC)>& paint) {
     if (!hwnd || !paint) return false;
     RECT windowRect{};
@@ -181,6 +192,40 @@ POINT ThemedWindowUi::WindowPosition(const ThemedWindowCreateOptions& options, i
     default:
         return CenterWindowOnOwnerMonitor(options.owner, windowWidth, windowHeight);
     }
+}
+
+std::optional<POINT> ThemedWindowUi::RestoredWindowPosition(int x, int y, int windowWidth, int windowHeight) {
+    if (windowWidth <= 0 || windowHeight <= 0) {
+        return std::nullopt;
+    }
+
+    const RECT proposed{x, y, x + windowWidth, y + windowHeight};
+    HMONITOR monitor = MonitorFromRect(&proposed, MONITOR_DEFAULTTONULL);
+    if (!monitor) {
+        return std::nullopt;
+    }
+
+    MONITORINFO info{};
+    info.cbSize = sizeof(info);
+    if (!GetMonitorInfoW(monitor, &info) || RectIntersectionArea(proposed, info.rcMonitor) <= 0) {
+        return std::nullopt;
+    }
+
+    POINT restored{x, y};
+    const RECT work = info.rcWork;
+    const int workWidth = work.right - work.left;
+    const int workHeight = work.bottom - work.top;
+    if (windowWidth >= workWidth) {
+        restored.x = work.left;
+    } else {
+        restored.x = std::max<int>(work.left, std::min<int>(restored.x, work.right - windowWidth));
+    }
+    if (windowHeight >= workHeight) {
+        restored.y = work.top;
+    } else {
+        restored.y = std::max<int>(work.top, std::min<int>(restored.y, work.bottom - windowHeight));
+    }
+    return restored;
 }
 
 ThemedWindowCreateOptions ThemedWindowUi::DialogOptions(

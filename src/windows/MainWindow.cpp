@@ -70,6 +70,7 @@ constexpr UINT_PTR ID_TIMER_DOCK = 10;
 constexpr UINT_PTR ID_TIMER_HOVER_ACTIVATE = 11;
 constexpr UINT_PTR ID_TIMER_NOTE_AUTOSAVE = 12;
 constexpr UINT_PTR ID_TIMER_REMINDER_SCAN = 13;
+constexpr UINT_PTR ID_TIMER_TOOL_OPEN_HIDE = 14;
 constexpr UINT kTrayIconId = 1;
 constexpr UINT WM_QUATTRO_DOUBLE_ALT_HOTKEY = WM_APP + 0x6C;
 constexpr int kDockVisiblePixels = 3;
@@ -2315,6 +2316,9 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             CancelNavDrag();
             CancelLinkDrag();
         }
+        if (wParam) {
+            CancelPendingToolOpenHide();
+        }
         if (!wParam && config_.hideWhenInactive && IsWindowVisible(hwnd_) && !DockAutoHidePaused()) {
             HideMainWindow();
         } else if (wParam && dockHidden_) {
@@ -2347,6 +2351,13 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             // messages above instead.
             if (!BackgroundAcceptanceMode()) {
                 UpdateDockState();
+            }
+            return 0;
+        }
+        if (wParam == ID_TIMER_TOOL_OPEN_HIDE) {
+            CancelPendingToolOpenHide();
+            if (IsWindowVisible(hwnd_) && !IsIconic(hwnd_) && !dockHidden_) {
+                DockHide();
             }
             return 0;
         }
@@ -3093,6 +3104,7 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             KillTimer(hwnd_, dockTimerId_);
             dockTimerId_ = 0;
         }
+        CancelPendingToolOpenHide();
         if (hoverActivationTimerId_ != 0) {
             KillTimer(hwnd_, ID_TIMER_HOVER_ACTIVATE);
             hoverActivationTimerId_ = 0;
@@ -5292,6 +5304,7 @@ void MainWindow::OpenBuiltinToolEngine(const std::wstring& engine, bool locatePr
         }
         CloseHandle(process.hThread);
         CloseHandle(process.hProcess);
+        RequestMainWindowHideAfterToolOpen();
         return;
     }
     if (engine == L"ad-block") {
@@ -5319,9 +5332,12 @@ void MainWindow::OpenBuiltinToolEngine(const std::wstring& engine, bool locatePr
         }
         CloseHandle(process.hThread);
         CloseHandle(process.hProcess);
+        RequestMainWindowHideAfterToolOpen();
         return;
     }
-    ShowBuiltinTool(hwnd_, instance_, theme_, pluginRegistry_, config_, engine, locateProcessOnOpen);
+    if (ShowBuiltinTool(hwnd_, instance_, theme_, pluginRegistry_, config_, engine, locateProcessOnOpen)) {
+        RequestMainWindowHideAfterToolOpen();
+    }
 }
 
 void MainWindow::ResetLayoutToDefaults() {
@@ -5888,6 +5904,43 @@ void MainWindow::EndDockAutoHidePause() {
 
 bool MainWindow::DockAutoHidePaused() const {
     return dockAutoHidePauseDepth_ > 0 || (hwnd_ && !IsWindowEnabled(hwnd_));
+}
+
+bool MainWindow::IsAtDockTarget() const {
+    RECT window{};
+    if (!GetWindowRect(hwnd_, &window)) {
+        return false;
+    }
+    return FindDockTarget(window, kDockSnapThreshold).has_value();
+}
+
+void MainWindow::CancelPendingToolOpenHide() {
+    if (toolOpenHideTimerActive_) {
+        KillTimer(hwnd_, ID_TIMER_TOOL_OPEN_HIDE);
+        toolOpenHideTimerActive_ = false;
+    }
+}
+
+void MainWindow::RequestMainWindowHideAfterToolOpen() {
+    CancelPendingToolOpenHide();
+    if (!IsWindowVisible(hwnd_) || IsIconic(hwnd_) || dockHidden_) {
+        return;
+    }
+    if (config_.autoDock && IsAtDockTarget()) {
+        if (config_.dockDelay <= 0) {
+            DockHide();
+            return;
+        }
+        toolOpenHideTimerActive_ = SetTimer(
+            hwnd_,
+            ID_TIMER_TOOL_OPEN_HIDE,
+            static_cast<UINT>(config_.dockDelay),
+            nullptr) != 0;
+        return;
+    }
+    if (config_.hideMainAfterToolOpen) {
+        HideMainWindow();
+    }
 }
 
 void MainWindow::UpdateDockState() {
