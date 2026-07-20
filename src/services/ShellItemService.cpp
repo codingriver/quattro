@@ -832,6 +832,76 @@ std::wstring DetectProviderId(const std::wstring& text, const std::wstring& verb
     return {};
 }
 
+constexpr std::size_t kMaxTrackedShellRegistrationsPerScope = 512;
+constexpr int kMaxTrackedShellMenuDepth = 3;
+
+bool RegistrationMatchesProvider(
+    const std::wstring& providerId,
+    const std::wstring& keyName,
+    const std::wstring& fullKey) {
+    const std::wstring command = RegistryString(HKEY_CLASSES_ROOT, fullKey + L"\\command", nullptr);
+    if (DetectProviderId(keyName, command) == providerId) return true;
+    const std::wstring defaultText = RegistryString(HKEY_CLASSES_ROOT, fullKey, nullptr);
+    if (DetectProviderId(defaultText, command) == providerId) return true;
+    const std::wstring muiVerb = RegistryString(HKEY_CLASSES_ROOT, fullKey, L"MUIVerb");
+    return DetectProviderId(muiVerb, command) == providerId;
+}
+
+std::optional<std::wstring> FindTrackedProviderRegistrationUnder(
+    const std::wstring& shellKey,
+    const std::wstring& providerId,
+    int depth,
+    std::size_t& visited) {
+    if (depth >= kMaxTrackedShellMenuDepth ||
+        visited >= kMaxTrackedShellRegistrationsPerScope) {
+        return std::nullopt;
+    }
+    HKEY key = nullptr;
+    if (RegOpenKeyExW(HKEY_CLASSES_ROOT, shellKey.c_str(), 0, KEY_ENUMERATE_SUB_KEYS, &key) !=
+        ERROR_SUCCESS) {
+        return std::nullopt;
+    }
+    std::optional<std::wstring> found;
+    for (DWORD index = 0; visited < kMaxTrackedShellRegistrationsPerScope; ++index) {
+        wchar_t childName[256]{};
+        DWORD childNameLength = static_cast<DWORD>(std::size(childName));
+        const LSTATUS status = RegEnumKeyExW(
+            key, index, childName, &childNameLength, nullptr, nullptr, nullptr, nullptr);
+        if (status == ERROR_NO_MORE_ITEMS) break;
+        if (status != ERROR_SUCCESS) continue;
+        ++visited;
+        const std::wstring fullKey = shellKey + L"\\" + childName;
+        if (RegistrationMatchesProvider(providerId, childName, fullKey)) {
+            found = fullKey;
+            break;
+        }
+        found = FindTrackedProviderRegistrationUnder(
+            fullKey + L"\\shell", providerId, depth + 1, visited);
+        if (found) break;
+    }
+    RegCloseKey(key);
+    return found;
+}
+
+std::optional<std::wstring> FindTrackedProviderRegistration(const std::wstring& providerId) {
+    if (providerId.empty()) return std::nullopt;
+    constexpr std::array<const wchar_t*, 6> shellScopes{
+        L"*\\shell",
+        L"AllFilesystemObjects\\shell",
+        L"Directory\\shell",
+        L"Directory\\Background\\shell",
+        L"Folder\\shell",
+        L"Drive\\shell",
+    };
+    for (const wchar_t* shellScope : shellScopes) {
+        std::size_t visited = 0;
+        if (auto found = FindTrackedProviderRegistrationUnder(shellScope, providerId, 0, visited)) {
+            return found;
+        }
+    }
+    return std::nullopt;
+}
+
 void InitializeSubmenu(NativeContextMenuSession& session, HMENU submenu, int position) {
     if (!submenu) {
         return;
@@ -1164,7 +1234,8 @@ bool ShellItemService::IsTrackedProviderInstalled(const TrackedContextMenuProvid
             return true;
         }
     }
-    return false;
+    return FindTrackedProviderRegistration(
+        binding.providerId ? binding.providerId : L"").has_value();
 }
 
 bool ShellItemService::LoadExecutableMenuIcon(
@@ -1205,6 +1276,9 @@ bool ShellItemService::LoadTrackedProviderIcon(
         if (CaptureRegistryKeyIcon(probeKey, item)) {
             return true;
         }
+    }
+    if (auto registeredKey = FindTrackedProviderRegistration(item.providerId)) {
+        return CaptureRegistryKeyIcon(*registeredKey, item);
     }
     return false;
 }
@@ -1482,107 +1556,6 @@ bool ShellItemService::OpenProperties(HWND owner, const Link& link) {
     return ShellExecuteExW(&info) != FALSE;
 }
 
-namespace {
-// Native Shell检测相关的辅助类和函数
-
-class NativeShellScannerVisitor {
-private:
-    std::wstring targetProviderId_;
-    int maxDepth_;
-
-public:
-    explicit NativeShellScannerVisitor(const std::wstring& providerId, int maxDepth = 4)
-        : targetProviderId_(ToLower(providerId)), maxDepth_(maxDepth) {}
-
-    bool FindProvider() {
-        // 扫描所有可能包含shell菜单的注册表位置
-        return ScanScope(L"*\\shell\\") ||
-               ScanScope(L"AllFilesystemObjects\\shell\\") ||
-               ScanScope(L"Directory\\shell\\") ||
-               ScanScope(L"Directory\\Background\\shell\\") ||
-               ScanScope(L"Folder\\shell\\") ||
-               ScanScope(L"Drive\\shell\\");
-    }
-
-private:
-    bool ScanScope(const std::wstring& scope) {
-        HKEY hkey = nullptr;
-        if (RegOpenKeyExW(HKEY_CLASSES_ROOT, scope.c_str(), 0,
-                         KEY_ENUMERATE_SUB_KEYS, &hkey) != ERROR_SUCCESS) {
-            return false;
-        }
-
-        bool found = false;
-        DWORD index = 0;
-        wchar_t subkey[256];
-        DWORD subkeySize;
-
-        while (!found && RegEnumKeyExW(hkey, index++, subkey,
-                                     &(subkeySize = _countof(subkey)),
-                                     nullptr, nullptr, nullptr, nullptr) == ERROR_SUCCESS) {
-            found = CheckMenuItemAndDescendants(scope, subkey, 0);
-        }
-
-        RegCloseKey(hkey);
-        return found;
-    }
-
-    bool CheckMenuItemAndDescendants(const std::wstring& scope,
-                                     const std::wstring& menuText, int depth) {
-        // 检查这个菜单项的文本是否匹配我们要找的provider
-        if (MatchesProvider(menuText)) {
-            return true;
-        }
-
-        // 递归检查cascade子菜单（受深度限制）
-        if (depth < maxDepth_ - 1) {
-            const std::wstring cascadePath = scope + menuText + L"\\shell";
-            if (ScanCascadeSubmenus(cascadePath, depth + 1)) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    bool ScanCascadeSubmenus(const std::wstring& fullPath, int depth) {
-        HKEY hkey = nullptr;
-        if (RegOpenKeyExW(HKEY_CLASSES_ROOT, fullPath.c_str(), 0,
-                         KEY_ENUMERATE_SUB_KEYS, &hkey) != ERROR_SUCCESS) {
-            return false;
-        }
-
-        bool found = false;
-        DWORD index = 0;
-        wchar_t childKey[256];
-        DWORD childKeySize;
-
-        while (!found && RegEnumKeyExW(hkey, index++, childKey,
-                                      &(childKeySize = _countof(childKey)),
-                                      nullptr, nullptr, nullptr, nullptr) == ERROR_SUCCESS) {
-            found = CheckMenuItemAndDescendants(fullPath + L"\\", childKey, depth);
-        }
-
-        RegCloseKey(hkey);
-        return found;
-    }
-
-    bool MatchesProvider(const std::wstring& menuText) {
-        // 使用现有的DetectProviderId逻辑来识别provider
-        std::wstring detected = ShellItemService::DetectTrackedContextMenuProvider(menuText);
-        return detected == targetProviderId_;
-    }
-};
-
-} // namespace
-
-// 新增实现: Native Shell检测
 bool ShellItemService::IsInstalledInNativeShell(const std::wstring& providerId) {
-    if (Trim(providerId).empty()) {
-        return false;
-    }
-
-    // 使用扫描器查找该provider
-    NativeShellScannerVisitor scanner(providerId);
-    return scanner.FindProvider();
+    return FindTrackedProviderRegistration(Trim(providerId)).has_value();
 }

@@ -65,7 +65,8 @@ public:
     static std::wstring DetectTrackedContextMenuProvider(
         const std::wstring& text,
         const std::wstring& verb = L"");
-    // 按绑定表探测键判断该 provider 对应工具是否在 Explorer 注册了右键菜单；
+    // 优先按绑定表精确探测键判断 provider 是否已注册；未命中时在固定的
+    // Explorer shell 范围内进行有上限的菜单注册扫描，以兼容本地化或自定义键名。
     // 探测键为空的表项（如系统终端）恒为已安装。
     static bool IsTrackedProviderInstalled(const TrackedContextMenuProviderBinding& binding);
     static bool IsShellParseName(const std::wstring& value);

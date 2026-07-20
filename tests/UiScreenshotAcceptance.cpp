@@ -74,6 +74,8 @@ struct Scenario {
     bool validateQuickImportIconLayout = false;
     bool waitForContextMenuIconLoad = true;
     bool validateContextMenuIconTransparency = false;
+    std::wstring expectedContextMenuProvider;
+    std::wstring expectedContextMenuStatus;
     int splitButtonMenuId = 0;
 };
 
@@ -1311,6 +1313,34 @@ void ValidateAndCapture(HWND hwnd, const Scenario& scenario, const std::filesyst
                     ThemedUi::IsTableChecked(table, uninstalledRow),
                     scenario.name + L": uninstalled provider row cannot be checked");
                 ThemedUi::SetTableSelectedIndex(table, -1);
+            }
+            if (!scenario.expectedContextMenuProvider.empty()) {
+                int expectedRow = -1;
+                std::wstring actualStatus;
+                for (int row = 0; row < rowCount; ++row) {
+                    wchar_t providerName[128]{};
+                    ListView_GetItemText(
+                        table, row, 0, providerName, static_cast<int>(std::size(providerName)));
+                    if (providerName == scenario.expectedContextMenuProvider) {
+                        wchar_t status[64]{};
+                        ListView_GetItemText(
+                            table, row, 1, status, static_cast<int>(std::size(status)));
+                        expectedRow = row;
+                        actualStatus = status;
+                        break;
+                    }
+                }
+                state.Check(
+                    expectedRow >= 0,
+                    scenario.name + L": expected context-menu provider row not found: " +
+                        scenario.expectedContextMenuProvider);
+                state.Check(
+                    expectedRow >= 0 && actualStatus == scenario.expectedContextMenuStatus,
+                    scenario.name + L": context-menu provider status mismatch: " +
+                        scenario.expectedContextMenuProvider + L" = " + actualStatus);
+                if (expectedRow >= 0) {
+                    ListView_EnsureVisible(table, expectedRow, FALSE);
+                }
             }
         }
     }
@@ -4432,6 +4462,8 @@ int wmain() {
                     L"settings-dialog-右键菜单-real-icons" + suffix + L".png";
                 realIconScenario.forcedDpi = dpi;
                 realIconScenario.validateContextMenuIconTransparency = false;
+                realIconScenario.expectedContextMenuProvider = L"Everything";
+                realIconScenario.expectedContextMenuStatus = L"已安装(注册表)";
                 RunDialogScenario(
                     realIconScenario,
                     outputDir,

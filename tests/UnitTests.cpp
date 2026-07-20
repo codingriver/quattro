@@ -2099,11 +2099,19 @@ int wmain() {
     Check(ShellItemService::IsShellParseName(shellLink.path), "Shell parse name");
     Check(ShellItemService::DetectTrackedContextMenuProvider(L"Open with Code") == ShellContextMenuProviderId::VsCode, "Shell menu detects VS Code");
     Check(ShellItemService::DetectTrackedContextMenuProvider(L"Search Everything...") == ShellContextMenuProviderId::Everything, "Shell menu detects Everything");
+    Check(ShellItemService::DetectTrackedContextMenuProvider(
+              L"本地化菜单文本", L"\"C:\\Tools\\Everything.exe\" -path \"%V\"") ==
+              ShellContextMenuProviderId::Everything,
+          "Shell menu detects localized registration from Everything command");
     Check(ShellItemService::DetectTrackedContextMenuProvider(L"Edit with Notepad++") == ShellContextMenuProviderId::NotepadPlusPlus, "Shell menu detects Notepad++");
     Check(ShellItemService::DetectTrackedContextMenuProvider(L"在终端中打开") == ShellContextMenuProviderId::Terminal, "Shell menu detects terminal");
     Check(ShellItemService::DetectTrackedContextMenuProvider(L"7-Zip") == ShellContextMenuProviderId::Archive, "Shell menu detects archive tool");
     Check(ShellItemService::DetectTrackedContextMenuProvider(L"Git Bash Here") == ShellContextMenuProviderId::Git, "Shell menu keeps Git Bash in Git provider");
     Check(ShellItemService::DetectTrackedContextMenuProvider(L"Open with Cursor") == ShellContextMenuProviderId::Cursor, "Shell menu detects Cursor");
+    Check(ShellItemService::DetectTrackedContextMenuProvider(
+              L"本地化菜单文本", L"\"C:\\Apps\\Cursor\\Cursor.exe\" \"%V\"") ==
+              ShellContextMenuProviderId::Cursor,
+          "Shell menu detects localized registration from provider command");
     Check(ShellItemService::DetectTrackedContextMenuProvider(L"通过 Cursor 打开") == ShellContextMenuProviderId::Cursor, "Shell menu detects Cursor Chinese label");
     Check(ShellItemService::DetectTrackedContextMenuProvider(L"", L"cursor") == ShellContextMenuProviderId::Cursor, "Shell menu detects Cursor verb");
     Check(ShellItemService::DetectTrackedContextMenuProvider(L"Open with Sublime Text") == ShellContextMenuProviderId::SublimeText, "Shell menu detects Sublime Text");
