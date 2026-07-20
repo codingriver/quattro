@@ -1,6 +1,7 @@
 #include "ThemedControls.h"
 #include "ThemedD2D.h"
 #include "ThemedGdiFallback.h"
+#include "ThemedUi.h"
 
 #include <commctrl.h>
 #include <windowsx.h>
@@ -29,14 +30,8 @@ constexpr int kTabOrientationVertical = 1;
 constexpr int kTabContainerStyleAppearanceDefault = 0;
 constexpr int kTabContainerStyleFramed = 1;
 constexpr int kTabContainerStyleBorderless = 2;
-constexpr wchar_t kThemedButtonIconProp[] = L"QuattroThemedButtonIcon";
-
 HICON ButtonIcon(HWND hwnd) {
-    HICON icon = reinterpret_cast<HICON>(SendMessageW(hwnd, BM_GETIMAGE, IMAGE_ICON, 0));
-    if (!icon) {
-        icon = reinterpret_cast<HICON>(GetPropW(hwnd, kThemedButtonIconProp));
-    }
-    return icon;
+    return reinterpret_cast<HICON>(SendMessageW(hwnd, BM_GETIMAGE, IMAGE_ICON, 0));
 }
 
 enum class ControlKind {
@@ -83,6 +78,8 @@ struct ControlState {
     int tabContainerStyle = kTabContainerStyleAppearanceDefault;
     bool multiline = false;
     bool selectAllOnFocus = false;
+    UINT dpi = 0;
+    std::optional<TablerIconManifest::Id> buttonTablerIcon;
     int radioGroup = 0;
     bool progressIndeterminate = false;
     double progressValue = 0.0;
@@ -204,6 +201,26 @@ int ActiveScaledMetric(const Theme& theme, const wchar_t* component, const wchar
     return ThemedD2D::ScaleDip(
         static_cast<int>(theme.metric(component, name, fallback)),
         ThemedD2D::ActiveDpi());
+}
+
+UINT ControlDpi(HWND hwnd) {
+    const auto state = FindState(hwnd);
+    if (state && state->dpi) {
+        return state->dpi;
+    }
+    const UINT dpi = hwnd ? GetDpiForWindow(hwnd) : USER_DEFAULT_SCREEN_DPI;
+    return dpi ? dpi : USER_DEFAULT_SCREEN_DPI;
+}
+
+int ControlScaledMetric(
+    HWND hwnd,
+    const Theme& theme,
+    const wchar_t* component,
+    const wchar_t* name,
+    float fallback) {
+    return ThemedD2D::ScaleDip(
+        static_cast<int>(theme.metric(component, name, fallback)),
+        ControlDpi(hwnd));
 }
 
 std::wstring WindowText(HWND hwnd) {
@@ -1246,24 +1263,52 @@ void DrawButton(const Theme& theme, const DRAWITEMSTRUCT* draw) {
     HGDIOBJ oldFont = font ? SelectObject(draw->hDC, font) : nullptr;
     std::wstring text = ControlText(draw->hwndItem);
     RECT textRect = ThemedControls::ButtonTextRect(theme, rect, pressed);
-    HICON icon = ButtonIcon(draw->hwndItem);
-    if (icon) {
-        const int iconSize = ActiveScaledMetric(theme, L"toolbarItem", L"iconSize", 16.0f);
-        const int iconGap = text.empty() ? 0 : ActiveScaledMetric(theme, L"toolbarItem", L"iconGap", 6.0f);
+    TablerIconManifest::Id tablerIcon{};
+    const bool hasTablerIcon = ThemedControls::ButtonTablerIcon(draw->hwndItem, tablerIcon);
+    HICON icon = hasTablerIcon ? nullptr : ButtonIcon(draw->hwndItem);
+    if (hasTablerIcon || icon) {
+        const int iconSize = hasTablerIcon
+            ? ControlScaledMetric(draw->hwndItem, theme, L"iconButton", L"iconSize", 20.0f)
+            : ControlScaledMetric(draw->hwndItem, theme, L"toolbarItem", L"iconSize", 16.0f);
+        const int iconGap = text.empty() ? 0
+            : ControlScaledMetric(draw->hwndItem, theme, L"toolbarItem", L"iconGap", 6.0f);
         SIZE textSize{};
         if (!text.empty()) textSize.cx = ThemedD2D::MeasureTextWidth(font, text);
         const int contentWidth = iconSize + iconGap + textSize.cx;
         const int iconX = rect.left + std::max(0, (static_cast<int>(rect.right - rect.left) - contentWidth) / 2) + (pressed ? 1 : 0);
         const int iconY = rect.top + ((rect.bottom - rect.top) - iconSize) / 2 + (pressed ? 1 : 0);
         const RECT iconRect{iconX, iconY, iconX + iconSize, iconY + iconSize};
-        if (!ThemedD2D::DrawIcon(draw->hDC, icon, iconRect, disabled)) {
+        if (hasTablerIcon) {
+            const Color themedIconColor = theme.color(L"iconButton", state, L"icon");
+            const COLORREF iconColor = ToColorRef(themedIconColor.a > 0.0f
+                ? themedIconColor
+                : theme.color(L"button", state, L"text"));
+            if (!::DrawTablerIcon(draw->hDC, iconRect, {}, tablerIcon, iconColor)) {
+                const int halfWidth = std::max(2, iconSize / 4);
+                const int halfHeight = std::max(1, iconSize / 8);
+                const int centerX = (iconRect.left + iconRect.right) / 2;
+                const int centerY = (iconRect.top + iconRect.bottom) / 2;
+                const POINT points[]{
+                    {centerX - halfWidth, centerY - halfHeight},
+                    {centerX, centerY + halfHeight},
+                    {centerX + halfWidth, centerY - halfHeight},
+                };
+                const float stroke = static_cast<float>(std::max(
+                    1,
+                    ControlScaledMetric(draw->hwndItem, theme, L"miniButton", L"arrowStrokeWidth", 2.0f)));
+                if (!ThemedD2D::DrawPolyline(draw->hDC, points, 3, iconColor, stroke)) {
+                    ThemedGdiFallback::DrawPolyline(
+                        draw->hDC, points, 3, iconColor, static_cast<int>(stroke));
+                }
+            }
+        } else if (!ThemedD2D::DrawIcon(draw->hDC, icon, iconRect, disabled)) {
             ThemedGdiFallback::DrawIcon(draw->hDC, icon, iconRect, disabled);
         }
         if (!text.empty()) textRect.left = iconX + iconSize + iconGap;
     }
     DrawThemedText(draw->hDC, font, text.c_str(), static_cast<int>(text.size()), textRect,
-        icon ? (DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS)
-             : (DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS),
+        (hasTablerIcon || icon) ? (DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS)
+                               : (DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS),
         GetTextColor(draw->hDC));
     if (oldFont) {
         SelectObject(draw->hDC, oldFont);
@@ -1290,8 +1335,44 @@ void DrawPrimaryButton(const Theme& theme, const DRAWITEMSTRUCT* draw) {
     HGDIOBJ oldFont = font ? SelectObject(draw->hDC, font) : nullptr;
     std::wstring text = ControlText(draw->hwndItem);
     RECT textRect = ThemedControls::ButtonTextRect(theme, rect, pressed);
+    TablerIconManifest::Id tablerIcon{};
+    const bool hasTablerIcon = ThemedControls::ButtonTablerIcon(draw->hwndItem, tablerIcon);
+    if (hasTablerIcon) {
+        const int iconSize = ControlScaledMetric(
+            draw->hwndItem, theme, L"iconButton", L"iconSize", 20.0f);
+        const int iconGap = text.empty() ? 0
+            : ControlScaledMetric(draw->hwndItem, theme, L"toolbarItem", L"iconGap", 6.0f);
+        SIZE textSize{};
+        if (!text.empty()) textSize.cx = ThemedD2D::MeasureTextWidth(font, text);
+        const int contentWidth = iconSize + iconGap + textSize.cx;
+        const int iconX = rect.left + std::max(
+            0, (static_cast<int>(rect.right - rect.left) - contentWidth) / 2) + (pressed ? 1 : 0);
+        const int iconY = rect.top + ((rect.bottom - rect.top) - iconSize) / 2 + (pressed ? 1 : 0);
+        const RECT iconRect{iconX, iconY, iconX + iconSize, iconY + iconSize};
+        if (!::DrawTablerIcon(draw->hDC, iconRect, {}, tablerIcon, textColor)) {
+            const int halfWidth = std::max(2, iconSize / 4);
+            const int halfHeight = std::max(1, iconSize / 8);
+            const int centerX = (iconRect.left + iconRect.right) / 2;
+            const int centerY = (iconRect.top + iconRect.bottom) / 2;
+            const POINT points[]{
+                {centerX - halfWidth, centerY - halfHeight},
+                {centerX, centerY + halfHeight},
+                {centerX + halfWidth, centerY - halfHeight},
+            };
+            const float stroke = static_cast<float>(std::max(
+                1,
+                ControlScaledMetric(draw->hwndItem, theme, L"miniButton", L"arrowStrokeWidth", 2.0f)));
+            if (!ThemedD2D::DrawPolyline(draw->hDC, points, 3, textColor, stroke)) {
+                ThemedGdiFallback::DrawPolyline(
+                    draw->hDC, points, 3, textColor, static_cast<int>(stroke));
+            }
+        }
+        if (!text.empty()) textRect.left = iconX + iconSize + iconGap;
+    }
     DrawThemedText(draw->hDC, font, text.c_str(), static_cast<int>(text.size()), textRect,
-        DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS, GetTextColor(draw->hDC));
+        hasTablerIcon ? (DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS)
+                      : (DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS),
+        GetTextColor(draw->hDC));
     if (oldFont) {
         SelectObject(draw->hDC, oldFont);
     }
@@ -2800,6 +2881,43 @@ void SetControlTheme(HWND hwnd, const Theme& theme) {
         }
         InvalidateRect(hwnd, nullptr, TRUE);
     }
+}
+
+void SetControlDpi(HWND hwnd, UINT dpi) {
+    if (!hwnd) {
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lock(StateMutex());
+        auto& states = StateMap();
+        const auto found = states.find(hwnd);
+        if (found == states.end()) {
+            return;
+        }
+        found->second.dpi = dpi ? dpi : USER_DEFAULT_SCREEN_DPI;
+    }
+    InvalidateRect(hwnd, nullptr, FALSE);
+}
+
+void SetButtonTablerIcon(HWND hwnd, TablerIconManifest::Id icon) {
+    if (!hwnd) {
+        return;
+    }
+    const ControlKind kind = KindFor(hwnd);
+    if (kind != ControlKind::Button && kind != ControlKind::PrimaryButton) {
+        return;
+    }
+    StateFor(hwnd).buttonTablerIcon = icon;
+    InvalidateRect(hwnd, nullptr, FALSE);
+}
+
+bool ButtonTablerIcon(HWND hwnd, TablerIconManifest::Id& icon) {
+    const auto state = FindState(hwnd);
+    if (!state || !state->buttonTablerIcon) {
+        return false;
+    }
+    icon = *state->buttonTablerIcon;
+    return true;
 }
 
 HWND CreateMiniButton(HINSTANCE instance, HWND parent, int id, const wchar_t* text, int x, int y, int width, int height, HFONT font) {

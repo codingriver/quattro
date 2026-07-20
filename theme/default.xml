@@ -388,7 +388,7 @@
     <Component name="iconButton">
         <Metric name="size" value="28"/>
         <Metric name="radius" value="7"/>
-        <Metric name="iconSize" value="16"/>
+        <Metric name="iconSize" value="20"/>
         <State name="normal" bg="argb(0,255,255,255)" icon="@text"/>
         <State name="hover" bg="@hover" icon="@accent"/>
         <State name="pressed" bg="@pressed" icon="@accent"/>

@@ -73,6 +73,7 @@ struct Scenario {
     bool validateQuickImportIconLayout = false;
     bool waitForContextMenuIconLoad = true;
     bool validateContextMenuIconTransparency = false;
+    int splitButtonMenuId = 0;
 };
 
 struct TestState {
@@ -366,6 +367,37 @@ BitmapCapture CaptureWindowBitmap(HWND hwnd) {
     SelectObject(dc, old);
     DeleteDC(dc);
     ReleaseDC(nullptr, screen);
+    return BitmapCapture{bitmap, width, height};
+}
+
+BitmapCapture CaptureControlBitmap(HWND hwnd) {
+    RECT rect{};
+    GetWindowRect(hwnd, &rect);
+    const int width = std::max(1, static_cast<int>(rect.right - rect.left));
+    const int height = std::max(1, static_cast<int>(rect.bottom - rect.top));
+    HDC screen = GetDC(nullptr);
+    HDC dc = screen ? CreateCompatibleDC(screen) : nullptr;
+    HBITMAP bitmap = screen ? CreateCompatibleBitmap(screen, width, height) : nullptr;
+    HGDIOBJ old = dc && bitmap ? SelectObject(dc, bitmap) : nullptr;
+    if (!screen || !dc || !bitmap || !old) {
+        if (bitmap) DeleteObject(bitmap);
+        if (dc) DeleteDC(dc);
+        if (screen) ReleaseDC(nullptr, screen);
+        return {};
+    }
+    HBRUSH magenta = CreateSolidBrush(RGB(255, 0, 255));
+    RECT fill{0, 0, width, height};
+    FillRect(dc, &fill, magenta);
+    DeleteObject(magenta);
+    RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW);
+    const BOOL printed = PrintWindow(hwnd, dc, 0x00000002);
+    SelectObject(dc, old);
+    DeleteDC(dc);
+    ReleaseDC(nullptr, screen);
+    if (!printed) {
+        DeleteObject(bitmap);
+        return {};
+    }
     return BitmapCapture{bitmap, width, height};
 }
 
@@ -705,6 +737,75 @@ std::size_t CountPixelsNearColor(
         }
     }
     return count;
+}
+
+void ValidateSplitButtonChevron(
+    HWND button,
+    const Theme& theme,
+    UINT dpi,
+    TestState& state,
+    const std::wstring& scenario,
+    bool verifySemanticState) {
+    state.Check(button != nullptr, scenario + L": split-button menu segment is missing");
+    if (!button) {
+        return;
+    }
+    if (verifySemanticState) {
+        TablerIconManifest::Id icon{};
+        state.Check(
+            ThemedControls::ButtonTablerIcon(button, icon) && icon == TablerIconId::ChevronDown,
+            scenario + L": split-button menu segment lost its typed ChevronDown state");
+        state.Check(
+            SendMessageW(button, BM_GETIMAGE, IMAGE_ICON, 0) == 0,
+            scenario + L": split-button menu segment still uses an intermediate HICON");
+    }
+
+    BitmapCapture capture = CaptureControlBitmap(button);
+    state.Check(capture.bitmap != nullptr, scenario + L": split-button icon capture failed");
+    if (!capture.bitmap) {
+        return;
+    }
+    const Color icon = theme.color(L"iconButton", L"normal", L"icon");
+    const COLORREF iconColor = RGB(
+        static_cast<BYTE>(std::clamp(icon.r, 0.0f, 1.0f) * 255.0f + 0.5f),
+        static_cast<BYTE>(std::clamp(icon.g, 0.0f, 1.0f) * 255.0f + 0.5f),
+        static_cast<BYTE>(std::clamp(icon.b, 0.0f, 1.0f) * 255.0f + 0.5f));
+    const RECT probe{
+        capture.width / 5,
+        capture.height / 5,
+        capture.width - capture.width / 5,
+        capture.height - capture.height / 5};
+    HDC dc = CreateCompatibleDC(nullptr);
+    HGDIOBJ old = SelectObject(dc, capture.bitmap);
+    int minX = capture.width;
+    int minY = capture.height;
+    int maxX = -1;
+    int maxY = -1;
+    std::size_t pixels = 0;
+    for (int y = probe.top; y < probe.bottom; ++y) {
+        for (int x = probe.left; x < probe.right; ++x) {
+            if (ColorDistance(GetPixel(dc, x, y), iconColor) <= 96) {
+                minX = std::min(minX, x);
+                minY = std::min(minY, y);
+                maxX = std::max(maxX, x);
+                maxY = std::max(maxY, y);
+                ++pixels;
+            }
+        }
+    }
+    SelectObject(dc, old);
+    DeleteDC(dc);
+    const int glyphWidth = maxX >= minX ? maxX - minX + 1 : 0;
+    const int glyphHeight = maxY >= minY ? maxY - minY + 1 : 0;
+    state.Check(
+        pixels >= static_cast<std::size_t>(std::max(8, MulDiv(8, static_cast<int>(dpi), 96))),
+        scenario + L": split-button chevron has too few visible pixels");
+    state.Check(
+        glyphWidth >= MulDiv(8, static_cast<int>(dpi), 96) &&
+            glyphHeight >= MulDiv(3, static_cast<int>(dpi), 96) &&
+            glyphWidth > glyphHeight,
+        scenario + L": split-button chevron is too small or resembles a square fallback glyph");
+    DeleteObject(capture.bitmap);
 }
 
 struct ChildInfo {
@@ -1291,6 +1392,17 @@ void ValidateAndCapture(HWND hwnd, const Scenario& scenario, const std::filesyst
                 DeleteObject(frameCapture.bitmap);
             }
         }
+    }
+
+    if (scenario.splitButtonMenuId != 0) {
+        const Theme validationTheme = Theme::Load(std::filesystem::current_path() / L"theme", L"default");
+        ValidateSplitButtonChevron(
+            ChildById(hwnd, scenario.splitButtonMenuId),
+            validationTheme,
+            scenario.forcedDpi,
+            state,
+            scenario.name,
+            true);
     }
 
     BitmapCapture capture = CaptureWindowBitmap(hwnd);
@@ -2090,6 +2202,13 @@ void RunSplitButtonMenuScenario(
         hwnd, HWND_BOTTOM, 0, 0, 0, 0,
         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
     UpdateWindow(hwnd);
+    ValidateSplitButtonChevron(
+        host.split_.menu,
+        host.theme_,
+        dpi,
+        state,
+        scenarioName + L" button",
+        true);
 
     const HWND foregroundBefore = GetForegroundWindow();
     const HWND activeBefore = GetActiveWindow();
@@ -2863,6 +2982,8 @@ void RunAppLaunchLockerScenario(const std::filesystem::path& outputDir, TestStat
 
 void RunAdBlockScenario(const std::filesystem::path& outputDir, TestState& state) {
     AcceptanceLog(L"begin ad-block");
+    const Theme validationTheme = Theme::Load(
+        std::filesystem::current_path() / L"theme", L"default");
     const std::filesystem::path progressRoot = outputDir / L"ad-block-progress-input";
     std::error_code progressError;
     std::filesystem::create_directories(progressRoot / L"nested", progressError);
@@ -2971,6 +3092,8 @@ void RunAdBlockScenario(const std::filesystem::path& outputDir, TestState& state
             L"ad-block: file picker split-button label is incorrect");
         state.Check(pickPathMenu && WindowText(pickPathMenu).empty(),
             L"ad-block: folder picker menu segment should use only the public icon");
+        ValidateSplitButtonChevron(
+            pickPathMenu, validationTheme, 96, state, L"ad-block 100% DPI", false);
         state.Check(clearResults && WindowText(clearResults) == L"清空",
             L"ad-block: clear-results action label is incorrect");
         state.Check(checkPath && WindowText(checkPath) == L"检查",
@@ -3186,6 +3309,13 @@ void RunAdBlockScenario(const std::filesystem::path& outputDir, TestState& state
             HWND blockButton = ChildById(dpiWindow, 1216);
             state.Check(exactMode && nameMode && tabControl && contentPanel && pathEdit && pickPath && pickPathMenu && clearResults && checkPath && scanTable && blockButton,
                 L"ad-block: DPI action row controls are incomplete");
+            ValidateSplitButtonChevron(
+                pickPathMenu,
+                validationTheme,
+                dpi,
+                state,
+                L"ad-block " + DpiPercentSuffix(dpi) + L"% DPI",
+                false);
             if (tabControl && contentPanel) {
                 RECT tabRect{};
                 RECT panelRect{};
@@ -3688,6 +3818,43 @@ void RunQuickImportScenarios(
     }
 }
 
+void RunLinkEditSplitButtonScenarios(
+    HWND owner,
+    HINSTANCE instance,
+    const Theme& theme,
+    const AppModel& model,
+    const std::filesystem::path& outputDir,
+    TestState& state) {
+    Link link;
+    link.name = L"验收启动项";
+    link.path = L"C:\\Windows\\notepad.exe";
+    link.parameter = L"acceptance.txt";
+    link.workDir = L"C:\\Windows";
+    link.remark = L"启动项备注";
+    for (const UINT dpi : {96u, 120u, 144u}) {
+        const std::wstring dpiSuffix = DpiPercentSuffix(dpi);
+        Scenario scenario{
+            L"link-edit-split-button-" + dpiSuffix,
+            L"QuattroLinkEditDialog",
+            L"添加启动项",
+            L"link-edit-split-button-" + dpiSuffix + L".png",
+            {L"添加启动项", L"确定", L"取消"},
+            {L"验收启动项", L"C:\\Windows\\notepad.exe", L"启动项备注"},
+            5,
+            2,
+            false};
+        scenario.forcedDpi = dpi;
+        scenario.splitButtonMenuId = 1006;
+        RunDialogScenario(
+            scenario,
+            outputDir,
+            state,
+            [&]() {
+                LinkEditDialog::Show(owner, instance, theme, link, model.groups, true);
+            });
+    }
+}
+
 } // namespace
 
 int wmain() {
@@ -3734,6 +3901,7 @@ int wmain() {
 
     wchar_t quickImportOnly[8]{};
     wchar_t splitButtonMenuOnly[8]{};
+    wchar_t linkEditSplitButtonOnly[8]{};
     if (GetEnvironmentVariableW(
             L"QUATTRO_UI_ACCEPTANCE_SPLIT_BUTTON_MENU_ONLY",
             splitButtonMenuOnly,
@@ -3752,6 +3920,26 @@ int wmain() {
             return 1;
         }
         std::wcout << L"ui_split_button_menu_acceptance=passed screenshots=" << outputDir.wstring() << L"\n";
+        return 0;
+    }
+
+    if (GetEnvironmentVariableW(
+            L"QUATTRO_UI_ACCEPTANCE_LINK_EDIT_SPLIT_BUTTON_ONLY",
+            linkEditSplitButtonOnly,
+            static_cast<DWORD>(std::size(linkEditSplitButtonOnly))) > 0) {
+        RunLinkEditSplitButtonScenarios(owner, instance, theme, model, outputDir, state);
+        DestroyWindow(owner);
+        OleUninitialize();
+        Gdiplus::GdiplusShutdown(gdiplusToken);
+        if (!state.ok) {
+            for (const auto& failure : state.failures) {
+                AcceptanceLog(L"link-edit split-button target failure " + failure);
+                std::wcerr << failure << L"\n";
+            }
+            return 1;
+        }
+        std::wcout << L"ui_link_edit_split_button_acceptance=passed screenshots="
+                   << outputDir.wstring() << L"\n";
         return 0;
     }
 
@@ -4392,19 +4580,7 @@ int wmain() {
 
     RunQuickImportScenarios(owner, instance, theme, model, outputDir, state);
 
-    Link link;
-    link.name = L"验收启动项";
-    link.path = L"C:\\Windows\\notepad.exe";
-    link.parameter = L"acceptance.txt";
-    link.workDir = L"C:\\Windows";
-    link.remark = L"启动项备注";
-    RunDialogScenario(
-        Scenario{L"link-edit-dialog", L"QuattroLinkEditDialog", L"添加启动项", L"link-edit-dialog.png", {L"添加启动项", L"确定", L"取消"}, {L"验收启动项", L"C:\\Windows\\notepad.exe", L"启动项备注"}, 5, 2, false},
-        outputDir,
-        state,
-        [&]() {
-            LinkEditDialog::Show(owner, instance, theme, link, model.groups, true);
-        });
+    RunLinkEditSplitButtonScenarios(owner, instance, theme, model, outputDir, state);
 
     Link url;
     url.name = L"验收网址";

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "TablerIconManifest.h"
 #include "Theme.h"
 
 #include <string>
@@ -37,7 +38,10 @@ HWND CreatePrimaryButton(
     bool defaultButton = true);
 
 void SetControlTheme(HWND hwnd, const Theme& theme);
+void SetControlDpi(HWND hwnd, UINT dpi);
 bool IsControlHovered(HWND hwnd);
+void SetButtonTablerIcon(HWND hwnd, TablerIconManifest::Id icon);
+bool ButtonTablerIcon(HWND hwnd, TablerIconManifest::Id& icon);
 
 HWND CreateMiniButton(
     HINSTANCE instance,

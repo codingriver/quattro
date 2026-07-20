@@ -421,6 +421,7 @@ void ThemedWindowUi::ApplyDpiChange(UINT newDpi, const RECT* suggestedWindowRect
             MulDiv(rect.bottom - rect.top, dpi->newDpi, dpi->oldDpi),
             SWP_NOACTIVATE | SWP_NOZORDER);
         SendMessageW(child, WM_SETFONT, reinterpret_cast<WPARAM>(dpi->font), FALSE);
+        ThemedControls::SetControlDpi(child, dpi->newDpi);
         return TRUE;
     }, reinterpret_cast<LPARAM>(&dpiChange));
 

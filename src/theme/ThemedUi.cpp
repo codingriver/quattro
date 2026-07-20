@@ -590,91 +590,12 @@ int TextWidth(HWND parent, HFONT font, const std::wstring& text) {
     return size.cx;
 }
 
-HICON CreateChevronFallbackIcon() {
-    constexpr int size = 64;
-    BITMAPINFO info{};
-    info.bmiHeader.biSize = sizeof(info.bmiHeader);
-    info.bmiHeader.biWidth = size;
-    info.bmiHeader.biHeight = -size;
-    info.bmiHeader.biPlanes = 1;
-    info.bmiHeader.biBitCount = 32;
-    info.bmiHeader.biCompression = BI_RGB;
-
-    void* pixels = nullptr;
-    HDC screen = GetDC(nullptr);
-    HBITMAP color = CreateDIBSection(screen, &info, DIB_RGB_COLORS, &pixels, nullptr, 0);
-    HBITMAP mask = CreateBitmap(size, size, 1, 1, nullptr);
-    HDC dc = CreateCompatibleDC(screen);
-    ReleaseDC(nullptr, screen);
-    if (!color || !mask || !dc || !pixels) {
-        if (dc) DeleteDC(dc);
-        if (mask) DeleteObject(mask);
-        if (color) DeleteObject(color);
-        return nullptr;
-    }
-
-    HGDIOBJ oldBitmap = SelectObject(dc, color);
-    std::fill_n(static_cast<std::uint32_t*>(pixels), size * size, 0);
-    const POINT points[]{{20, 26}, {32, 38}, {44, 26}};
-    bool usedFallback = false;
-    {
-        ThemedD2D::ScopedHdcPaint paint(nullptr, dc, ThemedD2D::SurfaceKind::Transparent);
-        if (!ThemedD2D::DrawPolyline(dc, points, 3, RGB(31, 41, 55), 5.0f)) {
-            ThemedGdiFallback::DrawPolyline(dc, points, 3, RGB(31, 41, 55), 5);
-            usedFallback = true;
-        }
-    }
-    if (usedFallback) {
-        auto* argb = static_cast<std::uint32_t*>(pixels);
-        for (int i = 0; i < size * size; ++i) {
-            if ((argb[i] & 0x00FFFFFFu) != 0) argb[i] |= 0xFF000000u;
-        }
-    }
-
-    SelectObject(dc, oldBitmap);
-    DeleteDC(dc);
-
-    ICONINFO iconInfo{};
-    iconInfo.fIcon = TRUE;
-    iconInfo.hbmColor = color;
-    iconInfo.hbmMask = mask;
-    HICON icon = CreateIconIndirect(&iconInfo);
-    DeleteObject(mask);
-    DeleteObject(color);
-    return icon;
-}
-
-LRESULT CALLBACK SplitButtonMenuProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR id, DWORD_PTR refData) {
-    if (message == WM_NCDESTROY) {
-        RemovePropW(hwnd, L"QuattroThemedButtonIcon");
-        HICON icon = reinterpret_cast<HICON>(refData);
-        if (icon) {
-            DestroyIcon(icon);
-        }
-        RemoveWindowSubclass(hwnd, SplitButtonMenuProc, id);
-    }
-    return DefSubclassProc(hwnd, message, wParam, lParam);
-}
-
-void ApplySplitButtonMenuIcon(HWND button, int buttonHeight) {
+void ApplySplitButtonMenuIcon(HWND button) {
     if (!button) {
         return;
     }
-
-    HICON icon = CreateTablerIconHandle({}, TablerIconId::ChevronDown);
-    if (!icon) {
-        icon = CreateChevronFallbackIcon();
-    }
-    if (!icon) {
-        SetWindowTextW(button, L"");
-        return;
-    }
-
     SetWindowTextW(button, L"");
-    SendMessageW(button, BM_SETIMAGE, IMAGE_ICON, reinterpret_cast<LPARAM>(icon));
-    SetPropW(button, L"QuattroThemedButtonIcon", icon);
-    SetWindowSubclass(button, SplitButtonMenuProc, 6, reinterpret_cast<DWORD_PTR>(icon));
-    (void)buttonHeight;
+    ThemedControls::SetButtonTablerIcon(button, TablerIconId::ChevronDown);
 }
 
 struct GroupBoxRuntime {
@@ -2377,7 +2298,7 @@ ThemedSplitButton ThemedUi::SplitButton(
     ThemedSplitButton split{};
     split.primary = Button(primaryId, text, x, y, role, size, ThemedButtonWidthMode::Fixed, primaryWidth, defaultButton);
     split.menu = Button(menuId, L"", x + primaryWidth, y, role, size, ThemedButtonWidthMode::Fixed, menuWidth);
-    ApplySplitButtonMenuIcon(split.menu, height);
+    ApplySplitButtonMenuIcon(split.menu);
     return split;
 }
 
@@ -3148,5 +3069,6 @@ bool ThemedUi::HandleParentMessage(const Theme& theme, UINT message, WPARAM, LPA
 // 返回值：原样返回传入的 HWND，便于创建函数直接内联返回。
 HWND ThemedUi::BindTheme(HWND hwnd) const {
     ThemedControls::SetControlTheme(hwnd, theme_);
+    ThemedControls::SetControlDpi(hwnd, dpi_);
     return hwnd;
 }

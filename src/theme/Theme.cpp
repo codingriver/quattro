@@ -970,7 +970,7 @@ void Theme::SetDefaults() {
     PutMetric(L"button", L"pressedOffset", 1.0f);
     PutMetric(L"iconButton", L"size", 28.0f);
     PutMetric(L"iconButton", L"radius", 7.0f);
-    PutMetric(L"iconButton", L"iconSize", 16.0f);
+    PutMetric(L"iconButton", L"iconSize", 20.0f);
     PutMetric(L"miniButton", L"width", 26.0f);
     PutMetric(L"miniButton", L"height", 24.0f);
     PutMetric(L"miniButton", L"radius", 6.0f);

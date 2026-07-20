@@ -1248,6 +1248,8 @@ int wmain() {
         "Theme soft pill tab radius");
     Check(Near(fallbackTheme.metric(L"listItem", L"twoLineHeight", 0.0f), 48.0f), "Theme two-line result row height");
     Check(Near(fallbackTheme.metric(L"miniButton", L"height", 0.0f), 24.0f), "Theme default mini button metric");
+    Check(Near(fallbackTheme.metric(L"iconButton", L"iconSize", 0.0f), 20.0f),
+        "Theme default icon button glyph size");
     Check(fallbackTheme.color(L"miniButton", L"hover", L"icon").a > 0.9f, "Theme default mini button hover");
     Check(Near(fallbackTheme.metric(L"tabButton", L"minTextWidth", 0.0f), 18.0f), "Theme default tab button min text width");
     ThemedEditOptions editOptions{};
@@ -1494,8 +1496,22 @@ int wmain() {
         HWND runtimeSlider = controlUi.Slider(7104, 8, 72, 220, runtimeSliderOptions);
         ThemedUi::SetSliderValue(runtimeSlider, 3.7);
         Check(Near(static_cast<float>(ThemedUi::SliderValue(runtimeSlider)), 4.0f), "Themed slider applies public step");
+        const ThemedSplitButton runtimeSplit = controlUi.SplitButton(
+            7107, 7108, L"file", 8, 104,
+            ThemedButtonRole::Normal,
+            ThemedButtonSize::Normal,
+            ThemedButtonWidthMode::Fixed,
+            120);
+        TablerIconManifest::Id runtimeSplitIcon{};
+        Check(runtimeSplit.primary != nullptr && runtimeSplit.menu != nullptr,
+            "Themed split button creates both public segments");
+        Check(ThemedControls::ButtonTablerIcon(runtimeSplit.menu, runtimeSplitIcon) &&
+                runtimeSplitIcon == TablerIconId::ChevronDown,
+            "Themed split button stores a strong typed chevron semantic");
+        Check(SendMessageW(runtimeSplit.menu, BM_GETIMAGE, IMAGE_ICON, 0) == 0,
+            "Themed split button does not downscale an intermediate HICON");
         HWND runtimeTooltipButton = tooltipUi.Button(
-            7106, L"tooltip", 8, 104,
+            7106, L"tooltip", 136, 104,
             ThemedButtonRole::Normal,
             ThemedButtonSize::Compact,
             ThemedButtonWidthMode::Text);
