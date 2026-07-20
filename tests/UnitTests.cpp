@@ -129,6 +129,24 @@ struct TableUpdateNotificationProbe {
     int checkChangedCount = 0;
 };
 
+struct EraseCountProbe {
+    int eraseCount = 0;
+};
+
+LRESULT CALLBACK EraseCountSubclassProc(
+    HWND hwnd,
+    UINT message,
+    WPARAM wParam,
+    LPARAM lParam,
+    UINT_PTR,
+    DWORD_PTR referenceData) {
+    auto* probe = reinterpret_cast<EraseCountProbe*>(referenceData);
+    if (probe && message == WM_ERASEBKGND) {
+        ++probe->eraseCount;
+    }
+    return DefSubclassProc(hwnd, message, wParam, lParam);
+}
+
 LRESULT CALLBACK TableUpdateNotificationParentProc(
     HWND hwnd,
     UINT message,
@@ -1511,6 +1529,12 @@ int wmain() {
         const RECT framedTextFrame{8, 116, 260, 188};
         HWND runtimeSingleLineFrame = controlUi.FramedStatic(L"one line", framedTextFrame);
         HWND runtimeTimeDisplay = controlUi.TimeDisplay(L"14:32:08.123", 8, 80, 252);
+        EraseCountProbe eraseProbe;
+        SetWindowSubclass(runtimeTimeDisplay, EraseCountSubclassProc, 0x54494D45, reinterpret_cast<DWORD_PTR>(&eraseProbe));
+        eraseProbe.eraseCount = 0;
+        ThemedUi::SetText(runtimeTimeDisplay, L"14:32:09.123");
+        UpdateWindow(runtimeTimeDisplay);
+        Check(eraseProbe.eraseCount == 0, "Themed time display updates without background erase");
         HWND runtimeListBox = controlUi.ListBox(7098, 200, 8, 100, 48);
         controlUi.MoveListBox(runtimeListBox, 196, 12, 104, 64);
         ThemedFramedTextOptions runtimeFramedTextOptions{};

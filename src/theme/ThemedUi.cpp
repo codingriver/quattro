@@ -1624,7 +1624,7 @@ void ThemedUi::SetText(HWND hwnd, const std::wstring& text) {
         hwnd,
         nullptr,
         nullptr,
-        RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW);
+        RDW_INVALIDATE | RDW_UPDATENOW);
 }
 
 void ThemedUi::SetVisible(HWND hwnd, bool visible) {

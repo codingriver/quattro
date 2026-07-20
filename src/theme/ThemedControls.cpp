@@ -1153,6 +1153,12 @@ LRESULT CALLBACK ThemedControlProc(HWND hwnd, UINT message, WPARAM wParam, LPARA
             return DefSubclassProc(hwnd, message, reinterpret_cast<WPARAM>(font), lParam);
         }
         break;
+    case WM_ERASEBKGND:
+        if (KindFor(hwnd) == ControlKind::Label || KindFor(hwnd) == ControlKind::StatusBadge ||
+            KindFor(hwnd) == ControlKind::StatusText || KindFor(hwnd) == ControlKind::TimeDisplay) {
+            return 1;
+        }
+        break;
     case WM_PAINT: {
         ControlKind kind = KindFor(hwnd);
         if (IsOwnerDrawButtonKind(kind)) {
