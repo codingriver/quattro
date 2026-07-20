@@ -7,6 +7,8 @@ void InitializeAppLog(const std::filesystem::path& appDirectory, bool enabled = 
 void SetAppLogEnabled(bool enabled);
 bool IsAppLogEnabled();
 void WriteAppLog(const std::wstring& message);
+void FlushAppLog();
+void ShutdownAppLog();
 void ResetStartupTiming();
 void FinishStartupTiming();
 bool IsStartupTimingActive();

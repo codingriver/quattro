@@ -47,6 +47,9 @@ template <typename RunWindow>
 int RunGui(const wchar_t* mode, RunWindow&& runWindow) {
     const std::filesystem::path logDirectory = GuiLogDirectory();
     InitializeAppLog(logDirectory, true);
+    struct AppLogShutdownGuard {
+        ~AppLogShutdownGuard() { ShutdownAppLog(); }
+    } appLogShutdownGuard;
     WriteAppLog(
         L"AppLaunchLocker GUI 启动: mode=" + std::wstring(mode) +
         L", pid=" + std::to_wstring(GetCurrentProcessId()) +

@@ -615,6 +615,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     ConfigService configService(appDirectory / L"conf.ini");
     AppConfig config = configService.Load();
     InitializeAppLog(appDirectory, config.loggingEnabled);
+    struct AppLogShutdownGuard {
+        ~AppLogShutdownGuard() { ShutdownAppLog(); }
+    } appLogShutdownGuard;
     WriteAppLog(L"应用启动。pid=" + CurrentPidText());
     WriteStartupTiming(
         L"app directory ready",

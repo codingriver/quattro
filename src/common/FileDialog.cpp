@@ -8,7 +8,6 @@
 #include <cwchar>
 #include <sstream>
 #include <system_error>
-#include <utility>
 #include <vector>
 
 namespace {
@@ -95,8 +94,8 @@ std::wstring CurrentComApartmentText() {
 
 class FileDialogLifecycleEventLogger final : public IFileDialogEvents {
 public:
-    FileDialogLifecycleEventLogger(std::wstring prefix, LARGE_INTEGER started, LARGE_INTEGER frequency)
-        : prefix_(std::move(prefix)), started_(started), frequency_(frequency) {}
+    FileDialogLifecycleEventLogger(LARGE_INTEGER started, LARGE_INTEGER frequency)
+        : started_(started), frequency_(frequency) {}
 
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** object) override {
         if (!object) {
@@ -127,9 +126,6 @@ public:
         if (InterlockedCompareExchange(&closeStartedObserved_, 1, 0) == 0) {
             QueryPerformanceCounter(&closeStarted_);
             closeStartElapsedMs_ = ElapsedMilliseconds(started_, closeStarted_, frequency_);
-            WriteAppLog(prefix_ + L" 开始关闭: trigger=fileOk" +
-                        L", elapsedMs=" + std::to_wstring(closeStartElapsedMs_) +
-                        L", threadId=" + std::to_wstring(GetCurrentThreadId()));
         }
         return S_OK;
     }
@@ -140,8 +136,6 @@ public:
             LARGE_INTEGER ready{};
             QueryPerformanceCounter(&ready);
             openElapsedMs_ = ElapsedMilliseconds(started_, ready, frequency_);
-            WriteAppLog(prefix_ + L" 打开完成: elapsedMs=" + std::to_wstring(openElapsedMs_) +
-                        L", readyEvent=folderChanged");
         }
         return S_OK;
     }
@@ -181,7 +175,6 @@ private:
     volatile LONG referenceCount_ = 1;
     volatile LONG openReadyObserved_ = 0;
     volatile LONG closeStartedObserved_ = 0;
-    std::wstring prefix_;
     LARGE_INTEGER started_{};
     LARGE_INTEGER frequency_{};
     LARGE_INTEGER closeStarted_{};
@@ -313,16 +306,7 @@ bool ShowCommonFileDialog(const CommonFileDialogOptions& options, CommonFileDial
         L", threadId=" + std::to_wstring(GetCurrentThreadId()) +
         L", apartment={" + CurrentComApartmentText() + L"}");
 
-    LARGE_INTEGER initialDirectoryStarted{};
-    LARGE_INTEGER initialDirectoryEnded{};
-    QueryPerformanceCounter(&initialDirectoryStarted);
-    WriteAppLog(DialogLogPrefix(options) + L" 初始目录解析开始");
     const std::filesystem::path initialDirectory = ResolveCommonFileDialogInitialDirectory(options.defaultPath);
-    QueryPerformanceCounter(&initialDirectoryEnded);
-    WriteAppLog(
-        DialogLogPrefix(options) + L" 初始目录解析完成: initialDir=\"" + initialDirectory.wstring() + L"\"" +
-        L", elapsedMs=" + std::to_wstring(
-            ElapsedMilliseconds(initialDirectoryStarted, initialDirectoryEnded, frequency)));
 
     if (!CommonFileDialogSupportsNativeMode(options.mode)) {
         LARGE_INTEGER ended{};
@@ -336,12 +320,7 @@ bool ShowCommonFileDialog(const CommonFileDialogOptions& options, CommonFileDial
     }
 
     IFileOpenDialog* dialog = nullptr;
-    LARGE_INTEGER createStarted{};
-    LARGE_INTEGER createEnded{};
-    QueryPerformanceCounter(&createStarted);
-    WriteAppLog(DialogLogPrefix(options) + L" 原生对话框创建开始");
     HRESULT hr = CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog));
-    QueryPerformanceCounter(&createEnded);
     if (FAILED(hr) || !dialog) {
         LARGE_INTEGER ended{};
         QueryPerformanceCounter(&ended);
@@ -351,14 +330,7 @@ bool ShowCommonFileDialog(const CommonFileDialogOptions& options, CommonFileDial
                     L", elapsedMs=" + std::to_wstring(result.elapsedMs));
         return false;
     }
-    WriteAppLog(
-        DialogLogPrefix(options) + L" 原生对话框创建完成: elapsedMs=" +
-        std::to_wstring(ElapsedMilliseconds(createStarted, createEnded, frequency)));
 
-    LARGE_INTEGER configureStarted{};
-    LARGE_INTEGER configureEnded{};
-    QueryPerformanceCounter(&configureStarted);
-    WriteAppLog(DialogLogPrefix(options) + L" 原生对话框配置开始");
     DWORD flags = 0;
     dialog->GetOptions(&flags);
     if (options.mode == CommonFileDialogMode::FolderOnly) {
@@ -402,18 +374,13 @@ bool ShowCommonFileDialog(const CommonFileDialogOptions& options, CommonFileDial
     }
 
     FileDialogLifecycleEventLogger* lifecycleEventLogger =
-        new FileDialogLifecycleEventLogger(DialogLogPrefix(options), started, frequency);
+        new FileDialogLifecycleEventLogger(started, frequency);
     DWORD eventCookie = 0;
     const HRESULT adviseResult = dialog->Advise(lifecycleEventLogger, &eventCookie);
     if (FAILED(adviseResult)) {
         WriteAppLog(DialogLogPrefix(options) + L" 打开事件监听注册失败: hr=" + HResultText(adviseResult));
     }
-    QueryPerformanceCounter(&configureEnded);
-    WriteAppLog(
-        DialogLogPrefix(options) + L" 原生对话框配置完成: elapsedMs=" +
-        std::to_wstring(ElapsedMilliseconds(configureStarted, configureEnded, frequency)));
 
-    WriteAppLog(DialogLogPrefix(options) + L" 等待用户操作: 调用 IFileDialog::Show");
     hr = dialog->Show(options.owner);
     LARGE_INTEGER showReturned{};
     QueryPerformanceCounter(&showReturned);
@@ -424,18 +391,6 @@ bool ShowCommonFileDialog(const CommonFileDialogOptions& options, CommonFileDial
     const long long closeElapsedMs = closeStartedObserved
         ? ElapsedMilliseconds(lifecycleEventLogger->closeStarted(), showReturned, frequency)
         : 0;
-    WriteAppLog(
-        DialogLogPrefix(options) + L" 关闭完成: accepted=" + std::wstring(result.accepted ? L"1" : L"0") +
-        L", hr=" + HResultText(result.dialogResult) +
-        L", closeStartedObserved=" + std::wstring(closeStartedObserved ? L"1" : L"0") +
-        L", closeElapsedMs=" + std::to_wstring(closeElapsedMs) +
-        L", showElapsedMs=" + std::to_wstring(ElapsedMilliseconds(started, showReturned, frequency)) +
-        L", threadId=" + std::to_wstring(GetCurrentThreadId()));
-
-    LARGE_INTEGER resultStarted{};
-    LARGE_INTEGER resultEnded{};
-    QueryPerformanceCounter(&resultStarted);
-    WriteAppLog(DialogLogPrefix(options) + L" 结果读取开始");
     if (result.accepted) {
         if (options.allowMultiSelect) {
             CollectMultiSelectResults(dialog, options, result);
@@ -449,28 +404,15 @@ bool ShowCommonFileDialog(const CommonFileDialogOptions& options, CommonFileDial
             result.displayName = result.displayNames.front();
         }
     }
-    QueryPerformanceCounter(&resultEnded);
-    WriteAppLog(
-        DialogLogPrefix(options) + L" 结果读取完成: selectedCount=" + std::to_wstring(result.paths.size()) +
-        L", selected=\"" + result.path + L"\"" +
-        L", elapsedMs=" + std::to_wstring(ElapsedMilliseconds(resultStarted, resultEnded, frequency)));
 
     const bool openReadyObserved = lifecycleEventLogger->openReadyObserved();
     const long long openElapsedMs = lifecycleEventLogger->openElapsedMs();
     const long long closeStartElapsedMs = lifecycleEventLogger->closeStartElapsedMs();
-    LARGE_INTEGER cleanupStarted{};
-    LARGE_INTEGER cleanupEnded{};
-    QueryPerformanceCounter(&cleanupStarted);
-    WriteAppLog(DialogLogPrefix(options) + L" 资源释放开始");
     if (SUCCEEDED(adviseResult)) {
         dialog->Unadvise(eventCookie);
     }
     lifecycleEventLogger->Release();
     dialog->Release();
-    QueryPerformanceCounter(&cleanupEnded);
-    WriteAppLog(
-        DialogLogPrefix(options) + L" 资源释放完成: elapsedMs=" +
-        std::to_wstring(ElapsedMilliseconds(cleanupStarted, cleanupEnded, frequency)));
 
     LARGE_INTEGER ended{};
     QueryPerformanceCounter(&ended);
@@ -479,6 +421,8 @@ bool ShowCommonFileDialog(const CommonFileDialogOptions& options, CommonFileDial
         DialogLogPrefix(options) + L" 调用完成: accepted=" + std::wstring(result.accepted ? L"1" : L"0") +
         L", hr=" + HResultText(result.dialogResult) +
         L", elapsedMs=" + std::to_wstring(result.elapsedMs) +
+        L", showElapsedMs=" + std::to_wstring(ElapsedMilliseconds(started, showReturned, frequency)) +
+        L", threadId=" + std::to_wstring(GetCurrentThreadId()) +
         L", openReadyObserved=" + std::wstring(openReadyObserved ? L"1" : L"0") +
         L", openElapsedMs=" + std::to_wstring(openElapsedMs) +
         L", closeStartedObserved=" + std::wstring(closeStartedObserved ? L"1" : L"0") +

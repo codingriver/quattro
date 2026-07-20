@@ -347,6 +347,7 @@ int wmain() {
         interactor.join();
     }
     DestroyWindow(owner);
+    ShutdownAppLog();
     std::filesystem::remove_all(root, ec);
     std::filesystem::remove_all(userConfig, ec);
     SetEnvironmentVariableW(L"QUATTRO_USER_CONFIG_DIR", nullptr);

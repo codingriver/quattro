@@ -304,6 +304,7 @@ int wmain() {
     ok = Require(authorized && authorized->status == 200 && authorized->body == "0123456789abcdef", L"valid Basic Auth should allow reads") && ok;
 
     service.Stop();
+    ShutdownAppLog();
     std::filesystem::remove_all(root, ec);
     std::filesystem::remove_all(userConfig, ec);
     SetEnvironmentVariableW(L"QUATTRO_USER_CONFIG_DIR", nullptr);

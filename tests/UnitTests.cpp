@@ -46,6 +46,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <thread>
 #include <unordered_set>
 #include <string>
 #include <vector>
@@ -2730,6 +2731,29 @@ int wmain() {
           "File dialog unsupported mode does not open native GUI");
     Check(unsupportedDialogResult.dialogResult == E_NOTIMPL,
           "File dialog unsupported mode returns E_NOTIMPL");
+    WriteAppLog(L"async-before-disable");
+    SetAppLogEnabled(false);
+    Check(!IsAppLogEnabled(), "App log reports disabled state");
+    WriteAppLog(L"disabled-marker-must-not-be-written");
+    SetAppLogEnabled(true);
+    Check(IsAppLogEnabled(), "App log reports enabled state");
+    constexpr int appLogThreadCount = 4;
+    constexpr int appLogLinesPerThread = 50;
+    std::vector<std::thread> appLogWriters;
+    for (int threadIndex = 0; threadIndex < appLogThreadCount; ++threadIndex) {
+        appLogWriters.emplace_back([threadIndex]() {
+            for (int lineIndex = 0; lineIndex < appLogLinesPerThread; ++lineIndex) {
+                WriteAppLog(
+                    L"async-thread-" + std::to_wstring(threadIndex) +
+                    L"-line-" + std::to_wstring(lineIndex));
+            }
+        });
+    }
+    for (auto& writer : appLogWriters) {
+        writer.join();
+    }
+    WriteAppLog(L"async-after-enable");
+    FlushAppLog();
     {
         std::ifstream appLog(appLogRoot / L"logs" / L"app.log", std::ios::binary);
         const std::string contents((std::istreambuf_iterator<char>(appLog)), std::istreambuf_iterator<char>());
@@ -2740,6 +2764,33 @@ int wmain() {
               "App log timestamp includes millisecond precision");
         Check(contents.find("elapsedMs=") != std::string::npos,
               "File dialog terminal log includes elapsed milliseconds");
+        Check(contents.find("async-before-disable") != std::string::npos,
+              "App log flush writes queued content");
+        Check(contents.find("disabled-marker-must-not-be-written") == std::string::npos,
+              "App log disabled state rejects new content");
+        Check(contents.find("async-after-enable") != std::string::npos,
+              "App log resumes after re-enabling");
+        for (int threadIndex = 0; threadIndex < appLogThreadCount; ++threadIndex) {
+            for (int lineIndex = 0; lineIndex < appLogLinesPerThread; ++lineIndex) {
+                const std::string marker =
+                    "async-thread-" + std::to_string(threadIndex) +
+                    "-line-" + std::to_string(lineIndex) + "\n";
+                Check(contents.find(marker) != std::string::npos,
+                      "App log preserves concurrent writer lines");
+            }
+        }
+    }
+    ShutdownAppLog();
+    InitializeAppLog(appLogRoot);
+    WriteAppLog(L"append-after-reinitialize");
+    ShutdownAppLog();
+    {
+        std::ifstream appLog(appLogRoot / L"logs" / L"app.log", std::ios::binary);
+        const std::string contents((std::istreambuf_iterator<char>(appLog)), std::istreambuf_iterator<char>());
+        Check(contents.find("async-before-disable") != std::string::npos,
+              "App log reinitialization preserves existing content");
+        Check(contents.find("append-after-reinitialize") != std::string::npos,
+              "App log reinitialization appends new content");
     }
     std::filesystem::remove_all(appLogRoot, ec);
 
