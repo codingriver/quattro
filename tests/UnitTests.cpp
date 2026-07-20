@@ -2742,11 +2742,13 @@ int wmain() {
     targetGroup.name = L"MergeGroup";
     targetGroup.parentGroup = 0;
     targetGroup.pos = -1;
+    targetGroup.groupUid = sourceGroup.groupUid;
     Check(targetStorage.InsertGroup(targetGroup), "Package target group insert");
     Group targetTag;
     targetTag.name = L"MergeTag";
     targetTag.parentGroup = targetGroup.id;
     targetTag.pos = -1;
+    targetTag.groupUid = sourceTag.groupUid;
     Check(targetStorage.InsertGroup(targetTag), "Package target tag insert");
     Link targetLink;
     targetLink.name = L"ExistingLink";
@@ -2764,10 +2766,10 @@ int wmain() {
     ConfigPackageService packageImporter(packageTargetRoot);
     ConfigPackageReport importReport = packageImporter.ImportPackageMerge(packagePath, packageOptions);
     Check(importReport.ok, "Package merge import succeeds");
-    Check(importReport.groupsAdded == 0, "Package merge reuses matching groups");
-    Check(importReport.groupsMerged >= 2, "Package merge reports reused groups");
-    Check(importReport.tagsAdded == 2, "Package merge import new tags");
-    Check(importReport.tagsMerged >= 2, "Package merge reports reused tags");
+    Check(importReport.groupsAdded == 1, "Package merge keeps different-uuid same-name groups distinct");
+    Check(importReport.groupsMerged >= 1, "Package merge reports uuid-reused groups");
+    Check(importReport.tagsAdded == 3, "Package merge imports different-uuid and new tags");
+    Check(importReport.tagsMerged >= 1, "Package merge reports uuid-reused tags");
     Check(importReport.linksAdded == 1, "Package merge import link count");
     Check(importReport.linksSkippedDuplicate == 1, "Package merge skips duplicate link");
     Check(importReport.notesAdded == 1, "Package merge import note count");
@@ -2823,6 +2825,112 @@ int wmain() {
     Check(FileExists(packageTargetRoot / L"icons" / L"url" / L"example.png"), "Package merge imports url icon");
     Check(!FileExists(packageTargetRoot / L"theme" / L"source.xml"), "Package merge does not import theme");
     Check(DirectoryExists(packageTargetRoot / L"backups"), "Package merge creates backup");
+
+    ConfigPackageReport repeatedPackageImport = packageImporter.ImportPackageMerge(packagePath, packageOptions);
+    AppModel repeatedPackageModel = targetStorage.Load();
+    Check(repeatedPackageImport.ok && repeatedPackageImport.todosAdded == 0 &&
+              repeatedPackageImport.todosSkippedIdentical == 1 && repeatedPackageModel.todos.size() == 1,
+          "Package merge is idempotent for todo uuid");
+
+    ConfigPackageMergePreview stalePackagePreview = packageImporter.PreviewPackageMerge(packagePath, packageOptions);
+    Group previewStateGroup;
+    previewStateGroup.name = L"PreviewStateChanged";
+    previewStateGroup.parentGroup = 0;
+    previewStateGroup.pos = -1;
+    Check(targetStorage.InsertGroup(previewStateGroup), "Package preview state mutation insert");
+    ConfigPackageReport stalePackageApply = packageImporter.ApplyPackageMerge(
+        packagePath, packageOptions, TodoRestorePolicy::KeepDeleted, stalePackagePreview.stateToken);
+    Check(!stalePackageApply.ok && stalePackageApply.message.find(L"重新预览") != std::wstring::npos,
+          "Package merge rejects stale preview token");
+    Check(targetStorage.DeleteGroup(previewStateGroup.id), "Package preview state mutation cleanup");
+
+    repeatedPackageModel = targetStorage.Load();
+    const auto importedTodoIt = std::find_if(repeatedPackageModel.todos.begin(), repeatedPackageModel.todos.end(), [](const TodoItem& item) {
+        return item.title == L"PackageTodoItem";
+    });
+    Check(importedTodoIt != repeatedPackageModel.todos.end() && targetStorage.DeleteTodoItem(importedTodoIt->id),
+          "Package local todo deletion creates tombstone");
+    ConfigPackageMergePreview deletedTodoPreview = packageImporter.PreviewPackageMerge(packagePath, packageOptions);
+    Check(deletedTodoPreview.ok && deletedTodoPreview.deletedTodoTitles.size() == 1,
+          "Package preview reports locally deleted todo");
+    ConfigPackageReport keepDeletedReport = packageImporter.ApplyPackageMerge(
+        packagePath, packageOptions, TodoRestorePolicy::KeepDeleted, deletedTodoPreview.stateToken);
+    Check(keepDeletedReport.ok && keepDeletedReport.todosKeptDeleted == 1 && targetStorage.Load().todos.empty(),
+          "Package merge keeps local todo deletion");
+    ConfigPackageMergePreview restoreTodoPreview = packageImporter.PreviewPackageMerge(packagePath, packageOptions);
+    ConfigPackageReport restoreDeletedReport = packageImporter.ApplyPackageMerge(
+        packagePath, packageOptions, TodoRestorePolicy::RestoreDeleted, restoreTodoPreview.stateToken);
+    AppModel restoredPackageModel = targetStorage.Load();
+    Check(restoreDeletedReport.ok && restoreDeletedReport.todosRestored == 1 &&
+              restoredPackageModel.todos.size() == 1 && restoredPackageModel.todoTombstones.empty(),
+          "Package merge restores locally deleted todo after confirmation");
+
+    Sleep(5);
+    sourceTodo.title = L"PackageTodoRemoteNewer";
+    sourceTodo.content = L"remote newer";
+    Check(sourceStorage.UpdateTodoItem(sourceTodo), "Package source todo remote update");
+    Check(packageExporter.ExportPackage(packagePath, packageOptions).ok, "Package re-export remote update");
+    ConfigPackageReport remoteNewerReport = packageImporter.ImportPackageMerge(packagePath, packageOptions);
+    AppModel remoteNewerModel = targetStorage.Load();
+    Check(remoteNewerReport.ok && remoteNewerReport.todosUpdatedFromRemote == 1 &&
+              std::any_of(remoteNewerModel.todos.begin(), remoteNewerModel.todos.end(), [](const TodoItem& item) {
+                  return item.title == L"PackageTodoRemoteNewer" && item.content == L"remote newer";
+              }),
+          "Package newer remote todo wins");
+
+    Sleep(5);
+    TodoItem localNewerTodo = remoteNewerModel.todos.front();
+    localNewerTodo.title = L"PackageTodoLocalNewer";
+    Check(targetStorage.UpdateTodoItem(localNewerTodo), "Package target todo local update");
+    ConfigPackageReport localNewerReport = packageImporter.ImportPackageMerge(packagePath, packageOptions);
+    AppModel localNewerModel = targetStorage.Load();
+    Check(localNewerReport.ok && localNewerReport.todosKeptLocal == 1 &&
+              std::any_of(localNewerModel.todos.begin(), localNewerModel.todos.end(), [](const TodoItem& item) {
+                  return item.title == L"PackageTodoLocalNewer";
+              }),
+          "Package newer local todo wins");
+
+    TodoItem distinctTodo = sourceTodo;
+    distinctTodo.id = 0;
+    distinctTodo.todoUid.clear();
+    distinctTodo.mergeUpdatedAtUtc.clear();
+    Check(sourceStorage.InsertTodoItem(distinctTodo), "Package source same-content distinct uuid insert");
+    Check(packageExporter.ExportPackage(packagePath, packageOptions).ok, "Package export distinct uuid todo");
+    ConfigPackageReport distinctTodoReport = packageImporter.ImportPackageMerge(packagePath, packageOptions);
+    AppModel distinctTodoModel = targetStorage.Load();
+    Check(distinctTodoReport.ok && distinctTodoReport.todosAdded == 1 && distinctTodoModel.todos.size() == 2,
+          "Package same-content different uuid remains distinct");
+
+    Check(sourceStorage.DeleteTodoItem(sourceTodo.id), "Package source remote tombstone create");
+    Check(packageExporter.ExportPackage(packagePath, packageOptions).ok, "Package export remote tombstone");
+    ConfigPackageReport remoteDeleteReport = packageImporter.ImportPackageMerge(packagePath, packageOptions);
+    Check(remoteDeleteReport.ok && remoteDeleteReport.todosRemoteDeleteConflicts == 1 && targetStorage.Load().todos.size() == 2,
+          "Package remote tombstone does not delete local todo");
+
+    const std::filesystem::path legacyPackagePath = std::filesystem::temp_directory_path() / L"quattro_package_unit_v1.q4cfg";
+    const std::filesystem::path legacyPackageTargetRoot = std::filesystem::temp_directory_path() / L"quattro_package_target_v1_unit";
+    std::filesystem::remove(legacyPackagePath, ec);
+    std::filesystem::remove_all(legacyPackageTargetRoot, ec);
+    std::filesystem::copy_file(packagePath, legacyPackagePath, std::filesystem::copy_options::overwrite_existing, ec);
+    sqlite3* legacyPackageDb = nullptr;
+    const bool legacyPackageOpened = !ec &&
+        sqlite3_open16(legacyPackagePath.c_str(), &legacyPackageDb) == SQLITE_OK && legacyPackageDb;
+    Check(legacyPackageOpened, "Package v1 compatibility package open");
+    if (legacyPackageOpened) {
+        Check(ExecSql(legacyPackageDb, "UPDATE PackageManifest SET Value='1' WHERE Key='formatVersion';"),
+              "Package v1 compatibility version update");
+        sqlite3_close(legacyPackageDb);
+    }
+    StorageService legacyPackageTargetStorage(legacyPackageTargetRoot);
+    legacyPackageTargetStorage.Load();
+    ConfigPackageService legacyPackageImporter(legacyPackageTargetRoot);
+    ConfigPackageReport firstLegacyPackageImport = legacyPackageImporter.ImportPackageMerge(legacyPackagePath, packageOptions);
+    ConfigPackageReport secondLegacyPackageImport = legacyPackageImporter.ImportPackageMerge(legacyPackagePath, packageOptions);
+    Check(firstLegacyPackageImport.ok && secondLegacyPackageImport.ok && secondLegacyPackageImport.todosAdded == 0 &&
+              secondLegacyPackageImport.todosSkippedIdentical == 1 && legacyPackageTargetStorage.Load().todos.size() == 1,
+          "Package repeated v1 import is idempotent");
+    std::filesystem::remove(legacyPackagePath, ec);
+    std::filesystem::remove_all(legacyPackageTargetRoot, ec);
 
     const std::filesystem::path appLogRoot = std::filesystem::temp_directory_path() /
                                              (L"quattro_app_log_tests_" + std::to_wstring(GetCurrentProcessId()));

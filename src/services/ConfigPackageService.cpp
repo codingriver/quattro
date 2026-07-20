@@ -12,9 +12,10 @@
 #include <fstream>
 #include <iterator>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace {
-constexpr int kPackageFormatVersion = 1;
+constexpr int kPackageFormatVersion = 2;
 
 class SQLiteDatabase {
 public:
@@ -356,7 +357,13 @@ std::wstring NormalizedPathKey(const std::wstring& value) {
     return ToLower(Trim(value));
 }
 
-int FindMatchingGroup(const AppModel& model, const Group& sourceGroup, int targetParentGroup) {
+int FindMatchingGroup(const AppModel& model, const Group& sourceGroup, int targetParentGroup, bool allowLegacyNameFallback) {
+    if (!sourceGroup.groupUid.empty()) {
+        for (const auto& group : model.groups) {
+            if (group.groupUid == sourceGroup.groupUid) return group.id;
+        }
+        if (!allowLegacyNameFallback) return 0;
+    }
     const std::wstring name = NormalizedNameKey(sourceGroup.name);
     if (name.empty()) {
         return 0;
@@ -470,7 +477,161 @@ void MergeUrlIcons(sqlite3* packageDb, const std::filesystem::path& appDirectory
     }
 }
 
-ConfigPackageReport MergeImportedData(const std::filesystem::path& appDirectory, const std::filesystem::path& importRoot) {
+void NormalizeLegacySourceIdentities(AppModel& model, const std::wstring& packageHash) {
+    for (auto& group : model.groups) {
+        group.groupUid = L"legacy-group-" + packageHash + L"-" + std::to_wstring(group.id);
+    }
+    for (auto& todo : model.todos) {
+        todo.todoUid = L"legacy-todo-" + packageHash + L"-" + std::to_wstring(todo.id);
+    }
+}
+
+std::wstring MergeStateToken(const std::filesystem::path& packagePath, const AppModel& model) {
+    std::uint32_t hash = 2166136261u;
+    auto append = [&](const std::wstring& value) {
+        for (wchar_t ch : value) {
+            hash ^= static_cast<std::uint32_t>(ch);
+            hash *= 16777619u;
+        }
+        hash ^= 0xffu;
+        hash *= 16777619u;
+    };
+    append(ContentHash(ReadBinaryFile(packagePath)));
+    for (const auto& group : model.groups) {
+        append(group.groupUid);
+        append(std::to_wstring(group.id));
+    }
+    for (const auto& todo : model.todos) {
+        append(todo.todoUid);
+        append(todo.mergeUpdatedAtUtc);
+        append(std::to_wstring(todo.tagId));
+    }
+    for (const auto& tombstone : model.todoTombstones) {
+        append(tombstone.todoUid);
+        append(tombstone.deletedAtUtc);
+    }
+    return Hex8(hash);
+}
+
+bool TodoBusinessEqual(const TodoItem& left, const TodoItem& right, int rightTagId) {
+    return left.tagId == rightTagId &&
+        left.title == right.title && left.content == right.content && left.enabled == right.enabled &&
+        left.scheduleKind == right.scheduleKind && left.repeatMode == right.repeatMode &&
+        left.repeatInterval == right.repeatInterval && left.repeatLimit == right.repeatLimit &&
+        left.repeatFinished == right.repeatFinished && left.cronExpression == right.cronExpression &&
+        left.anchorAt == right.anchorAt && left.nextDueAt == right.nextDueAt &&
+        left.completedAt == right.completedAt && left.ignoredDueAt == right.ignoredDueAt &&
+        left.snoozedUntil == right.snoozedUntil && left.createdAt == right.createdAt;
+}
+
+int NextTodoPosition(sqlite3* db, int tagId) {
+    SQLiteStatement query(db, L"SELECT COALESCE(MAX(POS),-1)+1 FROM TodoItems WHERE TagId=?;");
+    query.bindInt(1, tagId);
+    return query.ok() && query.step() == SQLITE_ROW ? query.columnInt(0) : 0;
+}
+
+bool InsertMergedTodo(sqlite3* db, TodoItem& item, std::wstring& error) {
+    item.pos = NextTodoPosition(db, item.tagId);
+    item.lastNotifiedDueAt.clear();
+    item.lastNotifiedAt.clear();
+    item.lastViewedDueAt.clear();
+    item.lastViewedAt.clear();
+    SQLiteStatement statement(db,
+        L"INSERT INTO TodoItems(TagId,Title,Content,Enabled,ScheduleKind,RepeatMode,RepeatInterval,RepeatLimit,RepeatFinished,CronExpression,AnchorAt,NextDueAt,CompletedAt,LastNotifiedDueAt,LastNotifiedAt,LastViewedDueAt,LastViewedAt,IgnoredDueAt,SnoozedUntil,POS,CreatedAt,UpdatedAt,TodoUid,MergeUpdatedAtUtc) "
+        L"VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);");
+    if (!statement.ok()) {
+        error = L"准备导入待办 SQL 失败。";
+        return false;
+    }
+    statement.bindInt(1, item.tagId);
+    statement.bindText(2, item.title);
+    statement.bindText(3, item.content);
+    statement.bindInt(4, item.enabled ? 1 : 0);
+    statement.bindInt(5, static_cast<int>(item.scheduleKind));
+    statement.bindInt(6, static_cast<int>(item.repeatMode));
+    statement.bindInt(7, item.repeatInterval);
+    statement.bindInt(8, item.repeatLimit);
+    statement.bindInt(9, item.repeatFinished);
+    statement.bindText(10, item.cronExpression);
+    statement.bindText(11, item.anchorAt);
+    statement.bindText(12, item.nextDueAt);
+    statement.bindText(13, item.completedAt);
+    statement.bindText(14, item.lastNotifiedDueAt);
+    statement.bindText(15, item.lastNotifiedAt);
+    statement.bindText(16, item.lastViewedDueAt);
+    statement.bindText(17, item.lastViewedAt);
+    statement.bindText(18, item.ignoredDueAt);
+    statement.bindText(19, item.snoozedUntil);
+    statement.bindInt(20, item.pos);
+    statement.bindText(21, item.createdAt);
+    statement.bindText(22, item.updatedAt);
+    statement.bindText(23, item.todoUid);
+    statement.bindText(24, item.mergeUpdatedAtUtc);
+    if (statement.step() != SQLITE_DONE) {
+        const void* message = sqlite3_errmsg16(db);
+        error = message ? static_cast<const wchar_t*>(message) : L"导入待办失败。";
+        return false;
+    }
+    item.id = static_cast<int>(sqlite3_last_insert_rowid(db));
+    return true;
+}
+
+bool UpdateMergedTodo(sqlite3* db, const TodoItem& item, int localId, std::wstring& error) {
+    SQLiteStatement statement(db,
+        L"UPDATE TodoItems SET TagId=?,Title=?,Content=?,Enabled=?,ScheduleKind=?,RepeatMode=?,RepeatInterval=?,RepeatLimit=?,RepeatFinished=?,CronExpression=?,AnchorAt=?,NextDueAt=?,CompletedAt=?,IgnoredDueAt=?,SnoozedUntil=?,POS=?,CreatedAt=?,UpdatedAt=?,TodoUid=?,MergeUpdatedAtUtc=? WHERE ID=?;");
+    if (!statement.ok()) {
+        error = L"准备更新合并待办 SQL 失败。";
+        return false;
+    }
+    statement.bindInt(1, item.tagId);
+    statement.bindText(2, item.title);
+    statement.bindText(3, item.content);
+    statement.bindInt(4, item.enabled ? 1 : 0);
+    statement.bindInt(5, static_cast<int>(item.scheduleKind));
+    statement.bindInt(6, static_cast<int>(item.repeatMode));
+    statement.bindInt(7, item.repeatInterval);
+    statement.bindInt(8, item.repeatLimit);
+    statement.bindInt(9, item.repeatFinished);
+    statement.bindText(10, item.cronExpression);
+    statement.bindText(11, item.anchorAt);
+    statement.bindText(12, item.nextDueAt);
+    statement.bindText(13, item.completedAt);
+    statement.bindText(14, item.ignoredDueAt);
+    statement.bindText(15, item.snoozedUntil);
+    statement.bindInt(16, item.pos);
+    statement.bindText(17, item.createdAt);
+    statement.bindText(18, item.updatedAt);
+    statement.bindText(19, item.todoUid);
+    statement.bindText(20, item.mergeUpdatedAtUtc);
+    statement.bindInt(21, localId);
+    if (statement.step() != SQLITE_DONE || sqlite3_changes(db) <= 0) {
+        const void* message = sqlite3_errmsg16(db);
+        error = message ? static_cast<const wchar_t*>(message) : L"更新合并待办失败。";
+        return false;
+    }
+    return true;
+}
+
+bool DeleteTombstone(sqlite3* db, const std::wstring& todoUid, std::wstring& error) {
+    SQLiteStatement statement(db, L"DELETE FROM TodoTombstones WHERE TodoUid=?;");
+    if (!statement.ok()) {
+        error = L"准备删除待办墓碑 SQL 失败。";
+        return false;
+    }
+    statement.bindText(1, todoUid);
+    if (statement.step() != SQLITE_DONE) {
+        error = L"删除待办墓碑失败。";
+        return false;
+    }
+    return true;
+}
+
+ConfigPackageReport MergeImportedData(
+    const std::filesystem::path& appDirectory,
+    const std::filesystem::path& importRoot,
+    int packageVersion,
+    const std::wstring& packageHash,
+    TodoRestorePolicy restorePolicy) {
     ConfigPackageReport report;
 
     StorageService targetStorage(appDirectory);
@@ -486,6 +647,8 @@ ConfigPackageReport MergeImportedData(const std::filesystem::path& appDirectory,
         report.message = L"导入包数据库不可用: " + sourceStorage.lastError();
         return report;
     }
+    const bool legacyPackage = packageVersion == 1;
+    if (legacyPackage) NormalizeLegacySourceIdentities(sourceModel, packageHash);
 
     std::unordered_map<int, int> groupIdMap;
     std::vector<Group> sourceMajorGroups;
@@ -509,7 +672,7 @@ ConfigPackageReport MergeImportedData(const std::filesystem::path& appDirectory,
     });
 
     for (const auto& sourceGroup : sourceMajorGroups) {
-        const int existingGroupId = FindMatchingGroup(targetModel, sourceGroup, 0);
+        const int existingGroupId = FindMatchingGroup(targetModel, sourceGroup, 0, legacyPackage);
         if (existingGroupId > 0) {
             groupIdMap[sourceGroup.id] = existingGroupId;
             ++report.groupsMerged;
@@ -535,7 +698,7 @@ ConfigPackageReport MergeImportedData(const std::filesystem::path& appDirectory,
             report.warnings.push_back(L"跳过缺少父分组的标签: " + sourceTag.name);
             continue;
         }
-        const int existingTagId = FindMatchingGroup(targetModel, sourceTag, parent->second);
+        const int existingTagId = FindMatchingGroup(targetModel, sourceTag, parent->second, legacyPackage);
         if (existingTagId > 0) {
             groupIdMap[sourceTag.id] = existingTagId;
             ++report.tagsMerged;
@@ -598,19 +761,139 @@ ConfigPackageReport MergeImportedData(const std::filesystem::path& appDirectory,
         }
     }
 
+    SQLiteDatabase targetDb(appDirectory / L"db" / L"link.db");
+    if (!targetDb.ok()) {
+        report.message = L"打开当前数据库进行待办合并失败: " + targetDb.Error();
+        return report;
+    }
+    std::wstring transactionError;
+    if (!Exec(targetDb.get(), "BEGIN IMMEDIATE;", transactionError)) {
+        report.message = L"开始待办合并事务失败: " + transactionError;
+        return report;
+    }
+    auto rollback = [&]() {
+        std::wstring ignored;
+        Exec(targetDb.get(), "ROLLBACK;", ignored);
+    };
+
+    std::unordered_set<std::wstring> tombstones;
+    for (const auto& item : targetModel.todoTombstones) tombstones.insert(item.todoUid);
+
     for (auto sourceTodo : sourceModel.todos) {
         const auto tag = groupIdMap.find(sourceTodo.tagId);
         if (tag == groupIdMap.end()) {
-            continue;
-        }
-        sourceTodo.id = 0;
-        sourceTodo.tagId = tag->second;
-        sourceTodo.pos = -1;
-        if (!targetStorage.InsertTodoItem(sourceTodo)) {
-            report.message = L"导入待办失败: " + targetStorage.lastError();
+            ++report.todosFailed;
+            report.message = L"待办“" + sourceTodo.title + L"”找不到对应标签，已回滚本次导入。";
+            rollback();
             return report;
         }
-        ++report.todosAdded;
+        const int sourceId = sourceTodo.id;
+        sourceTodo.tagId = tag->second;
+
+        int localIndex = -1;
+        for (std::size_t index = 0; index < targetModel.todos.size(); ++index) {
+            if (!sourceTodo.todoUid.empty() && targetModel.todos[index].todoUid == sourceTodo.todoUid) {
+                localIndex = static_cast<int>(index);
+                break;
+            }
+        }
+
+        if (localIndex < 0 && legacyPackage) {
+            std::vector<int> candidates;
+            for (std::size_t index = 0; index < targetModel.todos.size(); ++index) {
+                const auto& local = targetModel.todos[index];
+                if (local.tagId != sourceTodo.tagId || local.createdAt != sourceTodo.createdAt) continue;
+                if (local.id == sourceId || NormalizedNameKey(local.title) == NormalizedNameKey(sourceTodo.title)) {
+                    candidates.push_back(static_cast<int>(index));
+                }
+            }
+            if (candidates.size() == 1) {
+                localIndex = candidates.front();
+            } else if (candidates.size() > 1) {
+                ++report.todosConflicted;
+                report.warnings.push_back(L"旧格式待办身份不唯一，已跳过: " + sourceTodo.title);
+                continue;
+            }
+        }
+
+        const bool wasDeleted = tombstones.find(sourceTodo.todoUid) != tombstones.end();
+        if (localIndex < 0 && wasDeleted) {
+            if (restorePolicy == TodoRestorePolicy::KeepDeleted) {
+                ++report.todosKeptDeleted;
+                continue;
+            }
+            if (!DeleteTombstone(targetDb.get(), sourceTodo.todoUid, transactionError)) {
+                ++report.todosFailed;
+                report.message = transactionError;
+                rollback();
+                return report;
+            }
+            sourceTodo.id = 0;
+            if (!InsertMergedTodo(targetDb.get(), sourceTodo, transactionError)) {
+                ++report.todosFailed;
+                report.message = transactionError;
+                rollback();
+                return report;
+            }
+            targetModel.todos.push_back(sourceTodo);
+            tombstones.erase(sourceTodo.todoUid);
+            ++report.todosRestored;
+            continue;
+        }
+
+        if (localIndex < 0) {
+            sourceTodo.id = 0;
+            if (!InsertMergedTodo(targetDb.get(), sourceTodo, transactionError)) {
+                ++report.todosFailed;
+                report.message = transactionError;
+                rollback();
+                return report;
+            }
+            targetModel.todos.push_back(sourceTodo);
+            ++report.todosAdded;
+            continue;
+        }
+
+        TodoItem& local = targetModel.todos[static_cast<std::size_t>(localIndex)];
+        if (sourceTodo.mergeUpdatedAtUtc > local.mergeUpdatedAtUtc) {
+            sourceTodo.id = local.id;
+            sourceTodo.todoUid = local.todoUid;
+            sourceTodo.lastNotifiedDueAt = local.lastNotifiedDueAt;
+            sourceTodo.lastNotifiedAt = local.lastNotifiedAt;
+            sourceTodo.lastViewedDueAt = local.lastViewedDueAt;
+            sourceTodo.lastViewedAt = local.lastViewedAt;
+            if (!UpdateMergedTodo(targetDb.get(), sourceTodo, local.id, transactionError)) {
+                ++report.todosFailed;
+                report.message = transactionError;
+                rollback();
+                return report;
+            }
+            local = sourceTodo;
+            ++report.todosUpdatedFromRemote;
+        } else if (sourceTodo.mergeUpdatedAtUtc < local.mergeUpdatedAtUtc) {
+            ++report.todosKeptLocal;
+        } else if (TodoBusinessEqual(local, sourceTodo, sourceTodo.tagId)) {
+            ++report.todosSkippedIdentical;
+        } else {
+            ++report.todosConflicted;
+            report.warnings.push_back(L"待办更新时间相同但内容不同，已保留本地: " + local.title);
+        }
+    }
+
+    for (const auto& remoteTombstone : sourceModel.todoTombstones) {
+        const auto local = std::find_if(targetModel.todos.begin(), targetModel.todos.end(), [&](const TodoItem& item) {
+            return item.todoUid == remoteTombstone.todoUid;
+        });
+        if (local != targetModel.todos.end()) {
+            ++report.todosRemoteDeleteConflicts;
+            report.warnings.push_back(L"远端已删除但本地仍保留待办: " + local->title);
+        }
+    }
+
+    if (!Exec(targetDb.get(), "COMMIT;", transactionError)) {
+        report.message = L"提交待办合并事务失败: " + transactionError;
+        rollback();
+        return report;
     }
 
     report.ok = true;
@@ -626,6 +909,15 @@ ConfigPackageService::ConfigPackageService(std::filesystem::path appDirectory)
 ConfigPackageReport ConfigPackageService::ExportPackage(const std::filesystem::path& targetPath, const ConfigPackageOptions& options) {
     ConfigPackageReport report;
     std::wstring error;
+
+    if (options.includeData) {
+        StorageService storage(appDirectory_);
+        storage.Load();
+        if (!storage.sqliteAvailable()) {
+            report.message = L"导出前升级数据库失败: " + storage.lastError();
+            return report;
+        }
+    }
 
     std::error_code ec;
     std::filesystem::create_directories(targetPath.parent_path(), ec);
@@ -697,15 +989,102 @@ ConfigPackageReport ConfigPackageService::ExportPackage(const std::filesystem::p
 }
 
 ConfigPackageReport ConfigPackageService::ImportPackageMerge(const std::filesystem::path& packagePath, const ConfigPackageOptions& options) {
+    const ConfigPackageMergePreview preview = PreviewPackageMerge(packagePath, options);
+    if (!preview.ok) {
+        ConfigPackageReport report;
+        report.message = preview.message;
+        report.warnings = preview.warnings;
+        return report;
+    }
+    return ApplyPackageMerge(packagePath, options, TodoRestorePolicy::KeepDeleted, preview.stateToken);
+}
+
+ConfigPackageMergePreview ConfigPackageService::PreviewPackageMerge(
+    const std::filesystem::path& packagePath,
+    const ConfigPackageOptions& options) {
+    ConfigPackageMergePreview preview;
+    SQLiteDatabase packageDb(packagePath);
+    if (!packageDb.ok()) {
+        preview.message = packageDb.Error();
+        return preview;
+    }
+    const auto version = ParseInt(GetManifest(packageDb.get(), L"formatVersion"));
+    if (GetManifest(packageDb.get(), L"app") != L"Quattro" ||
+        !version.has_value() || (*version != 1 && *version != kPackageFormatVersion)) {
+        preview.message = L"不是受支持的 Quattro快速启动器 配置包。";
+        return preview;
+    }
+    preview.packageFormatVersion = *version;
+
+    StorageService targetStorage(appDirectory_);
+    const AppModel targetModel = targetStorage.Load();
+    if (!targetStorage.sqliteAvailable()) {
+        preview.message = L"当前数据库不可用: " + targetStorage.lastError();
+        return preview;
+    }
+    preview.stateToken = MergeStateToken(packagePath, targetModel);
+
+    if (!options.includeData) {
+        preview.ok = true;
+        preview.message = L"配置包预分析完成。";
+        return preview;
+    }
+
+    const std::filesystem::path tempDirectory = UniqueTempDirectory(L"quattro_preview");
+    std::wstring error;
+    if (!ExtractPackageFile(packageDb.get(), L"db/link.db", tempDirectory / L"db" / L"link.db", error)) {
+        preview.message = error;
+        std::error_code ec;
+        std::filesystem::remove_all(tempDirectory, ec);
+        return preview;
+    }
+    StorageService sourceStorage(tempDirectory);
+    AppModel sourceModel = sourceStorage.Load();
+    if (!sourceStorage.sqliteAvailable()) {
+        preview.message = L"导入包数据库不可用: " + sourceStorage.lastError();
+        std::error_code ec;
+        std::filesystem::remove_all(tempDirectory, ec);
+        return preview;
+    }
+    const std::wstring packageHash = ContentHash(ReadBinaryFile(packagePath));
+    if (*version == 1) {
+        NormalizeLegacySourceIdentities(sourceModel, packageHash);
+        preview.warnings.push_back(L"这是旧格式备份；只能保证同一备份文件重复导入时保持幂等。不同旧快照之间无法完全确认待办身份。");
+    }
+    std::unordered_set<std::wstring> tombstones;
+    for (const auto& item : targetModel.todoTombstones) tombstones.insert(item.todoUid);
+    for (const auto& item : sourceModel.todos) {
+        if (tombstones.find(item.todoUid) != tombstones.end()) {
+            preview.deletedTodoTitles.push_back(item.title);
+        }
+    }
+    std::error_code ec;
+    std::filesystem::remove_all(tempDirectory, ec);
+    preview.ok = true;
+    preview.message = L"配置包预分析完成。";
+    return preview;
+}
+
+ConfigPackageReport ConfigPackageService::ApplyPackageMerge(
+    const std::filesystem::path& packagePath,
+    const ConfigPackageOptions& options,
+    TodoRestorePolicy restorePolicy,
+    const std::wstring& expectedStateToken) {
     ConfigPackageReport report;
+    const ConfigPackageMergePreview preview = PreviewPackageMerge(packagePath, options);
+    if (!preview.ok) {
+        report.message = preview.message;
+        report.warnings = preview.warnings;
+        return report;
+    }
+    if (!expectedStateToken.empty() && preview.stateToken != expectedStateToken) {
+        report.message = L"本地数据在确认后发生变化，请重新预览并确认本次合并。";
+        return report;
+    }
+
     SQLiteDatabase packageDb(packagePath);
     if (!packageDb.ok()) {
         report.message = packageDb.Error();
-        return report;
-    }
-    if (GetManifest(packageDb.get(), L"app") != L"Quattro" ||
-        GetManifest(packageDb.get(), L"formatVersion") != std::to_wstring(kPackageFormatVersion)) {
-        report.message = L"不是有效的 Quattro快速启动器 配置包。";
         return report;
     }
 
@@ -721,8 +1100,11 @@ ConfigPackageReport ConfigPackageService::ImportPackageMerge(const std::filesyst
             return report;
         }
         std::vector<std::wstring> backupWarnings = report.warnings;
-        report = MergeImportedData(appDirectory_, tempDirectory);
+        const std::wstring packageHash = ContentHash(ReadBinaryFile(packagePath));
+        report = MergeImportedData(
+            appDirectory_, tempDirectory, preview.packageFormatVersion, packageHash, restorePolicy);
         report.warnings.insert(report.warnings.begin(), backupWarnings.begin(), backupWarnings.end());
+        report.warnings.insert(report.warnings.begin(), preview.warnings.begin(), preview.warnings.end());
         if (!report.ok) {
             RestoreSafetyBackup(appDirectory_, backupDirectory, report);
         }

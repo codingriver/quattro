@@ -136,6 +136,7 @@ struct Group {
     int sortDirection = 0;
     std::wstring content;
     int flag = 0;
+    std::wstring groupUid;
 };
 
 struct Link {
@@ -189,6 +190,15 @@ struct TodoItem {
     int pos = 0;
     std::wstring createdAt;
     std::wstring updatedAt;
+    std::wstring todoUid;
+    std::wstring mergeUpdatedAtUtc;
+};
+
+struct TodoTombstone {
+    std::wstring todoUid;
+    std::wstring deletedAtUtc;
+    std::wstring titleSnapshot;
+    std::wstring tagUid;
 };
 
 struct AppModel {
@@ -196,4 +206,5 @@ struct AppModel {
     std::vector<Link> links;
     std::vector<NotePage> notes;
     std::vector<TodoItem> todos;
+    std::vector<TodoTombstone> todoTombstones;
 };

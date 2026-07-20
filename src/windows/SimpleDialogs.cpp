@@ -107,7 +107,8 @@ enum class SettingsWebDavOperation {
     Test,
     Upload,
     List,
-    Download,
+    DownloadPreview,
+    DownloadApply,
 };
 
 struct SettingsWebDavResult {
@@ -435,6 +436,9 @@ std::wstring FormatConfigPackageReportText(const ConfigPackageReport& report) {
     if (report.groupsAdded > 0 || report.groupsMerged > 0 || report.tagsAdded > 0 ||
         report.tagsMerged > 0 || report.linksAdded > 0 || report.linksSkippedDuplicate > 0 ||
         report.notesAdded > 0 || report.notesMerged > 0 || report.todosAdded > 0 ||
+        report.todosUpdatedFromRemote > 0 || report.todosKeptLocal > 0 || report.todosRestored > 0 ||
+        report.todosKeptDeleted > 0 || report.todosSkippedIdentical > 0 || report.todosConflicted > 0 ||
+        report.todosRemoteDeleteConflicts > 0 || report.todosFailed > 0 ||
         report.urlIconsAdded > 0) {
         text += L"\n\n新增分组: " + std::to_wstring(report.groupsAdded);
         text += L"\n复用分组: " + std::to_wstring(report.groupsMerged);
@@ -445,6 +449,14 @@ std::wstring FormatConfigPackageReportText(const ConfigPackageReport& report) {
         text += L"\n新增便签: " + std::to_wstring(report.notesAdded);
         text += L"\n合并便签: " + std::to_wstring(report.notesMerged);
         text += L"\n新增待办: " + std::to_wstring(report.todosAdded);
+        text += L"\n远端更新待办: " + std::to_wstring(report.todosUpdatedFromRemote);
+        text += L"\n保留本地待办: " + std::to_wstring(report.todosKeptLocal);
+        text += L"\n恢复已删除待办: " + std::to_wstring(report.todosRestored);
+        text += L"\n保持删除: " + std::to_wstring(report.todosKeptDeleted);
+        text += L"\n内容相同跳过: " + std::to_wstring(report.todosSkippedIdentical);
+        text += L"\n待办冲突: " + std::to_wstring(report.todosConflicted);
+        text += L"\n远端删除冲突: " + std::to_wstring(report.todosRemoteDeleteConflicts);
+        text += L"\n待办失败: " + std::to_wstring(report.todosFailed);
         text += L"\n新增 URL 图标: " + std::to_wstring(report.urlIconsAdded);
     }
     if (!report.warnings.empty()) {
@@ -1087,7 +1099,8 @@ std::wstring FormatBackupConfirmationText(const WebDavRemoteFile& backup) {
     }
     text +=
         L"\n\n将把该备份中的分组、标签、启动项、便签和待办合并到当前数据。"
-        L"\n当前数据不会被覆盖，导入前会自动备份。";
+        L"\n同一待办按最后更新时间保留较新版本；本地已删除的条目会再次询问是否恢复。"
+        L"\n导入前会自动备份。";
     return text;
 }
 
@@ -2975,7 +2988,9 @@ private:
         }
         if (webDavDownloadButton_) {
             ui.SetEnabled(webDavDownloadButton_, !busy);
-            const bool downloadBusy = operation == SettingsWebDavOperation::List || operation == SettingsWebDavOperation::Download;
+            const bool downloadBusy = operation == SettingsWebDavOperation::List ||
+                operation == SettingsWebDavOperation::DownloadPreview ||
+                operation == SettingsWebDavOperation::DownloadApply;
             SetWindowTextW(webDavDownloadButton_, busy && downloadBusy ? L"处理中..." : L"从云端下载");
         }
         if (webDavTestButton_) {
@@ -3056,23 +3071,72 @@ private:
     }
 
     void DownloadSelectedWebDavBackup(const AppConfig& config, const std::wstring& fileName) {
-        SetWebDavBusy(true, SettingsWebDavOperation::Download);
+        SetWebDavBusy(true, SettingsWebDavOperation::DownloadPreview);
         const HWND target = hwnd_;
         const std::filesystem::path appDirectory = appDirectory_;
         std::thread([target, appDirectory, config, fileName]() {
             auto result = std::make_unique<SettingsWebDavResult>();
-            result->operation = SettingsWebDavOperation::Download;
+            result->operation = SettingsWebDavOperation::DownloadPreview;
+            result->config = config;
             WebDavBackupService service(appDirectory, config);
-            result->report = service.DownloadAndImportMerge(fileName);
+            result->report = service.DownloadAndPreviewMerge(fileName);
             result->ok = result->report.ok;
-            result->message = result->report.importReport.message.empty()
-                ? result->report.message
-                : FormatConfigPackageReportText(result->report.importReport);
+            result->message = result->report.message;
             SettingsWebDavResult* raw = result.release();
             if (!PostMessageW(target, WM_SETTINGS_WEBDAV_DONE, 0, reinterpret_cast<LPARAM>(raw))) {
                 delete raw;
             }
         }).detach();
+    }
+
+    void ApplyDownloadedWebDavBackup(const SettingsWebDavResult& previewResult, TodoRestorePolicy restorePolicy) {
+        SetWebDavBusy(true, SettingsWebDavOperation::DownloadApply);
+        const HWND target = hwnd_;
+        const std::filesystem::path appDirectory = appDirectory_;
+        const AppConfig config = previewResult.config;
+        const std::filesystem::path packagePath = previewResult.report.downloadedPackagePath;
+        const std::wstring remoteName = previewResult.report.remoteName;
+        const std::wstring stateToken = previewResult.report.mergePreview.stateToken;
+        std::thread([target, appDirectory, config, packagePath, remoteName, stateToken, restorePolicy]() {
+            auto result = std::make_unique<SettingsWebDavResult>();
+            result->operation = SettingsWebDavOperation::DownloadApply;
+            WebDavBackupService service(appDirectory, config);
+            result->report = service.ApplyDownloadedMerge(packagePath, remoteName, restorePolicy, stateToken);
+            result->ok = result->report.ok;
+            result->message = result->report.importReport.message.empty()
+                ? result->report.message
+                : FormatConfigPackageReportText(result->report.importReport);
+            SettingsWebDavResult* raw = result.release();
+            if (!PostMessageW(target, WM_SETTINGS_WEBDAV_DONE, 0, reinterpret_cast<LPARAM>(raw))) delete raw;
+        }).detach();
+    }
+
+    void ContinueWebDavMergePreview(const SettingsWebDavResult& result) {
+        if (!result.ok) {
+            ShowThemedMessageBox(hwnd_, instance_, theme_, result.message, L"从云端下载", MB_OK | MB_ICONWARNING);
+            return;
+        }
+        const auto& titles = result.report.mergePreview.deletedTodoTitles;
+        if (titles.empty()) {
+            ApplyDownloadedWebDavBackup(result, TodoRestorePolicy::KeepDeleted);
+            return;
+        }
+        std::wstring message = L"云端备份中有 " + std::to_wstring(titles.size()) +
+            L" 条待办已在本地删除。是否恢复这些条目？\n\n";
+        const std::size_t shown = std::min<std::size_t>(titles.size(), 8);
+        for (std::size_t index = 0; index < shown; ++index) message += L"- " + titles[index] + L"\n";
+        if (titles.size() > shown) message += L"- 以及其他 " + std::to_wstring(titles.size() - shown) + L" 条\n";
+        message += L"\n“是”恢复这些待办；“否”保持删除并继续合并；“取消”终止本次合并。";
+        const int choice = ShowThemedMessageBox(
+            hwnd_, instance_, theme_, message, L"确认恢复已删除待办",
+            MB_YESNOCANCEL | MB_ICONQUESTION | MB_DEFBUTTON2);
+        if (choice == IDCANCEL) {
+            std::error_code ec;
+            std::filesystem::remove(result.report.downloadedPackagePath, ec);
+            return;
+        }
+        ApplyDownloadedWebDavBackup(
+            result, choice == IDYES ? TodoRestorePolicy::RestoreDeleted : TodoRestorePolicy::KeepDeleted);
     }
 
     void ContinueWebDavDownloadSelection(const SettingsWebDavResult& result) {
@@ -3162,7 +3226,10 @@ private:
         case SettingsWebDavOperation::List:
             ContinueWebDavDownloadSelection(*result);
             return;
-        case SettingsWebDavOperation::Download:
+        case SettingsWebDavOperation::DownloadPreview:
+            ContinueWebDavMergePreview(*result);
+            return;
+        case SettingsWebDavOperation::DownloadApply:
             if (result->ok) {
                 MarkWebDavSyncedNow(true);
                 ShowToast(result->message.empty() ? L"已从云端下载并合并。" : result->message, ThemedToastRole::Success);
@@ -3209,7 +3276,8 @@ private:
             hwnd_,
             instance_,
             theme_,
-            L"将把配置包中的分组、标签、启动项、便签和待办合并到当前数据。\n\n当前数据不会被覆盖，导入前会自动备份。",
+            L"将把配置包中的分组、标签、启动项、便签和待办合并到当前数据。\n\n"
+            L"同一待办按最后更新时间保留较新版本，本地已删除的待办默认保持删除。导入前会自动备份。",
             L"合并导入配置包",
             MB_OKCANCEL | MB_ICONINFORMATION);
         if (confirm != IDOK) {

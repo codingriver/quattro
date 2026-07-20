@@ -801,6 +801,9 @@ std::wstring FormatConfigPackageReport(const ConfigPackageReport& report) {
     if (report.groupsAdded > 0 || report.groupsMerged > 0 || report.tagsAdded > 0 ||
         report.tagsMerged > 0 || report.linksAdded > 0 || report.linksSkippedDuplicate > 0 ||
         report.notesAdded > 0 || report.notesMerged > 0 || report.todosAdded > 0 ||
+        report.todosUpdatedFromRemote > 0 || report.todosKeptLocal > 0 || report.todosRestored > 0 ||
+        report.todosKeptDeleted > 0 || report.todosSkippedIdentical > 0 || report.todosConflicted > 0 ||
+        report.todosRemoteDeleteConflicts > 0 || report.todosFailed > 0 ||
         report.urlIconsAdded > 0) {
         text += L"\n\n新增分组: " + std::to_wstring(report.groupsAdded);
         text += L"\n复用分组: " + std::to_wstring(report.groupsMerged);
@@ -811,6 +814,14 @@ std::wstring FormatConfigPackageReport(const ConfigPackageReport& report) {
         text += L"\n新增便签: " + std::to_wstring(report.notesAdded);
         text += L"\n合并便签: " + std::to_wstring(report.notesMerged);
         text += L"\n新增待办: " + std::to_wstring(report.todosAdded);
+        text += L"\n远端更新待办: " + std::to_wstring(report.todosUpdatedFromRemote);
+        text += L"\n保留本地待办: " + std::to_wstring(report.todosKeptLocal);
+        text += L"\n恢复已删除待办: " + std::to_wstring(report.todosRestored);
+        text += L"\n保持删除: " + std::to_wstring(report.todosKeptDeleted);
+        text += L"\n内容相同跳过: " + std::to_wstring(report.todosSkippedIdentical);
+        text += L"\n待办冲突: " + std::to_wstring(report.todosConflicted);
+        text += L"\n远端删除冲突: " + std::to_wstring(report.todosRemoteDeleteConflicts);
+        text += L"\n待办失败: " + std::to_wstring(report.todosFailed);
         text += L"\n新增 URL 图标: " + std::to_wstring(report.urlIconsAdded);
     }
     if (!report.warnings.empty()) {
@@ -4718,7 +4729,9 @@ void MainWindow::ToggleTodoEnabled(int todoId) {
 
 bool MainWindow::SaveTodoReminderState(TodoItem& item, const wchar_t* context) {
     item.updatedAt = CurrentTodoTimestamp();
-    if (storageService_.UpdateTodoReminderState(item)) {
+    const bool advanceMergeTime = !context || wcscmp(context, L"发送提醒") != 0;
+    if (advanceMergeTime) item.mergeUpdatedAtUtc = CurrentTodoMergeTimestampUtc();
+    if (storageService_.UpdateTodoReminderState(item, advanceMergeTime)) {
         return true;
     }
     WriteAppLog(
@@ -4841,11 +4854,9 @@ void MainWindow::ClearDoneTodos() {
     if (MessageBoxW(hwnd_, L"确定清空已完成待办事项？", L"清空已完成", MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) != IDYES) {
         return;
     }
-    for (int id : doneIds) {
-        if (!storageService_.DeleteTodoItem(id)) {
-            MessageBoxW(hwnd_, storageService_.lastError().c_str(), L"清空已完成", MB_OK | MB_ICONWARNING);
-            return;
-        }
+    if (!storageService_.DeleteTodoItems(doneIds)) {
+        MessageBoxW(hwnd_, storageService_.lastError().c_str(), L"清空已完成", MB_OK | MB_ICONWARNING);
+        return;
     }
     model_.todos.erase(std::remove_if(model_.todos.begin(), model_.todos.end(), [&](const TodoItem& item) {
         return std::find(doneIds.begin(), doneIds.end(), item.id) != doneIds.end();
@@ -6345,7 +6356,8 @@ void MainWindow::ImportConfigPackageMerge() {
 
     const int confirm = MessageBoxW(
         hwnd_,
-        L"将把配置包中的分组、标签、启动项、便签和待办合并到当前数据。\n\n当前数据不会被覆盖，导入前会自动备份。",
+        L"将把配置包中的分组、标签、启动项、便签和待办合并到当前数据。\n\n"
+        L"同一待办按最后更新时间保留较新版本，本地已删除的待办默认保持删除。导入前会自动备份。",
         L"合并导入配置包",
         MB_OKCANCEL | MB_ICONINFORMATION);
     if (confirm != IDOK) {

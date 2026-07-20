@@ -8,11 +8,43 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cwctype>
 #include <string>
 #include <vector>
 
 namespace {
-constexpr int kSchemaVersion = 20003;
+constexpr int kSchemaVersion = 20004;
+
+std::wstring GenerateStableUuid() {
+    GUID value{};
+    if (FAILED(CoCreateGuid(&value))) return {};
+    wchar_t buffer[40]{};
+    if (StringFromGUID2(value, buffer, static_cast<int>(std::size(buffer))) <= 0) return {};
+    std::wstring result(buffer);
+    if (result.size() >= 2 && result.front() == L'{' && result.back() == L'}') {
+        result = result.substr(1, result.size() - 2);
+    }
+    std::transform(result.begin(), result.end(), result.begin(), [](wchar_t ch) {
+        return static_cast<wchar_t>(std::towlower(ch));
+    });
+    return result;
+}
+
+std::wstring FormatUtcTimestamp(const SYSTEMTIME& value) {
+    wchar_t buffer[40]{};
+    swprintf_s(buffer, L"%04u-%02u-%02uT%02u:%02u:%02u.%03uZ",
+        value.wYear, value.wMonth, value.wDay, value.wHour, value.wMinute,
+        value.wSecond, value.wMilliseconds);
+    return buffer;
+}
+
+std::wstring LegacyTimestampToUtc(const std::wstring& value) {
+    SYSTEMTIME local{};
+    if (!TryParseTodoTimestamp(value, local)) return {};
+    SYSTEMTIME utc{};
+    if (!TzSpecificLocalTimeToSystemTime(nullptr, &local, &utc)) return {};
+    return FormatUtcTimestamp(utc);
+}
 
 class SQLiteDatabase {
 public:
@@ -142,7 +174,8 @@ void CreateSchema(sqlite3* db, std::wstring& error) {
          "LAYOUT INTEGER DEFAULT 0,"
          "ICONSIZE INTEGER DEFAULT 0,"
          "FLAG INTEGER DEFAULT 0,"
-         "Content TEXT);"
+         "Content TEXT,"
+         "GroupUid TEXT NOT NULL DEFAULT '');"
          "CREATE TABLE IF NOT EXISTS Links("
          "ID INTEGER PRIMARY KEY AUTOINCREMENT,"
          "NAME TEXT NOT NULL,"
@@ -189,7 +222,14 @@ void CreateSchema(sqlite3* db, std::wstring& error) {
          "SnoozedUntil TEXT NOT NULL DEFAULT '',"
          "POS INTEGER DEFAULT 0,"
          "CreatedAt TEXT NOT NULL DEFAULT '',"
-         "UpdatedAt TEXT NOT NULL DEFAULT '');",
+         "UpdatedAt TEXT NOT NULL DEFAULT '',"
+         "TodoUid TEXT NOT NULL DEFAULT '',"
+         "MergeUpdatedAtUtc TEXT NOT NULL DEFAULT '');"
+         "CREATE TABLE IF NOT EXISTS TodoTombstones("
+         "TodoUid TEXT PRIMARY KEY,"
+         "DeletedAtUtc TEXT NOT NULL,"
+         "TitleSnapshot TEXT NOT NULL DEFAULT '',"
+         "TagUid TEXT NOT NULL DEFAULT '');",
          error);
 }
 
@@ -251,7 +291,11 @@ bool NeedsSchemaMigration(sqlite3* db) {
            !HasColumn(db, L"TodoItems", L"LastViewedDueAt") ||
            !HasColumn(db, L"TodoItems", L"LastViewedAt") ||
            !HasColumn(db, L"TodoItems", L"IgnoredDueAt") ||
-           !HasColumn(db, L"TodoItems", L"SnoozedUntil");
+           !HasColumn(db, L"TodoItems", L"SnoozedUntil") ||
+           !HasColumn(db, L"Groups", L"GroupUid") ||
+           !HasColumn(db, L"TodoItems", L"TodoUid") ||
+           !HasColumn(db, L"TodoItems", L"MergeUpdatedAtUtc") ||
+           !HasTable(db, L"TodoTombstones");
 }
 
 std::wstring MigrationTimestamp() {
@@ -288,6 +332,9 @@ bool BackupDatabaseBeforeMigration(const std::filesystem::path& appDirectory, co
 }
 
 void MigrateSchema(sqlite3* db, std::wstring& error) {
+    if (!HasColumn(db, L"Groups", L"GroupUid")) {
+        Exec(db, "ALTER TABLE Groups ADD COLUMN GroupUid TEXT NOT NULL DEFAULT '';", error);
+    }
     if (!HasColumn(db, L"Groups", L"SortDirection")) {
         Exec(db, "ALTER TABLE Groups ADD COLUMN SortDirection INTEGER DEFAULT 0;", error);
         Exec(db, "UPDATE Groups SET SortDirection=1 WHERE SORT=1;", error);
@@ -365,6 +412,82 @@ void MigrateSchema(sqlite3* db, std::wstring& error) {
     if (!HasColumn(db, L"TodoItems", L"SnoozedUntil")) {
         Exec(db, "ALTER TABLE TodoItems ADD COLUMN SnoozedUntil TEXT NOT NULL DEFAULT '';", error);
     }
+    if (!HasColumn(db, L"TodoItems", L"TodoUid")) {
+        Exec(db, "ALTER TABLE TodoItems ADD COLUMN TodoUid TEXT NOT NULL DEFAULT '';", error);
+    }
+    if (!HasColumn(db, L"TodoItems", L"MergeUpdatedAtUtc")) {
+        Exec(db, "ALTER TABLE TodoItems ADD COLUMN MergeUpdatedAtUtc TEXT NOT NULL DEFAULT '';", error);
+    }
+    Exec(db,
+         "CREATE TABLE IF NOT EXISTS TodoTombstones("
+         "TodoUid TEXT PRIMARY KEY,"
+         "DeletedAtUtc TEXT NOT NULL,"
+         "TitleSnapshot TEXT NOT NULL DEFAULT '',"
+         "TagUid TEXT NOT NULL DEFAULT '');",
+         error);
+
+    std::vector<int> groupIds;
+    {
+        SQLiteStatement query(db, L"SELECT ID FROM Groups WHERE GroupUid='';");
+        while (query.ok() && query.step() == SQLITE_ROW) groupIds.push_back(query.columnInt(0));
+    }
+    for (int id : groupIds) {
+        const std::wstring uid = GenerateStableUuid();
+        SQLiteStatement update(db, L"UPDATE Groups SET GroupUid=? WHERE ID=? AND GroupUid='';");
+        if (uid.empty() || !update.ok()) {
+            error = L"生成分组同步标识失败。";
+            return;
+        }
+        update.bindText(1, uid);
+        update.bindInt(2, id);
+        if (update.step() != SQLITE_DONE) {
+            error = L"保存分组同步标识失败。";
+            return;
+        }
+    }
+
+    struct TodoIdentityBackfill {
+        int id = 0;
+        std::wstring uid;
+        std::wstring mergeUpdatedAtUtc;
+        std::wstring updatedAt;
+        std::wstring createdAt;
+    };
+    std::vector<TodoIdentityBackfill> todos;
+    {
+        SQLiteStatement query(db, L"SELECT ID,TodoUid,MergeUpdatedAtUtc,UpdatedAt,CreatedAt FROM TodoItems WHERE TodoUid='' OR MergeUpdatedAtUtc='';");
+        while (query.ok() && query.step() == SQLITE_ROW) {
+            TodoIdentityBackfill item;
+            item.id = query.columnInt(0);
+            item.uid = query.columnText(1);
+            item.mergeUpdatedAtUtc = query.columnText(2);
+            item.updatedAt = query.columnText(3);
+            item.createdAt = query.columnText(4);
+            todos.push_back(std::move(item));
+        }
+    }
+    for (auto& item : todos) {
+        if (item.uid.empty()) item.uid = GenerateStableUuid();
+        if (item.mergeUpdatedAtUtc.empty()) {
+            item.mergeUpdatedAtUtc = LegacyTimestampToUtc(item.updatedAt);
+            if (item.mergeUpdatedAtUtc.empty()) item.mergeUpdatedAtUtc = LegacyTimestampToUtc(item.createdAt);
+            if (item.mergeUpdatedAtUtc.empty()) item.mergeUpdatedAtUtc = CurrentTodoMergeTimestampUtc();
+        }
+        SQLiteStatement update(db, L"UPDATE TodoItems SET TodoUid=?,MergeUpdatedAtUtc=? WHERE ID=?;");
+        if (item.uid.empty() || !update.ok()) {
+            error = L"生成待办同步标识失败。";
+            return;
+        }
+        update.bindText(1, item.uid);
+        update.bindText(2, item.mergeUpdatedAtUtc);
+        update.bindInt(3, item.id);
+        if (update.step() != SQLITE_DONE) {
+            error = L"保存待办同步标识失败。";
+            return;
+        }
+    }
+    Exec(db, "CREATE UNIQUE INDEX IF NOT EXISTS IX_Groups_GroupUid ON Groups(GroupUid) WHERE GroupUid<>'';", error);
+    Exec(db, "CREATE UNIQUE INDEX IF NOT EXISTS IX_TodoItems_TodoUid ON TodoItems(TodoUid) WHERE TodoUid<>'';", error);
 }
 
 int CountRows(sqlite3* db, const wchar_t* sql) {
@@ -454,6 +577,8 @@ bool NormalizeGroupForSave(sqlite3* db, Group& group) {
     }
     group.sort = std::max(0, std::min(3, group.sort));
     group.sortDirection = group.sortDirection == 0 ? 0 : 1;
+    if (group.groupUid.empty()) group.groupUid = GenerateStableUuid();
+    if (group.groupUid.empty()) return false;
     return true;
 }
 
@@ -514,8 +639,66 @@ bool NormalizeTodoForSave(sqlite3* db, TodoItem& item, bool isNew) {
     if (item.updatedAt.empty()) {
         item.updatedAt = now;
     }
+    if (item.todoUid.empty()) item.todoUid = GenerateStableUuid();
+    if (item.mergeUpdatedAtUtc.empty()) item.mergeUpdatedAtUtc = CurrentTodoMergeTimestampUtc();
+    if (item.todoUid.empty() || item.mergeUpdatedAtUtc.empty()) return false;
     return true;
 }
+
+bool RecordTodoTombstones(sqlite3* db, const std::wstring& predicate, int value, std::wstring& error) {
+    std::vector<TodoTombstone> tombstones;
+    const std::wstring sql =
+        L"SELECT t.TodoUid,t.Title,COALESCE(g.GroupUid,'') FROM TodoItems t "
+        L"LEFT JOIN Groups g ON g.ID=t.TagId WHERE " + predicate + L";";
+    SQLiteStatement query(db, sql.c_str());
+    if (!query.ok()) {
+        error = L"查询待办删除墓碑失败。";
+        return false;
+    }
+    query.bindInt(1, value);
+    for (;;) {
+        const int step = query.step();
+        if (step == SQLITE_DONE) break;
+        if (step != SQLITE_ROW) {
+            error = L"读取待办删除墓碑失败。";
+            return false;
+        }
+        TodoTombstone item;
+        item.todoUid = query.columnText(0);
+        item.titleSnapshot = query.columnText(1);
+        item.tagUid = query.columnText(2);
+        item.deletedAtUtc = CurrentTodoMergeTimestampUtc();
+        tombstones.push_back(std::move(item));
+    }
+    for (const auto& item : tombstones) {
+        if (item.todoUid.empty()) {
+            error = L"待办缺少同步标识，无法安全删除。";
+            return false;
+        }
+        SQLiteStatement insert(db,
+            L"INSERT INTO TodoTombstones(TodoUid,DeletedAtUtc,TitleSnapshot,TagUid) VALUES(?,?,?,?) "
+            L"ON CONFLICT(TodoUid) DO UPDATE SET DeletedAtUtc=excluded.DeletedAtUtc,TitleSnapshot=excluded.TitleSnapshot,TagUid=excluded.TagUid;");
+        if (!insert.ok()) {
+            error = L"创建待办删除墓碑失败。";
+            return false;
+        }
+        insert.bindText(1, item.todoUid);
+        insert.bindText(2, item.deletedAtUtc);
+        insert.bindText(3, item.titleSnapshot);
+        insert.bindText(4, item.tagUid);
+        if (insert.step() != SQLITE_DONE) {
+            error = L"保存待办删除墓碑失败。";
+            return false;
+        }
+    }
+    return true;
+}
+}
+
+std::wstring CurrentTodoMergeTimestampUtc() {
+    SYSTEMTIME now{};
+    GetSystemTime(&now);
+    return FormatUtcTimestamp(now);
 }
 
 StorageService::StorageService(std::filesystem::path appDirectory)
@@ -591,6 +774,7 @@ AppModel StorageService::Load() {
              "INSERT INTO Groups(ID,NAME,POS,ParentGroup,ICONSIZE,LAYOUT,SORT,SORTDIRECTION,TYPE) VALUES(2,'新的标签',0,1,32,1,0,0,0);",
              lastError_);
         WriteStartupTiming(L"storage default groups inserted", lastError_);
+        MigrateSchema(db.get(), lastError_);
     }
 
     if (startupSchemaTransaction) {
@@ -606,7 +790,7 @@ AppModel StorageService::Load() {
     AppModel model;
     {
         SQLiteStatement statement(db.get(),
-            L"SELECT ID,NAME,ParentGroup,ICON,LAYOUT,ICONSIZE,POS,TYPE,SORT,SORTDIRECTION,Content,FLAG "
+            L"SELECT ID,NAME,ParentGroup,ICON,LAYOUT,ICONSIZE,POS,TYPE,SORT,SORTDIRECTION,Content,FLAG,GroupUid "
             L"FROM Groups ORDER BY ParentGroup,POS,ID;");
         if (statement.ok()) {
             while (statement.step() == SQLITE_ROW) {
@@ -623,6 +807,7 @@ AppModel StorageService::Load() {
                 group.sortDirection = statement.columnInt(9) == 0 ? 0 : 1;
                 group.content = statement.columnText(10);
                 group.flag = statement.columnInt(11);
+                group.groupUid = statement.columnText(12);
                 model.groups.push_back(std::move(group));
             }
         }
@@ -677,7 +862,7 @@ AppModel StorageService::Load() {
 
     {
         SQLiteStatement statement(db.get(),
-            L"SELECT ID,TagId,Title,Content,Enabled,ScheduleKind,RepeatMode,RepeatInterval,RepeatLimit,RepeatFinished,CronExpression,AnchorAt,NextDueAt,CompletedAt,LastNotifiedDueAt,LastNotifiedAt,LastViewedDueAt,LastViewedAt,IgnoredDueAt,SnoozedUntil,POS,CreatedAt,UpdatedAt "
+            L"SELECT ID,TagId,Title,Content,Enabled,ScheduleKind,RepeatMode,RepeatInterval,RepeatLimit,RepeatFinished,CronExpression,AnchorAt,NextDueAt,CompletedAt,LastNotifiedDueAt,LastNotifiedAt,LastViewedDueAt,LastViewedAt,IgnoredDueAt,SnoozedUntil,POS,CreatedAt,UpdatedAt,TodoUid,MergeUpdatedAtUtc "
             L"FROM TodoItems ORDER BY TagId,CompletedAt,POS,ID;");
         if (statement.ok()) {
             while (statement.step() == SQLITE_ROW) {
@@ -705,11 +890,27 @@ AppModel StorageService::Load() {
                 item.pos = statement.columnInt(20);
                 item.createdAt = statement.columnText(21);
                 item.updatedAt = statement.columnText(22);
+                item.todoUid = statement.columnText(23);
+                item.mergeUpdatedAtUtc = statement.columnText(24);
                 model.todos.push_back(std::move(item));
             }
         }
     }
     WriteStartupTiming(L"storage todos loaded", L"count=" + std::to_wstring(model.todos.size()));
+
+    {
+        SQLiteStatement statement(db.get(), L"SELECT TodoUid,DeletedAtUtc,TitleSnapshot,TagUid FROM TodoTombstones ORDER BY DeletedAtUtc,TodoUid;");
+        if (statement.ok()) {
+            while (statement.step() == SQLITE_ROW) {
+                TodoTombstone item;
+                item.todoUid = statement.columnText(0);
+                item.deletedAtUtc = statement.columnText(1);
+                item.titleSnapshot = statement.columnText(2);
+                item.tagUid = statement.columnText(3);
+                model.todoTombstones.push_back(std::move(item));
+            }
+        }
+    }
 
     EnsureDefaultData(model);
     WriteStartupTiming(
@@ -738,8 +939,8 @@ bool StorageService::InsertGroup(Group& group) {
     }
 
     SQLiteStatement statement(db.get(),
-        L"INSERT INTO Groups(NAME,TYPE,SORT,SORTDIRECTION,POS,ParentGroup,ICON,LAYOUT,ICONSIZE,FLAG,Content) "
-        L"VALUES(?,?,?,?,?,?,?,?,?,?,?);");
+        L"INSERT INTO Groups(NAME,TYPE,SORT,SORTDIRECTION,POS,ParentGroup,ICON,LAYOUT,ICONSIZE,FLAG,Content,GroupUid) "
+        L"VALUES(?,?,?,?,?,?,?,?,?,?,?,?);");
     if (!statement.ok()) {
         lastError_ = L"新增分组 SQL 准备失败。";
         return false;
@@ -755,6 +956,7 @@ bool StorageService::InsertGroup(Group& group) {
     statement.bindInt(9, group.iconSize);
     statement.bindInt(10, group.flag);
     statement.bindText(11, group.content);
+    statement.bindText(12, group.groupUid);
     if (statement.step() != SQLITE_DONE) {
         const void* message = sqlite3_errmsg16(db.get());
         lastError_ = message ? static_cast<const wchar_t*>(message) : L"新增分组失败。";
@@ -779,7 +981,7 @@ bool StorageService::UpdateGroup(const Group& source) {
     }
 
     SQLiteStatement statement(db.get(),
-        L"UPDATE Groups SET NAME=?,TYPE=?,SORT=?,SORTDIRECTION=?,POS=?,ParentGroup=?,ICON=?,LAYOUT=?,ICONSIZE=?,FLAG=?,Content=? WHERE ID=?;");
+        L"UPDATE Groups SET NAME=?,TYPE=?,SORT=?,SORTDIRECTION=?,POS=?,ParentGroup=?,ICON=?,LAYOUT=?,ICONSIZE=?,FLAG=?,Content=?,GroupUid=? WHERE ID=?;");
     if (!statement.ok()) {
         lastError_ = L"更新分组 SQL 准备失败。";
         return false;
@@ -795,7 +997,8 @@ bool StorageService::UpdateGroup(const Group& source) {
     statement.bindInt(9, group.iconSize);
     statement.bindInt(10, group.flag);
     statement.bindText(11, group.content);
-    statement.bindInt(12, group.id);
+    statement.bindText(12, group.groupUid);
+    statement.bindInt(13, group.id);
     if (statement.step() != SQLITE_DONE) {
         const void* message = sqlite3_errmsg16(db.get());
         lastError_ = message ? static_cast<const wchar_t*>(message) : L"更新分组失败。";
@@ -811,6 +1014,9 @@ bool StorageService::DeleteGroup(int groupId) {
         lastError_ = db.Error();
         return false;
     }
+    CreateSchema(db.get(), lastError_);
+    MigrateSchema(db.get(), lastError_);
+    if (!lastError_.empty()) return false;
 
     SQLiteStatement typeQuery(db.get(), L"SELECT ParentGroup FROM Groups WHERE ID=?;");
     if (!typeQuery.ok()) {
@@ -830,6 +1036,8 @@ bool StorageService::DeleteGroup(int groupId) {
 
     bool ok = true;
     if (parentGroup == 0) {
+        ok = RecordTodoTombstones(
+            db.get(), L"t.TagId IN (SELECT ID FROM Groups WHERE ParentGroup=?)", groupId, lastError_);
         SQLiteStatement deleteTodos(db.get(),
             L"DELETE FROM TodoItems WHERE TagId IN (SELECT ID FROM Groups WHERE ParentGroup=?);");
         deleteTodos.bindInt(1, groupId);
@@ -849,6 +1057,7 @@ bool StorageService::DeleteGroup(int groupId) {
         deleteTags.bindInt(1, groupId);
         ok = ok && deleteTags.step() == SQLITE_DONE;
     } else {
+        ok = RecordTodoTombstones(db.get(), L"t.TagId=?", groupId, lastError_);
         SQLiteStatement deleteTodos(db.get(), L"DELETE FROM TodoItems WHERE TagId=?;");
         deleteTodos.bindInt(1, groupId);
         ok = ok && deleteTodos.step() == SQLITE_DONE;
@@ -1059,8 +1268,8 @@ bool StorageService::InsertTodoItem(TodoItem& item) {
     }
 
     SQLiteStatement statement(db.get(),
-        L"INSERT INTO TodoItems(TagId,Title,Content,Enabled,ScheduleKind,RepeatMode,RepeatInterval,RepeatLimit,RepeatFinished,CronExpression,AnchorAt,NextDueAt,CompletedAt,LastNotifiedDueAt,LastNotifiedAt,LastViewedDueAt,LastViewedAt,IgnoredDueAt,SnoozedUntil,POS,CreatedAt,UpdatedAt) "
-        L"VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);");
+        L"INSERT INTO TodoItems(TagId,Title,Content,Enabled,ScheduleKind,RepeatMode,RepeatInterval,RepeatLimit,RepeatFinished,CronExpression,AnchorAt,NextDueAt,CompletedAt,LastNotifiedDueAt,LastNotifiedAt,LastViewedDueAt,LastViewedAt,IgnoredDueAt,SnoozedUntil,POS,CreatedAt,UpdatedAt,TodoUid,MergeUpdatedAtUtc) "
+        L"VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);");
     if (!statement.ok()) {
         lastError_ = L"新增待办事项 SQL 准备失败。";
         return false;
@@ -1087,6 +1296,8 @@ bool StorageService::InsertTodoItem(TodoItem& item) {
     statement.bindInt(20, item.pos);
     statement.bindText(21, item.createdAt);
     statement.bindText(22, item.updatedAt);
+    statement.bindText(23, item.todoUid);
+    statement.bindText(24, item.mergeUpdatedAtUtc);
     if (statement.step() != SQLITE_DONE) {
         const void* message = sqlite3_errmsg16(db.get());
         lastError_ = message ? static_cast<const wchar_t*>(message) : L"新增待办事项失败。";
@@ -1108,6 +1319,7 @@ bool StorageService::UpdateTodoItem(const TodoItem& source) {
 
     TodoItem item = source;
     item.updatedAt = CurrentTodoTimestamp();
+    item.mergeUpdatedAtUtc = CurrentTodoMergeTimestampUtc();
     if (!NormalizeTodoForSave(db.get(), item, false)) {
         lastError_ = L"待办事项标题不能为空，且有时间的事项必须填写有效时间。";
         return false;
@@ -1115,7 +1327,7 @@ bool StorageService::UpdateTodoItem(const TodoItem& source) {
 
     SQLiteStatement statement(db.get(),
         L"UPDATE TodoItems SET TagId=?,Title=?,Content=?,Enabled=?,ScheduleKind=?,RepeatMode=?,RepeatInterval=?,RepeatLimit=?,RepeatFinished=?,CronExpression=?,AnchorAt=?,NextDueAt=?,"
-        L"CompletedAt=?,LastNotifiedDueAt=?,LastNotifiedAt=?,LastViewedDueAt=?,LastViewedAt=?,IgnoredDueAt=?,SnoozedUntil=?,POS=?,CreatedAt=?,UpdatedAt=? WHERE ID=?;");
+        L"CompletedAt=?,LastNotifiedDueAt=?,LastNotifiedAt=?,LastViewedDueAt=?,LastViewedAt=?,IgnoredDueAt=?,SnoozedUntil=?,POS=?,CreatedAt=?,UpdatedAt=?,TodoUid=?,MergeUpdatedAtUtc=? WHERE ID=?;");
     if (!statement.ok()) {
         lastError_ = L"更新待办事项 SQL 准备失败。";
         return false;
@@ -1142,7 +1354,9 @@ bool StorageService::UpdateTodoItem(const TodoItem& source) {
     statement.bindInt(20, item.pos);
     statement.bindText(21, item.createdAt);
     statement.bindText(22, item.updatedAt);
-    statement.bindInt(23, item.id);
+    statement.bindText(23, item.todoUid);
+    statement.bindText(24, item.mergeUpdatedAtUtc);
+    statement.bindInt(25, item.id);
     if (statement.step() != SQLITE_DONE) {
         const void* message = sqlite3_errmsg16(db.get());
         lastError_ = message ? static_cast<const wchar_t*>(message) : L"更新待办事项失败。";
@@ -1152,25 +1366,48 @@ bool StorageService::UpdateTodoItem(const TodoItem& source) {
 }
 
 bool StorageService::DeleteTodoItem(int todoId) {
+    return DeleteTodoItems({todoId});
+}
+
+bool StorageService::DeleteTodoItems(const std::vector<int>& todoIds) {
     lastError_.clear();
+    if (todoIds.empty()) return true;
     SQLiteDatabase db(appDirectory_ / L"db" / L"link.db");
     if (!db.ok()) {
         lastError_ = db.Error();
         return false;
     }
-
-    SQLiteStatement statement(db.get(), L"DELETE FROM TodoItems WHERE ID=?;");
-    if (!statement.ok()) {
-        lastError_ = L"删除待办事项 SQL 准备失败。";
+    CreateSchema(db.get(), lastError_);
+    MigrateSchema(db.get(), lastError_);
+    if (!lastError_.empty() || !Exec(db.get(), "BEGIN IMMEDIATE;", lastError_)) return false;
+    auto rollback = [&]() {
+        std::wstring ignored;
+        Exec(db.get(), "ROLLBACK;", ignored);
+    };
+    for (int todoId : todoIds) {
+        if (!RecordTodoTombstones(db.get(), L"t.ID=?", todoId, lastError_)) {
+            rollback();
+            return false;
+        }
+        SQLiteStatement statement(db.get(), L"DELETE FROM TodoItems WHERE ID=?;");
+        if (!statement.ok()) {
+            lastError_ = L"删除待办事项 SQL 准备失败。";
+            rollback();
+            return false;
+        }
+        statement.bindInt(1, todoId);
+        if (statement.step() != SQLITE_DONE || sqlite3_changes(db.get()) <= 0) {
+            const void* message = sqlite3_errmsg16(db.get());
+            lastError_ = message ? static_cast<const wchar_t*>(message) : L"删除待办事项失败。";
+            rollback();
+            return false;
+        }
+    }
+    if (!Exec(db.get(), "COMMIT;", lastError_)) {
+        rollback();
         return false;
     }
-    statement.bindInt(1, todoId);
-    if (statement.step() != SQLITE_DONE) {
-        const void* message = sqlite3_errmsg16(db.get());
-        lastError_ = message ? static_cast<const wchar_t*>(message) : L"删除待办事项失败。";
-        return false;
-    }
-    return sqlite3_changes(db.get()) > 0;
+    return true;
 }
 
 bool StorageService::SetTodoCompleted(int todoId, bool completed) {
@@ -1186,7 +1423,7 @@ bool StorageService::SetTodoCompleted(int todoId, bool completed) {
     TodoItem item;
     {
         SQLiteStatement query(db.get(),
-            L"SELECT ID,TagId,Title,Content,Enabled,ScheduleKind,RepeatMode,RepeatInterval,RepeatLimit,RepeatFinished,CronExpression,AnchorAt,NextDueAt,CompletedAt,LastNotifiedDueAt,LastNotifiedAt,LastViewedDueAt,LastViewedAt,IgnoredDueAt,SnoozedUntil,POS,CreatedAt,UpdatedAt "
+            L"SELECT ID,TagId,Title,Content,Enabled,ScheduleKind,RepeatMode,RepeatInterval,RepeatLimit,RepeatFinished,CronExpression,AnchorAt,NextDueAt,CompletedAt,LastNotifiedDueAt,LastNotifiedAt,LastViewedDueAt,LastViewedAt,IgnoredDueAt,SnoozedUntil,POS,CreatedAt,UpdatedAt,TodoUid,MergeUpdatedAtUtc "
             L"FROM TodoItems WHERE ID=?;");
         if (!query.ok()) {
             lastError_ = L"查询待办事项 SQL 准备失败。";
@@ -1220,6 +1457,8 @@ bool StorageService::SetTodoCompleted(int todoId, bool completed) {
         item.pos = query.columnInt(20);
         item.createdAt = query.columnText(21);
         item.updatedAt = query.columnText(22);
+        item.todoUid = query.columnText(23);
+        item.mergeUpdatedAtUtc = query.columnText(24);
     }
 
     const std::wstring now = CurrentTodoTimestamp();
@@ -1234,7 +1473,8 @@ bool StorageService::SetTodoCompleted(int todoId, bool completed) {
         item.updatedAt = now;
     }
 
-    SQLiteStatement statement(db.get(), L"UPDATE TodoItems SET NextDueAt=?,CompletedAt=?,RepeatFinished=?,LastNotifiedDueAt='',LastNotifiedAt='',LastViewedDueAt='',LastViewedAt='',IgnoredDueAt='',SnoozedUntil='',UpdatedAt=? WHERE ID=?;");
+    item.mergeUpdatedAtUtc = CurrentTodoMergeTimestampUtc();
+    SQLiteStatement statement(db.get(), L"UPDATE TodoItems SET NextDueAt=?,CompletedAt=?,RepeatFinished=?,LastNotifiedDueAt='',LastNotifiedAt='',LastViewedDueAt='',LastViewedAt='',IgnoredDueAt='',SnoozedUntil='',UpdatedAt=?,MergeUpdatedAtUtc=? WHERE ID=?;");
     if (!statement.ok()) {
         lastError_ = L"更新待办完成状态 SQL 准备失败。";
         return false;
@@ -1243,7 +1483,8 @@ bool StorageService::SetTodoCompleted(int todoId, bool completed) {
     statement.bindText(2, item.completedAt);
     statement.bindInt(3, item.repeatFinished);
     statement.bindText(4, item.updatedAt);
-    statement.bindInt(5, item.id);
+    statement.bindText(5, item.mergeUpdatedAtUtc);
+    statement.bindInt(6, item.id);
     if (statement.step() != SQLITE_DONE) {
         const void* message = sqlite3_errmsg16(db.get());
         lastError_ = message ? static_cast<const wchar_t*>(message) : L"更新待办完成状态失败。";
@@ -1278,7 +1519,7 @@ bool StorageService::CompleteOverdueTodos(int tagId, const std::wstring& now, To
 
     std::vector<TodoItem> overdueItems;
     SQLiteStatement query(db.get(),
-        L"SELECT ID,TagId,Title,Content,Enabled,ScheduleKind,RepeatMode,RepeatInterval,RepeatLimit,RepeatFinished,CronExpression,AnchorAt,NextDueAt,CompletedAt,LastNotifiedDueAt,LastNotifiedAt,LastViewedDueAt,LastViewedAt,IgnoredDueAt,SnoozedUntil,POS,CreatedAt,UpdatedAt "
+        L"SELECT ID,TagId,Title,Content,Enabled,ScheduleKind,RepeatMode,RepeatInterval,RepeatLimit,RepeatFinished,CronExpression,AnchorAt,NextDueAt,CompletedAt,LastNotifiedDueAt,LastNotifiedAt,LastViewedDueAt,LastViewedAt,IgnoredDueAt,SnoozedUntil,POS,CreatedAt,UpdatedAt,TodoUid,MergeUpdatedAtUtc "
         L"FROM TodoItems WHERE TagId=? ORDER BY POS,ID;");
     if (!query.ok()) {
         lastError_ = L"查询逾期待办 SQL 准备失败。";
@@ -1319,6 +1560,8 @@ bool StorageService::CompleteOverdueTodos(int tagId, const std::wstring& now, To
         item.pos = query.columnInt(20);
         item.createdAt = query.columnText(21);
         item.updatedAt = query.columnText(22);
+        item.todoUid = query.columnText(23);
+        item.mergeUpdatedAtUtc = query.columnText(24);
         if (IsTodoOverdueAt(item, normalizedNow)) {
             overdueItems.push_back(std::move(item));
         }
@@ -1335,8 +1578,9 @@ bool StorageService::CompleteOverdueTodos(int tagId, const std::wstring& now, To
     int updatedCount = 0;
     for (auto& item : overdueItems) {
         const TodoCompletionOutcome outcome = CompleteTodoOccurrence(item, normalizedNow);
+        item.mergeUpdatedAtUtc = CurrentTodoMergeTimestampUtc();
         SQLiteStatement update(db.get(),
-            L"UPDATE TodoItems SET NextDueAt=?,CompletedAt=?,RepeatFinished=?,LastNotifiedDueAt='',LastNotifiedAt='',LastViewedDueAt='',LastViewedAt='',IgnoredDueAt='',SnoozedUntil='',UpdatedAt=? WHERE ID=?;");
+            L"UPDATE TodoItems SET NextDueAt=?,CompletedAt=?,RepeatFinished=?,LastNotifiedDueAt='',LastNotifiedAt='',LastViewedDueAt='',LastViewedAt='',IgnoredDueAt='',SnoozedUntil='',UpdatedAt=?,MergeUpdatedAtUtc=? WHERE ID=?;");
         if (!update.ok()) {
             lastError_ = L"批量完成逾期待办 SQL 准备失败。";
             rollback();
@@ -1346,7 +1590,8 @@ bool StorageService::CompleteOverdueTodos(int tagId, const std::wstring& now, To
         update.bindText(2, item.completedAt);
         update.bindInt(3, item.repeatFinished);
         update.bindText(4, item.updatedAt);
-        update.bindInt(5, item.id);
+        update.bindText(5, item.mergeUpdatedAtUtc);
+        update.bindInt(6, item.id);
         if (update.step() != SQLITE_DONE) {
             const void* message = sqlite3_errmsg16(db.get());
             lastError_ = message ? static_cast<const wchar_t*>(message) : L"批量完成逾期待办失败。";
@@ -1387,14 +1632,15 @@ bool StorageService::SetTodoEnabled(int todoId, bool enabled) {
     MigrateSchema(db.get(), lastError_);
 
     SQLiteStatement statement(db.get(),
-        L"UPDATE TodoItems SET Enabled=?,LastNotifiedDueAt='',LastNotifiedAt='',LastViewedDueAt='',LastViewedAt='',IgnoredDueAt='',SnoozedUntil='',UpdatedAt=? WHERE ID=?;");
+        L"UPDATE TodoItems SET Enabled=?,LastNotifiedDueAt='',LastNotifiedAt='',LastViewedDueAt='',LastViewedAt='',IgnoredDueAt='',SnoozedUntil='',UpdatedAt=?,MergeUpdatedAtUtc=? WHERE ID=?;");
     if (!statement.ok()) {
         lastError_ = L"更新待办启用状态 SQL 准备失败。";
         return false;
     }
     statement.bindInt(1, enabled ? 1 : 0);
     statement.bindText(2, CurrentTodoTimestamp());
-    statement.bindInt(3, todoId);
+    statement.bindText(3, CurrentTodoMergeTimestampUtc());
+    statement.bindInt(4, todoId);
     if (statement.step() != SQLITE_DONE) {
         const void* message = sqlite3_errmsg16(db.get());
         lastError_ = message ? static_cast<const wchar_t*>(message) : L"更新待办启用状态失败。";
@@ -1403,7 +1649,7 @@ bool StorageService::SetTodoEnabled(int todoId, bool enabled) {
     return sqlite3_changes(db.get()) > 0;
 }
 
-bool StorageService::UpdateTodoReminderState(const TodoItem& item) {
+bool StorageService::UpdateTodoReminderState(const TodoItem& item, bool advanceMergeTime) {
     lastError_.clear();
     SQLiteDatabase db(appDirectory_ / L"db" / L"link.db");
     if (!db.ok()) {
@@ -1413,8 +1659,9 @@ bool StorageService::UpdateTodoReminderState(const TodoItem& item) {
     CreateSchema(db.get(), lastError_);
     MigrateSchema(db.get(), lastError_);
 
-    SQLiteStatement statement(db.get(),
-        L"UPDATE TodoItems SET LastNotifiedDueAt=?,LastNotifiedAt=?,LastViewedDueAt=?,LastViewedAt=?,IgnoredDueAt=?,SnoozedUntil=?,UpdatedAt=? WHERE ID=?;");
+    SQLiteStatement statement(db.get(), advanceMergeTime
+        ? L"UPDATE TodoItems SET LastNotifiedDueAt=?,LastNotifiedAt=?,LastViewedDueAt=?,LastViewedAt=?,IgnoredDueAt=?,SnoozedUntil=?,UpdatedAt=?,MergeUpdatedAtUtc=? WHERE ID=?;"
+        : L"UPDATE TodoItems SET LastNotifiedDueAt=?,LastNotifiedAt=?,LastViewedDueAt=?,LastViewedAt=?,IgnoredDueAt=?,SnoozedUntil=?,UpdatedAt=? WHERE ID=?;");
     if (!statement.ok()) {
         lastError_ = L"更新待办提醒状态 SQL 准备失败。";
         return false;
@@ -1426,7 +1673,12 @@ bool StorageService::UpdateTodoReminderState(const TodoItem& item) {
     statement.bindText(5, NormalizeTodoTimestamp(item.ignoredDueAt));
     statement.bindText(6, NormalizeTodoTimestamp(item.snoozedUntil));
     statement.bindText(7, CurrentTodoTimestamp());
-    statement.bindInt(8, item.id);
+    if (advanceMergeTime) {
+        statement.bindText(8, CurrentTodoMergeTimestampUtc());
+        statement.bindInt(9, item.id);
+    } else {
+        statement.bindInt(8, item.id);
+    }
     if (statement.step() != SQLITE_DONE) {
         const void* message = sqlite3_errmsg16(db.get());
         lastError_ = message ? static_cast<const wchar_t*>(message) : L"更新待办提醒状态失败。";

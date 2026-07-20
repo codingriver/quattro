@@ -120,6 +120,16 @@ WebDavBackupReport WebDavBackupService::UploadBackup() {
 }
 
 WebDavBackupReport WebDavBackupService::DownloadAndImportMerge(const std::wstring& remoteName) {
+    WebDavBackupReport preview = DownloadAndPreviewMerge(remoteName);
+    if (!preview.ok) return preview;
+    return ApplyDownloadedMerge(
+        preview.downloadedPackagePath,
+        preview.remoteName,
+        TodoRestorePolicy::KeepDeleted,
+        preview.mergePreview.stateToken);
+}
+
+WebDavBackupReport WebDavBackupService::DownloadAndPreviewMerge(const std::wstring& remoteName) {
     WebDavBackupReport report;
     std::wstring name = Trim(remoteName);
     if (name.empty() || !ToLower(name).ends_with(L".q4cfg") || name.find_first_of(L"/\\") != std::wstring::npos) {
@@ -147,11 +157,36 @@ WebDavBackupReport WebDavBackupService::DownloadAndImportMerge(const std::wstrin
     options.includeData = true;
     options.includeUrlIcons = true;
     ConfigPackageService packageService(appDirectory_);
-    report.importReport = packageService.ImportPackageMerge(packagePath, options);
+    report.mergePreview = packageService.PreviewPackageMerge(packagePath, options);
+    report.ok = report.mergePreview.ok;
+    report.remoteName = name;
+    report.downloadedPackagePath = packagePath;
+    report.message = report.mergePreview.message;
+    if (!report.ok) {
+        std::error_code ec;
+        std::filesystem::remove(packagePath, ec);
+        report.downloadedPackagePath.clear();
+    }
+    return report;
+}
+
+WebDavBackupReport WebDavBackupService::ApplyDownloadedMerge(
+    const std::filesystem::path& packagePath,
+    const std::wstring& remoteName,
+    TodoRestorePolicy restorePolicy,
+    const std::wstring& expectedStateToken) {
+    WebDavBackupReport report;
+    ConfigPackageOptions options;
+    options.includeConfig = false;
+    options.includeData = true;
+    options.includeUrlIcons = true;
+    ConfigPackageService packageService(appDirectory_);
+    report.importReport = packageService.ApplyPackageMerge(
+        packagePath, options, restorePolicy, expectedStateToken);
     std::error_code ec;
     std::filesystem::remove(packagePath, ec);
     report.ok = report.importReport.ok;
-    report.remoteName = name;
+    report.remoteName = remoteName;
     report.message = report.importReport.message;
     return report;
 }

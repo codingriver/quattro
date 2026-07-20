@@ -11,6 +11,8 @@ struct TodoBatchCompleteResult {
     std::vector<TodoItem> updatedItems;
 };
 
+std::wstring CurrentTodoMergeTimestampUtc();
+
 class StorageService {
 public:
     explicit StorageService(std::filesystem::path appDirectory);
@@ -27,10 +29,11 @@ public:
     bool InsertTodoItem(TodoItem& item);
     bool UpdateTodoItem(const TodoItem& item);
     bool DeleteTodoItem(int todoId);
+    bool DeleteTodoItems(const std::vector<int>& todoIds);
     bool SetTodoCompleted(int todoId, bool completed);
     bool CompleteOverdueTodos(int tagId, const std::wstring& now, TodoBatchCompleteResult& result);
     bool SetTodoEnabled(int todoId, bool enabled);
-    bool UpdateTodoReminderState(const TodoItem& item);
+    bool UpdateTodoReminderState(const TodoItem& item, bool advanceMergeTime = true);
     const std::wstring& lastError() const { return lastError_; }
     bool sqliteAvailable() const { return sqliteAvailable_; }
 

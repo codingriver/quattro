@@ -4647,6 +4647,50 @@ int wmain() {
                     L"D2D 消息框", MB_OKCANCEL | MB_ICONINFORMATION);
             });
 
+            Scenario restoreDeletedScenario{
+                L"webdav-restore-deleted-" + suffix,
+                L"QuattroThemedMessageDialog",
+                L"确认恢复已删除待办",
+                L"webdav-restore-deleted-" + suffix + L".png",
+                {L"确认恢复已删除待办", L"是", L"否", L"取消", L"本地删除"}, {}, 0, 3, false};
+            restoreDeletedScenario.forcedDpi = dpi;
+            RunDialogScenario(restoreDeletedScenario, outputDir, state, [&]() {
+                ShowThemedMessageBox(
+                    owner,
+                    instance,
+                    theme,
+                    L"云端备份中有 3 条待办已在本地删除。是否恢复这些条目？\n\n"
+                    L"- 准备季度汇报材料\n"
+                    L"- 更新服务器证书\n"
+                    L"- 整理项目复盘记录\n\n"
+                    L"“是”恢复这些待办；“否”保持删除并继续合并；“取消”终止本次合并。",
+                    L"确认恢复已删除待办",
+                    MB_YESNOCANCEL | MB_ICONQUESTION | MB_DEFBUTTON2);
+            });
+
+            Scenario downloadConfirmScenario{
+                L"webdav-download-confirm-" + suffix,
+                L"QuattroThemedMessageDialog",
+                L"从云端下载",
+                L"webdav-download-confirm-" + suffix + L".png",
+                {L"从云端下载", L"确定", L"取消", L"最后更新时间", L"再次询问"}, {}, 0, 2, false};
+            downloadConfirmScenario.forcedDpi = dpi;
+            RunDialogScenario(downloadConfirmScenario, outputDir, state, [&]() {
+                ShowThemedMessageBox(
+                    owner,
+                    instance,
+                    theme,
+                    L"请确认要下载并合并以下 WebDAV 备份：\n\n"
+                    L"文件名: quattro-backup-20260630-215427.q4cfg\n"
+                    L"文件大小: 136 KB\n"
+                    L"备份时间: 2026年7月1日 01:54\n\n"
+                    L"将把该备份中的分组、标签、启动项、便签和待办合并到当前数据。\n"
+                    L"同一待办按最后更新时间保留较新版本；本地已删除的条目会再次询问是否恢复。\n"
+                    L"导入前会自动备份。",
+                    L"从云端下载",
+                    MB_OKCANCEL | MB_ICONINFORMATION);
+            });
+
             std::wstring selectedBackup = backups.front().name;
             Scenario webDavScenario{
                 L"d2d-webdav-table-" + suffix,
@@ -4729,7 +4773,8 @@ int wmain() {
         L"文件大小: 136 KB\n"
         L"备份时间: 2026年7月1日 01:54\n\n"
         L"将把该备份中的分组、标签、启动项、便签和待办合并到当前数据。\n"
-        L"当前数据不会被覆盖，导入前会自动备份。";
+        L"同一待办按最后更新时间保留较新版本；本地已删除的条目会再次询问是否恢复。\n"
+        L"导入前会自动备份。";
     RunDialogScenario(
         Scenario{L"webdav-download-confirm", L"QuattroThemedMessageDialog", L"从云端下载", L"webdav-download-confirm.png", {L"从云端下载"}, {}, 0, 2, false},
         outputDir,
