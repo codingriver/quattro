@@ -237,6 +237,21 @@ HWND CreateStatusText(
     DWORD style = SS_CENTER,
     UINT dpi = USER_DEFAULT_SCREEN_DPI);
 
+SIZE MeasureTimeDisplay(
+    const Theme& theme,
+    HFONT baseFont,
+    const std::wstring& text,
+    UINT dpi = USER_DEFAULT_SCREEN_DPI);
+
+HWND CreateTimeDisplay(
+    HINSTANCE instance,
+    HWND parent,
+    const Theme& theme,
+    RECT frame,
+    const std::wstring& value,
+    HFONT baseFont,
+    UINT dpi = USER_DEFAULT_SCREEN_DPI);
+
 void SetStatusTextState(HWND hwnd, const wchar_t* state);
 
 int ButtonHeight(const Theme& theme);

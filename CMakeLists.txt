@@ -484,6 +484,7 @@ add_executable(Quattro WIN32
     src/common/EmbeddedExecutableManager.cpp
     src/windows/BuiltinTools.cpp
     src/windows/ConfirmDialog.cpp
+    src/domain/ClockDisplay.cpp
     src/domain/Config.cpp
     src/domain/TrackedContextMenuProviders.cpp
     src/services/ConfigPackageService.cpp
@@ -571,6 +572,7 @@ add_executable(QuattroTests
     src/common/EmbeddedAssets.cpp
     src/common/EmbeddedAssetInstaller.cpp
     src/common/EmbeddedExecutableManager.cpp
+    src/domain/ClockDisplay.cpp
     src/domain/Config.cpp
     src/domain/TrackedContextMenuProviders.cpp
     src/services/ConfigPackageService.cpp
@@ -659,6 +661,7 @@ add_executable(QuattroUiScreenshotAcceptance
     src/windows/AboutDialog.cpp
     src/windows/BuiltinTools.cpp
     src/windows/ConfirmDialog.cpp
+    src/domain/ClockDisplay.cpp
     src/domain/Config.cpp
     src/services/ConfigPackageService.cpp
     src/services/ContextMenuProviderIconService.cpp

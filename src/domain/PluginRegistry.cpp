@@ -54,6 +54,21 @@ std::vector<PluginRecord> PluginRegistry::BuiltinPlugins() {
     clicker.enabled = true;
     clicker.installed = true;
 
+    PluginRecord clock;
+    clock.id = L"quattro.builtin.clock";
+    clock.name = L"时钟";
+    clock.version = L"1.0.0";
+    clock.category = L"builtin-tools";
+    clock.kind = L"builtin-tool";
+    clock.engine = L"clock";
+    clock.description = L"始终置顶显示当前系统日期和时间，可选显示毫秒。";
+    clock.author = L"Quattro快速启动器";
+    clock.license = L"Built-in";
+    clock.builtin = true;
+    clock.deletable = false;
+    clock.enabled = true;
+    clock.installed = true;
+
     PluginRecord timer;
     timer.id = L"quattro.builtin.timer";
     timer.name = L"计时器";
@@ -135,6 +150,7 @@ std::vector<PluginRecord> PluginRegistry::BuiltinPlugins() {
 
     std::vector<PluginRecord> plugins = {
         clicker,
+        clock,
         timer,
         stopwatch,
         processTools,

@@ -15,6 +15,11 @@ enum class ThemedWindowPlacement {
     Manual,
 };
 
+enum class ThemedWindowSizePreset {
+    StandardDialog,
+    CompactTool,
+};
+
 struct ThemedWindowCreateOptions {
     HINSTANCE instance = nullptr;
     HWND owner = nullptr;
@@ -35,11 +40,14 @@ struct ThemedWindowCreateOptions {
     HICON smallIcon = nullptr;
     HCURSOR cursor = nullptr;
     bool scaleForDpi = true;
+    bool topMost = false;
     UINT logicalDpi = USER_DEFAULT_SCREEN_DPI;
 };
 
 constexpr int kThemedDialogClientWidth = 460;
 constexpr int kThemedDialogClientHeight = 246;
+constexpr int kThemedCompactToolClientWidth = 300;
+constexpr int kThemedCompactToolClientHeight = 128;
 constexpr int kThemedManagementClientWidth = 760;
 constexpr int kThemedManagementClientHeight = 520;
 constexpr int kThemedDetailsClientWidth = 620;
@@ -65,6 +73,7 @@ public:
 
     static SIZE AdjustedWindowSize(int clientWidth, int clientHeight, DWORD style, DWORD exStyle, bool hasMenu = false, UINT dpi = USER_DEFAULT_SCREEN_DPI);
     static UINT TargetDpi(const ThemedWindowCreateOptions& options);
+    static DWORD EffectiveExStyle(const ThemedWindowCreateOptions& options, bool backgroundMode);
     static int ScaleForDpi(int logicalPixels, UINT dpi, UINT logicalDpi = USER_DEFAULT_SCREEN_DPI);
     static POINT WindowPosition(const ThemedWindowCreateOptions& options, int windowWidth, int windowHeight);
     static ThemedWindowCreateOptions DialogOptions(
@@ -75,7 +84,8 @@ public:
         WNDPROC wndProc,
         void* createParam,
         HICON icon = nullptr,
-        HICON smallIcon = nullptr);
+        HICON smallIcon = nullptr,
+        ThemedWindowSizePreset sizePreset = ThemedWindowSizePreset::StandardDialog);
     static HWND CreateWindowHandle(const ThemedWindowCreateOptions& options, std::wstring* error = nullptr);
     static int ShowMessageBox(
         HWND owner,
@@ -97,6 +107,8 @@ public:
     ThemedUi ui() const;
 
     bool ShowModal();
+    void ShowModeless(bool activate = true);
+    void ResizeClientArea(int clientWidth, int clientHeight, bool keepCenter = true);
     void RestoreModalOwner();
     bool HandleMessage(UINT message, WPARAM wParam, LPARAM lParam, LRESULT& result);
     void RegisterEditFrame(HWND child, RECT frame, const ThemedEditOptions& options) override;

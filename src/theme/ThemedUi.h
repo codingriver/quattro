@@ -717,12 +717,15 @@ public:
     int contentTop() const { return layout_.contentInsetY; }
     int contentWidth() const { return clientWidth_ - layout_.contentInsetX * 2; }
     RECT contentRect() const { return layout_.ContentRect(clientWidth_, clientHeight_); }
+    int denseGap() const;
 
     int labelHeight() const;
     int buttonHeight() const;
     int buttonHeight(ThemedButtonRole role, ThemedButtonSize size) const;
     int compactButtonHeight() const;
     int footerButtonHeight() const { return layout_.footerButtonHeight; }
+    int timeDisplayHeight() const;
+    SIZE timeDisplayPreferredSize(const std::wstring& text) const;
     int checkBoxHeight(ThemedCheckBoxSize size = ThemedCheckBoxSize::Normal) const;
     int toggleHeight() const;
     int tabButtonHeight() const;
@@ -765,6 +768,7 @@ public:
     HWND StatusText(const std::wstring& text, int x, int y, int width, ThemedStatusTextOptions options = {}) const;
     void SetStatusTextRole(HWND hwnd, ThemedStatusRole role) const;
     HWND StatusBadge(const std::wstring& text, int x, int y, int width, ThemedStatusRole role = ThemedStatusRole::Normal) const;
+    HWND TimeDisplay(const std::wstring& text, int x, int y, int width) const;
     void SetStatusBadgeRole(HWND hwnd, ThemedStatusRole role) const;
     static void SetText(HWND hwnd, const std::wstring& text);
     static void SetVisible(HWND hwnd, bool visible);
@@ -869,6 +873,7 @@ public:
     static void SetComboBoxSelectedIndex(HWND comboBox, int selectedIndex, bool notify = false);
     static int ComboBoxSelectedIndex(HWND comboBox);
     HWND ListBox(int id, int x, int y, int width, int height, ThemedListBoxOptions options = {}) const;
+    void MoveListBox(HWND listBox, int x, int y, int width, int height) const;
     HWND Table(int id, RECT frame, const std::vector<ThemedTableColumn>& columns, ThemedTableOptions options = {}) const;
     static void SetTableRows(HWND table, const std::vector<ThemedTableRow>& rows);
     static void SetTableView(HWND table, ThemedTableView view);

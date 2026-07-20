@@ -151,6 +151,18 @@ UINT ThemedWindowUi::TargetDpi(const ThemedWindowCreateOptions& options) {
     return dpi ? dpi : USER_DEFAULT_SCREEN_DPI;
 }
 
+DWORD ThemedWindowUi::EffectiveExStyle(const ThemedWindowCreateOptions& options, bool backgroundMode) {
+    DWORD exStyle = options.exStyle;
+    if (options.topMost && !backgroundMode) {
+        exStyle |= WS_EX_TOPMOST;
+    }
+    if (backgroundMode) {
+        exStyle &= ~WS_EX_TOPMOST;
+        exStyle |= WS_EX_NOACTIVATE;
+    }
+    return exStyle;
+}
+
 int ThemedWindowUi::ScaleForDpi(int logicalPixels, UINT dpi, UINT logicalDpi) {
     return MulDiv(logicalPixels, static_cast<int>(dpi ? dpi : USER_DEFAULT_SCREEN_DPI),
         static_cast<int>(logicalDpi ? logicalDpi : USER_DEFAULT_SCREEN_DPI));
@@ -179,7 +191,8 @@ ThemedWindowCreateOptions ThemedWindowUi::DialogOptions(
     WNDPROC wndProc,
     void* createParam,
     HICON icon,
-    HICON smallIcon) {
+    HICON smallIcon,
+    ThemedWindowSizePreset sizePreset) {
     ThemedWindowCreateOptions options{};
     options.instance = instance;
     options.owner = owner;
@@ -187,8 +200,13 @@ ThemedWindowCreateOptions ThemedWindowUi::DialogOptions(
     options.title = title;
     options.wndProc = wndProc;
     options.createParam = createParam;
-    options.clientWidth = kThemedDialogClientWidth;
-    options.clientHeight = kThemedDialogClientHeight;
+    if (sizePreset == ThemedWindowSizePreset::CompactTool) {
+        options.clientWidth = kThemedCompactToolClientWidth;
+        options.clientHeight = kThemedCompactToolClientHeight;
+    } else {
+        options.clientWidth = kThemedDialogClientWidth;
+        options.clientHeight = kThemedDialogClientHeight;
+    }
     options.icon = icon;
     options.smallIcon = smallIcon;
     return options;
@@ -223,9 +241,9 @@ HWND ThemedWindowUi::CreateWindowHandle(const ThemedWindowCreateOptions& options
     const UINT dpi = TargetDpi(options);
     const int clientWidth = options.scaleForDpi ? ScaleForDpi(options.clientWidth, dpi, options.logicalDpi) : options.clientWidth;
     const int clientHeight = options.scaleForDpi ? ScaleForDpi(options.clientHeight, dpi, options.logicalDpi) : options.clientHeight;
-    const SIZE windowSize = AdjustedWindowSize(clientWidth, clientHeight, options.style, options.exStyle, false, dpi);
+    const DWORD exStyle = EffectiveExStyle(options, BackgroundAcceptanceMode());
+    const SIZE windowSize = AdjustedWindowSize(clientWidth, clientHeight, options.style, exStyle, false, dpi);
     const POINT position = WindowPosition(options, windowSize.cx, windowSize.cy);
-    const DWORD exStyle = BackgroundAcceptanceMode() ? (options.exStyle | WS_EX_NOACTIVATE) : options.exStyle;
     HWND hwnd = CreateWindowExW(
         exStyle,
         options.className,
@@ -285,6 +303,49 @@ ThemedUi ThemedWindowUi::ui() const {
 bool ThemedWindowUi::ShowModal() {
     ownerWasEnabled_ = ShowModalWindow(owner_, hwnd_);
     return ownerWasEnabled_;
+}
+
+void ThemedWindowUi::ShowModeless(bool activate) {
+    if (!hwnd_) {
+        return;
+    }
+    RedrawWindow(hwnd_, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+    ShowWindowRespectFocusPolicy(hwnd_, IsIconic(hwnd_) ? SW_RESTORE : SW_SHOWNORMAL);
+    RedrawWindow(hwnd_, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+    if (activate && !BackgroundAcceptanceMode()) {
+        ActivateWindow(hwnd_);
+    }
+}
+
+void ThemedWindowUi::ResizeClientArea(int clientWidth, int clientHeight, bool keepCenter) {
+    if (!hwnd_ || clientWidth <= 0 || clientHeight <= 0) {
+        return;
+    }
+    const DWORD style = static_cast<DWORD>(GetWindowLongPtrW(hwnd_, GWL_STYLE));
+    const DWORD exStyle = static_cast<DWORD>(GetWindowLongPtrW(hwnd_, GWL_EXSTYLE));
+    const SIZE windowSize = AdjustedWindowSize(clientWidth, clientHeight, style, exStyle, false, dpi_);
+    RECT windowRect{};
+    GetWindowRect(hwnd_, &windowRect);
+    int x = windowRect.left;
+    int y = windowRect.top;
+    if (keepCenter) {
+        x += ((windowRect.right - windowRect.left) - windowSize.cx) / 2;
+        y += ((windowRect.bottom - windowRect.top) - windowSize.cy) / 2;
+    }
+    const POINT clamped = ClampWindowToOwnerMonitor(owner_, x, y, windowSize.cx, windowSize.cy);
+    SetWindowPos(
+        hwnd_,
+        nullptr,
+        clamped.x,
+        clamped.y,
+        windowSize.cx,
+        windowSize.cy,
+        SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOOWNERZORDER);
+    RECT client{};
+    if (GetClientRect(hwnd_, &client)) {
+        clientWidth_ = client.right - client.left;
+        clientHeight_ = client.bottom - client.top;
+    }
 }
 
 void ThemedWindowUi::RestoreModalOwner() {

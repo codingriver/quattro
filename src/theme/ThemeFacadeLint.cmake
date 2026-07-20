@@ -89,6 +89,7 @@ if(EXISTS "${DEFAULT_THEME}")
         "smallControlHeight\" value=\"24"
         "mediumControlHeight\" value=\"28"
         "largeControlHeight\" value=\"32"
+        "fontScale\" value=\"5"
         "denseGap\" value=\"4"
         "titleInsetY\" value=\"4"
         "compactRowGap\" value=\"6"

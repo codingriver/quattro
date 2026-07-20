@@ -182,6 +182,7 @@ int MenuIconFor(UINT_PTR id, const std::wstring& text) {
 
 int MenuIconForToolEngine(const std::wstring& engine) {
     if (engine == L"clicker") return MenuIconRun;
+    if (engine == L"clock") return MenuIconClock;
     if (engine == L"timer") return MenuIconHistory;
     if (engine == L"stopwatch") return MenuIconCalculator;
     if (engine == L"process-tools") return MenuIconComputer;
@@ -248,6 +249,7 @@ const wchar_t* MenuIconName(MenuIcon icon) {
     case MenuIconHistory: return L"history";
     case MenuIconCertificate: return L"certificate";
     case MenuIconComputer: return L"computer";
+    case MenuIconClock: return L"clock";
     case MenuIconDownload: return L"download";
     default: return L"unknown";
     }

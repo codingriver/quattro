@@ -1360,6 +1360,18 @@ int ThemedUi::compactButtonHeight() const {
     return scale(ThemedControls::CompactButtonHeight(theme_));
 }
 
+int ThemedUi::denseGap() const {
+    return scale(static_cast<int>(theme_.metric(L"global", L"denseGap", 4.0f)));
+}
+
+int ThemedUi::timeDisplayHeight() const {
+    return timeDisplayPreferredSize(L"00:00:00.000").cy;
+}
+
+SIZE ThemedUi::timeDisplayPreferredSize(const std::wstring& text) const {
+    return ThemedControls::MeasureTimeDisplay(theme_, font_, text, dpi_);
+}
+
 int ThemedUi::checkBoxHeight(ThemedCheckBoxSize size) const {
     const int height = scale(ThemedControls::CheckBoxHeight(theme_));
     return size == ThemedCheckBoxSize::TwoLines ? height * 2 + layout_.rowGap : height;
@@ -1592,6 +1604,11 @@ void ThemedUi::SetStatusTextRole(HWND hwnd, ThemedStatusRole role) const {
 HWND ThemedUi::StatusBadge(const std::wstring& text, int x, int y, int width, ThemedStatusRole role) const {
     return BindTheme(ThemedControls::CreateStatusBadge(
         instance_, parent_, text.c_str(), x, y, width, theme_, font_, StatusState(role), dpi_));
+}
+
+HWND ThemedUi::TimeDisplay(const std::wstring& text, int x, int y, int width) const {
+    return BindTheme(ThemedControls::CreateTimeDisplay(
+        instance_, parent_, theme_, rect(x, y, width, timeDisplayHeight()), text, font_, dpi_));
 }
 
 void ThemedUi::SetStatusBadgeRole(HWND hwnd, ThemedStatusRole role) const {
@@ -2579,6 +2596,20 @@ HWND ThemedUi::ListBox(int id, int x, int y, int width, int height, ThemedListBo
         EnableWindow(hwnd, options.enabled ? TRUE : FALSE);
     }
     return hwnd;
+}
+
+void ThemedUi::MoveListBox(HWND listBox, int x, int y, int width, int height) const {
+    if (!listBox) {
+        return;
+    }
+    SetWindowPos(
+        listBox,
+        nullptr,
+        x,
+        y,
+        std::max(1, width),
+        std::max(1, height),
+        SWP_NOACTIVATE | SWP_NOZORDER);
 }
 
 HWND ThemedUi::Table(int id, RECT frame, const std::vector<ThemedTableColumn>& columns, ThemedTableOptions options) const {

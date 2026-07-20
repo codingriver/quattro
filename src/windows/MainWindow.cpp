@@ -2031,6 +2031,7 @@ int MainWindow::RunMessageLoop() {
     MSG message{};
     while (GetMessageW(&message, nullptr, 0, 0) > 0) {
         if (ThemedUi::PreTranslateMessage(message)) continue;
+        if (PreTranslateBuiltinToolMessage(message)) continue;
         TranslateMessage(&message);
         DispatchMessageW(&message);
     }

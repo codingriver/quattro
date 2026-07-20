@@ -10,7 +10,7 @@
            per-screen override. Unsupported components are ignored by the
            loader.
         3. Customize common controls through the shared categories below:
-           text, label, panel, field, edit, button, primaryButton, iconButton, miniButton, checkbox,
+           text, label, timeDisplay, panel, field, edit, button, primaryButton, iconButton, miniButton, checkbox,
            toggle, radio, comboBox, tabButton, calendarDay, list, listItem, table, tableHeader, scrollbar,
             slider, progressBar, dialog, menuItem, linkItem, majorNavItem, minorNavItem,
             titleButton, tooltip, toast, separator, etc.
@@ -204,6 +204,15 @@
         <State name="normal" text="@text"/>
         <State name="muted" text="@mutedText"/>
         <State name="disabled" text="@disabledText"/>
+    </Component>
+    <Component name="timeDisplay">
+        <Metric name="fontScale" value="5"/>
+        <Metric name="paddingX" value="16"/>
+        <Metric name="paddingY" value="8"/>
+        <Metric name="radius" value="7"/>
+        <Metric name="borderWidth" value="1"/>
+        <State name="normal" bg="@surfaceRaised" text="@text" border="@border"/>
+        <State name="disabled" bg="@background" text="@disabledText" border="@line"/>
     </Component>
     <Component name="panel">
         <Metric name="radius" value="7"/>

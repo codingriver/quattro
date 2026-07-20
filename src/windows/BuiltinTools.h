@@ -8,6 +8,8 @@
 
 #include <string>
 
+bool PreTranslateBuiltinToolMessage(const MSG& message);
+
 bool ShowBuiltinTool(
     HWND owner,
     HINSTANCE instance,

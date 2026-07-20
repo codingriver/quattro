@@ -1,5 +1,6 @@
 #include "../src/domain/Config.h"
 #include "../src/domain/ConfigVersion.h"
+#include "../src/domain/ClockDisplay.h"
 #include "../src/common/EmbeddedAssetInstaller.h"
 #include "../src/common/AppLog.h"
 #include "../src/common/FileDialog.h"
@@ -258,6 +259,28 @@ int wmain() {
     SetEnvironmentVariableW(L"QUATTRO_ACCEPTANCE_MODE", L"interactive");
     Check(!BackgroundAcceptanceMode(), "Interactive acceptance mode is not background");
     SetEnvironmentVariableW(L"QUATTRO_ACCEPTANCE_MODE", nullptr);
+    SYSTEMTIME clockSample{};
+    clockSample.wYear = 2026;
+    clockSample.wMonth = 7;
+    clockSample.wDay = 20;
+    clockSample.wDayOfWeek = 1;
+    clockSample.wHour = 14;
+    clockSample.wMinute = 32;
+    clockSample.wSecond = 8;
+    clockSample.wMilliseconds = 123;
+    Check(FormatClockDate(clockSample) == L"2026年07月20日 周一", "Clock date includes weekday");
+    Check(FormatClockTime(clockSample, false) == L"14:32:08", "Clock time omits milliseconds by default");
+    Check(FormatClockTime(clockSample, true) == L"14:32:08.123", "Clock time includes optional milliseconds");
+    Check(ClockRefreshDelayMs(clockSample, false) == 877, "Clock second refresh aligns to boundary");
+    Check(ClockRefreshDelayMs(clockSample, true) == kClockMillisecondsRefreshMs,
+        "Clock millisecond refresh uses shared display cadence");
+    ThemedWindowCreateOptions topMostOptions{};
+    topMostOptions.topMost = true;
+    Check((ThemedWindowUi::EffectiveExStyle(topMostOptions, false) & WS_EX_TOPMOST) != 0,
+        "Themed window keeps requested topmost semantics for product windows");
+    const DWORD backgroundClockStyle = ThemedWindowUi::EffectiveExStyle(topMostOptions, true);
+    Check((backgroundClockStyle & WS_EX_TOPMOST) == 0 && (backgroundClockStyle & WS_EX_NOACTIVATE) != 0,
+        "Themed window suppresses topmost and activation in background acceptance");
     Check(
         SelectedPathCopyService::FormatPaths({L"C:\\资料\\报告.docx", L"D:\\项目", L"\\\\server\\share\\文件.txt"}) ==
             L"C:\\资料\\报告.docx\r\nD:\\项目\r\n\\\\server\\share\\文件.txt",
@@ -1151,6 +1174,10 @@ int wmain() {
     <Component name="label">
         <State name="normal" text="rgb(4,5,6)"/>
     </Component>
+    <Component name="timeDisplay">
+        <Metric name="fontScale" value="4.5"/>
+        <State name="normal" text="rgb(6,7,8)"/>
+    </Component>
     <Component name="list">
         <Metric name="radius" value="9.5"/>
         <State name="normal" bg="rgb(7,8,9)" text="@accent"/>
@@ -1177,6 +1204,7 @@ int wmain() {
     Check(Near(closeHot.r, accent.r) && Near(closeHot.g, accent.g) && Near(closeHot.b, accent.b), "Theme color reference");
     Check(Near(customTheme.metric(L"scrollbar", L"thickness", 0.0f), 7.5f), "Theme metric parse");
     Check(Near(customTheme.color(L"label", L"normal", L"text").r, 4.0f / 255.0f), "Theme label component parse");
+    Check(Near(customTheme.metric(L"timeDisplay", L"fontScale", 0.0f), 4.5f), "Theme time display metric parse");
     Check(Near(customTheme.metric(L"list", L"radius", 0.0f), 9.5f), "Theme list metric parse");
     Check(Near(customTheme.color(L"list", L"normal", L"text").r, accent.r), "Theme list component color reference");
     Check(Near(customTheme.metric(L"miniButton", L"height", 0.0f), 21.0f), "Theme mini button metric parse");
@@ -1191,6 +1219,7 @@ int wmain() {
     Check(fallbackTheme.color(L"edit", L"readonly", L"border").a > 0.9f, "Theme default edit readonly");
     Check(fallbackTheme.color(L"comboBox", L"selected", L"itemBg").a > 0.9f, "Theme default combo selected");
     Check(fallbackTheme.color(L"label", L"normal", L"text").a > 0.9f, "Theme default label");
+    Check(Near(fallbackTheme.metric(L"timeDisplay", L"fontScale", 0.0f), 5.0f), "Theme default time display scale");
     Check(fallbackTheme.color(L"list", L"normal", L"bg").a > 0.9f, "Theme default list");
     Check(Near(fallbackTheme.metric(L"toggle", L"height", 0.0f), 24.0f), "Theme default toggle metric");
     Check(Near(fallbackTheme.metric(L"slider", L"thumbSize", 0.0f), 14.0f), "Theme default slider metric");
@@ -1432,6 +1461,13 @@ int wmain() {
             "Themed UI exposes the shared two-line result row height");
         Check(controlUi.footerButtonHeight() == controlUi.scale(32),
             "Themed UI exposes the large footer button template");
+        Check(controlUi.denseGap() == controlUi.scale(4) &&
+                dpi150Ui.denseGap() == ThemedWindowUi::ScaleForDpi(controlUi.denseGap(), 144),
+            "Themed UI exposes the shared DPI-scaled dense gap");
+        const SIZE timeDisplayPreferred = controlUi.timeDisplayPreferredSize(L"00:00:00.000");
+        Check(controlUi.timeDisplayHeight() == timeDisplayPreferred.cy &&
+                timeDisplayPreferred.cx > controlUi.scale(300) && timeDisplayPreferred.cy > controlUi.scale(64),
+            "Themed UI measures the five-times time display template");
         Check(dpi125Ui.footerButtonHeight() == ThemedWindowUi::ScaleForDpi(controlUi.footerButtonHeight(), 120),
             "Themed UI scales footer buttons at 125 percent DPI");
         const ThemedFormLayout sectionLayout(controlUi);
@@ -1457,16 +1493,37 @@ int wmain() {
             "Themed section vertically centers label in field row");
         const RECT framedTextFrame{8, 116, 260, 188};
         HWND runtimeSingleLineFrame = controlUi.FramedStatic(L"one line", framedTextFrame);
+        HWND runtimeTimeDisplay = controlUi.TimeDisplay(L"14:32:08.123", 8, 80, 252);
+        HWND runtimeListBox = controlUi.ListBox(7098, 200, 8, 100, 48);
+        controlUi.MoveListBox(runtimeListBox, 196, 12, 104, 64);
         ThemedFramedTextOptions runtimeFramedTextOptions{};
         runtimeFramedTextOptions.wrap = true;
         runtimeFramedTextOptions.multiline = true;
         HWND runtimeMultilineFrame = controlUi.FramedStatic(L"名称：Item\n来源：注册表\n状态：可禁用", framedTextFrame, runtimeFramedTextOptions);
         RECT singleLineRect{};
         RECT multilineRect{};
+        RECT timeDisplayRect{};
+        RECT listBoxRect{};
         GetWindowRect(runtimeSingleLineFrame, &singleLineRect);
         GetWindowRect(runtimeMultilineFrame, &multilineRect);
+        GetWindowRect(runtimeTimeDisplay, &timeDisplayRect);
+        GetWindowRect(runtimeListBox, &listBoxRect);
         MapWindowPoints(HWND_DESKTOP, controlParent, reinterpret_cast<POINT*>(&singleLineRect), 2);
         MapWindowPoints(HWND_DESKTOP, controlParent, reinterpret_cast<POINT*>(&multilineRect), 2);
+        MapWindowPoints(HWND_DESKTOP, controlParent, reinterpret_cast<POINT*>(&timeDisplayRect), 2);
+        MapWindowPoints(HWND_DESKTOP, controlParent, reinterpret_cast<POINT*>(&listBoxRect), 2);
+        Check(runtimeTimeDisplay != nullptr, "Themed time display public factory");
+        LOGFONTW baseTimeFont{};
+        LOGFONTW enlargedTimeFont{};
+        GetObjectW(GetStockObject(DEFAULT_GUI_FONT), sizeof(baseTimeFont), &baseTimeFont);
+        GetObjectW(reinterpret_cast<HFONT>(SendMessageW(runtimeTimeDisplay, WM_GETFONT, 0, 0)), sizeof(enlargedTimeFont), &enlargedTimeFont);
+        Check(std::abs(enlargedTimeFont.lfHeight) == std::abs(baseTimeFont.lfHeight) * 5,
+            "Themed time display font is exactly five times the base dialog font");
+        Check(timeDisplayRect.bottom - timeDisplayRect.top == controlUi.timeDisplayHeight(),
+            "Themed time display control consumes its measured panel height");
+        Check(listBoxRect.left == 196 && listBoxRect.top == 12 &&
+                listBoxRect.right - listBoxRect.left == 104 && listBoxRect.bottom - listBoxRect.top == 64,
+            "Themed list box public move helper updates the complete frame");
         Check(singleLineRect.bottom - singleLineRect.top == controlUi.scale(20),
             "Themed framed static keeps existing single-line text height");
         Check(multilineRect.top < singleLineRect.top && multilineRect.top <= framedTextFrame.top + controlUi.scale(6),
@@ -2210,6 +2267,7 @@ int wmain() {
     Check(TablerIconGlyph(TablerIconId::ChevronRight) != L'\0',
           "Tabler manifest contains submenu chevron");
     Check(MenuIconForToolEngine(L"clicker") == MenuIconRun, "Clicker tool menu icon");
+    Check(MenuIconForToolEngine(L"clock") == MenuIconClock, "Clock tool menu icon");
     Check(MenuIconForToolEngine(L"timer") == MenuIconHistory, "Timer tool menu icon");
     Check(MenuIconForToolEngine(L"stopwatch") == MenuIconCalculator, "Stopwatch tool menu icon");
     Check(MenuIconForToolEngine(L"process-tools") == MenuIconComputer, "Process tool menu icon");
@@ -2231,6 +2289,7 @@ int wmain() {
     auto plugins = pluginRegistry.LoadPlugins();
     Check(plugins.size() >= 3, "Plugin registry builtin count");
     bool hasAutoClickerName = false;
+    bool hasClock = false;
     bool hasProcessTools = false;
     bool hasLegacyProcessTool = false;
     bool hasAppLaunchLocker = false;
@@ -2238,6 +2297,9 @@ int wmain() {
     for (const auto& plugin : plugins) {
         if (plugin.id == L"quattro.builtin.clicker" && plugin.name == L"连点器") {
             hasAutoClickerName = true;
+        }
+        if (plugin.id == L"quattro.builtin.clock" && plugin.name == L"时钟" && plugin.engine == L"clock") {
+            hasClock = true;
         }
         if (plugin.id == L"quattro.builtin.process-tools" &&
             plugin.name == L"进程工具" &&
@@ -2262,12 +2324,14 @@ int wmain() {
         }
     }
     Check(hasAutoClickerName, "Plugin clicker display name");
+    Check(hasClock, "Plugin clock registration");
     Check(hasProcessTools, "Plugin process tools registration");
     Check(!hasLegacyProcessTool, "Legacy process tools are hidden from the toolbox registry");
     Check(hasAppLaunchLocker == !QuattroIsOfficialBuild(),
         "Plugin AppLaunchLocker registration follows build identity");
     Check(hasAdBlock, "Plugin AdBlock external tool registration");
     Check(pluginRegistry.IsEnabled(L"quattro.builtin.clicker"), "Plugin clicker enabled by default");
+    Check(pluginRegistry.IsEnabled(L"quattro.builtin.clock"), "Plugin clock enabled by default");
     Check(pluginRegistry.IsEnabled(L"quattro.builtin.timer"), "Plugin timer enabled by default");
     Check(pluginRegistry.IsEnabled(L"quattro.builtin.process-tools"), "Plugin process tools enabled by default");
     Check(pluginRegistry.IsEnabled(L"quattro.builtin.app-launch-locker") == !QuattroIsOfficialBuild(),

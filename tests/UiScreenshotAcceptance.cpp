@@ -9,6 +9,7 @@
 #include "../src/windows/ConfirmDialog.h"
 #include "../src/windows/UpdateCheckDialog.h"
 #include "../src/theme/Theme.h"
+#include "../src/theme/ThemedD2D.h"
 #include "../src/theme/ThemedUi.h"
 #include "../src/theme/ThemedWindowUi.h"
 #include "../src/common/Utilities.h"
@@ -3401,6 +3402,223 @@ std::wstring DpiPercentSuffix(UINT dpi) {
     return L"100";
 }
 
+void PumpModelessBuiltinTool(HWND hwnd) {
+    MSG message{};
+    while (IsWindow(hwnd)) {
+        const BOOL status = GetMessageW(&message, nullptr, 0, 0);
+        if (status <= 0) {
+            if (status == 0) {
+                PostQuitMessage(static_cast<int>(message.wParam));
+            }
+            break;
+        }
+        if (ThemedUi::PreTranslateMessage(message) || PreTranslateBuiltinToolMessage(message)) {
+            continue;
+        }
+        TranslateMessage(&message);
+        DispatchMessageW(&message);
+    }
+}
+
+void ValidateTimeDisplayScale(HWND hwnd, TestState& state, const std::wstring& name, bool expectDate) {
+    const auto children = Children(hwnd);
+    HWND display = nullptr;
+    HWND baseText = nullptr;
+    HWND date = nullptr;
+    int largestStaticHeight = 0;
+    for (const auto& child : children) {
+        if (!IsWindowVisible(child.hwnd)) {
+            continue;
+        }
+        if (child.className == L"Static" && child.text.find(L':') != std::wstring::npos) {
+            RECT rect{};
+            GetClientRect(child.hwnd, &rect);
+            const int height = rect.bottom - rect.top;
+            if (height > largestStaticHeight) {
+                largestStaticHeight = height;
+                display = child.hwnd;
+            }
+        }
+        if (child.className == L"Static" && child.text.find(L'年') != std::wstring::npos) {
+            date = child.hwnd;
+        }
+        if (!baseText && (child.className == L"Button" || child.className == L"Edit")) {
+            baseText = child.hwnd;
+        }
+    }
+    if (expectDate && date) {
+        baseText = date;
+    }
+    state.Check(display != nullptr, name + L": time display control was not found");
+    state.Check(baseText != nullptr, name + L": base font control was not found");
+    if (!display || !baseText) {
+        return;
+    }
+
+    LOGFONTW displayFont{};
+    LOGFONTW baseFont{};
+    GetObjectW(
+        reinterpret_cast<HFONT>(SendMessageW(display, WM_GETFONT, 0, 0)),
+        sizeof(displayFont),
+        &displayFont);
+    GetObjectW(
+        reinterpret_cast<HFONT>(SendMessageW(baseText, WM_GETFONT, 0, 0)),
+        sizeof(baseFont),
+        &baseFont);
+    state.Check(
+        std::abs(displayFont.lfHeight) == std::abs(baseFont.lfHeight) * 5,
+        name + L": time display font is not five times the base font");
+    if (expectDate) {
+        state.Check(date != nullptr, name + L": date label was not found");
+    }
+
+    wchar_t value[64]{};
+    GetWindowTextW(display, value, static_cast<int>(std::size(value)));
+    const SIZE measured = ThemedD2D::MeasureText(
+        reinterpret_cast<HFONT>(SendMessageW(display, WM_GETFONT, 0, 0)),
+        value,
+        0,
+        false);
+    RECT client{};
+    GetClientRect(display, &client);
+    state.Check(
+        measured.cx <= client.right - client.left && measured.cy <= client.bottom - client.top,
+        name + L": time text exceeds its adaptive panel");
+}
+
+void RunClockScenarios(
+    HWND owner,
+    HINSTANCE instance,
+    const Theme& theme,
+    const std::filesystem::path& outputDir,
+    TestState& state) {
+    PluginRegistry registry(std::filesystem::current_path());
+    AppConfig config;
+    for (const UINT dpi : {96u, 120u, 144u}) {
+        for (const bool showMilliseconds : {false, true}) {
+            if (!showMilliseconds) {
+                registry.SetSetting(L"quattro.builtin.clock", L"showMilliseconds", L"0");
+            }
+            const std::wstring suffix = DpiPercentSuffix(dpi) +
+                (showMilliseconds ? L"-milliseconds" : L"-seconds");
+            Scenario scenario{
+                L"builtin-clock-" + suffix,
+                L"QuattroClockTool",
+                L"时钟",
+                L"builtin-clock-" + suffix + L".png",
+                {L"时钟", L"显示毫秒"},
+                {},
+                0,
+                1,
+                false};
+            scenario.forcedDpi = dpi;
+
+            const HWND foregroundBefore = GetForegroundWindow();
+            const HWND activeBefore = GetActiveWindow();
+            RunDialogScenario(
+                scenario,
+                outputDir,
+                state,
+                [&]() {
+                    state.Check(
+                        ShowBuiltinTool(owner, instance, theme, registry, config, L"clock"),
+                        scenario.name + L": open request failed");
+                    HWND clock = WaitForTopWindow(
+                        FindWindowRequest{L"QuattroClockTool", L"时钟", GetCurrentProcessId()},
+                        3000);
+                    state.Check(clock != nullptr, scenario.name + L": modeless window was not found");
+                    if (!clock) {
+                        return;
+                    }
+                    const LONG_PTR exStyle = GetWindowLongPtrW(clock, GWL_EXSTYLE);
+                    state.Check((exStyle & WS_EX_TOPMOST) == 0,
+                        scenario.name + L": background clock retained topmost style");
+                    state.Check((exStyle & WS_EX_NOACTIVATE) != 0,
+                        scenario.name + L": background clock is activatable");
+                    HWND milliseconds = GetDlgItem(clock, 7801);
+                    state.Check(milliseconds != nullptr,
+                        scenario.name + L": milliseconds checkbox was not found");
+                    state.Check(
+                        milliseconds && ThemedUi::IsChecked(milliseconds) == showMilliseconds,
+                        scenario.name + L": milliseconds state was not restored");
+                    state.Check(
+                        ShowBuiltinTool(owner, instance, theme, registry, config, L"clock") &&
+                            CountTopWindowsForProcess(L"时钟", GetCurrentProcessId()) == 1,
+                        scenario.name + L": repeated open created another window");
+                    PumpModelessBuiltinTool(clock);
+                },
+                [&]() {
+                    HWND clock = FindTopWindow(
+                        FindWindowRequest{L"QuattroClockTool", L"时钟", GetCurrentProcessId()});
+                    ValidateTimeDisplayScale(clock, state, scenario.name, true);
+                    if (showMilliseconds) {
+                        return;
+                    }
+                    HWND milliseconds = clock ? GetDlgItem(clock, 7801) : nullptr;
+                    state.Check(milliseconds != nullptr,
+                        scenario.name + L": milliseconds checkbox disappeared before toggle");
+                    if (milliseconds) {
+                        SendMessageW(milliseconds, BM_CLICK, 0, 0);
+                        state.Check(ThemedUi::IsChecked(milliseconds),
+                            scenario.name + L": milliseconds checkbox did not toggle");
+                        state.Check(
+                            registry.GetSetting(
+                                L"quattro.builtin.clock", L"showMilliseconds", L"0") == L"1",
+                            scenario.name + L": milliseconds setting was not retained for reopen");
+                    }
+                });
+            state.Check(GetForegroundWindow() == foregroundBefore,
+                scenario.name + L": changed the foreground window");
+            state.Check(GetActiveWindow() == activeBefore,
+                scenario.name + L": changed the active window");
+        }
+    }
+
+
+    for (const UINT dpi : {96u, 120u, 144u}) {
+        const std::wstring dpiSuffix = DpiPercentSuffix(dpi);
+        auto run = [&](Scenario scenario, const wchar_t* engine) {
+            scenario.forcedDpi = dpi;
+            RunDialogScenario(
+                scenario,
+                outputDir,
+                state,
+                [&]() {
+                    ShowBuiltinTool(owner, instance, theme, registry, config, engine);
+                },
+                [&]() {
+                    HWND tool = FindTopWindow(
+                        FindWindowRequest{L"", scenario.title, GetCurrentProcessId()});
+                    ValidateTimeDisplayScale(tool, state, scenario.name, false);
+                });
+        };
+        run(
+            Scenario{
+                L"builtin-timer-time-display-" + dpiSuffix,
+                L"",
+                L"计时器",
+                L"builtin-timer-time-display-" + dpiSuffix + L".png",
+                {L"计时器", L"开始(&S)", L"重置(&R)"},
+                {},
+                3,
+                3,
+                false},
+            L"timer");
+        run(
+            Scenario{
+                L"builtin-stopwatch-time-display-" + dpiSuffix,
+                L"",
+                L"秒表",
+                L"builtin-stopwatch-time-display-" + dpiSuffix + L".png",
+                {L"秒表", L"开始(&S)", L"计次(&L)", L"导出(&E)"},
+                {},
+                0,
+                5,
+                false},
+            L"stopwatch");
+    }
+}
+
 void RunProcessToolsSingletonScenario(
     HWND owner,
     HINSTANCE instance,
@@ -4005,6 +4223,26 @@ int wmain() {
     }
 
     wchar_t processToolsOnly[8]{};
+    wchar_t clockOnly[8]{};
+    if (GetEnvironmentVariableW(
+            L"QUATTRO_UI_ACCEPTANCE_CLOCK_ONLY",
+            clockOnly,
+            static_cast<DWORD>(std::size(clockOnly))) > 0) {
+        RunClockScenarios(owner, instance, theme, outputDir, state);
+        DestroyWindow(owner);
+        OleUninitialize();
+        Gdiplus::GdiplusShutdown(gdiplusToken);
+        if (!state.ok) {
+            for (const auto& failure : state.failures) {
+                AcceptanceLog(L"clock target failure " + failure);
+                std::wcerr << failure << L"\n";
+            }
+            return 1;
+        }
+        std::wcout << L"ui_clock_acceptance=passed screenshots=" << outputDir.wstring() << L"\n";
+        return 0;
+    }
+
     if (GetEnvironmentVariableW(
             L"QUATTRO_UI_ACCEPTANCE_PROCESS_TOOLS_ONLY",
             processToolsOnly,
@@ -4607,6 +4845,7 @@ int wmain() {
 
     PluginRegistry registry(std::filesystem::current_path());
     AppConfig builtinToolConfig;
+    RunClockScenarios(owner, instance, theme, outputDir, state);
     RunDialogScenario(
         Scenario{L"builtin-clicker", L"", L"连点器", L"builtin-clicker.png", {L"连点器", L"启动(&S)"}, {L"0, 0", L"10", L"1000"}, 4, 2, false},
         outputDir,

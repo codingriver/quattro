@@ -164,6 +164,7 @@ enum MenuIcon {
     MenuIconHistory,
     MenuIconCertificate,
     MenuIconComputer,
+    MenuIconClock,
     MenuIconDownload,
 };
 

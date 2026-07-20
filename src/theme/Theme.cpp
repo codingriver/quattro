@@ -46,6 +46,7 @@ bool IsAllowedComponent(const std::wstring& component) {
         L"content",
         L"text",
         L"label",
+        L"timeDisplay",
         L"panel",
         L"field",
         L"link",
@@ -856,6 +857,17 @@ void Theme::SetDefaults() {
     PutMetric(L"label", L"height", 20.0f);
     PutMetric(L"label", L"textHeight", 20.0f);
     PutMetric(L"label", L"textOffsetY", 1.0f);
+    PutMetric(L"timeDisplay", L"fontScale", 5.0f);
+    PutMetric(L"timeDisplay", L"paddingX", 16.0f);
+    PutMetric(L"timeDisplay", L"paddingY", 8.0f);
+    PutMetric(L"timeDisplay", L"radius", 7.0f);
+    PutMetric(L"timeDisplay", L"borderWidth", 1.0f);
+    PutState(L"timeDisplay", L"normal", L"bg", palette_[L"surfaceRaised"]);
+    PutState(L"timeDisplay", L"normal", L"text", palette_[L"text"]);
+    PutState(L"timeDisplay", L"normal", L"border", palette_[L"border"]);
+    PutState(L"timeDisplay", L"disabled", L"bg", palette_[L"background"]);
+    PutState(L"timeDisplay", L"disabled", L"text", palette_[L"disabledText"]);
+    PutState(L"timeDisplay", L"disabled", L"border", palette_[L"line"]);
     PutMetric(L"panel", L"radius", 7.0f);
     PutMetric(L"panel", L"borderWidth", 1.0f);
     PutMetric(L"panel", L"paddingX", 10.0f);

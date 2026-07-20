@@ -3,6 +3,7 @@
 #include "../../resources/resource.h"
 
 #include "AppLog.h"
+#include "ClockDisplay.h"
 #include "DialogLayout.h"
 #include "FileDialog.h"
 #include "MainHotKey.h"
@@ -75,6 +76,8 @@ constexpr int ID_SW_DISPLAY = 7206;
 constexpr int ID_SW_LAPS = 7207;
 constexpr UINT_PTR ID_SW_TICK = 7208;
 constexpr int ID_SW_EXPORT = 7209;
+constexpr int ID_CLOCK_MILLISECONDS = 7801;
+constexpr UINT_PTR ID_CLOCK_REFRESH = 7802;
 constexpr int ID_PORT_VALUE = 7301;
 constexpr int ID_PORT_SCAN = 7302;
 constexpr int ID_PORT_KILL_BASE = 7310;
@@ -105,10 +108,13 @@ constexpr UINT WM_QUATTRO_TOOL_AUTOMATION = WM_APP + 0x80;
 constexpr UINT WM_QUATTRO_TOOL_TIMER_AUTOMATION = WM_APP + 0x81;
 constexpr UINT WM_QUATTRO_PROCESS_TOOLS_ACTIVATE = WM_APP + 0x82;
 constexpr UINT WM_QUATTRO_FILE_LOCK_COMPLETE = WM_APP + 0x83;
+constexpr UINT WM_QUATTRO_CLOCK_ACTIVATE = WM_APP + 0x84;
 constexpr wchar_t kProcessToolsWindowClass[] = L"QuattroProcessTools";
+constexpr wchar_t kClockWindowClass[] = L"QuattroClockTool";
 constexpr wchar_t kFileLockProgressWindowTitle[] = L"文件占用检查进度";
 constexpr UINT kTimerDisplayIntervalMs = 33;
 std::atomic<HWND> gProcessToolsWindow{nullptr};
+std::atomic<HWND> gClockWindow{nullptr};
 #ifndef AF_INET6
 constexpr ULONG AF_INET6 = 23;
 #endif
@@ -802,6 +808,9 @@ protected:
     LRESULT Handle(UINT message, WPARAM wParam, LPARAM lParam) {
         LRESULT commonResult = 0;
         if (ThemedWindowUi::HandleCommonMessage(windowUi_, message, wParam, lParam, commonResult)) {
+            if (message == WM_DPICHANGED) {
+                OnDpiChanged();
+            }
             if (message == WM_DESTROY) {
                 OnDestroy();
                 done_ = true;
@@ -874,6 +883,7 @@ protected:
     virtual bool OnHotKey(int id) { (void)id; return false; }
     virtual bool OnNotify(LPARAM lParam) { (void)lParam; return false; }
     virtual void OnPaint(HDC dc) { (void)dc; }
+    virtual void OnDpiChanged() {}
     virtual void OnDestroy() {}
 
     void Close() {
@@ -1815,6 +1825,224 @@ private:
     static constexpr int height_ = 380;
 };
 
+class ClockWindow final {
+public:
+    ClockWindow(HWND owner, HINSTANCE instance, const Theme& theme, PluginRegistry& registry)
+        : owner_(owner), instance_(instance), theme_(theme), registry_(registry) {}
+
+    static bool Open(HWND owner, HINSTANCE instance, const Theme& theme, PluginRegistry& registry) {
+        HWND existing = gClockWindow.load();
+        if (existing && IsWindow(existing)) {
+            PostMessageW(existing, WM_QUATTRO_CLOCK_ACTIVATE, 0, 0);
+            return true;
+        }
+        if (existing) {
+            gClockWindow.compare_exchange_strong(existing, nullptr);
+        }
+
+        std::unique_ptr<ClockWindow> window = std::make_unique<ClockWindow>(owner, instance, theme, registry);
+        if (!window->Create()) {
+            return false;
+        }
+        window->deleteOnDestroy_ = true;
+        window.release();
+        return true;
+    }
+
+private:
+    bool Create() {
+        HICON icon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_QUATTRO_APP_ICON));
+        auto options = ThemedWindowUi::DialogOptions(
+            instance_,
+            owner_,
+            kClockWindowClass,
+            L"时钟",
+            ClockWindow::Proc,
+            this,
+            icon,
+            icon,
+            ThemedWindowSizePreset::CompactTool);
+        options.topMost = true;
+
+        std::wstring error;
+        hwnd_ = ThemedWindowUi::CreateWindowHandle(options, &error);
+        if (!hwnd_) {
+            WriteAppLog(L"时钟窗口创建失败: " + error);
+            return false;
+        }
+        gClockWindow.store(hwnd_);
+        windowUi_->ShowModeless();
+        return true;
+    }
+
+    static LRESULT CALLBACK Proc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
+        ClockWindow* window = nullptr;
+        if (message == WM_NCCREATE) {
+            auto* create = reinterpret_cast<CREATESTRUCTW*>(lParam);
+            window = static_cast<ClockWindow*>(create->lpCreateParams);
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(window));
+            window->hwnd_ = hwnd;
+        } else {
+            window = reinterpret_cast<ClockWindow*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+        }
+        if (!window) {
+            return DefWindowProcW(hwnd, message, wParam, lParam);
+        }
+        const LRESULT result = window->Handle(message, wParam, lParam);
+        if (message == WM_NCDESTROY) {
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+            if (window->deleteOnDestroy_) {
+                delete window;
+            }
+        }
+        return result;
+    }
+
+    LRESULT Handle(UINT message, WPARAM wParam, LPARAM lParam) {
+        LRESULT commonResult = 0;
+        if (ThemedWindowUi::HandleCommonMessage(windowUi_, message, wParam, lParam, commonResult)) {
+            if (message == WM_DESTROY) {
+                KillTimer(hwnd_, ID_CLOCK_REFRESH);
+                HWND expected = hwnd_;
+                gClockWindow.compare_exchange_strong(expected, nullptr);
+            }
+            return commonResult;
+        }
+
+        switch (message) {
+        case WM_CREATE:
+            windowUi_ = std::make_unique<ThemedWindowUi>(
+                instance_, owner_, hwnd_, theme_, DialogLayoutKind::Compact,
+                kThemedCompactToolClientWidth, kThemedCompactToolClientHeight);
+            ResizeForTimeDisplay();
+            CreateControls();
+            UpdateDisplayAndSchedule();
+            return 0;
+        case WM_COMMAND:
+            if (LOWORD(wParam) == ID_CLOCK_MILLISECONDS && HIWORD(wParam) == BN_CLICKED) {
+                SetShowMilliseconds(ThemedUi::IsChecked(showMillisecondsCheck_));
+                return 0;
+            }
+            return 0;
+        case WM_QUATTRO_TOOL_AUTOMATION:
+            if (wParam == ID_CLOCK_MILLISECONDS) {
+                SetShowMilliseconds(!showMilliseconds_);
+                return 1;
+            }
+            return 0;
+        case WM_TIMER:
+            if (wParam == ID_CLOCK_REFRESH) {
+                UpdateDisplayAndSchedule();
+                return 0;
+            }
+            return 0;
+        case WM_TIMECHANGE:
+        case WM_SETTINGCHANGE:
+            UpdateDisplayAndSchedule();
+            return 0;
+        case WM_POWERBROADCAST:
+            if (wParam == PBT_APMRESUMEAUTOMATIC || wParam == PBT_APMRESUMESUSPEND) {
+                UpdateDisplayAndSchedule();
+            }
+            return TRUE;
+        case WM_QUATTRO_CLOCK_ACTIVATE:
+            if (windowUi_) {
+                windowUi_->ShowModeless();
+            }
+            return 0;
+        case WM_PAINT: {
+            PAINTSTRUCT paint{};
+            HDC dc = BeginPaint(hwnd_, &paint);
+            if (windowUi_) {
+                windowUi_->FillBackground(dc);
+                windowUi_->DrawRegisteredEditFrames(dc);
+            }
+            EndPaint(hwnd_, &paint);
+            return 0;
+        }
+        case WM_CLOSE:
+            DestroyWindow(hwnd_);
+            return 0;
+        default:
+            return DefWindowProcW(hwnd_, message, wParam, lParam);
+        }
+    }
+
+    void CreateControls() {
+        const ThemedUi ui = windowUi_->ui();
+        const int left = ui.contentLeft();
+        const int width = ui.contentWidth();
+        int y = ui.contentTop();
+
+        ThemedLabelOptions dateOptions{};
+        dateOptions.align = ThemedTextAlign::Center;
+        date_ = ui.Label(L"", left, y, width, dateOptions);
+        y = ui.nextRowY(y, ui.labelHeight());
+
+        time_ = ui.TimeDisplay(L"", left, y, width);
+        y += ui.timeDisplayHeight() + ui.layout().sectionGap;
+
+        showMilliseconds_ = registry_.GetSetting(
+            L"quattro.builtin.clock", L"showMilliseconds", L"0") != L"0";
+        ThemedCheckBoxOptions options{};
+        options.checked = showMilliseconds_;
+        const std::wstring text = L"显示毫秒";
+        const int checkWidth = ui.textWidth(text) + ui.checkBoxHeight() + ui.layout().controlGapX;
+        showMillisecondsCheck_ = ui.CheckBox(
+            ID_CLOCK_MILLISECONDS,
+            text,
+            ui.centeredGroupX(checkWidth),
+            y,
+            checkWidth,
+            options);
+    }
+
+    void ResizeForTimeDisplay() {
+        const ThemedUi ui = windowUi_->ui();
+        const SIZE display = ui.timeDisplayPreferredSize(L"00:00:00.000");
+        int y = ui.contentTop();
+        y = ui.nextRowY(y, ui.labelHeight());
+        y += display.cy + ui.layout().sectionGap + ui.checkBoxHeight();
+        const int clientWidth = display.cx + ui.contentLeft() * 2;
+        const int clientHeight = y + ui.contentTop();
+        windowUi_->ResizeClientArea(clientWidth, clientHeight);
+    }
+
+    void UpdateDisplayAndSchedule() {
+        if (!hwnd_) {
+            return;
+        }
+        SYSTEMTIME now{};
+        GetLocalTime(&now);
+        ThemedUi::SetText(date_, FormatClockDate(now));
+        ThemedUi::SetText(time_, FormatClockTime(now, showMilliseconds_));
+        KillTimer(hwnd_, ID_CLOCK_REFRESH);
+        SetTimer(hwnd_, ID_CLOCK_REFRESH, ClockRefreshDelayMs(now, showMilliseconds_), nullptr);
+    }
+
+    void SetShowMilliseconds(bool value) {
+        showMilliseconds_ = value;
+        ThemedUi::SetChecked(showMillisecondsCheck_, value);
+        registry_.SetSetting(
+            L"quattro.builtin.clock",
+            L"showMilliseconds",
+            value ? L"1" : L"0");
+        UpdateDisplayAndSchedule();
+    }
+
+    HWND owner_ = nullptr;
+    HINSTANCE instance_ = nullptr;
+    const Theme& theme_;
+    PluginRegistry& registry_;
+    HWND hwnd_ = nullptr;
+    HWND date_ = nullptr;
+    HWND time_ = nullptr;
+    HWND showMillisecondsCheck_ = nullptr;
+    std::unique_ptr<ThemedWindowUi> windowUi_;
+    bool showMilliseconds_ = false;
+    bool deleteOnDestroy_ = false;
+};
+
 class TimerDialog final : public ToolDialogBase {
 public:
     TimerDialog(HWND owner, HINSTANCE instance, const Theme& theme, PluginRegistry& registry)
@@ -1827,28 +2055,32 @@ private:
         const std::wstring minutes = registry_.GetSetting(L"quattro.builtin.timer", L"minutes", std::to_wstring((fallbackSeconds / 60) % 60));
         const std::wstring seconds = registry_.GetSetting(L"quattro.builtin.timer", L"secondsPart", std::to_wstring(fallbackSeconds % 60));
 
-        const DialogLayoutMetrics layout = CompactLayout();
+        ResizeForTimeDisplay();
         const ThemedUi timerUi = MakeUi();
-        const int editHeight = ThemedControls::EditFrameHeight(theme_);
-        const int labelHeight = ThemedControls::LabelHeight(theme_);
+        const DialogLayoutMetrics& layout = timerUi.layout();
+        const int clientWidth = timerUi.clientWidth();
+        const int editHeight = timerUi.editHeight();
+        const int labelHeight = timerUi.labelHeight();
         const int labelOffsetY = std::max(0, (editHeight - labelHeight) / 2);
-        const int unitLabelW = 22;
-        const int unitFieldW = 46;
+        const int unitLabelW = timerUi.scale(22);
+        const int unitFieldW = timerUi.scale(46);
         const int unitStep = unitLabelW + unitFieldW + layout.controlGapX + layout.labelGap / 2;
         const int unitGroupW = unitStep * 2 + unitLabelW + layout.controlGapX / 2 + unitFieldW;
-        const int unitGroupX = layout.CenteredGroupX(width_, unitGroupW);
+        const int unitGroupX = timerUi.centeredGroupX(unitGroupW);
         const int row0 = layout.contentInsetY;
-        const int row1 = row0 + layout.RowStep(ThemedControls::ButtonHeight(theme_));
-        const int row2 = row1 + layout.RowStep(ThemedControls::ButtonHeight(theme_));
+        const int row1 = timerUi.nextRowY(row0, editHeight);
+        const int row2 = timerUi.nextRowY(row1, timerUi.checkBoxHeight());
         timerUi.Label(L"时", unitGroupX, row0 + labelOffsetY, unitLabelW);
         hours_ = CreateEdit(ID_TIMER_HOURS, unitGroupX + unitLabelW + layout.controlGapX / 2, row0, unitFieldW, hours, ES_NUMBER);
         timerUi.Label(L"分", unitGroupX + unitStep, row0 + labelOffsetY, unitLabelW);
         minutes_ = CreateEdit(ID_TIMER_MINUTES, unitGroupX + unitStep + unitLabelW + layout.controlGapX / 2, row0, unitFieldW, minutes, ES_NUMBER);
         timerUi.Label(L"秒", unitGroupX + unitStep * 2, row0 + labelOffsetY, unitLabelW);
         seconds_ = CreateEdit(ID_TIMER_SECONDS, unitGroupX + unitStep * 2 + unitLabelW + layout.controlGapX / 2, row0, unitFieldW, seconds, ES_NUMBER);
-        const int checkBoxW = 100;
-        const int checkGroupW = checkBoxW * 2 + layout.controlGapX + layout.labelGap;
-        const int checkGroupX = layout.CenteredGroupX(width_, checkGroupW);
+        const int checkBoxW = std::max(
+            timerUi.textWidth(L"声音提醒"), timerUi.textWidth(L"置顶提醒")) +
+            timerUi.checkBoxHeight() + layout.controlGapX;
+        const int checkGroupW = checkBoxW * 2 + layout.controlGapX;
+        const int checkGroupX = timerUi.centeredGroupX(checkGroupW);
         ThemedCheckBoxOptions soundOptions{};
         soundOptions.checked = registry_.GetSetting(L"quattro.builtin.timer", L"sound", L"1") != L"0";
         sound_ = timerUi.CheckBox(ID_TIMER_SOUND, L"声音提醒", checkGroupX, row1, checkBoxW, soundOptions);
@@ -1857,21 +2089,34 @@ private:
         topMost_ = timerUi.CheckBox(
             ID_TIMER_TOPMOST,
             L"置顶提醒",
-            checkGroupX + checkBoxW + layout.controlGapX + layout.labelGap,
+            checkGroupX + checkBoxW + layout.controlGapX,
             row1,
             checkBoxW,
             topMostOptions);
-        display_ = timerUi.StatusText(L"00:05:00.000", layout.contentInsetX, row2, width_ - layout.contentInsetX * 2);
-        const int bh = ThemedControls::ButtonHeight(theme_);
+        display_ = timerUi.TimeDisplay(L"00:05:00.000", layout.contentInsetX, row2, timerUi.contentWidth());
+        const int bh = timerUi.buttonHeight();
         const int buttonWidth = layout.footerButtonWidth;
-        const int buttonY = row2 + 26 + layout.sectionGap;
-        const int buttonsX = layout.CenteredGroupX(width_, buttonWidth * 2 + layout.footerButtonGap);
+        const int buttonY = row2 + timerUi.timeDisplayHeight() + layout.sectionGap;
+        const int buttonsX = timerUi.centeredGroupX(buttonWidth * 2 + layout.footerButtonGap);
         start_ = timerUi.Button(ID_TIMER_START, L"开始(&S)", buttonsX, buttonY, ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, buttonWidth, true);
         pause_ = timerUi.Button(ID_TIMER_PAUSE, L"暂停(&P)", buttonsX, buttonY, ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, buttonWidth);
         reset_ = timerUi.Button(ID_TIMER_RESET, L"重置(&R)", buttonsX + buttonWidth + layout.footerButtonGap, buttonY, ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, buttonWidth);
-        status_ = timerUi.StatusText(L"", layout.contentInsetX, buttonY + bh + layout.rowGap, width_ - layout.contentInsetX * 2);
+        status_ = timerUi.StatusText(L"", layout.contentInsetX, buttonY + bh + layout.rowGap, clientWidth - layout.contentInsetX * 2);
         UpdateDisplay(ReadDurationMs());
         UpdateButtons();
+    }
+
+    void ResizeForTimeDisplay() {
+        const ThemedUi ui = MakeUi();
+        const SIZE display = ui.timeDisplayPreferredSize(L"00:00:00.000");
+        const int row0 = ui.contentTop();
+        const int row1 = ui.nextRowY(row0, ui.editHeight());
+        const int row2 = ui.nextRowY(row1, ui.checkBoxHeight());
+        const int buttonY = row2 + display.cy + ui.layout().sectionGap;
+        const int statusY = buttonY + ui.buttonHeight() + ui.layout().rowGap;
+        windowUi_->ResizeClientArea(
+            display.cx + ui.contentLeft() * 2,
+            statusY + ui.labelHeight() + ui.contentTop());
     }
 
     bool OnCommand(int id, int) override {
@@ -2083,19 +2328,20 @@ public:
 
 private:
     void OnCreate() override {
-        const DialogLayoutMetrics layout = CompactLayout();
-        const int left = layout.contentInsetX;
-        const int contentWidth = width_ - left * 2;
-        const int displayY = layout.contentInsetY;
-        const int displayHeight = 34;
-        display_ = MakeUi().StatusText(L"00:00:00.000", left, displayY, contentWidth);
-        const int bh = ThemedControls::ButtonHeight(theme_);
+        ResizeForTimeDisplay();
+        const ThemedUi swUi = MakeUi();
+        const DialogLayoutMetrics& layout = swUi.layout();
+        const int left = swUi.contentLeft();
+        const int contentWidth = swUi.contentWidth();
+        const int displayY = swUi.contentTop();
+        const int displayHeight = swUi.timeDisplayHeight();
+        display_ = swUi.TimeDisplay(L"00:00:00.000", left, displayY, contentWidth);
+        const int bh = swUi.buttonHeight();
         const int buttonWidth = (contentWidth - layout.controlGapX) / 2;
         const int buttonRow0 = displayY + displayHeight + layout.rowGap;
         const int buttonRow1 = buttonRow0 + bh + layout.rowGap;
         const int buttonRow2 = buttonRow1 + bh + layout.rowGap;
         const int rightButtonX = left + buttonWidth + layout.controlGapX;
-        const ThemedUi swUi = MakeUi();
         start_ = swUi.Button(ID_SW_START, L"开始(&S)", left, buttonRow0, ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, buttonWidth, true);
         pause_ = swUi.Button(ID_SW_PAUSE, L"暂停(&P)", left, buttonRow0, ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, buttonWidth);
         swUi.Button(ID_SW_LAP, L"计次(&L)", rightButtonX, buttonRow0, ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, buttonWidth);
@@ -2103,19 +2349,60 @@ private:
         swUi.Button(ID_SW_COPY, L"复制(&C)", rightButtonX, buttonRow1, ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, buttonWidth);
         swUi.Button(ID_SW_EXPORT, L"导出(&E)", left, buttonRow2, ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, contentWidth);
         const int lapsTop = buttonRow2 + bh + layout.sectionGap;
-        lapsFrame_ = RECT{left, lapsTop, width_ - left, height_ - layout.contentInsetY - layout.sectionGap - layout.rowGap};
+        const RECT lapsFrame{left, lapsTop, swUi.clientWidth() - left, swUi.clientHeight() - layout.contentInsetY};
+        const int listInset = std::max(1, swUi.denseGap() / 2);
         laps_ = swUi.ListBox(
             ID_SW_LAPS,
-            lapsFrame_.left + 2,
-            lapsFrame_.top + 2,
-            lapsFrame_.right - lapsFrame_.left - 4,
-            lapsFrame_.bottom - lapsFrame_.top - 4);
+            lapsFrame.left + listInset,
+            lapsFrame.top + listInset,
+            lapsFrame.right - lapsFrame.left - listInset * 2,
+            lapsFrame.bottom - lapsFrame.top - listInset * 2);
         LoadLapHistory();
         UpdateControls();
     }
 
+    void ResizeForTimeDisplay() {
+        const ThemedUi ui = MakeUi();
+        const SIZE display = ui.timeDisplayPreferredSize(L"00:00:00.000");
+        const int buttonRowsHeight = ui.buttonHeight() * 3 + ui.layout().rowGap * 2;
+        const int listHeight = ui.listItemHeight() * 4;
+        const int clientHeight = ui.contentTop() + display.cy + ui.layout().rowGap +
+            buttonRowsHeight + ui.layout().sectionGap + listHeight + ui.contentTop();
+        windowUi_->ResizeClientArea(display.cx + ui.contentLeft() * 2, clientHeight);
+    }
+
     void OnPaint(HDC dc) override {
-        ThemedControls::DrawListFrame(theme_, dc, lapsFrame_, laps_);
+        ThemedControls::DrawListFrame(theme_, dc, CurrentLapsFrame(), laps_);
+    }
+
+    void OnDpiChanged() override {
+        if (!laps_) {
+            return;
+        }
+        const ThemedUi ui = MakeUi();
+        RECT child{};
+        GetWindowRect(laps_, &child);
+        MapWindowPoints(HWND_DESKTOP, hwnd_, reinterpret_cast<POINT*>(&child), 2);
+        const int listInset = std::max(1, ui.denseGap() / 2);
+        ui.MoveListBox(
+            laps_,
+            ui.contentLeft() + listInset,
+            child.top,
+            ui.contentWidth() - listInset * 2,
+            ui.clientHeight() - ui.contentTop() - listInset - child.top);
+        InvalidateRect(hwnd_, nullptr, FALSE);
+    }
+
+    RECT CurrentLapsFrame() const {
+        RECT frame{};
+        if (!laps_) {
+            return frame;
+        }
+        GetWindowRect(laps_, &frame);
+        MapWindowPoints(HWND_DESKTOP, hwnd_, reinterpret_cast<POINT*>(&frame), 2);
+        const int listInset = std::max(1, MakeUi().denseGap() / 2);
+        InflateRect(&frame, listInset, listInset);
+        return frame;
     }
 
     bool OnCommand(int id, int) override {
@@ -2348,7 +2635,6 @@ private:
 
     HWND display_ = nullptr;
     HWND laps_ = nullptr;
-    RECT lapsFrame_{};
     HWND start_ = nullptr;
     HWND pause_ = nullptr;
     bool running_ = false;
@@ -3940,6 +4226,15 @@ private:
 };
 }
 
+bool PreTranslateBuiltinToolMessage(const MSG& message) {
+    HWND clock = gClockWindow.load();
+    if (!clock || !IsWindow(clock) || (message.hwnd != clock && !IsChild(clock, message.hwnd))) {
+        return false;
+    }
+    MSG translated = message;
+    return IsDialogMessageW(clock, &translated) != FALSE;
+}
+
 bool ShowBuiltinTool(
     HWND owner,
     HINSTANCE instance,
@@ -3951,6 +4246,9 @@ bool ShowBuiltinTool(
     if (engine == L"clicker") {
         ClickerDialog dialog(owner, instance, theme, registry);
         return dialog.Run();
+    }
+    if (engine == L"clock") {
+        return ClockWindow::Open(owner, instance, theme, registry);
     }
     if (engine == L"timer") {
         TimerDialog dialog(owner, instance, theme, registry);

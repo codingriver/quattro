@@ -58,6 +58,7 @@
     "history": { "codepoint": "U+EBEA", "fallback": false },
     "certificate": { "codepoint": "U+ED76", "fallback": false },
     "computer": { "codepoint": "U+EA89", "fallback": false },
+    "clock": { "codepoint": "U+EA70", "fallback": false },
     "download": { "codepoint": "U+EA96", "fallback": false }
   },
   "extraGlyphs": {

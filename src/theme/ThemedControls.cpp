@@ -59,6 +59,7 @@ enum class ControlKind {
     Label,
     StatusBadge,
     StatusText,
+    TimeDisplay,
 };
 
 // 主题控件的运行时状态。以进程内 HWND 映射存储，避免使用桌面堆（SetPropW），
@@ -79,6 +80,7 @@ struct ControlState {
     bool multiline = false;
     bool selectAllOnFocus = false;
     UINT dpi = 0;
+    HFONT ownedFont = nullptr;
     std::optional<TablerIconManifest::Id> buttonTablerIcon;
     int radioGroup = 0;
     bool progressIndeterminate = false;
@@ -151,6 +153,10 @@ void EraseState(HWND hwnd) {
         if (it->second.tableCheckBoxStateImages) {
             ImageList_Destroy(it->second.tableCheckBoxStateImages);
             it->second.tableCheckBoxStateImages = nullptr;
+        }
+        if (it->second.ownedFont) {
+            DeleteObject(it->second.ownedFont);
+            it->second.ownedFont = nullptr;
         }
         map.erase(it);
     }
@@ -682,6 +688,115 @@ void DrawStatusText(HWND hwnd, HDC dc, RECT rect) {
     }
 }
 
+HFONT CreateTimeDisplayFont(HFONT baseFont, const Theme& theme, UINT dpi) {
+    LOGFONTW font{};
+    if (!baseFont || GetObjectW(baseFont, sizeof(font), &font) != sizeof(font)) {
+        font.lfHeight = -MulDiv(14, static_cast<int>(dpi ? dpi : USER_DEFAULT_SCREEN_DPI), USER_DEFAULT_SCREEN_DPI);
+        font.lfWeight = FW_NORMAL;
+        font.lfCharSet = DEFAULT_CHARSET;
+        font.lfQuality = CLEARTYPE_QUALITY;
+        wcscpy_s(font.lfFaceName, L"Microsoft YaHei UI");
+    }
+    const float scale = std::max(1.0f, theme.metric(L"timeDisplay", L"fontScale", 5.0f));
+    font.lfHeight = static_cast<LONG>(std::lround(static_cast<double>(font.lfHeight) * scale));
+    font.lfWidth = 0;
+    return CreateFontIndirectW(&font);
+}
+
+SIZE MeasureFontText(HFONT font, const std::wstring& text) {
+    SIZE size = ThemedD2D::MeasureText(font, text, 0, false);
+    if (size.cx > 0 && size.cy > 0) {
+        return size;
+    }
+    HDC dc = GetDC(nullptr);
+    if (!dc) {
+        return {};
+    }
+    HGDIOBJ oldFont = font ? SelectObject(dc, font) : nullptr;
+    GetTextExtentPoint32W(dc, text.c_str(), static_cast<int>(text.size()), &size);
+    if (oldFont) {
+        SelectObject(dc, oldFont);
+    }
+    ReleaseDC(nullptr, dc);
+    return size;
+}
+
+HFONT ReplaceTimeDisplayFont(HWND hwnd, HFONT baseFont) {
+    auto state = FindState(hwnd);
+    if (!state || state->kind != ControlKind::TimeDisplay || !state->theme) {
+        return baseFont;
+    }
+    if (baseFont && baseFont == state->ownedFont) {
+        return baseFont;
+    }
+    HFONT replacement = CreateTimeDisplayFont(baseFont, *state->theme, state->dpi);
+    if (!replacement) {
+        return baseFont;
+    }
+
+    HFONT previous = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(StateMutex());
+        auto found = StateMap().find(hwnd);
+        if (found == StateMap().end()) {
+            DeleteObject(replacement);
+            return baseFont;
+        }
+        previous = found->second.ownedFont;
+        found->second.ownedFont = replacement;
+    }
+    if (previous) {
+        DeleteObject(previous);
+    }
+    return replacement;
+}
+
+void DrawTimeDisplay(HWND hwnd, HDC dc, RECT rect) {
+    auto state = FindState(hwnd);
+    const Theme* theme = state ? state->theme : nullptr;
+    if (!theme) {
+        return;
+    }
+    const wchar_t* visualState = IsWindowEnabled(hwnd) ? L"normal" : L"disabled";
+    FillThemedRect(
+        dc,
+        rect,
+        ToColorRef(theme->color(BackgroundComponent(hwnd), L"normal", L"bg")));
+    const UINT dpi = state->dpi ? state->dpi : USER_DEFAULT_SCREEN_DPI;
+    const int radius = MulDiv(
+        static_cast<int>(std::lround(theme->metric(L"timeDisplay", L"radius", 7.0f))),
+        static_cast<int>(dpi), USER_DEFAULT_SCREEN_DPI);
+    const int borderWidth = std::max(1, MulDiv(
+        static_cast<int>(std::lround(theme->metric(L"timeDisplay", L"borderWidth", 1.0f))),
+        static_cast<int>(dpi), USER_DEFAULT_SCREEN_DPI));
+    FillRoundRect(
+        dc,
+        rect,
+        radius,
+        ToColorRef(theme->color(L"timeDisplay", visualState, L"bg")),
+        ToColorRef(theme->color(L"timeDisplay", visualState, L"border")),
+        borderWidth);
+
+    const int paddingX = MulDiv(
+        static_cast<int>(std::lround(theme->metric(L"timeDisplay", L"paddingX", 16.0f))),
+        static_cast<int>(dpi), USER_DEFAULT_SCREEN_DPI);
+    const int paddingY = MulDiv(
+        static_cast<int>(std::lround(theme->metric(L"timeDisplay", L"paddingY", 8.0f))),
+        static_cast<int>(dpi), USER_DEFAULT_SCREEN_DPI);
+    RECT textRect = rect;
+    InflateRect(&textRect, -paddingX, -paddingY);
+    HFONT font = reinterpret_cast<HFONT>(SendMessageW(hwnd, WM_GETFONT, 0, 0));
+    const std::wstring text = ControlText(hwnd);
+    DrawThemedText(
+        dc,
+        font,
+        text.c_str(),
+        static_cast<int>(text.size()),
+        textRect,
+        DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+        ToColorRef(theme->color(L"timeDisplay", visualState, L"text")));
+}
+
 void DrawProgressBar(HWND hwnd, HDC targetDc = nullptr) {
     auto controlState = FindState(hwnd);
     const Theme* theme = controlState ? controlState->theme : nullptr;
@@ -1032,12 +1147,19 @@ LRESULT CALLBACK ThemedControlProc(HWND hwnd, UINT message, WPARAM wParam, LPARA
             return 0;
         }
         break;
+    case WM_SETFONT:
+        if (KindFor(hwnd) == ControlKind::TimeDisplay) {
+            HFONT font = ReplaceTimeDisplayFont(hwnd, reinterpret_cast<HFONT>(wParam));
+            return DefSubclassProc(hwnd, message, reinterpret_cast<WPARAM>(font), lParam);
+        }
+        break;
     case WM_PAINT: {
         ControlKind kind = KindFor(hwnd);
         if (IsOwnerDrawButtonKind(kind)) {
             return DefSubclassProc(hwnd, message, wParam, lParam);
         }
-        if (kind == ControlKind::Label || kind == ControlKind::StatusBadge || kind == ControlKind::StatusText) {
+        if (kind == ControlKind::Label || kind == ControlKind::StatusBadge ||
+            kind == ControlKind::StatusText || kind == ControlKind::TimeDisplay) {
             PAINTSTRUCT ps{};
             HDC dc = BeginPaint(hwnd, &ps);
             RECT rect{};
@@ -1048,7 +1170,8 @@ LRESULT CALLBACK ThemedControlProc(HWND hwnd, UINT message, WPARAM wParam, LPARA
                 ThemedD2D::ScopedHdcPaint d2dPaint(hwnd, dc);
                 if (kind == ControlKind::Label) DrawLabelControl(hwnd, dc, rect);
                 else if (kind == ControlKind::StatusBadge) DrawStatusBadge(hwnd, dc, rect);
-                else DrawStatusText(hwnd, dc, rect);
+                else if (kind == ControlKind::StatusText) DrawStatusText(hwnd, dc, rect);
+                else DrawTimeDisplay(hwnd, dc, rect);
             }
             EndPaint(hwnd, &ps);
             return 0;
@@ -1078,14 +1201,16 @@ LRESULT CALLBACK ThemedControlProc(HWND hwnd, UINT message, WPARAM wParam, LPARA
         if (IsOwnerDrawButtonKind(kind)) {
             return DefSubclassProc(hwnd, message, wParam, lParam);
         }
-        if (kind == ControlKind::Label || kind == ControlKind::StatusBadge || kind == ControlKind::StatusText) {
+        if (kind == ControlKind::Label || kind == ControlKind::StatusBadge ||
+            kind == ControlKind::StatusText || kind == ControlKind::TimeDisplay) {
             HDC dc = reinterpret_cast<HDC>(wParam);
             RECT rect{};
             GetClientRect(hwnd, &rect);
             ThemedD2D::ScopedHdcPaint d2dPaint(hwnd, dc);
             if (kind == ControlKind::Label) DrawLabelControl(hwnd, dc, rect);
             else if (kind == ControlKind::StatusBadge) DrawStatusBadge(hwnd, dc, rect);
-            else DrawStatusText(hwnd, dc, rect);
+            else if (kind == ControlKind::StatusText) DrawStatusText(hwnd, dc, rect);
+            else DrawTimeDisplay(hwnd, dc, rect);
             return 0;
         }
         if (kind == ControlKind::ProgressBar) {
@@ -2835,6 +2960,57 @@ HWND CreateStatusText(HINSTANCE instance, HWND parent, const wchar_t* text, int 
     return hwnd;
 }
 
+SIZE MeasureTimeDisplay(const Theme& theme, HFONT baseFont, const std::wstring& text, UINT dpi) {
+    const UINT effectiveDpi = dpi ? dpi : USER_DEFAULT_SCREEN_DPI;
+    HFONT displayFont = CreateTimeDisplayFont(baseFont, theme, effectiveDpi);
+    const SIZE textSize = MeasureFontText(displayFont ? displayFont : baseFont, text);
+    if (displayFont) {
+        DeleteObject(displayFont);
+    }
+    const int paddingX = MulDiv(
+        static_cast<int>(std::lround(theme.metric(L"timeDisplay", L"paddingX", 16.0f))),
+        static_cast<int>(effectiveDpi), USER_DEFAULT_SCREEN_DPI);
+    const int paddingY = MulDiv(
+        static_cast<int>(std::lround(theme.metric(L"timeDisplay", L"paddingY", 8.0f))),
+        static_cast<int>(effectiveDpi), USER_DEFAULT_SCREEN_DPI);
+    return SIZE{
+        std::max(1L, textSize.cx) + paddingX * 2,
+        std::max(1L, textSize.cy) + paddingY * 2};
+}
+
+HWND CreateTimeDisplay(
+    HINSTANCE instance,
+    HWND parent,
+    const Theme& theme,
+    RECT frame,
+    const std::wstring& value,
+    HFONT baseFont,
+    UINT dpi) {
+    HWND hwnd = CreateWindowExW(
+        0,
+        L"STATIC",
+        value.c_str(),
+        WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS,
+        frame.left,
+        frame.top,
+        frame.right - frame.left,
+        frame.bottom - frame.top,
+        parent,
+        nullptr,
+        instance,
+        nullptr);
+    if (hwnd) {
+        SetControlTextProp(hwnd, value.c_str());
+        auto& state = StateFor(hwnd);
+        state.kind = ControlKind::TimeDisplay;
+        state.theme = &theme;
+        state.dpi = dpi ? dpi : USER_DEFAULT_SCREEN_DPI;
+        AttachThemedBehavior(hwnd);
+        SendMessageW(hwnd, WM_SETFONT, reinterpret_cast<WPARAM>(baseFont), TRUE);
+    }
+    return hwnd;
+}
+
 void SetStatusTextState(HWND hwnd, const wchar_t* state) {
     if (!hwnd) {
         return;
@@ -2874,7 +3050,7 @@ void SetControlTheme(HWND hwnd, const Theme& theme) {
         if (kind == ControlKind::ComboBox || kind == ControlKind::Edit || kind == ControlKind::ProgressBar || kind == ControlKind::Slider
             || kind == ControlKind::GroupBox || kind == ControlKind::Panel
             || kind == ControlKind::Toggle || kind == ControlKind::Radio || kind == ControlKind::Label
-            || kind == ControlKind::StatusBadge || kind == ControlKind::StatusText) {
+            || kind == ControlKind::StatusBadge || kind == ControlKind::StatusText || kind == ControlKind::TimeDisplay) {
             StateFor(hwnd).theme = &theme;
         } else {
             StateFor(hwnd).theme = nullptr;
@@ -3261,7 +3437,7 @@ HWND CreateListBox(
         0,
         L"LISTBOX",
         nullptr,
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP | LBS_OWNERDRAWFIXED | extraStyle,
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | LBS_OWNERDRAWFIXED | LBS_NOINTEGRALHEIGHT | extraStyle,
         x,
         y,
         width,
