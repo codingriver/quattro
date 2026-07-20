@@ -19,6 +19,7 @@ void FillEllipse(HDC dc, RECT rect, COLORREF fill, COLORREF border, int borderWi
 void DrawPolyline(HDC dc, const POINT* points, int pointCount, COLORREF color, int strokeWidth);
 void DrawLine(HDC dc, int x1, int y1, int x2, int y2, COLORREF color, int strokeWidth);
 void DrawIcon(HDC dc, HICON icon, RECT destination, bool disabled);
+bool DrawBitmap(HDC dc, HBITMAP bitmap, RECT destination, bool disabled);
 bool ApplyRoundedWindowRegion(HWND hwnd, SIZE size, int radius, bool redraw);
 
 } // namespace ThemedGdiFallback

@@ -11,7 +11,7 @@
            loader.
         3. Customize common controls through the shared categories below:
            text, label, panel, field, edit, button, primaryButton, iconButton, miniButton, checkbox,
-           toggle, radio, comboBox, tabButton, list, listItem, table, tableHeader, scrollbar,
+           toggle, radio, comboBox, tabButton, calendarDay, list, listItem, table, tableHeader, scrollbar,
             slider, progressBar, dialog, menuItem, linkItem, majorNavItem, minorNavItem,
             titleButton, tooltip, toast, separator, etc.
         4. New themeable UI must first be mapped to an existing shared category.
@@ -500,6 +500,13 @@
         <Metric name="verticalUnderlineInset" value="6"/>
         <Metric name="softPillRadius" value="14"/>
         <Metric name="connectedOpenExtent" value="5"/>
+    </Component>
+    <Component name="calendarDay">
+        <Metric name="radius" value="7"/>
+        <Metric name="borderWidth" value="1"/>
+        <State name="normal" bg="@surface" text="@text" border="@surface"/>
+        <State name="today" bg="@surface" text="@accent" border="@accent"/>
+        <State name="selected" bg="@accent" text="@checkMark" border="@accent"/>
     </Component>
     <Component name="button">
         <Metric name="radius" value="7"/>

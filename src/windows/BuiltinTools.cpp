@@ -741,49 +741,6 @@ std::wstring OpenProcessLocation(const std::wstring& path) {
     return L"打开程序所在目录失败，路径可能已经失效。";
 }
 
-int VisibleProcessRowCount(const Theme& theme, RECT frame) {
-    const int padding = 8;
-    const int rowHeight = ThemedControls::ListBoxTwoLineItemHeight(theme);
-    const int availableHeight = static_cast<int>(frame.bottom - frame.top) - padding * 2;
-    return std::max(1, availableHeight / rowHeight);
-}
-
-void DrawProcessRows(
-    const Theme& theme,
-    HDC dc,
-    RECT frame,
-    const std::vector<ProcessDisplayRow>& rows,
-    const std::wstring& emptyText,
-    HFONT font) {
-    ThemedControls::DrawListFrame(theme, dc, frame, nullptr);
-    const int padding = 8;
-    RECT content = frame;
-    InflateRect(&content, -padding, -padding);
-    if (rows.empty()) {
-        HFONT oldFont = reinterpret_cast<HFONT>(SelectObject(dc, font));
-        SetBkMode(dc, TRANSPARENT);
-        SetTextColor(dc, ToColorRef(theme.color(L"text", L"muted", L"text")));
-        DrawTextW(dc, emptyText.c_str(), -1, &content, DT_SINGLELINE | DT_VCENTER | DT_CENTER | DT_END_ELLIPSIS);
-        SelectObject(dc, oldFont);
-        return;
-    }
-
-    const int rowHeight = ThemedControls::ListBoxTwoLineItemHeight(theme);
-    const int visibleCount = std::min<int>(static_cast<int>(rows.size()), VisibleProcessRowCount(theme, frame));
-    HFONT oldFont = reinterpret_cast<HFONT>(SelectObject(dc, font));
-    SetBkMode(dc, TRANSPARENT);
-    for (int i = 0; i < visibleCount; ++i) {
-        RECT rowRect{content.left, content.top + i * rowHeight, content.right, content.top + (i + 1) * rowHeight - 2};
-        RECT titleRect{rowRect.left + 2, rowRect.top + 2, rowRect.right - 76, rowRect.top + 22};
-        RECT detailRect{rowRect.left + 2, rowRect.top + 22, rowRect.right - 76, rowRect.bottom};
-        SetTextColor(dc, ToColorRef(theme.color(L"listItem", L"normal", L"text")));
-        DrawTextW(dc, rows[static_cast<std::size_t>(i)].title.c_str(), -1, &titleRect, DT_SINGLELINE | DT_VCENTER | DT_LEFT | DT_END_ELLIPSIS);
-        SetTextColor(dc, ToColorRef(theme.color(L"text", L"muted", L"text")));
-        DrawTextW(dc, rows[static_cast<std::size_t>(i)].detail.c_str(), -1, &detailRect, DT_SINGLELINE | DT_VCENTER | DT_LEFT | DT_END_ELLIPSIS);
-    }
-    SelectObject(dc, oldFont);
-}
-
 class ToolDialogBase {
 public:
     ToolDialogBase(HWND owner, HINSTANCE instance, const Theme& theme, PluginRegistry& registry, std::wstring title, int width, int height)
@@ -887,6 +844,11 @@ protected:
                 return 0;
             }
             return 0;
+        case WM_NOTIFY:
+            if (OnNotify(lParam)) {
+                return 0;
+            }
+            return 0;
         case WM_PAINT: {
             PAINTSTRUCT ps{};
             HDC dc = BeginPaint(hwnd_, &ps);
@@ -910,6 +872,7 @@ protected:
     virtual bool OnTimer(UINT_PTR id) { (void)id; return false; }
     virtual bool OnAutomationTimer(UINT_PTR id) { return OnTimer(id); }
     virtual bool OnHotKey(int id) { (void)id; return false; }
+    virtual bool OnNotify(LPARAM lParam) { (void)lParam; return false; }
     virtual void OnPaint(HDC dc) { (void)dc; }
     virtual void OnDestroy() {}
 
@@ -1335,39 +1298,34 @@ public:
         : ToolDialogBase(owner, instance, theme, registry, std::move(title), width, height) {}
 
 protected:
-    void ClearRowButtons() {
-        for (HWND button : rowButtons_) {
-            if (button) {
-                DestroyWindow(button);
-            }
-        }
-        rowButtons_.clear();
-    }
-
     void RebuildRowButtons(int baseId) {
-        ClearRowButtons();
-        const int visibleCount = std::min<int>(static_cast<int>(rows_.size()), VisibleProcessRowCount(theme_, resultsFrame_));
-        const int padding = 8;
-        const int rowHeight = ThemedControls::ListBoxTwoLineItemHeight(theme_);
-        const int buttonWidth = 62;
-        const int buttonHeight = ThemedControls::CompactButtonHeight(theme_);
-        for (int i = 0; i < visibleCount; ++i) {
-            const int rowTop = resultsFrame_.top + padding + i * rowHeight;
-            HWND button = MakeUi().Button(
-                baseId + i,
-                L"结束",
-                resultsFrame_.right - padding - buttonWidth,
-                rowTop + std::max(0, (rowHeight - buttonHeight) / 2) - 1,
-                ThemedButtonRole::Normal,
-                ThemedButtonSize::Compact,
-                ThemedButtonWidthMode::Fixed,
-                buttonWidth);
-            if (button) {
-                RedrawWindow(button, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW);
-            }
-            rowButtons_.push_back(button);
+        if (!resultsTable_) {
+            ThemedTableOptions options;
+            options.showHeader = false;
+            options.rowPresentation = ThemedTableRowPresentation::TwoLine;
+            options.reserveScrollBarGutter = true;
+            const std::vector<ThemedTableColumn> columns = {
+                {L"process", L"进程", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Remaining},
+                {L"action", L"操作", ThemedTableColumnAlign::Center, ThemedTableColumnWidth::Fixed, 76},
+            };
+            resultsTable_ = MakeUi().Table(9800, resultsFrame_, columns, options);
         }
-        InvalidateRect(hwnd_, &resultsFrame_, TRUE);
+        std::vector<ThemedTableRow> tableRows;
+        tableRows.reserve(rows_.size());
+        for (std::size_t index = 0; index < rows_.size(); ++index) {
+            ThemedTableRow row;
+            row.key = static_cast<std::intptr_t>(rows_[index].pid);
+            ThemedTableCell processCell;
+            processCell.text = rows_[index].title;
+            processCell.secondaryText = rows_[index].detail;
+            ThemedTableCell actionCell;
+            actionCell.text = L"结束";
+            actionCell.role = ThemedTableCellRole::Action;
+            actionCell.actionId = baseId + static_cast<int>(index);
+            row.cells = {std::move(processCell), std::move(actionCell)};
+            tableRows.push_back(std::move(row));
+        }
+        ThemedUi::SetTableRows(resultsTable_, tableRows);
     }
 
     bool ConfirmAndKillRow(std::size_t index, const wchar_t* title) {
@@ -1389,21 +1347,25 @@ protected:
         return true;
     }
 
-    void OnPaint(HDC dc) override {
-        DrawProcessRows(theme_, dc, resultsFrame_, rows_, emptyText_, font());
+    bool OnNotify(LPARAM lParam) override {
+        ThemedTableEvent event;
+        if (!ThemedUi::DecodeTableEvent(resultsTable_, lParam, event)) {
+            return false;
+        }
+        if (event.kind == ThemedTableEventKind::ActionInvoked && event.actionId != 0) {
+            return OnCommand(event.actionId, BN_CLICKED);
+        }
+        return true;
     }
 
-    void OnDestroy() override {
-        ClearRowButtons();
-    }
+    void OnPaint(HDC) override {}
 
     virtual void RefreshAfterKill() = 0;
 
     RECT resultsFrame_{};
+    HWND resultsTable_ = nullptr;
     HWND status_ = nullptr;
-    std::wstring emptyText_;
     std::vector<ProcessDisplayRow> rows_;
-    std::vector<HWND> rowButtons_;
 };
 
 class PortInspectorDialog final : public ProcessRowsDialogBase {
@@ -1434,7 +1396,7 @@ private:
         ThemedStatusTextOptions statusOptions{};
         statusOptions.align = ThemedTextAlign::Start;
         status_ = MakeUi().StatusText(L"输入端口号后点击扫描。", left, statusY, width_ - left * 2, statusOptions);
-        emptyText_ = L"暂无占用进程";
+        RebuildRowButtons(ID_PORT_KILL_BASE);
     }
 
     bool OnCommand(int id, int) override {
@@ -1464,7 +1426,7 @@ private:
         const std::optional<int> parsedPort = ParseInt(Trim(GetText(port_)));
         if (!parsedPort || *parsedPort <= 0 || *parsedPort > 65535) {
             rows_.clear();
-            ClearRowButtons();
+            RebuildRowButtons(ID_PORT_KILL_BASE);
             SetText(status_, L"请输入 1-65535 之间的端口号。");
             InvalidateRect(hwnd_, &resultsFrame_, TRUE);
             return;
@@ -1478,11 +1440,7 @@ private:
             SetText(status_, L"未发现占用进程。");
             return;
         }
-        const int visibleCount = VisibleProcessRowCount(theme_, resultsFrame_);
         std::wstring status = L"发现 " + std::to_wstring(rows_.size()) + L" 个占用进程。";
-        if (static_cast<int>(rows_.size()) > visibleCount) {
-            status += L" 当前显示前 " + std::to_wstring(visibleCount) + L" 个。";
-        }
         SetText(status_, status);
     }
 
@@ -1517,7 +1475,7 @@ private:
         ThemedStatusTextOptions statusOptions{};
         statusOptions.align = ThemedTextAlign::Start;
         status_ = MakeUi().StatusText(L"输入进程ID后点击查询。", left, statusY, width_ - left * 2, statusOptions);
-        emptyText_ = L"暂无进程条目";
+        RebuildRowButtons(ID_PROCESS_KILL_BASE);
     }
 
     bool OnCommand(int id, int) override {
@@ -1547,7 +1505,7 @@ private:
         const std::optional<int> parsedPid = ParseInt(Trim(GetText(pid_)));
         if (!parsedPid || *parsedPid <= 0) {
             rows_.clear();
-            ClearRowButtons();
+            RebuildRowButtons(ID_PROCESS_KILL_BASE);
             SetText(status_, L"请输入有效的进程ID。");
             InvalidateRect(hwnd_, &resultsFrame_, TRUE);
             return;
@@ -1635,12 +1593,17 @@ private:
         case WM_PAINT:
             Paint();
             return 0;
+        case WM_NOTIFY: {
+            ThemedTableEvent event;
+            if (ThemedUi::DecodeTableEvent(resultsTable_, lParam, event) &&
+                event.kind == ThemedTableEventKind::ActionInvoked && event.actionId != 0) {
+                HandleCommand(event.actionId);
+                return 0;
+            }
+            return 0;
+        }
         case WM_CLOSE:
             DestroyWindow(hwnd_);
-            return 0;
-        case WM_DESTROY:
-            ClearRowButtons();
-            done_ = true;
             return 0;
         default:
             return DefWindowProcW(hwnd_, message, wParam, lParam);
@@ -1681,13 +1644,24 @@ private:
         const int frameTop = row0 + layout.RowStep(bh) + layout.rowGap;
         const int statusY = height_ - layout.contentInsetY - labelHeight;
         resultsFrame_ = RECT{left, frameTop, width_ - left, statusY - layout.rowGap};
+        ThemedTableOptions tableOptions;
+        tableOptions.showHeader = false;
+        tableOptions.rowPresentation = ThemedTableRowPresentation::TwoLine;
+        tableOptions.reserveScrollBarGutter = true;
+        resultsTable_ = ui.Table(
+            9801,
+            resultsFrame_,
+            {
+                {L"process", L"进程", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Remaining},
+                {L"action", L"操作", ThemedTableColumnAlign::Center, ThemedTableColumnWidth::Fixed, 76},
+            },
+            tableOptions);
         status_ = ui.StatusText(
             L"输入文件或目录路径后点击检查。",
             left,
             statusY,
             width_ - left * 2,
             ThemedStatusTextOptions{ThemedStatusRole::Normal, ThemedTextAlign::Start});
-        emptyText_ = L"暂无占用进程";
     }
 
     void HandleCommand(int id) {
@@ -1700,10 +1674,10 @@ private:
             return;
         }
         if (id == ID_FILE_LOCK_PICK_MENU) {
-            const UINT command = ThemedUi::ShowSplitButtonMenu(
+            const UINT command = windowUi_->ui().ShowSplitButtonMenu(
                 hwnd_,
                 pickSplit_.menu,
-                {{ID_FILE_LOCK_PICK_DIR, L"选择目录"}});
+                {{ID_FILE_LOCK_PICK_DIR, L"选择目录", true, TablerIconId::Folder}});
             if (command != 0) {
                 SendMessageW(hwnd_, WM_COMMAND, MAKEWPARAM(command, BN_CLICKED), 0);
             }
@@ -1718,37 +1692,23 @@ private:
         }
     }
 
-    void ClearRowButtons() {
-        for (HWND button : rowButtons_) {
-            if (button) {
-                DestroyWindow(button);
-            }
-        }
-        rowButtons_.clear();
-    }
-
     void RebuildRowButtons() {
-        ClearRowButtons();
-        const ThemedUi ui = windowUi_->ui();
-        const int visibleCount = std::min<int>(static_cast<int>(rows_.size()), VisibleProcessRowCount(theme_, resultsFrame_));
-        const int padding = 8;
-        const int rowHeight = ThemedControls::ListBoxTwoLineItemHeight(theme_);
-        const int buttonWidth = 62;
-        const int buttonHeight = ThemedControls::CompactButtonHeight(theme_);
-        for (int i = 0; i < visibleCount; ++i) {
-            const int rowTop = resultsFrame_.top + padding + i * rowHeight;
-            HWND button = ui.Button(
-                ID_FILE_LOCK_KILL_BASE + i,
-                L"结束",
-                resultsFrame_.right - padding - buttonWidth,
-                rowTop + std::max(0, (rowHeight - buttonHeight) / 2) - 1,
-                ThemedButtonRole::Normal,
-                ThemedButtonSize::Compact,
-                ThemedButtonWidthMode::Fixed,
-                buttonWidth);
-            rowButtons_.push_back(button);
+        std::vector<ThemedTableRow> tableRows;
+        tableRows.reserve(rows_.size());
+        for (std::size_t index = 0; index < rows_.size(); ++index) {
+            ThemedTableCell processCell;
+            processCell.text = rows_[index].title;
+            processCell.secondaryText = rows_[index].detail;
+            ThemedTableCell actionCell;
+            actionCell.text = L"结束";
+            actionCell.role = ThemedTableCellRole::Action;
+            actionCell.actionId = ID_FILE_LOCK_KILL_BASE + static_cast<int>(index);
+            ThemedTableRow row;
+            row.key = static_cast<std::intptr_t>(rows_[index].pid);
+            row.cells = {std::move(processCell), std::move(actionCell)};
+            tableRows.push_back(std::move(row));
         }
-        InvalidateRect(hwnd_, &resultsFrame_, TRUE);
+        ThemedUi::SetTableRows(resultsTable_, tableRows);
     }
 
     void ConfirmAndKillRow(std::size_t index) {
@@ -1767,17 +1727,17 @@ private:
             ShowThemedMessageBox(hwnd_, instance_, theme_, error, L"文件占用检查", MB_OK | MB_ICONWARNING);
             return;
         }
-        if (index < rowButtons_.size() && rowButtons_[index]) {
-            windowUi_->ui().SetEnabled(rowButtons_[index], false);
-        }
+        rows_.erase(rows_.begin() + static_cast<std::ptrdiff_t>(index));
+        RebuildRowButtons();
         SetText(status_, L"进程已结束。");
     }
 
     void Paint() {
         PAINTSTRUCT ps{};
         HDC dc = BeginPaint(hwnd_, &ps);
+        windowUi_->FillBackground(dc);
         windowUi_->DrawRegisteredEditFrames(dc);
-        DrawProcessRows(theme_, dc, resultsFrame_, rows_, emptyText_, windowUi_->font());
+        windowUi_->DrawRegisteredTableFrames(dc);
         EndPaint(hwnd_, &ps);
     }
 
@@ -1812,7 +1772,7 @@ private:
         const std::wstring path = Trim(GetText(path_));
         if (path.empty()) {
             rows_.clear();
-            ClearRowButtons();
+            RebuildRowButtons();
             SetText(status_, L"请输入文件或目录路径。");
             InvalidateRect(hwnd_, &resultsFrame_, TRUE);
             return;
@@ -1830,13 +1790,9 @@ private:
             }
             return;
         }
-        const int visibleCount = VisibleProcessRowCount(theme_, resultsFrame_);
         std::wstring status = L"发现 " + std::to_wstring(rows_.size()) + L" 个占用进程。";
         if (!detail.empty()) {
             status += L" " + detail;
-        }
-        if (static_cast<int>(rows_.size()) > visibleCount) {
-            status += L" 当前显示前 " + std::to_wstring(visibleCount) + L" 个。";
         }
         SetText(status_, status);
     }
@@ -1851,9 +1807,8 @@ private:
     ThemedSplitButton pickSplit_{};
     RECT pathFrame_{};
     RECT resultsFrame_{};
-    std::wstring emptyText_;
+    HWND resultsTable_ = nullptr;
     std::vector<ProcessDisplayRow> rows_;
-    std::vector<HWND> rowButtons_;
     std::unique_ptr<ThemedWindowUi> windowUi_;
     bool done_ = false;
     static constexpr int width_ = 660;
@@ -3379,10 +3334,10 @@ private:
             PickDirectory();
             break;
         case ID_FILE_LOCK_PICK_MENU: {
-            const UINT command = ThemedUi::ShowSplitButtonMenu(
+            const UINT command = windowUi_->ui().ShowSplitButtonMenu(
                 hwnd_,
                 filePickSplit_.menu,
-                {{ID_FILE_LOCK_PICK_DIR, L"选择目录"}});
+                {{ID_FILE_LOCK_PICK_DIR, L"选择目录", true, TablerIconId::Folder}});
             if (command != 0) {
                 SendMessageW(hwnd_, WM_COMMAND, MAKEWPARAM(command, BN_CLICKED), 0);
             }

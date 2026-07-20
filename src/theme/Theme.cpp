@@ -60,6 +60,7 @@ bool IsAllowedComponent(const std::wstring& component) {
         L"miniButton",
         L"comboBox",
         L"tabButton",
+        L"calendarDay",
         L"button",
         L"primaryButton",
         L"checkbox",
@@ -501,6 +502,15 @@ void Theme::SetDefaults() {
     PutState(L"tabButton", L"disabled", L"bg", palette_[L"background"]);
     PutState(L"tabButton", L"disabled", L"text", palette_[L"disabledText"]);
     PutState(L"tabButton", L"disabled", L"border", palette_[L"line"]);
+    PutState(L"calendarDay", L"normal", L"bg", palette_[L"surface"]);
+    PutState(L"calendarDay", L"normal", L"text", palette_[L"text"]);
+    PutState(L"calendarDay", L"normal", L"border", palette_[L"surface"]);
+    PutState(L"calendarDay", L"today", L"bg", palette_[L"surface"]);
+    PutState(L"calendarDay", L"today", L"text", palette_[L"accent"]);
+    PutState(L"calendarDay", L"today", L"border", palette_[L"accent"]);
+    PutState(L"calendarDay", L"selected", L"bg", palette_[L"accent"]);
+    PutState(L"calendarDay", L"selected", L"text", palette_[L"white"]);
+    PutState(L"calendarDay", L"selected", L"border", palette_[L"accent"]);
     PutState(L"tabButton", L"emphasizedNormal", L"bg", palette_[L"surfaceRaised"]);
     PutState(L"tabButton", L"emphasizedNormal", L"text", palette_[L"text"]);
     PutState(L"tabButton", L"emphasizedNormal", L"border", palette_[L"surfaceRaised"]);
@@ -1011,6 +1021,8 @@ void Theme::SetDefaults() {
     PutMetric(L"tabButton", L"verticalUnderlineInset", 6.0f);
     PutMetric(L"tabButton", L"softPillRadius", 14.0f);
     PutMetric(L"tabButton", L"connectedOpenExtent", 5.0f);
+    PutMetric(L"calendarDay", L"radius", 7.0f);
+    PutMetric(L"calendarDay", L"borderWidth", 1.0f);
     PutMetric(L"checkbox", L"boxSize", 16.0f);
     PutMetric(L"checkbox", L"radius", 4.0f);
     PutMetric(L"checkbox", L"borderWidth", 1.0f);

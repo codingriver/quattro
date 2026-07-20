@@ -7,8 +7,10 @@
 #include <windowsx.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <unordered_map>
 
 namespace {
@@ -93,7 +95,318 @@ public:
 private:
     HWND table_ = nullptr;
 };
+
+struct SplitButtonMenuRuntimeItem {
+    std::wstring text;
+    bool enabled = true;
+    TablerIconId icon{};
+    ThemedMenuFontCache* fontCache = nullptr;
+};
+
+std::unordered_map<ULONG_PTR, const SplitButtonMenuRuntimeItem*>& SplitButtonMenuRuntimeItems() {
+    static thread_local std::unordered_map<ULONG_PTR, const SplitButtonMenuRuntimeItem*> items;
+    return items;
+}
+
+const SplitButtonMenuRuntimeItem* SplitButtonMenuRuntimeItemFromData(ULONG_PTR itemData) {
+    const auto found = SplitButtonMenuRuntimeItems().find(itemData);
+    return found == SplitButtonMenuRuntimeItems().end() ? nullptr : found->second;
+}
+
+int SplitButtonMenuMetric(
+    const Theme& theme,
+    const SplitButtonMenuRuntimeItem& item,
+    const wchar_t* name,
+    float fallback) {
+    return item.fontCache
+        ? item.fontCache->Scale(static_cast<int>(std::lround(theme.metric(L"menuItem", name, fallback))))
+        : static_cast<int>(std::lround(fallback));
+}
+
+bool MeasureSplitButtonMenuItem(
+    const Theme& theme,
+    MEASUREITEMSTRUCT* measure) {
+    if (!measure || measure->CtlType != ODT_MENU) return false;
+    const auto* item = SplitButtonMenuRuntimeItemFromData(measure->itemData);
+    if (!item || !item->fontCache) return false;
+    const SIZE textSize = item->fontCache->MeasureText(nullptr, item->text);
+    const int minTextWidth = SplitButtonMenuMetric(theme, *item, L"minTextWidth", 64.0f);
+    const int maxTextWidth = SplitButtonMenuMetric(theme, *item, L"maxTextWidth", 360.0f);
+    const int widthBase = SplitButtonMenuMetric(theme, *item, L"widthBase", 54.0f);
+    measure->itemHeight = static_cast<UINT>(SplitButtonMenuMetric(theme, *item, L"height", 28.0f));
+    measure->itemWidth = static_cast<UINT>(
+        widthBase + std::min(maxTextWidth, std::max(minTextWidth, static_cast<int>(textSize.cx))));
+    return true;
+}
+
+bool DrawSplitButtonMenuItem(
+    const Theme& theme,
+    const DRAWITEMSTRUCT* draw) {
+    if (!draw || draw->CtlType != ODT_MENU) return false;
+    const auto* item = SplitButtonMenuRuntimeItemFromData(draw->itemData);
+    if (!item || !item->fontCache) return false;
+
+    const bool selected = (draw->itemState & ODS_SELECTED) != 0;
+    const bool disabled = !item->enabled || (draw->itemState & ODS_DISABLED) != 0;
+    ThemedPaint paint(
+        WindowFromDC(draw->hDC), draw->hDC, theme,
+        item->fontCache->FontForDpi(item->fontCache->dpi()));
+    paint.Fill(
+        draw->rcItem,
+        selected ? ThemedPaintComponent::MenuItem : ThemedPaintComponent::Menu,
+        selected ? ThemedPaintState::Hover : ThemedPaintState::Normal);
+
+    if (selected) {
+        RECT hotRect = draw->rcItem;
+        InflateRect(
+            &hotRect,
+            -SplitButtonMenuMetric(theme, *item, L"hoverInsetX", 4.0f),
+            -SplitButtonMenuMetric(theme, *item, L"hoverInsetY", 3.0f));
+        paint.Fill(hotRect, ThemedPaintComponent::MenuItem, ThemedPaintState::Hover);
+    }
+
+    const int iconLeft = SplitButtonMenuMetric(theme, *item, L"iconLeft", 8.0f);
+    const int iconInsetY = SplitButtonMenuMetric(theme, *item, L"iconInsetY", 6.0f);
+    const int iconSize = SplitButtonMenuMetric(theme, *item, L"iconSize", 16.0f);
+    const RECT iconRect{
+        draw->rcItem.left + iconLeft,
+        draw->rcItem.top + iconInsetY,
+        draw->rcItem.left + iconLeft + iconSize,
+        draw->rcItem.bottom - iconInsetY};
+    if (TablerIconGlyph(item->icon) != L'\0') {
+        paint.DrawTablerIcon(
+            {}, item->icon, iconRect, ThemedPaintComponent::MenuItem,
+            disabled ? ThemedPaintState::Disabled : ThemedPaintState::Accent);
+    }
+
+    RECT textRect = draw->rcItem;
+    textRect.left += SplitButtonMenuMetric(theme, *item, L"textLeft", 34.0f);
+    textRect.right -= SplitButtonMenuMetric(theme, *item, L"textRight", 8.0f);
+    ThemedPaintTextOptions textOptions;
+    textOptions.verticalAlign = ThemedPaintVerticalAlign::Center;
+    textOptions.ellipsis = true;
+    paint.DrawText(
+        item->text,
+        textRect,
+        ThemedPaintComponent::MenuItem,
+        disabled ? ThemedPaintState::Disabled : ThemedPaintState::Normal,
+        textOptions);
+    return true;
+}
 } // namespace
+
+namespace {
+const wchar_t* PaintComponentName(ThemedPaintComponent component) {
+    switch (component) {
+    case ThemedPaintComponent::Window: return L"window";
+    case ThemedPaintComponent::Dialog: return L"dialog";
+    case ThemedPaintComponent::Panel: return L"panel";
+    case ThemedPaintComponent::List: return L"list";
+    case ThemedPaintComponent::ListItem: return L"listItem";
+    case ThemedPaintComponent::Menu: return L"menu";
+    case ThemedPaintComponent::MenuItem: return L"menuItem";
+    case ThemedPaintComponent::TabButton: return L"tabButton";
+    case ThemedPaintComponent::CalendarDay: return L"calendarDay";
+    case ThemedPaintComponent::Label: return L"label";
+    case ThemedPaintComponent::Separator: return L"separator";
+    case ThemedPaintComponent::Text:
+    default: return L"text";
+    }
+}
+
+const wchar_t* PaintStateName(ThemedPaintState state) {
+    switch (state) {
+    case ThemedPaintState::Hover: return L"hover";
+    case ThemedPaintState::Selected: return L"selected";
+    case ThemedPaintState::Focused: return L"focused";
+    case ThemedPaintState::Disabled: return L"disabled";
+    case ThemedPaintState::Error: return L"error";
+    case ThemedPaintState::Muted: return L"muted";
+    case ThemedPaintState::Accent: return L"accent";
+    case ThemedPaintState::Danger: return L"danger";
+    case ThemedPaintState::Warning: return L"warning";
+    case ThemedPaintState::Success: return L"success";
+    case ThemedPaintState::Today: return L"today";
+    case ThemedPaintState::Normal:
+    default: return L"normal";
+    }
+}
+
+COLORREF PaintColorRef(const Color& color) {
+    const auto channel = [](float value) {
+        return static_cast<BYTE>(std::clamp(value, 0.0f, 1.0f) * 255.0f + 0.5f);
+    };
+    return RGB(channel(color.r), channel(color.g), channel(color.b));
+}
+
+int PaintMetric(const Theme& theme, const wchar_t* component, const wchar_t* name, float fallback, UINT dpi) {
+    return ThemedD2D::ScaleDip(
+        static_cast<int>(std::lround(theme.metric(component, name, fallback))),
+        dpi ? dpi : USER_DEFAULT_SCREEN_DPI);
+}
+
+UINT PaintTextFormat(const ThemedPaintTextOptions& options) {
+    UINT format = options.multiline ? (DT_WORDBREAK | DT_EDITCONTROL) : DT_SINGLELINE;
+    switch (options.align) {
+    case ThemedPaintTextAlign::Center: format |= DT_CENTER; break;
+    case ThemedPaintTextAlign::End: format |= DT_RIGHT; break;
+    case ThemedPaintTextAlign::Start:
+    default: format |= DT_LEFT; break;
+    }
+    switch (options.verticalAlign) {
+    case ThemedPaintVerticalAlign::Center: format |= DT_VCENTER; break;
+    case ThemedPaintVerticalAlign::Bottom: format |= DT_BOTTOM; break;
+    case ThemedPaintVerticalAlign::Top:
+    default: format |= DT_TOP; break;
+    }
+    if (options.ellipsis) format |= DT_END_ELLIPSIS;
+    if (options.noPrefix) format |= DT_NOPREFIX;
+    return format;
+}
+} // namespace
+
+struct ThemedPaint::Impl {
+    Impl(HWND targetWindow, HDC targetDc, const Theme& targetTheme, HFONT targetFont)
+        : hwnd(targetWindow), dc(targetDc), theme(&targetTheme), font(targetFont),
+          dpi(ThemedD2D::DpiFor(targetWindow, targetDc)), paint(targetWindow, targetDc) {}
+
+    HWND hwnd = nullptr;
+    HDC dc = nullptr;
+    const Theme* theme = nullptr;
+    HFONT font = nullptr;
+    UINT dpi = USER_DEFAULT_SCREEN_DPI;
+    ThemedD2D::ScopedHdcPaint paint;
+};
+
+ThemedPaint::ThemedPaint(HWND hwnd, HDC dc, const Theme& theme, HFONT font)
+    : impl_(std::make_unique<Impl>(hwnd, dc, theme, font)) {}
+
+ThemedPaint::~ThemedPaint() = default;
+
+bool ThemedPaint::d2dReady() const {
+    return impl_ && impl_->paint.ready();
+}
+
+void ThemedPaint::Fill(
+    RECT rect,
+    ThemedPaintComponent component,
+    ThemedPaintState state,
+    ThemedPaintShape shape) const {
+    if (!impl_ || !impl_->dc || !impl_->theme) return;
+    const wchar_t* componentName = PaintComponentName(component);
+    const wchar_t* stateName = PaintStateName(state);
+    const COLORREF fill = PaintColorRef(impl_->theme->color(componentName, stateName, L"bg"));
+    const COLORREF border = PaintColorRef(impl_->theme->color(componentName, stateName, L"border"));
+    const int borderWidth = std::max(0, PaintMetric(*impl_->theme, componentName, L"borderWidth", 0.0f, impl_->dpi));
+    if (shape == ThemedPaintShape::Ellipse) {
+        if (!ThemedD2D::FillEllipse(impl_->dc, rect, fill, border, static_cast<float>(borderWidth))) {
+            ThemedGdiFallback::FillEllipse(impl_->dc, rect, fill, border, borderWidth);
+        }
+        return;
+    }
+    if (shape == ThemedPaintShape::RoundedRectangle) {
+        const int radius = std::max(0, PaintMetric(*impl_->theme, componentName, L"radius", 7.0f, impl_->dpi));
+        if (!ThemedD2D::FillRoundedRect(
+                impl_->dc, rect, static_cast<float>(radius), fill, border, static_cast<float>(borderWidth))) {
+            ThemedGdiFallback::FillRoundedRect(impl_->dc, rect, radius, fill, border, borderWidth);
+        }
+        return;
+    }
+    if (!ThemedD2D::FillRect(impl_->dc, rect, fill)) {
+        ThemedGdiFallback::FillSolidRect(impl_->dc, rect, fill);
+    }
+}
+
+void ThemedPaint::DrawText(
+    const std::wstring& text,
+    RECT rect,
+    ThemedPaintComponent component,
+    ThemedPaintState state,
+    ThemedPaintTextOptions options) const {
+    if (!impl_ || !impl_->dc || !impl_->theme || text.empty()) return;
+    const wchar_t* componentName = PaintComponentName(component);
+    const wchar_t* stateName = PaintStateName(state);
+    const COLORREF color = PaintColorRef(impl_->theme->color(componentName, stateName, L"text"));
+    const UINT format = PaintTextFormat(options);
+    if (!ThemedD2D::DrawTextLayout(
+            impl_->dc, impl_->font, text.c_str(), static_cast<int>(text.size()), rect, format, color)) {
+        ThemedGdiFallback::DrawText(
+            impl_->dc, impl_->font, text.c_str(), static_cast<int>(text.size()), rect, format, color);
+    }
+}
+
+void ThemedPaint::DrawLine(
+    POINT start,
+    POINT end,
+    ThemedPaintComponent component,
+    ThemedPaintState state,
+    bool pixelSnap) const {
+    if (!impl_ || !impl_->dc || !impl_->theme) return;
+    const wchar_t* componentName = PaintComponentName(component);
+    const wchar_t* stateName = PaintStateName(state);
+    const COLORREF color = PaintColorRef(impl_->theme->color(componentName, stateName, L"line"));
+    const int stroke = std::max(1, PaintMetric(*impl_->theme, componentName, L"thickness", 1.0f, impl_->dpi));
+    if (!ThemedD2D::DrawLine(
+            impl_->dc,
+            static_cast<float>(start.x),
+            static_cast<float>(start.y),
+            static_cast<float>(end.x),
+            static_cast<float>(end.y),
+            color,
+            static_cast<float>(stroke),
+            pixelSnap)) {
+        ThemedGdiFallback::DrawLine(impl_->dc, start.x, start.y, end.x, end.y, color, stroke);
+    }
+}
+
+void ThemedPaint::DrawPolyline(
+    const POINT* points,
+    int pointCount,
+    ThemedPaintComponent component,
+    ThemedPaintState state) const {
+    if (!impl_ || !impl_->dc || !impl_->theme || !points || pointCount < 2) return;
+    const wchar_t* componentName = PaintComponentName(component);
+    const wchar_t* stateName = PaintStateName(state);
+    const COLORREF color = PaintColorRef(impl_->theme->color(componentName, stateName, L"text"));
+    const int stroke = std::max(1, PaintMetric(*impl_->theme, componentName, L"thickness", 1.0f, impl_->dpi));
+    if (!ThemedD2D::DrawPolyline(impl_->dc, points, pointCount, color, static_cast<float>(stroke))) {
+        ThemedGdiFallback::DrawPolyline(impl_->dc, points, pointCount, color, stroke);
+    }
+}
+
+void ThemedPaint::DrawIcon(HICON icon, RECT rect, bool disabled) const {
+    if (!impl_ || !impl_->dc || !icon) return;
+    if (!ThemedD2D::DrawIcon(impl_->dc, icon, rect, disabled)) {
+        ThemedGdiFallback::DrawIcon(impl_->dc, icon, rect, disabled);
+    }
+}
+
+bool ThemedPaint::DrawBitmap(HBITMAP bitmap, RECT rect, bool disabled) const {
+    if (!impl_ || !impl_->dc || !bitmap) return false;
+    if (ThemedD2D::DrawBitmap(impl_->dc, bitmap, rect, disabled ? 0.47f : 1.0f)) return true;
+    return ThemedGdiFallback::DrawBitmap(impl_->dc, bitmap, rect, disabled);
+}
+
+bool ThemedPaint::DrawTablerIcon(
+    const std::filesystem::path& appDirectory,
+    TablerIconId id,
+    RECT rect,
+    ThemedPaintComponent component,
+    ThemedPaintState state) const {
+    if (!impl_ || !impl_->dc || !impl_->theme) return false;
+    const wchar_t* componentName = PaintComponentName(component);
+    const wchar_t* stateName = PaintStateName(state);
+    const COLORREF color = PaintColorRef(impl_->theme->color(componentName, stateName, L"icon"));
+    return ::DrawTablerIcon(impl_->dc, rect, appDirectory, id, color);
+}
+
+SIZE ThemedPaint::MeasureText(const std::wstring& text, int maxWidth, bool multiline) const {
+    if (!impl_ || text.empty()) return {};
+    SIZE size = ThemedD2D::MeasureText(impl_->font, text, maxWidth, multiline);
+    if (size.cx > 0 || size.cy > 0) return size;
+    return ThemedGdiFallback::MeasureText(
+        impl_->dc, impl_->font, text.c_str(), static_cast<int>(text.size()));
+}
 
 COLORREF ThemedUi::ListSurfaceColor(const Theme& theme) {
     return ThemedControls::ListSurfaceColor(theme);
@@ -302,19 +615,19 @@ HICON CreateChevronFallbackIcon() {
 
     HGDIOBJ oldBitmap = SelectObject(dc, color);
     std::fill_n(static_cast<std::uint32_t*>(pixels), size * size, 0);
-    HPEN pen = CreatePen(PS_SOLID, 5, RGB(31, 41, 55));
-    HGDIOBJ oldPen = SelectObject(dc, pen);
-    MoveToEx(dc, 20, 26, nullptr);
-    LineTo(dc, 32, 38);
-    LineTo(dc, 44, 26);
-    SelectObject(dc, oldPen);
-    if (pen) DeleteObject(pen);
-
-    auto* argb = static_cast<std::uint32_t*>(pixels);
-    for (int i = 0; i < size * size; ++i) {
-        const std::uint32_t rgb = argb[i] & 0x00FFFFFFu;
-        if (rgb != 0) {
-            argb[i] = 0xFF000000u | rgb;
+    const POINT points[]{{20, 26}, {32, 38}, {44, 26}};
+    bool usedFallback = false;
+    {
+        ThemedD2D::ScopedHdcPaint paint(nullptr, dc, ThemedD2D::SurfaceKind::Transparent);
+        if (!ThemedD2D::DrawPolyline(dc, points, 3, RGB(31, 41, 55), 5.0f)) {
+            ThemedGdiFallback::DrawPolyline(dc, points, 3, RGB(31, 41, 55), 5);
+            usedFallback = true;
+        }
+    }
+    if (usedFallback) {
+        auto* argb = static_cast<std::uint32_t*>(pixels);
+        for (int i = 0; i < size * size; ++i) {
+            if ((argb[i] & 0x00FFFFFFu) != 0) argb[i] |= 0xFF000000u;
         }
     }
 
@@ -1254,12 +1567,13 @@ int ThemedUi::tableColumnWidth(std::initializer_list<std::wstring_view> candidat
     return contentWidth + padding * 2;
 }
 
-int ThemedUi::tableHeightForRows(int visibleRows, bool showHeader) const {
+int ThemedUi::tableHeightForRows(int visibleRows, bool showHeader, bool twoLines) const {
     // TableFrameInnerRect currently consumes the physical public frame inset;
     // keep the height helper on that same drawing path so the viewport ends on
     // an exact row boundary at every DPI.
     const int border = std::max(1, scale(static_cast<int>(theme_.metric(L"table", L"borderWidth", 1.0f))));
-    const int rowHeight = scale(static_cast<int>(theme_.metric(L"listItem", L"height", 28.0f)));
+    const int rowHeight = scale(static_cast<int>(theme_.metric(
+        L"listItem", twoLines ? L"twoLineHeight" : L"height", twoLines ? 48.0f : 28.0f)));
     const int headerHeight = showHeader
         ? scale(static_cast<int>(theme_.metric(L"tableHeader", L"height", 28.0f)))
         : 0;
@@ -2070,7 +2384,7 @@ ThemedSplitButton ThemedUi::SplitButton(
 UINT ThemedUi::ShowSplitButtonMenu(
     HWND notificationWindow,
     HWND menuButton,
-    const std::vector<ThemedSplitButtonMenuItem>& items) {
+    const std::vector<ThemedSplitButtonMenuItem>& items) const {
     if (!notificationWindow || !menuButton || items.empty()) {
         return 0;
     }
@@ -2078,19 +2392,35 @@ UINT ThemedUi::ShowSplitButtonMenu(
     if (!menu) {
         return 0;
     }
-    for (const auto& item : items) {
-        UINT flags = MF_STRING;
-        if (!item.enabled) {
-            flags |= MF_GRAYED;
-        }
-        AppendMenuW(menu, flags, static_cast<UINT_PTR>(item.id), item.text.c_str());
-    }
     RECT button{};
     GetWindowRect(menuButton, &button);
+    ThemedMenuFontCache fontCache;
+    fontCache.FontForDpi(dpi_);
+    std::vector<SplitButtonMenuRuntimeItem> runtimeItems;
+    runtimeItems.reserve(items.size());
+    for (const auto& item : items) {
+        runtimeItems.push_back(SplitButtonMenuRuntimeItem{
+            item.text, item.enabled, item.icon, &fontCache});
+    }
+    for (std::size_t index = 0; index < items.size(); ++index) {
+        const auto* runtime = &runtimeItems[index];
+        const ULONG_PTR key = reinterpret_cast<ULONG_PTR>(runtime);
+        SplitButtonMenuRuntimeItems()[key] = runtime;
+        UINT flags = MF_OWNERDRAW;
+        if (!items[index].enabled) flags |= MF_GRAYED;
+        AppendMenuW(
+            menu,
+            flags,
+            static_cast<UINT_PTR>(items[index].id),
+            reinterpret_cast<LPCWSTR>(runtime));
+    }
     ThemedPopupMenuOptions options{};
     options.horizontalAlign = ThemedPopupMenuHorizontalAlign::Right;
     options.returnCommand = true;
     const UINT command = ShowPopupMenu(notificationWindow, menu, POINT{button.right, button.bottom}, options).command;
+    for (const auto& runtime : runtimeItems) {
+        SplitButtonMenuRuntimeItems().erase(reinterpret_cast<ULONG_PTR>(&runtime));
+    }
     DestroyMenu(menu);
     return command;
 }
@@ -2357,6 +2687,8 @@ HWND ThemedUi::Table(int id, RECT frame, const std::vector<ThemedTableColumn>& c
     if (options.fullRowSelect) extended |= LVS_EX_FULLROWSELECT;
     ListView_SetExtendedListViewStyle(table, extended);
     ThemedControls::RegisterTable(table, theme_, dpi_);
+    ThemedControls::ConfigureTableRowPresentation(
+        table, options.rowPresentation == ThemedTableRowPresentation::TwoLine);
     if (options.checkable) {
         ThemedControls::CreateSystemCheckBoxImages(table);
     }
@@ -2423,7 +2755,8 @@ void ThemedUi::SetTableRows(HWND table, const std::vector<ThemedTableRow>& rows)
             cells.push_back(ThemedControls::TableCellRuntime{
                 static_cast<int>(cell.role),
                 cell.actionId,
-                cell.image >= 0});
+                cell.image >= 0,
+                cell.secondaryText});
         }
         cellStates.push_back(std::move(cells));
     }
@@ -2782,7 +3115,17 @@ bool ThemedUi::IsNativeEditShortcut(const MSG& message) {
 // 返回值：消息已处理且 result 有效时返回 true，否则返回 false。
 bool ThemedUi::HandleParentMessage(const Theme& theme, UINT message, WPARAM, LPARAM lParam, LRESULT& result) {
     switch (message) {
+    case WM_MEASUREITEM:
+        if (MeasureSplitButtonMenuItem(theme, reinterpret_cast<MEASUREITEMSTRUCT*>(lParam))) {
+            result = TRUE;
+            return true;
+        }
+        break;
     case WM_DRAWITEM:
+        if (DrawSplitButtonMenuItem(theme, reinterpret_cast<const DRAWITEMSTRUCT*>(lParam))) {
+            result = TRUE;
+            return true;
+        }
         if (ThemedControls::Draw(theme, reinterpret_cast<const DRAWITEMSTRUCT*>(lParam))) {
             result = TRUE;
             return true;

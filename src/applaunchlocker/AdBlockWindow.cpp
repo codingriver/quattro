@@ -384,10 +384,10 @@ LRESULT AdBlockWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam) {
         } else if (id == ID_PICK_PATH) {
             PickFile();
         } else if (id == ID_PICK_PATH_MENU) {
-            const UINT command = ThemedUi::ShowSplitButtonMenu(
+            const UINT command = windowUi_->ui().ShowSplitButtonMenu(
                 hwnd_,
                 pickPathSplit_.menu,
-                {{ID_PICK_FOLDER, L"选择文件夹"}});
+                {{ID_PICK_FOLDER, L"选择文件夹", true, TablerIconId::Folder}});
             if (command != 0) {
                 SendMessageW(hwnd_, WM_COMMAND, MAKEWPARAM(command, BN_CLICKED), 0);
             }

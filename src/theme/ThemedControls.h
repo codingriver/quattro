@@ -404,8 +404,10 @@ struct TableCellRuntime {
     int role = 0;
     int actionId = 0;
     bool hasImage = false;
+    std::wstring secondaryText;
 };
 void RegisterTable(HWND table, const Theme& theme, UINT dpi = 0);
+void ConfigureTableRowPresentation(HWND table, bool twoLines);
 void ConfigureTableColumns(HWND table, const std::vector<int>& widthModes);
 void ConfigureTableGridLines(HWND table, bool rowGridLines, bool columnGridLines);
 void SetTableColumnResizeEnabled(HWND table, bool enabled);

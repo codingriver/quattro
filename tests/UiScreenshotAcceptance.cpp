@@ -1,7 +1,9 @@
 #include "../src/windows/BuiltinTools.h"
 #include "../src/windows/LinkEditDialog.h"
+#include "../src/windows/MainWindow.h"
 #include "../src/domain/MenuCatalog.h"
 #include "../src/domain/Models.h"
+#include "../src/domain/TodoSchedule.h"
 #include "../src/windows/QuickImportDialog.h"
 #include "../src/windows/SimpleDialogs.h"
 #include "../src/windows/ConfirmDialog.h"
@@ -367,6 +369,84 @@ BitmapCapture CaptureWindowBitmap(HWND hwnd) {
     return BitmapCapture{bitmap, width, height};
 }
 
+BitmapCapture CaptureClientBitmapWithChildren(HWND hwnd) {
+    RECT client{};
+    if (!GetClientRect(hwnd, &client)) return {};
+    const int width = std::max(1, static_cast<int>(client.right - client.left));
+    const int height = std::max(1, static_cast<int>(client.bottom - client.top));
+    HDC screen = GetDC(nullptr);
+    HDC dc = screen ? CreateCompatibleDC(screen) : nullptr;
+    HBITMAP bitmap = screen ? CreateCompatibleBitmap(screen, width, height) : nullptr;
+    HGDIOBJ old = dc && bitmap ? SelectObject(dc, bitmap) : nullptr;
+    if (!screen || !dc || !bitmap || !old) {
+        if (dc) DeleteDC(dc);
+        if (screen) ReleaseDC(nullptr, screen);
+        if (bitmap) DeleteObject(bitmap);
+        return {};
+    }
+    HBRUSH background = CreateSolidBrush(RGB(255, 0, 255));
+    FillRect(dc, &client, background);
+    DeleteObject(background);
+    SendMessageW(hwnd, WM_PRINTCLIENT, reinterpret_cast<WPARAM>(dc), PRF_CLIENT | PRF_ERASEBKGND);
+
+    std::vector<HWND> children;
+    for (HWND child = GetTopWindow(hwnd); child; child = GetWindow(child, GW_HWNDNEXT)) {
+        if (IsWindowVisible(child)) children.push_back(child);
+    }
+    std::reverse(children.begin(), children.end());
+    for (HWND child : children) {
+        RECT childRect{};
+        if (!GetWindowRect(child, &childRect)) continue;
+        MapWindowPoints(HWND_DESKTOP, hwnd, reinterpret_cast<POINT*>(&childRect), 2);
+        const int childWidth = childRect.right - childRect.left;
+        const int childHeight = childRect.bottom - childRect.top;
+        if (childWidth <= 0 || childHeight <= 0) continue;
+        HDC childDc = CreateCompatibleDC(screen);
+        HBITMAP childBitmap = CreateCompatibleBitmap(screen, childWidth, childHeight);
+        HGDIOBJ childOld = childDc && childBitmap ? SelectObject(childDc, childBitmap) : nullptr;
+        if (childDc && childBitmap && childOld) {
+            COLORREF childBackground = GetPixel(
+                dc,
+                std::clamp(childRect.left, 0L, static_cast<LONG>(width - 1)),
+                std::clamp(childRect.top, 0L, static_cast<LONG>(height - 1)));
+            if (childBackground == CLR_INVALID) childBackground = RGB(255, 255, 255);
+            HBRUSH childBrush = CreateSolidBrush(childBackground);
+            RECT childFill{0, 0, childWidth, childHeight};
+            FillRect(childDc, &childFill, childBrush);
+            DeleteObject(childBrush);
+        }
+        BOOL childDrawn = FALSE;
+        wchar_t childClass[64]{};
+        GetClassNameW(child, childClass, static_cast<int>(std::size(childClass)));
+        if (childDc && childBitmap && childOld && wcscmp(childClass, L"Button") == 0) {
+            DRAWITEMSTRUCT draw{};
+            draw.CtlType = ODT_BUTTON;
+            draw.CtlID = static_cast<UINT>(GetDlgCtrlID(child));
+            draw.itemAction = ODA_DRAWENTIRE;
+            draw.itemState = IsWindowEnabled(child) ? 0 : ODS_DISABLED;
+            if (GetFocus() == child) draw.itemState |= ODS_FOCUS;
+            draw.hwndItem = child;
+            draw.hDC = childDc;
+            draw.rcItem = RECT{0, 0, childWidth, childHeight};
+            childDrawn = SendMessageW(
+                hwnd, WM_DRAWITEM, static_cast<WPARAM>(draw.CtlID),
+                reinterpret_cast<LPARAM>(&draw)) != 0;
+        } else if (childDc && childBitmap && childOld) {
+            childDrawn = PrintWindow(child, childDc, 0x00000002);
+        }
+        if (childDrawn) {
+            BitBlt(dc, childRect.left, childRect.top, childWidth, childHeight, childDc, 0, 0, SRCCOPY);
+        }
+        if (childDc && childOld) SelectObject(childDc, childOld);
+        if (childBitmap) DeleteObject(childBitmap);
+        if (childDc) DeleteDC(childDc);
+    }
+    SelectObject(dc, old);
+    DeleteDC(dc);
+    ReleaseDC(nullptr, screen);
+    return BitmapCapture{bitmap, width, height};
+}
+
 bool SavePng(HBITMAP bitmap, const std::filesystem::path& path) {
     CLSID pngClsid{};
     if (GetEncoderClsid(L"image/png", &pngClsid) < 0) {
@@ -400,6 +480,76 @@ bool BitmapHasVisualContent(HBITMAP bitmap, int width, int height) {
         }
     }
     return colors.size() >= 12;
+}
+
+int LargestLowDetailHorizontalRun(HBITMAP bitmap, int width, int height) {
+    if (!bitmap || width < 8 || height < 8) return height;
+    BITMAPINFO info{};
+    info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    info.bmiHeader.biWidth = width;
+    info.bmiHeader.biHeight = -height;
+    info.bmiHeader.biPlanes = 1;
+    info.bmiHeader.biBitCount = 32;
+    info.bmiHeader.biCompression = BI_RGB;
+    std::vector<std::uint32_t> pixels(static_cast<std::size_t>(width) * static_cast<std::size_t>(height));
+    HDC dc = GetDC(nullptr);
+    const int lines = GetDIBits(dc, bitmap, 0, static_cast<UINT>(height), pixels.data(), &info, DIB_RGB_COLORS);
+    ReleaseDC(nullptr, dc);
+    if (lines == 0) return height;
+
+    int largest = 0;
+    int current = 0;
+    for (int y = 2; y < height - 2; ++y) {
+        std::set<std::uint32_t> colors;
+        const std::size_t row = static_cast<std::size_t>(y) * static_cast<std::size_t>(width);
+        for (int x = 2; x < width - 2; x += 2) {
+            colors.insert(pixels[row + static_cast<std::size_t>(x)] & 0x00ffffffu);
+            if (colors.size() > 2) break;
+        }
+        if (colors.size() <= 2) {
+            largest = std::max(largest, ++current);
+        } else {
+            current = 0;
+        }
+    }
+    return largest;
+}
+
+std::size_t DistinctToolMenuIconCount(HBITMAP bitmap, int width, int height, UINT dpi) {
+    if (!bitmap || width < 40 || height < 40) return 0;
+    BITMAPINFO info{};
+    info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    info.bmiHeader.biWidth = width;
+    info.bmiHeader.biHeight = -height;
+    info.bmiHeader.biPlanes = 1;
+    info.bmiHeader.biBitCount = 32;
+    info.bmiHeader.biCompression = BI_RGB;
+    std::vector<std::uint32_t> pixels(static_cast<std::size_t>(width) * static_cast<std::size_t>(height));
+    HDC dc = GetDC(nullptr);
+    const int lines = GetDIBits(dc, bitmap, 0, static_cast<UINT>(height), pixels.data(), &info, DIB_RGB_COLORS);
+    ReleaseDC(nullptr, dc);
+    if (lines == 0) return 0;
+
+    const int rowHeight = std::max(1, MulDiv(28, static_cast<int>(dpi), 96));
+    const int rowCount = std::clamp((height - 2) / rowHeight, 0, 16);
+    const int topInset = std::max(0, (height - rowCount * rowHeight) / 2);
+    const int iconLeft = std::max(2, MulDiv(5, static_cast<int>(dpi), 96));
+    const int iconRight = std::min(width - 2, MulDiv(30, static_cast<int>(dpi), 96));
+    std::set<std::uint64_t> fingerprints;
+    for (int item = 0; item < rowCount; ++item) {
+        const int top = std::clamp(topInset + item * rowHeight, 0, height);
+        const int bottom = std::clamp(top + rowHeight, 0, height);
+        std::uint64_t fingerprint = 1469598103934665603ull;
+        for (int y = top; y < bottom; ++y) {
+            const std::size_t row = static_cast<std::size_t>(y) * static_cast<std::size_t>(width);
+            for (int x = iconLeft; x < iconRight; ++x) {
+                fingerprint ^= pixels[row + static_cast<std::size_t>(x)] & 0x00ffffffu;
+                fingerprint *= 1099511628211ull;
+            }
+        }
+        fingerprints.insert(fingerprint);
+    }
+    return fingerprints.size();
 }
 
 bool BitmapHasAtLeastColors(HBITMAP bitmap, int width, int height, std::size_t requiredColors) {
@@ -1144,6 +1294,12 @@ void ValidateAndCapture(HWND hwnd, const Scenario& scenario, const std::filesyst
     }
 
     BitmapCapture capture = CaptureWindowBitmap(hwnd);
+    if (capture.bitmap && scenario.rejectDarkSurface &&
+        NearBlackPixelRatio(capture.bitmap, capture.width, capture.height) >= 0.12) {
+        DeleteObject(capture.bitmap);
+        capture = CaptureClientBitmapWithChildren(hwnd);
+        AcceptanceLog(scenario.name + L": used process-local client composite capture");
+    }
     const std::filesystem::path screenshot = outputDir / scenario.screenshotName;
     state.Check(capture.bitmap != nullptr, scenario.name + L": screenshot bitmap was not created");
     if (capture.bitmap) {
@@ -1563,6 +1719,48 @@ void RunMainWindowScenario(
             DeleteObject(titleCapture.bitmap);
         }
 
+        const auto captureTestMenu = [&](UINT message, const std::wstring& scenarioName, WPARAM parameter = 0) {
+            std::thread popupThread([&]() {
+                SendMessageW(hwnd, message, parameter, 0);
+            });
+            HWND testPopup = WaitForTopWindow(FindWindowRequest{L"#32768", L"", process.dwProcessId}, 5000);
+            state.Check(testPopup != nullptr, scenarioName + L": popup did not appear");
+            if (testPopup) {
+                BitmapCapture popupCapture = CaptureWindowBitmap(testPopup);
+                state.Check(
+                    popupCapture.bitmap && BitmapHasVisualContent(
+                        popupCapture.bitmap, popupCapture.width, popupCapture.height),
+                    scenarioName + L": popup screenshot is invalid");
+                if (popupCapture.bitmap) {
+                    const int lowDetailRun = LargestLowDetailHorizontalRun(
+                        popupCapture.bitmap, popupCapture.width, popupCapture.height);
+                    state.Check(
+                        lowDetailRun < MulDiv(28, static_cast<int>(dpi), 96),
+                        scenarioName + L": popup contains an owner-draw blank row band");
+                    if (scenarioName == L"tool-popup-menu") {
+                        state.Check(
+                            DistinctToolMenuIconCount(
+                                popupCapture.bitmap, popupCapture.width, popupCapture.height, dpi) >= 5,
+                            scenarioName + L": builtin tools still reuse one menu icon");
+                    }
+                    state.Check(
+                        SavePng(
+                            popupCapture.bitmap,
+                            outputDir / (scenarioName + L"-" + dpiSuffix + L".png")),
+                        scenarioName + L": screenshot save failed");
+                    DeleteObject(popupCapture.bitmap);
+                }
+                PostMessageW(testPopup, WM_CANCELMODE, 0, 0);
+                PostMessageW(hwnd, WM_CANCELMODE, 0, 0);
+            }
+            popupThread.join();
+            Sleep(100);
+        };
+        captureTestMenu(WM_QUATTRO_TEST_MAIN_MENU, L"main-popup-menu");
+        captureTestMenu(WM_QUATTRO_TEST_TOOL_MENU, L"tool-popup-menu");
+        captureTestMenu(WM_QUATTRO_TEST_LINK_MENU, L"link-popup-menu", static_cast<WPARAM>(visualLink.id));
+        captureTestMenu(WM_QUATTRO_TEST_TAG_MENU, L"tag-popup-menu", static_cast<WPARAM>(linkTag.id));
+
         std::thread menuThread([&]() {
             constexpr UINT kTestTodoMenuMessage = WM_APP + 0x6F;
             SendMessageW(hwnd, kTestTodoMenuMessage, static_cast<WPARAM>(reminderTodo.id), 0);
@@ -1777,6 +1975,169 @@ struct TableHostWindow {
         return DefWindowProcW(hwnd_, message, wParam, lParam);
     }
 };
+
+constexpr UINT kShowSplitButtonMenuAcceptance = WM_APP + 0x5B;
+
+struct SplitButtonMenuHostWindow {
+    HINSTANCE instance_ = nullptr;
+    HWND hwnd_ = nullptr;
+    UINT forcedDpi_ = USER_DEFAULT_SCREEN_DPI;
+    HFONT forcedFont_ = nullptr;
+    Theme theme_;
+    ThemedSplitButton split_{};
+    std::unique_ptr<ThemedWindowUi> windowUi_;
+    std::unique_ptr<ThemedUi> menuUi_;
+
+    ~SplitButtonMenuHostWindow() {
+        if (forcedFont_) DeleteObject(forcedFont_);
+    }
+
+    static LRESULT CALLBACK Proc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
+        SplitButtonMenuHostWindow* self = nullptr;
+        if (message == WM_NCCREATE) {
+            auto* create = reinterpret_cast<CREATESTRUCTW*>(lParam);
+            self = reinterpret_cast<SplitButtonMenuHostWindow*>(create->lpCreateParams);
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self));
+            self->hwnd_ = hwnd;
+        } else {
+            self = reinterpret_cast<SplitButtonMenuHostWindow*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+        }
+        return self ? self->Handle(message, wParam, lParam) : DefWindowProcW(hwnd, message, wParam, lParam);
+    }
+
+    LRESULT Handle(UINT message, WPARAM wParam, LPARAM lParam) {
+        LRESULT result = 0;
+        if (ThemedWindowUi::HandleCommonMessage(windowUi_, message, wParam, lParam, result)) {
+            return result;
+        }
+        switch (message) {
+        case WM_CREATE: {
+            windowUi_ = std::make_unique<ThemedWindowUi>(
+                instance_, nullptr, hwnd_, theme_, DialogLayoutKind::Compact, 260, 120);
+            forcedFont_ = ThemedControls::CreateDialogFont(forcedDpi_);
+            menuUi_ = std::make_unique<ThemedUi>(
+                instance_, hwnd_, theme_, forcedFont_, DialogLayoutKind::Compact,
+                ThemedWindowUi::ScaleForDpi(260, forcedDpi_),
+                ThemedWindowUi::ScaleForDpi(120, forcedDpi_),
+                nullptr, nullptr, nullptr, nullptr, forcedDpi_);
+            split_ = menuUi_->SplitButton(
+                501, 502, L"选择文件", menuUi_->scale(16), menuUi_->scale(20),
+                ThemedButtonRole::Normal, ThemedButtonSize::Normal,
+                ThemedButtonWidthMode::Fixed, menuUi_->scale(160));
+            return 0;
+        }
+        case WM_PAINT: {
+            PAINTSTRUCT ps{};
+            HDC dc = BeginPaint(hwnd_, &ps);
+            windowUi_->FillBackground(dc);
+            EndPaint(hwnd_, &ps);
+            return 0;
+        }
+        case kShowSplitButtonMenuAcceptance:
+            return static_cast<LRESULT>(menuUi_->ShowSplitButtonMenu(
+                hwnd_, split_.menu,
+                {
+                    {503, L"选择文件夹", true, TablerIconId::Folder},
+                    {504, L"清空路径", false, TablerIconId::Clear},
+                }));
+        default:
+            return DefWindowProcW(hwnd_, message, wParam, lParam);
+        }
+    }
+};
+
+void RunSplitButtonMenuScenario(
+    const std::filesystem::path& outputDir,
+    TestState& state,
+    UINT dpi) {
+    const std::wstring suffix = DpiPercentSuffix(dpi);
+    const std::wstring scenarioName = L"split-button-menu-" + suffix;
+    AcceptanceLog(L"begin " + scenarioName);
+    HINSTANCE instance = GetModuleHandleW(nullptr);
+    SplitButtonMenuHostWindow host;
+    host.instance_ = instance;
+    host.forcedDpi_ = dpi;
+    host.theme_ = Theme::Load(std::filesystem::current_path() / L"theme", L"default");
+
+    const std::wstring className = L"QuattroSplitButtonMenuHost" + std::to_wstring(dpi);
+    WNDCLASSEXW wc{};
+    wc.cbSize = sizeof(wc);
+    wc.lpfnWndProc = SplitButtonMenuHostWindow::Proc;
+    wc.hInstance = instance;
+    wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    wc.lpszClassName = className.c_str();
+    RegisterClassExW(&wc);
+    HWND hwnd = CreateWindowExW(
+        WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+        wc.lpszClassName,
+        scenarioName.c_str(),
+        WS_OVERLAPPEDWINDOW,
+        180,
+        180,
+        ThemedWindowUi::ScaleForDpi(300, dpi),
+        ThemedWindowUi::ScaleForDpi(160, dpi),
+        nullptr,
+        nullptr,
+        instance,
+        &host);
+    if (!hwnd || !host.menuUi_ || !host.split_.menu) {
+        state.Check(false, scenarioName + L": host or split button creation failed");
+        if (hwnd) DestroyWindow(hwnd);
+        return;
+    }
+    ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+    SetWindowPos(
+        hwnd, HWND_BOTTOM, 0, 0, 0, 0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+    UpdateWindow(hwnd);
+
+    const HWND foregroundBefore = GetForegroundWindow();
+    const HWND activeBefore = GetActiveWindow();
+    std::thread controller([&]() {
+        HWND popup = WaitForTopWindow(
+            FindWindowRequest{L"#32768", L"", GetCurrentProcessId()}, 5000);
+        state.Check(popup != nullptr, scenarioName + L": popup did not appear");
+        if (popup) {
+            BitmapCapture capture = CaptureWindowBitmap(popup);
+            state.Check(capture.bitmap != nullptr, scenarioName + L": popup capture failed");
+            if (capture.bitmap) {
+                state.Check(
+                    BitmapHasVisualContent(capture.bitmap, capture.width, capture.height),
+                    scenarioName + L": popup screenshot is blank");
+                state.Check(
+                    LargestLowDetailHorizontalRun(capture.bitmap, capture.width, capture.height) <
+                        MulDiv(28, static_cast<int>(dpi), USER_DEFAULT_SCREEN_DPI),
+                    scenarioName + L": popup contains a blank owner-draw row");
+                const Color accent = host.theme_.color(L"menuItem", L"accent", L"icon");
+                const COLORREF accentColor = RGB(
+                    static_cast<BYTE>(std::clamp(accent.r, 0.0f, 1.0f) * 255.0f + 0.5f),
+                    static_cast<BYTE>(std::clamp(accent.g, 0.0f, 1.0f) * 255.0f + 0.5f),
+                    static_cast<BYTE>(std::clamp(accent.b, 0.0f, 1.0f) * 255.0f + 0.5f));
+                const RECT iconArea{
+                    0, 0,
+                    std::min(capture.width, MulDiv(34, static_cast<int>(dpi), USER_DEFAULT_SCREEN_DPI)),
+                    capture.height};
+                state.Check(
+                    CountPixelsNearColor(
+                        capture.bitmap, capture.width, capture.height, iconArea, accentColor, 56) >=
+                        static_cast<std::size_t>(MulDiv(12, static_cast<int>(dpi), USER_DEFAULT_SCREEN_DPI)),
+                    scenarioName + L": semantic Tabler menu icon is not visible");
+                state.Check(
+                    SavePng(capture.bitmap, outputDir / (scenarioName + L".png")),
+                    scenarioName + L": screenshot save failed");
+                DeleteObject(capture.bitmap);
+            }
+            PostMessageW(popup, WM_CANCELMODE, 0, 0);
+            PostMessageW(hwnd, WM_CANCELMODE, 0, 0);
+        }
+    });
+    SendMessageW(hwnd, kShowSplitButtonMenuAcceptance, 0, 0);
+    controller.join();
+    state.Check(GetForegroundWindow() == foregroundBefore, scenarioName + L": changed the foreground window");
+    state.Check(GetActiveWindow() == activeBefore, scenarioName + L": changed the active window");
+    DestroyWindow(hwnd);
+    AcceptanceLog(L"end " + scenarioName);
+}
 
 // Map a table item's rect (table client coordinates) into the coordinate space
 // of a bitmap captured from the host top-level window.
@@ -3372,6 +3733,28 @@ int wmain() {
     config.webDavUserName = L"acceptance-user";
 
     wchar_t quickImportOnly[8]{};
+    wchar_t splitButtonMenuOnly[8]{};
+    if (GetEnvironmentVariableW(
+            L"QUATTRO_UI_ACCEPTANCE_SPLIT_BUTTON_MENU_ONLY",
+            splitButtonMenuOnly,
+            static_cast<DWORD>(std::size(splitButtonMenuOnly))) > 0) {
+        for (const UINT dpi : {96u, 120u, 144u}) {
+            RunSplitButtonMenuScenario(outputDir, state, dpi);
+        }
+        DestroyWindow(owner);
+        OleUninitialize();
+        Gdiplus::GdiplusShutdown(gdiplusToken);
+        if (!state.ok) {
+            for (const auto& failure : state.failures) {
+                AcceptanceLog(L"split-button-menu target failure " + failure);
+                std::wcerr << failure << L"\n";
+            }
+            return 1;
+        }
+        std::wcout << L"ui_split_button_menu_acceptance=passed screenshots=" << outputDir.wstring() << L"\n";
+        return 0;
+    }
+
     if (GetEnvironmentVariableW(
             L"QUATTRO_UI_ACCEPTANCE_QUICK_IMPORT_ONLY",
             quickImportOnly,
@@ -3773,6 +4156,80 @@ int wmain() {
             return 1;
         }
         std::wcout << L"ui_table_acceptance=passed screenshots=" << outputDir.wstring() << L"\n";
+        return 0;
+    }
+
+    wchar_t d2dDialogsOnly[8]{};
+    if (GetEnvironmentVariableW(
+            L"QUATTRO_UI_ACCEPTANCE_D2D_DIALOGS_ONLY",
+            d2dDialogsOnly,
+            static_cast<DWORD>(std::size(d2dDialogsOnly))) > 0) {
+        const std::vector<WebDavRemoteFile> backups{
+            {L"quattro-backup-20260630-215427-with-a-very-long-file-name.q4cfg", L"/remote/quattro-backup.q4cfg", 139264, L"Tue, 30 Jun 2026 17:54:27 GMT", false},
+            {L"quattro-backup-20260626-173428.q4cfg", L"/remote/quattro-backup-old.q4cfg", 77824, L"Fri, 26 Jun 2026 09:34:11 GMT", false}};
+        for (const UINT dpi : {96u, 120u, 144u}) {
+            const std::wstring suffix = DpiPercentSuffix(dpi);
+            Scenario messageScenario{
+                L"d2d-message-dialog-" + suffix,
+                L"QuattroThemedMessageDialog",
+                L"D2D 消息框",
+                L"d2d-message-dialog-" + suffix + L".png",
+                {L"D2D 消息框", L"确定", L"取消"}, {}, 0, 2, false};
+            messageScenario.forcedDpi = dpi;
+            RunDialogScenario(messageScenario, outputDir, state, [&]() {
+                ShowThemedMessageBox(
+                    owner, instance, theme,
+                    L"DWrite 多行消息测量与公共 D2D 背景绘制验收。",
+                    L"D2D 消息框", MB_OKCANCEL | MB_ICONINFORMATION);
+            });
+
+            std::wstring selectedBackup = backups.front().name;
+            Scenario webDavScenario{
+                L"d2d-webdav-table-" + suffix,
+                L"",
+                L"选择 WebDAV 备份",
+                L"d2d-webdav-table-" + suffix + L".png",
+                {L"选择 WebDAV 备份", L"下载"}, {}, 0, 2, false};
+            webDavScenario.forcedDpi = dpi;
+            RunDialogScenario(webDavScenario, outputDir, state, [&]() {
+                ShowWebDavBackupSelectionDialog(owner, instance, theme, backups, selectedBackup);
+            });
+
+            TodoItem todo;
+            todo.title = L"D2D 日历验收";
+            todo.content = L"验证日期选中、圆角、文字与 Footer。";
+            SYSTEMTIME selectedDate{};
+            GetLocalTime(&selectedDate);
+            selectedDate.wDay = selectedDate.wDay > 1 ? selectedDate.wDay - 1 : 2;
+            selectedDate.wHour = 9;
+            selectedDate.wMinute = 30;
+            selectedDate.wSecond = 0;
+            selectedDate.wMilliseconds = 0;
+            todo.anchorAt = FormatTodoTimestamp(selectedDate);
+            Scenario todoScenario{
+                L"d2d-todo-calendar-" + suffix,
+                L"QuattroTodoEditDialog",
+                L"新建待办",
+                L"d2d-todo-calendar-" + suffix + L".png",
+                {L"新建待办", L"保存待办", L"取消"},
+                {todo.title, todo.content}, 2, 2, false};
+            todoScenario.forcedDpi = dpi;
+            todoScenario.rejectDarkSurface = true;
+            RunDialogScenario(todoScenario, outputDir, state, [&]() {
+                TodoEditDialog::Show(owner, instance, theme, todo, true);
+            });
+        }
+        DestroyWindow(owner);
+        OleUninitialize();
+        Gdiplus::GdiplusShutdown(gdiplusToken);
+        if (!state.ok) {
+            for (const auto& failure : state.failures) {
+                AcceptanceLog(L"d2d dialog target failure " + failure);
+                std::wcerr << failure << L"\n";
+            }
+            return 1;
+        }
+        std::wcout << L"ui_d2d_dialog_acceptance=passed screenshots=" << outputDir.wstring() << L"\n";
         return 0;
     }
 

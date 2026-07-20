@@ -101,6 +101,7 @@ struct ControlState {
     bool tableReserveScrollBarGutter = false;
     bool tableShowRowGridLines = false;
     bool tableShowColumnGridLines = false;
+    bool tableTwoLineRows = false;
     int tableRowsUpdateDepth = 0;
     std::vector<int> tableColumnWidthModes;
     std::vector<bool> tableRowEnabled;
@@ -2218,14 +2219,33 @@ void DrawTableTextCell(
     SetBkMode(draw->nmcd.hdc, TRANSPARENT);
     const wchar_t* textState = enabled ? rowState : L"disabled";
     SetTextColor(draw->nmcd.hdc, ToColorRef(theme.color(L"listItem", textState, L"text")));
-    DrawThemedText(
-        draw->nmcd.hdc,
-        font,
-        text.c_str(),
-        static_cast<int>(text.size()),
-        textRect,
-        format,
-        GetTextColor(draw->nmcd.hdc));
+    if (cell && !cell->secondaryText.empty()) {
+        const int textHeight = TableScaledMetric(table, theme, L"listItem", L"textHeight", 20.0f);
+        const int denseGap = TableScaledMetric(table, theme, L"global", L"denseGap", 4.0f);
+        const int contentHeight = textHeight * 2 + denseGap;
+        const int top = textRect.top + std::max(0, (static_cast<int>(textRect.bottom - textRect.top) - contentHeight) / 2);
+        RECT primaryRect{textRect.left, top, textRect.right, top + textHeight};
+        RECT secondaryRect{textRect.left, primaryRect.bottom + denseGap, textRect.right, primaryRect.bottom + denseGap + textHeight};
+        UINT lineFormat = (format & ~(DT_VCENTER | DT_BOTTOM)) | DT_TOP;
+        DrawThemedText(
+            draw->nmcd.hdc, font, text.c_str(), static_cast<int>(text.size()),
+            primaryRect, lineFormat, GetTextColor(draw->nmcd.hdc));
+        const COLORREF secondaryColor = ToColorRef(theme.color(
+            L"text", enabled ? L"muted" : L"disabled", L"text"));
+        DrawThemedText(
+            draw->nmcd.hdc, font, cell->secondaryText.c_str(),
+            static_cast<int>(cell->secondaryText.size()), secondaryRect,
+            lineFormat, secondaryColor);
+    } else {
+        DrawThemedText(
+            draw->nmcd.hdc,
+            font,
+            text.c_str(),
+            static_cast<int>(text.size()),
+            textRect,
+            format,
+            GetTextColor(draw->nmcd.hdc));
+    }
     if (oldFont) {
         SelectObject(draw->nmcd.hdc, oldFont);
     }
@@ -3466,6 +3486,20 @@ void RegisterTable(HWND table, const Theme& theme, UINT dpi) {
     ThemedControls::RestoreTableDefaultImageList(table);
 }
 
+void ConfigureTableRowPresentation(HWND table, bool twoLines) {
+    if (!table) return;
+    auto& state = StateFor(table);
+    if (state.tableTwoLineRows == twoLines && state.tableDefaultSmallImages) return;
+    state.tableTwoLineRows = twoLines;
+    if (state.tableDefaultSmallImages) {
+        ListView_SetImageList(table, nullptr, LVSIL_SMALL);
+        ImageList_Destroy(state.tableDefaultSmallImages);
+        state.tableDefaultSmallImages = nullptr;
+    }
+    RestoreTableDefaultImageList(table);
+    InvalidateRect(table, nullptr, TRUE);
+}
+
 void ConfigureTableColumns(HWND table, const std::vector<int>& widthModes) {
     if (!table) return;
     StateFor(table).tableColumnWidthModes = widthModes;
@@ -3572,7 +3606,10 @@ void RestoreTableDefaultImageList(HWND table) {
     auto& state = StateFor(table);
     if (!state.theme) return;
     if (!state.tableDefaultSmallImages) {
-        const int rowHeight = TableScaledMetric(table, *state.theme, L"listItem", L"height", 28.0f);
+        const int rowHeight = TableScaledMetric(
+            table, *state.theme, L"listItem",
+            state.tableTwoLineRows ? L"twoLineHeight" : L"height",
+            state.tableTwoLineRows ? 48.0f : 28.0f);
         // Report view adds one physical pixel around the image-list height.
         // Subtract it here so the native item rect matches the public 28px row
         // template exactly at every DPI.
@@ -3601,7 +3638,10 @@ void CreateSystemCheckBoxImages(HWND table) {
         TableScaledMetric(table, *state.theme, L"listItem", L"paddingX", 8.0f)
         + TableScaledMetric(table, *state.theme, L"checkbox", L"boxSize", 16.0f)
         + TableScaledMetric(table, *state.theme, L"checkbox", L"gap", 8.0f));
-    const int height = std::max(1, TableScaledMetric(table, *state.theme, L"listItem", L"height", 28.0f) - 1);
+    const int height = std::max(1, TableScaledMetric(
+        table, *state.theme, L"listItem",
+        state.tableTwoLineRows ? L"twoLineHeight" : L"height",
+        state.tableTwoLineRows ? 48.0f : 28.0f) - 1);
     HIMAGELIST images = ImageList_Create(width, height, ILC_COLOR32, 2, 0);
     if (!images) return;
 

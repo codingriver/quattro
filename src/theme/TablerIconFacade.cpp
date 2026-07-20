@@ -1,6 +1,8 @@
 #include "ThemedUi.h"
 
 #include "TablerIconManifest.h"
+#include "ThemedD2D.h"
+#include "ThemedGdiFallback.h"
 #include "Utilities.h"
 
 #include <algorithm>
@@ -45,9 +47,11 @@ bool DrawTablerIcon(
     TablerIconId id,
     COLORREF color,
     int fontHeight) {
-    if (!dc || !EnsureTablerIconFontLoaded(appDirectory)) {
+    if (!dc) {
         return false;
     }
+    const std::filesystem::path fontPath = ResolveFontPath(appDirectory);
+    if (!FileExists(fontPath)) return false;
     const wchar_t glyph = TablerIconGlyph(id);
     if (glyph == L'\0') {
         return false;
@@ -75,17 +79,21 @@ bool DrawTablerIcon(
         return false;
     }
 
-    const int oldBkMode = SetBkMode(dc, TRANSPARENT);
-    const COLORREF oldTextColor = SetTextColor(dc, color);
-    HGDIOBJ oldFont = SelectObject(dc, font);
     wchar_t text[2] = {glyph, L'\0'};
     RECT drawRect = rect;
-    DrawTextW(dc, text, 1, &drawRect, DT_SINGLELINE | DT_CENTER | DT_VCENTER | DT_NOCLIP);
-    SelectObject(dc, oldFont);
-    SetTextColor(dc, oldTextColor);
-    SetBkMode(dc, oldBkMode);
+    ThemedD2D::ScopedHdcPaint paint(
+        WindowFromDC(dc), dc, ThemedD2D::SurfaceKind::Transparent);
+    const UINT format = DT_SINGLELINE | DT_CENTER | DT_VCENTER | DT_NOCLIP | DT_NOPREFIX;
+    bool drawn = ThemedD2D::DrawGlyphFromFontFile(
+        dc, fontPath.c_str(), glyph, drawRect, color, static_cast<float>(resolvedHeight));
+    if (!drawn) {
+        drawn = EnsureTablerIconFontLoaded(appDirectory);
+        if (drawn) {
+            ThemedGdiFallback::DrawText(dc, font, text, 1, drawRect, format, color);
+        }
+    }
     DeleteObject(font);
-    return true;
+    return drawn;
 }
 
 HICON CreateTablerIconHandle(
@@ -94,7 +102,7 @@ HICON CreateTablerIconHandle(
     int fontHeight,
     COLORREF color) {
     constexpr int size = 64;
-    if (!EnsureTablerIconFontLoaded(appDirectory) || TablerIconGlyph(id) == L'\0') {
+    if (!FileExists(ResolveFontPath(appDirectory)) || TablerIconGlyph(id) == L'\0') {
         return nullptr;
     }
 
@@ -130,12 +138,15 @@ HICON CreateTablerIconHandle(
         return nullptr;
     }
     auto* argb = static_cast<std::uint32_t*>(pixels);
+    bool hasAlpha = false;
     for (int i = 0; i < size * size; ++i) {
-        if ((argb[i] & 0x00FFFFFFu) != 0) {
-            argb[i] |= 0xFF000000u;
+        hasAlpha = hasAlpha || (argb[i] & 0xFF000000u) != 0;
+    }
+    if (!hasAlpha) {
+        for (int i = 0; i < size * size; ++i) {
+            if ((argb[i] & 0x00FFFFFFu) != 0) argb[i] |= 0xFF000000u;
         }
     }
-
     ICONINFO iconInfo{};
     iconInfo.fIcon = TRUE;
     iconInfo.hbmColor = bitmap;

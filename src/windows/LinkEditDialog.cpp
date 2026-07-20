@@ -202,10 +202,10 @@ private:
                 }
                 return 0;
             case IdBrowsePathMenu: {
-                const UINT command = ThemedUi::ShowSplitButtonMenu(
+                const UINT command = windowUi_->ui().ShowSplitButtonMenu(
                     hwnd_,
                     pathBrowseSplit_.menu,
-                    {{IdBrowsePathFolder, L"选择文件夹"}});
+                    {{IdBrowsePathFolder, L"选择文件夹", true, TablerIconId::Folder}});
                 if (command != 0) {
                     SendMessageW(hwnd_, WM_COMMAND, MAKEWPARAM(command, BN_CLICKED), 0);
                 }

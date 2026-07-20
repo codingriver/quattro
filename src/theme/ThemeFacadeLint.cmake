@@ -27,6 +27,29 @@ foreach(SOURCE_FILE IN LISTS WINDOW_SOURCES)
         message(FATAL_ERROR
             "Theme facade violation: ${FILE_NAME} updates common control state through a low-level API. Use ThemedUi semantic state helpers.")
     endif()
+
+    # User-visible custom painting in business windows must go through the
+    # semantic ThemedUi/ThemedPaint facade. Keep Win32 paint lifecycle and
+    # bitmap-handle interop available, but reject direct visual GDI primitives.
+    set(GDI_SCAN_TEXT "${SOURCE_TEXT}")
+    string(REPLACE "renderTarget_->DrawTextW" "D2D_RENDER_TARGET_DRAW_TEXT" GDI_SCAN_TEXT "${GDI_SCAN_TEXT}")
+    string(REPLACE "ImageList/DrawIconEx" "IMAGE_LIST_ICON_BRIDGE" GDI_SCAN_TEXT "${GDI_SCAN_TEXT}")
+    string(REPLACE "D2D1::Ellipse" "D2D_ELLIPSE" GDI_SCAN_TEXT "${GDI_SCAN_TEXT}")
+    string(REPLACE "FillEllipse" "D2D_FILL_ELLIPSE" GDI_SCAN_TEXT "${GDI_SCAN_TEXT}")
+    string(REPLACE "FillRoundedRectangle" "D2D_FILL_ROUNDED_RECT" GDI_SCAN_TEXT "${GDI_SCAN_TEXT}")
+    string(REPLACE "DrawRoundedRectangle" "D2D_DRAW_ROUNDED_RECT" GDI_SCAN_TEXT "${GDI_SCAN_TEXT}")
+    string(REPLACE "FillRectangle" "D2D_FILL_RECT" GDI_SCAN_TEXT "${GDI_SCAN_TEXT}")
+    string(REPLACE "DrawRectangle" "D2D_DRAW_RECT" GDI_SCAN_TEXT "${GDI_SCAN_TEXT}")
+    string(REPLACE "MainWindow::FillRect" "MAIN_WINDOW_D2D_FILL_RECT" GDI_SCAN_TEXT "${GDI_SCAN_TEXT}")
+    string(REPLACE ".DrawPolyline" ".THEMED_DRAW_POLYLINE" GDI_SCAN_TEXT "${GDI_SCAN_TEXT}")
+    string(REGEX MATCH
+        "CreateSolidBrush[ ]*[(]|CreatePen[ ]*[(]|FrameRect[ ]*[(]|RoundRect[ ]*[(]|Rectangle[ ]*[(]|Ellipse[ ]*[(]|Polygon[ ]*[(]|Polyline[ ]*[(]|DrawTextW[ ]*[(]|TextOutW[ ]*[(]|ExtTextOutW[ ]*[(]|GradientFill[ ]*[(]|AlphaBlend[ ]*[(]|TransparentBlt[ ]*[(]|BitBlt[ ]*[(]|StretchBlt[ ]*[(]|DrawIconEx[ ]*[(]|DrawFrameControl[ ]*[(]|::FillRect[ ]*[(]|FillRect[ ]*[(][ ]*(dc|draw->hDC)"
+        DIRECT_VISUAL_GDI_MATCH
+        "${GDI_SCAN_TEXT}")
+    if(DIRECT_VISUAL_GDI_MATCH)
+        message(FATAL_ERROR
+            "Theme facade violation: ${FILE_NAME} draws user-visible pixels through GDI (${DIRECT_VISUAL_GDI_MATCH}). Use ThemedPaint; GDI is allowed only inside ThemedGdiFallback or an approved interop adapter.")
+    endif()
 endforeach()
 
 set(POPUP_MENU_CALL_SOURCES ${WINDOW_SOURCES} "${SOURCE_DIR}/src/services/ShellItemService.cpp")

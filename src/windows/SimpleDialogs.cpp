@@ -429,18 +429,6 @@ COLORREF ToColorRef(Color color) {
     return RGB(byte(color.r), byte(color.g), byte(color.b));
 }
 
-void FillRoundRect(HDC dc, RECT rect, int radius, COLORREF fill, COLORREF border, int borderWidth) {
-    HBRUSH brush = CreateSolidBrush(fill);
-    HPEN pen = CreatePen(PS_SOLID, std::max(1, borderWidth), border);
-    HGDIOBJ oldBrush = SelectObject(dc, brush);
-    HGDIOBJ oldPen = SelectObject(dc, pen);
-    RoundRect(dc, rect.left, rect.top, rect.right, rect.bottom, radius * 2, radius * 2);
-    SelectObject(dc, oldPen);
-    SelectObject(dc, oldBrush);
-    DeleteObject(pen);
-    DeleteObject(brush);
-}
-
 std::wstring FormatConfigPackageReportText(const ConfigPackageReport& report) {
     std::wstring text = report.message.empty() ? (report.ok ? L"操作完成。" : L"操作失败。") : report.message;
     if (report.groupsAdded > 0 || report.groupsMerged > 0 || report.tagsAdded > 0 ||
@@ -1124,20 +1112,16 @@ int EstimateMessageRows(const std::wstring& message, int width, int averageCharW
     return std::max(1, rows);
 }
 
-int MeasureMessageTextHeight(const std::wstring& message, int width) {
+int MeasureMessageTextHeight(const Theme& theme, const std::wstring& message, int width) {
     HFONT font = ThemedControls::CreateDialogFont();
     if (!font) {
         font = reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
     }
     HDC dc = GetDC(nullptr);
-    HFONT oldFont = reinterpret_cast<HFONT>(SelectObject(dc, font));
-    TEXTMETRICW textMetric{};
-    GetTextMetricsW(dc, &textMetric);
-    const int lineHeight = std::max(20, static_cast<int>(textMetric.tmHeight + textMetric.tmExternalLeading));
-    const int averageCharWidth = std::max(1, static_cast<int>(textMetric.tmAveCharWidth));
-    RECT rect{0, 0, std::max(1, width), 0};
-    DrawTextW(dc, message.c_str(), static_cast<int>(message.size()), &rect, DT_LEFT | DT_WORDBREAK | DT_EDITCONTROL | DT_NOPREFIX | DT_CALCRECT);
-    SelectObject(dc, oldFont);
+    ThemedPaint paint(nullptr, dc, theme, font);
+    const int lineHeight = std::max(20, static_cast<int>(theme.metric(L"text", L"textHeight", 20.0f)));
+    const int averageCharWidth = std::max(1, lineHeight / 2);
+    const SIZE measured = paint.MeasureText(message, std::max(1, width), true);
     ReleaseDC(nullptr, dc);
     if (font && font != GetStockObject(DEFAULT_GUI_FONT)) {
         DeleteObject(font);
@@ -1145,7 +1129,7 @@ int MeasureMessageTextHeight(const std::wstring& message, int width) {
     const int editRowHeight = lineHeight + std::max(4, lineHeight / 4);
     const int controlPadding = lineHeight + std::max(8, lineHeight / 2);
     const int estimatedHeight = EstimateMessageRows(message, width, averageCharWidth) * editRowHeight + controlPadding;
-    return std::max(lineHeight, std::max(static_cast<int>(rect.bottom - rect.top), estimatedHeight));
+    return std::max(lineHeight, std::max(static_cast<int>(measured.cy), estimatedHeight));
 }
 
 HMODULE RichEditLibrary() {
@@ -1159,17 +1143,6 @@ public:
         : owner_(owner), instance_(instance), theme_(theme), message_(std::move(message)), title_(std::move(title)), flags_(flags) {}
 
     int Run() {
-        WNDCLASSEXW wc{};
-        wc.cbSize = sizeof(wc);
-        wc.lpfnWndProc = ThemedMessageDialog::Proc;
-        wc.hInstance = instance_;
-        wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-        wc.hIcon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_QUATTRO_APP_ICON));
-        wc.hIconSm = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_QUATTRO_APP_ICON));
-        wc.hbrBackground = nullptr;
-        wc.lpszClassName = L"QuattroThemedMessageDialog";
-        RegisterClassExW(&wc);
-
         RECT workArea{};
         SystemParametersInfoW(SPI_GETWORKAREA, 0, &workArea, 0);
 
@@ -1177,39 +1150,25 @@ public:
         const DialogLayoutMetrics layout = GetDialogLayoutMetrics(theme_, DialogLayoutKind::Mini);
         const int buttonHeight = ThemedControls::ButtonHeight(theme_);
         const int textWidth = width_ - layout.contentInsetX * 2;
-        const int textHeight = MeasureMessageTextHeight(message_, textWidth);
+        const int textHeight = MeasureMessageTextHeight(theme_, message_, textWidth);
         const int availableHeight = std::max(260, static_cast<int>(workArea.bottom - workArea.top) * 3 / 4);
         const int maxTextHeight = std::max(80, availableHeight - layout.contentInsetY - layout.footerGap - buttonHeight - layout.footerInsetY);
         textNeedsScroll_ = textHeight + 4 > maxTextHeight;
         textHeight_ = std::min(std::max(32, textHeight + 4), maxTextHeight);
         const int clientHeight = std::max(150, layout.contentInsetY + textHeight_ + layout.footerGap + buttonHeight + layout.footerInsetY);
-        const DWORD exStyle = WS_EX_DLGMODALFRAME | WS_EX_WINDOWEDGE;
-        const DWORD style = WS_CAPTION | WS_SYSMENU | WS_POPUP | WS_CLIPCHILDREN;
-        RECT windowRect{0, 0, width_, clientHeight};
-        AdjustWindowRectEx(&windowRect, style, FALSE, exStyle);
-        const int windowWidth = windowRect.right - windowRect.left;
-        const int windowHeight = windowRect.bottom - windowRect.top;
-
-        const POINT position = CenterWindowOnOwnerMonitor(owner_, windowWidth, windowHeight);
-
-        hwnd_ = CreateWindowExW(
-            exStyle,
-            wc.lpszClassName,
-            title_.empty() ? L"提示" : title_.c_str(),
-            style,
-            position.x,
-            position.y,
-            windowWidth,
-            windowHeight,
-            owner_,
-            nullptr,
-            instance_,
-            this);
+        const std::wstring className = L"QuattroThemedMessageDialog";
+        HICON icon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_QUATTRO_APP_ICON));
+        auto options = ThemedWindowUi::DialogOptions(
+            instance_, owner_, className.c_str(), title_.empty() ? L"提示" : title_.c_str(),
+            ThemedMessageDialog::Proc, this, icon, icon);
+        options.clientWidth = width_;
+        options.clientHeight = clientHeight;
+        hwnd_ = ThemedWindowUi::CreateWindowHandle(options);
         if (!hwnd_) {
             return MessageBoxW(owner_, message_.c_str(), title_.c_str(), flags_);
         }
 
-        ownerWasEnabled_ = ShowModalWindow(owner_, hwnd_);
+        windowUi_->ShowModal();
         UpdateWindow(hwnd_);
 
         MSG message{};
@@ -1219,7 +1178,6 @@ public:
                 DispatchMessageW(&message);
             }
         }
-        RestoreModalOwner(owner_, ownerWasEnabled_, ownerRestored_);
         return result_;
     }
 
@@ -1421,22 +1379,22 @@ private:
     }
 
     LRESULT Handle(UINT message, WPARAM wParam, LPARAM lParam) {
+        LRESULT commonResult = 0;
+        if (ThemedWindowUi::HandleCommonMessage(windowUi_, message, wParam, lParam, commonResult)) {
+            return commonResult;
+        }
         switch (message) {
         case WM_CREATE: {
-            font_ = ThemedControls::CreateDialogFont();
-            if (!font_) {
-                font_ = reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
-            } else {
-                ownsFont_ = true;
-            }
-            backgroundBrush_ = CreateSolidBrush(ToColorRef(theme_.color(L"dialog", L"normal", L"bg")));
-            const DialogLayoutMetrics layout = GetDialogLayoutMetrics(theme_, DialogLayoutKind::Mini);
             RECT client{};
             GetClientRect(hwnd_, &client);
             const int clientWidth = client.right - client.left;
             const int clientHeight = client.bottom - client.top;
+            windowUi_ = std::make_unique<ThemedWindowUi>(
+                instance_, owner_, hwnd_, theme_, DialogLayoutKind::Mini, clientWidth, clientHeight);
+            font_ = windowUi_->font();
+            const DialogLayoutMetrics layout = windowUi_->ui().layout();
             CreateMessageTextControl(layout, clientWidth);
-            const ThemedUi ui(instance_, hwnd_, theme_, font_, DialogLayoutKind::Mini, clientWidth, clientHeight);
+            const ThemedUi ui = windowUi_->ui();
             if (YesNoCancel()) {
                 ui.FooterButton(IDYES, L"是", 0, 3, true, true);
                 ui.FooterButton(IDNO, L"否", 1, 3);
@@ -1455,41 +1413,15 @@ private:
         case WM_PAINT: {
             PAINTSTRUCT ps{};
             HDC dc = BeginPaint(hwnd_, &ps);
-            RECT rect{};
-            GetClientRect(hwnd_, &rect);
-            FillRect(dc, &rect, backgroundBrush_ ? backgroundBrush_ : reinterpret_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
+            windowUi_->FillBackground(dc);
             EndPaint(hwnd_, &ps);
             return 0;
         }
-        case WM_ERASEBKGND:
-            return 1;
         case WM_NOTIFY:
             if (HandleMessageTextNotify(lParam)) {
                 return TRUE;
             }
-            {
-                LRESULT result = 0;
-                if (ThemedUi::HandleParentMessage(theme_, message, wParam, lParam, result)) {
-                    return result;
-                }
-            }
             return 0;
-        case WM_CTLCOLOREDIT:
-        case WM_CTLCOLORSTATIC:
-            if (reinterpret_cast<HWND>(lParam) == messageEdit_) {
-                HDC dc = reinterpret_cast<HDC>(wParam);
-                SetBkMode(dc, TRANSPARENT);
-                SetTextColor(dc, ToColorRef(theme_.color(L"label", L"normal", L"text")));
-                return reinterpret_cast<LRESULT>(backgroundBrush_ ? backgroundBrush_ : GetStockObject(WHITE_BRUSH));
-            }
-            return DefWindowProcW(hwnd_, message, wParam, lParam);
-        case WM_DRAWITEM: {
-            LRESULT result = 0;
-            if (ThemedUi::HandleParentMessage(theme_, message, wParam, lParam, result)) {
-                return result;
-            }
-            return 0;
-        }
         case WM_COMMAND:
             switch (LOWORD(wParam)) {
             case IDYES:
@@ -1510,17 +1442,10 @@ private:
         case WM_CLOSE:
             Close(YesNo() ? IDNO : IDCANCEL);
             return 0;
-        case WM_DESTROY:
-            RestoreModalOwner(owner_, ownerWasEnabled_, ownerRestored_);
-            if (ownsFont_ && font_) {
-                DeleteObject(font_);
-                font_ = nullptr;
-            }
-            if (backgroundBrush_) {
-                DeleteObject(backgroundBrush_);
-                backgroundBrush_ = nullptr;
-            }
+        case WM_NCDESTROY:
             done_ = true;
+            hwnd_ = nullptr;
+            font_ = nullptr;
             return 0;
         default:
             return DefWindowProcW(hwnd_, message, wParam, lParam);
@@ -1540,12 +1465,9 @@ private:
     int textHeight_ = 32;
     int result_ = IDOK;
     HFONT font_ = nullptr;
-    HBRUSH backgroundBrush_ = nullptr;
+    std::unique_ptr<ThemedWindowUi> windowUi_;
     bool messageTextIsRichEdit_ = false;
     bool textNeedsScroll_ = false;
-    bool ownsFont_ = false;
-    bool ownerWasEnabled_ = false;
-    bool ownerRestored_ = false;
     bool done_ = false;
 };
 
@@ -1839,43 +1761,24 @@ public:
     bool Run() {
         const std::wstring className = L"QuattroWebDavBackupSelectionDialog_" +
             std::to_wstring(GetCurrentProcessId()) + L"_" + std::to_wstring(GetTickCount64());
-        WNDCLASSEXW wc{};
-        wc.cbSize = sizeof(wc);
-        wc.lpfnWndProc = WebDavBackupSelectionDialog::Proc;
-        wc.hInstance = instance_;
-        wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-        wc.hIcon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_QUATTRO_APP_ICON));
-        wc.hIconSm = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_QUATTRO_APP_ICON));
-        wc.hbrBackground = nullptr;
-        wc.lpszClassName = className.c_str();
-        if (!RegisterClassExW(&wc)) {
-            const DWORD error = GetLastError();
-            if (error != ERROR_CLASS_ALREADY_EXISTS) {
-                WriteAppLog(L"WebDAV 备份选择窗口类注册失败: " + FormatLastError(error));
-                return false;
-            }
-        }
-
-        const POINT position = OffsetWindowFromOwnerOnMonitor(owner_, 560, 390, 60, 80);
-        hwnd_ = CreateWindowExW(
-            WS_EX_DLGMODALFRAME | WS_EX_WINDOWEDGE,
-            className.c_str(),
-            L"选择 WebDAV 备份",
-            WS_CAPTION | WS_SYSMENU | WS_POPUP | WS_CLIPCHILDREN,
-            position.x,
-            position.y,
-            560,
-            390,
-            owner_,
-            nullptr,
-            instance_,
-            this);
+        auto options = ThemedWindowUi::DialogOptions(
+            instance_, owner_, className.c_str(), L"选择 WebDAV 备份",
+            WebDavBackupSelectionDialog::Proc, this,
+            LoadIconW(instance_, MAKEINTRESOURCEW(IDI_QUATTRO_APP_ICON)),
+            LoadIconW(instance_, MAKEINTRESOURCEW(IDI_QUATTRO_APP_ICON)));
+        options.clientWidth = kThemedDetailsClientWidth;
+        options.clientHeight = kThemedDetailsClientHeight;
+        options.placement = ThemedWindowPlacement::OffsetOwner;
+        options.offsetX = 60;
+        options.offsetY = 80;
+        std::wstring createError;
+        hwnd_ = ThemedWindowUi::CreateWindowHandle(options, &createError);
         if (!hwnd_) {
-            WriteAppLog(L"WebDAV 备份选择窗口创建失败: " + FormatLastError(GetLastError()));
+            WriteAppLog(L"WebDAV 备份选择窗口创建失败: " + createError);
             return false;
         }
 
-        ownerWasEnabled_ = ShowModalWindow(owner_, hwnd_);
+        windowUi_->ShowModal();
         UpdateWindow(hwnd_);
 
         MSG message{};
@@ -1885,7 +1788,6 @@ public:
                 DispatchMessageW(&message);
             }
         }
-        RestoreModalOwner(owner_, ownerWasEnabled_, ownerRestored_);
         return accepted_;
     }
 
@@ -1903,69 +1805,26 @@ private:
         return dialog ? dialog->Handle(message, wParam, lParam) : DefWindowProcW(hwnd, message, wParam, lParam);
     }
 
-    int TextWidth(HDC dc, const std::wstring& text) const {
-        SIZE size{};
-        GetTextExtentPoint32W(dc, text.c_str(), static_cast<int>(text.size()), &size);
-        return size.cx;
-    }
-
-    int BackupSizeColumnWidth(HDC dc) const {
-        int width = TextWidth(dc, L"888 KB");
-        for (const auto& backup : backups_) {
-            width = std::max(width, TextWidth(dc, FormatFileSize(backup.size)));
+    void PopulateTable() {
+        std::vector<ThemedTableRow> rows;
+        rows.reserve(backups_.size());
+        for (std::size_t index = 0; index < backups_.size(); ++index) {
+            const auto& backup = backups_[index];
+            ThemedTableRow row;
+            row.key = static_cast<std::intptr_t>(index);
+            row.cells = {
+                ThemedTableCell{backup.name},
+                ThemedTableCell{FormatFileSize(backup.size)},
+                ThemedTableCell{FormatBackupModifiedDate(backup.lastModified)},
+            };
+            rows.push_back(std::move(row));
         }
-        return width + 12;
-    }
-
-    int BackupDateColumnWidth(HDC dc) const {
-        int width = TextWidth(dc, L"2026年12月30日 23:59");
-        for (const auto& backup : backups_) {
-            width = std::max(width, TextWidth(dc, FormatBackupModifiedDate(backup.lastModified)));
-        }
-        return width + 12;
-    }
-
-    bool DrawBackupListItem(const DRAWITEMSTRUCT* draw) {
-        if (!draw || draw->CtlID != ID_WEBDAV_BACKUP_LIST) {
-            return false;
-        }
-
-        RECT rect = draw->rcItem;
-        const bool selected = (draw->itemState & ODS_SELECTED) != 0;
-        const bool focused = (draw->itemState & ODS_FOCUS) != 0;
-        const wchar_t* state = selected ? L"selected" : (focused ? L"focused" : L"normal");
-        HBRUSH brush = CreateSolidBrush(ToColorRef(theme_.color(selected ? L"listItem" : L"list", state, L"bg")));
-        FillRect(draw->hDC, &rect, brush);
-        DeleteObject(brush);
-
-        if (draw->itemID == static_cast<UINT>(-1) || draw->itemID >= backups_.size()) {
-            return true;
-        }
-
-        const auto& backup = backups_[draw->itemID];
-        const std::wstring sizeText = FormatFileSize(backup.size);
-        const std::wstring dateText = FormatBackupModifiedDate(backup.lastModified);
-        RECT textRect = ThemedControls::ListItemTextRect(theme_, rect);
-        const int gap = 10;
-        const int dateWidth = BackupDateColumnWidth(draw->hDC);
-        const int sizeWidth = BackupSizeColumnWidth(draw->hDC);
-        RECT dateRect{textRect.right - dateWidth, textRect.top, textRect.right, textRect.bottom};
-        RECT sizeRect{dateRect.left - gap - sizeWidth, textRect.top, dateRect.left - gap, textRect.bottom};
-        RECT nameRect{textRect.left, textRect.top, sizeRect.left - gap, textRect.bottom};
-        if (nameRect.right < nameRect.left) {
-            nameRect.right = nameRect.left;
-        }
-
-        SetBkMode(draw->hDC, TRANSPARENT);
-        SetTextColor(draw->hDC, ToColorRef(theme_.color(selected ? L"listItem" : L"list", state, L"text")));
-        DrawTextW(draw->hDC, backup.name.c_str(), static_cast<int>(backup.name.size()), &nameRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-        DrawTextW(draw->hDC, sizeText.c_str(), static_cast<int>(sizeText.size()), &sizeRect, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
-        DrawTextW(draw->hDC, dateText.c_str(), static_cast<int>(dateText.size()), &dateRect, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
-        return true;
+        ThemedUi::SetTableRows(table_, rows);
+        if (!rows.empty()) ThemedUi::SetTableSelectedIndex(table_, 0);
     }
 
     void AcceptSelection() {
-        const int selected = static_cast<int>(SendMessageW(list_, LB_GETCURSEL, 0, 0));
+        const int selected = ThemedUi::TableSelectedIndex(table_);
         if (selected < 0 || selected >= static_cast<int>(backups_.size())) {
             ShowThemedMessageBox(hwnd_, instance_, theme_, L"请选择一个备份文件。", L"选择 WebDAV 备份", MB_OK | MB_ICONWARNING);
             return;
@@ -1977,71 +1836,56 @@ private:
     }
 
     LRESULT Handle(UINT message, WPARAM wParam, LPARAM lParam) {
+        LRESULT commonResult = 0;
+        if (ThemedWindowUi::HandleCommonMessage(windowUi_, message, wParam, lParam, commonResult)) {
+            return commonResult;
+        }
         switch (message) {
         case WM_CREATE: {
-            font_ = ThemedControls::CreateDialogFont();
-            if (!font_) {
-                font_ = reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
-            } else {
-                ownsFont_ = true;
-            }
-            backgroundBrush_ = CreateSolidBrush(ToColorRef(theme_.color(L"dialog", L"normal", L"bg")));
-            listBrush_ = CreateSolidBrush(ToColorRef(theme_.color(L"list", L"normal", L"bg")));
             RECT client{};
             GetClientRect(hwnd_, &client);
-            const ThemedUi ui(instance_, hwnd_, theme_, font_, DialogLayoutKind::Standard, client.right - client.left, client.bottom - client.top);
-            ui.Label(L"云端备份记录", 24, 20, 180);
-            list_ = ui.ListBox(ID_WEBDAV_BACKUP_LIST, 24, 48, 500, 238);
-            for (const auto& backup : backups_) {
-                SendMessageW(list_, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(FormatBackupListItem(backup).c_str()));
-            }
-            if (!backups_.empty()) {
-                SendMessageW(list_, LB_SETCURSEL, 0, 0);
-            }
-
-            ui.Button(IDOK, L"下载", 360, 310, ThemedButtonRole::Primary, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, 76, true);
-            ui.Button(IDCANCEL, L"取消", 452, 310, ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, 76);
-            SetFocus(list_);
+            windowUi_ = std::make_unique<ThemedWindowUi>(
+                instance_, owner_, hwnd_, theme_, DialogLayoutKind::Standard,
+                client.right - client.left, client.bottom - client.top);
+            const ThemedUi& ui = windowUi_->ui();
+            const auto& layout = ui.layout();
+            const int labelY = ui.contentTop();
+            ui.Label(L"云端备份记录", ui.contentLeft(), labelY, ui.contentWidth());
+            const int tableTop = labelY + ui.labelHeight() + layout.sectionGap;
+            const int footerTop = layout.FooterButtonY(ui.clientHeight(), ui.footerButtonHeight());
+            const RECT tableFrame{
+                ui.contentLeft(), tableTop, ui.contentLeft() + ui.contentWidth(),
+                std::max(tableTop + ui.tableHeightForRows(1, true), footerTop - layout.footerGap)};
+            const std::vector<ThemedTableColumn> columns = {
+                {L"name", L"文件名", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Remaining},
+                {L"size", L"大小", ThemedTableColumnAlign::End, ThemedTableColumnWidth::Content},
+                {L"modified", L"修改时间", ThemedTableColumnAlign::End, ThemedTableColumnWidth::Content},
+            };
+            table_ = ui.Table(ID_WEBDAV_BACKUP_LIST, tableFrame, columns);
+            PopulateTable();
+            ui.FooterButton(IDOK, L"下载", 0, 2, true, true);
+            ui.FooterButton(IDCANCEL, L"取消", 1, 2);
+            SetFocus(table_);
             return 0;
         }
         case WM_PAINT: {
             PAINTSTRUCT ps{};
             HDC dc = BeginPaint(hwnd_, &ps);
-            RECT rect{};
-            GetClientRect(hwnd_, &rect);
-            FillRect(dc, &rect, backgroundBrush_ ? backgroundBrush_ : reinterpret_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
-            const RECT listFrame{22, 46, 526, 288};
-            ThemedControls::DrawListFrame(theme_, dc, listFrame, list_);
+            windowUi_->FillBackground(dc);
+            windowUi_->DrawRegisteredTableFrames(dc);
             EndPaint(hwnd_, &ps);
             return 0;
         }
-        case WM_ERASEBKGND:
-            return 1;
-        case WM_CTLCOLORLISTBOX: {
-            HDC dc = reinterpret_cast<HDC>(wParam);
-            SetTextColor(dc, ToColorRef(theme_.color(L"list", L"normal", L"text")));
-            SetBkColor(dc, ToColorRef(theme_.color(L"list", L"normal", L"bg")));
-            return reinterpret_cast<LRESULT>(listBrush_ ? listBrush_ : GetStockObject(WHITE_BRUSH));
-        }
-        case WM_CTLCOLORSTATIC: {
-            HDC dc = reinterpret_cast<HDC>(wParam);
-            SetBkMode(dc, TRANSPARENT);
-            SetTextColor(dc, ToColorRef(theme_.color(L"label", L"normal", L"text")));
-            return reinterpret_cast<LRESULT>(backgroundBrush_ ? backgroundBrush_ : GetStockObject(WHITE_BRUSH));
-        }
-        case WM_DRAWITEM:
-            if (DrawBackupListItem(reinterpret_cast<const DRAWITEMSTRUCT*>(lParam))) {
-                return TRUE;
-            }
-            if (ThemedControls::Draw(theme_, reinterpret_cast<const DRAWITEMSTRUCT*>(lParam))) {
-                return TRUE;
-            }
-            return 0;
-        case WM_COMMAND:
-            if (LOWORD(wParam) == ID_WEBDAV_BACKUP_LIST && HIWORD(wParam) == LBN_DBLCLK) {
+        case WM_NOTIFY: {
+            ThemedTableEvent event;
+            if (ThemedUi::DecodeTableEvent(table_, lParam, event) &&
+                event.kind == ThemedTableEventKind::Activated) {
                 AcceptSelection();
                 return 0;
             }
+            return 0;
+        }
+        case WM_COMMAND:
             if (LOWORD(wParam) == IDOK) {
                 AcceptSelection();
                 return 0;
@@ -2056,21 +1900,9 @@ private:
             done_ = true;
             DestroyWindow(hwnd_);
             return 0;
-        case WM_DESTROY:
+        case WM_NCDESTROY:
             done_ = true;
-            RestoreModalOwner(owner_, ownerWasEnabled_, ownerRestored_);
-            if (backgroundBrush_) {
-                DeleteObject(backgroundBrush_);
-                backgroundBrush_ = nullptr;
-            }
-            if (listBrush_) {
-                DeleteObject(listBrush_);
-                listBrush_ = nullptr;
-            }
-            if (ownsFont_ && font_) {
-                DeleteObject(font_);
-                font_ = nullptr;
-            }
+            hwnd_ = nullptr;
             return 0;
         default:
             return DefWindowProcW(hwnd_, message, wParam, lParam);
@@ -2080,16 +1912,11 @@ private:
     HWND owner_ = nullptr;
     HINSTANCE instance_ = nullptr;
     HWND hwnd_ = nullptr;
-    HWND list_ = nullptr;
-    HFONT font_ = nullptr;
+    HWND table_ = nullptr;
     const Theme& theme_;
     const std::vector<WebDavRemoteFile>& backups_;
     std::wstring& selectedName_;
-    HBRUSH backgroundBrush_ = nullptr;
-    HBRUSH listBrush_ = nullptr;
-    bool ownsFont_ = false;
-    bool ownerWasEnabled_ = false;
-    bool ownerRestored_ = false;
+    std::unique_ptr<ThemedWindowUi> windowUi_;
     bool accepted_ = false;
     bool done_ = false;
 };

@@ -84,6 +84,18 @@ bool DrawPolyline(
     float strokeWidth);
 
 bool DrawIcon(HDC dc, HICON icon, RECT destination, bool disabled = false);
+bool DrawBitmap(HDC dc, HBITMAP bitmap, RECT destination, float opacity = 1.0f);
+
+// Draws one glyph from an application-owned font file without relying on the
+// DirectWrite system font collection. This is required for private/subset
+// fonts that are intentionally not installed for the current user.
+bool DrawGlyphFromFontFile(
+    HDC dc,
+    const wchar_t* fontPath,
+    wchar_t glyph,
+    const RECT& rect,
+    COLORREF color,
+    float emSize);
 
 bool DrawTextLayout(
     HDC dc,

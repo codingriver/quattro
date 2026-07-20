@@ -110,6 +110,37 @@ void DrawIcon(HDC dc, HICON icon, RECT destination, bool disabled) {
     }
 }
 
+bool DrawBitmap(HDC dc, HBITMAP bitmap, RECT destination, bool disabled) {
+    if (!dc || !bitmap) return false;
+    BITMAP source{};
+    if (GetObjectW(bitmap, sizeof(source), &source) != sizeof(source) ||
+        source.bmWidth <= 0 || source.bmHeight == 0) {
+        return false;
+    }
+    HDC memory = CreateCompatibleDC(dc);
+    if (!memory) return false;
+    HGDIOBJ oldBitmap = SelectObject(memory, bitmap);
+    BLENDFUNCTION blend{};
+    blend.BlendOp = AC_SRC_OVER;
+    blend.SourceConstantAlpha = disabled ? 120 : 255;
+    blend.AlphaFormat = AC_SRC_ALPHA;
+    const BOOL drawn = AlphaBlend(
+        dc,
+        destination.left,
+        destination.top,
+        destination.right - destination.left,
+        destination.bottom - destination.top,
+        memory,
+        0,
+        0,
+        source.bmWidth,
+        std::abs(source.bmHeight),
+        blend);
+    SelectObject(memory, oldBitmap);
+    DeleteDC(memory);
+    return drawn != FALSE;
+}
+
 bool ApplyRoundedWindowRegion(HWND hwnd, SIZE size, int radius, bool redraw) {
     if (!hwnd || size.cx <= 0 || size.cy <= 0 || radius <= 0) return false;
     HRGN region = CreateRoundRectRgn(

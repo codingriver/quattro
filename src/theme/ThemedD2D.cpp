@@ -11,6 +11,7 @@
 #include <cwchar>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace ThemedD2D {
 namespace {
@@ -56,6 +57,10 @@ public:
             SafeRelease(entry.format);
         }
         textFormats_.clear();
+        for (auto& [_, face] : fontFaces_) {
+            SafeRelease(face);
+        }
+        fontFaces_.clear();
         SafeRelease(dwriteFactory_);
         SafeRelease(d2dFactory_);
     }
@@ -79,11 +84,36 @@ public:
     }
 
     bool Bind(HWND hwnd, HDC dc, SurfaceKind surface, RECT& boundRect) {
-        (void)hwnd;
         if (!dc || FallbackForced() || !EnsureFactories()) {
             return false;
         }
-        if (target_ && targetSurface_ != surface) {
+        // Real window DCs must bind the full client surface. BeginPaint can
+        // expose only the current update-region bounds through GetClipBox;
+        // rebinding a DCRenderTarget to that smaller box may clear the rest of
+        // the window on some drivers. Memory-DC screenshot probes have no HWND
+        // and remain authoritative through their explicit clip box.
+        RECT rect{};
+        HWND dcWindow = WindowFromDC(dc);
+        if (dcWindow) {
+            if (!GetClientRect(dcWindow, &rect) || rect.right <= rect.left || rect.bottom <= rect.top) {
+                return false;
+            }
+        } else if (GetClipBox(dc, &rect) == ERROR || rect.right <= rect.left || rect.bottom <= rect.top) {
+            return false;
+        }
+        HWND surfaceWindow = WindowFromDC(dc);
+        if (!surfaceWindow) surfaceWindow = hwnd;
+        const bool changedSurface = target_ && targetSurface_ != surface;
+        const bool changedWindow = target_ && surfaceWindow != boundWindow_ && (surfaceWindow || boundWindow_);
+        // A new BeginPaint/PrintWindow surface may reuse the same numeric HWND
+        // after the previous window was destroyed. Treat a changed HDC as a
+        // new target even when WindowFromDC reports the same HWND value; stale
+        // DCRenderTarget state otherwise leaves part of the new surface black.
+        const bool changedDc = target_ && boundDc_ && boundDc_ != dc;
+        const bool changedRect = target_ &&
+            (rect.left != boundRect_.left || rect.top != boundRect_.top ||
+             rect.right != boundRect_.right || rect.bottom != boundRect_.bottom);
+        if (changedSurface || changedWindow || changedDc || changedRect) {
             DiscardDeviceResources();
         }
         if (!target_) {
@@ -103,22 +133,13 @@ public:
             targetSurface_ = surface;
         }
 
-        // The HDC is authoritative for the paint surface. Screenshot probes
-        // intentionally draw a real owner-draw HWND into a memory DC at an
-        // arbitrary destination rectangle; binding that DC to the HWND client
-        // rect would clip every translated control outside its native bounds.
-        RECT rect{};
-        if (GetClipBox(dc, &rect) == ERROR || rect.right <= rect.left || rect.bottom <= rect.top) {
-            HWND targetWindow = WindowFromDC(dc);
-            if (!targetWindow || !GetClientRect(targetWindow, &rect) ||
-                rect.right <= rect.left || rect.bottom <= rect.top) {
-                return false;
-            }
-        }
         if (FAILED(target_->BindDC(dc, &rect))) {
             DiscardDeviceResources();
             return false;
         }
+        boundWindow_ = surfaceWindow;
+        boundDc_ = dc;
+        boundRect_ = rect;
         boundRect = rect;
         return true;
     }
@@ -190,6 +211,36 @@ public:
         return format;
     }
 
+    IDWriteFontFace* FontFaceFromFile(const wchar_t* path) {
+        if (!path || !*path || !EnsureFactories()) return nullptr;
+        const std::wstring key(path);
+        auto found = fontFaces_.find(key);
+        if (found != fontFaces_.end()) return found->second;
+
+        IDWriteFontFile* file = nullptr;
+        if (FAILED(dwriteFactory_->CreateFontFileReference(path, nullptr, &file)) || !file) {
+            return nullptr;
+        }
+        BOOL supported = FALSE;
+        DWRITE_FONT_FILE_TYPE fileType = DWRITE_FONT_FILE_TYPE_UNKNOWN;
+        DWRITE_FONT_FACE_TYPE faceType = DWRITE_FONT_FACE_TYPE_UNKNOWN;
+        UINT32 faceCount = 0;
+        const HRESULT analyze = file->Analyze(&supported, &fileType, &faceType, &faceCount);
+        if (FAILED(analyze) || !supported || faceCount == 0) {
+            SafeRelease(file);
+            return nullptr;
+        }
+
+        IDWriteFontFace* face = nullptr;
+        IDWriteFontFile* files[]{file};
+        const HRESULT created = dwriteFactory_->CreateFontFace(
+            faceType, 1, files, 0, DWRITE_FONT_SIMULATIONS_NONE, &face);
+        SafeRelease(file);
+        if (FAILED(created) || !face) return nullptr;
+        fontFaces_[key] = face;
+        return face;
+    }
+
     void DiscardDeviceResources() {
         for (auto& [_, brush] : brushes_) {
             SafeRelease(brush);
@@ -197,6 +248,9 @@ public:
         brushes_.clear();
         SafeRelease(roundedStrokeStyle_);
         SafeRelease(target_);
+        boundWindow_ = nullptr;
+        boundDc_ = nullptr;
+        boundRect_ = {};
     }
 
 private:
@@ -204,10 +258,14 @@ private:
     ID2D1Factory* d2dFactory_ = nullptr;
     IDWriteFactory* dwriteFactory_ = nullptr;
     ID2D1DCRenderTarget* target_ = nullptr;
+    HWND boundWindow_ = nullptr;
+    HDC boundDc_ = nullptr;
+    RECT boundRect_{};
     SurfaceKind targetSurface_ = SurfaceKind::Opaque;
     ID2D1StrokeStyle* roundedStrokeStyle_ = nullptr;
     std::unordered_map<std::uint32_t, ID2D1SolidColorBrush*> brushes_;
     std::unordered_map<std::wstring, TextFormatEntry> textFormats_;
+    std::unordered_map<std::wstring, IDWriteFontFace*> fontFaces_;
 };
 
 thread_local Runtime g_runtime;
@@ -518,6 +576,105 @@ bool DrawIcon(HDC dc, HICON icon, RECT destination, bool disabled) {
     DeleteObject(bitmap);
     DeleteDC(memory);
     return rendered;
+}
+
+bool DrawBitmap(HDC dc, HBITMAP bitmap, RECT destination, float opacity) {
+    if (!IsActive(dc) || !bitmap) return false;
+    BITMAP source{};
+    if (GetObjectW(bitmap, sizeof(source), &source) != sizeof(source) ||
+        source.bmWidth <= 0 || source.bmHeight == 0) {
+        return false;
+    }
+    const int width = source.bmWidth;
+    const int height = std::abs(source.bmHeight);
+    BITMAPINFO info{};
+    info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    info.bmiHeader.biWidth = width;
+    info.bmiHeader.biHeight = -height;
+    info.bmiHeader.biPlanes = 1;
+    info.bmiHeader.biBitCount = 32;
+    info.bmiHeader.biCompression = BI_RGB;
+    std::vector<std::uint32_t> pixels(static_cast<std::size_t>(width) * static_cast<std::size_t>(height));
+    HDC memory = CreateCompatibleDC(dc);
+    if (!memory || GetDIBits(
+            memory, bitmap, 0, static_cast<UINT>(height), pixels.data(), &info, DIB_RGB_COLORS) == 0) {
+        if (memory) DeleteDC(memory);
+        return false;
+    }
+    DeleteDC(memory);
+
+    ID2D1Bitmap* d2dBitmap = nullptr;
+    const HRESULT hr = g_activePaint->target->CreateBitmap(
+        D2D1::SizeU(static_cast<UINT32>(width), static_cast<UINT32>(height)),
+        pixels.data(),
+        static_cast<UINT32>(width * 4),
+        D2D1::BitmapProperties(
+            D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED),
+            96.0f,
+            96.0f),
+        &d2dBitmap);
+    if (FAILED(hr) || !d2dBitmap) return false;
+    g_activePaint->target->DrawBitmap(
+        d2dBitmap,
+        RectF(destination),
+        std::clamp(opacity, 0.0f, 1.0f),
+        D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+    SafeRelease(d2dBitmap);
+    return true;
+}
+
+bool DrawGlyphFromFontFile(
+    HDC dc,
+    const wchar_t* fontPath,
+    wchar_t glyph,
+    const RECT& rect,
+    COLORREF color,
+    float emSize) {
+    if (!IsActive(dc) || !fontPath || !*fontPath || glyph == L'\0' || emSize <= 0.0f) {
+        return false;
+    }
+    IDWriteFontFace* face = g_runtime.FontFaceFromFile(fontPath);
+    ID2D1SolidColorBrush* brush = g_runtime.Brush(color);
+    if (!face || !brush) return false;
+
+    const UINT32 codePoint = static_cast<UINT32>(glyph);
+    UINT16 glyphIndex = 0;
+    if (FAILED(face->GetGlyphIndicesW(&codePoint, 1, &glyphIndex)) || glyphIndex == 0) {
+        return false;
+    }
+
+    DWRITE_FONT_METRICS fontMetrics{};
+    DWRITE_GLYPH_METRICS glyphMetrics{};
+    face->GetMetrics(&fontMetrics);
+    if (fontMetrics.designUnitsPerEm == 0 ||
+        FAILED(face->GetDesignGlyphMetrics(&glyphIndex, 1, &glyphMetrics, FALSE))) {
+        return false;
+    }
+    const float scale = emSize / static_cast<float>(fontMetrics.designUnitsPerEm);
+    const float inkWidth = std::max(
+        0.0f,
+        static_cast<float>(glyphMetrics.advanceWidth - glyphMetrics.leftSideBearing - glyphMetrics.rightSideBearing) * scale);
+    const float inkHeight = std::max(
+        0.0f,
+        static_cast<float>(glyphMetrics.advanceHeight - glyphMetrics.topSideBearing - glyphMetrics.bottomSideBearing) * scale);
+    const float centerX = (static_cast<float>(rect.left) + static_cast<float>(rect.right)) * 0.5f;
+    const float centerY = (static_cast<float>(rect.top) + static_cast<float>(rect.bottom)) * 0.5f;
+    const D2D1_POINT_2F baseline{
+        centerX - inkWidth * 0.5f - static_cast<float>(glyphMetrics.leftSideBearing) * scale,
+        centerY - inkHeight * 0.5f +
+            static_cast<float>(glyphMetrics.verticalOriginY - glyphMetrics.topSideBearing) * scale};
+    const DWRITE_GLYPH_RUN run{
+        face,
+        emSize,
+        1,
+        &glyphIndex,
+        nullptr,
+        nullptr,
+        FALSE,
+        0};
+    g_activePaint->target->DrawGlyphRun(
+        baseline, &run, brush, DWRITE_MEASURING_MODE_NATURAL);
+    return true;
 }
 
 bool DrawTextLayout(

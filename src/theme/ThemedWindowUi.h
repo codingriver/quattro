@@ -108,6 +108,7 @@ public:
     void SetEditReadOnly(HWND child, bool readOnly);
     void SetEditError(HWND child, bool error);
     void SetEditEnabled(HWND child, bool enabled);
+    void SetEditVisible(HWND child, bool visible);
     void SetEditPlaceholder(HWND child, const std::wstring& placeholder);
     void DrawRegisteredEditFrames(HDC dc) const;
     void DrawRegisteredTableFrames(HDC dc) const;

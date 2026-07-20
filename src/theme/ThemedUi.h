@@ -10,6 +10,7 @@
 #include <vector>
 #include <commctrl.h>
 #include <filesystem>
+#include <memory>
 #include <windows.h>
 
 // Shared Tabler icon font facade. Callers provide a semantic icon name from
@@ -31,6 +32,112 @@ bool DrawTablerIcon(
     TablerIconId id,
     COLORREF color,
     int fontHeight = 0);
+
+enum class ThemedPaintComponent {
+    Window,
+    Dialog,
+    Panel,
+    List,
+    ListItem,
+    Menu,
+    MenuItem,
+    TabButton,
+    CalendarDay,
+    Text,
+    Label,
+    Separator,
+};
+
+enum class ThemedPaintState {
+    Normal,
+    Hover,
+    Selected,
+    Focused,
+    Disabled,
+    Error,
+    Muted,
+    Accent,
+    Danger,
+    Warning,
+    Success,
+    Today,
+};
+
+enum class ThemedPaintShape {
+    Rectangle,
+    RoundedRectangle,
+    Ellipse,
+};
+
+enum class ThemedPaintTextAlign {
+    Start,
+    Center,
+    End,
+};
+
+enum class ThemedPaintVerticalAlign {
+    Top,
+    Center,
+    Bottom,
+};
+
+struct ThemedPaintTextOptions {
+    ThemedPaintTextAlign align = ThemedPaintTextAlign::Start;
+    ThemedPaintVerticalAlign verticalAlign = ThemedPaintVerticalAlign::Top;
+    bool multiline = false;
+    bool ellipsis = false;
+    bool noPrefix = true;
+};
+
+// Semantic custom-paint facade. Business windows provide only shared component
+// roles and runtime states; theme tokens, DPI conversion, D2D/DWrite resource
+// management, and the isolated GDI emergency backend remain in the public UI
+// layer.
+class ThemedPaint final {
+public:
+    ThemedPaint(HWND hwnd, HDC dc, const Theme& theme, HFONT font);
+    ~ThemedPaint();
+
+    ThemedPaint(const ThemedPaint&) = delete;
+    ThemedPaint& operator=(const ThemedPaint&) = delete;
+
+    bool d2dReady() const;
+    void Fill(
+        RECT rect,
+        ThemedPaintComponent component,
+        ThemedPaintState state = ThemedPaintState::Normal,
+        ThemedPaintShape shape = ThemedPaintShape::Rectangle) const;
+    void DrawText(
+        const std::wstring& text,
+        RECT rect,
+        ThemedPaintComponent component = ThemedPaintComponent::Text,
+        ThemedPaintState state = ThemedPaintState::Normal,
+        ThemedPaintTextOptions options = {}) const;
+    void DrawLine(
+        POINT start,
+        POINT end,
+        ThemedPaintComponent component = ThemedPaintComponent::Separator,
+        ThemedPaintState state = ThemedPaintState::Normal,
+        bool pixelSnap = true) const;
+    void DrawPolyline(
+        const POINT* points,
+        int pointCount,
+        ThemedPaintComponent component,
+        ThemedPaintState state = ThemedPaintState::Normal) const;
+    void DrawIcon(HICON icon, RECT rect, bool disabled = false) const;
+    bool DrawBitmap(HBITMAP bitmap, RECT rect, bool disabled = false) const;
+    bool DrawTablerIcon(
+        const std::filesystem::path& appDirectory,
+        TablerIconId id,
+        RECT rect,
+        ThemedPaintComponent component = ThemedPaintComponent::MenuItem,
+        ThemedPaintState state = ThemedPaintState::Normal) const;
+    SIZE MeasureText(const std::wstring& text, int maxWidth = 0, bool multiline = false) const;
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+};
 
 enum class ThemedButtonRole {
     Normal,
@@ -173,6 +280,11 @@ enum class ThemedTableView {
     Icons,
 };
 
+enum class ThemedTableRowPresentation {
+    SingleLine,
+    TwoLine,
+};
+
 enum class ThemedTableColumnAlign {
     Start,
     Center,
@@ -208,6 +320,7 @@ struct ThemedTableOptions {
     // 行数会超出可见高度、必然出现垂直滚动条时置 true：
     // 列宽分配预扣滚动条宽度，避免出现横向滚动条。
     bool reserveScrollBarGutter = false;
+    ThemedTableRowPresentation rowPresentation = ThemedTableRowPresentation::SingleLine;
 };
 
 enum class ThemedTableCellRole {
@@ -221,6 +334,7 @@ struct ThemedTableCell {
     int image = -1;
     ThemedTableCellRole role = ThemedTableCellRole::Text;
     int actionId = 0;
+    std::wstring secondaryText;
 };
 
 struct ThemedTableRow {
@@ -430,6 +544,7 @@ struct ThemedSplitButtonMenuItem {
     int id = 0;
     std::wstring text;
     bool enabled = true;
+    TablerIconId icon{};
 };
 
 enum class ThemedEditMode {
@@ -633,7 +748,7 @@ public:
     int comboBoxWidth(const std::vector<std::wstring>& items) const;
     int tableColumnWidth(const std::wstring& widestText) const;
     int tableColumnWidth(std::initializer_list<std::wstring_view> candidateTexts) const;
-    int tableHeightForRows(int visibleRows, bool showHeader = true) const;
+    int tableHeightForRows(int visibleRows, bool showHeader = true, bool twoLines = false) const;
     RECT tabStripRect(RECT bounds) const;
     int tabPageTop(RECT tabStrip) const;
     int footerButtonX(int buttonIndex, int buttonCount) const;
@@ -728,10 +843,10 @@ public:
         ThemedButtonWidthMode widthMode = ThemedButtonWidthMode::Fixed,
         int fixedWidth = 0,
         bool defaultButton = false) const;
-    static UINT ShowSplitButtonMenu(
+    UINT ShowSplitButtonMenu(
         HWND notificationWindow,
         HWND menuButton,
-        const std::vector<ThemedSplitButtonMenuItem>& items);
+        const std::vector<ThemedSplitButtonMenuItem>& items) const;
 
     // FooterButton uses DialogLayoutMetrics::FooterButtonX/Y internally, so
     // every dialog gets the same compact footer alignment and spacing.

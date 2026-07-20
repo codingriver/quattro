@@ -730,7 +730,7 @@ LRESULT CALLBACK DockPeekWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPAR
     case WM_MOUSEMOVE:
     case WM_LBUTTONDOWN:
     case WM_LBUTTONUP: {
-        HWND owner = reinterpret_cast<HWND>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+        HWND owner = GetWindow(hwnd, GW_OWNER);
         if (owner) {
             SendMessageW(owner, WM_QUATTRO_DOCK_PEEK_ACTIVATE, 0, 0);
         }
@@ -741,9 +741,11 @@ LRESULT CALLBACK DockPeekWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPAR
         HDC dc = BeginPaint(hwnd, &ps);
         RECT rect{};
         GetClientRect(hwnd, &rect);
-        HBRUSH brush = CreateSolidBrush(RGB(255, 255, 255));
-        FillRect(dc, &rect, brush);
-        DeleteObject(brush);
+        const auto* theme = reinterpret_cast<const Theme*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+        if (theme) {
+            ThemedPaint paint(hwnd, dc, *theme, reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT)));
+            paint.Fill(rect, ThemedPaintComponent::Window);
+        }
         EndPaint(hwnd, &ps);
         return 0;
     }
@@ -1560,20 +1562,18 @@ std::wstring MenuTextFromRaw(const std::wstring& text) {
     return result;
 }
 
-bool DrawStockMenuIcon(HDC dc, const RECT& rect, SHSTOCKICONID id) {
+bool DrawStockMenuIcon(ThemedPaint& paint, const RECT& rect, SHSTOCKICONID id, bool disabled = false) {
     SHSTOCKICONINFO info{};
     info.cbSize = sizeof(info);
     if (FAILED(SHGetStockIconInfo(id, SHGSI_ICON | SHGSI_SMALLICON, &info)) || !info.hIcon) {
         return false;
     }
-    const int size = std::min(rect.right - rect.left, rect.bottom - rect.top);
-    DrawIconEx(dc, rect.left + ((rect.right - rect.left) - size) / 2, rect.top + ((rect.bottom - rect.top) - size) / 2,
-               info.hIcon, size, size, 0, nullptr, DI_NORMAL);
+    paint.DrawIcon(info.hIcon, rect, disabled);
     DestroyIcon(info.hIcon);
     return true;
 }
 
-bool DrawSystemImageListIcon(HDC dc, const RECT& rect, int imageIndex, bool disabled) {
+bool DrawSystemImageListIcon(ThemedPaint& paint, const RECT& rect, int imageIndex, bool disabled) {
     if (imageIndex < 0) {
         return false;
     }
@@ -1588,226 +1588,37 @@ bool DrawSystemImageListIcon(HDC dc, const RECT& rect, int imageIndex, bool disa
         return false;
     }
 
-    const int size = std::min(rect.right - rect.left, rect.bottom - rect.top);
-    const int x = rect.left + ((rect.right - rect.left) - size) / 2;
-    const int y = rect.top + ((rect.bottom - rect.top) - size) / 2;
-    return ImageList_Draw(imageList, imageIndex, dc, x, y, disabled ? ILD_BLEND50 : ILD_NORMAL) != FALSE;
+    HICON icon = ImageList_GetIcon(imageList, imageIndex, ILD_NORMAL);
+    if (!icon) return false;
+    paint.DrawIcon(icon, rect, disabled);
+    DestroyIcon(icon);
+    return true;
 }
 
-struct MenuIconPalette {
-    COLORREF accent = RGB(0, 153, 215);
-    COLORREF danger = RGB(228, 48, 58);
-    COLORREF warning = RGB(245, 180, 40);
-    COLORREF success = RGB(24, 150, 92);
-    COLORREF muted = RGB(100, 116, 139);
-    COLORREF disabled = RGB(160, 168, 178);
-    COLORREF neutral = RGB(255, 255, 255);
-};
-
-bool DrawLocalMenuIcon(HDC dc, const RECT& rc, int icon, bool disabled, COLORREF color, const MenuIconPalette& palette, const std::filesystem::path& appDirectory) {
-    const COLORREF accent = disabled ? palette.disabled :
-        (icon == MenuIconDelete || icon == MenuIconClear || icon == MenuIconExit || icon == MenuIconPower ? palette.danger : palette.accent);
-    return DrawTablerIcon(
-        dc,
-        rc,
+bool DrawLocalMenuIcon(
+    ThemedPaint& paint,
+    const RECT& rect,
+    int icon,
+    ThemedPaintState state,
+    const std::filesystem::path& appDirectory) {
+    return paint.DrawTablerIcon(
         appDirectory,
         MenuIconTablerId(static_cast<MenuIcon>(icon)),
-        color == CLR_INVALID ? accent : color);
+        rect,
+        ThemedPaintComponent::MenuItem,
+        state);
 }
 
-bool DrawMenuChevronRight(HDC dc, const RECT& rc, COLORREF color, const std::filesystem::path& appDirectory) {
-    return DrawTablerIcon(dc, rc, appDirectory, TablerIconId::ChevronRight, color);
-}
-
-void DrawFallbackMenuIcon(HDC dc, const RECT& rc, int icon, bool disabled, COLORREF color, const MenuIconPalette& palette) {
-    const COLORREF blue = disabled ? palette.disabled : (color == CLR_INVALID ? palette.accent : color);
-    const COLORREF red = disabled ? palette.disabled : (color == CLR_INVALID ? palette.danger : color);
-    const COLORREF mutedColor = disabled ? palette.disabled : palette.muted;
-    const COLORREF amber = disabled ? palette.disabled : palette.warning;
-    const COLORREF green = disabled ? palette.disabled : palette.success;
-    const int l = rc.left + 1;
-    const int t = rc.top + 1;
-    const int r = rc.right - 1;
-    const int b = rc.bottom - 1;
-    HPEN pen = CreatePen(PS_SOLID, 2, icon == MenuIconDelete || icon == MenuIconClear ? red : blue);
-    HGDIOBJ oldPen = SelectObject(dc, pen);
-    HBRUSH brush = CreateSolidBrush(icon == MenuIconFolder ? amber : palette.neutral);
-    HGDIOBJ oldBrush = SelectObject(dc, brush);
-
-    switch (icon) {
-    case MenuIconRefresh:
-        Arc(dc, l, t, r, b, r - 2, t + 4, l + 3, t + 4);
-        MoveToEx(dc, r - 3, t + 3, nullptr);
-        LineTo(dc, r - 1, t + 8);
-        LineTo(dc, r - 7, t + 7);
-        break;
-    case MenuIconMove:
-        MoveToEx(dc, l + 2, (t + b) / 2, nullptr);
-        LineTo(dc, r - 3, (t + b) / 2);
-        MoveToEx(dc, r - 7, t + 4, nullptr);
-        LineTo(dc, r - 3, (t + b) / 2);
-        LineTo(dc, r - 7, b - 4);
-        break;
-    case MenuIconCopy:
-        Rectangle(dc, l + 4, t + 2, r - 1, b - 4);
-        Rectangle(dc, l + 1, t + 5, r - 4, b - 1);
-        break;
-    case MenuIconCut:
-        Ellipse(dc, l + 1, t + 2, l + 6, t + 7);
-        Ellipse(dc, l + 1, b - 7, l + 6, b - 2);
-        MoveToEx(dc, l + 6, t + 7, nullptr);
-        LineTo(dc, r - 2, b - 3);
-        MoveToEx(dc, l + 6, b - 7, nullptr);
-        LineTo(dc, r - 2, t + 3);
-        break;
-    case MenuIconPaste:
-        RoundRect(dc, l + 3, t + 4, r - 2, b - 1, 3, 3);
-        Rectangle(dc, l + 6, t + 1, r - 5, t + 6);
-        MoveToEx(dc, l + 6, t + 10, nullptr);
-        LineTo(dc, r - 5, t + 10);
-        MoveToEx(dc, l + 6, t + 13, nullptr);
-        LineTo(dc, r - 7, t + 13);
-        break;
-    case MenuIconClear:
-    case MenuIconDelete:
-        MoveToEx(dc, l + 2, t + 2, nullptr);
-        LineTo(dc, r - 2, b - 2);
-        MoveToEx(dc, r - 2, t + 2, nullptr);
-        LineTo(dc, l + 2, b - 2);
-        break;
-    case MenuIconSort:
-        MoveToEx(dc, l + 2, t + 3, nullptr);
-        LineTo(dc, r - 2, t + 3);
-        MoveToEx(dc, l + 2, (t + b) / 2, nullptr);
-        LineTo(dc, r - 6, (t + b) / 2);
-        MoveToEx(dc, l + 2, b - 3, nullptr);
-        LineTo(dc, r - 10, b - 3);
-        break;
-    case MenuIconSize:
-        Rectangle(dc, l + 2, t + 2, l + 7, t + 7);
-        Rectangle(dc, r - 8, t + 2, r - 2, t + 8);
-        Rectangle(dc, l + 2, b - 8, l + 9, b - 2);
-        Rectangle(dc, r - 9, b - 9, r - 2, b - 2);
-        break;
-    case MenuIconList:
-        for (int i = 0; i < 3; ++i) {
-            const int y = t + 3 + i * 5;
-            Rectangle(dc, l + 2, y, l + 5, y + 3);
-            MoveToEx(dc, l + 8, y + 1, nullptr);
-            LineTo(dc, r - 2, y + 1);
-        }
-        break;
-    case MenuIconTile:
-        Rectangle(dc, l + 2, t + 2, l + 7, t + 7);
-        Rectangle(dc, r - 7, t + 2, r - 2, t + 7);
-        Rectangle(dc, l + 2, b - 7, l + 7, b - 2);
-        Rectangle(dc, r - 7, b - 7, r - 2, b - 2);
-        break;
-    case MenuIconGroup:
-        {
-            HBRUSH fillBrush = CreateSolidBrush(amber);
-            HGDIOBJ previousBrush = SelectObject(dc, fillBrush);
-            RoundRect(dc, l + 1, t + 4, r - 1, b - 1, 4, 4);
-            SelectObject(dc, previousBrush);
-            DeleteObject(fillBrush);
-        }
-        MoveToEx(dc, l + 2, t + 4, nullptr);
-        LineTo(dc, l + 6, t + 1);
-        LineTo(dc, l + 10, t + 4);
-        break;
-    case MenuIconTag:
-        MoveToEx(dc, l + 3, t + 2, nullptr);
-        LineTo(dc, r - 2, t + 2);
-        LineTo(dc, r - 2, b - 6);
-        LineTo(dc, (l + r) / 2, b - 2);
-        LineTo(dc, l + 3, b - 6);
-        LineTo(dc, l + 3, t + 2);
-        break;
-    case MenuIconTheme:
-        {
-            HBRUSH fillBrush = CreateSolidBrush(disabled ? palette.disabled : palette.neutral);
-            HGDIOBJ previousBrush = SelectObject(dc, fillBrush);
-            Ellipse(dc, l + 1, t + 1, r - 1, b - 1);
-            SelectObject(dc, previousBrush);
-            DeleteObject(fillBrush);
-        }
-        {
-            HBRUSH greenBrush = CreateSolidBrush(green);
-            HGDIOBJ previousBrush = SelectObject(dc, greenBrush);
-            Ellipse(dc, l + 4, t + 4, l + 8, t + 8);
-            Ellipse(dc, r - 8, t + 5, r - 4, t + 9);
-            Ellipse(dc, l + 7, b - 8, l + 11, b - 4);
-            SelectObject(dc, previousBrush);
-            DeleteObject(greenBrush);
-        }
-        break;
-    case MenuIconEyeOff:
-        Arc(dc, l + 1, t + 3, r - 1, b - 3, l + 3, (t + b) / 2, r - 3, (t + b) / 2);
-        Arc(dc, l + 1, t + 3, r - 1, b - 3, r - 3, (t + b) / 2, l + 3, (t + b) / 2);
-        MoveToEx(dc, l + 2, b - 2, nullptr);
-        LineTo(dc, r - 2, t + 2);
-        break;
-    case MenuIconView:
-        Rectangle(dc, l + 1, t + 3, r - 1, b - 3);
-        MoveToEx(dc, l + 4, (t + b) / 2, nullptr);
-        LineTo(dc, r - 4, (t + b) / 2);
-        break;
-    case MenuIconReward:
-        {
-            HBRUSH fillBrush = CreateSolidBrush(disabled ? palette.disabled : palette.warning);
-            HGDIOBJ previousBrush = SelectObject(dc, fillBrush);
-            Ellipse(dc, l + 2, t + 2, r - 2, b - 2);
-            SelectObject(dc, previousBrush);
-            DeleteObject(fillBrush);
-        }
-        MoveToEx(dc, (l + r) / 2, t + 5, nullptr);
-        LineTo(dc, (l + r) / 2, b - 5);
-        MoveToEx(dc, l + 6, t + 8, nullptr);
-        LineTo(dc, r - 6, t + 8);
-        MoveToEx(dc, l + 6, b - 8, nullptr);
-        LineTo(dc, r - 6, b - 8);
-        break;
-    default:
-        HPEN mutedPen = CreatePen(PS_SOLID, 2, mutedColor);
-        SelectObject(dc, mutedPen);
-        Rectangle(dc, l + 2, t + 2, r - 2, b - 2);
-        SelectObject(dc, pen);
-        DeleteObject(mutedPen);
-        break;
-    }
-
-    SelectObject(dc, oldBrush);
-    SelectObject(dc, oldPen);
-    DeleteObject(brush);
-    DeleteObject(pen);
-}
-
-void DrawMenuIcon(HDC dc, const RECT& rc, int icon, bool disabled, COLORREF color, const MenuIconPalette& palette, const std::filesystem::path& appDirectory) {
+void DrawMenuIcon(
+    ThemedPaint& paint,
+    const RECT& rc,
+    int icon,
+    ThemedPaintState state,
+    const std::filesystem::path& appDirectory) {
     if (icon == MenuIconNone) {
         return;
     }
-    bool drawn = false;
-    switch (icon) {
-    case MenuIconFile: drawn = DrawStockMenuIcon(dc, rc, SIID_DOCNOASSOC); break;
-    case MenuIconFolder: drawn = DrawStockMenuIcon(dc, rc, SIID_FOLDER); break;
-    case MenuIconUrl: drawn = DrawStockMenuIcon(dc, rc, SIID_WORLD); break;
-    case MenuIconRun: drawn = DrawStockMenuIcon(dc, rc, SIID_APPLICATION); break;
-    case MenuIconShield: drawn = DrawStockMenuIcon(dc, rc, SIID_SHIELD); break;
-    case MenuIconOpenFolder: drawn = DrawStockMenuIcon(dc, rc, SIID_FOLDEROPEN); break;
-    case MenuIconShortcut: drawn = DrawStockMenuIcon(dc, rc, SIID_LINK); break;
-    case MenuIconEdit: drawn = DrawStockMenuIcon(dc, rc, SIID_RENAME); break;
-    case MenuIconGroup: drawn = DrawStockMenuIcon(dc, rc, SIID_FOLDER); break;
-    case MenuIconInfo: drawn = DrawStockMenuIcon(dc, rc, SIID_INFO); break;
-    case MenuIconDelete: drawn = DrawStockMenuIcon(dc, rc, SIID_DELETE); break;
-    default:
-        break;
-    }
-    if (!drawn) {
-        drawn = DrawLocalMenuIcon(dc, rc, icon, disabled, color, palette, appDirectory);
-    }
-    if (!drawn) {
-        DrawFallbackMenuIcon(dc, rc, icon, disabled, color, palette);
-    }
+    DrawLocalMenuIcon(paint, rc, icon, state, appDirectory);
 }
 
 HBITMAP CreateTrackedMenuIconBitmap(const ShellContextMenuItem& source) {
@@ -1836,41 +1647,6 @@ HBITMAP CreateTrackedMenuIconBitmap(const ShellContextMenuItem& source) {
         source.iconPixels.data(),
         source.iconPixels.size() * sizeof(std::uint32_t));
     return bitmap;
-}
-
-bool DrawTrackedMenuIcon(HDC dc, const RECT& target, HBITMAP bitmap, bool disabled) {
-    if (!dc || !bitmap) {
-        return false;
-    }
-    BITMAP source{};
-    if (GetObjectW(bitmap, sizeof(source), &source) != sizeof(source) ||
-        source.bmWidth <= 0 || source.bmHeight == 0) {
-        return false;
-    }
-    HDC memoryDc = CreateCompatibleDC(dc);
-    if (!memoryDc) {
-        return false;
-    }
-    HGDIOBJ oldBitmap = SelectObject(memoryDc, bitmap);
-    BLENDFUNCTION blend{};
-    blend.BlendOp = AC_SRC_OVER;
-    blend.SourceConstantAlpha = disabled ? 120 : 255;
-    blend.AlphaFormat = AC_SRC_ALPHA;
-    const BOOL drawn = AlphaBlend(
-        dc,
-        target.left,
-        target.top,
-        target.right - target.left,
-        target.bottom - target.top,
-        memoryDc,
-        0,
-        0,
-        source.bmWidth,
-        std::abs(source.bmHeight),
-        blend);
-    SelectObject(memoryDc, oldBitmap);
-    DeleteDC(memoryDc);
-    return drawn != FALSE;
 }
 
 bool LooksLikeUrlText(const std::wstring& value) {
@@ -2329,6 +2105,38 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             RECT rect{};
             GetWindowRect(hwnd_, &rect);
             ShowTagMenu(static_cast<int>(wParam), POINT{rect.left + 80, rect.top + 120});
+            return TRUE;
+        }
+        return FALSE;
+    case WM_QUATTRO_TEST_MAIN_MENU:
+        if (QuattroTestMode()) {
+            RECT rect{};
+            GetWindowRect(hwnd_, &rect);
+            ShowMainMenu(POINT{rect.left + 80, rect.top + 80});
+            return TRUE;
+        }
+        return FALSE;
+    case WM_QUATTRO_TEST_TOOL_MENU:
+        if (QuattroTestMode()) {
+            RECT rect{};
+            GetWindowRect(hwnd_, &rect);
+            ShowToolMenu(POINT{rect.left + 80, rect.top + 80});
+            return TRUE;
+        }
+        return FALSE;
+    case WM_QUATTRO_TEST_LINK_MENU:
+        if (QuattroTestMode()) {
+            RECT rect{};
+            GetWindowRect(hwnd_, &rect);
+            ShowLinkMenu(static_cast<int>(wParam), POINT{rect.left + 80, rect.top + 80});
+            return TRUE;
+        }
+        return FALSE;
+    case WM_QUATTRO_TEST_TAG_MENU:
+        if (QuattroTestMode()) {
+            RECT rect{};
+            GetWindowRect(hwnd_, &rect);
+            ShowTagMenu(static_cast<int>(wParam), POINT{rect.left + 80, rect.top + 80});
             return TRUE;
         }
         return FALSE;
@@ -6158,7 +5966,7 @@ void MainWindow::ShowDockPeek(const RECT& peekRect) {
         wc.hInstance = instance_;
         wc.hCursor = LoadCursorW(nullptr, IDC_HAND);
         wc.lpszClassName = kDockPeekWindowClass;
-        wc.hbrBackground = reinterpret_cast<HBRUSH>(GetStockObject(WHITE_BRUSH));
+        wc.hbrBackground = nullptr;
         if (!RegisterClassExW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
             return;
         }
@@ -6175,7 +5983,7 @@ void MainWindow::ShowDockPeek(const RECT& peekRect) {
             hwnd_,
             nullptr,
             instance_,
-            hwnd_);
+            &theme_);
         if (!dockPeek_) {
             return;
         }
@@ -7764,7 +7572,15 @@ void MainWindow::AppendToolItems(HMENU menu) {
         const UINT command = ID_MENU_TOOL_BASE + static_cast<UINT>(menuToolEngines_.size());
         menuToolEngines_.push_back(plugin.engine);
         menuToolEnabled_.push_back(plugin.enabled);
-        AppendThemedMenuItem(menu, MF_STRING | (plugin.enabled ? 0 : MF_GRAYED), command, plugin.name, false, -1, -1, MenuIconTools);
+        AppendThemedMenuItem(
+            menu,
+            MF_STRING | (plugin.enabled ? 0 : MF_GRAYED),
+            command,
+            plugin.name,
+            false,
+            -1,
+            -1,
+            MenuIconForToolEngine(plugin.engine));
     }
     if (menuToolEngines_.empty()) {
         AppendThemedMenuItem(menu, MF_STRING | MF_GRAYED, ID_MENU_TOOL_BASE, L"无可用工具");
@@ -9137,110 +8953,104 @@ bool MainWindow::DrawThemedMenuItem(const DRAWITEMSTRUCT* draw) {
     };
     RECT rc = draw->rcItem;
     HDC dc = draw->hDC;
-    const Color background = theme_.color(L"menu", L"normal", L"bg");
+    {
+        ThemedPaint paint(hwnd_, dc, theme_, menuFont_->FontForDpi(menuFont_->dpi()));
 
-    if (item->separator) {
-        HBRUSH backgroundBrush = CreateSolidBrush(ToColorRef(background));
-        ::FillRect(dc, &rc, backgroundBrush);
-        DeleteObject(backgroundBrush);
+        if (item->separator) {
+            paint.Fill(rc, ThemedPaintComponent::Menu);
 
-        const int inset = std::max(0, scaledMetric(L"separator", L"inset", 0.0f));
-        const int thickness = std::max(1, scaledMetric(L"separator", L"thickness", 1.0f));
-        RECT lineRect{
-            rc.left + inset,
-            rc.top + ((rc.bottom - rc.top) - thickness) / 2,
-            rc.right - inset,
-            rc.top + ((rc.bottom - rc.top) - thickness) / 2 + thickness};
-        HBRUSH lineBrush = CreateSolidBrush(ToColorRef(theme_.color(L"separator", L"normal", L"line")));
-        ::FillRect(dc, &lineRect, lineBrush);
-        DeleteObject(lineBrush);
-        return true;
-    }
-
-    const bool selected = (draw->itemState & ODS_SELECTED) != 0;
-
-    const Color hover = selected ? theme_.color(L"menuItem", L"hover", L"bg") : background;
-    HBRUSH backgroundBrush = CreateSolidBrush(ToColorRef(hover));
-    ::FillRect(dc, &rc, backgroundBrush);
-    DeleteObject(backgroundBrush);
-
-    if (selected) {
-        RECT hotRect = rc;
-        InflateRect(&hotRect, -scaledMetric(L"menuItem", L"hoverInsetX", 4.0f), -scaledMetric(L"menuItem", L"hoverInsetY", 3.0f));
-        HBRUSH hotBrush = CreateSolidBrush(ToColorRef(theme_.color(L"menuItem", L"hover", L"bg")));
-        ::FillRect(dc, &hotRect, hotBrush);
-        DeleteObject(hotBrush);
-    }
-
-    const int iconLeft = scaledMetric(L"menuItem", L"iconLeft", 8.0f);
-    const int iconTopInset = scaledMetric(L"menuItem", L"iconInsetY", 6.0f);
-    const int iconSize = scaledMetric(L"menuItem", L"iconSize", 16.0f);
-    const RECT iconRect{rc.left + iconLeft, rc.top + iconTopInset, rc.left + iconLeft + iconSize, rc.bottom - iconTopInset};
-    COLORREF iconColorRef = CLR_INVALID;
-    if (item->iconTone == MenuIconTone::Active) {
-        iconColorRef = ToColorRef(theme_.color(L"menuItem", item->disabled ? L"disabled" : L"checked", L"icon"));
-    } else if (item->iconTone == MenuIconTone::Muted) {
-        iconColorRef = ToColorRef(theme_.color(L"menuItem", item->disabled ? L"disabled" : L"normal", L"icon"));
-    }
-    MenuIconPalette iconPalette;
-    iconPalette.accent = ToColorRef(theme_.color(L"menuItem", L"accent", L"icon"));
-    iconPalette.danger = ToColorRef(theme_.color(L"menuItem", L"danger", L"icon"));
-    iconPalette.warning = ToColorRef(theme_.color(L"menuItem", L"warning", L"icon"));
-    iconPalette.success = ToColorRef(theme_.color(L"menuItem", L"success", L"icon"));
-    iconPalette.muted = ToColorRef(theme_.color(L"menuItem", L"normal", L"icon"));
-    iconPalette.disabled = ToColorRef(theme_.color(L"menuItem", L"disabled", L"icon"));
-    iconPalette.neutral = ToColorRef(theme_.color(L"menu", L"normal", L"bg"));
-    if (item->nativeIconBitmap && DrawTrackedMenuIcon(dc, iconRect, item->nativeIconBitmap, item->disabled)) {
-        // The cached bitmap is copied from the Windows native menu.
-    } else if (item->stockIcon >= 0) {
-        if (!DrawStockMenuIcon(dc, iconRect, static_cast<SHSTOCKICONID>(item->stockIcon)) &&
-            !DrawSystemImageListIcon(dc, iconRect, item->systemImageIndex, item->disabled)) {
-            DrawMenuIcon(dc, iconRect, item->icon, item->disabled, iconColorRef, iconPalette, appDirectory_);
+            const int inset = std::max(0, scaledMetric(L"separator", L"inset", 0.0f));
+            const int thickness = std::max(1, scaledMetric(L"separator", L"thickness", 1.0f));
+            const int lineY = rc.top + ((rc.bottom - rc.top) - thickness) / 2;
+            paint.DrawLine({rc.left + inset, lineY}, {rc.right - inset, lineY});
+            return true;
         }
-    } else if (item->systemImageIndex >= 0) {
-        if (!DrawSystemImageListIcon(dc, iconRect, item->systemImageIndex, item->disabled)) {
-            DrawMenuIcon(dc, iconRect, item->icon, item->disabled, iconColorRef, iconPalette, appDirectory_);
+
+        const bool selected = (draw->itemState & ODS_SELECTED) != 0;
+
+        paint.Fill(rc, selected ? ThemedPaintComponent::MenuItem : ThemedPaintComponent::Menu,
+                   selected ? ThemedPaintState::Hover : ThemedPaintState::Normal);
+
+        if (selected) {
+            RECT hotRect = rc;
+            InflateRect(&hotRect, -scaledMetric(L"menuItem", L"hoverInsetX", 4.0f), -scaledMetric(L"menuItem", L"hoverInsetY", 3.0f));
+            paint.Fill(hotRect, ThemedPaintComponent::MenuItem, ThemedPaintState::Hover);
         }
-    } else {
-        DrawMenuIcon(dc, iconRect, item->icon, item->disabled, iconColorRef, iconPalette, appDirectory_);
+
+        const int iconLeft = scaledMetric(L"menuItem", L"iconLeft", 8.0f);
+        const int iconTopInset = scaledMetric(L"menuItem", L"iconInsetY", 6.0f);
+        const int iconSize = scaledMetric(L"menuItem", L"iconSize", 16.0f);
+        const RECT iconRect{rc.left + iconLeft, rc.top + iconTopInset, rc.left + iconLeft + iconSize, rc.bottom - iconTopInset};
+        ThemedPaintState iconState = item->disabled ? ThemedPaintState::Disabled : ThemedPaintState::Accent;
+        if (!item->disabled && item->iconTone == MenuIconTone::Muted) {
+            iconState = ThemedPaintState::Normal;
+        }
+        if (!item->disabled &&
+            (item->icon == MenuIconDelete || item->icon == MenuIconClear ||
+             item->icon == MenuIconExit || item->icon == MenuIconPower)) {
+            iconState = ThemedPaintState::Danger;
+        }
+        if (item->nativeIconBitmap && paint.DrawBitmap(item->nativeIconBitmap, iconRect, item->disabled)) {
+            // Tracked Windows shell commands keep the icon supplied by their provider.
+        } else if (item->icon != MenuIconNone) {
+            // Quattro-owned commands always use the shared semantic Tabler facade.
+            DrawMenuIcon(paint, iconRect, item->icon, iconState, appDirectory_);
+        } else if (item->stockIcon >= 0) {
+            if (!DrawStockMenuIcon(paint, iconRect, static_cast<SHSTOCKICONID>(item->stockIcon), item->disabled)) {
+                DrawSystemImageListIcon(paint, iconRect, item->systemImageIndex, item->disabled);
+            }
+        } else if (item->systemImageIndex >= 0) {
+            DrawSystemImageListIcon(paint, iconRect, item->systemImageIndex, item->disabled);
+        }
+
+        RECT textRect = rc;
+        textRect.left += scaledMetric(L"menuItem", L"textLeft", 34.0f);
+        textRect.right -= item->submenu
+            ? scaledMetric(L"menuItem", L"submenuRight", 22.0f)
+            : scaledMetric(L"menuItem", L"textRight", 8.0f);
+        ThemedPaintTextOptions textOptions;
+        textOptions.verticalAlign = ThemedPaintVerticalAlign::Center;
+        textOptions.ellipsis = true;
+        paint.DrawText(
+            item->text,
+            textRect,
+            ThemedPaintComponent::MenuItem,
+            item->disabled ? ThemedPaintState::Disabled : ThemedPaintState::Normal,
+            textOptions);
+
+        if (item->submenu) {
+            const ThemedPaintState arrowState = item->disabled
+                ? ThemedPaintState::Disabled
+                : (selected ? ThemedPaintState::Hover : ThemedPaintState::Normal);
+            const int midY = (rc.top + rc.bottom) / 2;
+            const int arrowRight = scaledMetric(L"menuItem", L"arrowRight", 9.0f);
+            const int arrowIconSize = scaledMetric(L"menuItem", L"iconSize", 16.0f);
+            const RECT arrowRect{
+                rc.right - arrowRight - arrowIconSize,
+                midY - arrowIconSize / 2,
+                rc.right - arrowRight,
+                midY - arrowIconSize / 2 + arrowIconSize};
+            if (!paint.DrawTablerIcon(
+                    appDirectory_, TablerIconId::ChevronRight, arrowRect,
+                    ThemedPaintComponent::MenuItem, arrowState)) {
+                const int arrowWidth = scaledMetric(L"menuItem", L"arrowWidth", 5.0f);
+                const int arrowHalfHeight = scaledMetric(L"menuItem", L"arrowHalfHeight", 4.0f);
+                const int arrowTip = rc.right - arrowRight;
+                POINT points[] = {
+                    {arrowTip - arrowWidth, midY - arrowHalfHeight},
+                    {arrowTip, midY},
+                    {arrowTip - arrowWidth, midY + arrowHalfHeight},
+                };
+                paint.DrawPolyline(
+                    points, static_cast<int>(std::size(points)),
+                    ThemedPaintComponent::MenuItem, arrowState);
+            }
+        }
     }
-
-    RECT textRect = rc;
-    textRect.left += scaledMetric(L"menuItem", L"textLeft", 34.0f);
-    textRect.right -= item->submenu
-        ? scaledMetric(L"menuItem", L"submenuRight", 22.0f)
-        : scaledMetric(L"menuItem", L"textRight", 8.0f);
-    SetBkMode(dc, TRANSPARENT);
-    SetTextColor(dc, ToColorRef(theme_.color(L"menuItem", item->disabled ? L"disabled" : L"normal", L"text")));
-    HGDIOBJ oldFont = SelectObject(dc, menuFont_->FontForDpi(menuFont_->dpi()));
-    DrawTextW(dc, item->text.c_str(), static_cast<int>(item->text.size()), &textRect, DT_SINGLELINE | DT_VCENTER | DT_LEFT | DT_END_ELLIPSIS);
-    SelectObject(dc, oldFont);
-
     if (item->submenu) {
-        const COLORREF arrowColor = ToColorRef(theme_.color(L"menuItem", item->disabled ? L"disabled" : (selected ? L"hover" : L"normal"), L"text"));
-        const int midY = (rc.top + rc.bottom) / 2;
-        const int arrowRight = scaledMetric(L"menuItem", L"arrowRight", 9.0f);
-        const int arrowIconSize = scaledMetric(L"menuItem", L"iconSize", 16.0f);
-        const RECT arrowRect{
-            rc.right - arrowRight - arrowIconSize,
-            midY - arrowIconSize / 2,
-            rc.right - arrowRight,
-            midY - arrowIconSize / 2 + arrowIconSize};
-        if (!DrawMenuChevronRight(dc, arrowRect, arrowColor, appDirectory_)) {
-            HPEN pen = CreatePen(PS_SOLID, 1, arrowColor);
-            HGDIOBJ oldPen = SelectObject(dc, pen);
-            const int arrowWidth = scaledMetric(L"menuItem", L"arrowWidth", 5.0f);
-            const int arrowHalfHeight = scaledMetric(L"menuItem", L"arrowHalfHeight", 4.0f);
-            const int arrowTip = rc.right - arrowRight;
-            POINT points[] = {
-                {arrowTip - arrowWidth, midY - arrowHalfHeight},
-                {arrowTip, midY},
-                {arrowTip - arrowWidth, midY + arrowHalfHeight},
-            };
-            Polyline(dc, points, static_cast<int>(std::size(points)));
-            SelectObject(dc, oldPen);
-            DeleteObject(pen);
-        }
+        // Commit the D2D DC render target before excluding this owner-draw row;
+        // otherwise EndDraw observes the excluded HDC clip and the entire
+        // submenu parent is left as an empty menu slot.
         ExcludeClipRect(dc, rc.left, rc.top, rc.right, rc.bottom);
     }
     return true;

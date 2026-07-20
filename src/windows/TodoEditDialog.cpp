@@ -489,6 +489,10 @@ private:
         windowUi_->ui().SetEnabled(hwnd, enabled);
     }
 
+    void SetFieldVisible(HWND hwnd, bool visible) {
+        if (windowUi_) windowUi_->SetEditVisible(hwnd, visible);
+    }
+
     HWND Label(const wchar_t* text, int x, int y, int width = 180) {
         return windowUi_->ui().Label(text, x, y - scrollY_, width);
     }
@@ -561,7 +565,7 @@ private:
             if (item.child == child) {
                 item.rect = frame;
                 windowUi_->MoveEditFrame(child, Offset(frame));
-                ShowWindow(child, IntersectsContentViewport(frame.top, frame.bottom - frame.top) ? SW_SHOW : SW_HIDE);
+                SetFieldVisible(child, IntersectsContentViewport(frame.top, frame.bottom - frame.top));
                 return;
             }
         }
@@ -1143,7 +1147,7 @@ private:
         MoveStatic(timeLabel_, sideX, y + labelOffsetY, TextControlWidth(L"时间"), labelHeight);
         SetFrame(timeEdit_, RECT{sideX, y + fieldHeight, sideX + 82, y + fieldHeight * 2});
         SetVisible(timeLabel_, true);
-        SetVisible(timeEdit_, true);
+        SetFieldVisible(timeEdit_, true);
         y += CalendarHeight() + rowGap;
 
         repeatLabelY_ = y;
@@ -1179,7 +1183,7 @@ private:
         }
 
         SetVisible(monthlyFixedButton_, showMonthly);
-        SetVisible(monthlyDayEdit_, showMonthly);
+        SetFieldVisible(monthlyDayEdit_, showMonthly);
         SetVisible(monthlyDayLabel_, showMonthly);
         if (showMonthly) {
             const int fixedWidth = TabWidth(L"每月固定");
@@ -1191,7 +1195,7 @@ private:
         }
 
         SetVisible(customPrefix_, showCustom);
-        SetVisible(customIntervalEdit_, showCustom);
+        SetFieldVisible(customIntervalEdit_, showCustom);
         SetVisible(customUnitCombo_, showCustom);
         SetVisible(customSuffix_, showCustom);
         if (showCustom) {
@@ -1228,7 +1232,7 @@ private:
         SetEnabled(advancedButton_, recurring);
         SetVisible(endNeverButton_, advancedExpanded_);
         SetVisible(endCountButton_, advancedExpanded_);
-        SetVisible(endCountEdit_, advancedExpanded_ && endMode_ == EndMode::Count);
+        SetFieldVisible(endCountEdit_, advancedExpanded_ && endMode_ == EndMode::Count);
         if (advancedExpanded_) {
             const int neverWidth = TabWidth(L"永不结束");
             const int countWidth = TabWidth(L"完成 N 次");
@@ -1298,47 +1302,39 @@ private:
         Layout();
     }
 
-    void DrawLine(HDC dc, int y) {
-        HPEN pen = CreatePen(PS_SOLID, MetricInt(L"separator", L"thickness", 1.0f), ColorFor(L"separator", L"normal", L"line"));
-        HGDIOBJ oldPen = SelectObject(dc, pen);
-        MoveToEx(dc, 0, y, nullptr);
-        LineTo(dc, DrawerWidth(), y);
-        SelectObject(dc, oldPen);
-        DeleteObject(pen);
+    void DrawLine(ThemedPaint& paint, int y) {
+        paint.DrawLine({0, y}, {DrawerWidth(), y});
     }
 
-    void DrawPanel(HDC dc, RECT rect, bool selected, bool error) {
-        const wchar_t* state = error ? L"selected" : (selected ? L"selected" : L"normal");
-        HBRUSH brush = CreateSolidBrush(ColorFor(L"panel", state, L"bg"));
-        HPEN pen = CreatePen(PS_SOLID, MetricInt(L"panel", L"borderWidth", 1.0f), ColorFor(L"panel", state, L"border"));
-        HGDIOBJ oldBrush = SelectObject(dc, brush);
-        HGDIOBJ oldPen = SelectObject(dc, pen);
-        const int radius = static_cast<int>(theme_.metric(L"panel", L"radius", 7.0f));
-        RoundRect(dc, rect.left, rect.top, rect.right, rect.bottom, radius * 2, radius * 2);
-        SelectObject(dc, oldPen);
-        SelectObject(dc, oldBrush);
-        DeleteObject(pen);
-        DeleteObject(brush);
+    void DrawPanel(ThemedPaint& paint, RECT rect, bool selected, bool error) {
+        paint.Fill(
+            rect,
+            ThemedPaintComponent::Panel,
+            error ? ThemedPaintState::Danger : (selected ? ThemedPaintState::Selected : ThemedPaintState::Normal),
+            ThemedPaintShape::RoundedRectangle);
     }
 
-    void DrawRoundFill(HDC dc, RECT rect, int radius, COLORREF bg, COLORREF border) {
-        HBRUSH brush = CreateSolidBrush(bg);
-        HPEN pen = CreatePen(PS_SOLID, 1, border);
-        HGDIOBJ oldBrush = SelectObject(dc, brush);
-        HGDIOBJ oldPen = SelectObject(dc, pen);
-        RoundRect(dc, rect.left, rect.top, rect.right, rect.bottom, radius * 2, radius * 2);
-        SelectObject(dc, oldPen);
-        SelectObject(dc, oldBrush);
-        DeleteObject(pen);
-        DeleteObject(brush);
+    void DrawCalendarCell(ThemedPaint& paint, RECT rect, ThemedPaintState state) {
+        paint.Fill(
+            rect,
+            ThemedPaintComponent::CalendarDay,
+            state,
+            ThemedPaintShape::RoundedRectangle);
     }
 
-    void DrawTextIn(HDC dc, const std::wstring& text, RECT rect, COLORREF color, UINT format, HFONT font = nullptr) {
-        SetBkMode(dc, TRANSPARENT);
-        SetTextColor(dc, color);
-        HFONT oldFont = reinterpret_cast<HFONT>(SelectObject(dc, font ? font : windowUi_->font()));
-        DrawTextW(dc, text.c_str(), static_cast<int>(text.size()), &rect, format);
-        SelectObject(dc, oldFont);
+    void DrawTextIn(
+        ThemedPaint& paint,
+        const std::wstring& text,
+        RECT rect,
+        ThemedPaintComponent component,
+        ThemedPaintState state,
+        ThemedPaintTextAlign align = ThemedPaintTextAlign::Start,
+        bool ellipsis = false) {
+        ThemedPaintTextOptions options;
+        options.align = align;
+        options.verticalAlign = ThemedPaintVerticalAlign::Center;
+        options.ellipsis = ellipsis;
+        paint.DrawText(text, rect, component, state, options);
     }
 
     RECT CalendarPrevRect() const {
@@ -1541,20 +1537,20 @@ private:
         }
     }
 
-    void DrawCalendar(HDC dc) {
+    void DrawCalendar(ThemedPaint& paint) {
         RECT rect = Offset(calendarRect_);
-        DrawPanel(dc, rect, false, false);
+        DrawPanel(paint, rect, false, false);
 
         RECT prev = Offset(CalendarPrevRect());
         RECT next = Offset(CalendarNextRect());
-        ThemedControls::DrawIconButtonFrame(theme_, dc, prev);
-        ThemedControls::DrawIconButtonFrame(theme_, dc, next);
-        DrawTextIn(dc, L"<", prev, ColorFor(L"text", L"muted", L"text"), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-        DrawTextIn(dc, L">", next, ColorFor(L"text", L"muted", L"text"), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        paint.Fill(prev, ThemedPaintComponent::TabButton, ThemedPaintState::Normal, ThemedPaintShape::RoundedRectangle);
+        paint.Fill(next, ThemedPaintComponent::TabButton, ThemedPaintState::Normal, ThemedPaintShape::RoundedRectangle);
+        DrawTextIn(paint, L"<", prev, ThemedPaintComponent::Text, ThemedPaintState::Muted, ThemedPaintTextAlign::Center);
+        DrawTextIn(paint, L">", next, ThemedPaintComponent::Text, ThemedPaintState::Muted, ThemedPaintTextAlign::Center);
 
         if (calendarPickerMode_ == CalendarPickerMode::Year) {
             const std::wstring title = std::to_wstring(calendarYearPageStart_) + L"-" + std::to_wstring(calendarYearPageStart_ + 11);
-            DrawTextIn(dc, title, RECT{rect.left + 42, rect.top + 6, rect.right - 42, rect.top + 28}, ColorFor(L"text", L"normal", L"text"), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            DrawTextIn(paint, title, RECT{rect.left + 42, rect.top + 6, rect.right - 42, rect.top + 28}, ThemedPaintComponent::Text, ThemedPaintState::Normal, ThemedPaintTextAlign::Center);
             const int gridLeft = rect.left + 28;
             const int gridTop = rect.top + 42;
             for (int i = 0; i < 12; ++i) {
@@ -1569,19 +1565,19 @@ private:
                 };
                 const bool selected = selectedDate_.wYear == year;
                 if (selected) {
-                    DrawRoundFill(dc, cell, 6, ColorFor(L"panel", L"selected", L"border"), ColorFor(L"panel", L"selected", L"border"));
+                    DrawCalendarCell(paint, cell, ThemedPaintState::Selected);
                 }
-                DrawTextIn(dc, std::to_wstring(year), cell, selected ? ColorFor(L"panel", L"normal", L"bg") : ColorFor(L"text", L"normal", L"text"), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                DrawTextIn(paint, std::to_wstring(year), cell, selected ? ThemedPaintComponent::CalendarDay : ThemedPaintComponent::Text, selected ? ThemedPaintState::Selected : ThemedPaintState::Normal, ThemedPaintTextAlign::Center);
             }
             return;
         }
 
         RECT yearTitle = Offset(CalendarYearTitleRect());
         RECT monthTitle = Offset(CalendarMonthTitleRect());
-        ThemedControls::DrawMiniButtonFrame(theme_, dc, yearTitle);
-        ThemedControls::DrawMiniButtonFrame(theme_, dc, monthTitle);
-        DrawTextIn(dc, std::to_wstring(calendarYear_) + L"年", yearTitle, ColorFor(L"text", L"normal", L"text"), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-        DrawTextIn(dc, std::to_wstring(calendarMonth_) + L"月", monthTitle, ColorFor(L"text", L"normal", L"text"), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        paint.Fill(yearTitle, ThemedPaintComponent::TabButton, ThemedPaintState::Normal, ThemedPaintShape::RoundedRectangle);
+        paint.Fill(monthTitle, ThemedPaintComponent::TabButton, ThemedPaintState::Normal, ThemedPaintShape::RoundedRectangle);
+        DrawTextIn(paint, std::to_wstring(calendarYear_) + L"年", yearTitle, ThemedPaintComponent::Text, ThemedPaintState::Normal, ThemedPaintTextAlign::Center);
+        DrawTextIn(paint, std::to_wstring(calendarMonth_) + L"月", monthTitle, ThemedPaintComponent::Text, ThemedPaintState::Normal, ThemedPaintTextAlign::Center);
 
         if (calendarPickerMode_ == CalendarPickerMode::Month) {
             static constexpr const wchar_t* kMonths[] = {
@@ -1602,9 +1598,9 @@ private:
                 };
                 const bool selected = selectedDate_.wYear == calendarYear_ && selectedDate_.wMonth == month;
                 if (selected) {
-                    DrawRoundFill(dc, cell, 6, ColorFor(L"panel", L"selected", L"border"), ColorFor(L"panel", L"selected", L"border"));
+                    DrawCalendarCell(paint, cell, ThemedPaintState::Selected);
                 }
-                DrawTextIn(dc, kMonths[index], cell, selected ? ColorFor(L"panel", L"normal", L"bg") : ColorFor(L"text", L"normal", L"text"), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                DrawTextIn(paint, kMonths[index], cell, selected ? ThemedPaintComponent::CalendarDay : ThemedPaintComponent::Text, selected ? ThemedPaintState::Selected : ThemedPaintState::Normal, ThemedPaintTextAlign::Center);
             }
             return;
         }
@@ -1613,7 +1609,7 @@ private:
         int y = rect.top + CalendarHeaderHeight();
         for (int i = 0; i < 7; ++i) {
             RECT weekday{rect.left + i * cellWidth, y, rect.left + (i + 1) * cellWidth, y + CalendarWeekdayHeight()};
-            DrawTextIn(dc, ShortWeekdayText(i), weekday, ColorFor(L"text", L"muted", L"text"), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            DrawTextIn(paint, ShortWeekdayText(i), weekday, ThemedPaintComponent::Text, ThemedPaintState::Muted, ThemedPaintTextAlign::Center);
         }
 
         SYSTEMTIME first{};
@@ -1639,15 +1635,24 @@ private:
             const bool selected = selectedDate_.wYear == calendarYear_ && selectedDate_.wMonth == calendarMonth_ && selectedDate_.wDay == day;
             const bool isToday = today.wYear == calendarYear_ && today.wMonth == calendarMonth_ && today.wDay == day;
             if (selected) {
-                DrawRoundFill(dc, cell, 5, ColorFor(L"panel", L"selected", L"border"), ColorFor(L"panel", L"selected", L"border"));
+                DrawCalendarCell(paint, cell, ThemedPaintState::Selected);
             } else if (isToday) {
-                DrawRoundFill(dc, cell, 5, ColorFor(L"panel", L"normal", L"bg"), ColorFor(L"panel", L"selected", L"border"));
+                DrawCalendarCell(paint, cell, ThemedPaintState::Today);
             }
-            DrawTextIn(dc, std::to_wstring(day), cell, selected ? ColorFor(L"panel", L"normal", L"bg") : ColorFor(L"text", L"normal", L"text"), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            const ThemedPaintComponent dayComponent = selected || isToday
+                ? ThemedPaintComponent::CalendarDay
+                : ThemedPaintComponent::Text;
+            const ThemedPaintState dayState = selected
+                ? ThemedPaintState::Selected
+                : (isToday ? ThemedPaintState::Today : ThemedPaintState::Normal);
+            DrawTextIn(
+                paint, std::to_wstring(day), cell,
+                dayComponent, dayState, ThemedPaintTextAlign::Center);
         }
     }
 
     void Paint(HDC dc) {
+        ThemedPaint paint(hwnd_, dc, theme_, windowUi_->font());
         RECT client{};
         GetClientRect(hwnd_, &client);
         windowUi_->FillBackground(dc);
@@ -1656,36 +1661,46 @@ private:
         RECT reminder = Offset(reminderRect_);
         const int textHeight = StaticTextHeight();
         const int labelOffsetY = std::max(0, (static_cast<int>(reminder.bottom - reminder.top) - windowUi_->ui().labelHeight()) / 2);
-        DrawTextIn(dc, L"提醒时间", RECT{ContentInsetX(), reminder.top + labelOffsetY, FieldX(), reminder.bottom}, ColorFor(L"label", L"normal", L"text"), DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+        DrawTextIn(paint, L"提醒时间", RECT{ContentInsetX(), reminder.top + labelOffsetY, FieldX(), reminder.bottom}, ThemedPaintComponent::Label, ThemedPaintState::Normal);
         const std::wstring summary = ReminderSummary();
-        DrawTextIn(dc, summary, RECT{FieldX(), reminder.top + labelOffsetY, reminder.right, reminder.bottom}, ColorFor(L"text", L"accent", L"text"), DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+        DrawTextIn(paint, summary, RECT{FieldX(), reminder.top + labelOffsetY, reminder.right, reminder.bottom}, ThemedPaintComponent::Text, ThemedPaintState::Accent, ThemedPaintTextAlign::Start, true);
         if (!reminderError_.empty()) {
-            DrawTextIn(dc, reminderError_, RECT{FieldX(), reminder.bottom + RowGap(), FieldRight(), reminder.bottom + RowGap() + textHeight}, ColorFor(L"text", L"danger", L"text"), DT_LEFT | DT_SINGLELINE);
+            DrawTextIn(paint, reminderError_, RECT{FieldX(), reminder.bottom + RowGap(), FieldRight(), reminder.bottom + RowGap() + textHeight}, ThemedPaintComponent::Text, ThemedPaintState::Danger);
         }
 
-        DrawCalendar(dc);
+        DrawCalendar(paint);
         const int repeatLabelOffsetY = std::max(0, (windowUi_->ui().tabButtonHeight() - windowUi_->ui().labelHeight()) / 2);
-        DrawTextIn(dc, L"重复规则", RECT{ContentInsetX(), repeatLabelY_ - scrollY_ + repeatLabelOffsetY, FieldX(), repeatLabelY_ - scrollY_ + windowUi_->ui().tabButtonHeight()}, ColorFor(L"label", L"normal", L"text"), DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+        DrawTextIn(paint, L"重复规则", RECT{ContentInsetX(), repeatLabelY_ - scrollY_ + repeatLabelOffsetY, FieldX(), repeatLabelY_ - scrollY_ + windowUi_->ui().tabButtonHeight()}, ThemedPaintComponent::Label, ThemedPaintState::Normal);
 
         RECT footer{0, ClientHeight() - FooterHeight(), client.right, ClientHeight()};
-        HBRUSH footerBrush = CreateSolidBrush(ColorFor(L"panel", L"normal", L"bg"));
-        FillRect(dc, &footer, footerBrush);
-        DeleteObject(footerBrush);
-        DrawLine(dc, footer.top);
+        paint.Fill(footer, ThemedPaintComponent::Panel);
+        DrawLine(paint, footer.top);
     }
 
     LRESULT Handle(UINT message, WPARAM wParam, LPARAM lParam) {
         LRESULT commonResult = 0;
         if (ThemedWindowUi::HandleCommonMessage(windowUi_, message, wParam, lParam, commonResult)) {
+            if (message == WM_DPICHANGED && windowUi_) {
+                // The common layer first updates the DPI, font, client metrics,
+                // and registered frames. Re-run the business layout afterward
+                // so calendar geometry and Footer controls consume the new
+                // physical client size instead of stale 96-DPI coordinates.
+                Layout();
+            }
             return commonResult;
         }
         switch (message) {
         case WM_CREATE:
+        {
+            RECT client{};
+            GetClientRect(hwnd_, &client);
             windowUi_ = std::make_unique<ThemedWindowUi>(
-                instance_, owner_, hwnd_, theme_, DialogLayoutKind::Standard, kDialogWidth, kDialogHeight);
+                instance_, owner_, hwnd_, theme_, DialogLayoutKind::Standard,
+                client.right - client.left, client.bottom - client.top);
             CreateControls();
             Layout();
             return 0;
+        }
         case WM_SIZE:
             Layout();
             return 0;
@@ -1768,6 +1783,9 @@ private:
             EndPaint(hwnd_, &ps);
             return 0;
         }
+        case WM_PRINTCLIENT:
+            Paint(reinterpret_cast<HDC>(wParam));
+            return 0;
         case WM_KEYDOWN:
             if (calendarFocused_ && HandleCalendarKey(wParam)) {
                 return 0;

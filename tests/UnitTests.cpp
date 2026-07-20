@@ -636,6 +636,46 @@ int wmain() {
                 DestroyIcon(handle);
             }
         }
+        const auto iconPixels = [](HICON icon) {
+            std::vector<std::uint32_t> pixels;
+            ICONINFO info{};
+            if (!icon || !GetIconInfo(icon, &info) || !info.hbmColor) return pixels;
+            BITMAP bitmap{};
+            if (GetObjectW(info.hbmColor, sizeof(bitmap), &bitmap) == sizeof(bitmap) &&
+                bitmap.bmWidth > 0 && bitmap.bmHeight != 0) {
+                const int height = std::abs(bitmap.bmHeight);
+                pixels.resize(static_cast<std::size_t>(bitmap.bmWidth) * static_cast<std::size_t>(height));
+                BITMAPINFO bitmapInfo{};
+                bitmapInfo.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+                bitmapInfo.bmiHeader.biWidth = bitmap.bmWidth;
+                bitmapInfo.bmiHeader.biHeight = -height;
+                bitmapInfo.bmiHeader.biPlanes = 1;
+                bitmapInfo.bmiHeader.biBitCount = 32;
+                bitmapInfo.bmiHeader.biCompression = BI_RGB;
+                HDC dc = CreateCompatibleDC(nullptr);
+                if (!dc || GetDIBits(
+                        dc, info.hbmColor, 0, static_cast<UINT>(height), pixels.data(),
+                        &bitmapInfo, DIB_RGB_COLORS) == 0) {
+                    pixels.clear();
+                }
+                if (dc) DeleteDC(dc);
+            }
+            if (info.hbmMask) DeleteObject(info.hbmMask);
+            if (info.hbmColor) DeleteObject(info.hbmColor);
+            return pixels;
+        };
+        HICON fileIcon = CreateTablerIconHandle(firstInstall.appDirectory, MenuIconTablerId(MenuIconFile));
+        HICON folderIcon = CreateTablerIconHandle(firstInstall.appDirectory, MenuIconTablerId(MenuIconFolder));
+        const auto filePixels = iconPixels(fileIcon);
+        const auto folderPixels = iconPixels(folderIcon);
+        Check(!filePixels.empty() && !folderPixels.empty() && filePixels != folderPixels,
+            "DirectWrite private-font rendering produces distinct Tabler glyphs instead of fallback boxes");
+        Check(std::any_of(filePixels.begin(), filePixels.end(), [](std::uint32_t pixel) {
+                return (pixel & 0xFF000000u) != 0;
+            }),
+            "DirectWrite private-font rendering preserves glyph alpha");
+        if (fileIcon) DestroyIcon(fileIcon);
+        if (folderIcon) DestroyIcon(folderIcon);
 
         EmbeddedAssetInstallResult unchangedInstall = PrepareEmbeddedAssets(assetModuleRoot);
         Check(unchangedInstall.failures == 0 && unchangedInstall.filesDecompressed == 0,
@@ -1186,6 +1226,16 @@ int wmain() {
     Check(Near(fallbackTheme.metric(L"edit", L"textHeight", 0.0f), 20.0f), "Theme edit body line height");
     Check(Near(fallbackTheme.metric(L"comboBox", L"itemHeight", 0.0f), 28.0f), "Theme combo item height");
     Check(Near(fallbackTheme.metric(L"tabButton", L"height", 0.0f), 28.0f), "Theme tab height");
+    const Color calendarTodayBackground = fallbackTheme.color(L"calendarDay", L"today", L"bg");
+    const Color calendarSelectedBackground = fallbackTheme.color(L"calendarDay", L"selected", L"bg");
+    const Color calendarSelectedText = fallbackTheme.color(L"calendarDay", L"selected", L"text");
+    Check(
+        std::abs(calendarTodayBackground.r - calendarSelectedBackground.r) > 0.2f ||
+            std::abs(calendarTodayBackground.g - calendarSelectedBackground.g) > 0.2f ||
+            std::abs(calendarTodayBackground.b - calendarSelectedBackground.b) > 0.2f,
+        "Calendar today and selected backgrounds are visually distinct");
+    Check(calendarSelectedText.r > 0.9f && calendarSelectedText.g > 0.9f && calendarSelectedText.b > 0.9f,
+        "Calendar selected date uses inverse text");
     Check(fallbackTheme.color(L"tabButton", L"emphasizedSelected", L"text").r > 0.9f,
         "Theme emphasized tab selected text");
     Check(fallbackTheme.color(L"tabButton", L"minimalSelected", L"underline").b > 0.8f,
@@ -1329,6 +1379,22 @@ int wmain() {
         0, 0, 320, 200, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
     Check(controlParent != nullptr, "Themed control test parent created");
     if (controlParent) {
+        {
+            ThemedWindowUi frameUi(
+                GetModuleHandleW(nullptr), nullptr, controlParent, fallbackTheme,
+                DialogLayoutKind::Compact, 320, 200);
+            HWND framedEdit = frameUi.ui().Edit(7099, RECT{8, 8, 96, 36}, L"1");
+            HWND frameWindow = FindWindowExW(controlParent, nullptr, L"QuattroThemedEditFrame", nullptr);
+            Check(framedEdit != nullptr && frameWindow != nullptr,
+                "Themed edit creates its shared frame window");
+            frameUi.SetEditVisible(framedEdit, false);
+            Check(frameWindow && (GetWindowLongPtrW(frameWindow, GWL_STYLE) & WS_VISIBLE) == 0,
+                "Hiding a themed edit also hides its shared frame window");
+            frameUi.SetEditVisible(framedEdit, true);
+            Check(frameWindow && (GetWindowLongPtrW(frameWindow, GWL_STYLE) & WS_VISIBLE) != 0,
+                "Showing a themed edit also restores its shared frame window");
+            if (framedEdit) DestroyWindow(framedEdit);
+        }
         ThemedUi controlUi(
             GetModuleHandleW(nullptr), controlParent, fallbackTheme,
             reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT)),
@@ -1459,6 +1525,59 @@ int wmain() {
             if (bitmapDc) DeleteDC(bitmapDc);
             if (screen) ReleaseDC(nullptr, screen);
         }
+        {
+            HDC screen = GetDC(nullptr);
+            HDC bitmapDc = screen ? CreateCompatibleDC(screen) : nullptr;
+            HBITMAP bitmap = screen ? CreateCompatibleBitmap(screen, 220, 80) : nullptr;
+            HGDIOBJ oldBitmap = bitmapDc && bitmap ? SelectObject(bitmapDc, bitmap) : nullptr;
+            if (bitmapDc && bitmap) {
+                ThemedGdiFallback::FillSolidRect(bitmapDc, RECT{0, 0, 220, 80}, RGB(255, 255, 255));
+                {
+                    ThemedPaint paint(
+                        nullptr, bitmapDc, fallbackTheme,
+                        reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT)));
+                    Check(paint.d2dReady(), "Semantic paint facade opens a D2D paint session");
+                    paint.Fill(
+                        RECT{2, 2, 218, 78},
+                        ThemedPaintComponent::Panel,
+                        ThemedPaintState::Selected,
+                        ThemedPaintShape::RoundedRectangle);
+                    ThemedPaintTextOptions options;
+                    options.align = ThemedPaintTextAlign::Center;
+                    options.verticalAlign = ThemedPaintVerticalAlign::Center;
+                    paint.DrawText(
+                        L"DWrite semantic paint", RECT{8, 8, 212, 48},
+                        ThemedPaintComponent::Text, ThemedPaintState::Normal, options);
+                    paint.DrawLine({8, 60}, {212, 60});
+                    const SIZE measured = paint.MeasureText(L"semantic paint", 180, false);
+                    Check(measured.cx > 0 && measured.cy > 0,
+                        "Semantic paint facade measures text through the shared backend");
+                }
+                Check(GetPixel(bitmapDc, 4, 4) != RGB(255, 255, 255),
+                    "Semantic D2D paint changes the target surface");
+
+                SetEnvironmentVariableW(L"QUATTRO_FORCE_GDI_FALLBACK", L"1");
+                ThemedGdiFallback::FillSolidRect(bitmapDc, RECT{0, 0, 220, 80}, RGB(255, 255, 255));
+                {
+                    ThemedPaint paint(
+                        nullptr, bitmapDc, fallbackTheme,
+                        reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT)));
+                    Check(!paint.d2dReady(), "Semantic paint facade exposes forced fallback state");
+                    paint.Fill(
+                        RECT{2, 2, 218, 78},
+                        ThemedPaintComponent::Panel,
+                        ThemedPaintState::Normal,
+                        ThemedPaintShape::RoundedRectangle);
+                }
+                SetEnvironmentVariableW(L"QUATTRO_FORCE_GDI_FALLBACK", nullptr);
+                Check(GetPixel(bitmapDc, 4, 4) != RGB(255, 255, 255),
+                    "Semantic paint facade delegates to isolated GDI fallback");
+            }
+            if (bitmapDc && oldBitmap) SelectObject(bitmapDc, oldBitmap);
+            if (bitmap) DeleteObject(bitmap);
+            if (bitmapDc) DeleteDC(bitmapDc);
+            if (screen) ReleaseDC(nullptr, screen);
+        }
         auto catalogStatusBarPaints = [&](const wchar_t* fallbackFlag) {
             HDC screen = GetDC(nullptr);
             HDC bitmapDc = screen ? CreateCompatibleDC(screen) : nullptr;
@@ -1533,6 +1652,33 @@ int wmain() {
         Check(ThemedUi::IsTableChecked(runtimeTable, 1), "Themed table preserves disabled checked state");
         ThemedUi::SetTableChecked(runtimeTable, 1, false);
         Check(ThemedUi::IsTableChecked(runtimeTable, 1), "Themed table public setter leaves disabled rows unchanged");
+
+        ThemedTableOptions twoLineOptions{};
+        twoLineOptions.showHeader = false;
+        twoLineOptions.rowPresentation = ThemedTableRowPresentation::TwoLine;
+        HWND twoLineTable = controlUi.Table(
+            7108,
+            RECT{0, 0, 360, controlUi.tableHeightForRows(2, false, true)},
+            {
+                ThemedTableColumn{L"process", L"Process", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Remaining},
+                ThemedTableColumn{L"action", L"Action", ThemedTableColumnAlign::Center, ThemedTableColumnWidth::Fixed, 76},
+            },
+            twoLineOptions);
+        ThemedTableCell processCell;
+        processCell.text = L"PID 42 Quattro.exe";
+        processCell.secondaryText = L"C:\\Apps\\Quattro.exe";
+        ThemedTableCell processAction;
+        processAction.text = L"结束";
+        processAction.role = ThemedTableCellRole::Action;
+        processAction.actionId = 42;
+        ThemedUi::SetTableRows(twoLineTable, {ThemedTableRow{42, {processCell, processAction}, false, true}});
+        RECT twoLineRowRect{};
+        ListView_GetItemRect(twoLineTable, 0, &twoLineRowRect, LVIR_BOUNDS);
+        Check(twoLineRowRect.bottom - twoLineRowRect.top == controlUi.scale(48),
+            "Themed two-line table uses the shared 48px row template");
+        Check(controlUi.tableHeightForRows(3, false, true) - controlUi.tableHeightForRows(2, false, true)
+                == controlUi.scale(48),
+            "Themed two-line table height helper advances by the shared row template");
 
         ThemedTableOptions updateNotificationOptions{};
         updateNotificationOptions.checkable = true;
@@ -2046,7 +2192,16 @@ int wmain() {
           "Tabler manifest contains split-button chevron");
     Check(TablerIconGlyph(TablerIconId::ChevronRight) != L'\0',
           "Tabler manifest contains submenu chevron");
-    Check(MenuIconFor(ID_MENU_TOOL_BASE + 2, L"秒表") == MenuIconTools, "Builtin tool dynamic icon");
+    Check(MenuIconForToolEngine(L"clicker") == MenuIconRun, "Clicker tool menu icon");
+    Check(MenuIconForToolEngine(L"timer") == MenuIconHistory, "Timer tool menu icon");
+    Check(MenuIconForToolEngine(L"stopwatch") == MenuIconCalculator, "Stopwatch tool menu icon");
+    Check(MenuIconForToolEngine(L"process-tools") == MenuIconComputer, "Process tool menu icon");
+    Check(MenuIconForToolEngine(L"app-launch-locker") == MenuIconRestart, "Startup manager tool menu icon");
+    Check(MenuIconForToolEngine(L"ad-block") == MenuIconShield, "Ad blocker tool menu icon");
+    Check(MenuIconForToolEngine(L"unknown") == MenuIconTools, "Unknown tool menu icon fallback");
+    const ThemedSplitButtonMenuItem folderMenuItem{701, L"选择文件夹", true, TablerIconId::Folder};
+    Check(folderMenuItem.icon == TablerIconId::Folder && TablerIconGlyph(folderMenuItem.icon) != L'\0',
+        "Split button menu item carries a strong typed Tabler icon");
     Check(MenuIconFor(ID_MENU_ALL_LAYOUT_LIST, L"列表") == MenuIconList, "List layout icon");
     Check(MenuIconFor(ID_MENU_ALL_LAYOUT_TILE, L"平铺") == MenuIconTile, "Tile layout icon");
     Check(std::filesystem::exists(L"icons/menu/tabler/tabler-icons.ttf"), "Local menu icon font exists");

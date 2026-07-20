@@ -620,6 +620,15 @@ void ThemedWindowUi::SetEditEnabled(HWND child, bool enabled) {
     InvalidateEditFrame(child);
 }
 
+void ThemedWindowUi::SetEditVisible(HWND child, bool visible) {
+    if (!child) return;
+    ShowWindow(child, visible ? SW_SHOWNA : SW_HIDE);
+    if (EditFrame* editFrame = FindEditFrame(child)) {
+        SyncEditFrameWindow(*editFrame);
+        InvalidateRect(hwnd_, &editFrame->frame, TRUE);
+    }
+}
+
 void ThemedWindowUi::SetEditPlaceholder(HWND child, const std::wstring& placeholder) {
     EditFrame* editFrame = FindEditFrame(child);
     if (!editFrame) {

@@ -174,6 +174,7 @@ struct MenuVisualRequirement {
 };
 
 int MenuIconFor(UINT_PTR id, const std::wstring& text);
+int MenuIconForToolEngine(const std::wstring& engine);
 const wchar_t* MenuIconName(MenuIcon icon);
 bool MenuIconIsRenderable(MenuIcon icon);
 TablerIconManifest::Id MenuIconTablerId(MenuIcon icon);
