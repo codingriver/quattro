@@ -71,6 +71,7 @@ struct AppConfig {
     bool trackTraeContextMenu = false;
     bool trackZedContextMenu = false;
     bool trackVimContextMenu = false;
+    bool registerCopyPathContextMenu = false;
 
     bool mouseEnterActiveGroup = false;
     bool mouseEnterActiveTag = false;

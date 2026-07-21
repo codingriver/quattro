@@ -94,6 +94,7 @@ constexpr int ID_LOGGING_ENABLED = 432;
 constexpr int ID_RESET_CONTEXT_MENU = 440;
 constexpr int ID_REFRESH_CONTEXT_MENU_FROM_NATIVE = 449;
 constexpr int ID_CONTEXT_MENU_TABLE = 447;
+constexpr int ID_REGISTER_COPY_PATH_CONTEXT_MENU = 448;
 constexpr int ID_HIDE_MAIN_AFTER_TOOL_OPEN = 451;
 constexpr int ID_MESSAGE_TEXT = 501;
 constexpr int ID_HOTKEY_CONFLICT_IGNORE = 502;
@@ -1953,7 +1954,8 @@ public:
         std::vector<Link> contextMenuLinks,
         SettingsContextMenuRefreshRunner contextMenuRefreshRunner,
         SettingsContextMenuRefreshApplyCallback contextMenuRefreshApplyCallback,
-        SettingsContextMenuProviderIconRunner contextMenuProviderIconRunner)
+        SettingsContextMenuProviderIconRunner contextMenuProviderIconRunner,
+        SettingsCopyPathContextMenuCallback copyPathContextMenuCallback)
         : owner_(owner),
           instance_(instance),
           config_(config),
@@ -1970,7 +1972,8 @@ public:
           contextMenuLinks_(std::move(contextMenuLinks)),
           contextMenuRefreshRunner_(std::move(contextMenuRefreshRunner)),
           contextMenuRefreshApplyCallback_(std::move(contextMenuRefreshApplyCallback)),
-          contextMenuProviderIconRunner_(std::move(contextMenuProviderIconRunner)) {}
+          contextMenuProviderIconRunner_(std::move(contextMenuProviderIconRunner)),
+          copyPathContextMenuCallback_(std::move(copyPathContextMenuCallback)) {}
 
     ~SettingsDialog() {
         AbandonContextMenuIconLoad();
@@ -2066,6 +2069,15 @@ private:
 
     HWND StatusBadge(int tab, const wchar_t* text, int x, int y, int width, ThemedStatusRole role) {
         HWND hwnd = MakeUi().StatusBadge(text, x, ContentY(y), width, role);
+        AddTabChild(hwnd, tab);
+        return hwnd;
+    }
+
+    HWND StatusText(int tab, const wchar_t* text, int x, int y, int width, ThemedStatusRole role) {
+        ThemedStatusTextOptions options{};
+        options.role = role;
+        options.align = ThemedTextAlign::Start;
+        HWND hwnd = MakeUi().StatusText(text, x, ContentY(y), width, options);
         AddTabChild(hwnd, tab);
         return hwnd;
     }
@@ -2250,6 +2262,21 @@ private:
                 },
             },
         });
+    }
+
+    void UpdateCopyPathContextMenuStatus(bool enabled) {
+        if (registerCopyPathContextMenu_) {
+            ThemedUi::SetChecked(registerCopyPathContextMenu_, enabled);
+        }
+        if (!copyPathContextMenuStatus_) {
+            return;
+        }
+        SetWindowTextW(
+            copyPathContextMenuStatus_,
+            enabled ? L"已注册；Quattro 未运行时也可使用。" : L"未注册。");
+        MakeUi().SetStatusTextRole(
+            copyPathContextMenuStatus_,
+            enabled ? ThemedStatusRole::Success : ThemedStatusRole::Normal);
     }
 
     void EnsureContextMenuProviderState() {
@@ -2601,6 +2628,7 @@ private:
             break;
         case TabContextMenu: {
             ReadContextMenuTableDraft(value);
+            value.registerCopyPathContextMenu = ThemedUi::IsChecked(registerCopyPathContextMenu_);
             break;
         }
         case TabInteraction:
@@ -3556,8 +3584,24 @@ private:
         if (currentTab_ == TabWebDav && !SaveWebDavPasswordIfNeeded(next)) {
             return false;
         }
+        if (next.registerCopyPathContextMenu != config_.registerCopyPathContextMenu &&
+            copyPathContextMenuCallback_) {
+            std::wstring error;
+            if (!copyPathContextMenuCallback_(next.registerCopyPathContextMenu, error)) {
+                ShowThemedMessageBox(
+                    hwnd_,
+                    instance_,
+                    theme_,
+                    error.empty() ? L"更新资源管理器右键菜单失败。" : error,
+                    L"复制绝对路径右键菜单",
+                    MB_OK | MB_ICONWARNING);
+                UpdateCopyPathContextMenuStatus(config_.registerCopyPathContextMenu);
+                return false;
+            }
+        }
 
         config_ = next;
+        UpdateCopyPathContextMenuStatus(config_.registerCopyPathContextMenu);
         if (!closeAfterCommit && applyCallback_) {
             mainHotKeyRegistered_ = applyCallback_(config_, importedData_);
             processLocatorHotKeyRegistered_ = config_.globalHotKeysEnabled && config_.processLocatorHotKey != 0;
@@ -3732,12 +3776,39 @@ private:
             loggingEnabled_ = CheckBox(TabBehavior, ID_LOGGING_ENABLED, L"启用日志", behaviorLeft + behaviorRunColumnWidth * 2, behaviorSystemFirstY, draft_.loggingEnabled, behaviorContentWidth - behaviorRunColumnWidth * 2);
             ThemedUi::BindGroupChildren(behaviorSystemGroup, {hideOnStart_, autoRun_, loggingEnabled_});
 
-            // 表格固定显示 7 行高度，更多 provider 由 ListView 垂直滚动承载，
+            const ThemedSectionGeometry contextMenuIntegrationSection = behaviorForm.section(
+                behaviorFrameLeft, pageTop, behaviorFrameWidth,
+                {behaviorForm.sectionRow({ThemedSectionItemKind::CheckBox}),
+                 behaviorForm.sectionRow({ThemedSectionItemKind::Text})});
+            HWND contextMenuIntegrationGroup = AddSectionFrame(
+                TabContextMenu, L"系统集成", contextMenuIntegrationSection.frame);
+            registerCopyPathContextMenu_ = CheckBox(
+                TabContextMenu,
+                ID_REGISTER_COPY_PATH_CONTEXT_MENU,
+                L"注册“复制绝对路径”右键菜单",
+                behaviorLeft,
+                behaviorForm.sectionItemY(contextMenuIntegrationSection, 0, behaviorCheckHeight),
+                draft_.registerCopyPathContextMenu,
+                behaviorContentWidth);
+            copyPathContextMenuStatus_ = StatusText(
+                TabContextMenu,
+                draft_.registerCopyPathContextMenu ? L"已注册；Quattro 未运行时也可使用。" : L"未注册。",
+                behaviorLeft,
+                behaviorForm.sectionItemY(contextMenuIntegrationSection, 1, settingsUi.labelHeight()),
+                behaviorContentWidth,
+                draft_.registerCopyPathContextMenu ? ThemedStatusRole::Success : ThemedStatusRole::Normal);
+            ThemedUi::BindGroupChildren(
+                contextMenuIntegrationGroup, {registerCopyPathContextMenu_, copyPathContextMenuStatus_});
+
+            // 表格固定显示 5 行高度，更多 provider 由 ListView 垂直滚动承载，
             // 对话框高度不随 provider 数量增长。
-            constexpr int kContextMenuVisibleRows = 7;
+            constexpr int kContextMenuVisibleRows = 5;
             const int contextMenuTableHeight = settingsUi.tableHeightForRows(kContextMenuVisibleRows, false);
             const ThemedSectionGeometry contextMenuTrackingSection = behaviorForm.contentSection(
-                behaviorFrameLeft, pageTop, behaviorFrameWidth, contextMenuTableHeight);
+                behaviorFrameLeft,
+                contextMenuIntegrationSection.frame.bottom + behaviorFrameGap,
+                behaviorFrameWidth,
+                contextMenuTableHeight);
             HWND contextMenuTrackingGroup = AddSectionFrame(TabContextMenu, L"自动跟踪", contextMenuTrackingSection.frame);
             RECT contextMenuTableFrame{
                 contextMenuTrackingSection.content.left,
@@ -4169,6 +4240,14 @@ private:
                 ShowTab(ThemedUi::ActiveTab(settingsTabs_));
                 return 0;
             }
+        if (LOWORD(wParam) == ID_REGISTER_COPY_PATH_CONTEXT_MENU && HIWORD(wParam) == BN_CLICKED) {
+            const bool enabled = ThemedUi::IsChecked(registerCopyPathContextMenu_);
+            SetWindowTextW(
+                copyPathContextMenuStatus_,
+                enabled ? L"保存设置后注册。" : L"保存设置后移除。" );
+            MakeUi().SetStatusTextRole(copyPathContextMenuStatus_, ThemedStatusRole::Warning);
+            return 0;
+        }
         if (LOWORD(wParam) >= ID_TAG_ALIGN_LEFT && LOWORD(wParam) <= ID_TAG_ALIGN_RIGHT) {
             tagAlignIndex_ = static_cast<int>(LOWORD(wParam) - ID_TAG_ALIGN_LEFT);
             UpdateTagAlignButtons();
@@ -4403,6 +4482,8 @@ private:
     HWND showSkinButton_ = nullptr;
     HWND autoRun_ = nullptr;
     HWND loggingEnabled_ = nullptr;
+    HWND registerCopyPathContextMenu_ = nullptr;
+    HWND copyPathContextMenuStatus_ = nullptr;
     HWND contextMenuTable_ = nullptr;
     HWND resetContextMenuButton_ = nullptr;
     HWND refreshContextMenuButton_ = nullptr;
@@ -4476,6 +4557,7 @@ private:
     SettingsContextMenuRefreshRunner contextMenuRefreshRunner_;
     SettingsContextMenuRefreshApplyCallback contextMenuRefreshApplyCallback_;
     SettingsContextMenuProviderIconRunner contextMenuProviderIconRunner_;
+    SettingsCopyPathContextMenuCallback copyPathContextMenuCallback_;
     std::jthread contextMenuRefreshThread_;
     std::mutex contextMenuRefreshMutex_;
     std::optional<ShellContextMenuRefreshResult> contextMenuRefreshResult_;
@@ -4534,7 +4616,8 @@ bool ShowSettingsDialog(
     const std::vector<Link>& contextMenuLinks,
     SettingsContextMenuRefreshRunner contextMenuRefreshRunner,
     SettingsContextMenuRefreshApplyCallback contextMenuRefreshApplyCallback,
-    SettingsContextMenuProviderIconRunner contextMenuProviderIconRunner) {
+    SettingsContextMenuProviderIconRunner contextMenuProviderIconRunner,
+    SettingsCopyPathContextMenuCallback copyPathContextMenuCallback) {
     SettingsDialog dialog(
         owner,
         instance,
@@ -4551,7 +4634,8 @@ bool ShowSettingsDialog(
         contextMenuLinks,
         std::move(contextMenuRefreshRunner),
         std::move(contextMenuRefreshApplyCallback),
-        std::move(contextMenuProviderIconRunner));
+        std::move(contextMenuProviderIconRunner),
+        std::move(copyPathContextMenuCallback));
     const bool accepted = dialog.Run();
     if (importedData) {
         *importedData = dialog.webDavDataImported();

@@ -489,6 +489,7 @@ add_executable(Quattro WIN32
     src/domain/TrackedContextMenuProviders.cpp
     src/services/ConfigPackageService.cpp
     src/services/ContextMenuProviderIconService.cpp
+    src/services/ExplorerCopyPathContextMenuService.cpp
     src/common/FileDialog.cpp
     src/services/FileLockQueryService.cpp
     src/common/EmbeddedAssetInstaller.cpp
@@ -577,6 +578,7 @@ add_executable(QuattroTests
     src/domain/TrackedContextMenuProviders.cpp
     src/services/ConfigPackageService.cpp
     src/services/ContextMenuProviderIconService.cpp
+    src/services/ExplorerCopyPathContextMenuService.cpp
     src/common/FileDialog.cpp
     src/services/FileLockQueryService.cpp
     src/services/Launcher.cpp

@@ -25,5 +25,8 @@ class SelectedPathCopyService {
 public:
     static std::wstring FormatPaths(const std::vector<std::wstring>& paths);
     static bool WriteClipboardText(HWND owner, const std::wstring& text, std::wstring& errorMessage);
+    static SelectedPathCopyResult CopyExplicitPaths(
+        const std::vector<std::wstring>& paths,
+        HWND clipboardOwner);
     static SelectedPathCopyResult CopySelectedPaths(HWND foregroundWindow, HWND clipboardOwner);
 };

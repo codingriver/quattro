@@ -220,6 +220,31 @@ bool SelectedPathCopyService::WriteClipboardText(HWND owner, const std::wstring&
     return success;
 }
 
+SelectedPathCopyResult SelectedPathCopyService::CopyExplicitPaths(
+    const std::vector<std::wstring>& sourcePaths,
+    HWND clipboardOwner) {
+    std::vector<std::wstring> paths;
+    paths.reserve(sourcePaths.size());
+    for (const auto& path : sourcePaths) {
+        if (path.empty()) {
+            continue;
+        }
+        if (PathIsRelativeW(path.c_str())) {
+            return {SelectedPathCopyStatus::NonFileSystemItem, 0, L"路径不是绝对路径：" + path};
+        }
+        paths.push_back(path);
+    }
+    if (paths.empty()) {
+        return {SelectedPathCopyStatus::NoSelection, 0, L"没有提供可复制的路径。"};
+    }
+
+    std::wstring clipboardError;
+    if (!WriteClipboardText(clipboardOwner, FormatPaths(paths), clipboardError)) {
+        return {SelectedPathCopyStatus::ClipboardUnavailable, 0, std::move(clipboardError)};
+    }
+    return {SelectedPathCopyStatus::Success, paths.size(), {}};
+}
+
 SelectedPathCopyResult SelectedPathCopyService::CopySelectedPaths(HWND foregroundWindow, HWND clipboardOwner) {
     if (!foregroundWindow) {
         return {SelectedPathCopyStatus::UnsupportedForegroundWindow, 0, {}};
@@ -249,10 +274,5 @@ SelectedPathCopyResult SelectedPathCopyService::CopySelectedPaths(HWND foregroun
         return result;
     }
 
-    std::wstring clipboardError;
-    if (!WriteClipboardText(clipboardOwner, FormatPaths(paths), clipboardError)) {
-        return {SelectedPathCopyStatus::ClipboardUnavailable, 0, std::move(clipboardError)};
-    }
-    result.copiedCount = paths.size();
-    return result;
+    return CopyExplicitPaths(paths, clipboardOwner);
 }

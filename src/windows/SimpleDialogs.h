@@ -23,6 +23,7 @@ using SettingsContextMenuRefreshApplyCallback = std::function<void(
     const ShellContextMenuRefreshResult&)>;
 using SettingsContextMenuProviderIconRunner = std::function<std::vector<ContextMenuProviderIconInfo>(
     std::stop_token)>;
+using SettingsCopyPathContextMenuCallback = std::function<bool(bool, std::wstring&)>;
 
 bool ShowTextInputDialog(HWND owner, HINSTANCE instance, const Theme& theme, const std::wstring& title, const std::wstring& label, std::wstring& value);
 int ShowThemedMessageBox(HWND owner, HINSTANCE instance, const Theme& theme, const std::wstring& message, const std::wstring& title, UINT flags);
@@ -55,4 +56,5 @@ bool ShowSettingsDialog(
     const std::vector<Link>& contextMenuLinks = {},
     SettingsContextMenuRefreshRunner contextMenuRefreshRunner = {},
     SettingsContextMenuRefreshApplyCallback contextMenuRefreshApplyCallback = {},
-    SettingsContextMenuProviderIconRunner contextMenuProviderIconRunner = {});
+    SettingsContextMenuProviderIconRunner contextMenuProviderIconRunner = {},
+    SettingsCopyPathContextMenuCallback copyPathContextMenuCallback = {});

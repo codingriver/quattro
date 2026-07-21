@@ -7,6 +7,7 @@
 #include "../src/domain/LinkSorting.h"
 #include "../src/services/ConfigPackageService.h"
 #include "../src/services/ContextMenuProviderIconService.h"
+#include "../src/services/ExplorerCopyPathContextMenuService.h"
 #include "../src/services/FileLockQueryService.h"
 #include "../src/services/Launcher.h"
 #include "../src/domain/MenuCatalog.h"
@@ -306,6 +307,42 @@ int wmain() {
     Check(SelectedPathCopyService::FormatPaths({L"C:\\single.txt"}) == L"C:\\single.txt",
         "Single selected path has no separator");
     Check(SelectedPathCopyService::FormatPaths({}).empty(), "Empty selected path list formats empty");
+    Check(
+        SelectedPathCopyService::CopyExplicitPaths({L"relative\\file.txt"}, nullptr).status ==
+            SelectedPathCopyStatus::NonFileSystemItem,
+        "Explicit selected paths reject relative paths");
+
+    const std::filesystem::path contextMenuExe = L"C:\\Program Files\\Quattro 测试\\Quattro.exe";
+    Check(
+        ExplorerCopyPathContextMenuService::BuildCommand(contextMenuExe) ==
+            L"\"C:\\Program Files\\Quattro 测试\\Quattro.exe\" --copy-absolute-path \"%1\"",
+        "Copy path context menu command quotes executable and shell item");
+    Check(
+        ExplorerCopyPathContextMenuService::BuildIconValue(contextMenuExe) ==
+            L"\"C:\\Program Files\\Quattro 测试\\Quattro.exe\",0",
+        "Copy path context menu icon quotes executable");
+    {
+        const std::wstring testKey =
+            L"Software\\Quattro\\Tests\\CopyPathMenu_" + std::to_wstring(GetCurrentProcessId());
+        ExplorerCopyPathContextMenuService contextMenuService(HKEY_CURRENT_USER, testKey, false);
+        std::wstring registryError;
+        contextMenuService.Unregister(registryError);
+        Check(contextMenuService.Register(contextMenuExe, registryError),
+            "Copy path context menu registers in isolated registry key");
+        ExplorerCopyPathContextMenuState state = contextMenuService.Query(contextMenuExe);
+        Check(state.registered && state.matchesExecutable,
+            "Copy path context menu query matches registered executable");
+        const std::filesystem::path movedExe = L"D:\\Portable Apps\\Quattro.exe";
+        Check(contextMenuService.Reconcile(true, movedExe, registryError),
+            "Copy path context menu reconcile repairs moved executable");
+        state = contextMenuService.Query(movedExe);
+        Check(state.registered && state.matchesExecutable,
+            "Copy path context menu repaired registration matches moved executable");
+        Check(contextMenuService.Unregister(registryError),
+            "Copy path context menu unregisters isolated registry key");
+        Check(!contextMenuService.Query(movedExe).registered,
+            "Copy path context menu removes only its isolated key");
+    }
 
     const std::wstring clipboardPaths = L"C:\\资料\\报告.docx\r\nD:\\项目";
     std::wstring clipboardError;
@@ -557,6 +594,7 @@ int wmain() {
     Check(!config.hideMainAfterToolOpen, "Config default keep main after tool open");
     Check(!config.hideOnStart, "Config default hide on start");
     Check(!config.autoRun, "Config default auto run");
+    Check(!config.registerCopyPathContextMenu, "Config default copy path context menu disabled");
     Check(config.loggingEnabled, "Config default logging enabled");
     for (const auto& provider : TrackedContextMenuProviders()) {
         Check(!(config.*(provider.configMember)), "Config default context menu tracking disabled");
@@ -585,6 +623,7 @@ int wmain() {
     config.httpServerPort = 45211;
     config.httpServerRootPath = L"C:\\QuattroWeb";
     config.copySelectedPathsHotKey = L'X';
+    config.registerCopyPathContextMenu = true;
     service.Save(config);
 
     AppConfig loaded = service.Load();
@@ -609,6 +648,7 @@ int wmain() {
     Check(loaded.httpServerPort == 45211, "Config http port");
     Check(loaded.httpServerRootPath == L"C:\\QuattroWeb", "Config http root");
     Check(loaded.copySelectedPathsHotKey == L'X', "Config copy selected paths hotkey round trip");
+    Check(loaded.registerCopyPathContextMenu, "Config copy path context menu round trip");
     Check(FileExists(unitUserConfigRoot / L"webdav.ini"), "Config webdav stored in user config directory");
     Check(FileExists(unitUserConfigRoot / L"http.ini"), "Config http stored in user config directory");
     Check(FileExists(unitUserConfigRoot / L"context-menu.ini"), "Context menu settings stored in user config directory");

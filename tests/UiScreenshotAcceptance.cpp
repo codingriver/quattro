@@ -4405,7 +4405,7 @@ int wmain() {
             false,
             false,
             false,
-            {L"自动跟踪", L"缓存维护", L"重置右键菜单"},
+            {L"系统集成", L"注册“复制绝对路径”右键菜单", L"未注册。", L"自动跟踪", L"缓存维护", L"重置右键菜单"},
             L"右键菜单"};
         settingsScenario.unexpectedVisibleChildTexts = {
             L"恢复跟踪开关默认值，并清除全部菜单列表、状态与图标缓存。",
@@ -4508,7 +4508,7 @@ int wmain() {
             false,
             false,
             true,
-            {L"自动跟踪", L"缓存维护", L"获取图标中..."},
+            {L"系统集成", L"注册“复制绝对路径”右键菜单", L"未注册。", L"自动跟踪", L"缓存维护", L"获取图标中..."},
             L"右键菜单"};
         nonBlockingScenario.waitForContextMenuIconLoad = false;
         std::atomic_bool slowIconRunnerStarted{false};
@@ -4582,7 +4582,7 @@ int wmain() {
             false,
             false,
             false,
-            {L"自动跟踪", L"缓存维护", L"扫描中..."},
+            {L"系统集成", L"注册“复制绝对路径”右键菜单", L"未注册。", L"自动跟踪", L"缓存维护", L"扫描中..."},
             L"右键菜单"};
         busyScenario.actionButtonText = L"从Windows菜单刷新";
         busyScenario.closeDelayMs = 700;
@@ -4879,7 +4879,7 @@ int wmain() {
     const std::vector<std::pair<std::wstring, std::vector<std::wstring>>> settingsPages{
         {L"显示", {L"界面元素", L"布局与外观", L"显示标题栏", L"透明度", L"标签文字", L"分组宽度"}},
         {L"行为", {L"窗口行为", L"未贴边时，打开工具后隐藏主窗口", L"运行与数据", L"系统集成", L"启动后隐藏", L"开机启动", L"启用日志"}},
-        {L"右键菜单", {L"自动跟踪", L"缓存维护", L"重置右键菜单"}},
+        {L"右键菜单", {L"系统集成", L"注册“复制绝对路径”右键菜单", L"未注册。", L"自动跟踪", L"缓存维护", L"重置右键菜单"}},
         {L"交互", {L"启动操作", L"悬停激活", L"双击运行", L"分组激活延迟", L"标签激活延迟"}},
         {L"热键", {L"全局快捷键", L"启用全局快捷键", L"主窗口显隐", L"进程定位器", L"复制选中项绝对路径"}},
         {L"链接", {L"目录命令", L"公共链接", L"打开目录命令", L"帮助链接", L"更新链接", L"FAQ 链接"}},

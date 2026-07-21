@@ -3,7 +3,9 @@
 #include "AppLog.h"
 #include "EmbeddedAssetInstaller.h"
 #include "Elevation.h"
+#include "ExplorerCopyPathContextMenuService.h"
 #include "MainWindow.h"
+#include "SelectedPathCopyService.h"
 #include "SimpleDialogs.h"
 #include "Storage.h"
 #include "Theme.h"
@@ -19,6 +21,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -72,6 +75,30 @@ std::wstring CurrentExecutablePath() {
         }
         buffer.resize(buffer.size() * 2);
     }
+}
+
+std::optional<int> TryRunCopyAbsolutePathCommand() {
+    int argc = 0;
+    LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    if (!argv) {
+        return std::nullopt;
+    }
+    if (argc < 2 || std::wstring(argv[1]) != L"--copy-absolute-path") {
+        LocalFree(argv);
+        return std::nullopt;
+    }
+
+    std::vector<std::wstring> paths;
+    paths.reserve(argc > 2 ? static_cast<std::size_t>(argc - 2) : 0);
+    for (int index = 2; index < argc; ++index) {
+        if (argv[index] && *argv[index]) {
+            paths.emplace_back(argv[index]);
+        }
+    }
+    LocalFree(argv);
+
+    const SelectedPathCopyResult result = SelectedPathCopyService::CopyExplicitPaths(paths, nullptr);
+    return result.status == SelectedPathCopyStatus::Success ? 0 : 2;
 }
 
 std::wstring NormalizeProcessPath(std::wstring path) {
@@ -599,6 +626,9 @@ std::wstring TestScopedSingleInstanceName(std::wstring name) {
 }
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
+    if (const std::optional<int> commandResult = TryRunCopyAbsolutePathCommand()) {
+        return *commandResult;
+    }
     ResetStartupTiming();
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 
@@ -620,6 +650,17 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
         ~AppLogShutdownGuard() { ShutdownAppLog(); }
     } appLogShutdownGuard;
     WriteAppLog(L"应用启动。pid=" + CurrentPidText());
+    {
+        ExplorerCopyPathContextMenuService contextMenuService =
+            ExplorerCopyPathContextMenuService::ForCurrentProcess();
+        std::wstring contextMenuError;
+        if (!contextMenuService.Reconcile(
+                config.registerCopyPathContextMenu,
+                ExplorerCopyPathContextMenuService::CurrentExecutablePath(),
+                contextMenuError)) {
+            WriteAppLog(L"复制绝对路径右键菜单对账失败: " + contextMenuError);
+        }
+    }
     WriteStartupTiming(
         L"app directory ready",
         L"module=" + moduleDirectory.wstring() +

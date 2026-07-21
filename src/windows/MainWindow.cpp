@@ -4,6 +4,7 @@
 #include "AppLog.h"
 #include "BuiltinTools.h"
 #include "EmbeddedExecutableManager.h"
+#include "ExplorerCopyPathContextMenuService.h"
 #include "Elevation.h"
 #include "FileDialog.h"
 #include "HotKeyEditor.h"
@@ -5209,6 +5210,14 @@ void MainWindow::OpenSettings() {
         }
         shellContextMenuCache_.UpdateBatch(cacheUpdates);
     };
+    auto updateCopyPathContextMenu = [](bool enabled, std::wstring& error) -> bool {
+        ExplorerCopyPathContextMenuService service =
+            ExplorerCopyPathContextMenuService::ForCurrentProcess();
+        return service.Reconcile(
+            enabled,
+            ExplorerCopyPathContextMenuService::CurrentExecutablePath(),
+            error);
+    };
     if (!ShowSettingsDialog(
             hwnd_,
             instance_,
@@ -5225,7 +5234,9 @@ void MainWindow::OpenSettings() {
             resetContextMenu,
             model_.links,
             {},
-            applyContextMenuRefresh)) {
+            applyContextMenuRefresh,
+            {},
+            updateCopyPathContextMenu)) {
         if (importedData) {
             model_ = storageService_.Load();
             RestoreLegacyBuiltinSystemFunctionKeys();
@@ -5243,6 +5254,19 @@ void MainWindow::OpenSettings() {
 void MainWindow::CommitSettingsConfig(const AppConfig& next, bool importedData) {
     AppConfig previous = config_;
     config_ = next;
+    if (previous.registerCopyPathContextMenu != config_.registerCopyPathContextMenu) {
+        ExplorerCopyPathContextMenuService service =
+            ExplorerCopyPathContextMenuService::ForCurrentProcess();
+        std::wstring error;
+        if (!service.Reconcile(
+                config_.registerCopyPathContextMenu,
+                ExplorerCopyPathContextMenuService::CurrentExecutablePath(),
+                error)) {
+            config_.registerCopyPathContextMenu = previous.registerCopyPathContextMenu;
+            WriteAppLog(L"更新复制绝对路径右键菜单失败: " + error);
+            ShowToast(L"资源管理器右键菜单更新失败，设置已回退。", ThemedToastRole::Warning);
+        }
+    }
     configService_.Save(config_);
     for (const auto& provider : TrackedContextMenuProviders()) {
         if (previous.*(provider.configMember) && !(config_.*(provider.configMember))) {
