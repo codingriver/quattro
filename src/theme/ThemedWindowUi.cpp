@@ -286,14 +286,18 @@ HWND ThemedWindowUi::CreateWindowHandle(const ThemedWindowCreateOptions& options
     const UINT dpi = TargetDpi(options);
     const int clientWidth = options.scaleForDpi ? ScaleForDpi(options.clientWidth, dpi, options.logicalDpi) : options.clientWidth;
     const int clientHeight = options.scaleForDpi ? ScaleForDpi(options.clientHeight, dpi, options.logicalDpi) : options.clientHeight;
+    DWORD style = options.style;
+    if (options.resizable) style |= WS_THICKFRAME;
+    if (options.maximizable) style |= WS_MAXIMIZEBOX;
+    if (options.minimizable) style |= WS_MINIMIZEBOX;
     const DWORD exStyle = EffectiveExStyle(options, BackgroundAcceptanceMode());
-    const SIZE windowSize = AdjustedWindowSize(clientWidth, clientHeight, options.style, exStyle, false, dpi);
+    const SIZE windowSize = AdjustedWindowSize(clientWidth, clientHeight, style, exStyle, false, dpi);
     const POINT position = WindowPosition(options, windowSize.cx, windowSize.cy);
     HWND hwnd = CreateWindowExW(
         exStyle,
         options.className,
         options.title ? options.title : L"",
-        options.style,
+        style,
         position.x,
         position.y,
         windowSize.cx,

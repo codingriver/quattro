@@ -42,6 +42,9 @@ struct ThemedWindowCreateOptions {
     HCURSOR cursor = nullptr;
     bool scaleForDpi = true;
     bool topMost = false;
+    bool resizable = false;
+    bool maximizable = false;
+    bool minimizable = false;
     UINT logicalDpi = USER_DEFAULT_SCREEN_DPI;
 };
 
@@ -115,7 +118,7 @@ public:
     bool HandleMessage(UINT message, WPARAM wParam, LPARAM lParam, LRESULT& result);
     void RegisterEditFrame(HWND child, RECT frame, const ThemedEditOptions& options) override;
     void RegisterTableFrame(HWND child, RECT frame) override;
-    void UnregisterTableFrame(HWND child);
+    void UnregisterTableFrame(HWND child) override;
     void UnregisterEditFrame(HWND child);
     void MoveEditFrame(HWND child, RECT frame);
     void SetEditFrameState(HWND child, bool readOnly, bool error);

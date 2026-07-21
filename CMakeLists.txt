@@ -355,6 +355,7 @@ add_library(QuattroThemedUi STATIC
     src/theme/ThemedControls.cpp
     src/theme/ThemedMessageBox.cpp
     src/theme/ThemedTaskProgressDialog.cpp
+    src/theme/ThemedFileTransferQueueDialog.cpp
     src/theme/ThemedUi.cpp
     src/theme/TablerIconFacade.cpp
     src/theme/ThemedWindowUi.cpp
@@ -530,7 +531,9 @@ add_executable(Quattro WIN32
     src/services/WebDavCredentialService.cpp
     src/services/WebDavRecoveryService.cpp
     src/services/WebDavFileService.cpp
-    src/services/WebDavTransferProgressController.cpp
+    src/services/WebDavFileIndexCache.cpp
+    src/services/WebDavTransferQueueController.cpp
+    src/services/WebDavTransferCoordinator.cpp
 )
 
 set_target_properties(Quattro PROPERTIES
@@ -604,7 +607,9 @@ add_executable(QuattroTests
     src/services/WebDavCredentialService.cpp
     src/services/WebDavRecoveryService.cpp
     src/services/WebDavFileService.cpp
-    src/services/WebDavTransferProgressController.cpp
+    src/services/WebDavFileIndexCache.cpp
+    src/services/WebDavTransferQueueController.cpp
+    src/services/WebDavTransferCoordinator.cpp
 )
 
 add_executable(QuattroNoteTodoAcceptance
@@ -702,7 +707,9 @@ add_executable(QuattroUiScreenshotAcceptance
     src/services/WebDavCredentialService.cpp
     src/services/WebDavRecoveryService.cpp
     src/services/WebDavFileService.cpp
-    src/services/WebDavTransferProgressController.cpp
+    src/services/WebDavFileIndexCache.cpp
+    src/services/WebDavTransferQueueController.cpp
+    src/services/WebDavTransferCoordinator.cpp
 )
 
 add_executable(QuattroAboutTrayExitAcceptance
@@ -735,7 +742,9 @@ add_executable(QuattroWebDavAcceptance
     src/services/WebDavCredentialService.cpp
     src/services/WebDavRecoveryService.cpp
     src/services/WebDavFileService.cpp
-    src/services/WebDavTransferProgressController.cpp
+    src/services/WebDavFileIndexCache.cpp
+    src/services/WebDavTransferQueueController.cpp
+    src/services/WebDavTransferCoordinator.cpp
 )
 
 target_compile_definitions(QuattroTests PRIVATE
@@ -1231,7 +1240,9 @@ add_executable(QuattroSettingsHttpButtonsAcceptance
     src/services/WebDavCredentialService.cpp
     src/services/WebDavRecoveryService.cpp
     src/services/WebDavFileService.cpp
-    src/services/WebDavTransferProgressController.cpp
+    src/services/WebDavFileIndexCache.cpp
+    src/services/WebDavTransferQueueController.cpp
+    src/services/WebDavTransferCoordinator.cpp
 )
 
 target_compile_definitions(QuattroSettingsHttpButtonsAcceptance PRIVATE

@@ -126,7 +126,7 @@ void ThemedTaskProgressDialog::CreateControls() {
     const int left = ui.contentLeft();
     int y = layout.contentInsetY;
     status_ = ui.StatusText(options_.initialStatus, left, y, ui.contentWidth(),
-        ThemedStatusTextOptions{ThemedStatusRole::Info, ThemedTextAlign::Center});
+        ThemedStatusTextOptions{ThemedStatusRole::Info, ThemedTextAlign::Start});
     y = ui.nextRowY(y, ui.labelHeight());
     detail_ = ui.Label(options_.initialDetail, left, y, ui.contentWidth());
     y += ui.labelHeight() + layout.sectionGap;
@@ -143,15 +143,19 @@ void ThemedTaskProgressDialog::Refresh() {
     snapshot.detail = options_.initialDetail;
     if (options_.readSnapshot) snapshot = options_.readSnapshot();
     const ThemedUi ui = windowUi_->ui();
-    if (!snapshot.title.empty()) SetWindowTextW(hwnd_, snapshot.title.c_str());
-    ui.SetStatusTextRole(status_, snapshot.role);
-    ThemedUi::SetText(status_, snapshot.status);
-    ThemedUi::SetText(detail_, snapshot.detail);
-    ThemedUi::SetProgress(progress_, std::clamp(snapshot.value, 0.0, 1.0), snapshot.indeterminate);
+    if (!snapshot.title.empty() && (!hasSnapshot_ || snapshot.title != lastSnapshot_.title)) SetWindowTextW(hwnd_, snapshot.title.c_str());
+    if (!hasSnapshot_ || snapshot.role != lastSnapshot_.role) ui.SetStatusTextRole(status_, snapshot.role);
+    if (!hasSnapshot_ || snapshot.status != lastSnapshot_.status) ThemedUi::SetText(status_, snapshot.status);
+    if (!hasSnapshot_ || snapshot.detail != lastSnapshot_.detail) ThemedUi::SetText(detail_, snapshot.detail);
+    if (!hasSnapshot_ || snapshot.value != lastSnapshot_.value || snapshot.indeterminate != lastSnapshot_.indeterminate) {
+        ThemedUi::SetProgress(progress_, std::clamp(snapshot.value, 0.0, 1.0), snapshot.indeterminate);
+    }
     const bool stopEnabled = !snapshot.finished && !snapshot.stopRequested;
     if (stopEnabled_ != stopEnabled) {
         stopEnabled_ = stopEnabled;
         if (!stopEnabled && GetFocus() == stop_) SetFocus(close_);
         ui.SetEnabled(stop_, stopEnabled);
     }
+    lastSnapshot_ = std::move(snapshot);
+    hasSnapshot_ = true;
 }

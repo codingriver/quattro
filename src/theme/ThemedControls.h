@@ -428,12 +428,16 @@ struct TableCellRuntime {
 void RegisterTable(HWND table, const Theme& theme, UINT dpi = 0);
 void ConfigureTableRowPresentation(HWND table, bool twoLines);
 void ConfigureTableColumns(HWND table, const std::vector<int>& widthModes);
+void MoveTable(HWND table, int x, int y, int width, int height);
 void ConfigureTableGridLines(HWND table, bool rowGridLines, bool columnGridLines);
 void SetTableColumnResizeEnabled(HWND table, bool enabled);
 void SetTableHorizontalScrollEnabled(HWND table, bool enabled);
 void SetTableScrollBarGutterReserved(HWND table, bool reserved);
 void SetTableRowEnabledStates(HWND table, const std::vector<bool>& enabled);
 void SetTableCells(HWND table, const std::vector<std::vector<TableCellRuntime>>& cells);
+void InsertTableRowState(HWND table, int index, bool enabled, std::vector<TableCellRuntime> cells);
+void UpdateTableRowState(HWND table, int index, bool enabled, std::vector<TableCellRuntime> cells);
+void RemoveTableRowState(HWND table, int index);
 void BeginTableRowsUpdate(HWND table);
 void EndTableRowsUpdate(HWND table);
 bool IsTableRowsUpdating(HWND table);

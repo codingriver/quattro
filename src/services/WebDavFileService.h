@@ -11,6 +11,13 @@
 
 struct WebDavRemoteFile;
 
+enum class WebDavFileRecordHealth {
+    Healthy,
+    MissingMetadata,
+    InvalidMetadata,
+    MetadataReadFailed,
+};
+
 struct WebDavFileRecord {
     std::wstring id;
     std::wstring absolutePath;
@@ -20,6 +27,8 @@ struct WebDavFileRecord {
     std::wstring uploadedAtUtc;
     std::wstring uploadState = L"complete";
     bool contentReady = true;
+    WebDavFileRecordHealth health = WebDavFileRecordHealth::Healthy;
+    std::wstring recordError;
 };
 
 enum class WebDavFileTransferPhase {
@@ -42,11 +51,21 @@ struct WebDavFileOperationResult {
     WebDavFileRecord record;
 };
 
+struct WebDavFileEnumerationOptions {
+    unsigned int maxMetadataConcurrency = 4;
+    std::size_t batchSize = 20;
+};
+
+using WebDavFileBatchCallback = std::function<bool(std::vector<WebDavFileRecord>)>;
+
 class WebDavFileService {
 public:
     explicit WebDavFileService(AppConfig config);
 
     bool List(std::vector<WebDavFileRecord>& records, std::wstring& error);
+    bool Enumerate(const WebDavFileEnumerationOptions& options, WebDavFileBatchCallback callback,
+        std::stop_token stopToken, std::wstring& error);
+    static unsigned int NormalizeMetadataConcurrency(unsigned int value);
     WebDavFileOperationResult Upload(const std::filesystem::path& localPath,
         WebDavFileProgressCallback progress = {}, std::stop_token stopToken = {});
     WebDavFileOperationResult Download(const WebDavFileRecord& record,

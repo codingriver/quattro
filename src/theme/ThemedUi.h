@@ -580,6 +580,7 @@ class ThemedTableFrameRegistry {
 public:
     virtual ~ThemedTableFrameRegistry() = default;
     virtual void RegisterTableFrame(HWND child, RECT frame) = 0;
+    virtual void UnregisterTableFrame(HWND child) = 0;
 };
 
 class ThemedTooltipRegistry {
@@ -875,7 +876,12 @@ public:
     HWND ListBox(int id, int x, int y, int width, int height, ThemedListBoxOptions options = {}) const;
     void MoveListBox(HWND listBox, int x, int y, int width, int height) const;
     HWND Table(int id, RECT frame, const std::vector<ThemedTableColumn>& columns, ThemedTableOptions options = {}) const;
+    void MoveTable(HWND table, RECT frame) const;
     static void SetTableRows(HWND table, const std::vector<ThemedTableRow>& rows);
+    static int AppendTableRow(HWND table, const ThemedTableRow& row);
+    static bool UpdateTableRow(HWND table, int index, const ThemedTableRow& row);
+    static bool RemoveTableRow(HWND table, int index);
+    static int FindTableRowByKey(HWND table, std::intptr_t key);
     static void SetTableView(HWND table, ThemedTableView view);
     static void SetTableChecked(HWND table, int index, bool checked);
     static bool IsTableChecked(HWND table, int index);
@@ -885,6 +891,8 @@ public:
     static void SetTableSelectedIndex(HWND table, int index);
     static std::intptr_t TableRowKey(HWND table, int index);
     static int TableHitTest(HWND table, POINT point, bool fullRow = false, bool* stateIcon = nullptr);
+    static int TableScreenHitTest(HWND table, POINT screenPoint, bool fullRow = false, bool* stateIcon = nullptr);
+    static bool TableCellScreenRect(HWND table, int row, int column, RECT& screenRect);
     static void SetTableIconSpacing(HWND table, int x, int y);
     static void ClearTable(HWND table);
     static void SetTableImageLists(HWND table, HIMAGELIST smallImages, HIMAGELIST largeImages);

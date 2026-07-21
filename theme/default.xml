@@ -359,8 +359,8 @@
         <Metric name="controlGapX" value="12"/>
         <Metric name="footerButtonWidth" value="76"/>
         <Metric name="footerButtonGap" value="16"/>
-        <Metric name="compactContentInsetX" value="18"/>
-        <Metric name="compactContentInsetY" value="16"/>
+        <Metric name="compactContentInsetX" value="12"/>
+        <Metric name="compactContentInsetY" value="10"/>
         <Metric name="compactLabelWidth" value="84"/>
         <Metric name="compactLabelGap" value="10"/>
         <Metric name="compactRowGap" value="6"/>

@@ -12,10 +12,12 @@
 #include "../src/theme/ThemedD2D.h"
 #include "../src/theme/ThemedUi.h"
 #include "../src/theme/ThemedWindowUi.h"
+#include "../src/theme/ThemedFileTransferQueueDialog.h"
 #include "../src/common/Utilities.h"
 #include "../src/windows/TodoEditDialog.h"
 #include "../src/windows/UrlEditDialog.h"
 #include "../src/services/WebDavClient.h"
+#include "../src/services/WebDavFileIndexCache.h"
 #include "../src/services/ShellItemService.h"
 #include "../src/services/Storage.h"
 #include "../src/domain/Config.h"
@@ -2084,12 +2086,15 @@ struct TableHostWindow {
             const std::vector<ThemedTableColumn> columns = webDavColumns_
                 ? std::vector<ThemedTableColumn>{
                     {L"name", L"文件名", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed,
-                        ui.tableColumnWidth({L"文件名", L"quattro-webdav-rightclick-test.ext"})},
+                        ui.tableColumnWidth({L"文件名", L"quattro-file-name.ext"})},
                     {L"path", L"系统绝对路径", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Remaining},
                     {L"size", L"大小", ThemedTableColumnAlign::End, ThemedTableColumnWidth::Fixed,
                         ui.tableColumnWidth({L"大小", L"999.99 GB"})},
                     {L"time", L"上传时间", ThemedTableColumnAlign::End, ThemedTableColumnWidth::Fixed,
                         ui.tableColumnWidth({L"上传时间", L"2000-00-00T00:00:00.000Z"})},
+                    {L"action", L"操作", ThemedTableColumnAlign::Center, ThemedTableColumnWidth::Fixed,
+                        ui.buttonWidth(L"…", ThemedButtonRole::Normal, ThemedButtonSize::Compact,
+                            ThemedButtonWidthMode::Text) + ui.denseGap()},
                 }
                 : std::vector<ThemedTableColumn>{
                     {L"name", L"名称", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Remaining},
@@ -2101,12 +2106,16 @@ struct TableHostWindow {
                 columns,
                 tableOptions);
             if (webDavColumns_) {
+                ThemedTableCell firstAction{L"…"};
+                firstAction.role = ThemedTableCellRole::Action;
+                firstAction.actionId = 434;
+                ThemedTableCell secondAction = firstAction;
                 ThemedUi::SetTableRows(table_, {
                     {1, {{L"quattro-webdav-rightclick-test-6d19acf4b6a74a4ab51a525522e4a38.ext"},
                          {L"C:\\Users\\tester\\Documents\\quattro-webdav-rightclick-test.ext"},
-                         {L"51 B"}, {L"2026-07-21T06:50:00.000Z"}}, false, true},
+                         {L"51 B"}, {L"2026-07-21T06:50:00.000Z"}, firstAction}, false, true},
                     {2, {{L"AGENTS.md"}, {L"E:\\work\\quattro\\AGENTS.md"}, {L"4 KB"},
-                         {L"2026-07-21T07:42:00.000Z"}}, false, true},
+                         {L"2026-07-21T07:42:00.000Z"}, secondAction}, false, true},
                 });
             } else if (checkable_) {
                 ThemedUi::SetTableRows(table_, {
@@ -2562,10 +2571,21 @@ void RunWebDavFileColumnsScenario(const std::filesystem::path& outputDir, TestSt
     Sleep(200);
 
     HWND header = ListView_GetHeader(host.table_);
-    state.Check(header && Header_GetItemCount(header) == 4, scenario + L": expected four columns");
+    state.Check(header && Header_GetItemCount(header) == 5, scenario + L": expected five columns");
     const int pathWidth = ListView_GetColumnWidth(host.table_, 1);
     state.Check(pathWidth >= host.windowUi_->ui().tableColumnWidth(L"系统绝对路径"),
         scenario + L": remaining absolute-path column is not visibly wide");
+    int actionId = 0;
+    state.Check(ThemedControls::TableCellAction(host.table_, 0, 4, actionId) && actionId == 434,
+        scenario + L": three-dot action cell is not invokable");
+    RECT actionCell{};
+    state.Check(ThemedUi::TableCellScreenRect(host.table_, 0, 4, actionCell),
+        scenario + L": action cell screen rectangle is unavailable");
+    const POINT actionCellCenter{
+        (actionCell.left + actionCell.right) / 2,
+        (actionCell.top + actionCell.bottom) / 2};
+    state.Check(ThemedUi::TableScreenHitTest(host.table_, actionCellCenter) == 0,
+        scenario + L": public screen-coordinate hit test did not resolve the action row");
     BitmapCapture capture = CaptureWindowBitmap(hwnd);
     state.Check(capture.bitmap != nullptr, scenario + L": capture failed");
     if (capture.bitmap) {
@@ -2574,6 +2594,15 @@ void RunWebDavFileColumnsScenario(const std::filesystem::path& outputDir, TestSt
         SavePng(capture.bitmap, outputDir / (scenario + L".png"));
         DeleteObject(capture.bitmap);
     }
+    HMENU actionMenu = CreatePopupMenu();
+    AppendMenuW(actionMenu, MF_STRING, 431, L"下载");
+    AppendMenuW(actionMenu, MF_STRING, 432, L"查看详情");
+    AppendMenuW(actionMenu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(actionMenu, MF_STRING, 433, L"删除");
+    wchar_t menuText[32]{};
+    GetMenuStringW(actionMenu, 432, menuText, static_cast<int>(std::size(menuText)), MF_BYCOMMAND);
+    state.Check(std::wstring(menuText) == L"查看详情", scenario + L": details menu item is missing");
+    DestroyMenu(actionMenu);
     state.Check(GetForegroundWindow() == foregroundBefore, scenario + L": changed the foreground window");
     state.Check(GetActiveWindow() == activeBefore, scenario + L": changed the active window");
     DestroyWindow(hwnd);
@@ -4218,6 +4247,167 @@ void RunLinkEditSplitButtonScenarios(
     }
 }
 
+void RunWebDavTransferQueueScenario(
+    HINSTANCE instance,
+    const Theme& theme,
+    const std::filesystem::path& outputDir,
+    TestState& state,
+    UINT dpi) {
+    ThemedFileTransferQueueSnapshot snapshot;
+    snapshot.title = L"WebDAV 文件传输";
+    snapshot.status = L"正在上传（3 / 4）";
+    snapshot.detail = L"当前 2 / 3 · report.zip · 已完成 1，失败 0";
+    snapshot.progress = 0.63;
+    snapshot.running = true;
+    snapshot.rows = {
+        {1, L"config.json", L"C:\\Users\\acceptance\\config.json", 2048, ThemedFileTransferStatus::UploadCompleted},
+        {2, L"report.zip", L"D:\\项目资料\\report.zip", 142606336, ThemedFileTransferStatus::Uploading},
+        {3, L"数据文件.bin", L"\\\\server\\share\\数据文件.bin", 83886080, ThemedFileTransferStatus::Waiting},
+    };
+    ThemedFileTransferQueueDialogOptions options;
+    options.instance = instance;
+    options.theme = theme;
+    options.className = L"QuattroWebDavTransferQueueAcceptance_" + std::to_wstring(dpi);
+    options.title = snapshot.title;
+    options.readSnapshot = [&snapshot] { return snapshot; };
+    ThemedFileTransferQueueDialog dialog(std::move(options));
+    state.Check(dialog.Show(), L"webdav transfer queue: show failed");
+    if (!dialog.hwnd()) return;
+    SetWindowPos(dialog.hwnd(), HWND_BOTTOM, 0, 0, 0, 0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+    Scenario scenario{
+        L"webdav-transfer-queue-" + DpiPercentSuffix(dpi),
+        L"QuattroWebDavTransferQueueAcceptance_" + std::to_wstring(dpi),
+        snapshot.title,
+        L"webdav-transfer-queue-" + DpiPercentSuffix(dpi) + L".png",
+        {L"停止", L"关闭"}, {}, 0, 2, false};
+    scenario.forcedDpi = dpi;
+    scenario.expectedVisibleChildTexts = {snapshot.status, snapshot.detail};
+    ValidateAndCapture(dialog.hwnd(), scenario, outputDir, state);
+    const BitmapCapture first = CaptureWindowBitmap(dialog.hwnd());
+    dialog.NotifyChanged();
+    MSG message{};
+    while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+        TranslateMessage(&message); DispatchMessageW(&message);
+    }
+    const BitmapCapture second = CaptureWindowBitmap(dialog.hwnd());
+    const std::size_t changed = CountChangedPixelSamples(first, second, 12, 4);
+    state.Check(changed <= 8,
+        scenario.name + L": unchanged snapshot changed visible pixels=" + std::to_wstring(changed));
+    dialog.Close();
+}
+
+void RunWebDavFileManagerQueueEntryScenario(
+    HWND owner,
+    HINSTANCE instance,
+    const Theme& theme,
+    const AppConfig& config,
+    const std::filesystem::path& outputDir,
+    TestState& state,
+    UINT dpi) {
+    SetEnvironmentVariableW(L"QUATTRO_TEST_MODE", L"1");
+    SetEnvironmentVariableW(L"QUATTRO_TEST_WEBDAV_FILE_MANAGER_SKIP_REFRESH", L"1");
+    SetEnvironmentVariableW(L"QUATTRO_TEST_WEBDAV_FILE_MANAGER_INCREMENTAL", L"1");
+    const std::filesystem::path cacheRoot = outputDir /
+        (L"webdav-file-manager-cache-" + DpiPercentSuffix(dpi));
+    std::filesystem::create_directories(cacheRoot);
+    SetEnvironmentVariableW(L"QUATTRO_USER_CONFIG_DIR", cacheRoot.c_str());
+    WebDavFileRecord healthy;
+    healthy.id = std::wstring(64, L'a');
+    healthy.displayName = L"report.zip";
+    healthy.absolutePath = L"C:\\Users\\demo\\Documents\\report.zip";
+    healthy.size = 8 * 1024 * 1024;
+    healthy.sha256 = std::wstring(64, L'1');
+    healthy.uploadedAtUtc = L"2026-07-21T14:32:00.000Z";
+    WebDavFileRecord abnormal;
+    abnormal.id = std::wstring(64, L'b');
+    abnormal.displayName = L"异常记录 · bbbbbbbbbbbb";
+    abnormal.health = WebDavFileRecordHealth::MissingMetadata;
+    abnormal.recordError = L"metadata.json 缺失";
+    abnormal.uploadState = L"invalid";
+    abnormal.contentReady = false;
+    WebDavFileIndexCache(config).Replace({healthy, abnormal}, L"2026-07-21T14:35:00.000Z");
+    std::thread inspector([&]() {
+        HWND window = WaitForTopWindow(FindWindowRequest{L"", L"WebDAV 文件管理", GetCurrentProcessId()}, 5000);
+        state.Check(window != nullptr, L"webdav file manager queue entry: window not found");
+        if (!window) return;
+        const ULONGLONG incrementalDeadline = GetTickCount64() + 3000;
+        while (!GetPropW(window, L"QuattroWebDavIncrementalApplied") &&
+               GetTickCount64() < incrementalDeadline) {
+            Sleep(20);
+        }
+        state.Check(reinterpret_cast<INT_PTR>(GetPropW(
+                window, L"QuattroWebDavIncrementalApplied")) == 1,
+            L"webdav file manager incremental refresh did not preserve stable rows");
+        HWND table = GetDlgItem(window, 430);
+        wchar_t firstName[128]{};
+        wchar_t secondName[128]{};
+        if (table) {
+            ListView_GetItemText(table, 0, 0, firstName, static_cast<int>(std::size(firstName)));
+            ListView_GetItemText(table, 1, 0, secondName, static_cast<int>(std::size(secondName)));
+        }
+        state.Check(table && ListView_GetItemCount(table) == 2 &&
+                std::wstring(firstName) == L"report-updated.zip" &&
+                std::wstring(secondName) == L"new-tail.txt",
+            L"webdav file manager incremental rows were not updated in place and appended at tail");
+        Scenario scenario{
+            L"webdav-file-manager-queue-entry-" + DpiPercentSuffix(dpi),
+            L"", L"WebDAV 文件管理",
+            L"webdav-file-manager-queue-entry-" + DpiPercentSuffix(dpi) + L".png",
+            {L"刷新", L"队列", L"全选", L"清除选择", L"下载所选", L"删除所选"},
+            {}, 0, 6, false};
+        scenario.forcedDpi = dpi;
+        scenario.expectedVisibleChildTexts = {
+            L"远端目录：/Quattro/files/", L"已选择 0 项 · 共 2 项"};
+        scenario.unexpectedVisibleChildTexts = {L"关闭"};
+        ValidateAndCapture(window, scenario, outputDir, state);
+        PostMessageW(window, WM_CLOSE, 0, 0);
+    });
+    ShowWebDavFileManagerDialog(owner, instance, theme, config);
+    inspector.join();
+    SetEnvironmentVariableW(L"QUATTRO_USER_CONFIG_DIR", nullptr);
+    SetEnvironmentVariableW(L"QUATTRO_TEST_WEBDAV_FILE_MANAGER_INCREMENTAL", nullptr);
+    SetEnvironmentVariableW(L"QUATTRO_TEST_WEBDAV_FILE_MANAGER_SKIP_REFRESH", nullptr);
+}
+
+void RunWebDavFileDetailsScenario(
+    HWND owner,
+    HINSTANCE instance,
+    const Theme& theme,
+    const AppConfig& config,
+    const std::filesystem::path& outputDir,
+    TestState& state,
+    UINT dpi) {
+    SetEnvironmentVariableW(L"QUATTRO_TEST_MODE", L"1");
+    SetEnvironmentVariableW(L"QUATTRO_TEST_WEBDAV_FILE_MANAGER_SKIP_REFRESH", L"1");
+    SetEnvironmentVariableW(L"QUATTRO_TEST_WEBDAV_FILE_DETAILS", L"1");
+    std::thread inspector([&]() {
+        HWND details = WaitForTopWindow(
+            FindWindowRequest{L"", L"WebDAV 文件详情", GetCurrentProcessId()}, 5000);
+        state.Check(details != nullptr, L"webdav file details: window not found");
+        if (!details) return;
+        Scenario scenario{
+            L"webdav-file-details-" + DpiPercentSuffix(dpi),
+            L"", L"WebDAV 文件详情",
+            L"webdav-file-details-" + DpiPercentSuffix(dpi) + L".png",
+            {L"确定"}, {}, 0, 1, false};
+        scenario.forcedDpi = dpi;
+        scenario.expectedVisibleChildTexts = {
+            L"文件名：", L"EntryFlow.md", L"文件大小：", L"5 KB",
+            L"上传时间：", L"2026-07-21T08:31:35.872Z", L"上传状态：",
+            L"complete · 内容可用", L"系统绝对路径", L"远端记录路径", L"SHA-256"};
+        ValidateAndCapture(details, scenario, outputDir, state);
+        PostMessageW(details, WM_CLOSE, 0, 0);
+        HWND manager = WaitForTopWindow(
+            FindWindowRequest{L"", L"WebDAV 文件管理", GetCurrentProcessId()}, 2000);
+        if (manager) PostMessageW(manager, WM_CLOSE, 0, 0);
+    });
+    ShowWebDavFileManagerDialog(owner, instance, theme, config);
+    inspector.join();
+    SetEnvironmentVariableW(L"QUATTRO_TEST_WEBDAV_FILE_DETAILS", nullptr);
+    SetEnvironmentVariableW(L"QUATTRO_TEST_WEBDAV_FILE_MANAGER_SKIP_REFRESH", nullptr);
+}
+
 } // namespace
 
 int wmain() {
@@ -4263,6 +4453,38 @@ int wmain() {
     config.webDavBackupPath = L"/Quattro/backups/";
     config.webDavFilesPath = L"/Quattro/files/";
     config.webDavUserName = L"acceptance-user";
+
+    wchar_t webDavTransferQueueOnly[8]{};
+    if (GetEnvironmentVariableW(
+            L"QUATTRO_UI_ACCEPTANCE_WEBDAV_TRANSFER_QUEUE_ONLY",
+            webDavTransferQueueOnly,
+            static_cast<DWORD>(std::size(webDavTransferQueueOnly))) > 0) {
+        UINT requestedDpi = 0;
+        wchar_t dpiValue[16]{};
+        const DWORD dpiLength = GetEnvironmentVariableW(
+            L"QUATTRO_UI_ACCEPTANCE_WEBDAV_DPI", dpiValue,
+            static_cast<DWORD>(std::size(dpiValue)));
+        if (dpiLength > 0 && dpiLength < std::size(dpiValue)) {
+            requestedDpi = static_cast<UINT>(_wtoi(dpiValue));
+        }
+        const std::vector<UINT> dpis = requestedDpi == 0
+            ? std::vector<UINT>{96u}
+            : std::vector<UINT>{requestedDpi};
+        for (const UINT dpi : dpis) {
+            RunWebDavTransferQueueScenario(instance, theme, outputDir, state, dpi);
+            RunWebDavFileManagerQueueEntryScenario(owner, instance, theme, config, outputDir, state, dpi);
+            RunWebDavFileDetailsScenario(owner, instance, theme, config, outputDir, state, dpi);
+        }
+        DestroyWindow(owner);
+        OleUninitialize();
+        Gdiplus::GdiplusShutdown(gdiplusToken);
+        if (!state.ok) {
+            for (const auto& failure : state.failures) std::wcerr << failure << L"\n";
+            return 1;
+        }
+        std::wcout << L"ui_webdav_transfer_queue_acceptance=passed screenshots=" << outputDir.wstring() << L"\n";
+        return 0;
+    }
 
     wchar_t quickImportOnly[8]{};
     wchar_t splitButtonMenuOnly[8]{};

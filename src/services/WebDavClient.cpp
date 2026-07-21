@@ -54,7 +54,17 @@ bool WebDavClient::DownloadFile(const std::wstring&, const std::filesystem::path
     return TestConnection();
 }
 
+bool WebDavClient::DownloadText(const std::wstring&, std::wstring& text, std::stop_token, long* statusCode) {
+    text.clear();
+    if (statusCode) *statusCode = 0;
+    return TestConnection();
+}
+
 bool WebDavClient::DeleteRemoteFile(const std::wstring&) {
+    return TestConnection();
+}
+
+bool WebDavClient::DeleteRemoteDirectory(const std::wstring&) {
     return TestConnection();
 }
 
@@ -414,6 +424,24 @@ bool WebDavClient::DownloadFile(const std::wstring& remotePath, const std::files
     return true;
 }
 
+bool WebDavClient::DownloadText(const std::wstring& remotePath, std::wstring& text,
+    std::stop_token stopToken, long* statusCode) {
+    text.clear();
+    std::vector<std::uint8_t> response;
+    long status = 0;
+    if (!Request(L"GET", remotePath, nullptr, {}, &response, &status, {}, stopToken)) {
+        if (statusCode) *statusCode = status;
+        return false;
+    }
+    if (statusCode) *statusCode = status;
+    if (status != 200) {
+        lastError_ = L"下载 WebDAV 文本失败，HTTP " + std::to_wstring(status);
+        return false;
+    }
+    text = Utf8ToWide(std::string(response.begin(), response.end()));
+    return true;
+}
+
 bool WebDavClient::DeleteRemoteFile(const std::wstring& remotePath) {
     long status = 0;
     if (!Request(L"DELETE", remotePath, nullptr, {}, nullptr, &status)) {
@@ -421,6 +449,22 @@ bool WebDavClient::DeleteRemoteFile(const std::wstring& remotePath) {
     }
     if (status != 200 && status != 202 && status != 204 && status != 404) {
         lastError_ = L"删除 WebDAV 旧备份失败，HTTP " + std::to_wstring(status);
+        return false;
+    }
+    return true;
+}
+
+bool WebDavClient::DeleteRemoteDirectory(const std::wstring& remotePath) {
+    std::wstring collectionPath = NormalizePath(remotePath);
+    if (collectionPath.empty() || collectionPath.back() != L'/') {
+        collectionPath.push_back(L'/');
+    }
+    long status = 0;
+    if (!Request(L"DELETE", collectionPath, nullptr, {}, nullptr, &status)) {
+        return false;
+    }
+    if (status != 200 && status != 202 && status != 204 && status != 404) {
+        lastError_ = L"删除 WebDAV 目录失败，HTTP " + std::to_wstring(status);
         return false;
     }
     return true;

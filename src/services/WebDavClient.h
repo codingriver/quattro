@@ -44,7 +44,10 @@ public:
         WebDavProgressCallback progress = {}, std::stop_token stopToken = {});
     bool DownloadFile(const std::wstring& remotePath, const std::filesystem::path& localPath,
         WebDavProgressCallback progress = {}, std::stop_token stopToken = {});
+    bool DownloadText(const std::wstring& remotePath, std::wstring& text,
+        std::stop_token stopToken = {}, long* statusCode = nullptr);
     bool DeleteRemoteFile(const std::wstring& remotePath);
+    bool DeleteRemoteDirectory(const std::wstring& remotePath);
 
     const std::wstring& lastError() const { return lastError_; }
 

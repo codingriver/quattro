@@ -912,8 +912,8 @@ void Theme::SetDefaults() {
     PutMetric(L"dialog", L"controlGapX", 12.0f);
     PutMetric(L"dialog", L"footerButtonWidth", 76.0f);
     PutMetric(L"dialog", L"footerButtonGap", 16.0f);
-    PutMetric(L"dialog", L"compactContentInsetX", 18.0f);
-    PutMetric(L"dialog", L"compactContentInsetY", 16.0f);
+    PutMetric(L"dialog", L"compactContentInsetX", 12.0f);
+    PutMetric(L"dialog", L"compactContentInsetY", 10.0f);
     PutMetric(L"dialog", L"compactLabelWidth", 84.0f);
     PutMetric(L"dialog", L"compactLabelGap", 10.0f);
     PutMetric(L"dialog", L"compactRowGap", 6.0f);

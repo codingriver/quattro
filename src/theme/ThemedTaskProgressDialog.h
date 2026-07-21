@@ -69,4 +69,6 @@ private:
     HWND stop_ = nullptr;
     HWND close_ = nullptr;
     bool stopEnabled_ = true;
+    bool hasSnapshot_ = false;
+    ThemedTaskProgressSnapshot lastSnapshot_{};
 };

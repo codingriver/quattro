@@ -2693,6 +2693,52 @@ HWND ThemedUi::Table(int id, RECT frame, const std::vector<ThemedTableColumn>& c
     return table;
 }
 
+void ThemedUi::MoveTable(HWND table, RECT frame) const {
+    if (!table) return;
+    const RECT inner = ThemedControls::TableFrameInnerRect(theme_, frame, dpi_);
+    ThemedControls::MoveTable(table, inner.left, inner.top, inner.right - inner.left, inner.bottom - inner.top);
+    if (tableFrameRegistry_) {
+        tableFrameRegistry_->UnregisterTableFrame(table);
+        tableFrameRegistry_->RegisterTableFrame(table, frame);
+    }
+}
+
+namespace {
+std::vector<ThemedControls::TableCellRuntime> TableCellStates(const ThemedTableRow& row) {
+    std::vector<ThemedControls::TableCellRuntime> cells;
+    cells.reserve(row.cells.size());
+    for (const auto& cell : row.cells) {
+        cells.push_back(ThemedControls::TableCellRuntime{
+            static_cast<int>(cell.role), cell.actionId, cell.image >= 0, cell.secondaryText});
+    }
+    return cells;
+}
+
+bool WriteTableRow(HWND table, int index, const ThemedTableRow& row, bool insert) {
+    if (!table || index < 0) return false;
+    const std::wstring first = row.cells.empty() ? L"" : row.cells.front().text;
+    LVITEMW item{};
+    item.mask = LVIF_TEXT | LVIF_PARAM | LVIF_IMAGE;
+    item.iItem = index;
+    item.pszText = const_cast<wchar_t*>(first.c_str());
+    item.lParam = static_cast<LPARAM>(row.key);
+    item.iImage = !row.cells.empty() ? row.cells.front().image : -1;
+    if (insert) {
+        if (ListView_InsertItem(table, &item) < 0) return false;
+    } else if (!ListView_SetItem(table, &item)) {
+        return false;
+    }
+    const int columnCount = Header_GetItemCount(ListView_GetHeader(table));
+    for (int cell = 1; cell < columnCount; ++cell) {
+        const std::wstring text = static_cast<std::size_t>(cell) < row.cells.size()
+            ? row.cells[static_cast<std::size_t>(cell)].text : L"";
+        ListView_SetItemText(table, index, cell, const_cast<wchar_t*>(text.c_str()));
+    }
+    ListView_SetCheckState(table, index, row.checked ? TRUE : FALSE);
+    return true;
+}
+}
+
 void ThemedUi::SetTableRows(HWND table, const std::vector<ThemedTableRow>& rows) {
     if (!table) return;
     std::vector<bool> enabledStates;
@@ -2751,6 +2797,40 @@ void ThemedUi::SetTableRows(HWND table, const std::vector<ThemedTableRow>& rows)
     }
 }
 
+int ThemedUi::AppendTableRow(HWND table, const ThemedTableRow& row) {
+    if (!table) return -1;
+    const int index = ListView_GetItemCount(table);
+    const ScopedTableRowsUpdate update(table);
+    if (!WriteTableRow(table, index, row, true)) return -1;
+    ThemedControls::InsertTableRowState(table, index, row.enabled, TableCellStates(row));
+    return index;
+}
+
+bool ThemedUi::UpdateTableRow(HWND table, int index, const ThemedTableRow& row) {
+    if (!table || index < 0 || index >= ListView_GetItemCount(table)) return false;
+    const ScopedTableRowsUpdate update(table);
+    if (!WriteTableRow(table, index, row, false)) return false;
+    ThemedControls::UpdateTableRowState(table, index, row.enabled, TableCellStates(row));
+    return true;
+}
+
+bool ThemedUi::RemoveTableRow(HWND table, int index) {
+    if (!table || index < 0 || index >= ListView_GetItemCount(table)) return false;
+    const ScopedTableRowsUpdate update(table);
+    if (!ListView_DeleteItem(table, index)) return false;
+    ThemedControls::RemoveTableRowState(table, index);
+    return true;
+}
+
+int ThemedUi::FindTableRowByKey(HWND table, std::intptr_t key) {
+    if (!table) return -1;
+    const int count = ListView_GetItemCount(table);
+    for (int index = 0; index < count; ++index) {
+        if (TableRowKey(table, index) == key) return index;
+    }
+    return -1;
+}
+
 void ThemedUi::SetTableView(HWND table, ThemedTableView view) {
     if (!table) return;
     DWORD_PTR style = static_cast<DWORD_PTR>(GetWindowLongPtrW(table, GWL_STYLE));
@@ -2807,6 +2887,21 @@ int ThemedUi::TableHitTest(HWND table, POINT point, bool fullRow, bool* stateIco
         if (PtInRect(&row, point)) return rowIndex;
     }
     return -1;
+}
+int ThemedUi::TableScreenHitTest(HWND table, POINT screenPoint, bool fullRow, bool* stateIcon) {
+    if (!table) return -1;
+    POINT clientPoint = screenPoint;
+    ScreenToClient(table, &clientPoint);
+    return TableHitTest(table, clientPoint, fullRow, stateIcon);
+}
+bool ThemedUi::TableCellScreenRect(HWND table, int row, int column, RECT& screenRect) {
+    if (!table || row < 0 || column < 0) return false;
+    RECT cell{LVIR_BOUNDS, column, 0, 0};
+    if (!ListView_GetSubItemRect(table, row, column, LVIR_BOUNDS, &cell)) return false;
+    POINT points[2]{{cell.left, cell.top}, {cell.right, cell.bottom}};
+    MapWindowPoints(table, nullptr, points, 2);
+    screenRect = RECT{points[0].x, points[0].y, points[1].x, points[1].y};
+    return true;
 }
 void ThemedUi::SetTableIconSpacing(HWND table, int x, int y) { if (table) ListView_SetIconSpacing(table, x, y); }
 void ThemedUi::ClearTable(HWND table) {

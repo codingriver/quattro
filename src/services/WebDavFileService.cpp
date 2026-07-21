@@ -1,14 +1,20 @@
 #include "WebDavFileService.h"
 
+#include "AppLog.h"
 #include "JsonValue.h"
 #include "Utilities.h"
 #include "WebDavClient.h"
 #include "WebDavCredentialService.h"
 
 #include <bcrypt.h>
+#include <algorithm>
 #include <fstream>
 #include <iomanip>
 #include <sstream>
+#include <atomic>
+#include <chrono>
+#include <mutex>
+#include <thread>
 
 namespace {
 std::wstring JsonEscape(const std::wstring& value) {
@@ -73,8 +79,7 @@ bool WebDavFileService::IsCollectionSelfResponse(const std::wstring& remotePath,
     const std::wstring href = NormalizeRemotePathForComparison(entry.href);
     if (target.empty() || href.size() < target.size()) return false;
     const std::size_t offset = href.size() - target.size();
-    return href.compare(offset, target.size(), target) == 0 &&
-        (offset == 0 || href[offset - 1] == L'/');
+    return href.compare(offset, target.size(), target) == 0;
 }
 
 bool WebDavFileService::IsRecordDirectoryName(const std::wstring& name) {
@@ -177,21 +182,136 @@ bool WebDavFileService::ReadMetadata(const std::wstring& text, WebDavFileRecord&
 }
 
 bool WebDavFileService::List(std::vector<WebDavFileRecord>& records, std::wstring& error) {
-    records.clear(); std::wstring password; if (!LoadPassword(password, error)) return false;
-    WebDavClient client(config_, password);
+    records.clear();
+    return Enumerate({}, [&](std::vector<WebDavFileRecord> batch) {
+        records.insert(records.end(), std::make_move_iterator(batch.begin()), std::make_move_iterator(batch.end()));
+        return true;
+    }, {}, error);
+}
+
+unsigned int WebDavFileService::NormalizeMetadataConcurrency(unsigned int value) {
+    return std::clamp(value, 1u, 8u);
+}
+
+bool WebDavFileService::Enumerate(const WebDavFileEnumerationOptions& options,
+    WebDavFileBatchCallback callback, std::stop_token stopToken, std::wstring& error) {
+    std::wstring password;
+    if (!LoadPassword(password, error)) return false;
+    WebDavClient listingClient(config_, password);
     const auto filesDirectory = FilesDirectory(config_);
-    std::vector<WebDavRemoteFile> dirs; if (!client.ListFiles(filesDirectory, dirs)) { error = client.lastError(); return false; }
-    for (const auto& dir : dirs) {
-        if (!dir.collection || dir.name.empty() || IsCollectionSelfResponse(filesDirectory, dir) ||
-            !IsRecordDirectoryName(dir.name)) continue;
-        std::vector<WebDavRemoteFile> entries; const auto base = WebDavClient::CombineRemotePath(filesDirectory, dir.name);
-        if (!client.ListFiles(base, entries)) continue;
-        auto meta = std::find_if(entries.begin(), entries.end(), [](const auto& f){ return !f.collection && ToLower(f.name) == L"metadata.json"; });
-        if (meta == entries.end()) continue;
-        const auto temp = std::filesystem::temp_directory_path() / (L"quattro_webdav_meta_" + dir.name + L".json");
-        if (!client.DownloadFile(WebDavClient::CombineRemotePath(base, L"metadata.json"), temp)) continue;
-        const auto text = LoadUtf8File(temp); std::error_code ec; std::filesystem::remove(temp, ec); WebDavFileRecord record;
-        if (ReadMetadata(text, record)) records.push_back(std::move(record));
+    std::vector<WebDavRemoteFile> entries;
+    if (!listingClient.ListFiles(filesDirectory, entries)) { error = listingClient.lastError(); return false; }
+    std::vector<std::wstring> recordIds;
+    for (const auto& entry : entries) {
+        if (entry.collection && !entry.name.empty() && !IsCollectionSelfResponse(filesDirectory, entry) &&
+            IsRecordDirectoryName(entry.name)) recordIds.push_back(entry.name);
+    }
+    std::sort(recordIds.begin(), recordIds.end());
+    recordIds.erase(std::unique(recordIds.begin(), recordIds.end()), recordIds.end());
+    WriteAppLog(L"WebDAV 文件枚举发现记录目录: " + std::to_wstring(recordIds.size()));
+    std::atomic_size_t next{0};
+    std::atomic_size_t loaded{0};
+    std::atomic_size_t downloadFailures{0};
+    std::atomic_size_t missingMetadata{0};
+    std::atomic_size_t invalidMetadata{0};
+    std::atomic_bool cancelled{false};
+    std::mutex batchMutex;
+    std::mutex callbackMutex;
+    std::vector<WebDavFileRecord> pending;
+    const std::size_t batchSize = std::max<std::size_t>(1, options.batchSize);
+    auto lastFlush = std::chrono::steady_clock::now();
+    auto flush = [&](bool force) {
+        std::vector<WebDavFileRecord> batch;
+        {
+            std::lock_guard lock(batchMutex);
+            const bool intervalElapsed =
+                std::chrono::steady_clock::now() - lastFlush >= std::chrono::milliseconds(100);
+            if (pending.empty() || (!force && pending.size() < batchSize && !intervalElapsed)) return true;
+            batch.swap(pending);
+            lastFlush = std::chrono::steady_clock::now();
+        }
+        std::lock_guard callbackLock(callbackMutex);
+        if (callback && !callback(std::move(batch))) { cancelled = true; return false; }
+        return true;
+    };
+    auto enqueue = [&](WebDavFileRecord record) {
+        {
+            std::lock_guard lock(batchMutex);
+            pending.push_back(std::move(record));
+        }
+        return flush(false);
+    };
+    auto errorRecord = [](const std::wstring& id, WebDavFileRecordHealth health,
+                           const std::wstring& error) {
+        WebDavFileRecord record;
+        record.id = id;
+        record.displayName = L"异常记录 · " + id.substr(0, std::min<std::size_t>(12, id.size()));
+        record.uploadState = L"invalid";
+        record.contentReady = false;
+        record.health = health;
+        record.recordError = error;
+        return record;
+    };
+    const unsigned int concurrency = std::min<unsigned int>(
+        NormalizeMetadataConcurrency(options.maxMetadataConcurrency),
+        static_cast<unsigned int>(std::max<std::size_t>(1, recordIds.size())));
+    std::vector<std::jthread> workers;
+    workers.reserve(concurrency);
+    for (unsigned int worker = 0; worker < concurrency; ++worker) {
+        workers.emplace_back([&, password](std::stop_token workerStop) {
+            WebDavClient client(config_, password);
+            while (!workerStop.stop_requested() && !stopToken.stop_requested() && !cancelled.load()) {
+                const std::size_t index = next.fetch_add(1);
+                if (index >= recordIds.size()) break;
+                const auto base = WebDavClient::CombineRemotePath(filesDirectory, recordIds[index]);
+                std::wstring text;
+                long metadataStatus = 0;
+                if (!client.DownloadText(WebDavClient::CombineRemotePath(base, L"metadata.json"),
+                        text, stopToken, &metadataStatus)) {
+                    if (metadataStatus == 404) {
+                        ++missingMetadata;
+                        WriteAppLog(L"WebDAV 文件记录缺少 Meta，已作为异常记录显示: " + recordIds[index]);
+                        enqueue(errorRecord(recordIds[index], WebDavFileRecordHealth::MissingMetadata,
+                            L"metadata.json 缺失"));
+                        continue;
+                    }
+                    ++downloadFailures;
+                    WriteAppLog(L"WebDAV 文件 Meta 读取失败: " + recordIds[index] + L"，" + client.lastError());
+                    enqueue(errorRecord(recordIds[index], WebDavFileRecordHealth::MetadataReadFailed,
+                        client.lastError().empty() ? L"metadata.json 读取失败" : client.lastError()));
+                    continue;
+                }
+                WebDavFileRecord record;
+                if (!ReadMetadata(text, record)) {
+                    ++invalidMetadata;
+                    WriteAppLog(L"WebDAV 文件 Meta 格式无效: " + recordIds[index]);
+                    enqueue(errorRecord(recordIds[index], WebDavFileRecordHealth::InvalidMetadata,
+                        L"metadata.json 格式无效"));
+                    continue;
+                }
+                record.id = recordIds[index];
+                ++loaded;
+                enqueue(std::move(record));
+            }
+        });
+    }
+    // std::jthread's destructor requests stop before joining. Clearing the
+    // vector here would therefore cancel slow metadata requests and return a
+    // truncated list. Explicit join waits for every assigned record instead.
+    for (auto& worker : workers) {
+        if (worker.joinable()) worker.join();
+    }
+    if (stopToken.stop_requested() || cancelled.load()) { error = L"WebDAV 文件刷新已取消。"; return false; }
+    if (!flush(true)) { error = L"WebDAV 文件刷新已取消。"; return false; }
+    WriteAppLog(L"WebDAV 文件枚举完成: 目录 " + std::to_wstring(recordIds.size()) +
+        L"，有效 " + std::to_wstring(loaded.load()) +
+        L"，读取失败 " + std::to_wstring(downloadFailures.load()) +
+        L"，缺少 Meta " + std::to_wstring(missingMetadata.load()) +
+        L"，无效 Meta " + std::to_wstring(invalidMetadata.load()));
+    if (downloadFailures.load() > 0) {
+        error = L"有 " + std::to_wstring(downloadFailures.load()) +
+            L" 个远端文件记录读取失败，已保留现有缓存，请稍后刷新重试。";
+        return false;
     }
     return true;
 }
@@ -244,7 +364,8 @@ WebDavFileOperationResult WebDavFileService::Download(const WebDavFileRecord& re
 bool WebDavFileService::Delete(const WebDavFileRecord& record, std::wstring& error) {
     std::wstring password; if (!LoadPassword(password, error)) return false; WebDavClient client(config_, password);
     const auto base = WebDavClient::CombineRemotePath(FilesDirectory(config_), record.id);
-    if (!client.DeleteRemoteFile(WebDavClient::CombineRemotePath(base, L"metadata.json"))) { error = client.lastError(); return false; }
     if (!client.DeleteRemoteFile(WebDavClient::CombineRemotePath(base, L"content"))) { error = client.lastError(); return false; }
-    client.DeleteRemoteFile(base); return true;
+    if (!client.DeleteRemoteFile(WebDavClient::CombineRemotePath(base, L"metadata.json"))) { error = client.lastError(); return false; }
+    if (!client.DeleteRemoteDirectory(base)) { error = client.lastError(); return false; }
+    return true;
 }

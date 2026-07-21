@@ -13,7 +13,7 @@
 #include "Utilities.h"
 #include "WebDavRecoveryService.h"
 #include "WebDavFileService.h"
-#include "WebDavTransferProgressController.h"
+#include "WebDavTransferCoordinator.h"
 
 #include <windows.h>
 #include <objbase.h>
@@ -104,10 +104,14 @@ std::optional<int> TryRunCopyAbsolutePathCommand() {
     return result.status == SelectedPathCopyStatus::Success ? 0 : 2;
 }
 
-std::optional<int> TryRunWebDavUploadCommand(const AppConfig& config, HINSTANCE instance, const Theme& theme) {
+std::optional<int> TryRunWebDavTransferCommand(const AppConfig& config, HINSTANCE instance, const Theme& theme) {
     int argc = 0;
     LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
     if (!argv) return std::nullopt;
+    if (argc >= 2 && std::wstring(argv[1]) == L"--webdav-transfer-host") {
+        LocalFree(argv);
+        return WebDavTransferCoordinator::RunHost(instance, theme, config);
+    }
     if (argc < 2 || std::wstring(argv[1]) != L"--upload-to-webdav") {
         LocalFree(argv);
         return std::nullopt;
@@ -122,16 +126,13 @@ std::optional<int> TryRunWebDavUploadCommand(const AppConfig& config, HINSTANCE 
         WriteAppLog(L"WebDAV 上传命令失败：未收到文件路径。");
         return 2;
     }
-    WebDavTransferProgressController controller(nullptr, instance, theme, config);
-    if (!controller.StartUpload(std::move(paths))) {
-        WriteAppLog(L"WebDAV 上传命令失败：无法启动传输控制器。");
+    std::wstring error;
+    if (!WebDavTransferCoordinator::SubmitUploads(paths, error)) {
+        WriteAppLog(L"WebDAV 上传命令失败：" + error);
         return 2;
     }
-    const int result = controller.RunUntilFinished();
-    WriteAppLog(L"WebDAV 上传命令结束，退出码=" + std::to_wstring(result) +
-        L"，成功=" + std::to_wstring(controller.succeeded()) +
-        L"，失败=" + std::to_wstring(controller.failed()));
-    return result;
+    WriteAppLog(L"WebDAV 上传命令已加入公共传输队列。");
+    return 0;
 }
 
 std::wstring NormalizeProcessPath(std::wstring path) {
@@ -684,7 +685,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     } appLogShutdownGuard;
     const std::filesystem::path commandThemeDirectory = appDirectory / L"theme";
     Theme commandTheme = Theme::Load(commandThemeDirectory, config.theme);
-    if (const std::optional<int> commandResult = TryRunWebDavUploadCommand(config, instance, commandTheme)) {
+    if (const std::optional<int> commandResult = TryRunWebDavTransferCommand(config, instance, commandTheme)) {
         return *commandResult;
     }
     WriteAppLog(L"应用启动。pid=" + CurrentPidText());

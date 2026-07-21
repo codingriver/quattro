@@ -86,8 +86,8 @@ inline DialogLayoutMetrics GetDialogLayoutMetrics(const Theme& theme, DialogLayo
     DialogLayoutMetrics metrics{};
     switch (kind) {
     case DialogLayoutKind::Compact:
-        metrics.contentInsetX = DialogLayoutMetric(theme, L"compactContentInsetX", 18.0f);
-        metrics.contentInsetY = DialogLayoutMetric(theme, L"compactContentInsetY", 16.0f);
+        metrics.contentInsetX = DialogLayoutMetric(theme, L"compactContentInsetX", 12.0f);
+        metrics.contentInsetY = DialogLayoutMetric(theme, L"compactContentInsetY", 10.0f);
         metrics.labelWidth = DialogLayoutMetric(theme, L"compactLabelWidth", 84.0f);
         metrics.labelGap = DialogLayoutMetric(theme, L"compactLabelGap", 10.0f);
         metrics.rowGap = DialogLayoutMetric(theme, L"compactRowGap", 6.0f);

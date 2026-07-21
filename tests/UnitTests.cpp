@@ -10,6 +10,8 @@
 #include "../src/services/ExplorerCopyPathContextMenuService.h"
 #include "../src/services/ExplorerWebDavUploadContextMenuService.h"
 #include "../src/services/WebDavFileService.h"
+#include "../src/services/WebDavFileIndexCache.h"
+#include "../src/services/WebDavTransferQueueController.h"
 #include "../src/services/FileLockQueryService.h"
 #include "../src/services/Launcher.h"
 #include "../src/domain/MenuCatalog.h"
@@ -130,6 +132,7 @@ public:
 struct TableUpdateNotificationProbe {
     HWND table = nullptr;
     int checkChangedCount = 0;
+    int deleteAllCount = 0;
 };
 
 struct EraseCountProbe {
@@ -159,6 +162,10 @@ LRESULT CALLBACK TableUpdateNotificationParentProc(
     DWORD_PTR referenceData) {
     auto* probe = reinterpret_cast<TableUpdateNotificationProbe*>(referenceData);
     if (message == WM_NOTIFY && probe && probe->table) {
+        const auto* header = reinterpret_cast<NMHDR*>(lParam);
+        if (header && header->hwndFrom == probe->table && header->code == LVN_DELETEALLITEMS) {
+            ++probe->deleteAllCount;
+        }
         ThemedTableEvent event{};
         if (ThemedUi::DecodeTableEvent(probe->table, lParam, event) &&
             event.kind == ThemedTableEventKind::CheckChanged) {
@@ -329,6 +336,72 @@ int wmain() {
         "WebDAV upload context menu safely passes selected item");
     Check(WebDavFileService::RecordId(L"c:\\资料\\报告.docx").size() == 64,
         "WebDAV file record uses SHA-256 path id");
+    Check(WebDavFileService::NormalizeMetadataConcurrency(0) == 1,
+        "WebDAV metadata enumeration clamps zero concurrency");
+    Check(WebDavFileService::NormalizeMetadataConcurrency(4) == 4,
+        "WebDAV metadata enumeration accepts default concurrency");
+    Check(WebDavFileService::NormalizeMetadataConcurrency(20) == 8,
+        "WebDAV metadata enumeration caps concurrency at eight");
+    {
+        AppConfig cacheConfig;
+        cacheConfig.webDavUrl = L"https://dav.example.test/root";
+        cacheConfig.webDavUserName = L"cache-user";
+        cacheConfig.webDavFilesPath = L"/Quattro/files/";
+        WebDavFileIndexCache cache(cacheConfig);
+        WebDavFileRecord first;
+        first.id = std::wstring(64, L'a');
+        first.absolutePath = L"C:\\资料\\报告.txt";
+        first.displayName = L"报告.txt";
+        first.size = 123;
+        first.sha256 = std::wstring(64, L'1');
+        first.uploadedAtUtc = L"2026-07-21T14:35:10.000Z";
+        WebDavFileRecord second = first;
+        second.id = std::wstring(64, L'b');
+        second.absolutePath = L"\\\\server\\share\\数据.bin";
+        second.displayName = L"数据.bin";
+        second.size = 456;
+        second.sha256 = std::wstring(64, L'2');
+        second.health = WebDavFileRecordHealth::MissingMetadata;
+        second.recordError = L"metadata.json 缺失";
+        second.contentReady = false;
+        Check(cache.Replace({first}, L"2026-07-21T14:36:00.000Z"),
+            "WebDAV file index cache replaces records");
+        std::vector<WebDavFileRecord> cachedRecords;
+        std::wstring refreshedAt;
+        Check(cache.Load(cachedRecords, refreshedAt) && cachedRecords.size() == 1 &&
+                cachedRecords[0].absolutePath == first.absolutePath &&
+                refreshedAt == L"2026-07-21T14:36:00.000Z",
+            "WebDAV file index cache loads complete records and refresh time");
+        Check(cache.Upsert(second), "WebDAV file index cache upserts records");
+        cachedRecords.clear();
+        Check(cache.Load(cachedRecords, refreshedAt) && cachedRecords.size() == 2 &&
+                std::any_of(cachedRecords.begin(), cachedRecords.end(), [&](const auto& record) {
+                    return record.id == second.id && record.health == WebDavFileRecordHealth::MissingMetadata &&
+                        record.recordError == second.recordError;
+                }),
+            "WebDAV file index cache preserves existing and abnormal records on upsert");
+        Check(cache.Remove(first.id), "WebDAV file index cache removes one record");
+        cachedRecords.clear();
+        Check(cache.Load(cachedRecords, refreshedAt) && cachedRecords.size() == 1 &&
+                cachedRecords[0].id == second.id,
+            "WebDAV file index cache removal does not require a remote refresh");
+
+        AppConfig otherUser = cacheConfig;
+        otherUser.webDavUserName = L"other-user";
+        AppConfig otherDirectory = cacheConfig;
+        otherDirectory.webDavFilesPath = L"/Quattro/other-files/";
+        Check(WebDavFileIndexCache::CachePath(cacheConfig) != WebDavFileIndexCache::CachePath(otherUser) &&
+                WebDavFileIndexCache::CachePath(cacheConfig) != WebDavFileIndexCache::CachePath(otherDirectory),
+            "WebDAV file index cache is isolated by account and remote directory");
+    }
+    Check(WebDavTransferQueueOptions{}.maxConcurrentTransfers == 1,
+        "WebDAV transfer queue defaults to one concurrent task");
+    Check(WebDavTransferQueueController::NormalizeMaxConcurrentTransfers(0) == 1,
+        "WebDAV transfer queue clamps zero concurrency");
+    Check(WebDavTransferQueueController::NormalizeMaxConcurrentTransfers(3) == 3,
+        "WebDAV transfer queue accepts bounded concurrency");
+    Check(WebDavTransferQueueController::NormalizeMaxConcurrentTransfers(8) == 4,
+        "WebDAV transfer queue caps concurrency at four");
     {
         const std::wstring testKey =
             L"Software\\Quattro\\Tests\\CopyPathMenu_" + std::to_wstring(GetCurrentProcessId());
@@ -1338,7 +1411,10 @@ int wmain() {
     Check(Near(fallbackTheme.metric(L"global", L"largeControlHeight", 0.0f), 32.0f), "Theme large control height scale");
     Check(Near(fallbackTheme.metric(L"dialog", L"contentInsetX", 0.0f), 28.0f), "Theme default dialog standard inset");
     Check(Near(fallbackTheme.metric(L"dialog", L"labelMinWidth", 0.0f), 20.0f), "Theme default dialog label min width");
+    Check(Near(fallbackTheme.metric(L"dialog", L"compactContentInsetX", 0.0f), 12.0f), "Theme default dialog compact horizontal inset");
+    Check(Near(fallbackTheme.metric(L"dialog", L"compactContentInsetY", 0.0f), 10.0f), "Theme default dialog compact vertical inset");
     Check(Near(fallbackTheme.metric(L"dialog", L"compactRowGap", 0.0f), 6.0f), "Theme default dialog compact row gap");
+    Check(Near(fallbackTheme.metric(L"dialog", L"compactSectionGap", 0.0f), 12.0f), "Theme default dialog compact section gap");
     Check(Near(fallbackTheme.metric(L"dialog", L"miniFooterInsetY", 0.0f), 16.0f), "Theme default dialog mini footer inset");
     Check(Near(fallbackTheme.metric(L"dialog", L"miniFooterButtonWidth", 0.0f), 72.0f), "Theme default dialog mini footer button");
     Check(Near(fallbackTheme.metric(L"dialog", L"overlaySectionGap", 0.0f), 12.0f), "Theme default dialog overlay section gap");
@@ -1820,10 +1896,31 @@ int wmain() {
             ThemedTableRow{43, {{L"disabled"}, {L"preserved"}}, true, false},
         });
         Check(ThemedUi::TableRowCount(runtimeTable) == 2 && ThemedUi::TableRowKey(runtimeTable, 0) == 42, "Themed table public row model");
+        RECT firstCellScreen{};
+        Check(ThemedUi::TableCellScreenRect(runtimeTable, 0, 0, firstCellScreen)
+                && firstCellScreen.right > firstCellScreen.left
+                && firstCellScreen.bottom > firstCellScreen.top,
+            "Themed table public cell screen rectangle");
         Check(ThemedUi::IsTableChecked(runtimeTable, 0), "Themed table public checked state");
         Check(ThemedUi::IsTableChecked(runtimeTable, 1), "Themed table preserves disabled checked state");
         ThemedUi::SetTableChecked(runtimeTable, 1, false);
         Check(ThemedUi::IsTableChecked(runtimeTable, 1), "Themed table public setter leaves disabled rows unchanged");
+        ThemedUi::SetTableSelectedIndex(runtimeTable, 0);
+        const int appendedRow = ThemedUi::AppendTableRow(
+            runtimeTable, ThemedTableRow{44, {{L"appended"}, {L"tail"}}, false, true});
+        Check(appendedRow == 2 && ThemedUi::TableRowCount(runtimeTable) == 3 &&
+                ThemedUi::FindTableRowByKey(runtimeTable, 44) == 2 &&
+                ThemedUi::TableSelectedIndex(runtimeTable) == 0,
+            "Themed table appends a stable-key row without replacing selection");
+        Check(ThemedUi::UpdateTableRow(
+                runtimeTable, 2, ThemedTableRow{44, {{L"updated"}, {L"in place"}}, true, true}) &&
+                ThemedUi::IsTableChecked(runtimeTable, 2) && ThemedUi::TableRowKey(runtimeTable, 2) == 44,
+            "Themed table updates one row in place");
+        Check(ThemedUi::RemoveTableRow(runtimeTable, 1) &&
+                ThemedUi::TableRowCount(runtimeTable) == 2 &&
+                ThemedUi::TableRowKey(runtimeTable, 0) == 42 &&
+                ThemedUi::TableRowKey(runtimeTable, 1) == 44,
+            "Themed table removes one row while preserving remaining order");
 
         ThemedTableOptions twoLineOptions{};
         twoLineOptions.showHeader = false;
@@ -1882,6 +1979,14 @@ int wmain() {
             "Themed table row replacement does not create a selection");
         Check(ListView_GetTopIndex(updateNotificationTable) == 0,
             "Themed table row replacement keeps the initial viewport at the first row");
+        updateProbe.deleteAllCount = 0;
+        ThemedUi::AppendTableRow(updateNotificationTable,
+            ThemedTableRow{20, {{L"incremental append"}}, false, true});
+        ThemedUi::UpdateTableRow(updateNotificationTable, 10,
+            ThemedTableRow{20, {{L"incremental update"}}, true, true});
+        ThemedUi::RemoveTableRow(updateNotificationTable, 10);
+        Check(updateProbe.checkChangedCount == 0 && updateProbe.deleteAllCount == 0,
+            "Themed table incremental mutations avoid full replacement and internal checkbox notifications");
         ThemedUi::SetTableChecked(updateNotificationTable, 1, true);
         Check(updateProbe.checkChangedCount == 1 && ThemedUi::TableSelectedIndex(updateNotificationTable) == 1,
             "Themed table standalone checkbox update preserves existing notification behavior");

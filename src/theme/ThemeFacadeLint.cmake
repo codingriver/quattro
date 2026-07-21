@@ -92,6 +92,8 @@ if(EXISTS "${DEFAULT_THEME}")
         "fontScale\" value=\"5"
         "denseGap\" value=\"4"
         "titleInsetY\" value=\"4"
+        "compactContentInsetX\" value=\"12"
+        "compactContentInsetY\" value=\"10"
         "compactRowGap\" value=\"6"
         "standardRowGap\" value=\"8"
         "sectionGap\" value=\"12"

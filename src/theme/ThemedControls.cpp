@@ -95,6 +95,8 @@ struct ControlState {
     UINT tableDpi = USER_DEFAULT_SCREEN_DPI;
     int tableHotRow = -1;
     int tableHotColumn = -1;
+    int tablePressedRow = -1;
+    int tablePressedColumn = -1;
     bool tableAllowColumnResize = false;
     bool tableAllowHorizontalScroll = false;
     bool tableReserveScrollBarGutter = false;
@@ -1057,6 +1059,13 @@ LRESULT CALLBACK ThemedControlProc(HWND hwnd, UINT message, WPARAM wParam, LPARA
         if (KindFor(hwnd) == ControlKind::Table && IsDisabledTableRowHit(hwnd, lParam)) {
             return 0;
         }
+        if (KindFor(hwnd) == ControlKind::Table) {
+            ControlState& tableState = StateFor(hwnd);
+            const int pressedRow = tableState.tablePressedRow;
+            tableState.tablePressedRow = -1;
+            tableState.tablePressedColumn = -1;
+            InvalidateTableRow(hwnd, pressedRow);
+        }
         if ((KindFor(hwnd) == ControlKind::CheckBox || KindFor(hwnd) == ControlKind::Toggle || KindFor(hwnd) == ControlKind::Radio)
             && IsWindowEnabled(hwnd)) {
             POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
@@ -1079,6 +1088,15 @@ LRESULT CALLBACK ThemedControlProc(HWND hwnd, UINT message, WPARAM wParam, LPARA
     case WM_LBUTTONDOWN:
         if (KindFor(hwnd) == ControlKind::Table && IsDisabledTableRowHit(hwnd, lParam)) {
             return 0;
+        }
+        if (KindFor(hwnd) == ControlKind::Table) {
+            LVHITTESTINFO hit{};
+            hit.pt = POINT{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+            ListView_SubItemHitTest(hwnd, &hit);
+            ControlState& tableState = StateFor(hwnd);
+            tableState.tablePressedRow = hit.iItem;
+            tableState.tablePressedColumn = hit.iSubItem;
+            InvalidateTableRow(hwnd, hit.iItem);
         }
         if (KindFor(hwnd) == ControlKind::Slider && IsWindowEnabled(hwnd)) {
             SetFocus(hwnd);
@@ -1284,6 +1302,8 @@ LRESULT CALLBACK ThemedControlProc(HWND hwnd, UINT message, WPARAM wParam, LPARA
             const int hotRow = tableState.tableHotRow;
             tableState.tableHotRow = -1;
             tableState.tableHotColumn = -1;
+            tableState.tablePressedRow = -1;
+            tableState.tablePressedColumn = -1;
             InvalidateTableRow(hwnd, hotRow);
             break;
         }
@@ -2184,6 +2204,16 @@ bool IsTableRowHovered(HWND table, int row) {
     return state && state->tableHotRow == row;
 }
 
+bool IsTableCellHovered(HWND table, int row, int column) {
+    const auto state = FindState(table);
+    return state && state->tableHotRow == row && state->tableHotColumn == column;
+}
+
+bool IsTableCellPressed(HWND table, int row, int column) {
+    const auto state = FindState(table);
+    return state && state->tablePressedRow == row && state->tablePressedColumn == column;
+}
+
 const wchar_t* TableRowState(int row, bool selected, bool enabled, bool hovered) {
     if (!enabled) {
         return L"disabled";
@@ -2253,20 +2283,6 @@ RECT TableSubItemRect(HWND table, int row, int column, RECT fallback) {
     return ListView_GetSubItemRect(table, row, column, LVIR_BOUNDS, &subItem) ? subItem : rect;
 }
 
-bool CursorInTableCell(HWND table, int row, int column) {
-    POINT point{};
-    if (!GetCursorPos(&point)) {
-        return false;
-    }
-    ScreenToClient(table, &point);
-    LVHITTESTINFO hit{};
-    hit.pt = point;
-    if (ListView_SubItemHitTest(table, &hit) < 0) {
-        return false;
-    }
-    return hit.iItem == row && hit.iSubItem == column;
-}
-
 void DrawTableActionCell(
     const Theme& theme,
     HWND table,
@@ -2308,8 +2324,8 @@ void DrawTableActionCell(
     buttonRect.right = buttonRect.left + buttonWidth;
     buttonRect.bottom = buttonRect.top + buttonHeight;
 
-    const bool hot = enabled && CursorInTableCell(table, row, column);
-    const bool pressed = hot && (GetKeyState(VK_LBUTTON) & 0x8000) != 0;
+    const bool hot = enabled && IsTableCellHovered(table, row, column);
+    const bool pressed = hot && IsTableCellPressed(table, row, column);
     const bool buttonFocused = enabled && GetFocus() == table && selected;
     const wchar_t* component = cell.role == 2 ? L"primaryButton" : L"button";
     DrawButtonFrame(theme, draw->nmcd.hdc, buttonRect, component, hot, pressed, buttonFocused, !enabled);
@@ -3805,6 +3821,12 @@ void ConfigureTableColumns(HWND table, const std::vector<int>& widthModes) {
     StateFor(table).tableColumnWidthModes = widthModes;
 }
 
+void MoveTable(HWND table, int x, int y, int width, int height) {
+    if (!table) return;
+    SetWindowPos(table, nullptr, x, y, std::max(1, width), std::max(1, height), SWP_NOACTIVATE | SWP_NOZORDER);
+    RelayoutTableRemainingColumns(table, -1, -1);
+}
+
 void ConfigureTableGridLines(HWND table, bool rowGridLines, bool columnGridLines) {
     if (!table) return;
     auto& state = StateFor(table);
@@ -3856,15 +3878,51 @@ void SetTableCells(HWND table, const std::vector<std::vector<TableCellRuntime>>&
     StateFor(table).tableCells = cells;
 }
 
+void InsertTableRowState(HWND table, int index, bool enabled, std::vector<TableCellRuntime> cells) {
+    if (!table) return;
+    auto& state = StateFor(table);
+    const std::size_t position = static_cast<std::size_t>(std::clamp(index, 0,
+        static_cast<int>(state.tableRowEnabled.size())));
+    state.tableRowEnabled.insert(state.tableRowEnabled.begin() + position, enabled);
+    const std::size_t cellPosition = std::min(position, state.tableCells.size());
+    state.tableCells.insert(state.tableCells.begin() + cellPosition, std::move(cells));
+}
+
+void UpdateTableRowState(HWND table, int index, bool enabled, std::vector<TableCellRuntime> cells) {
+    if (!table || index < 0) return;
+    auto& state = StateFor(table);
+    const std::size_t position = static_cast<std::size_t>(index);
+    if (position >= state.tableRowEnabled.size() || position >= state.tableCells.size()) return;
+    state.tableRowEnabled[position] = enabled;
+    state.tableCells[position] = std::move(cells);
+}
+
+void RemoveTableRowState(HWND table, int index) {
+    if (!table || index < 0) return;
+    auto& state = StateFor(table);
+    const std::size_t position = static_cast<std::size_t>(index);
+    if (position < state.tableRowEnabled.size()) {
+        state.tableRowEnabled.erase(state.tableRowEnabled.begin() + position);
+    }
+    if (position < state.tableCells.size()) {
+        state.tableCells.erase(state.tableCells.begin() + position);
+    }
+}
+
 void BeginTableRowsUpdate(HWND table) {
     if (!table) return;
-    ++StateFor(table).tableRowsUpdateDepth;
+    auto& state = StateFor(table);
+    if (state.tableRowsUpdateDepth++ == 0) SendMessageW(table, WM_SETREDRAW, FALSE, 0);
 }
 
 void EndTableRowsUpdate(HWND table) {
     if (!table) return;
     auto& state = StateFor(table);
     state.tableRowsUpdateDepth = std::max(0, state.tableRowsUpdateDepth - 1);
+    if (state.tableRowsUpdateDepth == 0) {
+        SendMessageW(table, WM_SETREDRAW, TRUE, 0);
+        RedrawWindow(table, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN);
+    }
 }
 
 bool IsTableRowsUpdating(HWND table) {
