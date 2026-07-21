@@ -2024,6 +2024,7 @@ struct TableHostWindow {
     bool gridLines_ = false;
     bool allowColumnResize_ = false;
     bool checkable_ = false;
+    bool webDavColumns_ = false;
     bool showHeader_ = true;
     int visibleRows_ = 0;
     UINT forcedDpi_ = 0;
@@ -2054,14 +2055,15 @@ struct TableHostWindow {
             return result;
         }
         if (message == WM_CREATE) {
+            const int logicalWidth = webDavColumns_ ? 720 : 360;
             windowUi_ = std::make_unique<ThemedWindowUi>(
-                instance_, nullptr, hwnd_, theme_, DialogLayoutKind::Compact, 360, 260);
+                instance_, nullptr, hwnd_, theme_, DialogLayoutKind::Compact, logicalWidth, 260);
             std::unique_ptr<ThemedUi> forcedUi;
             if (forcedDpi_) {
                 forcedFont_ = ThemedControls::CreateDialogFont(forcedDpi_);
                 forcedUi = std::make_unique<ThemedUi>(
                     instance_, hwnd_, theme_, forcedFont_, DialogLayoutKind::Compact,
-                    ThemedWindowUi::ScaleForDpi(360, forcedDpi_),
+                    ThemedWindowUi::ScaleForDpi(logicalWidth, forcedDpi_),
                     ThemedWindowUi::ScaleForDpi(260, forcedDpi_),
                     nullptr, windowUi_.get(), nullptr, nullptr, forcedDpi_);
             }
@@ -2079,13 +2081,34 @@ struct TableHostWindow {
             const int tableBottom = visibleRows_ > 0
                 ? ui.scale(16) + ui.tableHeightForRows(visibleRows_, showHeader_)
                 : ui.scale(240);
+            const std::vector<ThemedTableColumn> columns = webDavColumns_
+                ? std::vector<ThemedTableColumn>{
+                    {L"name", L"文件名", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed,
+                        ui.tableColumnWidth({L"文件名", L"quattro-webdav-rightclick-test.ext"})},
+                    {L"path", L"系统绝对路径", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Remaining},
+                    {L"size", L"大小", ThemedTableColumnAlign::End, ThemedTableColumnWidth::Fixed,
+                        ui.tableColumnWidth({L"大小", L"999.99 GB"})},
+                    {L"time", L"上传时间", ThemedTableColumnAlign::End, ThemedTableColumnWidth::Fixed,
+                        ui.tableColumnWidth({L"上传时间", L"2000-00-00T00:00:00.000Z"})},
+                }
+                : std::vector<ThemedTableColumn>{
+                    {L"name", L"名称", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Remaining},
+                    {L"value", L"值", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, 96},
+                };
             table_ = ui.Table(
                 101,
-                RECT{ui.scale(16), ui.scale(16), ui.scale(344), tableBottom},
-                {{L"name", L"名称", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Remaining},
-                 {L"value", L"值", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, 96}},
+                RECT{ui.scale(16), ui.scale(16), ui.scale(logicalWidth - 16), tableBottom},
+                columns,
                 tableOptions);
-            if (checkable_) {
+            if (webDavColumns_) {
+                ThemedUi::SetTableRows(table_, {
+                    {1, {{L"quattro-webdav-rightclick-test-6d19acf4b6a74a4ab51a525522e4a38.ext"},
+                         {L"C:\\Users\\tester\\Documents\\quattro-webdav-rightclick-test.ext"},
+                         {L"51 B"}, {L"2026-07-21T06:50:00.000Z"}}, false, true},
+                    {2, {{L"AGENTS.md"}, {L"E:\\work\\quattro\\AGENTS.md"}, {L"4 KB"},
+                         {L"2026-07-21T07:42:00.000Z"}}, false, true},
+                });
+            } else if (checkable_) {
                 ThemedUi::SetTableRows(table_, {
                     {1, {{L"已勾选"}, {L"已安装"}}, true, true},
                     {2, {{L"未勾选"}, {L"已安装"}}, false, true},
@@ -2501,6 +2524,60 @@ void RunTableAlternatingRowsScenario(const std::filesystem::path& outputDir, Tes
 
     DestroyWindow(hwnd);
     AcceptanceLog(L"end table-alternating-rows");
+}
+
+void RunWebDavFileColumnsScenario(const std::filesystem::path& outputDir, TestState& state, UINT dpi) {
+    const std::wstring suffix = DpiPercentSuffix(dpi);
+    const std::wstring scenario = L"webdav-file-columns-" + suffix;
+    AcceptanceLog(L"begin " + scenario);
+    const HWND foregroundBefore = GetForegroundWindow();
+    const HWND activeBefore = GetActiveWindow();
+    HINSTANCE instance = GetModuleHandleW(nullptr);
+    TableHostWindow host;
+    host.instance_ = instance;
+    host.webDavColumns_ = true;
+    host.forcedDpi_ = dpi;
+    host.theme_ = Theme::Load(std::filesystem::current_path() / L"theme", L"default");
+
+    const std::wstring className = L"QuattroWebDavFileColumnsHost" + suffix;
+    WNDCLASSEXW wc{};
+    wc.cbSize = sizeof(wc);
+    wc.lpfnWndProc = TableHostWindow::Proc;
+    wc.hInstance = instance;
+    wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    wc.lpszClassName = className.c_str();
+    RegisterClassExW(&wc);
+    HWND hwnd = CreateWindowExW(
+        WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, wc.lpszClassName, scenario.c_str(), WS_OVERLAPPEDWINDOW,
+        120, 120, ThemedWindowUi::ScaleForDpi(760, dpi), ThemedWindowUi::ScaleForDpi(320, dpi),
+        nullptr, nullptr, instance, &host);
+    if (!hwnd || !host.table_) {
+        state.Check(false, scenario + L": host window/table creation failed");
+        return;
+    }
+    ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+    SetWindowPos(hwnd, HWND_BOTTOM, 0, 0, 0, 0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+    RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW | RDW_ALLCHILDREN);
+    Sleep(200);
+
+    HWND header = ListView_GetHeader(host.table_);
+    state.Check(header && Header_GetItemCount(header) == 4, scenario + L": expected four columns");
+    const int pathWidth = ListView_GetColumnWidth(host.table_, 1);
+    state.Check(pathWidth >= host.windowUi_->ui().tableColumnWidth(L"系统绝对路径"),
+        scenario + L": remaining absolute-path column is not visibly wide");
+    BitmapCapture capture = CaptureWindowBitmap(hwnd);
+    state.Check(capture.bitmap != nullptr, scenario + L": capture failed");
+    if (capture.bitmap) {
+        state.Check(BitmapHasVisualContent(capture.bitmap, capture.width, capture.height),
+            scenario + L": screenshot looks blank or too flat");
+        SavePng(capture.bitmap, outputDir / (scenario + L".png"));
+        DeleteObject(capture.bitmap);
+    }
+    state.Check(GetForegroundWindow() == foregroundBefore, scenario + L": changed the foreground window");
+    state.Check(GetActiveWindow() == activeBefore, scenario + L": changed the active window");
+    DestroyWindow(hwnd);
+    AcceptanceLog(L"end " + scenario);
 }
 
 void RunCheckableTableScenario(const std::filesystem::path& outputDir, TestState& state, UINT dpi) {
@@ -4182,7 +4259,9 @@ int wmain() {
     AppConfig config;
     config.webDavEnabled = true;
     config.webDavUrl = L"https://dav.example.test/remote.php/dav/files/demo";
-    config.webDavRemotePath = L"/Quattro/backups/";
+    config.webDavRemotePath = L"/Quattro/";
+    config.webDavBackupPath = L"/Quattro/backups/";
+    config.webDavFilesPath = L"/Quattro/files/";
     config.webDavUserName = L"acceptance-user";
 
     wchar_t quickImportOnly[8]{};
@@ -4640,6 +4719,9 @@ int wmain() {
         RunCheckableTableScenario(outputDir, state, 96);
         RunCheckableTableScenario(outputDir, state, 120);
         RunCheckableTableScenario(outputDir, state, 144);
+        RunWebDavFileColumnsScenario(outputDir, state, 96);
+        RunWebDavFileColumnsScenario(outputDir, state, 120);
+        RunWebDavFileColumnsScenario(outputDir, state, 144);
         RunTableHoverRepaintScenario(state);
         DestroyWindow(owner);
         OleUninitialize();
@@ -4883,7 +4965,7 @@ int wmain() {
         {L"交互", {L"启动操作", L"悬停激活", L"双击运行", L"分组激活延迟", L"标签激活延迟"}},
         {L"热键", {L"全局快捷键", L"启用全局快捷键", L"主窗口显隐", L"进程定位器", L"复制选中项绝对路径"}},
         {L"链接", {L"目录命令", L"公共链接", L"打开目录命令", L"帮助链接", L"更新链接", L"FAQ 链接"}},
-        {L"WebDAV", {L"WebDAV 备份", L"启用 WebDAV 备份", L"服务器地址", L"用户名", L"远端目录", L"测试连接", L"上传到云端"}},
+        {L"WebDAV", {L"WebDAV 备份", L"启用 WebDAV 备份", L"服务器地址", L"用户名", L"备份目录", L"保留数量", L"文件目录", L"/Quattro/backups/", L"/Quattro/files/", L"打开文件管理", L"注册“上传到 WebDAV”右键菜单", L"测试连接", L"上传到云端"}},
         {L"HTTP", {L"服务配置", L"运行控制", L"高级配置", L"配置目录"}},
         {L"备份", {L"配置包", L"导出配置包", L"待办事项", L"含已完成"}},
     };

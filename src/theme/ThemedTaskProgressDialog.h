@@ -12,6 +12,7 @@
 class ThemedWindowUi;
 
 struct ThemedTaskProgressSnapshot {
+    std::wstring title;
     std::wstring status;
     std::wstring detail;
     ThemedStatusRole role = ThemedStatusRole::Info;

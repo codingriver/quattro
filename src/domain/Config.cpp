@@ -19,6 +19,43 @@ int Clamp(int value, int minValue, int maxValue) {
 bool IsBoolValue(int value) {
     return value == 0 || value == 1;
 }
+
+std::wstring WebDavRootFromLegacyPath(std::wstring path) {
+    path = Trim(path);
+    if (path.empty()) {
+        return L"/Quattro/";
+    }
+    while (path.size() > 1 && path.back() == L'/') {
+        path.pop_back();
+    }
+    const std::wstring suffix = L"/backups";
+    if (path.size() >= suffix.size() && ToLower(path.substr(path.size() - suffix.size())) == suffix) {
+        path.erase(path.size() - suffix.size());
+        if (path.empty()) path = L"/";
+    }
+    if (path.front() != L'/') path.insert(path.begin(), L'/');
+    if (path.back() != L'/') path.push_back(L'/');
+    return path;
+}
+
+std::wstring NormalizeWebDavDirectory(std::wstring path, const wchar_t* fallback) {
+    path = Trim(path);
+    if (path.empty()) path = fallback;
+    std::replace(path.begin(), path.end(), L'\\', L'/');
+    if (path.front() != L'/') path.insert(path.begin(), L'/');
+    while (path.find(L"//") != std::wstring::npos) path = ReplaceAll(path, L"//", L"/");
+    if (path.back() != L'/') path.push_back(L'/');
+    return path;
+}
+
+std::wstring WebDavChildPath(const std::wstring& root, const wchar_t* child) {
+    std::wstring path = WebDavRootFromLegacyPath(root);
+    if (path.back() != L'/') path.push_back(L'/');
+    path += child;
+    path.push_back(L'/');
+    return NormalizeWebDavDirectory(path, L"/Quattro/");
+}
+
 }
 
 ConfigService::ConfigService(std::filesystem::path configPath)
@@ -74,6 +111,8 @@ AppConfig ConfigService::Load() const {
     config.copySelectedPathsHotKey = ReadInt(L"nCopySelectedPathsHotKey", config.copySelectedPathsHotKey);
     config.registerCopyPathContextMenu = ReadBool(
         L"bRegisterCopyPathContextMenu", config.registerCopyPathContextMenu);
+    config.registerWebDavUploadContextMenu = ReadBool(
+        L"bRegisterWebDavUploadContextMenu", config.registerWebDavUploadContextMenu);
     config.ignoreHotKeyConflictWarning = ReadBool(L"bIgnoreHotKeyConflictWarning", config.ignoreHotKeyConflictWarning);
 
     config.width = Clamp(ReadInt(L"nWidth", config.width), 260, 1800);
@@ -110,9 +149,20 @@ AppConfig ConfigService::Load() const {
     config.webDavUrl = hasWebDavConfig
         ? ReadExternalString(webDavPath, kWebDavSection, L"Url", L"")
         : ReadString(L"WebDavUrl", L"");
-    config.webDavRemotePath = hasWebDavConfig
-        ? ReadExternalString(webDavPath, kWebDavSection, L"RemotePath", L"/Quattro/backups/")
-        : ReadString(L"WebDavRemotePath", L"/Quattro/backups/");
+    config.webDavRemotePath = ReadWebDavRoot(webDavPath, hasWebDavConfig);
+    const std::wstring missingWebDavPath = L"__QUATTRO_MISSING_PATH__";
+    const std::wstring backupPath = hasWebDavConfig
+        ? ReadExternalString(webDavPath, kWebDavSection, L"BackupPath", missingWebDavPath.c_str())
+        : ReadString(L"WebDavBackupPath", missingWebDavPath.c_str());
+    const std::wstring filesPath = hasWebDavConfig
+        ? ReadExternalString(webDavPath, kWebDavSection, L"FilesPath", missingWebDavPath.c_str())
+        : ReadString(L"WebDavFilesPath", missingWebDavPath.c_str());
+    config.webDavBackupPath = backupPath == missingWebDavPath
+        ? WebDavChildPath(config.webDavRemotePath, L"backups")
+        : NormalizeWebDavDirectory(backupPath, L"/Quattro/backups/");
+    config.webDavFilesPath = filesPath == missingWebDavPath
+        ? WebDavChildPath(config.webDavRemotePath, L"files")
+        : NormalizeWebDavDirectory(filesPath, L"/Quattro/files/");
     config.webDavUserName = hasWebDavConfig
         ? ReadExternalString(webDavPath, kWebDavSection, L"UserName", L"")
         : ReadString(L"WebDavUserName", L"");
@@ -242,6 +292,7 @@ AppConfig ConfigService::LoadForSchemaUpgrade(int targetVersion, bool& compatibl
     readInt(L"nProcessLocatorHotKey", config.processLocatorHotKey);
     readInt(L"nCopySelectedPathsHotKey", config.copySelectedPathsHotKey);
     readBool(L"bRegisterCopyPathContextMenu", config.registerCopyPathContextMenu);
+    readBool(L"bRegisterWebDavUploadContextMenu", config.registerWebDavUploadContextMenu);
     readBool(L"bIgnoreHotKeyConflictWarning", config.ignoreHotKeyConflictWarning);
     readClampedInt(L"nWidth", config.width, 260, 1800);
     readClampedInt(L"nHeight", config.height, 320, 1600);
@@ -280,9 +331,20 @@ AppConfig ConfigService::LoadForSchemaUpgrade(int targetVersion, bool& compatibl
     config.webDavUrl = hasWebDavConfig
         ? ReadExternalString(webDavPath, kWebDavSection, L"Url", L"")
         : ReadString(L"WebDavUrl", L"");
-    config.webDavRemotePath = hasWebDavConfig
-        ? ReadExternalString(webDavPath, kWebDavSection, L"RemotePath", L"/Quattro/backups/")
-        : ReadString(L"WebDavRemotePath", L"/Quattro/backups/");
+    config.webDavRemotePath = ReadWebDavRoot(webDavPath, hasWebDavConfig);
+    const std::wstring missingWebDavPath = L"__QUATTRO_MISSING_PATH__";
+    const std::wstring backupPath = hasWebDavConfig
+        ? ReadExternalString(webDavPath, kWebDavSection, L"BackupPath", missingWebDavPath.c_str())
+        : ReadString(L"WebDavBackupPath", missingWebDavPath.c_str());
+    const std::wstring filesPath = hasWebDavConfig
+        ? ReadExternalString(webDavPath, kWebDavSection, L"FilesPath", missingWebDavPath.c_str())
+        : ReadString(L"WebDavFilesPath", missingWebDavPath.c_str());
+    config.webDavBackupPath = backupPath == missingWebDavPath
+        ? WebDavChildPath(config.webDavRemotePath, L"backups")
+        : NormalizeWebDavDirectory(backupPath, L"/Quattro/backups/");
+    config.webDavFilesPath = filesPath == missingWebDavPath
+        ? WebDavChildPath(config.webDavRemotePath, L"files")
+        : NormalizeWebDavDirectory(filesPath, L"/Quattro/files/");
     config.webDavUserName = hasWebDavConfig
         ? ReadExternalString(webDavPath, kWebDavSection, L"UserName", L"")
         : ReadString(L"WebDavUserName", L"");
@@ -405,6 +467,7 @@ void ConfigService::Save(const AppConfig& config) const {
     WriteInt(L"nProcessLocatorHotKey", config.processLocatorHotKey);
     WriteInt(L"nCopySelectedPathsHotKey", config.copySelectedPathsHotKey);
     WriteInt(L"bRegisterCopyPathContextMenu", config.registerCopyPathContextMenu ? 1 : 0);
+    WriteInt(L"bRegisterWebDavUploadContextMenu", config.registerWebDavUploadContextMenu ? 1 : 0);
     WriteInt(L"bIgnoreHotKeyConflictWarning", config.ignoreHotKeyConflictWarning ? 1 : 0);
     WriteString(L"TagAlign", config.tagAlign);
     WriteString(L"Theme", config.theme);
@@ -494,6 +557,18 @@ std::filesystem::path ConfigService::WebDavConfigPath() const {
     return QuattroUserConfigDirectory() / L"webdav.ini";
 }
 
+std::wstring ConfigService::ReadWebDavRoot(const std::filesystem::path& path, bool external) const {
+    const wchar_t* missing = L"__QUATTRO_MISSING_ROOT__";
+    const std::wstring root = external
+        ? ReadExternalString(path, kWebDavSection, L"RootPath", missing)
+        : ReadString(L"WebDavRootPath", missing);
+    if (root != missing) return WebDavRootFromLegacyPath(root);
+    const std::wstring legacy = external
+        ? ReadExternalString(path, kWebDavSection, L"RemotePath", L"/Quattro/backups/")
+        : ReadString(L"WebDavRemotePath", L"/Quattro/backups/");
+    return WebDavRootFromLegacyPath(legacy);
+}
+
 std::filesystem::path ConfigService::HttpConfigPath() const {
     return QuattroUserConfigDirectory() / L"http.ini";
 }
@@ -535,7 +610,10 @@ void ConfigService::SaveExternalNetworkSettings(const AppConfig& config) const {
     const std::filesystem::path webDavPath = WebDavConfigPath();
     WriteExternalInt(webDavPath, kWebDavSection, L"Enabled", config.webDavEnabled ? 1 : 0);
     WriteExternalString(webDavPath, kWebDavSection, L"Url", config.webDavUrl);
-    WriteExternalString(webDavPath, kWebDavSection, L"RemotePath", config.webDavRemotePath);
+    WriteExternalString(webDavPath, kWebDavSection, L"BackupPath", NormalizeWebDavDirectory(config.webDavBackupPath, L"/Quattro/backups/"));
+    WriteExternalString(webDavPath, kWebDavSection, L"FilesPath", NormalizeWebDavDirectory(config.webDavFilesPath, L"/Quattro/files/"));
+    WriteExternalString(webDavPath, kWebDavSection, L"RootPath", L"");
+    WriteExternalString(webDavPath, kWebDavSection, L"RemotePath", L"");
     WriteExternalString(webDavPath, kWebDavSection, L"UserName", config.webDavUserName);
     WriteExternalInt(webDavPath, kWebDavSection, L"KeepCount", config.webDavKeepCount);
     WriteExternalString(webDavPath, kWebDavSection, L"LastSyncAt", config.webDavLastSyncAt);
@@ -552,6 +630,8 @@ void ConfigService::DeleteLegacyNetworkSettings() const {
     WriteString(L"WebDavEnabled", L"");
     WriteString(L"WebDavUrl", L"");
     WriteString(L"WebDavRemotePath", L"");
+    WriteString(L"WebDavBackupPath", L"");
+    WriteString(L"WebDavFilesPath", L"");
     WriteString(L"WebDavUserName", L"");
     WriteString(L"WebDavKeepCount", L"");
     WriteString(L"WebDavLastSyncAt", L"");

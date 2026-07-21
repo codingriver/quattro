@@ -186,6 +186,7 @@ int MenuIconForToolEngine(const std::wstring& engine) {
     if (engine == L"timer") return MenuIconHistory;
     if (engine == L"stopwatch") return MenuIconCalculator;
     if (engine == L"process-tools") return MenuIconComputer;
+    if (engine == L"webdav-manager") return MenuIconFolder;
     if (engine == L"app-launch-locker") return MenuIconRestart;
     if (engine == L"ad-block") return MenuIconShield;
     return MenuIconTools;

@@ -7,6 +7,21 @@
 
 namespace {
 constexpr const wchar_t* kSection = L"WebDavRecovery";
+
+std::wstring RootPath(std::wstring path) {
+    path = Trim(path);
+    while (path.size() > 1 && path.back() == L'/') path.pop_back();
+    if (ToLower(path).ends_with(L"/backups")) path.resize(path.size() - 8);
+    if (path.empty()) path = L"/";
+    if (path.back() != L'/') path.push_back(L'/');
+    return path;
+}
+
+std::wstring ChildPath(const std::wstring& root, const wchar_t* child) {
+    std::wstring value = RootPath(root) + child;
+    if (value.back() != L'/') value.push_back(L'/');
+    return value;
+}
 }
 
 WebDavRecoveryService::WebDavRecoveryService(std::filesystem::path recoveryPath)
@@ -19,7 +34,8 @@ std::filesystem::path WebDavRecoveryService::DefaultRecoveryPath() {
 
 bool WebDavRecoveryService::HasWebDavSettings(const AppConfig& config) {
     return !Trim(config.webDavUrl).empty() &&
-        !Trim(config.webDavRemotePath).empty() &&
+        !Trim(config.webDavBackupPath).empty() &&
+        !Trim(config.webDavFilesPath).empty() &&
         !Trim(config.webDavUserName).empty();
 }
 
@@ -31,7 +47,16 @@ bool WebDavRecoveryService::Load(AppConfig& config) const {
     AppConfig recovered = config;
     recovered.webDavEnabled = ReadBool(L"enabled", recovered.webDavEnabled);
     recovered.webDavUrl = ReadString(L"url", L"");
-    recovered.webDavRemotePath = ReadString(L"remote_path", L"/Quattro/backups/");
+    recovered.webDavRemotePath = ReadString(L"remote_path", L"/Quattro/");
+    if (ToLower(recovered.webDavRemotePath).ends_with(L"/backups/")) {
+        recovered.webDavRemotePath.resize(recovered.webDavRemotePath.size() - 9);
+        if (recovered.webDavRemotePath.empty()) recovered.webDavRemotePath = L"/";
+        if (recovered.webDavRemotePath.back() != L'/') recovered.webDavRemotePath.push_back(L'/');
+    }
+    recovered.webDavBackupPath = ReadString(L"backup_path", L"");
+    recovered.webDavFilesPath = ReadString(L"files_path", L"");
+    if (Trim(recovered.webDavBackupPath).empty()) recovered.webDavBackupPath = ChildPath(recovered.webDavRemotePath, L"backups");
+    if (Trim(recovered.webDavFilesPath).empty()) recovered.webDavFilesPath = ChildPath(recovered.webDavRemotePath, L"files");
     recovered.webDavUserName = ReadString(L"username", L"");
     recovered.webDavKeepCount = std::max(1, std::min(100, ReadInt(L"keep_count", recovered.webDavKeepCount)));
 
@@ -42,6 +67,8 @@ bool WebDavRecoveryService::Load(AppConfig& config) const {
     config.webDavEnabled = recovered.webDavEnabled;
     config.webDavUrl = recovered.webDavUrl;
     config.webDavRemotePath = recovered.webDavRemotePath;
+    config.webDavBackupPath = recovered.webDavBackupPath;
+    config.webDavFilesPath = recovered.webDavFilesPath;
     config.webDavUserName = recovered.webDavUserName;
     config.webDavKeepCount = recovered.webDavKeepCount;
     return true;
@@ -60,7 +87,9 @@ bool WebDavRecoveryService::Save(const AppConfig& config, std::wstring& error) c
     WriteInt(L"version", 1);
     WriteInt(L"enabled", config.webDavEnabled ? 1 : 0);
     WriteString(L"url", config.webDavUrl);
-    WriteString(L"remote_path", Trim(config.webDavRemotePath).empty() ? L"/Quattro/backups/" : config.webDavRemotePath);
+    WriteString(L"remote_path", RootPath(config.webDavRemotePath));
+    WriteString(L"backup_path", config.webDavBackupPath);
+    WriteString(L"files_path", config.webDavFilesPath);
     WriteString(L"username", config.webDavUserName);
     WriteInt(L"keep_count", std::max(1, std::min(100, config.webDavKeepCount)));
     WriteString(L"credential_target", WebDavCredentialService::TargetName(config));

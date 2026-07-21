@@ -5,6 +5,7 @@
 #include "BuiltinTools.h"
 #include "EmbeddedExecutableManager.h"
 #include "ExplorerCopyPathContextMenuService.h"
+#include "ExplorerWebDavUploadContextMenuService.h"
 #include "Elevation.h"
 #include "FileDialog.h"
 #include "HotKeyEditor.h"
@@ -5218,6 +5219,10 @@ void MainWindow::OpenSettings() {
             ExplorerCopyPathContextMenuService::CurrentExecutablePath(),
             error);
     };
+    auto updateWebDavUploadContextMenu = [](bool enabled, std::wstring& error) -> bool {
+        ExplorerWebDavUploadContextMenuService service;
+        return service.Reconcile(enabled, ExplorerWebDavUploadContextMenuService::CurrentExecutablePath(), error);
+    };
     if (!ShowSettingsDialog(
             hwnd_,
             instance_,
@@ -5236,7 +5241,8 @@ void MainWindow::OpenSettings() {
             {},
             applyContextMenuRefresh,
             {},
-            updateCopyPathContextMenu)) {
+            updateCopyPathContextMenu,
+            updateWebDavUploadContextMenu)) {
         if (importedData) {
             model_ = storageService_.Load();
             RestoreLegacyBuiltinSystemFunctionKeys();
@@ -5265,6 +5271,16 @@ void MainWindow::CommitSettingsConfig(const AppConfig& next, bool importedData) 
             config_.registerCopyPathContextMenu = previous.registerCopyPathContextMenu;
             WriteAppLog(L"更新复制绝对路径右键菜单失败: " + error);
             ShowToast(L"资源管理器右键菜单更新失败，设置已回退。", ThemedToastRole::Warning);
+        }
+    }
+    if (previous.registerWebDavUploadContextMenu != config_.registerWebDavUploadContextMenu) {
+        ExplorerWebDavUploadContextMenuService service;
+        std::wstring error;
+        if (!service.Reconcile(config_.registerWebDavUploadContextMenu,
+                ExplorerWebDavUploadContextMenuService::CurrentExecutablePath(), error)) {
+            config_.registerWebDavUploadContextMenu = previous.registerWebDavUploadContextMenu;
+            WriteAppLog(L"更新 WebDAV 上传右键菜单失败: " + error);
+            ShowToast(L"WebDAV 上传右键菜单更新失败，设置已回退。", ThemedToastRole::Warning);
         }
     }
     configService_.Save(config_);
@@ -5318,6 +5334,10 @@ void MainWindow::OpenBuiltinTool(std::size_t index) {
 }
 
 void MainWindow::OpenBuiltinToolEngine(const std::wstring& engine, bool locateProcessOnOpen) {
+    if (engine == L"webdav-manager") {
+        ShowWebDavFileManagerDialog(hwnd_, instance_, theme_, config_);
+        return;
+    }
     if (engine == L"app-launch-locker") {
         const EmbeddedExecutablePrepareResult prepared = PrepareEmbeddedExecutable(
             L"app-launch-locker", {QuattroEmbeddedExecutableRootDirectory()});

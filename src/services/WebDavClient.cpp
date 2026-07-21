@@ -46,11 +46,11 @@ bool WebDavClient::ListFiles(const std::wstring&, std::vector<WebDavRemoteFile>&
     return TestConnection();
 }
 
-bool WebDavClient::UploadFile(const std::filesystem::path&, const std::wstring&) {
+bool WebDavClient::UploadFile(const std::filesystem::path&, const std::wstring&, WebDavProgressCallback, std::stop_token) {
     return TestConnection();
 }
 
-bool WebDavClient::DownloadFile(const std::wstring&, const std::filesystem::path&) {
+bool WebDavClient::DownloadFile(const std::wstring&, const std::filesystem::path&, WebDavProgressCallback, std::stop_token) {
     return TestConnection();
 }
 
@@ -90,13 +90,25 @@ std::wstring WebDavClient::CombineRemotePath(const std::wstring& directory, cons
     return left + L"/" + right;
 }
 
+std::wstring WebDavClient::BackupRemotePath(const AppConfig& config) {
+    return Trim(config.webDavBackupPath).empty()
+        ? CombineRemotePath(config.webDavRemotePath, L"backups")
+        : config.webDavBackupPath;
+}
+
+std::wstring WebDavClient::FilesRemotePath(const AppConfig& config) {
+    return Trim(config.webDavFilesPath).empty()
+        ? CombineRemotePath(config.webDavRemotePath, L"files")
+        : config.webDavFilesPath;
+}
+
 bool WebDavClient::Request(
     const std::wstring&,
     const std::wstring&,
     RequestBody*,
     const std::vector<std::string>&,
     std::vector<std::uint8_t>*,
-    long*) {
+    long*, const WebDavProgressCallback&, std::stop_token) {
     return TestConnection();
 }
 
@@ -281,6 +293,26 @@ size_t ReadCallback(char* ptr, size_t size, size_t nmemb, void* userdata) {
     body->offset += copied;
     return copied;
 }
+
+struct TransferContext {
+    const WebDavProgressCallback* progress = nullptr;
+    const std::stop_token* stopToken = nullptr;
+};
+
+int ProgressCallback(void* userdata, curl_off_t downloadTotal, curl_off_t downloadNow,
+    curl_off_t uploadTotal, curl_off_t uploadNow) {
+    auto* context = static_cast<TransferContext*>(userdata);
+    if (context && context->stopToken && context->stopToken->stop_requested()) return 1;
+    if (context && context->progress && *context->progress) {
+        const bool upload = uploadTotal > 0 || uploadNow > 0;
+        if (!(*context->progress)(
+                static_cast<std::uint64_t>(upload ? uploadNow : downloadNow),
+                static_cast<std::uint64_t>(upload ? uploadTotal : downloadTotal))) {
+            return 1;
+        }
+    }
+    return 0;
+}
 }
 
 WebDavClient::WebDavClient(AppConfig config, std::wstring password)
@@ -289,7 +321,7 @@ WebDavClient::WebDavClient(AppConfig config, std::wstring password)
 
 bool WebDavClient::TestConnection() {
     std::vector<WebDavRemoteFile> files;
-    return ListFiles(config_.webDavRemotePath, files);
+    return ListFiles(L"/", files);
 }
 
 bool WebDavClient::EnsureDirectory(const std::wstring& remotePath) {
@@ -344,16 +376,17 @@ bool WebDavClient::ListFiles(const std::wstring& remotePath, std::vector<WebDavR
     return true;
 }
 
-bool WebDavClient::UploadFile(const std::filesystem::path& localPath, const std::wstring& remotePath) {
+bool WebDavClient::UploadFile(const std::filesystem::path& localPath, const std::wstring& remotePath,
+    WebDavProgressCallback progress, std::stop_token stopToken) {
     RequestBody body;
     body.kind = BodyKind::Upload;
     body.upload = ReadBinaryFile(localPath);
-    if (body.upload.empty() && FileExists(localPath)) {
-        lastError_ = L"WebDAV 上传文件为空: " + localPath.wstring();
+    if (body.upload.empty() && !FileExists(localPath)) {
+        lastError_ = L"WebDAV 上传文件读取失败: " + localPath.wstring();
         return false;
     }
     long status = 0;
-    if (!Request(L"PUT", remotePath, &body, {"Content-Type: application/octet-stream"}, nullptr, &status)) {
+    if (!Request(L"PUT", remotePath, &body, {"Content-Type: application/octet-stream"}, nullptr, &status, progress, stopToken)) {
         return false;
     }
     if (status < 200 || status >= 300) {
@@ -363,18 +396,15 @@ bool WebDavClient::UploadFile(const std::filesystem::path& localPath, const std:
     return true;
 }
 
-bool WebDavClient::DownloadFile(const std::wstring& remotePath, const std::filesystem::path& localPath) {
+bool WebDavClient::DownloadFile(const std::wstring& remotePath, const std::filesystem::path& localPath,
+    WebDavProgressCallback progress, std::stop_token stopToken) {
     std::vector<std::uint8_t> response;
     long status = 0;
-    if (!Request(L"GET", remotePath, nullptr, {}, &response, &status)) {
+    if (!Request(L"GET", remotePath, nullptr, {}, &response, &status, progress, stopToken)) {
         return false;
     }
     if (status != 200) {
         lastError_ = L"下载 WebDAV 备份失败，HTTP " + std::to_wstring(status);
-        return false;
-    }
-    if (response.empty()) {
-        lastError_ = L"下载的 WebDAV 备份为空。";
         return false;
     }
     if (!WriteBinaryFile(localPath, response)) {
@@ -459,13 +489,27 @@ std::wstring WebDavClient::CombineRemotePath(const std::wstring& directory, cons
     return left + L"/" + right;
 }
 
+std::wstring WebDavClient::BackupRemotePath(const AppConfig& config) {
+    return Trim(config.webDavBackupPath).empty()
+        ? CombineRemotePath(config.webDavRemotePath, L"backups")
+        : config.webDavBackupPath;
+}
+
+std::wstring WebDavClient::FilesRemotePath(const AppConfig& config) {
+    return Trim(config.webDavFilesPath).empty()
+        ? CombineRemotePath(config.webDavRemotePath, L"files")
+        : config.webDavFilesPath;
+}
+
 bool WebDavClient::Request(
     const std::wstring& method,
     const std::wstring& remotePath,
     RequestBody* body,
     const std::vector<std::string>& headers,
     std::vector<std::uint8_t>* response,
-    long* statusCode) {
+    long* statusCode,
+    const WebDavProgressCallback& progress,
+    std::stop_token stopToken) {
     if (!ValidateSettings()) {
         WriteAppLog(L"WebDAV 请求失败: " + lastError_ + L"；方法 " + method);
         return false;
@@ -504,6 +548,12 @@ bool WebDavClient::Request(
     curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, errorBuffer);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, target);
+    TransferContext transferContext{&progress, &stopToken};
+    if (progress || stopToken.stop_possible()) {
+        curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+        curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, ProgressCallback);
+        curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &transferContext);
+    }
 
     curl_slist* headerList = nullptr;
     for (const auto& header : headers) {

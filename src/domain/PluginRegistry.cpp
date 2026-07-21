@@ -116,6 +116,22 @@ std::vector<PluginRecord> PluginRegistry::BuiltinPlugins() {
     processTools.enabled = true;
     processTools.installed = true;
 
+    PluginRecord webDavManager;
+    webDavManager.id = L"quattro.builtin.webdav-manager";
+    webDavManager.name = L"WebDAV 管理";
+    webDavManager.version = L"1.0.0";
+    webDavManager.category = L"builtin-tools";
+    webDavManager.kind = L"builtin-tool";
+    webDavManager.engine = L"webdav-manager";
+    webDavManager.description = L"查看、下载和删除 WebDAV 文件目录中的文件。";
+    webDavManager.permissions = L"网络访问, 文件下载, 远端文件删除";
+    webDavManager.author = L"Quattro快速启动器";
+    webDavManager.license = L"Built-in";
+    webDavManager.builtin = true;
+    webDavManager.deletable = false;
+    webDavManager.enabled = true;
+    webDavManager.installed = true;
+
     PluginRecord appLaunchLocker;
     appLaunchLocker.id = L"quattro.builtin.app-launch-locker";
     appLaunchLocker.name = L"自启动管理";
@@ -154,6 +170,7 @@ std::vector<PluginRecord> PluginRegistry::BuiltinPlugins() {
         timer,
         stopwatch,
         processTools,
+        webDavManager,
     };
     if (!QuattroIsOfficialBuild()) {
         plugins.push_back(std::move(appLaunchLocker));

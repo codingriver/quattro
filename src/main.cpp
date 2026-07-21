@@ -4,6 +4,7 @@
 #include "EmbeddedAssetInstaller.h"
 #include "Elevation.h"
 #include "ExplorerCopyPathContextMenuService.h"
+#include "ExplorerWebDavUploadContextMenuService.h"
 #include "MainWindow.h"
 #include "SelectedPathCopyService.h"
 #include "SimpleDialogs.h"
@@ -11,6 +12,8 @@
 #include "Theme.h"
 #include "Utilities.h"
 #include "WebDavRecoveryService.h"
+#include "WebDavFileService.h"
+#include "WebDavTransferProgressController.h"
 
 #include <windows.h>
 #include <objbase.h>
@@ -99,6 +102,36 @@ std::optional<int> TryRunCopyAbsolutePathCommand() {
 
     const SelectedPathCopyResult result = SelectedPathCopyService::CopyExplicitPaths(paths, nullptr);
     return result.status == SelectedPathCopyStatus::Success ? 0 : 2;
+}
+
+std::optional<int> TryRunWebDavUploadCommand(const AppConfig& config, HINSTANCE instance, const Theme& theme) {
+    int argc = 0;
+    LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    if (!argv) return std::nullopt;
+    if (argc < 2 || std::wstring(argv[1]) != L"--upload-to-webdav") {
+        LocalFree(argv);
+        return std::nullopt;
+    }
+    std::vector<std::filesystem::path> paths;
+    for (int index = 2; index < argc; ++index) {
+        if (argv[index] && *argv[index]) paths.emplace_back(argv[index]);
+    }
+    LocalFree(argv);
+    WriteAppLog(L"收到 WebDAV 上传命令，参数数量=" + std::to_wstring(paths.size()));
+    if (paths.empty()) {
+        WriteAppLog(L"WebDAV 上传命令失败：未收到文件路径。");
+        return 2;
+    }
+    WebDavTransferProgressController controller(nullptr, instance, theme, config);
+    if (!controller.StartUpload(std::move(paths))) {
+        WriteAppLog(L"WebDAV 上传命令失败：无法启动传输控制器。");
+        return 2;
+    }
+    const int result = controller.RunUntilFinished();
+    WriteAppLog(L"WebDAV 上传命令结束，退出码=" + std::to_wstring(result) +
+        L"，成功=" + std::to_wstring(controller.succeeded()) +
+        L"，失败=" + std::to_wstring(controller.failed()));
+    return result;
 }
 
 std::wstring NormalizeProcessPath(std::wstring path) {
@@ -649,6 +682,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     struct AppLogShutdownGuard {
         ~AppLogShutdownGuard() { ShutdownAppLog(); }
     } appLogShutdownGuard;
+    const std::filesystem::path commandThemeDirectory = appDirectory / L"theme";
+    Theme commandTheme = Theme::Load(commandThemeDirectory, config.theme);
+    if (const std::optional<int> commandResult = TryRunWebDavUploadCommand(config, instance, commandTheme)) {
+        return *commandResult;
+    }
     WriteAppLog(L"应用启动。pid=" + CurrentPidText());
     {
         ExplorerCopyPathContextMenuService contextMenuService =
@@ -659,6 +697,16 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
                 ExplorerCopyPathContextMenuService::CurrentExecutablePath(),
                 contextMenuError)) {
             WriteAppLog(L"复制绝对路径右键菜单对账失败: " + contextMenuError);
+        }
+    }
+    {
+        ExplorerWebDavUploadContextMenuService contextMenuService;
+        std::wstring contextMenuError;
+        if (!contextMenuService.Reconcile(
+                config.registerWebDavUploadContextMenu,
+                ExplorerWebDavUploadContextMenuService::CurrentExecutablePath(),
+                contextMenuError)) {
+            WriteAppLog(L"WebDAV 上传右键菜单对账失败: " + contextMenuError);
         }
     }
     WriteStartupTiming(

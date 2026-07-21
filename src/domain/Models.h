@@ -72,6 +72,7 @@ struct AppConfig {
     bool trackZedContextMenu = false;
     bool trackVimContextMenu = false;
     bool registerCopyPathContextMenu = false;
+    bool registerWebDavUploadContextMenu = false;
 
     bool mouseEnterActiveGroup = false;
     bool mouseEnterActiveTag = false;
@@ -112,7 +113,11 @@ struct AppConfig {
 
     bool webDavEnabled = false;
     std::wstring webDavUrl;
-    std::wstring webDavRemotePath = L"/Quattro/backups/";
+    // WebDAV root directory. Backups and file records live in fixed
+    // subdirectories named "backups" and "files".
+    std::wstring webDavRemotePath = L"/Quattro/";
+    std::wstring webDavBackupPath = L"/Quattro/backups/";
+    std::wstring webDavFilesPath = L"/Quattro/files/";
     std::wstring webDavUserName;
     int webDavKeepCount = 10;
     std::wstring webDavLastSyncAt;

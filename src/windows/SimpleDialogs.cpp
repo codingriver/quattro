@@ -24,6 +24,8 @@
 #include "Utilities.h"
 #include "WebDavBackupService.h"
 #include "WebDavCredentialService.h"
+#include "WebDavFileService.h"
+#include "WebDavTransferProgressController.h"
 
 #include <commdlg.h>
 #include <commctrl.h>
@@ -72,6 +74,13 @@ constexpr int ID_WEBDAV_CLEAR_PASSWORD = 411;
 constexpr int ID_WEBDAV_UPLOAD = 412;
 constexpr int ID_WEBDAV_DOWNLOAD = 413;
 constexpr int ID_WEBDAV_BACKUP_LIST = 414;
+constexpr int ID_WEBDAV_UPLOAD_CONTEXT_MENU = 419;
+constexpr int ID_WEBDAV_FILE_MANAGER = 420;
+constexpr int ID_WEBDAV_FILE_REFRESH = 421;
+constexpr int ID_WEBDAV_FILE_DOWNLOAD = 422;
+constexpr int ID_WEBDAV_FILE_DELETE = 423;
+constexpr UINT WM_WEBDAV_FILE_LIST_DONE = WM_APP + 0xC8;
+constexpr UINT WM_WEBDAV_FILE_REFRESH_REQUEST = WM_APP + 0xC9;
 constexpr int ID_CONFIG_EXPORT = 415;
 constexpr int ID_CONFIG_IMPORT = 416;
 constexpr int ID_TODO_EXPORT = 417;
@@ -1936,6 +1945,131 @@ private:
     bool done_ = false;
 };
 
+class WebDavFileManagerDialog {
+public:
+    WebDavFileManagerDialog(HWND owner, HINSTANCE instance, const Theme& theme, AppConfig config)
+        : owner_(owner), instance_(instance), theme_(theme), config_(std::move(config)) {}
+
+    bool Run() {
+        const std::wstring className = L"QuattroWebDavFileManagerDialog_" + std::to_wstring(GetCurrentProcessId()) + L"_" + std::to_wstring(GetTickCount64());
+        auto options = ThemedWindowUi::DialogOptions(instance_, owner_, className.c_str(), L"WebDAV 文件管理", Proc, this,
+            LoadIconW(instance_, MAKEINTRESOURCEW(IDI_QUATTRO_APP_ICON)), LoadIconW(instance_, MAKEINTRESOURCEW(IDI_QUATTRO_APP_ICON)));
+        options.clientWidth = kThemedDetailsClientWidth + 120;
+        options.clientHeight = kThemedDetailsClientHeight + 40;
+        options.placement = ThemedWindowPlacement::OffsetOwner; options.offsetX = 60; options.offsetY = 80;
+        std::wstring error; hwnd_ = ThemedWindowUi::CreateWindowHandle(options, &error);
+        if (!hwnd_) { WriteAppLog(L"WebDAV 文件管理窗口创建失败: " + error); return false; }
+        windowUi_->ShowModal(); UpdateWindow(hwnd_);
+        MSG message{}; while (!done_ && GetMessageW(&message, nullptr, 0, 0) > 0) {
+            if (!ThemedUi::PreTranslateMessage(message) && !IsDialogMessageW(hwnd_, &message)) { TranslateMessage(&message); DispatchMessageW(&message); }
+        }
+        return true;
+    }
+private:
+    struct ListResult {
+        bool ok = false;
+        std::vector<WebDavFileRecord> records;
+        std::wstring error;
+    };
+
+    static LRESULT CALLBACK Proc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
+        auto* dialog = reinterpret_cast<WebDavFileManagerDialog*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+        if (message == WM_NCCREATE) { auto* create = reinterpret_cast<CREATESTRUCTW*>(lParam); dialog = static_cast<WebDavFileManagerDialog*>(create->lpCreateParams); SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(dialog)); dialog->hwnd_ = hwnd; }
+        return dialog ? dialog->Handle(message, wParam, lParam) : DefWindowProcW(hwnd, message, wParam, lParam);
+    }
+    void PopulateTable() {
+        std::vector<ThemedTableRow> rows; rows.reserve(records_.size());
+        for (std::size_t i = 0; i < records_.size(); ++i) rows.push_back(ThemedTableRow{static_cast<std::intptr_t>(i), {ThemedTableCell{records_[i].displayName}, ThemedTableCell{records_[i].absolutePath}, ThemedTableCell{FormatFileSize(records_[i].size)}, ThemedTableCell{records_[i].uploadedAtUtc}}, true, true});
+        ThemedUi::SetTableRows(table_, rows); if (!rows.empty()) ThemedUi::SetTableSelectedIndex(table_, 0);
+    }
+    void StartRefresh() {
+        if (refreshBusy_) return;
+        refreshBusy_ = true;
+        records_.clear();
+        ThemedUi::ClearTable(table_);
+        ThemedUi::SetText(directoryLabel_, L"远端目录：" + WebDavFileService::FilesDirectory(config_) + L" · 正在加载...");
+        if (windowUi_) {
+            const ThemedUi ui = windowUi_->ui();
+            ui.SetEnabled(refreshButton_, false);
+            ui.SetEnabled(downloadButton_, false);
+            ui.SetEnabled(deleteButton_, false);
+        }
+        const HWND target = hwnd_;
+        const AppConfig config = config_;
+        const std::shared_ptr<std::atomic<bool>> alive = alive_;
+        std::thread([target, config, alive]() {
+            auto result = std::make_unique<ListResult>();
+            WebDavFileService service(config);
+            result->ok = service.List(result->records, result->error);
+            ListResult* raw = result.release();
+            if (!alive->load() || !PostMessageW(target, WM_WEBDAV_FILE_LIST_DONE, 0, reinterpret_cast<LPARAM>(raw))) {
+                delete raw;
+            }
+        }).detach();
+    }
+    void FinishRefresh(std::unique_ptr<ListResult> result) {
+        refreshBusy_ = false;
+        ThemedUi::SetText(directoryLabel_, L"远端目录：" + WebDavFileService::FilesDirectory(config_));
+        if (windowUi_) {
+            const ThemedUi ui = windowUi_->ui();
+            ui.SetEnabled(refreshButton_, true);
+            ui.SetEnabled(downloadButton_, true);
+            ui.SetEnabled(deleteButton_, true);
+        }
+        if (!result || !result->ok) {
+            ShowThemedMessageBox(hwnd_, instance_, theme_, result ? result->error : L"读取 WebDAV 文件失败。", L"WebDAV 文件管理", MB_OK | MB_ICONWARNING);
+            return;
+        }
+        records_ = std::move(result->records);
+        PopulateTable();
+    }
+    int Selected() const { const int index = ThemedUi::TableSelectedIndex(table_); return index >= 0 && index < static_cast<int>(records_.size()) ? index : -1; }
+    void Download() {
+        const int index = Selected(); if (index < 0) { ShowThemedMessageBox(hwnd_, instance_, theme_, L"请选择一个文件。", L"WebDAV 文件管理", MB_OK | MB_ICONWARNING); return; }
+        const auto& record = records_[static_cast<std::size_t>(index)];
+        if (FileExists(record.absolutePath) && MessageBoxW(hwnd_, (L"本地文件已存在，将覆盖：\n" + record.absolutePath).c_str(), L"确认覆盖", MB_OKCANCEL | MB_ICONWARNING) != IDOK) return;
+        WebDavTransferProgressController transfer(hwnd_, instance_, theme_, config_);
+        if (!transfer.StartDownload(record)) return;
+        transfer.RunUntilFinished();
+        const auto result = transfer.downloadResult();
+        if (!result.ok) ShowThemedMessageBox(hwnd_, instance_, theme_, result.message, L"下载失败", MB_OK | MB_ICONWARNING); else { ThemedToastOptions toast{}; toast.role = ThemedToastRole::Success; windowUi_->ui().ShowToast(L"文件下载完成。", toast); StartRefresh(); }
+    }
+    void DeleteSelected() {
+        const int index = Selected(); if (index < 0) { ShowThemedMessageBox(hwnd_, instance_, theme_, L"请选择一个文件。", L"WebDAV 文件管理", MB_OK | MB_ICONWARNING); return; }
+        const auto& record = records_[static_cast<std::size_t>(index)];
+        if (MessageBoxW(hwnd_, (L"确定删除远端文件？\n" + record.absolutePath).c_str(), L"删除 WebDAV 文件", MB_OKCANCEL | MB_ICONWARNING) != IDOK) return;
+        std::wstring error; WebDavFileService service(config_); if (!service.Delete(record, error)) ShowThemedMessageBox(hwnd_, instance_, theme_, error, L"删除失败", MB_OK | MB_ICONWARNING); else StartRefresh();
+    }
+    LRESULT Handle(UINT message, WPARAM wParam, LPARAM lParam) {
+        LRESULT common = 0; if (ThemedWindowUi::HandleCommonMessage(windowUi_, message, wParam, lParam, common)) return common;
+        switch (message) {
+        case WM_CREATE: {
+            RECT client{}; GetClientRect(hwnd_, &client); windowUi_ = std::make_unique<ThemedWindowUi>(instance_, owner_, hwnd_, theme_, DialogLayoutKind::Standard, client.right, client.bottom);
+            const auto& ui = windowUi_->ui(); const auto& layout = ui.layout(); directoryLabel_ = ui.Label(L"远端目录：" + WebDavFileService::FilesDirectory(config_), ui.contentLeft(), ui.contentTop(), ui.contentWidth());
+            const int top = ui.contentTop() + ui.labelHeight() + layout.sectionGap; const int footer = layout.FooterButtonY(ui.clientHeight(), ui.footerButtonHeight());
+            RECT frame{ui.contentLeft(), top, ui.contentLeft()+ui.contentWidth(), footer-layout.footerGap};
+            const int fileNameWidth = ui.tableColumnWidth({L"文件名", L"quattro-webdav-rightclick-test.ext"});
+            const int fileSizeWidth = ui.tableColumnWidth({L"大小", L"999.99 GB"});
+            const int uploadTimeWidth = ui.tableColumnWidth({L"上传时间", L"2000-00-00T00:00:00.000Z"});
+            table_ = ui.Table(430, frame, {
+                {L"name", L"文件名", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, fileNameWidth},
+                {L"path", L"系统绝对路径", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Remaining},
+                {L"size", L"大小", ThemedTableColumnAlign::End, ThemedTableColumnWidth::Fixed, fileSizeWidth},
+                {L"time", L"上传时间", ThemedTableColumnAlign::End, ThemedTableColumnWidth::Fixed, uploadTimeWidth},
+            });
+            refreshButton_ = ui.FooterButton(ID_WEBDAV_FILE_REFRESH, L"刷新", 0, 4); downloadButton_ = ui.FooterButton(ID_WEBDAV_FILE_DOWNLOAD, L"下载", 1, 4, true); deleteButton_ = ui.FooterButton(ID_WEBDAV_FILE_DELETE, L"删除", 2, 4); ui.FooterButton(IDCANCEL, L"关闭", 3, 4); PostMessageW(hwnd_, WM_WEBDAV_FILE_REFRESH_REQUEST, 0, 0); return 0; }
+        case WM_PAINT: { PAINTSTRUCT ps{}; HDC dc=BeginPaint(hwnd_,&ps); windowUi_->FillBackground(dc); windowUi_->DrawRegisteredTableFrames(dc); EndPaint(hwnd_,&ps); return 0; }
+        case WM_WEBDAV_FILE_REFRESH_REQUEST: StartRefresh(); return 0;
+        case WM_WEBDAV_FILE_LIST_DONE: FinishRefresh(std::unique_ptr<ListResult>(reinterpret_cast<ListResult*>(lParam))); return 0;
+        case WM_COMMAND: if (LOWORD(wParam)==ID_WEBDAV_FILE_REFRESH) { StartRefresh(); return 0; } if (LOWORD(wParam)==ID_WEBDAV_FILE_DOWNLOAD) { Download(); return 0; } if (LOWORD(wParam)==ID_WEBDAV_FILE_DELETE) { DeleteSelected(); return 0; } if (LOWORD(wParam)==IDCANCEL) { done_=true; DestroyWindow(hwnd_); return 0; } return 0;
+        case WM_CLOSE: done_=true; DestroyWindow(hwnd_); return 0;
+        case WM_NCDESTROY: alive_->store(false); done_=true; hwnd_=nullptr; return 0;
+        default: return DefWindowProcW(hwnd_, message, wParam, lParam);
+        }
+    }
+    HWND owner_{}; HINSTANCE instance_{}; HWND hwnd_{}; HWND table_{}; HWND directoryLabel_{}; HWND refreshButton_{}; HWND downloadButton_{}; HWND deleteButton_{}; const Theme& theme_; AppConfig config_; std::vector<WebDavFileRecord> records_; std::unique_ptr<ThemedWindowUi> windowUi_; std::shared_ptr<std::atomic<bool>> alive_ = std::make_shared<std::atomic<bool>>(true); bool refreshBusy_=false; bool done_=false;
+};
+
 class SettingsDialog {
 public:
     SettingsDialog(
@@ -1955,7 +2089,8 @@ public:
         SettingsContextMenuRefreshRunner contextMenuRefreshRunner,
         SettingsContextMenuRefreshApplyCallback contextMenuRefreshApplyCallback,
         SettingsContextMenuProviderIconRunner contextMenuProviderIconRunner,
-        SettingsCopyPathContextMenuCallback copyPathContextMenuCallback)
+        SettingsCopyPathContextMenuCallback copyPathContextMenuCallback,
+        SettingsWebDavUploadContextMenuCallback webDavUploadContextMenuCallback)
         : owner_(owner),
           instance_(instance),
           config_(config),
@@ -1973,7 +2108,8 @@ public:
           contextMenuRefreshRunner_(std::move(contextMenuRefreshRunner)),
           contextMenuRefreshApplyCallback_(std::move(contextMenuRefreshApplyCallback)),
           contextMenuProviderIconRunner_(std::move(contextMenuProviderIconRunner)),
-          copyPathContextMenuCallback_(std::move(copyPathContextMenuCallback)) {}
+          copyPathContextMenuCallback_(std::move(copyPathContextMenuCallback)),
+          webDavUploadContextMenuCallback_(std::move(webDavUploadContextMenuCallback)) {}
 
     ~SettingsDialog() {
         AbandonContextMenuIconLoad();
@@ -2784,14 +2920,15 @@ private:
     AppConfig ReadWebDavDraftFromControls() {
         AppConfig value = config_;
         value.webDavEnabled = ThemedUi::IsChecked(webDavEnabled_);
+        value.registerWebDavUploadContextMenu = ThemedUi::IsChecked(webDavUploadContextMenu_);
         value.webDavUrl = GetText(webDavUrlEdit_);
-        value.webDavRemotePath = GetText(webDavRemotePathEdit_);
+        value.webDavBackupPath = GetText(webDavBackupPathEdit_);
+        value.webDavFilesPath = GetText(webDavFilesPathEdit_);
         value.webDavUserName = GetText(webDavUserNameEdit_);
         value.webDavKeepCount = ClampNumber(webDavKeepCountEdit_, 1, 100, value.webDavKeepCount);
         value.webDavLastSyncAt = draft_.webDavLastSyncAt;
-        if (Trim(value.webDavRemotePath).empty()) {
-            value.webDavRemotePath = L"/Quattro/backups/";
-        }
+        if (Trim(value.webDavBackupPath).empty()) value.webDavBackupPath = L"/Quattro/backups/";
+        if (Trim(value.webDavFilesPath).empty()) value.webDavFilesPath = L"/Quattro/files/";
         return value;
     }
 
@@ -3599,6 +3736,17 @@ private:
                 return false;
             }
         }
+        if (next.registerWebDavUploadContextMenu != config_.registerWebDavUploadContextMenu &&
+            webDavUploadContextMenuCallback_) {
+            std::wstring error;
+            if (!webDavUploadContextMenuCallback_(next.registerWebDavUploadContextMenu, error)) {
+                ShowThemedMessageBox(
+                    hwnd_, instance_, theme_,
+                    error.empty() ? L"更新 WebDAV 上传右键菜单失败。" : error,
+                    L"上传到 WebDAV 右键菜单", MB_OK | MB_ICONWARNING);
+                return false;
+            }
+        }
 
         config_ = next;
         UpdateCopyPathContextMenuStatus(config_.registerCopyPathContextMenu);
@@ -3997,7 +4145,7 @@ private:
                 behaviorFrameLeft, directoryCommandSection.frame.bottom + behaviorFrameGap, behaviorFrameWidth,
                 {behaviorForm.sectionRow({ThemedSectionItemKind::Label}),
                  behaviorForm.sectionRow({ThemedSectionItemKind::Edit}),
-                 behaviorForm.sectionRow({ThemedSectionItemKind::Label}),
+                 behaviorForm.sectionRow({ThemedSectionItemKind::Edit}),
                  behaviorForm.sectionRow({ThemedSectionItemKind::Edit}),
                  behaviorForm.sectionRow({ThemedSectionItemKind::Label}),
                  behaviorForm.sectionRow({ThemedSectionItemKind::Edit})});
@@ -4025,9 +4173,13 @@ private:
                  behaviorForm.sectionRow({ThemedSectionItemKind::Edit}),
                  behaviorForm.sectionRow({ThemedSectionItemKind::Label}),
                  behaviorForm.sectionRow({ThemedSectionItemKind::Edit}),
+                 behaviorForm.sectionRow({ThemedSectionItemKind::Label}),
+                 behaviorForm.sectionRow({ThemedSectionItemKind::Edit}),
+                 behaviorForm.sectionRow({ThemedSectionItemKind::CompactButton}),
                  behaviorForm.sectionRow({ThemedSectionItemKind::CompactButton})});
             HWND webDavGroup = AddSectionFrame(TabWebDav, L"WebDAV 备份", webDavSection.frame);
             webDavEnabled_ = CheckBox(TabWebDav, 208, L"启用 WebDAV 备份", behaviorLeft, behaviorForm.sectionItemY(webDavSection, 0, behaviorCheckHeight), draft_.webDavEnabled, behaviorCheckWidth);
+            webDavUploadContextMenu_ = CheckBox(TabWebDav, ID_WEBDAV_UPLOAD_CONTEXT_MENU, L"注册“上传到 WebDAV”右键菜单", behaviorRight, behaviorForm.sectionItemY(webDavSection, 0, behaviorCheckHeight), draft_.registerWebDavUploadContextMenu, behaviorCheckWidth);
             webDavLastSyncLabel_ = Label(TabWebDav, L"", behaviorRight, behaviorForm.sectionItemY(webDavSection, 0, settingsUi.labelHeight()), behaviorCheckWidth);
             UpdateWebDavLastSyncLabel();
             const int webDavServerLabelWidth = behaviorForm.labelWidthForText(L"服务器地址");
@@ -4040,24 +4192,28 @@ private:
             ThemedEditOptions passwordOptions{};
             passwordOptions.content = ThemedEditContent::Password;
             webDavPasswordEdit_ = FramedEdit(TabWebDav, 213, behaviorRight, behaviorForm.sectionItemY(webDavSection, 3, settingsUi.editHeight()), behaviorCheckWidth, L"", passwordOptions);
-            HWND webDavRemoteLabel = Label(TabWebDav, L"远端目录", behaviorLeft, behaviorForm.sectionItemY(webDavSection, 4, settingsUi.labelHeight()), behaviorCheckWidth);
+            HWND webDavBackupLabel = Label(TabWebDav, L"备份目录", behaviorLeft, behaviorForm.sectionItemY(webDavSection, 4, settingsUi.labelHeight()), behaviorCheckWidth);
             HWND webDavKeepLabel = Label(TabWebDav, L"保留数量", behaviorRight, behaviorForm.sectionItemY(webDavSection, 4, settingsUi.labelHeight()), behaviorCheckWidth);
-            webDavRemotePathEdit_ = FramedEdit(TabWebDav, 210, behaviorLeft, behaviorForm.sectionItemY(webDavSection, 5, settingsUi.editHeight()), behaviorCheckWidth, draft_.webDavRemotePath);
+            webDavBackupPathEdit_ = FramedEdit(TabWebDav, 210, behaviorLeft, behaviorForm.sectionItemY(webDavSection, 5, settingsUi.editHeight()), behaviorCheckWidth, draft_.webDavBackupPath);
             webDavKeepCountEdit_ = NumberEdit(TabWebDav, 211, behaviorRight, behaviorForm.sectionItemY(webDavSection, 5, settingsUi.editHeight()), behaviorCheckWidth, draft_.webDavKeepCount);
             const int webDavButtonsWidth =
                 testWidth + behaviorLayout.controlGapX + clearWidth + behaviorLayout.controlGapX
                 + uploadWidth + behaviorLayout.controlGapX + downloadWidth;
             const int webDavButtonsX = settingsUi.centeredGroupX(webDavButtonsWidth);
-            const int webDavButtonsY = behaviorForm.sectionItemY(webDavSection, 6, settingsUi.compactButtonHeight());
+            HWND webDavFilesLabel = Label(TabWebDav, L"文件目录", behaviorLeft, behaviorForm.sectionItemY(webDavSection, 6, settingsUi.labelHeight()), behaviorContentWidth);
+            webDavFilesPathEdit_ = FramedEdit(TabWebDav, 219, behaviorLeft, behaviorForm.sectionItemY(webDavSection, 7, settingsUi.editHeight()), behaviorContentWidth, draft_.webDavFilesPath);
+            const int webDavButtonsY = behaviorForm.sectionItemY(webDavSection, 8, settingsUi.compactButtonHeight());
             webDavTestButton_ = Button(TabWebDav, ID_WEBDAV_TEST, L"测试连接", webDavButtonsX, webDavButtonsY, testWidth);
             webDavClearPasswordButton_ = Button(TabWebDav, ID_WEBDAV_CLEAR_PASSWORD, L"清除密码", webDavButtonsX + testWidth + behaviorLayout.controlGapX, webDavButtonsY, clearWidth);
             webDavUploadButton_ = Button(TabWebDav, ID_WEBDAV_UPLOAD, L"上传到云端", webDavButtonsX + testWidth + behaviorLayout.controlGapX + clearWidth + behaviorLayout.controlGapX, webDavButtonsY, uploadWidth);
             webDavDownloadButton_ = Button(TabWebDav, ID_WEBDAV_DOWNLOAD, L"从云端下载", webDavButtonsX + testWidth + behaviorLayout.controlGapX + clearWidth + behaviorLayout.controlGapX + uploadWidth + behaviorLayout.controlGapX, webDavButtonsY, downloadWidth);
+            const int fileManagerWidth = settingsUi.buttonWidth(L"打开文件管理", ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Text);
+            webDavFileManagerButton_ = Button(TabWebDav, ID_WEBDAV_FILE_MANAGER, L"打开文件管理", settingsUi.centeredGroupX(fileManagerWidth), behaviorForm.sectionItemY(webDavSection, 9, settingsUi.compactButtonHeight()), fileManagerWidth);
             ThemedUi::BindGroupChildren(webDavGroup, {
-                webDavEnabled_, webDavLastSyncLabel_, webDavUrlLabel, webDavUrlEdit_, webDavUserLabel,
+                webDavEnabled_, webDavUploadContextMenu_, webDavLastSyncLabel_, webDavUrlLabel, webDavUrlEdit_, webDavUserLabel,
                 webDavPasswordLabel, webDavUserNameEdit_, webDavPasswordEdit_, webDavTestButton_,
-                webDavClearPasswordButton_, webDavRemoteLabel, webDavKeepLabel,
-                webDavRemotePathEdit_, webDavKeepCountEdit_, webDavUploadButton_, webDavDownloadButton_});
+                webDavClearPasswordButton_, webDavBackupLabel, webDavKeepLabel,
+                webDavBackupPathEdit_, webDavKeepCountEdit_, webDavFilesLabel, webDavFilesPathEdit_, webDavUploadButton_, webDavDownloadButton_, webDavFileManagerButton_});
 
             const DialogLayoutMetrics& httpLayout = settingsUi.layout();
             const int httpPanelPaddingX = groupInsets.left;
@@ -4305,6 +4461,13 @@ private:
                 DownloadWebDavBackup();
                 return 0;
             }
+            if (LOWORD(wParam) == ID_WEBDAV_FILE_MANAGER) {
+                AppConfig value = ReadWebDavDraftFromControls();
+                if (SaveWebDavPasswordIfNeeded(value)) {
+                    ShowWebDavFileManagerDialog(hwnd_, instance_, theme_, value);
+                }
+                return 0;
+            }
             if (LOWORD(wParam) == ID_CONFIG_EXPORT) {
                 ExportConfigPackage();
                 return 0;
@@ -4518,7 +4681,8 @@ private:
     HWND rewardUrlEdit_ = nullptr;
     HWND webDavEnabled_ = nullptr;
     HWND webDavUrlEdit_ = nullptr;
-    HWND webDavRemotePathEdit_ = nullptr;
+    HWND webDavBackupPathEdit_ = nullptr;
+    HWND webDavFilesPathEdit_ = nullptr;
     HWND webDavKeepCountEdit_ = nullptr;
     HWND webDavUserNameEdit_ = nullptr;
     HWND webDavPasswordEdit_ = nullptr;
@@ -4527,6 +4691,8 @@ private:
     HWND webDavTestButton_ = nullptr;
     HWND webDavClearPasswordButton_ = nullptr;
     HWND webDavLastSyncLabel_ = nullptr;
+    HWND webDavFileManagerButton_ = nullptr;
+    HWND webDavUploadContextMenu_ = nullptr;
     HWND httpServerAutoStart_ = nullptr;
     HWND httpServerAddressEdit_ = nullptr;
     HWND httpServerRootEdit_ = nullptr;
@@ -4558,6 +4724,7 @@ private:
     SettingsContextMenuRefreshApplyCallback contextMenuRefreshApplyCallback_;
     SettingsContextMenuProviderIconRunner contextMenuProviderIconRunner_;
     SettingsCopyPathContextMenuCallback copyPathContextMenuCallback_;
+    SettingsWebDavUploadContextMenuCallback webDavUploadContextMenuCallback_;
     std::jthread contextMenuRefreshThread_;
     std::mutex contextMenuRefreshMutex_;
     std::optional<ShellContextMenuRefreshResult> contextMenuRefreshResult_;
@@ -4599,6 +4766,11 @@ bool ShowWebDavBackupSelectionDialog(
     return dialog.Run();
 }
 
+bool ShowWebDavFileManagerDialog(HWND owner, HINSTANCE instance, const Theme& theme, const AppConfig& config) {
+    WebDavFileManagerDialog dialog(owner, instance, theme, config);
+    return dialog.Run();
+}
+
 bool ShowSettingsDialog(
     HWND owner,
     HINSTANCE instance,
@@ -4617,7 +4789,8 @@ bool ShowSettingsDialog(
     SettingsContextMenuRefreshRunner contextMenuRefreshRunner,
     SettingsContextMenuRefreshApplyCallback contextMenuRefreshApplyCallback,
     SettingsContextMenuProviderIconRunner contextMenuProviderIconRunner,
-    SettingsCopyPathContextMenuCallback copyPathContextMenuCallback) {
+    SettingsCopyPathContextMenuCallback copyPathContextMenuCallback,
+    SettingsWebDavUploadContextMenuCallback webDavUploadContextMenuCallback) {
     SettingsDialog dialog(
         owner,
         instance,
@@ -4635,7 +4808,8 @@ bool ShowSettingsDialog(
         std::move(contextMenuRefreshRunner),
         std::move(contextMenuRefreshApplyCallback),
         std::move(contextMenuProviderIconRunner),
-        std::move(copyPathContextMenuCallback));
+        std::move(copyPathContextMenuCallback),
+        std::move(webDavUploadContextMenuCallback));
     const bool accepted = dialog.Run();
     if (importedData) {
         *importedData = dialog.webDavDataImported();

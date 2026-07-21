@@ -143,6 +143,7 @@ void ThemedTaskProgressDialog::Refresh() {
     snapshot.detail = options_.initialDetail;
     if (options_.readSnapshot) snapshot = options_.readSnapshot();
     const ThemedUi ui = windowUi_->ui();
+    if (!snapshot.title.empty()) SetWindowTextW(hwnd_, snapshot.title.c_str());
     ui.SetStatusTextRole(status_, snapshot.role);
     ThemedUi::SetText(status_, snapshot.status);
     ThemedUi::SetText(detail_, snapshot.detail);

@@ -8,6 +8,8 @@
 #include "../src/services/ConfigPackageService.h"
 #include "../src/services/ContextMenuProviderIconService.h"
 #include "../src/services/ExplorerCopyPathContextMenuService.h"
+#include "../src/services/ExplorerWebDavUploadContextMenuService.h"
+#include "../src/services/WebDavFileService.h"
 #include "../src/services/FileLockQueryService.h"
 #include "../src/services/Launcher.h"
 #include "../src/domain/MenuCatalog.h"
@@ -321,6 +323,12 @@ int wmain() {
         ExplorerCopyPathContextMenuService::BuildIconValue(contextMenuExe) ==
             L"\"C:\\Program Files\\Quattro 测试\\Quattro.exe\",0",
         "Copy path context menu icon quotes executable");
+    Check(
+        ExplorerWebDavUploadContextMenuService::BuildCommand(contextMenuExe) ==
+            L"\"C:\\Program Files\\Quattro 测试\\Quattro.exe\" --upload-to-webdav \"%1\"",
+        "WebDAV upload context menu safely passes selected item");
+    Check(WebDavFileService::RecordId(L"c:\\资料\\报告.docx").size() == 64,
+        "WebDAV file record uses SHA-256 path id");
     {
         const std::wstring testKey =
             L"Software\\Quattro\\Tests\\CopyPathMenu_" + std::to_wstring(GetCurrentProcessId());
@@ -595,6 +603,7 @@ int wmain() {
     Check(!config.hideOnStart, "Config default hide on start");
     Check(!config.autoRun, "Config default auto run");
     Check(!config.registerCopyPathContextMenu, "Config default copy path context menu disabled");
+    Check(!config.registerWebDavUploadContextMenu, "Config default WebDAV upload context menu disabled");
     Check(config.loggingEnabled, "Config default logging enabled");
     for (const auto& provider : TrackedContextMenuProviders()) {
         Check(!(config.*(provider.configMember)), "Config default context menu tracking disabled");
@@ -610,6 +619,8 @@ int wmain() {
     config.webDavEnabled = true;
     config.webDavUrl = L"https://dav.local/remote.php/dav/files/unit/";
     config.webDavRemotePath = L"/Quattro/backups/";
+    config.webDavBackupPath = L"/Custom/backups/";
+    config.webDavFilesPath = L"/Custom/files/";
     config.webDavUserName = L"unit";
     config.webDavKeepCount = 7;
     config.loggingEnabled = false;
@@ -624,6 +635,7 @@ int wmain() {
     config.httpServerRootPath = L"C:\\QuattroWeb";
     config.copySelectedPathsHotKey = L'X';
     config.registerCopyPathContextMenu = true;
+    config.registerWebDavUploadContextMenu = true;
     service.Save(config);
 
     AppConfig loaded = service.Load();
@@ -634,7 +646,9 @@ int wmain() {
     Check(loaded.updateUrl == L"https://update.local/", "Config update url");
     Check(loaded.webDavEnabled, "Config webdav enabled");
     Check(loaded.webDavUrl == L"https://dav.local/remote.php/dav/files/unit/", "Config webdav url");
-    Check(loaded.webDavRemotePath == L"/Quattro/backups/", "Config webdav remote path");
+    Check(loaded.webDavRemotePath == L"/Quattro/", "Config webdav root path");
+    Check(loaded.webDavBackupPath == L"/Custom/backups/", "Config webdav backup path");
+    Check(loaded.webDavFilesPath == L"/Custom/files/", "Config webdav files path");
     Check(loaded.webDavUserName == L"unit", "Config webdav user");
     Check(loaded.webDavKeepCount == 7, "Config webdav keep count");
     Check(!loaded.loggingEnabled, "Config logging enabled");
@@ -649,6 +663,7 @@ int wmain() {
     Check(loaded.httpServerRootPath == L"C:\\QuattroWeb", "Config http root");
     Check(loaded.copySelectedPathsHotKey == L'X', "Config copy selected paths hotkey round trip");
     Check(loaded.registerCopyPathContextMenu, "Config copy path context menu round trip");
+    Check(loaded.registerWebDavUploadContextMenu, "Config WebDAV upload context menu round trip");
     Check(FileExists(unitUserConfigRoot / L"webdav.ini"), "Config webdav stored in user config directory");
     Check(FileExists(unitUserConfigRoot / L"http.ini"), "Config http stored in user config directory");
     Check(FileExists(unitUserConfigRoot / L"context-menu.ini"), "Context menu settings stored in user config directory");
@@ -1217,7 +1232,9 @@ int wmain() {
     Check(recovery.Load(recovered), "WebDAV recovery load");
     Check(recovered.webDavEnabled, "WebDAV recovery enabled");
     Check(recovered.webDavUrl == config.webDavUrl, "WebDAV recovery url");
-    Check(recovered.webDavRemotePath == config.webDavRemotePath, "WebDAV recovery remote path");
+    Check(recovered.webDavRemotePath == L"/Quattro/", "WebDAV recovery remote root path");
+    Check(recovered.webDavBackupPath == config.webDavBackupPath, "WebDAV recovery backup path");
+    Check(recovered.webDavFilesPath == config.webDavFilesPath, "WebDAV recovery files path");
     Check(recovered.webDavUserName == config.webDavUserName, "WebDAV recovery user");
     Check(recovered.webDavKeepCount == config.webDavKeepCount, "WebDAV recovery keep count");
     const std::wstring recoveryText = LoadUtf8File(recoveryPath);
@@ -2360,6 +2377,7 @@ int wmain() {
     Check(MenuIconForToolEngine(L"timer") == MenuIconHistory, "Timer tool menu icon");
     Check(MenuIconForToolEngine(L"stopwatch") == MenuIconCalculator, "Stopwatch tool menu icon");
     Check(MenuIconForToolEngine(L"process-tools") == MenuIconComputer, "Process tool menu icon");
+    Check(MenuIconForToolEngine(L"webdav-manager") == MenuIconFolder, "WebDAV manager tool menu icon");
     Check(MenuIconForToolEngine(L"app-launch-locker") == MenuIconRestart, "Startup manager tool menu icon");
     Check(MenuIconForToolEngine(L"ad-block") == MenuIconShield, "Ad blocker tool menu icon");
     Check(MenuIconForToolEngine(L"unknown") == MenuIconTools, "Unknown tool menu icon fallback");
@@ -2380,6 +2398,7 @@ int wmain() {
     bool hasAutoClickerName = false;
     bool hasClock = false;
     bool hasProcessTools = false;
+    bool hasWebDavManager = false;
     bool hasLegacyProcessTool = false;
     bool hasAppLaunchLocker = false;
     bool hasAdBlock = false;
@@ -2394,6 +2413,11 @@ int wmain() {
             plugin.name == L"进程工具" &&
             plugin.engine == L"process-tools") {
             hasProcessTools = true;
+        }
+        if (plugin.id == L"quattro.builtin.webdav-manager" &&
+            plugin.name == L"WebDAV 管理" &&
+            plugin.engine == L"webdav-manager") {
+            hasWebDavManager = true;
         }
         if (plugin.id == L"quattro.builtin.port-inspector" ||
             plugin.id == L"quattro.builtin.process-inspector" ||
@@ -2415,6 +2439,7 @@ int wmain() {
     Check(hasAutoClickerName, "Plugin clicker display name");
     Check(hasClock, "Plugin clock registration");
     Check(hasProcessTools, "Plugin process tools registration");
+    Check(hasWebDavManager, "Plugin WebDAV manager registration");
     Check(!hasLegacyProcessTool, "Legacy process tools are hidden from the toolbox registry");
     Check(hasAppLaunchLocker == !QuattroIsOfficialBuild(),
         "Plugin AppLaunchLocker registration follows build identity");
@@ -2423,6 +2448,7 @@ int wmain() {
     Check(pluginRegistry.IsEnabled(L"quattro.builtin.clock"), "Plugin clock enabled by default");
     Check(pluginRegistry.IsEnabled(L"quattro.builtin.timer"), "Plugin timer enabled by default");
     Check(pluginRegistry.IsEnabled(L"quattro.builtin.process-tools"), "Plugin process tools enabled by default");
+    Check(pluginRegistry.IsEnabled(L"quattro.builtin.webdav-manager"), "Plugin WebDAV manager enabled by default");
     Check(pluginRegistry.IsEnabled(L"quattro.builtin.app-launch-locker") == !QuattroIsOfficialBuild(),
         "Plugin AppLaunchLocker availability follows build identity");
     if (QuattroIsOfficialBuild()) {
@@ -2458,7 +2484,11 @@ int wmain() {
     Check(LinkSortLess(alphaLink, betaLink, 2, 0), "Name ascending sort");
     Check(LinkSortLess(betaLink, alphaLink, 2, 1), "Name descending sort");
 
-    Check(WebDavClient::CombineRemotePath(L"/Quattro/backups/", L"file.q4cfg") == L"/Quattro/backups/file.q4cfg", "WebDAV remote path combine");
+    Check(WebDavClient::CombineRemotePath(L"/Quattro/", L"backups/file.q4cfg") == L"/Quattro/backups/file.q4cfg", "WebDAV remote path combine");
+    AppConfig rootConfig;
+    rootConfig.webDavRemotePath = L"/Quattro/";
+    Check(WebDavClient::BackupRemotePath(rootConfig) == L"/Quattro/backups/", "WebDAV backup path");
+    Check(WebDavClient::FilesRemotePath(rootConfig) == L"/Quattro/files/", "WebDAV files path");
 #ifdef QUATTRO_WITH_WEBDAV_LIBS
     const std::string propFindXml = R"xml(<?xml version="1.0" encoding="utf-8"?>
 <d:multistatus xmlns:d="DAV:">
@@ -2476,6 +2506,19 @@ int wmain() {
     Check(davFiles[0].collection, "WebDAV PROPFIND collection");
     Check(davFiles[1].name == L"quattro-backup-20260626-153012.q4cfg", "WebDAV PROPFIND file name");
     Check(davFiles[1].size == 12345, "WebDAV PROPFIND file size");
+    WebDavRemoteFile filesCollection;
+    filesCollection.name = L"files";
+    filesCollection.href = L"/dav/cf/quattro/Quattro/files/?ignored=1";
+    filesCollection.collection = true;
+    Check(WebDavFileService::IsCollectionSelfResponse(L"/Quattro/files/", filesCollection),
+        "WebDAV file list excludes queried collection response");
+    filesCollection.href = L"/dav/cf/quattro/Quattro/files/files/";
+    Check(!WebDavFileService::IsCollectionSelfResponse(L"/Quattro/files/", filesCollection),
+        "WebDAV file list does not confuse a child with queried collection");
+    Check(WebDavFileService::IsRecordDirectoryName(std::wstring(64, L'a')),
+        "WebDAV file list accepts SHA-256 record directory");
+    Check(!WebDavFileService::IsRecordDirectoryName(L"files"),
+        "WebDAV file list rejects non-record collection");
 #endif
 
     const std::filesystem::path storageRoot = std::filesystem::temp_directory_path() / L"quattro_storage_unit";

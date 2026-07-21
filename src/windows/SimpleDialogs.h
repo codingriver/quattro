@@ -4,6 +4,7 @@
 #include "ContextMenuProviderIconService.h"
 #include "ShellContextMenuRefreshService.h"
 #include "Theme.h"
+#include "WebDavFileService.h"
 
 #include <windows.h>
 
@@ -24,6 +25,7 @@ using SettingsContextMenuRefreshApplyCallback = std::function<void(
 using SettingsContextMenuProviderIconRunner = std::function<std::vector<ContextMenuProviderIconInfo>(
     std::stop_token)>;
 using SettingsCopyPathContextMenuCallback = std::function<bool(bool, std::wstring&)>;
+using SettingsWebDavUploadContextMenuCallback = std::function<bool(bool, std::wstring&)>;
 
 bool ShowTextInputDialog(HWND owner, HINSTANCE instance, const Theme& theme, const std::wstring& title, const std::wstring& label, std::wstring& value);
 int ShowThemedMessageBox(HWND owner, HINSTANCE instance, const Theme& theme, const std::wstring& message, const std::wstring& title, UINT flags);
@@ -39,6 +41,11 @@ bool ShowWebDavBackupSelectionDialog(
     const Theme& theme,
     const std::vector<WebDavRemoteFile>& backups,
     std::wstring& selectedName);
+bool ShowWebDavFileManagerDialog(
+    HWND owner,
+    HINSTANCE instance,
+    const Theme& theme,
+    const AppConfig& config);
 bool ShowSettingsDialog(
     HWND owner,
     HINSTANCE instance,
@@ -57,4 +64,5 @@ bool ShowSettingsDialog(
     SettingsContextMenuRefreshRunner contextMenuRefreshRunner = {},
     SettingsContextMenuRefreshApplyCallback contextMenuRefreshApplyCallback = {},
     SettingsContextMenuProviderIconRunner contextMenuProviderIconRunner = {},
-    SettingsCopyPathContextMenuCallback copyPathContextMenuCallback = {});
+    SettingsCopyPathContextMenuCallback copyPathContextMenuCallback = {},
+    SettingsWebDavUploadContextMenuCallback webDavUploadContextMenuCallback = {});

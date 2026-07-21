@@ -42,7 +42,8 @@ bool WebDavBackupService::TestConnection(std::wstring& error) {
         return false;
     }
     WebDavClient client(config_, password);
-    if (!client.TestConnection()) {
+    if (!client.EnsureDirectory(WebDavClient::BackupRemotePath(config_)) ||
+        !client.EnsureDirectory(WebDavClient::FilesRemotePath(config_))) {
         error = client.lastError();
         return false;
     }
@@ -57,7 +58,8 @@ bool WebDavBackupService::ListBackups(std::vector<WebDavRemoteFile>& backups, st
     }
     WebDavClient client(config_, password);
     std::vector<WebDavRemoteFile> files;
-    if (!client.ListFiles(config_.webDavRemotePath, files)) {
+    const std::wstring backupPath = WebDavClient::BackupRemotePath(config_);
+    if (!client.ListFiles(backupPath, files)) {
         error = client.lastError();
         return false;
     }
@@ -91,13 +93,14 @@ WebDavBackupReport WebDavBackupService::UploadBackup() {
     }
 
     WebDavClient client(config_, password);
-    if (!client.EnsureDirectory(config_.webDavRemotePath)) {
+    const std::wstring backupPath = WebDavClient::BackupRemotePath(config_);
+    if (!client.EnsureDirectory(backupPath)) {
         report.message = client.lastError();
         std::error_code ec;
         std::filesystem::remove(packagePath, ec);
         return report;
     }
-    const std::wstring remotePath = WebDavClient::CombineRemotePath(config_.webDavRemotePath, fileName);
+    const std::wstring remotePath = WebDavClient::CombineRemotePath(backupPath, fileName);
     if (!client.UploadFile(packagePath, remotePath)) {
         report.message = client.lastError();
         std::error_code ec;
@@ -146,7 +149,7 @@ WebDavBackupReport WebDavBackupService::DownloadAndPreviewMerge(const std::wstri
 
     const std::filesystem::path packagePath = TempPackagePath(name);
     WebDavClient client(config_, password);
-    const std::wstring remotePath = WebDavClient::CombineRemotePath(config_.webDavRemotePath, name);
+    const std::wstring remotePath = WebDavClient::CombineRemotePath(WebDavClient::BackupRemotePath(config_), name);
     if (!client.DownloadFile(remotePath, packagePath)) {
         report.message = client.lastError();
         return report;
@@ -200,8 +203,8 @@ bool WebDavBackupService::LoadPassword(std::wstring& password, std::wstring& err
         error = L"WebDAV 地址未配置。";
         return false;
     }
-    if (Trim(config_.webDavRemotePath).empty()) {
-        error = L"WebDAV 远端目录未配置。";
+    if (Trim(config_.webDavBackupPath).empty()) {
+        error = L"WebDAV 备份目录未配置。";
         return false;
     }
     if (Trim(config_.webDavUserName).empty()) {
@@ -235,7 +238,7 @@ std::filesystem::path WebDavBackupService::TempPackagePath(const std::wstring& f
 
 void WebDavBackupService::PruneOldBackups(WebDavClient& client, std::vector<std::wstring>& warnings) {
     std::vector<WebDavRemoteFile> files;
-    if (!client.ListFiles(config_.webDavRemotePath, files)) {
+    if (!client.ListFiles(WebDavClient::BackupRemotePath(config_), files)) {
         warnings.push_back(client.lastError());
         return;
     }
@@ -250,7 +253,7 @@ void WebDavBackupService::PruneOldBackups(WebDavClient& client, std::vector<std:
     });
     const int keepCount = std::max(1, std::min(100, config_.webDavKeepCount));
     for (std::size_t i = static_cast<std::size_t>(keepCount); i < backups.size(); ++i) {
-        const std::wstring remotePath = WebDavClient::CombineRemotePath(config_.webDavRemotePath, backups[i].name);
+        const std::wstring remotePath = WebDavClient::CombineRemotePath(WebDavClient::BackupRemotePath(config_), backups[i].name);
         if (!client.DeleteRemoteFile(remotePath)) {
             warnings.push_back(client.lastError());
         }
