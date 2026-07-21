@@ -670,11 +670,25 @@ struct ControlTooltipRuntime {
     bool shownForHover = false;
 };
 
+struct TableRowTooltipRuntime {
+    ThemedTooltipRegistry* registry = nullptr;
+    ThemedTableRowTooltipProvider provider;
+    ThemedTooltipOptions options{};
+    int hoveredRow = -1;
+    int shownRow = -1;
+    POINT anchor{};
+    bool trackingMouseLeave = false;
+    UINT hoverDelayMs = 400;
+};
+
 constexpr int kToolBarOverflowId = 0x7ff0;
 constexpr UINT_PTR kControlTooltipSubclassId = 0x51545450;
+constexpr UINT_PTR kTableRowTooltipSubclassId = 0x51545451;
+constexpr UINT_PTR kTableRowTooltipTimerId = 0x5154;
 
 LRESULT CALLBACK ToolItemProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR id, DWORD_PTR refData);
 LRESULT CALLBACK ControlTooltipProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR id, DWORD_PTR refData);
+LRESULT CALLBACK TableRowTooltipProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR id, DWORD_PTR refData);
 LRESULT CALLBACK TabPageNavigationProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR id, DWORD_PTR refData);
 
 std::unordered_map<HWND, GroupBoxRuntime>& GroupBoxStates() {
@@ -689,6 +703,11 @@ std::unordered_map<HWND, PanelRuntime>& PanelStates() {
 
 std::unordered_map<HWND, ControlTooltipRuntime>& ControlTooltipStates() {
     static std::unordered_map<HWND, ControlTooltipRuntime> states;
+    return states;
+}
+
+std::unordered_map<HWND, TableRowTooltipRuntime>& TableRowTooltipStates() {
+    static std::unordered_map<HWND, TableRowTooltipRuntime> states;
     return states;
 }
 
@@ -1270,6 +1289,70 @@ LRESULT CALLBACK ControlTooltipProc(
     if (message == WM_NCDESTROY) {
         ControlTooltipStates().erase(hwnd);
         RemoveWindowSubclass(hwnd, ControlTooltipProc, id);
+    }
+    return DefSubclassProc(hwnd, message, wParam, lParam);
+}
+
+LRESULT CALLBACK TableRowTooltipProc(
+    HWND hwnd,
+    UINT message,
+    WPARAM wParam,
+    LPARAM lParam,
+    UINT_PTR id,
+    DWORD_PTR) {
+    auto it = TableRowTooltipStates().find(hwnd);
+    if (it != TableRowTooltipStates().end()) {
+        TableRowTooltipRuntime& runtime = it->second;
+        if (message == WM_MOUSEMOVE && runtime.registry && runtime.options.enabled && runtime.provider) {
+            if (!runtime.trackingMouseLeave) {
+                TRACKMOUSEEVENT track{};
+                track.cbSize = sizeof(track);
+                track.dwFlags = TME_LEAVE;
+                track.hwndTrack = hwnd;
+                runtime.trackingMouseLeave = TrackMouseEvent(&track) != FALSE;
+            }
+            POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+            const int row = ThemedUi::TableHitTest(hwnd, point, true);
+            ClientToScreen(hwnd, &point);
+            runtime.anchor = point;
+            if (row != runtime.hoveredRow) {
+                KillTimer(hwnd, kTableRowTooltipTimerId);
+                if (runtime.shownRow >= 0) runtime.registry->HideTooltip();
+                runtime.hoveredRow = row;
+                runtime.shownRow = -1;
+                if (row >= 0 && runtime.hoverDelayMs == 0) {
+                    const std::wstring text = runtime.provider(row, ThemedUi::TableRowKey(hwnd, row));
+                    if (!text.empty()) {
+                        runtime.registry->ShowTooltip(text, runtime.anchor, runtime.options);
+                        runtime.shownRow = row;
+                    }
+                } else if (row >= 0) {
+                    SetTimer(hwnd, kTableRowTooltipTimerId, runtime.hoverDelayMs, nullptr);
+                }
+            }
+        } else if (message == WM_TIMER && wParam == kTableRowTooltipTimerId) {
+            KillTimer(hwnd, kTableRowTooltipTimerId);
+            if (runtime.registry && runtime.provider && runtime.hoveredRow >= 0) {
+                const std::wstring text = runtime.provider(
+                    runtime.hoveredRow, ThemedUi::TableRowKey(hwnd, runtime.hoveredRow));
+                if (!text.empty()) {
+                    runtime.registry->ShowTooltip(text, runtime.anchor, runtime.options);
+                    runtime.shownRow = runtime.hoveredRow;
+                }
+            }
+            return 0;
+        } else if (message == WM_MOUSELEAVE || (message == WM_SHOWWINDOW && !wParam)) {
+            KillTimer(hwnd, kTableRowTooltipTimerId);
+            runtime.trackingMouseLeave = false;
+            runtime.hoveredRow = -1;
+            if (runtime.shownRow >= 0 && runtime.registry) runtime.registry->HideTooltip();
+            runtime.shownRow = -1;
+        }
+    }
+    if (message == WM_NCDESTROY) {
+        KillTimer(hwnd, kTableRowTooltipTimerId);
+        TableRowTooltipStates().erase(hwnd);
+        RemoveWindowSubclass(hwnd, TableRowTooltipProc, id);
     }
     return DefSubclassProc(hwnd, message, wParam, lParam);
 }
@@ -2964,6 +3047,28 @@ bool ThemedUi::DecodeTableEvent(HWND table, LPARAM lParam, ThemedTableEvent& eve
     return false;
 }
 
+void ThemedUi::SetTableRowTooltip(
+    HWND table,
+    ThemedTableRowTooltipProvider provider,
+    ThemedTooltipOptions options,
+    UINT hoverDelayMs) const {
+    if (!table) return;
+    auto& states = TableRowTooltipStates();
+    if (!tooltipRegistry_ || !provider) {
+        auto it = states.find(table);
+        if (it != states.end()) {
+            KillTimer(table, kTableRowTooltipTimerId);
+            if (it->second.registry && it->second.shownRow >= 0) it->second.registry->HideTooltip();
+            states.erase(it);
+        }
+        RemoveWindowSubclass(table, TableRowTooltipProc, kTableRowTooltipSubclassId);
+        return;
+    }
+    states[table] = TableRowTooltipRuntime{
+        tooltipRegistry_, std::move(provider), options, -1, -1, POINT{}, false, hoverDelayMs};
+    SetWindowSubclass(table, TableRowTooltipProc, kTableRowTooltipSubclassId, 0);
+}
+
 void ThemedUi::SetTooltip(HWND control, const std::wstring& text, ThemedTooltipOptions options) const {
     if (!control) return;
     auto& states = ControlTooltipStates();
@@ -2993,6 +3098,18 @@ void ThemedUi::DetachTooltips(ThemedTooltipRegistry* registry) {
             RemoveWindowSubclass(it->first, ControlTooltipProc, kControlTooltipSubclassId);
         }
         it = states.erase(it);
+    }
+    auto& tableStates = TableRowTooltipStates();
+    for (auto it = tableStates.begin(); it != tableStates.end();) {
+        if (it->second.registry != registry) {
+            ++it;
+            continue;
+        }
+        if (it->first && IsWindow(it->first)) {
+            KillTimer(it->first, kTableRowTooltipTimerId);
+            RemoveWindowSubclass(it->first, TableRowTooltipProc, kTableRowTooltipSubclassId);
+        }
+        it = tableStates.erase(it);
     }
 }
 

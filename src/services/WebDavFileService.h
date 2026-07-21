@@ -40,10 +40,17 @@ enum class WebDavFileTransferPhase {
     Verifying,
 };
 
+enum class WebDavFileDeletePhase {
+    DeletingContent,
+    DeletingMetadata,
+    DeletingDirectory,
+};
+
 using WebDavFileProgressCallback = std::function<bool(
     WebDavFileTransferPhase phase,
     std::uint64_t transferred,
     std::uint64_t total)>;
+using WebDavFileDeleteProgressCallback = std::function<void(WebDavFileDeletePhase phase, bool completed)>;
 
 struct WebDavFileOperationResult {
     bool ok = false;
@@ -70,11 +77,14 @@ public:
         WebDavFileProgressCallback progress = {}, std::stop_token stopToken = {});
     WebDavFileOperationResult Download(const WebDavFileRecord& record,
         WebDavFileProgressCallback progress = {}, std::stop_token stopToken = {});
-    bool Delete(const WebDavFileRecord& record, std::wstring& error);
+    bool Delete(const WebDavFileRecord& record, std::wstring& error,
+        WebDavFileDeleteProgressCallback progress = {});
 
     static std::wstring CanonicalPath(const std::filesystem::path& path);
     static std::wstring RecordId(const std::wstring& canonicalPath);
     static std::wstring FilesDirectory(const AppConfig& config);
+    static std::wstring FormatUploadedAtLocal(const std::wstring& uploadedAtUtc);
+    static std::wstring FormatRecordTooltip(const WebDavFileRecord& record);
     static bool IsCollectionSelfResponse(const std::wstring& remotePath, const WebDavRemoteFile& entry);
     static bool IsRecordDirectoryName(const std::wstring& name);
 

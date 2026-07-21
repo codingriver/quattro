@@ -1465,11 +1465,12 @@ void RunTooltipVisualScenario(
     const Theme& theme,
     const std::filesystem::path& outputDir,
     TestState& state,
-    UINT dpi) {
+    UINT dpi,
+    const std::wstring& tooltipText =
+        L"恢复跟踪开关默认值，并清除全部菜单列表、状态与图标缓存。",
+    const std::wstring& screenshotPrefix = L"public-tooltip") {
     const std::wstring suffix = std::to_wstring(dpi * 100 / USER_DEFAULT_SCREEN_DPI);
-    const std::wstring scenarioName = L"public-tooltip-" + suffix;
-    const std::wstring tooltipText =
-        L"恢复跟踪开关默认值，并清除全部菜单列表、状态与图标缓存。";
+    const std::wstring scenarioName = screenshotPrefix + L"-" + suffix;
     AcceptanceLog(L"begin " + scenarioName);
 
     RECT ownerRect{};
@@ -1526,7 +1527,7 @@ void RunTooltipVisualScenario(
 
         BitmapCapture tooltipCapture = CaptureWindowBitmap(tooltip);
         const std::filesystem::path tooltipScreenshot =
-            outputDir / (L"public-tooltip-" + suffix + L".png");
+            outputDir / (screenshotPrefix + L"-" + suffix + L".png");
         state.Check(
             tooltipCapture.bitmap != nullptr,
             scenarioName + L": tooltip screenshot bitmap was not created");
@@ -4394,7 +4395,7 @@ void RunWebDavFileDetailsScenario(
         scenario.forcedDpi = dpi;
         scenario.expectedVisibleChildTexts = {
             L"文件名：", L"EntryFlow.md", L"文件大小：", L"5 KB",
-            L"上传时间：", L"2026-07-21T08:31:35.872Z", L"上传状态：",
+            L"上传时间：", WebDavFileService::FormatUploadedAtLocal(L"2026-07-21T08:31:35.872Z"), L"上传状态：",
             L"complete · 内容可用", L"系统绝对路径", L"远端记录路径", L"SHA-256"};
         ValidateAndCapture(details, scenario, outputDir, state);
         PostMessageW(details, WM_CLOSE, 0, 0);
@@ -4405,6 +4406,47 @@ void RunWebDavFileDetailsScenario(
     ShowWebDavFileManagerDialog(owner, instance, theme, config);
     inspector.join();
     SetEnvironmentVariableW(L"QUATTRO_TEST_WEBDAV_FILE_DETAILS", nullptr);
+    SetEnvironmentVariableW(L"QUATTRO_TEST_WEBDAV_FILE_MANAGER_SKIP_REFRESH", nullptr);
+}
+
+void RunWebDavDeleteProgressScenario(
+    HWND owner,
+    HINSTANCE instance,
+    const Theme& theme,
+    const AppConfig& config,
+    const std::filesystem::path& outputDir,
+    TestState& state,
+    UINT dpi) {
+    SetEnvironmentVariableW(L"QUATTRO_TEST_MODE", L"1");
+    SetEnvironmentVariableW(L"QUATTRO_TEST_WEBDAV_FILE_MANAGER_SKIP_REFRESH", L"1");
+    SetEnvironmentVariableW(L"QUATTRO_TEST_WEBDAV_DELETE_PROGRESS", L"1");
+    const std::filesystem::path cacheRoot = outputDir /
+        (L"webdav-delete-progress-cache-" + DpiPercentSuffix(dpi));
+    std::filesystem::create_directories(cacheRoot);
+    SetEnvironmentVariableW(L"QUATTRO_USER_CONFIG_DIR", cacheRoot.c_str());
+    std::thread inspector([&]() {
+        HWND progress = WaitForTopWindow(
+            FindWindowRequest{L"", L"删除 WebDAV 文件", GetCurrentProcessId()}, 5000);
+        state.Check(progress != nullptr, L"webdav delete progress: window not found");
+        if (!progress) return;
+        Scenario scenario{
+            L"webdav-delete-progress-" + DpiPercentSuffix(dpi),
+            L"", L"删除 WebDAV 文件",
+            L"webdav-delete-progress-" + DpiPercentSuffix(dpi) + L".png",
+            {L"停止", L"关闭"}, {}, 0, 2, false};
+        scenario.forcedDpi = dpi;
+        scenario.expectedVisibleChildTexts = {
+            L"正在删除 2 / 5", L"正在删除元数据：archive-report.zip"};
+        ValidateAndCapture(progress, scenario, outputDir, state);
+        PostMessageW(progress, WM_CLOSE, 0, 0);
+        HWND manager = WaitForTopWindow(
+            FindWindowRequest{L"", L"WebDAV 文件管理", GetCurrentProcessId()}, 2000);
+        if (manager) PostMessageW(manager, WM_CLOSE, 0, 0);
+    });
+    ShowWebDavFileManagerDialog(owner, instance, theme, config);
+    inspector.join();
+    SetEnvironmentVariableW(L"QUATTRO_USER_CONFIG_DIR", nullptr);
+    SetEnvironmentVariableW(L"QUATTRO_TEST_WEBDAV_DELETE_PROGRESS", nullptr);
     SetEnvironmentVariableW(L"QUATTRO_TEST_WEBDAV_FILE_MANAGER_SKIP_REFRESH", nullptr);
 }
 
@@ -4454,6 +4496,34 @@ int wmain() {
     config.webDavFilesPath = L"/Quattro/files/";
     config.webDavUserName = L"acceptance-user";
 
+    wchar_t webDavRowTooltipOnly[8]{};
+    if (GetEnvironmentVariableW(
+            L"QUATTRO_UI_ACCEPTANCE_WEBDAV_ROW_TOOLTIP_ONLY",
+            webDavRowTooltipOnly,
+            static_cast<DWORD>(std::size(webDavRowTooltipOnly))) > 0) {
+        WebDavFileRecord record;
+        record.displayName = L"report-updated.zip";
+        record.absolutePath = L"C:\\Users\\demo\\Documents\\report.zip";
+        record.size = 8 * 1024 * 1024;
+        record.uploadedAtUtc = L"2026-07-21T14:32:00.000Z";
+        const std::wstring tooltipText = WebDavFileService::FormatRecordTooltip(record);
+        for (const UINT dpi : {96u, 120u, 144u}) {
+            RunTooltipVisualScenario(
+                owner, instance, theme, outputDir, state, dpi,
+                tooltipText, L"webdav-file-row-tooltip");
+        }
+        DestroyWindow(owner);
+        OleUninitialize();
+        Gdiplus::GdiplusShutdown(gdiplusToken);
+        if (!state.ok) {
+            for (const auto& failure : state.failures) std::wcerr << failure << L"\n";
+            return 1;
+        }
+        std::wcout << L"ui_webdav_row_tooltip_acceptance=passed screenshots="
+                   << outputDir.wstring() << L"\n";
+        return 0;
+    }
+
     wchar_t webDavTransferQueueOnly[8]{};
     if (GetEnvironmentVariableW(
             L"QUATTRO_UI_ACCEPTANCE_WEBDAV_TRANSFER_QUEUE_ONLY",
@@ -4470,10 +4540,17 @@ int wmain() {
         const std::vector<UINT> dpis = requestedDpi == 0
             ? std::vector<UINT>{96u}
             : std::vector<UINT>{requestedDpi};
+        wchar_t queueDialogOnly[8]{};
+        const bool queueDialogOnlyRequested = GetEnvironmentVariableW(
+            L"QUATTRO_UI_ACCEPTANCE_WEBDAV_QUEUE_DIALOG_ONLY", queueDialogOnly,
+            static_cast<DWORD>(std::size(queueDialogOnly))) > 0;
         for (const UINT dpi : dpis) {
             RunWebDavTransferQueueScenario(instance, theme, outputDir, state, dpi);
-            RunWebDavFileManagerQueueEntryScenario(owner, instance, theme, config, outputDir, state, dpi);
-            RunWebDavFileDetailsScenario(owner, instance, theme, config, outputDir, state, dpi);
+            if (!queueDialogOnlyRequested) {
+                RunWebDavFileManagerQueueEntryScenario(owner, instance, theme, config, outputDir, state, dpi);
+                RunWebDavFileDetailsScenario(owner, instance, theme, config, outputDir, state, dpi);
+                RunWebDavDeleteProgressScenario(owner, instance, theme, config, outputDir, state, dpi);
+            }
         }
         DestroyWindow(owner);
         OleUninitialize();

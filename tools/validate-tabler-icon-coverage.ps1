@@ -64,7 +64,8 @@ foreach ($file in $sourceFiles) {
         }
     }
     foreach ($line in ($text -split "`r?`n")) {
-        if ($line -match '(?i)(tabler|glyph|chevron)' -and $line -match '0x[0-9a-f]{4,6}') {
+        if ($line -match '(?i)(\btabler\b|tabler(?=icon|font|glyph)|glyph|chevron)' -and
+            $line -match '0x[0-9a-f]{4,6}') {
             throw "Hard-coded Tabler glyph is not allowed in $($file.FullName): $line"
         }
     }

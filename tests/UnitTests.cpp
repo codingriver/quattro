@@ -342,6 +342,25 @@ int wmain() {
         "WebDAV metadata enumeration accepts default concurrency");
     Check(WebDavFileService::NormalizeMetadataConcurrency(20) == 8,
         "WebDAV metadata enumeration caps concurrency at eight");
+    const std::wstring localUploadTime = WebDavFileService::FormatUploadedAtLocal(
+        L"2026-07-21T14:35:10.872Z");
+    Check(localUploadTime.size() == 19 && localUploadTime[4] == L'-' && localUploadTime[10] == L' ' &&
+            localUploadTime[13] == L':' && localUploadTime[16] == L':' &&
+            localUploadTime.find(L'Z') == std::wstring::npos,
+        "WebDAV upload time is converted to local time with second precision");
+    Check(WebDavFileService::FormatUploadedAtLocal(L"invalid").empty(),
+        "WebDAV upload time rejects invalid UTC metadata");
+    WebDavFileRecord tooltipRecord;
+    tooltipRecord.displayName = L"报告.txt";
+    tooltipRecord.absolutePath = L"C:\\资料\\报告.txt";
+    tooltipRecord.size = 2048;
+    tooltipRecord.uploadedAtUtc = L"2026-07-21T14:35:10.872Z";
+    Check(WebDavFileService::FormatRecordTooltip(tooltipRecord) ==
+            L"报告.txt  ·  2 KB\nC:\\资料\\报告.txt\n上传时间：" + localUploadTime,
+        "WebDAV row tooltip formats name, size, full path, and local upload time");
+    tooltipRecord.health = WebDavFileRecordHealth::MissingMetadata;
+    Check(WebDavFileService::FormatRecordTooltip(tooltipRecord) == L"获取失败",
+        "WebDAV row tooltip hides internal metadata errors behind the failure text");
     {
         AppConfig cacheConfig;
         cacheConfig.webDavUrl = L"https://dav.example.test/root";
@@ -1415,6 +1434,8 @@ int wmain() {
     Check(Near(fallbackTheme.metric(L"dialog", L"compactContentInsetY", 0.0f), 10.0f), "Theme default dialog compact vertical inset");
     Check(Near(fallbackTheme.metric(L"dialog", L"compactRowGap", 0.0f), 6.0f), "Theme default dialog compact row gap");
     Check(Near(fallbackTheme.metric(L"dialog", L"compactSectionGap", 0.0f), 12.0f), "Theme default dialog compact section gap");
+    Check(kThemedDialogLayoutKind == DialogLayoutKind::Compact,
+        "Builtin tool dialog layout defaults to compact mode");
     Check(Near(fallbackTheme.metric(L"dialog", L"miniFooterInsetY", 0.0f), 16.0f), "Theme default dialog mini footer inset");
     Check(Near(fallbackTheme.metric(L"dialog", L"miniFooterButtonWidth", 0.0f), 72.0f), "Theme default dialog mini footer button");
     Check(Near(fallbackTheme.metric(L"dialog", L"overlaySectionGap", 0.0f), 12.0f), "Theme default dialog overlay section gap");
@@ -1895,12 +1916,30 @@ int wmain() {
             ThemedTableRow{42, {{L"row"}, {L"value"}}, true, true},
             ThemedTableRow{43, {{L"disabled"}, {L"preserved"}}, true, false},
         });
-        Check(ThemedUi::TableRowCount(runtimeTable) == 2 && ThemedUi::TableRowKey(runtimeTable, 0) == 42, "Themed table public row model");
+        const int tooltipShowBaseline = tooltipRegistry.showCount;
+        const int tooltipHideBaseline = tooltipRegistry.hideCount;
+        tooltipUi.SetTableRowTooltip(runtimeTable, [](int row, std::intptr_t rowKey) {
+            return L"row " + std::to_wstring(row) + L" key " + std::to_wstring(rowKey);
+        }, {}, 0);
         RECT firstCellScreen{};
         Check(ThemedUi::TableCellScreenRect(runtimeTable, 0, 0, firstCellScreen)
                 && firstCellScreen.right > firstCellScreen.left
                 && firstCellScreen.bottom > firstCellScreen.top,
             "Themed table public cell screen rectangle");
+        POINT tooltipRowPoint{
+            firstCellScreen.left + std::max(1L, (firstCellScreen.right - firstCellScreen.left) / 2),
+            firstCellScreen.top + std::max(1L, (firstCellScreen.bottom - firstCellScreen.top) / 2)};
+        ScreenToClient(runtimeTable, &tooltipRowPoint);
+        Check(ThemedUi::TableHitTest(runtimeTable, tooltipRowPoint, true) == 0,
+            "Themed table row tooltip test point resolves to the first row");
+        SendMessageW(runtimeTable, WM_MOUSEMOVE, 0, MAKELPARAM(tooltipRowPoint.x, tooltipRowPoint.y));
+        Check(tooltipRegistry.showCount == tooltipShowBaseline + 1 &&
+                tooltipRegistry.shownText == L"row 0 key 42",
+            "Themed table row tooltip resolves dynamic content after the shared hover delay");
+        SendMessageW(runtimeTable, WM_MOUSELEAVE, 0, 0);
+        Check(tooltipRegistry.hideCount == tooltipHideBaseline + 1 && !tooltipRegistry.visible,
+            "Themed table row tooltip hides when the pointer leaves the table");
+        Check(ThemedUi::TableRowCount(runtimeTable) == 2 && ThemedUi::TableRowKey(runtimeTable, 0) == 42, "Themed table public row model");
         Check(ThemedUi::IsTableChecked(runtimeTable, 0), "Themed table public checked state");
         Check(ThemedUi::IsTableChecked(runtimeTable, 1), "Themed table preserves disabled checked state");
         ThemedUi::SetTableChecked(runtimeTable, 1, false);

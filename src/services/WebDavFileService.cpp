@@ -48,6 +48,14 @@ std::wstring NowUtc() {
     return buffer;
 }
 
+std::wstring FormatRecordSize(std::uint64_t bytes) {
+    if (bytes >= 1024ull * 1024ull) {
+        return std::to_wstring((bytes + 1024ull * 1024ull - 1) / (1024ull * 1024ull)) + L" MB";
+    }
+    if (bytes >= 1024ull) return std::to_wstring((bytes + 1023ull) / 1024ull) + L" KB";
+    return std::to_wstring(bytes) + L" B";
+}
+
 bool SaveUtf8(const std::filesystem::path& path, const std::wstring& text) {
     int size = WideCharToMultiByte(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), nullptr, 0, nullptr, nullptr);
     std::string utf8(size, '\0');
@@ -71,6 +79,39 @@ WebDavFileService::WebDavFileService(AppConfig config) : config_(std::move(confi
 
 std::wstring WebDavFileService::FilesDirectory(const AppConfig& config) {
     return WebDavClient::FilesRemotePath(config);
+}
+
+std::wstring WebDavFileService::FormatUploadedAtLocal(const std::wstring& uploadedAtUtc) {
+    SYSTEMTIME utc{};
+    wchar_t suffix = L'\0';
+    const int matched = swscanf_s(
+        uploadedAtUtc.c_str(),
+        L"%4hu-%2hu-%2huT%2hu:%2hu:%2hu.%3hu%c",
+        &utc.wYear, &utc.wMonth, &utc.wDay,
+        &utc.wHour, &utc.wMinute, &utc.wSecond, &utc.wMilliseconds,
+        &suffix, 1u);
+    if (matched != 8 || suffix != L'Z') return {};
+    FILETIME validation{};
+    if (!SystemTimeToFileTime(&utc, &validation)) return {};
+    DYNAMIC_TIME_ZONE_INFORMATION timeZone{};
+    GetDynamicTimeZoneInformation(&timeZone);
+    SYSTEMTIME local{};
+    if (!SystemTimeToTzSpecificLocalTimeEx(&timeZone, &utc, &local)) return {};
+    wchar_t buffer[32]{};
+    swprintf_s(buffer, L"%04u-%02u-%02u %02u:%02u:%02u",
+        local.wYear, local.wMonth, local.wDay, local.wHour, local.wMinute, local.wSecond);
+    return buffer;
+}
+
+std::wstring WebDavFileService::FormatRecordTooltip(const WebDavFileRecord& record) {
+    if (record.health != WebDavFileRecordHealth::Healthy ||
+        record.displayName.empty() || record.absolutePath.empty()) {
+        return L"获取失败";
+    }
+    const std::wstring uploadedAt = FormatUploadedAtLocal(record.uploadedAtUtc);
+    if (uploadedAt.empty()) return L"获取失败";
+    return record.displayName + L"  ·  " + FormatRecordSize(record.size) + L"\n" +
+        record.absolutePath + L"\n上传时间：" + uploadedAt;
 }
 
 bool WebDavFileService::IsCollectionSelfResponse(const std::wstring& remotePath, const WebDavRemoteFile& entry) {
@@ -361,11 +402,18 @@ WebDavFileOperationResult WebDavFileService::Download(const WebDavFileRecord& re
     result.ok = true; result.record = record; result.message = L"下载完成。"; return result;
 }
 
-bool WebDavFileService::Delete(const WebDavFileRecord& record, std::wstring& error) {
+bool WebDavFileService::Delete(const WebDavFileRecord& record, std::wstring& error,
+    WebDavFileDeleteProgressCallback progress) {
     std::wstring password; if (!LoadPassword(password, error)) return false; WebDavClient client(config_, password);
     const auto base = WebDavClient::CombineRemotePath(FilesDirectory(config_), record.id);
+    if (progress) progress(WebDavFileDeletePhase::DeletingContent, false);
     if (!client.DeleteRemoteFile(WebDavClient::CombineRemotePath(base, L"content"))) { error = client.lastError(); return false; }
+    if (progress) progress(WebDavFileDeletePhase::DeletingContent, true);
+    if (progress) progress(WebDavFileDeletePhase::DeletingMetadata, false);
     if (!client.DeleteRemoteFile(WebDavClient::CombineRemotePath(base, L"metadata.json"))) { error = client.lastError(); return false; }
+    if (progress) progress(WebDavFileDeletePhase::DeletingMetadata, true);
+    if (progress) progress(WebDavFileDeletePhase::DeletingDirectory, false);
     if (!client.DeleteRemoteDirectory(base)) { error = client.lastError(); return false; }
+    if (progress) progress(WebDavFileDeletePhase::DeletingDirectory, true);
     return true;
 }

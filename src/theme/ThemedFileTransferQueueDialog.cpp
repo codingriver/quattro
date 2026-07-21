@@ -94,7 +94,7 @@ LRESULT ThemedFileTransferQueueDialog::Handle(UINT message, WPARAM wParam, LPARA
     case WM_CREATE:
         { RECT client{}; GetClientRect(hwnd_, &client);
         windowUi_ = std::make_unique<ThemedWindowUi>(options_.instance, options_.owner, hwnd_, options_.theme,
-            DialogLayoutKind::Standard, client.right, client.bottom); }
+            DialogLayoutKind::Compact, client.right, client.bottom); }
         windowUi_->SetDpiChangedCallback([this](UINT) { LayoutControls(); });
         CreateControls(); Refresh(); return 0;
     case WM_SIZE:
@@ -139,7 +139,7 @@ void ThemedFileTransferQueueDialog::CreateControls() {
 void ThemedFileTransferQueueDialog::LayoutControls() {
     if (!windowUi_) return;
     RECT client{}; GetClientRect(hwnd_, &client);
-    const ThemedUi ui(options_.instance, hwnd_, options_.theme, windowUi_->font(), DialogLayoutKind::Standard,
+    const ThemedUi ui(options_.instance, hwnd_, options_.theme, windowUi_->font(), DialogLayoutKind::Compact,
         client.right, client.bottom, windowUi_.get(), windowUi_.get(), windowUi_.get(), windowUi_.get());
     const auto& layout = ui.layout();
     int y = ui.contentTop();

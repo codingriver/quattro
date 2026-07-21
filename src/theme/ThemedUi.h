@@ -10,6 +10,7 @@
 #include <vector>
 #include <commctrl.h>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <windows.h>
 
@@ -384,6 +385,8 @@ struct ThemedTooltipOptions {
     bool enabled = true;
     int maxWidth = 0;
 };
+
+using ThemedTableRowTooltipProvider = std::function<std::wstring(int row, std::intptr_t rowKey)>;
 
 enum class ThemedToastAnchor {
     OwnerBottomRight,
@@ -897,6 +900,13 @@ public:
     static void ClearTable(HWND table);
     static void SetTableImageLists(HWND table, HIMAGELIST smallImages, HIMAGELIST largeImages);
     static bool DecodeTableEvent(HWND table, LPARAM lParam, ThemedTableEvent& event);
+    // Bind dynamic tooltip content to table rows. Hit testing, hover delay,
+    // placement, and cleanup remain owned by the public UI layer.
+    void SetTableRowTooltip(
+        HWND table,
+        ThemedTableRowTooltipProvider provider,
+        ThemedTooltipOptions options = {},
+        UINT hoverDelayMs = 400) const;
     // Bind a themed tooltip to any facade-created control. Hover tracking,
     // placement, drawing, and cleanup remain owned by the public UI layer.
     void SetTooltip(HWND control, const std::wstring& text, ThemedTooltipOptions options = {}) const;

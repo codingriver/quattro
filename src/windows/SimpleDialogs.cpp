@@ -17,6 +17,7 @@
 #include "Storage.h"
 #include "ThemedControls.h"
 #include "ThemedFormLayout.h"
+#include "ThemedTaskProgressDialog.h"
 #include "ThemedUi.h"
 #include "ThemedWindowUi.h"
 #include "TodoSchedule.h"
@@ -92,6 +93,8 @@ constexpr UINT WM_WEBDAV_FILE_REFRESH_REQUEST = WM_APP + 0xC9;
 constexpr UINT WM_WEBDAV_FILE_DELETE_DONE = WM_APP + 0xCA;
 constexpr UINT WM_WEBDAV_FILE_SHOW_TEST_DETAILS = WM_APP + 0xCB;
 constexpr UINT WM_WEBDAV_FILE_APPLY_TEST_INCREMENTAL = WM_APP + 0xCC;
+constexpr UINT WM_WEBDAV_FILE_DELETE_ITEM_DONE = WM_APP + 0xCD;
+constexpr UINT WM_WEBDAV_FILE_SHOW_TEST_DELETE_PROGRESS = WM_APP + 0xCE;
 constexpr int ID_CONFIG_EXPORT = 415;
 constexpr int ID_CONFIG_IMPORT = 416;
 constexpr int ID_TODO_EXPORT = 417;
@@ -2034,7 +2037,8 @@ private:
             else if (record_.health == WebDavFileRecordHealth::MetadataReadFailed) healthText = L"Meta 读取失败";
             addValueRow(L"文件名：", record_.displayName);
             addValueRow(L"文件大小：", healthy ? FormatFileSize(record_.size) : L"—");
-            addValueRow(L"上传时间：", healthy ? record_.uploadedAtUtc : L"—");
+            const std::wstring uploadedAtLocal = WebDavFileService::FormatUploadedAtLocal(record_.uploadedAtUtc);
+            addValueRow(L"上传时间：", healthy && !uploadedAtLocal.empty() ? uploadedAtLocal : L"获取失败");
             addValueRow(L"上传状态：", healthy ? record_.uploadState +
                 (record_.contentReady ? L" · 内容可用" : L" · 内容不可用") : healthText);
 
@@ -2138,7 +2142,28 @@ private:
     struct DeleteResult {
         std::vector<std::wstring> succeededIds;
         std::vector<std::wstring> failedIds;
+        std::vector<std::wstring> notStartedIds;
         std::wstring lastError;
+        bool stopped = false;
+    };
+    struct DeleteItemResult {
+        std::wstring id;
+        bool ok = false;
+        std::wstring error;
+    };
+    struct DeleteTaskState {
+        std::mutex mutex;
+        std::atomic_bool stopRequested{false};
+        std::size_t totalFiles = 0;
+        std::size_t currentFile = 0;
+        std::size_t completedSteps = 0;
+        std::size_t succeeded = 0;
+        std::size_t failed = 0;
+        std::wstring currentName;
+        std::wstring phaseText;
+        std::wstring lastError;
+        bool finished = false;
+        bool stopped = false;
     };
 
     static LRESULT CALLBACK Proc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
@@ -2156,6 +2181,14 @@ private:
         case WebDavFileRecordHealth::MetadataReadFailed: return L"Meta 读取失败";
         default: return L"正常";
         }
+    }
+    static std::wstring UploadedAtText(const WebDavFileRecord& record) {
+        if (!IsHealthy(record)) return L"获取失败";
+        const std::wstring local = WebDavFileService::FormatUploadedAtLocal(record.uploadedAtUtc);
+        return local.empty() ? L"获取失败" : local;
+    }
+    static std::wstring RowTooltipText(const WebDavFileRecord& record) {
+        return WebDavFileService::FormatRecordTooltip(record);
     }
     static bool SameRecord(const WebDavFileRecord& left, const WebDavFileRecord& right) {
         return left.id == right.id && left.absolutePath == right.absolutePath &&
@@ -2181,7 +2214,7 @@ private:
             {ThemedTableCell{record.displayName},
              ThemedTableCell{healthy ? record.absolutePath : record.recordError},
              ThemedTableCell{healthy ? FormatFileSize(record.size) : L"—"},
-             ThemedTableCell{healthy ? record.uploadedAtUtc : HealthText(record)}, action},
+             ThemedTableCell{healthy ? UploadedAtText(record) : HealthText(record)}, action},
             checkedIds_.contains(record.id),
             !deletingIds_.contains(record.id)};
     }
@@ -2466,6 +2499,69 @@ private:
         if (index < 0 || index >= static_cast<int>(records_.size())) { ShowThemedMessageBox(hwnd_, instance_, theme_, L"请选择一个文件。", L"WebDAV 文件管理", MB_OK | MB_ICONWARNING); return; }
         DeleteRecords({records_[static_cast<std::size_t>(index)]});
     }
+    static std::wstring DeletePhaseText(WebDavFileDeletePhase phase) {
+        switch (phase) {
+        case WebDavFileDeletePhase::DeletingContent: return L"正在删除文件内容";
+        case WebDavFileDeletePhase::DeletingMetadata: return L"正在删除元数据";
+        case WebDavFileDeletePhase::DeletingDirectory: return L"正在删除远端目录";
+        }
+        return L"正在删除";
+    }
+    void ShowDeleteProgress(const std::shared_ptr<DeleteTaskState>& state) {
+        ThemedTaskProgressDialogOptions options{};
+        options.owner = hwnd_;
+        options.instance = instance_;
+        options.theme = theme_;
+        options.icon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_QUATTRO_APP_ICON));
+        options.className = L"QuattroWebDavDeleteProgress_" + std::to_wstring(GetCurrentProcessId()) +
+            L"_" + std::to_wstring(GetTickCount64());
+        options.title = L"删除 WebDAV 文件";
+        options.initialStatus = L"正在准备删除…";
+        options.initialDetail = L"正在检查远端文件记录。";
+        options.stopText = L"停止";
+        options.closeText = L"关闭";
+        options.readSnapshot = [state]() {
+            ThemedTaskProgressSnapshot snapshot;
+            std::lock_guard lock(state->mutex);
+            const std::size_t totalSteps = std::max<std::size_t>(1, state->totalFiles * 3);
+            snapshot.title = L"删除 WebDAV 文件";
+            snapshot.value = static_cast<double>(state->completedSteps) / static_cast<double>(totalSteps);
+            snapshot.indeterminate = false;
+            snapshot.finished = state->finished;
+            snapshot.stopRequested = state->stopRequested.load();
+            if (state->finished) {
+                snapshot.role = state->failed > 0 ? ThemedStatusRole::Warning : ThemedStatusRole::Success;
+                snapshot.status = state->stopped ? L"删除已停止" : L"删除完成";
+                snapshot.detail = L"成功 " + std::to_wstring(state->succeeded) + L" 项，失败 " +
+                    std::to_wstring(state->failed) + L" 项。";
+                if (!state->lastError.empty()) snapshot.detail += L" 最后错误：" + state->lastError;
+            } else {
+                snapshot.role = state->stopRequested.load() ? ThemedStatusRole::Warning : ThemedStatusRole::Info;
+                snapshot.status = state->currentFile == 0
+                    ? L"正在准备删除…"
+                    : L"正在删除 " + std::to_wstring(state->currentFile) + L" / " +
+                        std::to_wstring(state->totalFiles);
+                snapshot.detail = state->phaseText;
+                if (!state->currentName.empty()) snapshot.detail += L"：" + state->currentName;
+                if (state->stopRequested.load()) snapshot.detail = L"将在当前文件完成后停止。";
+            }
+            return snapshot;
+        };
+        options.requestStop = [state]() { state->stopRequested.store(true); };
+        deleteProgressDialog_ = std::make_unique<ThemedTaskProgressDialog>(std::move(options));
+        deleteProgressDialog_->Show();
+    }
+    void ShowTestDeleteProgress() {
+        if (!QuattroTestMode()) return;
+        auto state = std::make_shared<DeleteTaskState>();
+        state->totalFiles = 5;
+        state->currentFile = 2;
+        state->completedSteps = 4;
+        state->currentName = L"archive-report.zip";
+        state->phaseText = L"正在删除元数据";
+        deleteTaskState_ = state;
+        ShowDeleteProgress(state);
+    }
     void DeleteRecords(std::vector<WebDavFileRecord> records) {
         if (records.empty() || deleteBusy_) return;
         const std::wstring prompt = L"确定删除选中的 " + std::to_wstring(records.size()) + L" 个远端文件？\n不会删除对应的本地文件。";
@@ -2477,42 +2573,95 @@ private:
             if (index >= 0) ThemedUi::UpdateTableRow(table_, index, TableRow(records_[static_cast<std::size_t>(index)]));
         }
         UpdateSelectionState();
+        auto taskState = std::make_shared<DeleteTaskState>();
+        taskState->totalFiles = records.size();
+        deleteTaskState_ = taskState;
+        ShowDeleteProgress(taskState);
         const HWND target = hwnd_; const AppConfig config = config_; const auto alive = alive_;
-        std::thread([target, config, records = std::move(records), alive]() mutable {
+        std::thread([target, config, records = std::move(records), alive, taskState]() mutable {
             auto result = std::make_unique<DeleteResult>();
             WebDavFileService service(config); WebDavFileIndexCache cache(config);
-            for (const auto& record : records) {
+            for (std::size_t recordIndex = 0; recordIndex < records.size(); ++recordIndex) {
+                if (taskState->stopRequested.load()) {
+                    result->stopped = true;
+                    for (std::size_t pending = recordIndex; pending < records.size(); ++pending) {
+                        result->notStartedIds.push_back(records[pending].id);
+                    }
+                    break;
+                }
+                const auto& record = records[recordIndex];
+                {
+                    std::lock_guard lock(taskState->mutex);
+                    taskState->currentFile = recordIndex + 1;
+                    taskState->currentName = record.displayName;
+                    taskState->phaseText = L"正在准备远端删除";
+                }
                 std::wstring error;
-                if (service.Delete(record, error)) { result->succeededIds.push_back(record.id); cache.Remove(record.id); }
-                else { result->failedIds.push_back(record.id); result->lastError = error; }
+                const bool ok = service.Delete(record, error, [taskState](WebDavFileDeletePhase phase, bool completed) {
+                    std::lock_guard lock(taskState->mutex);
+                    taskState->phaseText = DeletePhaseText(phase);
+                    if (completed) ++taskState->completedSteps;
+                });
+                if (ok) {
+                    result->succeededIds.push_back(record.id);
+                    cache.Remove(record.id);
+                } else {
+                    result->failedIds.push_back(record.id);
+                    result->lastError = error;
+                }
+                {
+                    std::lock_guard lock(taskState->mutex);
+                    taskState->completedSteps = (recordIndex + 1) * 3;
+                    if (ok) ++taskState->succeeded; else { ++taskState->failed; taskState->lastError = error; }
+                }
+                auto item = std::make_unique<DeleteItemResult>();
+                item->id = record.id;
+                item->ok = ok;
+                item->error = error;
+                DeleteItemResult* itemRaw = item.release();
+                if (!alive->load() || !PostMessageW(target, WM_WEBDAV_FILE_DELETE_ITEM_DONE, 0,
+                        reinterpret_cast<LPARAM>(itemRaw))) {
+                    delete itemRaw;
+                }
+            }
+            {
+                std::lock_guard lock(taskState->mutex);
+                taskState->finished = true;
+                taskState->stopped = result->stopped;
+                if (!result->stopped) taskState->completedSteps = taskState->totalFiles * 3;
             }
             DeleteResult* raw = result.release();
             if (!alive->load() || !PostMessageW(target, WM_WEBDAV_FILE_DELETE_DONE, 0, reinterpret_cast<LPARAM>(raw))) delete raw;
         }).detach();
     }
     void DeleteChecked() { DeleteRecords(CheckedRecords()); }
-    void FinishDelete(std::unique_ptr<DeleteResult> result) {
-        deleteBusy_ = false;
+    void FinishDeleteItem(std::unique_ptr<DeleteItemResult> result) {
         if (!result) return;
-        for (const auto& id : result->succeededIds) {
-            const int index = RecordIndex(id);
+        const int index = RecordIndex(result->id);
+        if (result->ok) {
             if (index >= 0) {
                 ThemedUi::RemoveTableRow(table_, index);
                 records_.erase(records_.begin() + index);
             }
-            checkedIds_.erase(id); deletingIds_.erase(id);
+            checkedIds_.erase(result->id);
+            deletingIds_.erase(result->id);
+        } else {
+            deletingIds_.erase(result->id);
+            deletedTombstones_.erase(result->id);
+            if (index >= 0) ThemedUi::UpdateTableRow(table_, index, TableRow(records_[static_cast<std::size_t>(index)]));
         }
-        for (const auto& id : result->failedIds) {
-            deletingIds_.erase(id); deletedTombstones_.erase(id);
+        UpdateSelectionState();
+    }
+    void FinishDelete(std::unique_ptr<DeleteResult> result) {
+        deleteBusy_ = false;
+        if (!result) return;
+        for (const auto& id : result->notStartedIds) {
+            deletingIds_.erase(id);
+            deletedTombstones_.erase(id);
             const int index = RecordIndex(id);
             if (index >= 0) ThemedUi::UpdateTableRow(table_, index, TableRow(records_[static_cast<std::size_t>(index)]));
         }
         UpdateSelectionState();
-        std::wstring message = L"删除完成：成功 " + std::to_wstring(result->succeededIds.size()) +
-            L" 个，失败 " + std::to_wstring(result->failedIds.size()) + L" 个。";
-        if (!result->lastError.empty()) message += L"\n最后错误：" + result->lastError;
-        ShowThemedMessageBox(hwnd_, instance_, theme_, message, L"批量删除", MB_OK |
-            (result->failedIds.empty() ? MB_ICONINFORMATION : MB_ICONWARNING));
     }
     void ShowTransferQueue() {
         std::wstring error;
@@ -2604,7 +2753,7 @@ private:
             RECT frame{ui.contentLeft(), top, ui.contentLeft()+ui.contentWidth(), ui.clientHeight()-layout.contentInsetY};
             const int fileNameWidth = ui.tableColumnWidth({L"文件名", L"quattro-file-name.ext"});
             const int fileSizeWidth = ui.tableColumnWidth({L"大小", L"999.99 GB"});
-            const int uploadTimeWidth = ui.tableColumnWidth({L"上传时间", L"2000-00-00T00:00:00.000Z"});
+            const int uploadTimeWidth = ui.tableColumnWidth({L"上传时间", L"2000-00-00 00:00:00"});
             const int actionWidth = ui.buttonWidth(
                 L"…", ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Text) + ui.denseGap();
             ThemedTableOptions tableOptions{}; tableOptions.checkable = true; tableOptions.allowColumnResize = true;
@@ -2616,6 +2765,12 @@ private:
                 {L"time", L"上传时间", ThemedTableColumnAlign::End, ThemedTableColumnWidth::Fixed, uploadTimeWidth},
                 {L"action", L"操作", ThemedTableColumnAlign::Center, ThemedTableColumnWidth::Fixed, actionWidth},
             }, tableOptions);
+            ThemedTooltipOptions rowTooltipOptions{};
+            rowTooltipOptions.placement = ThemedTooltipPlacement::Cursor;
+            ui.SetTableRowTooltip(table_, [this](int row, std::intptr_t) {
+                if (row < 0 || row >= static_cast<int>(records_.size())) return std::wstring{};
+                return RowTooltipText(records_[static_cast<std::size_t>(row)]);
+            }, rowTooltipOptions);
             LayoutControls();
             LoadCache();
             wchar_t showTestDetails[8]{};
@@ -2646,15 +2801,23 @@ private:
                     static_cast<DWORD>(std::size(incrementalTest))) > 0) {
                 PostMessageW(hwnd_, WM_WEBDAV_FILE_APPLY_TEST_INCREMENTAL, 0, 0);
             }
+            wchar_t deleteProgressTest[8]{};
+            if (QuattroTestMode() && GetEnvironmentVariableW(
+                    L"QUATTRO_TEST_WEBDAV_DELETE_PROGRESS", deleteProgressTest,
+                    static_cast<DWORD>(std::size(deleteProgressTest))) > 0) {
+                PostMessageW(hwnd_, WM_WEBDAV_FILE_SHOW_TEST_DELETE_PROGRESS, 0, 0);
+            }
             return 0; }
         case WM_SIZE: if (windowUi_) LayoutControls(); return 0;
         case WM_PAINT: { PAINTSTRUCT ps{}; HDC dc=BeginPaint(hwnd_,&ps); windowUi_->FillBackground(dc); windowUi_->DrawRegisteredTableFrames(dc); EndPaint(hwnd_,&ps); return 0; }
         case WM_WEBDAV_FILE_REFRESH_REQUEST: StartRefresh(); return 0;
         case WM_WEBDAV_FILE_BATCH: ApplyBatch(std::unique_ptr<BatchResult>(reinterpret_cast<BatchResult*>(lParam))); return 0;
         case WM_WEBDAV_FILE_LIST_DONE: FinishRefresh(std::unique_ptr<ListResult>(reinterpret_cast<ListResult*>(lParam))); return 0;
+        case WM_WEBDAV_FILE_DELETE_ITEM_DONE: FinishDeleteItem(std::unique_ptr<DeleteItemResult>(reinterpret_cast<DeleteItemResult*>(lParam))); return 0;
         case WM_WEBDAV_FILE_DELETE_DONE: FinishDelete(std::unique_ptr<DeleteResult>(reinterpret_cast<DeleteResult*>(lParam))); return 0;
         case WM_WEBDAV_FILE_SHOW_TEST_DETAILS: ShowDetails(0); return 0;
         case WM_WEBDAV_FILE_APPLY_TEST_INCREMENTAL: ApplyTestIncrementalRefresh(); return 0;
+        case WM_WEBDAV_FILE_SHOW_TEST_DELETE_PROGRESS: ShowTestDeleteProgress(); return 0;
         case WM_NOTIFY: {
             ThemedTableEvent event{};
             if (ThemedUi::DecodeTableEvent(table_, lParam, event)) {
@@ -2701,6 +2864,8 @@ private:
     std::vector<WebDavFileRecord> records_; std::map<std::wstring, std::intptr_t> rowKeys_; std::intptr_t nextRowKey_ = 1;
     std::set<std::wstring> checkedIds_; std::set<std::wstring> deletingIds_;
     std::set<std::wstring> deletedTombstones_; std::unique_ptr<ThemedWindowUi> windowUi_;
+    std::shared_ptr<DeleteTaskState> deleteTaskState_;
+    std::unique_ptr<ThemedTaskProgressDialog> deleteProgressDialog_;
     std::shared_ptr<std::atomic<bool>> alive_ = std::make_shared<std::atomic<bool>>(true);
     std::stop_source refreshStop_; std::uint64_t refreshGeneration_=0; bool refreshBusy_=false; bool deleteBusy_=false; bool done_=false;
 };
