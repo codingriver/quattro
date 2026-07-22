@@ -60,7 +60,9 @@ struct TrackedContextMenuProviderBinding {
     static constexpr std::size_t MaxShellProbeKeys = 8;
     const wchar_t* shellProbeKeys[MaxShellProbeKeys] = {};
     // 仅用于没有 Icon/DefaultIcon/command 的 DLL 型 ContextMenuHandler。
-    // 文件名会优先相对 InprocServer32 所在目录解析，再查询 App Paths；
+    // 文件名只允许相对 InprocServer32 所在目录解析；同一 provider 可能
+    // 聚合多个产品（如 7-Zip/WinRAR），禁止通过全局 App Paths 串用
+    // 另一款已安装产品的图标。
     // 禁止直接把 Shell Extension DLL 的通用文件图标当作品牌图标。
     static constexpr std::size_t MaxBrandIconExecutables = 4;
     const wchar_t* brandIconExecutables[MaxBrandIconExecutables] = {};

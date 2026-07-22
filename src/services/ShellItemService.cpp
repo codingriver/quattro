@@ -642,11 +642,6 @@ bool CaptureBrandExecutableIcon(
             CaptureIconLocationValue(adjacent.wstring(), item)) {
             return true;
         }
-        const std::wstring registered = ResolveExecutablePath(executableName);
-        if (!registered.empty() && std::filesystem::is_regular_file(registered, ec) &&
-            CaptureIconLocationValue(registered, item)) {
-            return true;
-        }
     }
     return false;
 }

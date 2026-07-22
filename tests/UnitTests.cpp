@@ -1341,6 +1341,27 @@ int wmain() {
             !brandExecutableItem.iconPixels.empty() &&
             brandExecutableSource == TrackedProviderIconSource::BrandExecutable,
             "Provider icon resolves a declared brand executable beside the shell extension");
+
+        const std::filesystem::path unrelatedModuleDirectory =
+            std::filesystem::temp_directory_path() /
+            (L"quattro_provider_icon_unrelated_" + registryTestSuffix);
+        const std::wstring unrelatedModule =
+            (unrelatedModuleDirectory / L"handler.dll").wstring();
+        const bool unrelatedFixtureReady = SetTestRegistryString(
+            registryClassesRoot + L"CLSID\\" + registryClsid + L"\\InprocServer32",
+            nullptr,
+            unrelatedModule);
+        Check(unrelatedFixtureReady, "Provider icon unrelated-module fixture is created");
+        if (unrelatedFixtureReady) {
+            ShellContextMenuItem unrelatedItem;
+            TrackedProviderIconSource unrelatedSource = TrackedProviderIconSource::None;
+            Check(
+                !ShellItemService::LoadTrackedProviderIcon(
+                    brandExecutableBinding, unrelatedItem, &unrelatedSource) &&
+                unrelatedItem.iconPixels.empty() &&
+                unrelatedSource == TrackedProviderIconSource::None,
+                "Provider icon does not use a global App Paths executable from another product");
+        }
     }
     std::filesystem::remove_all(terminalTargetRoot, ec);
 

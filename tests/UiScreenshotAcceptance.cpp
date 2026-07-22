@@ -4999,6 +4999,172 @@ int wmain() {
                             AcceptanceSystemContextMenuProviderIcons);
                     });
             }
+
+            const std::filesystem::path resetReopenRoot = outputDir / L"reset-reopen-cache";
+            std::filesystem::create_directories(resetReopenRoot);
+            ShellContextMenuCacheService resetReopenCache(resetReopenRoot);
+            Link cachedLink;
+            cachedLink.id = 91001;
+            cachedLink.path = std::filesystem::current_path().wstring();
+            ShellContextMenuSnapshot cachedSnapshot;
+            cachedSnapshot.complete = true;
+            for (std::size_t index = 0; index < 2; ++index) {
+                ShellContextMenuItem item;
+                item.providerId = index == 0
+                    ? ShellContextMenuProviderId::Git
+                    : ShellContextMenuProviderId::Svn;
+                item.text = index == 0 ? L"Git cached command" : L"SVN cached command";
+                item.iconWidth = 16;
+                item.iconHeight = 16;
+                item.iconQuality = 1;
+                item.iconPixels.assign(
+                    16 * 16,
+                    index == 0 ? 0xFF2A70D6u : 0xFFD69B2Au);
+                cachedSnapshot.items.push_back(std::move(item));
+            }
+            ShellContextMenuTrackingOptions cachedTracking;
+            cachedTracking.git = true;
+            cachedTracking.svn = true;
+            resetReopenCache.Update(cachedLink, cachedSnapshot, cachedTracking);
+            state.Check(
+                resetReopenCache.BestIconForProvider(ShellContextMenuProviderId::Git).has_value() &&
+                resetReopenCache.BestIconForProvider(ShellContextMenuProviderId::Svn).has_value(),
+                L"context-menu reset/reopen fixture did not persist cached provider icons");
+
+            std::atomic_int resetCallbackCount{0};
+            std::atomic_bool resetDialogInspected{false};
+            std::thread resetController([&]() {
+                HWND settings = WaitForTopWindow(
+                    FindWindowRequest{L"QuattroSettingsDialog", L"设置", GetCurrentProcessId()}, 7000);
+                state.Check(settings != nullptr, L"context-menu reset/reopen settings dialog did not appear");
+                if (!settings) return;
+                auto children = Children(settings);
+                auto contextMenuTab = std::find_if(children.begin(), children.end(), [](const ChildInfo& child) {
+                    return child.className == L"Button" && child.text == L"右键菜单";
+                });
+                state.Check(
+                    contextMenuTab != children.end(),
+                    L"context-menu reset/reopen tab button was not found");
+                if (contextMenuTab == children.end()) {
+                    PostMessageW(settings, WM_CLOSE, 0, 0);
+                    return;
+                }
+                PostMessageW(contextMenuTab->hwnd, BM_CLICK, 0, 0);
+                HWND resetButton = nullptr;
+                for (int elapsed = 0; elapsed < 5000 && !resetButton; elapsed += 20) {
+                    for (const auto& child : Children(settings)) {
+                        if (IsWindowVisible(child.hwnd) && child.className == L"Button" &&
+                            child.text == L"重置右键菜单") {
+                            resetButton = child.hwnd;
+                            break;
+                        }
+                    }
+                    if (!resetButton) Sleep(20);
+                }
+                state.Check(resetButton != nullptr, L"context-menu reset/reopen reset button was not found");
+                if (!resetButton) {
+                    PostMessageW(settings, WM_CLOSE, 0, 0);
+                    return;
+                }
+                // 等待自动图标加载结束，否则产品会按设计拒绝重置。
+                for (int elapsed = 0; elapsed < 5000; elapsed += 20) {
+                    bool loading = false;
+                    for (const auto& child : Children(settings)) {
+                        if (!IsWindowVisible(child.hwnd) || child.className != L"SysListView32") continue;
+                        const int rows = ListView_GetItemCount(child.hwnd);
+                        for (int row = 0; row < rows; ++row) {
+                            wchar_t status[64]{};
+                            ListView_GetItemText(child.hwnd, row, 1, status, static_cast<int>(std::size(status)));
+                            loading = loading || std::wstring(status) == L"检测中...";
+                        }
+                    }
+                    if (!loading) break;
+                    Sleep(20);
+                }
+                PostMessageW(resetButton, BM_CLICK, 0, 0);
+                HWND confirmation = WaitForTopWindow(
+                    FindWindowRequest{
+                        L"QuattroThemedMessageDialog", L"重置右键菜单", GetCurrentProcessId()},
+                    5000);
+                state.Check(
+                    confirmation != nullptr,
+                    L"context-menu reset/reopen confirmation dialog did not appear");
+                if (confirmation) {
+                    resetDialogInspected = true;
+                    PostMessageW(confirmation, WM_COMMAND, MAKEWPARAM(IDYES, BN_CLICKED), 0);
+                }
+                for (int elapsed = 0; elapsed < 3000 && resetCallbackCount.load() == 0; elapsed += 20) {
+                    Sleep(20);
+                }
+                PostMessageW(settings, WM_COMMAND, MAKEWPARAM(IDCANCEL, BN_CLICKED), 0);
+                PostMessageW(settings, WM_CLOSE, 0, 0);
+            });
+            AppConfig resetConfig = config;
+            resetConfig.trackGitContextMenu = true;
+            resetConfig.trackSvnContextMenu = true;
+            bool resetImported = false;
+            ShowSettingsDialog(
+                owner, instance, resetConfig, theme,
+                std::filesystem::current_path(), std::filesystem::current_path(), &resetImported,
+                nullptr, false, false, false, {},
+                [&]() {
+                    ++resetCallbackCount;
+                    return resetReopenCache.Reset();
+                },
+                {}, {}, {},
+                [&](std::stop_token stopToken) {
+                    return ContextMenuProviderIconService(resetReopenRoot).Load(stopToken);
+                });
+            resetController.join();
+            state.Check(resetDialogInspected.load(), L"context-menu reset/reopen confirmation was not inspected");
+            state.Check(resetCallbackCount.load() == 1, L"context-menu reset callback count mismatch");
+            state.Check(
+                !resetReopenCache.BestIconForProvider(ShellContextMenuProviderId::Git).has_value() &&
+                !resetReopenCache.BestIconForProvider(ShellContextMenuProviderId::Svn).has_value(),
+                L"context-menu reset retained native provider icon cache");
+
+            const std::vector<ContextMenuProviderIconInfo> reopenedIcons =
+                ContextMenuProviderIconService(resetReopenRoot).Load();
+            const auto reopenedGit = std::find_if(reopenedIcons.begin(), reopenedIcons.end(), [](const auto& info) {
+                return info.providerId == ShellContextMenuProviderId::Git;
+            });
+            const auto reopenedSvn = std::find_if(reopenedIcons.begin(), reopenedIcons.end(), [](const auto& info) {
+                return info.providerId == ShellContextMenuProviderId::Svn;
+            });
+            if (reopenedGit != reopenedIcons.end() && reopenedSvn != reopenedIcons.end() &&
+                reopenedGit->installedViaProbe && reopenedSvn->installedViaProbe) {
+                state.Check(
+                    !reopenedGit->icon.pixels.empty() && !reopenedSvn->icon.pixels.empty(),
+                    L"context-menu reset/reopen did not resolve installed Git/SVN fallback icons");
+                state.Check(
+                    reopenedGit->icon.pixels != reopenedSvn->icon.pixels,
+                    L"context-menu reset/reopen resolved Git/SVN to the same generic DLL icon");
+            }
+
+            Scenario resetReopenScenario = settingsScenario;
+            resetReopenScenario.name = L"settings-dialog-右键菜单-reset-reopen";
+            resetReopenScenario.screenshotName = L"settings-dialog-右键菜单-reset-reopen.png";
+            resetReopenScenario.validateContextMenuIconTransparency = false;
+            if (reopenedGit != reopenedIcons.end() && reopenedGit->installedViaProbe) {
+                resetReopenScenario.expectedContextMenuProvider = L"Git (TortoiseGit)";
+                resetReopenScenario.expectedContextMenuStatus = L"已安装(注册表)";
+            }
+            RunDialogScenario(
+                resetReopenScenario,
+                outputDir,
+                state,
+                [&]() {
+                    bool imported = false;
+                    ShowSettingsDialog(
+                        owner, instance, resetConfig, theme,
+                        std::filesystem::current_path(), std::filesystem::current_path(), &imported,
+                        nullptr, false, false, false, {}, {}, {}, {}, {},
+                        [reopenedIcons](std::stop_token stopToken) {
+                            return stopToken.stop_requested()
+                                ? std::vector<ContextMenuProviderIconInfo>{}
+                                : reopenedIcons;
+                        });
+                });
             DestroyWindow(owner);
             OleUninitialize();
             Gdiplus::GdiplusShutdown(gdiplusToken);
