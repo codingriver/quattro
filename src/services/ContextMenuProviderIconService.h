@@ -29,13 +29,14 @@ public:
     explicit ContextMenuProviderIconService(ResolveFunction resolver);
 
     std::vector<ContextMenuProviderIconInfo> Load(std::stop_token stopToken = {}) const;
-
-private:
-    static ContextMenuProviderIconInfo ResolveDefault(
+    // Provider 展示图标必须优先使用稳定的注册表/品牌 EXE 来源；原生菜单
+    // 缓存保存的是具体命令图标，只能在静态来源不可用时兜底。
+    static ContextMenuProviderIconInfo ResolveProvider(
         const TrackedContextMenuProviderBinding& binding,
         const std::optional<ShellContextMenuCachedIcon>& cachedIcon,
         std::stop_token stopToken);
 
+private:
     std::filesystem::path storageDirectory_;
     ResolveFunction resolver_;
 };

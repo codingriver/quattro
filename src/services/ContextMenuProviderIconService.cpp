@@ -64,12 +64,12 @@ std::vector<ContextMenuProviderIconInfo> ContextMenuProviderIconService::Load(
             : std::nullopt;
         result.push_back(resolver_
             ? resolver_(provider, cachedIcon, stopToken)
-            : ResolveDefault(provider, cachedIcon, stopToken));
+            : ResolveProvider(provider, cachedIcon, stopToken));
     }
     return result;
 }
 
-ContextMenuProviderIconInfo ContextMenuProviderIconService::ResolveDefault(
+ContextMenuProviderIconInfo ContextMenuProviderIconService::ResolveProvider(
     const TrackedContextMenuProviderBinding& binding,
     const std::optional<ShellContextMenuCachedIcon>& cachedIcon,
     std::stop_token stopToken) {
@@ -86,12 +86,6 @@ ContextMenuProviderIconInfo ContextMenuProviderIconService::ResolveDefault(
     }
 
     info.attempted = true;
-    if (cachedIcon && HasIcon(*cachedIcon)) {
-        info.icon = *cachedIcon;
-        WriteAppLog(L"右键菜单 provider 图标：provider=" + info.providerId + L"，source=native-cache");
-        return info;
-    }
-
     ShellContextMenuItem item;
     TrackedProviderIconSource source = TrackedProviderIconSource::None;
     if (info.providerId == ShellContextMenuProviderId::Terminal) {
@@ -109,10 +103,19 @@ ContextMenuProviderIconInfo ContextMenuProviderIconService::ResolveDefault(
         ShellItemService::LoadTrackedProviderIcon(binding, item, &source);
     }
     info.icon = CachedIconFrom(item);
-    WriteAppLog(
-        L"右键菜单 provider 图标：provider=" + info.providerId + L"，source=" +
-        (info.providerId == ShellContextMenuProviderId::Terminal
-            ? (HasIcon(info.icon) ? L"terminal-executable" : L"fallback")
-            : IconSourceText(source)));
+    if (HasIcon(info.icon)) {
+        WriteAppLog(
+            L"右键菜单 provider 图标：provider=" + info.providerId + L"，source=" +
+            (info.providerId == ShellContextMenuProviderId::Terminal
+                ? L"terminal-executable"
+                : IconSourceText(source)));
+        return info;
+    }
+    if (cachedIcon && HasIcon(*cachedIcon)) {
+        info.icon = *cachedIcon;
+        WriteAppLog(L"右键菜单 provider 图标：provider=" + info.providerId + L"，source=native-cache-fallback");
+        return info;
+    }
+    WriteAppLog(L"右键菜单 provider 图标：provider=" + info.providerId + L"，source=fallback");
     return info;
 }

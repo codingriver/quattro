@@ -1342,6 +1342,19 @@ int wmain() {
             brandExecutableSource == TrackedProviderIconSource::BrandExecutable,
             "Provider icon resolves a declared brand executable beside the shell extension");
 
+        ShellContextMenuCachedIcon commandCacheIcon;
+        commandCacheIcon.width = 16;
+        commandCacheIcon.height = 16;
+        commandCacheIcon.quality = 9;
+        commandCacheIcon.pixels.assign(16 * 16, 0xFF35C759u);
+        const ContextMenuProviderIconInfo preferredBrandIcon =
+            ContextMenuProviderIconService::ResolveProvider(
+                brandExecutableBinding, commandCacheIcon, {});
+        Check(
+            preferredBrandIcon.icon.pixels == brandExecutableItem.iconPixels &&
+            preferredBrandIcon.icon.pixels != commandCacheIcon.pixels,
+            "Provider presentation prefers a stable brand icon over refreshed command cache");
+
         const std::filesystem::path unrelatedModuleDirectory =
             std::filesystem::temp_directory_path() /
             (L"quattro_provider_icon_unrelated_" + registryTestSuffix);
@@ -1361,6 +1374,12 @@ int wmain() {
                 unrelatedItem.iconPixels.empty() &&
                 unrelatedSource == TrackedProviderIconSource::None,
                 "Provider icon does not use a global App Paths executable from another product");
+            const ContextMenuProviderIconInfo cachedFallbackIcon =
+                ContextMenuProviderIconService::ResolveProvider(
+                    brandExecutableBinding, commandCacheIcon, {});
+            Check(
+                cachedFallbackIcon.icon.pixels == commandCacheIcon.pixels,
+                "Provider presentation uses refreshed command cache only when no stable icon exists");
         }
     }
     std::filesystem::remove_all(terminalTargetRoot, ec);

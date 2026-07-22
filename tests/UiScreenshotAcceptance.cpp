@@ -5141,6 +5141,40 @@ int wmain() {
                     L"context-menu reset/reopen resolved Git/SVN to the same generic DLL icon");
             }
 
+            ShellContextMenuSnapshot refreshedCommandSnapshot;
+            refreshedCommandSnapshot.complete = true;
+            for (std::size_t index = 0; index < 2; ++index) {
+                ShellContextMenuItem item;
+                item.providerId = index == 0
+                    ? ShellContextMenuProviderId::Git
+                    : ShellContextMenuProviderId::Svn;
+                item.text = index == 0 ? L"Git refreshed command" : L"SVN refreshed command";
+                item.iconWidth = 16;
+                item.iconHeight = 16;
+                item.iconQuality = 9;
+                item.iconPixels.assign(
+                    16 * 16,
+                    index == 0 ? 0xFF38B249u : 0xFF3975D1u);
+                refreshedCommandSnapshot.items.push_back(std::move(item));
+            }
+            resetReopenCache.Update(cachedLink, refreshedCommandSnapshot, cachedTracking);
+            const std::vector<ContextMenuProviderIconInfo> refreshedIcons =
+                ContextMenuProviderIconService(resetReopenRoot).Load();
+            const auto refreshedGit = std::find_if(refreshedIcons.begin(), refreshedIcons.end(), [](const auto& info) {
+                return info.providerId == ShellContextMenuProviderId::Git;
+            });
+            const auto refreshedSvn = std::find_if(refreshedIcons.begin(), refreshedIcons.end(), [](const auto& info) {
+                return info.providerId == ShellContextMenuProviderId::Svn;
+            });
+            if (reopenedGit != reopenedIcons.end() && reopenedSvn != reopenedIcons.end() &&
+                refreshedGit != refreshedIcons.end() && refreshedSvn != refreshedIcons.end() &&
+                reopenedGit->installedViaProbe && reopenedSvn->installedViaProbe) {
+                state.Check(
+                    refreshedGit->icon.pixels == reopenedGit->icon.pixels &&
+                    refreshedSvn->icon.pixels == reopenedSvn->icon.pixels,
+                    L"context-menu refresh replaced stable Git/SVN brand icons with command icons");
+            }
+
             Scenario resetReopenScenario = settingsScenario;
             resetReopenScenario.name = L"settings-dialog-右键菜单-reset-reopen";
             resetReopenScenario.screenshotName = L"settings-dialog-右键菜单-reset-reopen.png";
@@ -5163,6 +5197,26 @@ int wmain() {
                             return stopToken.stop_requested()
                                 ? std::vector<ContextMenuProviderIconInfo>{}
                                 : reopenedIcons;
+                        });
+                });
+
+            Scenario refreshStableScenario = resetReopenScenario;
+            refreshStableScenario.name = L"settings-dialog-右键菜单-refresh-stable-icons";
+            refreshStableScenario.screenshotName = L"settings-dialog-右键菜单-refresh-stable-icons.png";
+            RunDialogScenario(
+                refreshStableScenario,
+                outputDir,
+                state,
+                [&]() {
+                    bool imported = false;
+                    ShowSettingsDialog(
+                        owner, instance, resetConfig, theme,
+                        std::filesystem::current_path(), std::filesystem::current_path(), &imported,
+                        nullptr, false, false, false, {}, {}, {}, {}, {},
+                        [refreshedIcons](std::stop_token stopToken) {
+                            return stopToken.stop_requested()
+                                ? std::vector<ContextMenuProviderIconInfo>{}
+                                : refreshedIcons;
                         });
                 });
             DestroyWindow(owner);
