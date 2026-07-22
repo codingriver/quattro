@@ -29,6 +29,8 @@
 /screenshots/*
 !/screenshots/list-view-demo.png
 !/screenshots/main-window-demo.png
+!/screenshots/readme/
+!/screenshots/readme/**
 
 /resources/icons/quattro-app-icon.png
 /resources/icons/quattro-app-icon-transparent.png
