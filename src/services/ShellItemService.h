@@ -60,6 +60,14 @@ struct ShellItemRef {
     bool isVirtual = false;
 };
 
+enum class TrackedProviderIconSource : std::uint8_t {
+    None = 0,
+    ExplicitRegistry,
+    CommandExecutable,
+    BrandExecutable,
+    ApplicationExecutable,
+};
+
 class ShellItemService {
 public:
     static std::wstring DetectTrackedContextMenuProvider(
@@ -83,7 +91,8 @@ public:
     // IContextMenu, so it is suitable for finite background presentation work.
     static bool LoadTrackedProviderIcon(
         const TrackedContextMenuProviderBinding& binding,
-        ShellContextMenuItem& item);
+        ShellContextMenuItem& item,
+        TrackedProviderIconSource* source = nullptr);
     static bool OpenShellTarget(HWND owner, const Link& link, int showCmd, std::wstring& errorMessage);
     static bool OpenContainingLocation(HWND owner, const Link& link, std::wstring& errorMessage);
     static bool QueryTrackedContextMenu(

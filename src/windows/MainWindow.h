@@ -77,12 +77,26 @@ public:
     const AppConfig& config() const { return config_; }
 
 private:
+    enum class HitKind;
+
     class DockAutoHidePause {
     public:
         DockAutoHidePause(MainWindow& window, bool restoreHidden = true);
         ~DockAutoHidePause();
         DockAutoHidePause(const DockAutoHidePause&) = delete;
         DockAutoHidePause& operator=(const DockAutoHidePause&) = delete;
+
+    private:
+        MainWindow& window_;
+    };
+
+    // 弹出菜单期间锁定被右键项的 hover 显示，菜单关闭后按真实鼠标位置恢复。
+    class MenuHoverLock {
+    public:
+        MenuHoverLock(MainWindow& window, HitKind kind, int id);
+        ~MenuHoverLock();
+        MenuHoverLock(const MenuHoverLock&) = delete;
+        MenuHoverLock& operator=(const MenuHoverLock&) = delete;
 
     private:
         MainWindow& window_;
@@ -270,6 +284,10 @@ private:
     void BeginDockAutoHidePause(bool restoreHidden);
     void EndDockAutoHidePause();
     bool DockAutoHidePaused() const;
+    void BeginMenuHoverLock(HitKind kind, int id);
+    void EndMenuHoverLock();
+    void RefreshHoverFromCursor();
+    void PresentHoverChange(HitKind previousKind, HitKind nextKind);
     bool IsAtDockTarget() const;
     void RequestMainWindowHideAfterToolOpen();
     void CancelPendingToolOpenHide();
@@ -485,6 +503,8 @@ private:
     HitKind menuContextKind_ = HitKind::None;
     int menuContextId_ = 0;
     HitArea hover_;
+    bool menuHoverLocked_ = false;
+    HitArea menuHoverLockArea_;
     std::vector<HitArea> hitAreas_;
     float groupScrollOffset_ = 0.0f;
     float tagScrollOffset_ = 0.0f;

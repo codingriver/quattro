@@ -1,5 +1,59 @@
 # Agent Rules
 
+## Project Orientation Rules
+
+- 本项目是原生 Windows C++ 快速启动器。核心目标是以尽可能短的操作路径管理并启动程序、文件、文件夹、网址、Shell 系统位置和系统功能，同时提供标签化便签、待办、热键、托盘、备份/WebDAV、HTTP 文件服务和少量高频工具；新增需求必须优先服务“快速找到当前分组/标签中的入口并立即执行”，不得把主流程演变成通用文件管理器、浏览器或复杂信息管理系统。
+- 开始开发前先按职责定位代码：`src/main.cpp` 负责进程入口、单实例、命令行入口、运行根目录和启动编排；`src/windows/MainWindow.*` 负责 Quattro 主窗口、分组/标签/启动项/便签/待办交互、托盘、热键和主菜单；`src/windows/*Dialog.*` 与 `SimpleDialogs.*` 负责业务对话框和设置；`src/theme/` 是公共窗口、控件、布局、主题和 D2D/DWrite 基础设施；`src/domain/` 放纯模型、排序、菜单目录和插件注册；`src/services/` 放存储、启动、Shell、网络、备份、导入和系统集成；`src/applaunchlocker/` 只属于独立的 `AppLaunchLocker.exe`。
+- 构建目标必须先分清边界：`Quattro` 是快速启动器主程序，`QuattroThemedUi` 是可被多个 EXE 独立链接的公共 UI 静态库，`AppLaunchLockerCore` 是无 Quattro 窗口依赖的治理核心，`AppLaunchLocker` 与 `QuattroUpdater` 是独立 EXE。不得为了复用方便把独立 EXE 的业务实现重新塞回 `Quattro.exe`。
+- 数据入口以 `src/domain/Models.h` 的 `AppModel`、`Group`、`Link`、`NotePage`、`TodoItem` 为准；持久化以 `StorageService` 和 `ConfigService` 的公开能力为准。`conf.ini` 保存窗口、显示、行为、热键和网络等配置，`db/link.db` 保存分组、标签、启动项、便签、待办和工具数据。新增字段前必须先判断它属于配置、业务数据库、缓存还是纯运行期状态，不得在多个位置重复保存同一事实。
+- 普通业务修改采用“校验输入 -> 持久化成功 -> 更新内存模型 -> 局部更新界面/运行时 -> 记录日志或反馈”的顺序。数据库写入失败时不得先让界面表现为成功；单条增删改不得通过重新 `Load()` 整个数据库来同步内存，只有配置包导入、恢复、迁移或明确的整体重建流程可以全量重载。
+- `Group.id`、`Link.id`、`TodoItem.id`、`groupUid`、`todoUid` 等稳定标识用于关联、选择恢复、异步结果合并和 Table 行 key；排序位置 `pos`、当前 vector 下标和屏幕行号都不是业务身份，禁止把它们长期保存为对象身份。
+- 新增异步任务时，耗时 I/O、网络、Shell 扫描和系统查询必须离开 UI 线程；结果通过明确拥有权的消息/回调回到窗口线程，并使用 generation、stop token 或等价机制丢弃过期结果。后台线程不得直接操作 HWND、公共控件状态或主窗口模型容器。
+- `SimpleDialogs.cpp` 目前承载设置、WebDAV 管理等历史界面；只在既有小型同类流程中继续维护。新增具备独立状态、异步任务、多个关键状态或较多控件的窗口应优先拆成独立 `.h/.cpp`，不要继续扩大单文件匿名类；公共通用对话框则放入 `src/theme/` 并保持无 Quattro 业务依赖。
+
+## Product Surface Map
+
+- 主窗口是自绘快速启动面板：标题区提供窗口级操作，分组栏切换一级场景，标签栏切换具体内容，内容区按标签类型显示启动项、便签或待办。启动项支持平铺/列表、图标尺寸、排序、运行次数、拖拽排序和跨标签移动/复制；调整主窗口时必须同时检查绘制、命中测试、键盘导航、滚动范围、拖拽目标、Tooltip 和右键菜单是否消费同一份布局结果。
+- `MainWindow` 使用公共 Theme token 和 `ThemedD2D`/DWrite 能力完成主画布绘制，但它不是普通对话框，不应为了形式统一强行把分组、标签和启动项改造成大量原生子控件。新增主窗口视觉语义必须先抽出可复用的布局/绘制计算，命中区域与绘制矩形不得分别维护魔法数字。
+- 分组用于一级场景组织，普通标签承载启动项，便签标签承载 `NotePage`，待办标签承载 `TodoItem`，“全部”视图是聚合视图而不是新的持久化标签。新增操作必须明确它对当前标签、当前分组、全部聚合视图和跨标签移动/复制的语义。
+- 启动项编辑按类型分工：通用程序/文件/文件夹使用 `LinkEditDialog`，网址使用 `UrlEditDialog`，待办使用 `TodoEditDialog`，批量剪贴板/文本导入使用 `QuickImportDialog`。启动路径、参数、工作目录、显示方式、管理员权限、PIDL、系统功能 key、URL 图标和单项热键应继续经过既有 domain/service 能力，不要在对话框中复制启动或解析逻辑。
+- 设置窗口当前页面固定围绕“显示、行为、右键菜单、交互、热键、链接、WebDAV、HTTP、备份”组织。新增配置先放入最接近的既有页面；只有形成独立用户任务且现有页面会明显过载时才新增页面。搜索页面、搜索框或搜索配置在当前产品阶段一律禁止。
+- 工具箱条目由 `PluginRegistry` 描述，当前引擎包括连点器、时钟、计时器、秒表、进程工具、WebDAV 管理、自启动管理和广告拦截。轻量同进程工具由 `BuiltinTools` 承载；需要独立生命周期或提权边界的工具必须使用独立 EXE，不能仅因为工具箱里有入口就实现为 Quattro 内嵌窗口。
+- WebDAV 文件管理、传输队列、任务进度、更新检查/下载、确认框、消息框和 Toast 已有对应公共或业务窗口。新增流程前先查找 `ThemedFileTransferQueueDialog`、`ThemedTaskProgressDialog`、`ShowThemedMessageBox`、`ConfirmDialog`、Tooltip/Toast 等能力，禁止创建外观和生命周期相同的私有替代品。
+- `AppLaunchLockerWindow` 展示启动项来源/分类和治理操作，`AdBlockWindow` 展示扫描结果与已阻止记录；二者共享 `QuattroThemedUi`，但数据和操作必须来自 `AppLaunchLockerCore`。修改其界面时既要遵守本节的公共 UI 规则，也要遵守独立进程边界规则。
+
+## Public UI Capability Rules
+
+- 开发界面前按固定顺序选能力：窗口创建、DPI、公共消息和生命周期先查 `ThemedWindowUi`；控件创建、语义状态、文本测量和 Table 事件先查 `ThemedUi.h`；表单行、分组和 section 排版先查 `ThemedFormLayout`；标准对话框几何先查 `DialogLayout`/`CatalogDialogLayout`；主窗口自绘先查 `ThemedD2D` 与现有 `MainWindow` 公共计算。只有这些层都无法表达需求时才允许扩展公共层。
+- `ThemedUi.h` 是业务代码可使用能力的权威目录；`ThemedControls` 主要是公共 facade 的实现细节。业务窗口不得因为 `ThemedControls` 已有内部函数就直接调用，也不得直接发送等价的 `LVM_*`、`BM_*`、`TCM_*` 等消息绕过公共状态管理。
+- 公共层新增能力应使用业务可理解的语义参数，例如 row key、selection、active、enabled、role、value、placement，而不是暴露颜色、画笔、padding、圆角、底层 style 或消息编号。能力应覆盖所有复用窗口，禁止以某个页面名或控件 ID 命名公共 API。
+- 扩展公共控件时必须同步完成：在 `ThemedUi.h` 增加语义接口；在 `ThemedUi.cpp`/`ThemedControls.*` 实现统一状态和绘制；必要时补 `Theme.cpp` fallback、`theme/default.xml`、主题白名单/文档和 lint；为行为补 `UnitTests.cpp` 直接测试；涉及视觉则补后台 HWND 截图验收。公共接口未完成前，业务窗口不得先落一个私有版本。
+- 公共布局扩展优先补充可复用的“计算结果”而不是新常量，例如统一 label 列宽、整组居中、剩余内容区、Footer 位置、Table 可用高度和滚动区。布局 helper 必须返回已按目标 DPI 缩放的结果，并让绘制与命中测试共同消费。
+- 窗口中需要异步 busy、空状态、错误、成功、警告、危险操作、行内动作或二级说明时，应优先使用现有 `StatusText`/`StatusBadge`、Toast、Progress、Table cell role、two-line row、enabled/active 状态；不要靠临时颜色、禁用整个窗口或修改按钮高度表达业务状态。
+- 新窗口的最小实现骨架是：`DialogOptions`/`CreateWindowHandle` 创建，WndProc 最前调用 `HandleCommonMessage`，`ThemedWindowUi::ui()` 创建控件和取得缩放布局，公共 facade 修改状态，DPI 回调重新布局，析构/`WM_NCDESTROY` 释放异步和窗口资源。缺少其中任一环节时应先参照现有独立窗口，而不是复制裸 Win32 模板。
+
+## Interface Composition Rules
+
+- 界面设计先写清信息层级和主操作，再选 Standard/Compact/Management 等既有窗口语义，再用公共行高、控件高度和 gap 排版。快速启动器优先保持当前内容和主动作可见，说明文字、边框、标题和二次确认只在能降低误操作时加入。
+- 主操作放在内容附近或 Footer，批量操作与选择状态放在 Table 相邻工具行，危险操作使用公共 danger/destructive 语义；不要把高频动作藏入多层菜单，也不要为同一动作同时放置多个视觉权重相同的入口。
+- 空状态必须说明“为什么为空”和可执行的下一步；加载状态应保留已有可用数据并显示后台刷新状态；错误状态应保留可重试入口。网络刷新、图标刷新、扫描等流程不得先清空列表再等待结果，避免内容闪烁和用户失去选择。
+- 同一窗口的创建、重排和 DPI 重排必须使用同一个布局函数或同一组公共几何 helper。条件控件隐藏后应重新收紧布局，不得留下只为隐藏控件预留的空白；可变长度内容优先让 Table/List/Panel 占用剩余高度。
+- 所有用户可见文案应采用当前项目的简洁中文风格：动作按钮使用动词，状态说明当前结果，错误说明失败对象与下一步；不要暴露 Win32、HRESULT、内部 ID 或数据库字段名，详细诊断写入日志。
+
+## Table Dynamic Data Rules
+
+- `ThemedUi::Table` 是所有业务表格的唯一创建入口，`ThemedTableRow` 是行的公共表达。每个动态表格必须给 `row.key` 设置稳定且唯一的业务标识，例如数据库 ID、PID、远端文件稳定 ID 的稳定映射；禁止使用 `index + 1`、当前排序位置或指针作为会跨刷新使用的 key。确实没有整数 ID 时，应在业务层维护稳定 key 映射，并处理哈希冲突。
+- Table 的“查”默认查询业务模型而不是读取显示文本：使用 `FindTableRowByKey` 将业务 key 定位到当前行，使用 `TableRowKey` 从事件行还原业务对象，使用 `TableRowCount`、`TableSelectedIndex`、`IsTableChecked` 等公共只读能力读取控件语义状态。不得通过跨进程或业务层裸 `LVM_GETITEMTEXTW` 把 Table 当数据库。
+- 首次创建、切换到完全不同的数据集、整体导入/恢复、列结构变化或确需整体重排时可以调用 `SetTableRows`。单条新增、异步批次到达、状态变化、行内动作完成、删除完成等日常变化禁止调用 `SetTableRows`，必须采用增量接口，避免 `ListView_DeleteAllItems` 引起闪烁、选择丢失、滚动跳回顶部和伪 `LVN_ITEMCHANGED`。
+- 新增行默认使用 `AppendTableRow`；更新行先按稳定 key 定位，再仅在内容或 enabled/active/checked/图标/二级文本确有变化时调用 `UpdateTableRow`；删除行先按 key 定位，再调用 `RemoveTableRow`。批量删除必须按当前行号从大到小执行，或每次重新按 key 查找，防止前一行删除后索引偏移。
+- 有序列表新增后如果业务排序允许尾部追加，可直接 append；如果必须插入中间位置，而公共 facade 尚无对应位置插入能力，应先在 `ThemedUi` 增加按 index/key 的公共插入接口及运行时行状态同步、重绘抑制和测试，禁止业务窗口直接 `ListView_InsertItem`。同理，若需要保持顶部可见行、批量事务或按 key 移动行但公共接口不足，先扩展公共 Table 能力。
+- 动态刷新应先在业务层做差异合并：构建 `key -> model/index` 映射，将结果分为新增、变化、未变化、删除；未变化行不写控件；变化行原位更新；新增行追加或按公共接口插入；删除在批次收尾时倒序移除。WebDAV 文件管理现有的分批 `AppendTableRow`/`UpdateTableRow`、最终倒序 `RemoveTableRow` 是参考实现。
+- Table 选择、勾选、active、滚动和 Tooltip 绑定必须以 key 为基准保持。增量更新不得主动重设选择；删除选中行后选择相邻可用行；整体重排前记录 selected key、checked key 集合和必要的 viewport key，重建后按 key 恢复。若公共 facade 没有恢复某项状态的能力，先补公共接口，不得在各窗口散落底层消息。
+- `DecodeTableEvent` 返回的 `rowKey` 和 `actionId` 是业务处理入口。处理事件时先验证 key 对应对象仍存在，再执行持久化和模型更新；异步结果回来后也必须重新按 key 定位，不能继续使用任务启动时保存的 row index。公共 Table 正在内部更新时产生的通知不得当作用户操作二次写回模型。
+- 行内操作使用 `ThemedTableCellRole::Action`/`DestructiveAction` 和稳定 `actionId`；双行内容使用 `secondaryText` 与公共 two-line row；禁用、处理中、当前生效状态分别使用 row `enabled`、`active` 等公共语义。禁止为某张表私绘按钮、直接改变行高或通过拼接特殊字符模拟状态。
+- 批量或高频增量更新必须由公共 Table 层统一抑制通知与控制失效区域，只重绘受影响行。业务窗口不得用 `WM_SETREDRAW`、全窗口 `InvalidateRect(..., TRUE)`、销毁重建 Table 或隐藏再显示控件来掩盖闪烁；如现有单行接口不足以满足性能，应扩展公共批处理 facade 并增加“不触发全量删除、不产生伪用户通知、保持选择”的测试。
+- Table CRUD 公共能力修改后至少验证：稳定 key 查找；追加不替换选择；原位更新保留行号和选择；删除保持剩余顺序；checkbox 内部写入不产生用户事件；enabled/active/action/two-line 状态正确；大量行批次不执行全量删除。涉及视觉变化时再按 100%/125%/150% DPI 做后台截图验收。
+
 ## Feature Rules
 
 - 搜索功能暂时不要开发；不要新增、恢复或暴露搜索入口、搜索热键、搜索窗口或与搜索相关的用户可见配置。

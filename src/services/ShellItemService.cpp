@@ -621,7 +621,47 @@ bool CaptureCommandIcon(const std::wstring& command, ShellContextMenuItem& item)
     return CaptureIconLocationValue(ExecutableFromCommand(command), item);
 }
 
-bool CaptureRegistryKeyIcon(const std::wstring& key, ShellContextMenuItem& item) {
+bool CaptureBrandExecutableIcon(
+    const TrackedContextMenuProviderBinding& binding,
+    const std::wstring& moduleValue,
+    ShellContextMenuItem& item) {
+    std::wstring modulePath;
+    int ignoredIndex = 0;
+    if (!ParseIconLocation(moduleValue, modulePath, ignoredIndex)) {
+        return false;
+    }
+    modulePath = ExpandEnvironmentStringsSafe(Trim(modulePath));
+    const std::filesystem::path moduleDirectory = std::filesystem::path(modulePath).parent_path();
+    for (const wchar_t* executableName : binding.brandIconExecutables) {
+        if (!executableName) {
+            break;
+        }
+        const std::filesystem::path adjacent = moduleDirectory / executableName;
+        std::error_code ec;
+        if (!moduleDirectory.empty() && std::filesystem::is_regular_file(adjacent, ec) &&
+            CaptureIconLocationValue(adjacent.wstring(), item)) {
+            return true;
+        }
+        const std::wstring registered = ResolveExecutablePath(executableName);
+        if (!registered.empty() && std::filesystem::is_regular_file(registered, ec) &&
+            CaptureIconLocationValue(registered, item)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool CaptureRegistryKeyIcon(
+    const std::wstring& key,
+    const TrackedContextMenuProviderBinding& binding,
+    ShellContextMenuItem& item,
+    TrackedProviderIconSource* source) {
+    const auto captured = [&](TrackedProviderIconSource value) {
+        if (source) {
+            *source = value;
+        }
+        return true;
+    };
     const std::array<std::pair<std::wstring, const wchar_t*>, 4> iconLocations{{
         {key, L"Icon"},
         {key + L"\\DefaultIcon", nullptr},
@@ -631,7 +671,7 @@ bool CaptureRegistryKeyIcon(const std::wstring& key, ShellContextMenuItem& item)
     for (const auto& [location, valueName] : iconLocations) {
         const std::wstring value = RegistryString(HKEY_CLASSES_ROOT, location, valueName);
         if (!value.empty() && CaptureIconLocationValue(value, item)) {
-            return true;
+            return captured(TrackedProviderIconSource::ExplicitRegistry);
         }
     }
 
@@ -642,7 +682,7 @@ bool CaptureRegistryKeyIcon(const std::wstring& key, ShellContextMenuItem& item)
     for (const auto& location : commandLocations) {
         const std::wstring command = RegistryString(HKEY_CLASSES_ROOT, location, nullptr);
         if (!command.empty() && CaptureCommandIcon(command, item)) {
-            return true;
+            return captured(TrackedProviderIconSource::CommandExecutable);
         }
     }
 
@@ -651,11 +691,11 @@ bool CaptureRegistryKeyIcon(const std::wstring& key, ShellContextMenuItem& item)
         const std::wstring classKey = L"CLSID\\" + handlerClass;
         const std::wstring classIcon = RegistryString(HKEY_CLASSES_ROOT, classKey + L"\\DefaultIcon", nullptr);
         if (!classIcon.empty() && CaptureIconLocationValue(classIcon, item)) {
-            return true;
+            return captured(TrackedProviderIconSource::ExplicitRegistry);
         }
         const std::wstring module = RegistryString(HKEY_CLASSES_ROOT, classKey + L"\\InprocServer32", nullptr);
-        if (!module.empty() && CaptureIconLocationValue(module, item)) {
-            return true;
+        if (!module.empty() && CaptureBrandExecutableIcon(binding, module, item)) {
+            return captured(TrackedProviderIconSource::BrandExecutable);
         }
     }
 
@@ -663,7 +703,7 @@ bool CaptureRegistryKeyIcon(const std::wstring& key, ShellContextMenuItem& item)
     if (key.rfind(applicationsPrefix, 0) == 0) {
         const std::wstring executable = key.substr(applicationsPrefix.size());
         if (!executable.empty() && CaptureIconLocationValue(ResolveExecutablePath(executable), item)) {
-            return true;
+            return captured(TrackedProviderIconSource::ApplicationExecutable);
         }
     }
     return false;
@@ -1262,7 +1302,11 @@ bool ShellItemService::LoadExecutableMenuIcon(
 
 bool ShellItemService::LoadTrackedProviderIcon(
     const TrackedContextMenuProviderBinding& binding,
-    ShellContextMenuItem& item) {
+    ShellContextMenuItem& item,
+    TrackedProviderIconSource* source) {
+    if (source) {
+        *source = TrackedProviderIconSource::None;
+    }
     item.providerId = binding.providerId ? binding.providerId : L"";
     for (const wchar_t* probeKey : binding.shellProbeKeys) {
         if (!probeKey) {
@@ -1273,12 +1317,12 @@ bool ShellItemService::LoadTrackedProviderIcon(
             continue;
         }
         RegCloseKey(key);
-        if (CaptureRegistryKeyIcon(probeKey, item)) {
+        if (CaptureRegistryKeyIcon(probeKey, binding, item, source)) {
             return true;
         }
     }
     if (auto registeredKey = FindTrackedProviderRegistration(item.providerId)) {
-        return CaptureRegistryKeyIcon(*registeredKey, item);
+        return CaptureRegistryKeyIcon(*registeredKey, binding, item, source);
     }
     return false;
 }

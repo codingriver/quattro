@@ -2472,6 +2472,7 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         }
         HitArea next = HitTest(x, y);
         if (next.kind != hover_.kind || next.id != hover_.id) {
+            const HitKind previousHoverKind = hover_.kind;
             hover_ = next;
             pendingHoverActivationKind_ = HitKind::None;
             pendingHoverActivationId_ = 0;
@@ -2490,7 +2491,7 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
                 const UINT delay = static_cast<UINT>(std::max(1, config_.activeTagDelay));
                 hoverActivationTimerId_ = SetTimer(hwnd_, ID_TIMER_HOVER_ACTIVATE, delay, nullptr);
             }
-            InvalidateRect(hwnd_, nullptr, FALSE);
+            PresentHoverChange(previousHoverKind, next.kind);
         }
         if (!trackingMouse_) {
             TRACKMOUSEEVENT event{};
@@ -2512,14 +2513,17 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         }
         CancelNavDrag();
         trackingMouse_ = false;
-        hover_ = {};
-        pendingHoverActivationKind_ = HitKind::None;
-        pendingHoverActivationId_ = 0;
-        if (hoverActivationTimerId_ != 0) {
-            KillTimer(hwnd_, ID_TIMER_HOVER_ACTIVATE);
-            hoverActivationTimerId_ = 0;
+        {
+            const HitKind previousHoverKind = hover_.kind;
+            hover_ = {};
+            pendingHoverActivationKind_ = HitKind::None;
+            pendingHoverActivationId_ = 0;
+            if (hoverActivationTimerId_ != 0) {
+                KillTimer(hwnd_, ID_TIMER_HOVER_ACTIVATE);
+                hoverActivationTimerId_ = 0;
+            }
+            PresentHoverChange(previousHoverKind, HitKind::None);
         }
-        InvalidateRect(hwnd_, nullptr, FALSE);
         return 0;
     case WM_MOUSEWHEEL: {
         HideItemTooltip();
@@ -4483,14 +4487,17 @@ void MainWindow::ShowWindowsContextMenu(int linkId, POINT screenPoint) {
     ShellContextMenuTrackingOptions nativeTracking = tracking;
     nativeTracking.terminal = false;
     ShellContextMenuSnapshot snapshot;
-    BeginPopupMenuSession();
-    ShellItemService::ShowNativeContextMenu(
-        hwnd_,
-        *link,
-        screenPoint,
-        nativeTracking,
-        &snapshot);
-    EndPopupMenuSession();
+    {
+        MenuHoverLock hoverLock(*this, HitKind::Link, linkId);
+        BeginPopupMenuSession();
+        ShellItemService::ShowNativeContextMenu(
+            hwnd_,
+            *link,
+            screenPoint,
+            nativeTracking,
+            &snapshot);
+        EndPopupMenuSession();
+    }
     shellContextMenuCache_.Update(*link, snapshot, nativeTracking);
     if (tracking.terminal) {
         ShellContextMenuTrackingOptions terminalOnly;
@@ -5853,6 +5860,14 @@ MainWindow::DockAutoHidePause::~DockAutoHidePause() {
     window_.EndDockAutoHidePause();
 }
 
+MainWindow::MenuHoverLock::MenuHoverLock(MainWindow& window, HitKind kind, int id) : window_(window) {
+    window_.BeginMenuHoverLock(kind, id);
+}
+
+MainWindow::MenuHoverLock::~MenuHoverLock() {
+    window_.EndMenuHoverLock();
+}
+
 bool MainWindow::TryRepairLinkTarget(Link& link) {
     Link edited = link;
     if (!LinkEditDialog::Show(hwnd_, instance_, theme_, edited, model_.groups, false)) {
@@ -5959,6 +5974,70 @@ void MainWindow::EndDockAutoHidePause() {
 
 bool MainWindow::DockAutoHidePaused() const {
     return dockAutoHidePauseDepth_ > 0 || (hwnd_ && !IsWindowEnabled(hwnd_));
+}
+
+void MainWindow::BeginMenuHoverLock(HitKind kind, int id) {
+    menuHoverLocked_ = true;
+    menuHoverLockArea_ = HitArea{kind, id, {}};
+    hover_ = menuHoverLockArea_;
+    if (hwnd_) {
+        InvalidateRect(hwnd_, nullptr, FALSE);
+    }
+}
+
+void MainWindow::EndMenuHoverLock() {
+    menuHoverLocked_ = false;
+    menuHoverLockArea_ = {};
+    // 菜单关闭后按真实鼠标位置恢复正常 hover 逻辑。
+    if (QuattroTestMode() && BackgroundAcceptanceMode()) {
+        // 后台验收不能读取用户桌面的真实鼠标位置；测试通过进程内
+        // 语义消息继续驱动后续 hover 状态。
+        hover_ = {};
+    } else {
+        RefreshHoverFromCursor();
+    }
+    if (hwnd_) {
+        InvalidateRect(hwnd_, nullptr, FALSE);
+    }
+}
+
+void MainWindow::RefreshHoverFromCursor() {
+    if (!hwnd_) {
+        return;
+    }
+    POINT cursor{};
+    if (!GetCursorPos(&cursor)) {
+        hover_ = {};
+        return;
+    }
+    POINT client = cursor;
+    ScreenToClient(hwnd_, &client);
+    RECT rc{};
+    GetClientRect(hwnd_, &rc);
+    if (!PtInRect(&rc, client)) {
+        hover_ = {};
+        return;
+    }
+    const POINT dip = ClientPointToDip(client);
+    hover_ = HitTest(static_cast<float>(dip.x), static_cast<float>(dip.y));
+}
+
+void MainWindow::PresentHoverChange(HitKind previousKind, HitKind nextKind) {
+    if (!hwnd_) {
+        return;
+    }
+    InvalidateRect(hwnd_, nullptr, FALSE);
+
+    const auto isContentItem = [](HitKind kind) {
+        return kind == HitKind::Link || kind == HitKind::Todo;
+    };
+    if (isContentItem(previousKind) || isContentItem(nextKind)) {
+        // WM_PAINT is lower priority than queued mouse messages. Without an
+        // immediate commit, fast pointer movement can replace hover_ several
+        // times before any frame is drawn. Tooltips do not show this problem
+        // because their layered window is presented synchronously per move.
+        UpdateWindow(hwnd_);
+    }
 }
 
 bool MainWindow::IsAtDockTarget() const {
@@ -6967,7 +7046,11 @@ void MainWindow::ShowLinkMenu(int linkId, POINT screenPoint) {
     selectedLinkId_ = linkId;
     menuContextKind_ = HitKind::Link;
     menuContextId_ = linkId;
-    const UINT command = TrackMainPopupMenu(menu, screenPoint, true);
+    UINT command = 0;
+    {
+        MenuHoverLock hoverLock(*this, HitKind::Link, linkId);
+        command = TrackMainPopupMenu(menu, screenPoint, true);
+    }
     DestroyMenu(menu);
     if (command != 0) {
         SendMessageW(hwnd_, WM_COMMAND, MAKEWPARAM(command, 0), 0);
@@ -10547,6 +10630,9 @@ MainWindow::HitArea MainWindow::HitTest(float x, float y) const {
 }
 
 bool MainWindow::IsHover(HitKind kind, int id) const {
+    if (menuHoverLocked_) {
+        return menuHoverLockArea_.kind == kind && menuHoverLockArea_.id == id;
+    }
     return hover_.kind == kind && hover_.id == id;
 }
 

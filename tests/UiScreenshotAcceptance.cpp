@@ -162,8 +162,16 @@ std::vector<ContextMenuProviderIconInfo> AcceptanceSystemContextMenuProviderIcon
     for (std::size_t index = 0; index < result.size() && !stopToken.stop_requested(); ++index) {
         if (!result[index].installed) continue;
         ShellContextMenuItem item;
-        const std::filesystem::path& executable = executables[index % executables.size()];
-        if (!ShellItemService::LoadExecutableMenuIcon(executable.wstring(), item)) continue;
+        TrackedProviderIconSource source = TrackedProviderIconSource::None;
+        const auto providers = TrackedContextMenuProviders();
+        bool loaded = index < providers.size() &&
+            providers[index].providerId != ShellContextMenuProviderId::Terminal &&
+            ShellItemService::LoadTrackedProviderIcon(providers[index], item, &source);
+        if (!loaded) {
+            const std::filesystem::path& executable = executables[index % executables.size()];
+            loaded = ShellItemService::LoadExecutableMenuIcon(executable.wstring(), item);
+        }
+        if (!loaded) continue;
         result[index].icon.width = item.iconWidth;
         result[index].icon.height = item.iconHeight;
         result[index].icon.quality = item.iconQuality;
@@ -1882,12 +1890,54 @@ void RunMainWindowScenario(
         }
 
         const auto captureTestMenu = [&](UINT message, const std::wstring& scenarioName, WPARAM parameter = 0) {
+            BitmapCapture linkMenuIdleCapture;
+            BitmapCapture linkMenuHoverReferenceCapture;
+            if (scenarioName == L"link-popup-menu") {
+                SendMessageW(hwnd, kTestLinkVisualStateMessage, parameter, 0);
+                linkMenuIdleCapture = CaptureWindowBitmap(hwnd);
+                SendMessageW(hwnd, kTestLinkVisualStateMessage, parameter, 1);
+                linkMenuHoverReferenceCapture = CaptureWindowBitmap(hwnd);
+                SendMessageW(hwnd, kTestLinkVisualStateMessage, parameter, 0);
+                state.Check(
+                    linkMenuIdleCapture.bitmap && linkMenuHoverReferenceCapture.bitmap,
+                    L"main-window-link-menu-hover: reference captures failed");
+            }
             std::thread popupThread([&]() {
                 SendMessageW(hwnd, message, parameter, 0);
             });
             HWND testPopup = WaitForTopWindow(FindWindowRequest{L"#32768", L"", process.dwProcessId}, 5000);
             state.Check(testPopup != nullptr, scenarioName + L": popup did not appear");
+            BitmapCapture linkMenuMainCapture;
             if (testPopup) {
+                if (scenarioName == L"link-popup-menu") {
+                    linkMenuMainCapture = CaptureWindowBitmap(hwnd);
+                    state.Check(
+                        linkMenuMainCapture.bitmap != nullptr,
+                        L"main-window-link-menu-hover: main-window capture failed while menu was open");
+                    if (linkMenuMainCapture.bitmap) {
+                        state.Check(
+                            SavePng(
+                                linkMenuMainCapture.bitmap,
+                                outputDir / (L"main-window-link-menu-hover-" + dpiSuffix + L".png")),
+                            L"main-window-link-menu-hover: screenshot save failed");
+                        if (linkMenuIdleCapture.bitmap && linkMenuHoverReferenceCapture.bitmap) {
+                            const std::size_t changedFromIdle =
+                                CountChangedPixelSamples(linkMenuIdleCapture, linkMenuMainCapture);
+                            const std::size_t changedFromHover =
+                                CountChangedPixelSamples(linkMenuHoverReferenceCapture, linkMenuMainCapture);
+                            AcceptanceLog(
+                                L"main-window-link-menu-hover dpi=" + dpiSuffix +
+                                L" changedFromIdle=" + std::to_wstring(changedFromIdle) +
+                                L" changedFromHover=" + std::to_wstring(changedFromHover));
+                            state.Check(
+                                changedFromIdle >= 100,
+                                L"main-window-link-menu-hover: link lost its hover highlight while the menu was open");
+                            state.Check(
+                                changedFromHover <= 20,
+                                L"main-window-link-menu-hover: menu-open highlight differs from normal hover");
+                        }
+                    }
+                }
                 BitmapCapture popupCapture = CaptureWindowBitmap(testPopup);
                 state.Check(
                     popupCapture.bitmap && BitmapHasVisualContent(
@@ -1917,6 +1967,26 @@ void RunMainWindowScenario(
             }
             popupThread.join();
             Sleep(100);
+            if (scenarioName == L"link-popup-menu") {
+                BitmapCapture closedCapture = CaptureWindowBitmap(hwnd);
+                state.Check(
+                    closedCapture.bitmap != nullptr,
+                    L"main-window-link-menu-hover: post-menu capture failed");
+                if (closedCapture.bitmap && linkMenuIdleCapture.bitmap) {
+                    const std::size_t changedAfterClose =
+                        CountChangedPixelSamples(linkMenuIdleCapture, closedCapture);
+                    AcceptanceLog(
+                        L"main-window-link-menu-hover-close dpi=" + dpiSuffix +
+                        L" changedAfterClose=" + std::to_wstring(changedAfterClose));
+                    state.Check(
+                        changedAfterClose <= 20,
+                        L"main-window-link-menu-hover: hover lock remained after the menu closed");
+                }
+                if (closedCapture.bitmap) DeleteObject(closedCapture.bitmap);
+            }
+            if (linkMenuMainCapture.bitmap) DeleteObject(linkMenuMainCapture.bitmap);
+            if (linkMenuIdleCapture.bitmap) DeleteObject(linkMenuIdleCapture.bitmap);
+            if (linkMenuHoverReferenceCapture.bitmap) DeleteObject(linkMenuHoverReferenceCapture.bitmap);
         };
         captureTestMenu(WM_QUATTRO_TEST_MAIN_MENU, L"main-popup-menu");
         captureTestMenu(WM_QUATTRO_TEST_TOOL_MENU, L"tool-popup-menu");

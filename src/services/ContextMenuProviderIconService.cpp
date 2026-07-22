@@ -1,5 +1,6 @@
 #include "ContextMenuProviderIconService.h"
 
+#include "AppLog.h"
 #include "TerminalContextMenuService.h"
 #include "Utilities.h"
 
@@ -22,6 +23,16 @@ ShellContextMenuCachedIcon CachedIconFrom(const ShellContextMenuItem& item) {
 bool HasIcon(const ShellContextMenuCachedIcon& icon) {
     return icon.width > 0 && icon.height > 0 && icon.width <= 64 && icon.height <= 64 &&
         icon.pixels.size() == static_cast<std::size_t>(icon.width * icon.height);
+}
+
+const wchar_t* IconSourceText(TrackedProviderIconSource source) {
+    switch (source) {
+    case TrackedProviderIconSource::ExplicitRegistry: return L"registry-icon";
+    case TrackedProviderIconSource::CommandExecutable: return L"command-executable";
+    case TrackedProviderIconSource::BrandExecutable: return L"brand-executable";
+    case TrackedProviderIconSource::ApplicationExecutable: return L"application-executable";
+    default: return L"fallback";
+    }
 }
 }
 
@@ -77,10 +88,12 @@ ContextMenuProviderIconInfo ContextMenuProviderIconService::ResolveDefault(
     info.attempted = true;
     if (cachedIcon && HasIcon(*cachedIcon)) {
         info.icon = *cachedIcon;
+        WriteAppLog(L"右键菜单 provider 图标：provider=" + info.providerId + L"，source=native-cache");
         return info;
     }
 
     ShellContextMenuItem item;
+    TrackedProviderIconSource source = TrackedProviderIconSource::None;
     if (info.providerId == ShellContextMenuProviderId::Terminal) {
         const TerminalContextMenuRefreshContext context = TerminalContextMenuService::DetectAvailablePrograms();
         for (const auto& program : context.programs) {
@@ -93,8 +106,13 @@ ContextMenuProviderIconInfo ContextMenuProviderIconService::ResolveDefault(
             }
         }
     } else {
-        ShellItemService::LoadTrackedProviderIcon(binding, item);
+        ShellItemService::LoadTrackedProviderIcon(binding, item, &source);
     }
     info.icon = CachedIconFrom(item);
+    WriteAppLog(
+        L"右键菜单 provider 图标：provider=" + info.providerId + L"，source=" +
+        (info.providerId == ShellContextMenuProviderId::Terminal
+            ? (HasIcon(info.icon) ? L"terminal-executable" : L"fallback")
+            : IconSourceText(source)));
     return info;
 }

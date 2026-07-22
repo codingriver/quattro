@@ -48,6 +48,7 @@
 
 #include <cmath>
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <filesystem>
@@ -64,6 +65,45 @@
 
 namespace {
 int failures = 0;
+
+bool SetTestRegistryString(const std::wstring& subkey, const wchar_t* valueName, const std::wstring& value) {
+    HKEY key = nullptr;
+    if (RegCreateKeyExW(
+            HKEY_CURRENT_USER,
+            subkey.c_str(),
+            0,
+            nullptr,
+            REG_OPTION_NON_VOLATILE,
+            KEY_SET_VALUE,
+            nullptr,
+            &key,
+            nullptr) != ERROR_SUCCESS) {
+        return false;
+    }
+    const LSTATUS status = RegSetValueExW(
+        key,
+        valueName,
+        0,
+        REG_SZ,
+        reinterpret_cast<const BYTE*>(value.c_str()),
+        static_cast<DWORD>((value.size() + 1) * sizeof(wchar_t)));
+    RegCloseKey(key);
+    return status == ERROR_SUCCESS;
+}
+
+class ScopedTestRegistryTree {
+public:
+    explicit ScopedTestRegistryTree(std::wstring subkey) : subkey_(std::move(subkey)) {}
+    ~ScopedTestRegistryTree() {
+        RegDeleteTreeW(HKEY_CURRENT_USER, subkey_.c_str());
+    }
+
+    ScopedTestRegistryTree(const ScopedTestRegistryTree&) = delete;
+    ScopedTestRegistryTree& operator=(const ScopedTestRegistryTree&) = delete;
+
+private:
+    std::wstring subkey_;
+};
 
 void Check(bool condition, const char* name) {
     if (!condition) {
@@ -1262,6 +1302,46 @@ int wmain() {
         !providerIcons.empty() && providerIcons.front().providerId == ShellContextMenuProviderId::VsCode &&
         providerIcons.back().providerId == ShellContextMenuProviderId::Vim,
         "Provider icon load preserves the shared provider order");
+
+    // A DLL-only ContextMenuHandler has no trustworthy provider icon. The old
+    // fallback extracted resource 0 (or the generic file association icon) from
+    // InprocServer32, which made unrelated providers such as TortoiseGit and
+    // TortoiseSVN display the same DLL icon after the native-menu cache reset.
+    const std::wstring registryTestSuffix = std::to_wstring(GetCurrentProcessId());
+    const std::wstring registryHandlerName = L"Quattro.ProviderIconTest." + registryTestSuffix;
+    const std::wstring registryClsid = L"{QUATTRO-PROVIDER-ICON-" + registryTestSuffix + L"}";
+    const std::wstring registryClassesRoot = L"Software\\Classes\\";
+    ScopedTestRegistryTree registryHandlerTree(registryClassesRoot + registryHandlerName);
+    ScopedTestRegistryTree registryClsidTree(registryClassesRoot + L"CLSID\\" + registryClsid);
+    const bool registryFixtureReady =
+        SetTestRegistryString(registryClassesRoot + registryHandlerName, nullptr, registryClsid) &&
+        SetTestRegistryString(
+            registryClassesRoot + L"CLSID\\" + registryClsid + L"\\InprocServer32",
+            nullptr,
+            L"%SystemRoot%\\System32\\shell32.dll");
+    Check(registryFixtureReady, "Provider icon registry fixture is created");
+    if (registryFixtureReady) {
+        TrackedContextMenuProviderBinding dllOnlyBinding{};
+        dllOnlyBinding.providerId = L"quattro-provider-icon-test";
+        dllOnlyBinding.shellProbeKeys[0] = registryHandlerName.c_str();
+        ShellContextMenuItem dllOnlyItem;
+        TrackedProviderIconSource dllOnlySource = TrackedProviderIconSource::ExplicitRegistry;
+        Check(
+            !ShellItemService::LoadTrackedProviderIcon(dllOnlyBinding, dllOnlyItem, &dllOnlySource) &&
+            dllOnlyItem.iconPixels.empty() && dllOnlySource == TrackedProviderIconSource::None,
+            "Provider icon rejects a generic InprocServer32 DLL icon");
+
+        TrackedContextMenuProviderBinding brandExecutableBinding = dllOnlyBinding;
+        brandExecutableBinding.brandIconExecutables[0] = L"cmd.exe";
+        ShellContextMenuItem brandExecutableItem;
+        TrackedProviderIconSource brandExecutableSource = TrackedProviderIconSource::None;
+        Check(
+            ShellItemService::LoadTrackedProviderIcon(
+                brandExecutableBinding, brandExecutableItem, &brandExecutableSource) &&
+            !brandExecutableItem.iconPixels.empty() &&
+            brandExecutableSource == TrackedProviderIconSource::BrandExecutable,
+            "Provider icon resolves a declared brand executable beside the shell extension");
+    }
     std::filesystem::remove_all(terminalTargetRoot, ec);
 
     // Executable menu icons must resolve even when the target exposes no icon at
