@@ -32,6 +32,25 @@ std::wstring PhaseText(ThemedFileTransferStatus status) {
     default: return L"等待传输";
     }
 }
+
+std::pair<int, int> PhasePosition(bool upload, WebDavFileTransferPhase phase) {
+    if (!upload) {
+        return phase == WebDavFileTransferPhase::Verifying ? std::pair{2, 2} : std::pair{1, 2};
+    }
+    switch (phase) {
+    case WebDavFileTransferPhase::Preparing: return {1, 4};
+    case WebDavFileTransferPhase::UploadingMeta: return {2, 4};
+    case WebDavFileTransferPhase::UploadingContent: return {3, 4};
+    case WebDavFileTransferPhase::FinalizingMeta: return {4, 4};
+    default: return {0, 4};
+    }
+}
+
+int Percent(std::uint64_t value, std::uint64_t total) {
+    if (total == 0) return 0;
+    return static_cast<int>(std::clamp(
+        static_cast<double>(value) * 100.0 / static_cast<double>(total), 0.0, 100.0));
+}
 }
 
 WebDavTransferQueueController::WebDavTransferQueueController(
@@ -90,6 +109,7 @@ void WebDavTransferQueueController::EnqueueUploads(const std::vector<std::filesy
         task->absolutePath = canonical;
         task->size = std::filesystem::file_size(path, ec);
         if (ec) task->size = 0;
+        task->contentTotal = task->size;
         tasks_.push_back(std::move(task));
     }
     condition_.notify_all();
@@ -110,6 +130,7 @@ void WebDavTransferQueueController::EnqueueDownloads(const std::vector<WebDavFil
         task->fileName = record.displayName;
         task->absolutePath = record.absolutePath;
         task->size = record.size;
+        task->contentTotal = task->size;
         tasks_.push_back(std::move(task));
     }
     condition_.notify_all();
@@ -178,6 +199,11 @@ void WebDavTransferQueueController::RunTask(const std::shared_ptr<Task>& task) {
             task->status = StatusForPhase(task->kind, phase);
             task->transferred = transferred;
             task->total = total;
+            if (phase == WebDavFileTransferPhase::UploadingContent ||
+                phase == WebDavFileTransferPhase::DownloadingContent) {
+                task->contentTransferred = transferred;
+                task->contentTotal = total > 0 ? total : task->size;
+            }
             if (task->stopRequested) return false;
         }
         NotifyChanged();
@@ -201,7 +227,12 @@ void WebDavTransferQueueController::RunTask(const std::shared_ptr<Task>& task) {
         }
         if (finalState.empty()) finalState = result.ok ? L"成功" : L"失败";
         finalMessage = result.message;
-        if (result.ok) { task->transferred = task->size; task->total = task->size; }
+        if (result.ok) {
+            task->transferred = task->size;
+            task->total = task->size;
+            task->contentTransferred = task->size;
+            task->contentTotal = task->size;
+        }
     }
     WriteAppLog(std::wstring(L"WebDAV 队列任务结束：") + task->fileName + L"，状态=" +
         finalState + (finalMessage.empty() ? L"" : L"，详情=" + finalMessage));
@@ -223,15 +254,17 @@ ThemedFileTransferStatus WebDavTransferQueueController::StatusForPhase(Kind kind
 double WebDavTransferQueueController::TaskProgress(const Task& task) {
     if (task.status == ThemedFileTransferStatus::UploadCompleted || task.status == ThemedFileTransferStatus::DownloadCompleted) return 1.0;
     if (task.kind == Kind::Download) {
-        if (task.status == ThemedFileTransferStatus::Verifying) return 0.95;
-        return task.total > 0 ? std::clamp(static_cast<double>(task.transferred) / task.total * 0.95, 0.0, 0.95) : 0.0;
+        if (task.status == ThemedFileTransferStatus::Verifying) return 0.5;
+        return task.total > 0
+            ? std::clamp(static_cast<double>(task.transferred) / task.total * 0.5, 0.0, 0.5)
+            : 0.0;
     }
     const double ratio = task.total > 0 ? std::clamp(static_cast<double>(task.transferred) / task.total, 0.0, 1.0) : 0.0;
     switch (task.status) {
-    case ThemedFileTransferStatus::Preparing: return 0.05;
-    case ThemedFileTransferStatus::UploadingMeta: return 0.10 + ratio * 0.10;
-    case ThemedFileTransferStatus::Uploading: return 0.20 + ratio * 0.75;
-    case ThemedFileTransferStatus::Confirming: return 0.95 + ratio * 0.05;
+    case ThemedFileTransferStatus::Preparing: return 0.0;
+    case ThemedFileTransferStatus::UploadingMeta: return 0.25 + ratio * 0.25;
+    case ThemedFileTransferStatus::Uploading: return 0.50 + ratio * 0.25;
+    case ThemedFileTransferStatus::Confirming: return 0.75 + ratio * 0.25;
     default: return 0.0;
     }
 }
@@ -241,33 +274,75 @@ ThemedFileTransferQueueSnapshot WebDavTransferQueueController::Snapshot() const 
     ThemedFileTransferQueueSnapshot snapshot;
     snapshot.title = L"WebDAV 文件传输";
     snapshot.rows.reserve(tasks_.size());
-    std::uint64_t totalWeight = 0;
-    double completedWeight = 0.0;
-    int completed = 0, failed = 0, stopped = 0;
+    std::uint64_t totalBytes = 0;
+    std::uint64_t transferredBytes = 0;
+    int completed = 0, failed = 0, stopped = 0, waiting = 0, active = 0;
     const Task* current = nullptr;
     for (const auto& task : tasks_) {
-        snapshot.rows.push_back(ThemedFileTransferRow{task->id, task->fileName, task->absolutePath, task->size, task->status});
-        const std::uint64_t weight = task->size > 0 ? task->size : 1;
-        totalWeight += weight;
-        completedWeight += static_cast<double>(weight) * TaskProgress(*task);
-        if (task->status == ThemedFileTransferStatus::UploadCompleted || task->status == ThemedFileTransferStatus::DownloadCompleted) ++completed;
-        else if (task->status == ThemedFileTransferStatus::UploadFailed || task->status == ThemedFileTransferStatus::DownloadFailed) ++failed;
-        else if (task->status == ThemedFileTransferStatus::Stopped) ++stopped;
-        else if (Active(task->status) && !current) current = task.get();
+        const bool taskActive = Active(task->status);
+        const auto [phaseIndex, phaseCount] = PhasePosition(task->kind == Kind::Upload, task->phase);
+        ThemedFileTransferRow row;
+        row.id = task->id;
+        row.fileName = task->fileName;
+        row.absolutePath = task->absolutePath;
+        row.size = task->size;
+        row.status = task->status;
+        row.direction = task->kind == Kind::Upload
+            ? ThemedFileTransferDirection::Upload : ThemedFileTransferDirection::Download;
+        row.phaseIndex = taskActive ? phaseIndex : 0;
+        row.phaseCount = taskActive ? phaseCount : 0;
+        row.phaseTransferred = task->transferred;
+        row.phaseTotal = task->total;
+        row.contentTransferred = task->contentTransferred;
+        row.contentTotal = task->contentTotal;
+        row.error = task->error;
+        row.active = taskActive;
+        snapshot.rows.push_back(std::move(row));
+
+        totalBytes += task->size;
+        if (task->status == ThemedFileTransferStatus::UploadCompleted ||
+            task->status == ThemedFileTransferStatus::DownloadCompleted) {
+            ++completed;
+            transferredBytes += task->size;
+        } else {
+            transferredBytes += std::min(task->contentTransferred, task->size);
+            if (task->status == ThemedFileTransferStatus::UploadFailed ||
+                task->status == ThemedFileTransferStatus::DownloadFailed) ++failed;
+            else if (task->status == ThemedFileTransferStatus::Stopped) ++stopped;
+            else if (task->status == ThemedFileTransferStatus::Waiting) ++waiting;
+            else if (taskActive) {
+                ++active;
+                if (!current) current = task.get();
+            }
+        }
     }
-    snapshot.progress = totalWeight > 0 ? std::clamp(completedWeight / totalWeight, 0.0, 1.0) : 0.0;
+    snapshot.progress = totalBytes > 0
+        ? std::clamp(static_cast<double>(transferredBytes) / static_cast<double>(totalBytes), 0.0, 1.0)
+        : (tasks_.empty() ? 0.0 : static_cast<double>(completed) / static_cast<double>(tasks_.size()));
     snapshot.running = std::any_of(tasks_.begin(), tasks_.end(), [](const auto& task) { return !Terminal(task->status); });
     snapshot.stopRequested = snapshot.running && std::any_of(tasks_.begin(), tasks_.end(), [](const auto& task) { return task->stopRequested; });
+    snapshot.status = L"总进度 " + FormatByteSizeForDisplay(transferredBytes) + L" / " +
+        FormatByteSizeForDisplay(totalBytes) + L"（" + std::to_wstring(Percent(transferredBytes, totalBytes)) +
+        L"%） · 成功 " + std::to_wstring(completed) + L" · 失败 " + std::to_wstring(failed) +
+        L" · 处理中 " + std::to_wstring(active) + L" · 等待 " + std::to_wstring(waiting);
+    if (stopped > 0) snapshot.status += L" · 停止 " + std::to_wstring(stopped);
     if (current) {
-        snapshot.status = PhaseText(current->status);
         const auto index = std::find_if(tasks_.begin(), tasks_.end(), [&](const auto& item) { return item->id == current->id; });
         snapshot.detail = L"当前 " + std::to_wstring(std::distance(tasks_.begin(), index) + 1) + L" / " +
-            std::to_wstring(tasks_.size()) + L" · " + current->fileName + L" · 已完成 " +
-            std::to_wstring(completed) + L"，失败 " + std::to_wstring(failed);
+            std::to_wstring(tasks_.size()) + L" · " + current->fileName + L" · " + PhaseText(current->status);
+        if (current->total > 0 && current->status != ThemedFileTransferStatus::Preparing) {
+            snapshot.detail += L" · " + FormatByteSizeForDisplay(current->transferred) + L" / " +
+                FormatByteSizeForDisplay(current->total) + L"（" +
+                std::to_wstring(Percent(current->transferred, current->total)) + L"%）";
+        }
+        if (active > 1) snapshot.detail += L" · 并行任务 " + std::to_wstring(active);
+        snapshot.currentProgress = TaskProgress(*current);
+        snapshot.currentProgressVisible = true;
     } else if (!tasks_.empty()) {
-        snapshot.status = failed > 0 ? L"传输部分失败" : (stopped > 0 ? L"传输已停止" : L"传输完成");
-        snapshot.detail = L"完成 " + std::to_wstring(completed) + L"，失败 " + std::to_wstring(failed) +
-            L"，停止 " + std::to_wstring(stopped);
+        snapshot.detail = snapshot.running
+            ? L"等待下一项传输任务开始。"
+            : (failed > 0 ? L"传输结束，部分文件失败。" :
+                (stopped > 0 ? L"传输已停止。" : L"全部文件传输完成。"));
     } else {
         snapshot.status = L"等待传输";
         snapshot.detail = L"尚未添加文件。";

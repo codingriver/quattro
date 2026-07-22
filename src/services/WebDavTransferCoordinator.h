@@ -11,6 +11,8 @@
 
 class WebDavTransferCoordinator final {
 public:
+    static std::vector<std::filesystem::path> ExpandUploadPaths(
+        const std::vector<std::filesystem::path>& paths);
     static bool SubmitUploads(const std::vector<std::filesystem::path>& paths, std::wstring& error);
     static bool SubmitDownloads(const std::vector<WebDavFileRecord>& records, std::wstring& error);
     static bool ShowQueue(std::wstring& error);

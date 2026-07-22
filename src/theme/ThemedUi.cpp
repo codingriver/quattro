@@ -2825,10 +2825,13 @@ bool WriteTableRow(HWND table, int index, const ThemedTableRow& row, bool insert
 void ThemedUi::SetTableRows(HWND table, const std::vector<ThemedTableRow>& rows) {
     if (!table) return;
     std::vector<bool> enabledStates;
+    std::vector<bool> activeStates;
     std::vector<std::vector<ThemedControls::TableCellRuntime>> cellStates;
     enabledStates.reserve(rows.size());
+    activeStates.reserve(rows.size());
     cellStates.reserve(rows.size());
     for (const auto& row : rows) enabledStates.push_back(row.enabled);
+    for (const auto& row : rows) activeStates.push_back(row.active);
     for (const auto& row : rows) {
         std::vector<ThemedControls::TableCellRuntime> cells;
         cells.reserve(row.cells.size());
@@ -2849,6 +2852,7 @@ void ThemedUi::SetTableRows(HWND table, const std::vector<ThemedTableRow>& rows)
     const ScopedTableRowsUpdate update(table);
     ListView_DeleteAllItems(table);
     ThemedControls::SetTableRowEnabledStates(table, enabledStates);
+    ThemedControls::SetTableRowActiveStates(table, activeStates);
     ThemedControls::SetTableCells(table, cellStates);
     for (std::size_t index = 0; index < rows.size(); ++index) {
         const auto& source = rows[index];
@@ -2883,17 +2887,25 @@ void ThemedUi::SetTableRows(HWND table, const std::vector<ThemedTableRow>& rows)
 int ThemedUi::AppendTableRow(HWND table, const ThemedTableRow& row) {
     if (!table) return -1;
     const int index = ListView_GetItemCount(table);
-    const ScopedTableRowsUpdate update(table);
-    if (!WriteTableRow(table, index, row, true)) return -1;
-    ThemedControls::InsertTableRowState(table, index, row.enabled, TableCellStates(row));
+    ThemedControls::BeginTableRowUpdate(table);
+    if (!WriteTableRow(table, index, row, true)) {
+        ThemedControls::EndTableRowUpdate(table, index);
+        return -1;
+    }
+    ThemedControls::InsertTableRowState(table, index, row.enabled, row.active, TableCellStates(row));
+    ThemedControls::EndTableRowUpdate(table, index);
     return index;
 }
 
 bool ThemedUi::UpdateTableRow(HWND table, int index, const ThemedTableRow& row) {
     if (!table || index < 0 || index >= ListView_GetItemCount(table)) return false;
-    const ScopedTableRowsUpdate update(table);
-    if (!WriteTableRow(table, index, row, false)) return false;
-    ThemedControls::UpdateTableRowState(table, index, row.enabled, TableCellStates(row));
+    ThemedControls::BeginTableRowUpdate(table);
+    if (!WriteTableRow(table, index, row, false)) {
+        ThemedControls::EndTableRowUpdate(table, index);
+        return false;
+    }
+    ThemedControls::UpdateTableRowState(table, index, row.enabled, row.active, TableCellStates(row));
+    ThemedControls::EndTableRowUpdate(table, index);
     return true;
 }
 
@@ -2930,6 +2942,7 @@ void ThemedUi::SetTableChecked(HWND table, int index, bool checked) {
 }
 bool ThemedUi::IsTableChecked(HWND table, int index) { return table && ListView_GetCheckState(table, index) != FALSE; }
 bool ThemedUi::IsTableRowEnabled(HWND table, int index) { return ThemedControls::IsTableRowEnabled(table, index); }
+bool ThemedUi::IsTableRowActive(HWND table, int index) { return ThemedControls::IsTableRowActive(table, index); }
 int ThemedUi::TableRowCount(HWND table) { return table ? ListView_GetItemCount(table) : 0; }
 int ThemedUi::TableSelectedIndex(HWND table) { return table ? ListView_GetNextItem(table, -1, LVNI_SELECTED) : -1; }
 void ThemedUi::SetTableSelectedIndex(HWND table, int index) {
@@ -2991,6 +3004,7 @@ void ThemedUi::ClearTable(HWND table) {
     if (!table) return;
     ListView_DeleteAllItems(table);
     ThemedControls::SetTableRowEnabledStates(table, {});
+    ThemedControls::SetTableRowActiveStates(table, {});
     ThemedControls::SetTableCells(table, {});
 }
 void ThemedUi::SetTableImageLists(HWND table, HIMAGELIST smallImages, HIMAGELIST largeImages) {
@@ -3067,6 +3081,21 @@ void ThemedUi::SetTableRowTooltip(
     states[table] = TableRowTooltipRuntime{
         tooltipRegistry_, std::move(provider), options, -1, -1, POINT{}, false, hoverDelayMs};
     SetWindowSubclass(table, TableRowTooltipProc, kTableRowTooltipSubclassId, 0);
+}
+
+void ThemedUi::RefreshTableRowTooltip(HWND table) {
+    auto it = TableRowTooltipStates().find(table);
+    if (it == TableRowTooltipStates().end()) return;
+    auto& runtime = it->second;
+    if (!runtime.registry || !runtime.provider || runtime.shownRow < 0) return;
+    const std::wstring text = runtime.provider(
+        runtime.shownRow, TableRowKey(table, runtime.shownRow));
+    if (text.empty()) {
+        runtime.registry->HideTooltip();
+        runtime.shownRow = -1;
+        return;
+    }
+    runtime.registry->ShowTooltip(text, runtime.anchor, runtime.options);
 }
 
 void ThemedUi::SetTooltip(HWND control, const std::wstring& text, ThemedTooltipOptions options) const {

@@ -672,6 +672,7 @@ void Theme::SetDefaults() {
     PutState(L"table", L"normal", L"border", palette_[L"border"]);
     PutState(L"table", L"normal", L"grid", palette_[L"line"]);
     PutState(L"table", L"focused", L"border", palette_[L"focus"]);
+    PutState(L"table", L"activeRow", L"border", palette_[L"focus"]);
     PutState(L"table", L"disabled", L"bg", palette_[L"background"]);
     PutState(L"table", L"disabled", L"text", palette_[L"disabledText"]);
     PutState(L"tableHeader", L"normal", L"bg", palette_[L"surfaceRaised"]);
@@ -1066,6 +1067,7 @@ void Theme::SetDefaults() {
     PutMetric(L"table", L"radius", 7.0f);
     PutMetric(L"table", L"borderWidth", 1.0f);
     PutMetric(L"table", L"gridWidth", 1.0f);
+    PutMetric(L"table", L"activeRowBorderWidth", 2.0f);
     PutMetric(L"tableHeader", L"height", 28.0f);
     PutMetric(L"groupBox", L"radius", 7.0f);
     PutMetric(L"groupBox", L"borderWidth", 1.0f);

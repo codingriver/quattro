@@ -28,12 +28,26 @@ enum class ThemedFileTransferStatus {
     Stopped,
 };
 
+enum class ThemedFileTransferDirection {
+    Upload,
+    Download,
+};
+
 struct ThemedFileTransferRow {
     std::uint64_t id = 0;
     std::wstring fileName;
     std::wstring absolutePath;
     std::uint64_t size = 0;
     ThemedFileTransferStatus status = ThemedFileTransferStatus::Waiting;
+    ThemedFileTransferDirection direction = ThemedFileTransferDirection::Upload;
+    int phaseIndex = 0;
+    int phaseCount = 0;
+    std::uint64_t phaseTransferred = 0;
+    std::uint64_t phaseTotal = 0;
+    std::uint64_t contentTransferred = 0;
+    std::uint64_t contentTotal = 0;
+    std::wstring error;
+    bool active = false;
 };
 
 struct ThemedFileTransferQueueSnapshot {
@@ -41,9 +55,11 @@ struct ThemedFileTransferQueueSnapshot {
     std::wstring status;
     std::wstring detail;
     double progress = 0.0;
+    double currentProgress = 0.0;
     std::vector<ThemedFileTransferRow> rows;
     bool running = false;
     bool stopRequested = false;
+    bool currentProgressVisible = false;
 };
 
 struct ThemedFileTransferQueueDialogOptions {
@@ -84,11 +100,13 @@ private:
     HWND status_ = nullptr;
     HWND detail_ = nullptr;
     HWND progress_ = nullptr;
+    HWND currentProgress_ = nullptr;
     HWND table_ = nullptr;
     HWND stop_ = nullptr;
     HWND close_ = nullptr;
     bool hasSnapshot_ = false;
     bool stopEnabled_ = true;
+    bool currentProgressVisible_ = false;
     ThemedFileTransferQueueSnapshot lastSnapshot_{};
     std::atomic_bool changePosted_ = false;
 };

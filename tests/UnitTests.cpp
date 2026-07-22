@@ -38,6 +38,7 @@
 #include "../src/services/WebDavClient.h"
 #include "../src/services/WebDavCredentialService.h"
 #include "../src/services/WebDavRecoveryService.h"
+#include "../src/services/WebDavTransferCoordinator.h"
 #include "../src/windows/MenuAnchorGeometry.h"
 #include "../src/windows/MainTitleBuildMarkerLayout.h"
 #include "../src/windows/ToastFeedback.h"
@@ -421,6 +422,48 @@ int wmain() {
         "WebDAV transfer queue accepts bounded concurrency");
     Check(WebDavTransferQueueController::NormalizeMaxConcurrentTransfers(8) == 4,
         "WebDAV transfer queue caps concurrency at four");
+    {
+        const std::filesystem::path uploadRoot = std::filesystem::temp_directory_path() /
+            (L"quattro_webdav_upload_expand_" + std::to_wstring(GetCurrentProcessId()));
+        std::error_code cleanupError;
+        std::filesystem::remove_all(uploadRoot, cleanupError);
+
+        const std::filesystem::path nested = uploadRoot / L"folder" / L"nested";
+        const std::filesystem::path empty = uploadRoot / L"empty";
+        std::filesystem::create_directories(nested, cleanupError);
+        std::filesystem::create_directories(empty, cleanupError);
+        const std::filesystem::path rootFile = uploadRoot / L"root.txt";
+        const std::filesystem::path nestedFile = nested / L"child.bin";
+        {
+            std::ofstream stream(rootFile, std::ios::binary | std::ios::trunc);
+            stream << "root";
+        }
+        {
+            std::ofstream stream(nestedFile, std::ios::binary | std::ios::trunc);
+            stream << "child";
+        }
+
+        const auto expanded = WebDavTransferCoordinator::ExpandUploadPaths({
+            rootFile,
+            uploadRoot / L"folder",
+            rootFile,
+            empty,
+            uploadRoot / L"missing.txt",
+        });
+        std::unordered_set<std::wstring> expandedKeys;
+        for (const auto& path : expanded) {
+            expandedKeys.insert(WebDavFileService::CanonicalPath(path));
+            std::error_code fileError;
+            Check(std::filesystem::is_regular_file(path, fileError),
+                "WebDAV upload expansion returns only regular files");
+        }
+        Check(expanded.size() == 2 &&
+                expandedKeys.count(WebDavFileService::CanonicalPath(rootFile)) == 1 &&
+                expandedKeys.count(WebDavFileService::CanonicalPath(nestedFile)) == 1,
+            "WebDAV upload expansion recursively flattens folders and deduplicates files");
+
+        std::filesystem::remove_all(uploadRoot, cleanupError);
+    }
     {
         const std::wstring testKey =
             L"Software\\Quattro\\Tests\\CopyPathMenu_" + std::to_wstring(GetCurrentProcessId());
@@ -1416,6 +1459,10 @@ int wmain() {
     Check(fallbackTheme.color(L"table", L"normal", L"border").a > 0.9f, "Theme default table border");
     Check(fallbackTheme.color(L"table", L"normal", L"grid").a > 0.9f, "Theme default table grid");
     Check(Near(fallbackTheme.metric(L"table", L"gridWidth", 0.0f), 1.0f), "Theme default table grid width");
+    Check(fallbackTheme.color(L"table", L"activeRow", L"border").a > 0.9f,
+        "Theme default table active-row border");
+    Check(Near(fallbackTheme.metric(L"table", L"activeRowBorderWidth", 0.0f), 2.0f),
+        "Theme default table active-row border width");
     Check(Near(fallbackTheme.metric(L"tableHeader", L"height", 0.0f), 28.0f), "Theme default table header height");
     Check(Near(fallbackTheme.metric(L"tooltip", L"maxWidth", 0.0f), 420.0f), "Theme default tooltip max width");
     Check(fallbackTheme.color(L"groupBox", L"normal", L"border").a > 0.9f, "Theme default group box border");
@@ -1913,13 +1960,14 @@ int wmain() {
             tableOptions);
         Check(runtimeTable != nullptr, "Themed table public factory");
         ThemedUi::SetTableRows(runtimeTable, {
-            ThemedTableRow{42, {{L"row"}, {L"value"}}, true, true},
+            ThemedTableRow{42, {{L"row"}, {L"value"}}, true, true, true},
             ThemedTableRow{43, {{L"disabled"}, {L"preserved"}}, true, false},
         });
         const int tooltipShowBaseline = tooltipRegistry.showCount;
         const int tooltipHideBaseline = tooltipRegistry.hideCount;
-        tooltipUi.SetTableRowTooltip(runtimeTable, [](int row, std::intptr_t rowKey) {
-            return L"row " + std::to_wstring(row) + L" key " + std::to_wstring(rowKey);
+        std::wstring tableTooltipState = L"initial";
+        tooltipUi.SetTableRowTooltip(runtimeTable, [&tableTooltipState](int row, std::intptr_t rowKey) {
+            return L"row " + std::to_wstring(row) + L" key " + std::to_wstring(rowKey) + L" " + tableTooltipState;
         }, {}, 0);
         RECT firstCellScreen{};
         Check(ThemedUi::TableCellScreenRect(runtimeTable, 0, 0, firstCellScreen)
@@ -1934,12 +1982,19 @@ int wmain() {
             "Themed table row tooltip test point resolves to the first row");
         SendMessageW(runtimeTable, WM_MOUSEMOVE, 0, MAKELPARAM(tooltipRowPoint.x, tooltipRowPoint.y));
         Check(tooltipRegistry.showCount == tooltipShowBaseline + 1 &&
-                tooltipRegistry.shownText == L"row 0 key 42",
+                tooltipRegistry.shownText == L"row 0 key 42 initial",
             "Themed table row tooltip resolves dynamic content after the shared hover delay");
+        tableTooltipState = L"updated";
+        ThemedUi::RefreshTableRowTooltip(runtimeTable);
+        Check(tooltipRegistry.showCount == tooltipShowBaseline + 2 &&
+                tooltipRegistry.shownText == L"row 0 key 42 updated",
+            "Themed table row tooltip refreshes in place when row progress changes");
         SendMessageW(runtimeTable, WM_MOUSELEAVE, 0, 0);
         Check(tooltipRegistry.hideCount == tooltipHideBaseline + 1 && !tooltipRegistry.visible,
             "Themed table row tooltip hides when the pointer leaves the table");
         Check(ThemedUi::TableRowCount(runtimeTable) == 2 && ThemedUi::TableRowKey(runtimeTable, 0) == 42, "Themed table public row model");
+        Check(ThemedUi::IsTableRowActive(runtimeTable, 0) && !ThemedUi::IsTableRowActive(runtimeTable, 1),
+            "Themed table public active-row state is isolated to the processing row");
         Check(ThemedUi::IsTableChecked(runtimeTable, 0), "Themed table public checked state");
         Check(ThemedUi::IsTableChecked(runtimeTable, 1), "Themed table preserves disabled checked state");
         ThemedUi::SetTableChecked(runtimeTable, 1, false);
@@ -1952,9 +2007,11 @@ int wmain() {
                 ThemedUi::TableSelectedIndex(runtimeTable) == 0,
             "Themed table appends a stable-key row without replacing selection");
         Check(ThemedUi::UpdateTableRow(
-                runtimeTable, 2, ThemedTableRow{44, {{L"updated"}, {L"in place"}}, true, true}) &&
+                runtimeTable, 2, ThemedTableRow{44, {{L"updated"}, {L"in place"}}, true, true, true}) &&
                 ThemedUi::IsTableChecked(runtimeTable, 2) && ThemedUi::TableRowKey(runtimeTable, 2) == 44,
             "Themed table updates one row in place");
+        Check(ThemedUi::IsTableRowActive(runtimeTable, 2),
+            "Themed table incremental update applies the active-row frame state");
         Check(ThemedUi::RemoveTableRow(runtimeTable, 1) &&
                 ThemedUi::TableRowCount(runtimeTable) == 2 &&
                 ThemedUi::TableRowKey(runtimeTable, 0) == 42 &&
@@ -2022,7 +2079,9 @@ int wmain() {
         ThemedUi::AppendTableRow(updateNotificationTable,
             ThemedTableRow{20, {{L"incremental append"}}, false, true});
         ThemedUi::UpdateTableRow(updateNotificationTable, 10,
-            ThemedTableRow{20, {{L"incremental update"}}, true, true});
+            ThemedTableRow{20, {{L"incremental update"}}, true, true, true});
+        Check(ThemedUi::IsTableRowActive(updateNotificationTable, 10),
+            "Themed table single-row update preserves the active processing state");
         ThemedUi::RemoveTableRow(updateNotificationTable, 10);
         Check(updateProbe.checkChangedCount == 0 && updateProbe.deleteAllCount == 0,
             "Themed table incremental mutations avoid full replacement and internal checkbox notifications");

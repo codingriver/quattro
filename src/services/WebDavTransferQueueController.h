@@ -47,6 +47,8 @@ private:
         WebDavFileTransferPhase phase = WebDavFileTransferPhase::Preparing;
         std::uint64_t transferred = 0;
         std::uint64_t total = 0;
+        std::uint64_t contentTransferred = 0;
+        std::uint64_t contentTotal = 0;
         std::wstring error;
         bool stopRequested = false;
     };

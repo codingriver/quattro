@@ -608,8 +608,10 @@
         <Metric name="radius" value="7"/>
         <Metric name="borderWidth" value="1"/>
         <Metric name="gridWidth" value="1"/>
+        <Metric name="activeRowBorderWidth" value="2"/>
         <State name="normal" bg="@surface" text="@text" border="@border" grid="@line"/>
         <State name="focused" bg="@surface" text="@text" border="@focus"/>
+        <State name="activeRow" border="@focus"/>
         <State name="disabled" bg="@background" text="@disabledText" border="@line"/>
     </Component>
     <Component name="tableHeader">

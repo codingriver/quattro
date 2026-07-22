@@ -106,6 +106,7 @@ struct ControlState {
     int tableRowsUpdateDepth = 0;
     std::vector<int> tableColumnWidthModes;
     std::vector<bool> tableRowEnabled;
+    std::vector<bool> tableRowActive;
     std::vector<std::vector<ThemedControls::TableCellRuntime>> tableCells;
 };
 
@@ -2105,6 +2106,28 @@ void DrawTableCellGridLines(const Theme& theme, HWND table, const NMLVCUSTOMDRAW
     FillThemedRect(draw->nmcd.hdc, lineRect, ToColorRef(theme.color(L"table", L"normal", L"grid")));
 }
 
+void DrawTableActiveRowFrame(
+    const Theme& theme,
+    HWND table,
+    const NMLVCUSTOMDRAW* draw,
+    RECT cellRect) {
+    const int row = static_cast<int>(draw->nmcd.dwItemSpec);
+    if (!ThemedControls::IsTableRowActive(table, row)) return;
+    const int column = draw->iSubItem;
+    const int columnCount = Header_GetItemCount(ListView_GetHeader(table));
+    const int width = std::max(1, TableScaledMetric(
+        table, theme, L"table", L"activeRowBorderWidth", 2.0f));
+    const COLORREF color = ToColorRef(theme.color(L"table", L"activeRow", L"border"));
+    DrawThemedLine(draw->nmcd.hdc, cellRect.left, cellRect.top, cellRect.right, cellRect.top, color, width);
+    DrawThemedLine(draw->nmcd.hdc, cellRect.left, cellRect.bottom - 1, cellRect.right, cellRect.bottom - 1, color, width);
+    if (column == 0) {
+        DrawThemedLine(draw->nmcd.hdc, cellRect.left, cellRect.top, cellRect.left, cellRect.bottom, color, width);
+    }
+    if (column == columnCount - 1) {
+        DrawThemedLine(draw->nmcd.hdc, cellRect.right - 1, cellRect.top, cellRect.right - 1, cellRect.bottom, color, width);
+    }
+}
+
 void DrawHeaderItem(const Theme& theme, HWND header, const NMCUSTOMDRAW* draw) {
     const bool table = KindFor(GetParent(header)) == ControlKind::Table;
     const wchar_t* component = table ? L"tableHeader" : L"list";
@@ -2346,6 +2369,7 @@ void DrawTableActionCell(
         SelectObject(draw->nmcd.hdc, oldFont);
     }
     DrawTableCellGridLines(theme, table, draw, cellRect);
+    DrawTableActiveRowFrame(theme, table, draw, cellRect);
 }
 
 void DrawTableTextCell(
@@ -2478,6 +2502,7 @@ void DrawTableTextCell(
         SelectObject(draw->nmcd.hdc, oldFont);
     }
     DrawTableCellGridLines(theme, table, draw, cellRect);
+    DrawTableActiveRowFrame(theme, table, draw, cellRect);
 }
 
 void DrawTableRowCells(
@@ -3873,27 +3898,36 @@ void SetTableRowEnabledStates(HWND table, const std::vector<bool>& enabled) {
     StateFor(table).tableRowEnabled = enabled;
 }
 
+void SetTableRowActiveStates(HWND table, const std::vector<bool>& active) {
+    if (!table) return;
+    StateFor(table).tableRowActive = active;
+}
+
 void SetTableCells(HWND table, const std::vector<std::vector<TableCellRuntime>>& cells) {
     if (!table) return;
     StateFor(table).tableCells = cells;
 }
 
-void InsertTableRowState(HWND table, int index, bool enabled, std::vector<TableCellRuntime> cells) {
+void InsertTableRowState(HWND table, int index, bool enabled, bool active, std::vector<TableCellRuntime> cells) {
     if (!table) return;
     auto& state = StateFor(table);
     const std::size_t position = static_cast<std::size_t>(std::clamp(index, 0,
         static_cast<int>(state.tableRowEnabled.size())));
     state.tableRowEnabled.insert(state.tableRowEnabled.begin() + position, enabled);
+    const std::size_t activePosition = std::min(position, state.tableRowActive.size());
+    state.tableRowActive.insert(state.tableRowActive.begin() + activePosition, active);
     const std::size_t cellPosition = std::min(position, state.tableCells.size());
     state.tableCells.insert(state.tableCells.begin() + cellPosition, std::move(cells));
 }
 
-void UpdateTableRowState(HWND table, int index, bool enabled, std::vector<TableCellRuntime> cells) {
+void UpdateTableRowState(HWND table, int index, bool enabled, bool active, std::vector<TableCellRuntime> cells) {
     if (!table || index < 0) return;
     auto& state = StateFor(table);
     const std::size_t position = static_cast<std::size_t>(index);
-    if (position >= state.tableRowEnabled.size() || position >= state.tableCells.size()) return;
+    if (position >= state.tableRowEnabled.size() || position >= state.tableRowActive.size() ||
+        position >= state.tableCells.size()) return;
     state.tableRowEnabled[position] = enabled;
+    state.tableRowActive[position] = active;
     state.tableCells[position] = std::move(cells);
 }
 
@@ -3903,6 +3937,9 @@ void RemoveTableRowState(HWND table, int index) {
     const std::size_t position = static_cast<std::size_t>(index);
     if (position < state.tableRowEnabled.size()) {
         state.tableRowEnabled.erase(state.tableRowEnabled.begin() + position);
+    }
+    if (position < state.tableRowActive.size()) {
+        state.tableRowActive.erase(state.tableRowActive.begin() + position);
     }
     if (position < state.tableCells.size()) {
         state.tableCells.erase(state.tableCells.begin() + position);
@@ -3925,6 +3962,18 @@ void EndTableRowsUpdate(HWND table) {
     }
 }
 
+void BeginTableRowUpdate(HWND table) {
+    if (!table) return;
+    ++StateFor(table).tableRowsUpdateDepth;
+}
+
+void EndTableRowUpdate(HWND table, int row) {
+    if (!table) return;
+    auto& state = StateFor(table);
+    state.tableRowsUpdateDepth = std::max(0, state.tableRowsUpdateDepth - 1);
+    InvalidateTableRow(table, row);
+}
+
 bool IsTableRowsUpdating(HWND table) {
     const auto state = FindState(table);
     return state && state->tableRowsUpdateDepth > 0;
@@ -3935,6 +3984,13 @@ bool IsTableRowEnabled(HWND table, int index) {
     return state && index >= 0 && static_cast<std::size_t>(index) < state->tableRowEnabled.size()
         ? state->tableRowEnabled[static_cast<std::size_t>(index)]
         : true;
+}
+
+bool IsTableRowActive(HWND table, int index) {
+    const auto state = FindState(table);
+    return state && index >= 0 && static_cast<std::size_t>(index) < state->tableRowActive.size()
+        ? state->tableRowActive[static_cast<std::size_t>(index)]
+        : false;
 }
 
 // The CDIS_SELECTED bit in NMCUSTOMDRAW::uItemState is unreliable for ListView

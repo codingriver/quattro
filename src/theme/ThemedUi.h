@@ -343,6 +343,7 @@ struct ThemedTableRow {
     std::vector<ThemedTableCell> cells;
     bool checked = false;
     bool enabled = true;
+    bool active = false;
 };
 
 enum class ThemedTableEventKind {
@@ -889,6 +890,7 @@ public:
     static void SetTableChecked(HWND table, int index, bool checked);
     static bool IsTableChecked(HWND table, int index);
     static bool IsTableRowEnabled(HWND table, int index);
+    static bool IsTableRowActive(HWND table, int index);
     static int TableRowCount(HWND table);
     static int TableSelectedIndex(HWND table);
     static void SetTableSelectedIndex(HWND table, int index);
@@ -907,6 +909,7 @@ public:
         ThemedTableRowTooltipProvider provider,
         ThemedTooltipOptions options = {},
         UINT hoverDelayMs = 400) const;
+    static void RefreshTableRowTooltip(HWND table);
     // Bind a themed tooltip to any facade-created control. Hover tracking,
     // placement, drawing, and cleanup remain owned by the public UI layer.
     void SetTooltip(HWND control, const std::wstring& text, ThemedTooltipOptions options = {}) const;

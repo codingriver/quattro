@@ -9,7 +9,9 @@
 #include <cstring>
 #include <deque>
 #include <mutex>
+#include <stack>
 #include <thread>
+#include <unordered_set>
 #include <sddl.h>
 
 namespace {
@@ -27,6 +29,52 @@ struct Request {
     std::vector<std::filesystem::path> uploads;
     std::vector<WebDavFileRecord> downloads;
 };
+
+bool AddUploadFile(
+    const std::filesystem::path& path,
+    std::vector<std::filesystem::path>& files,
+    std::unordered_set<std::wstring>& seen) {
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(path, ec)) return false;
+    const std::wstring canonical = WebDavFileService::CanonicalPath(path);
+    if (canonical.empty() || !seen.insert(canonical).second) return false;
+    files.push_back(path);
+    return true;
+}
+
+void ExpandUploadDirectory(
+    const std::filesystem::path& root,
+    std::vector<std::filesystem::path>& files,
+    std::unordered_set<std::wstring>& seen) {
+    std::stack<std::filesystem::path> pending;
+    pending.push(root);
+    while (!pending.empty()) {
+        const auto directory = pending.top();
+        pending.pop();
+
+        std::error_code ec;
+        std::filesystem::directory_iterator it(
+            directory,
+            std::filesystem::directory_options::skip_permission_denied,
+            ec);
+        if (ec) continue;
+        const std::filesystem::directory_iterator end;
+        for (; it != end; it.increment(ec)) {
+            if (ec) {
+                ec.clear();
+                continue;
+            }
+            const auto path = it->path();
+            if (it->is_directory(ec)) {
+                if (!ec) pending.push(path);
+                ec.clear();
+                continue;
+            }
+            ec.clear();
+            AddUploadFile(path, files, seen);
+        }
+    }
+}
 
 std::wstring ScopeSuffix() {
     std::wstring suffix = Hex8(StablePathHash(GetModuleDirectory().wstring()));
@@ -162,10 +210,25 @@ bool Send(const std::vector<std::uint8_t>& data, std::wstring& error) {
 }
 }
 
+std::vector<std::filesystem::path> WebDavTransferCoordinator::ExpandUploadPaths(
+    const std::vector<std::filesystem::path>& paths) {
+    std::vector<std::filesystem::path> files;
+    std::unordered_set<std::wstring> seen;
+    for (const auto& path : paths) {
+        if (AddUploadFile(path, files, seen)) continue;
+
+        std::error_code ec;
+        if (std::filesystem::is_directory(path, ec)) {
+            ExpandUploadDirectory(path, files, seen);
+        }
+    }
+    return files;
+}
+
 bool WebDavTransferCoordinator::SubmitUploads(const std::vector<std::filesystem::path>& paths, std::wstring& error) {
     if (paths.empty()) { error = L"没有可上传的文件。"; return false; }
     const bool ok = Send(SerializeUploads(paths), error);
-    WriteAppLog(ok ? L"WebDAV 传输请求已发送：上传 " + std::to_wstring(paths.size()) + L" 个文件。"
+    WriteAppLog(ok ? L"WebDAV 传输请求已发送：上传 " + std::to_wstring(paths.size()) + L" 个路径。"
                    : L"WebDAV 上传请求发送失败：" + error);
     return ok;
 }
@@ -229,8 +292,11 @@ int WebDavTransferCoordinator::RunHost(HINSTANCE instance, const Theme& theme, c
                 { std::lock_guard lock(requestsMutex); pending.swap(requests); }
                 for (auto& request : pending) {
                     if (request.kind == kUpload) {
-                        WriteAppLog(L"WebDAV 传输宿主收到上传请求：" + std::to_wstring(request.uploads.size()) + L" 个文件。");
-                        controller.EnqueueUploads(request.uploads);
+                        auto files = ExpandUploadPaths(request.uploads);
+                        WriteAppLog(L"WebDAV 传输宿主收到上传请求：" +
+                            std::to_wstring(request.uploads.size()) + L" 个路径，展开 " +
+                            std::to_wstring(files.size()) + L" 个文件。");
+                        if (!files.empty()) controller.EnqueueUploads(files);
                     } else if (request.kind == kDownload) {
                         WriteAppLog(L"WebDAV 传输宿主收到下载请求：" + std::to_wstring(request.downloads.size()) + L" 个文件。");
                         controller.EnqueueDownloads(request.downloads);

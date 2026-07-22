@@ -93,6 +93,22 @@ struct TestState {
     }
 };
 
+struct TableMutationProbe {
+    int deleteAllCount = 0;
+    int redrawSuspendCount = 0;
+};
+
+LRESULT CALLBACK TableMutationProbeProc(
+    HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR id, DWORD_PTR refData) {
+    auto* probe = reinterpret_cast<TableMutationProbe*>(refData);
+    if (probe) {
+        if (message == LVM_DELETEALLITEMS) ++probe->deleteAllCount;
+        if (message == WM_SETREDRAW && !wParam) ++probe->redrawSuspendCount;
+    }
+    if (message == WM_NCDESTROY) RemoveWindowSubclass(hwnd, TableMutationProbeProc, id);
+    return DefSubclassProc(hwnd, message, wParam, lParam);
+}
+
 std::vector<ContextMenuProviderIconInfo> AcceptanceContextMenuProviderIcons(std::stop_token stopToken) {
     const auto providers = TrackedContextMenuProviders();
     std::vector<ContextMenuProviderIconInfo> result;
@@ -4256,15 +4272,24 @@ void RunWebDavTransferQueueScenario(
     UINT dpi) {
     ThemedFileTransferQueueSnapshot snapshot;
     snapshot.title = L"WebDAV 文件传输";
-    snapshot.status = L"正在上传（3 / 4）";
-    snapshot.detail = L"当前 2 / 3 · report.zip · 已完成 1，失败 0";
+    snapshot.status = L"总进度 48 MB / 216 MB（22%） · 成功 1 · 失败 0 · 处理中 1 · 等待 1";
+    snapshot.detail = L"当前 2 / 3 · report.zip · 正在上传（3 / 4） · 46 MB / 136 MB（33%）";
     snapshot.progress = 0.63;
+    snapshot.currentProgress = 0.58;
+    snapshot.currentProgressVisible = true;
     snapshot.running = true;
     snapshot.rows = {
         {1, L"config.json", L"C:\\Users\\acceptance\\config.json", 2048, ThemedFileTransferStatus::UploadCompleted},
         {2, L"report.zip", L"D:\\项目资料\\report.zip", 142606336, ThemedFileTransferStatus::Uploading},
         {3, L"数据文件.bin", L"\\\\server\\share\\数据文件.bin", 83886080, ThemedFileTransferStatus::Waiting},
     };
+    snapshot.rows[1].phaseIndex = 3;
+    snapshot.rows[1].phaseCount = 4;
+    snapshot.rows[1].phaseTransferred = 48234496;
+    snapshot.rows[1].phaseTotal = 142606336;
+    snapshot.rows[1].contentTransferred = snapshot.rows[1].phaseTransferred;
+    snapshot.rows[1].contentTotal = snapshot.rows[1].phaseTotal;
+    snapshot.rows[1].active = true;
     ThemedFileTransferQueueDialogOptions options;
     options.instance = instance;
     options.theme = theme;
@@ -4274,6 +4299,9 @@ void RunWebDavTransferQueueScenario(
     ThemedFileTransferQueueDialog dialog(std::move(options));
     state.Check(dialog.Show(), L"webdav transfer queue: show failed");
     if (!dialog.hwnd()) return;
+    HWND table = GetDlgItem(dialog.hwnd(), 6104);
+    TableMutationProbe mutationProbe;
+    if (table) SetWindowSubclass(table, TableMutationProbeProc, 41, reinterpret_cast<DWORD_PTR>(&mutationProbe));
     SetWindowPos(dialog.hwnd(), HWND_BOTTOM, 0, 0, 0, 0,
         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
     Scenario scenario{
@@ -4295,6 +4323,48 @@ void RunWebDavTransferQueueScenario(
     const std::size_t changed = CountChangedPixelSamples(first, second, 12, 4);
     state.Check(changed <= 8,
         scenario.name + L": unchanged snapshot changed visible pixels=" + std::to_wstring(changed));
+
+    snapshot.rows[1].status = ThemedFileTransferStatus::UploadCompleted;
+    snapshot.rows[1].phaseIndex = 0;
+    snapshot.rows[1].phaseCount = 0;
+    snapshot.rows[1].phaseTransferred = snapshot.rows[1].size;
+    snapshot.rows[1].phaseTotal = snapshot.rows[1].size;
+    snapshot.rows[1].contentTransferred = snapshot.rows[1].size;
+    snapshot.rows[1].contentTotal = snapshot.rows[1].size;
+    snapshot.rows[1].active = false;
+    snapshot.rows[2].status = ThemedFileTransferStatus::Uploading;
+    snapshot.rows[2].phaseIndex = 3;
+    snapshot.rows[2].phaseCount = 4;
+    snapshot.rows[2].phaseTransferred = 20971520;
+    snapshot.rows[2].phaseTotal = snapshot.rows[2].size;
+    snapshot.rows[2].contentTransferred = snapshot.rows[2].phaseTransferred;
+    snapshot.rows[2].contentTotal = snapshot.rows[2].size;
+    snapshot.rows[2].active = true;
+    snapshot.status = L"总进度 158 MB / 216 MB（73%） · 成功 2 · 失败 0 · 处理中 1 · 等待 0";
+    snapshot.detail = L"当前 3 / 3 · 数据文件.bin · 正在上传（3 / 4） · 20 MB / 80 MB（25%）";
+    snapshot.progress = 0.73;
+    snapshot.currentProgress = 0.56;
+    dialog.NotifyChanged();
+    const ULONGLONG transitionDeadline = GetTickCount64() + 2000;
+    while (GetTickCount64() < transitionDeadline) {
+        while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+            TranslateMessage(&message); DispatchMessageW(&message);
+        }
+        if (table && ThemedUi::TableRowCount(table) == 3 &&
+            !ThemedUi::IsTableRowActive(table, 1) && ThemedUi::IsTableRowActive(table, 2)) break;
+        Sleep(10);
+    }
+    Scenario transitioned = scenario;
+    transitioned.name = L"webdav-transfer-queue-transition-" + DpiPercentSuffix(dpi);
+    transitioned.screenshotName = transitioned.name + L".png";
+    transitioned.expectedVisibleChildTexts = {snapshot.status, snapshot.detail};
+    ValidateAndCapture(dialog.hwnd(), transitioned, outputDir, state);
+    state.Check(table && ThemedUi::TableRowCount(table) == 3 &&
+            !ThemedUi::IsTableRowActive(table, 1) && ThemedUi::IsTableRowActive(table, 2),
+        L"webdav transfer queue: active frame did not move exclusively to the processing row");
+    state.Check(mutationProbe.deleteAllCount == 0 && mutationProbe.redrawSuspendCount == 0,
+        L"webdav transfer queue: single-task progress update rebuilt or suspended the whole table");
+    if (table) RemoveWindowSubclass(table, TableMutationProbeProc, 41);
     dialog.Close();
 }
 
@@ -4546,6 +4616,10 @@ int wmain() {
             static_cast<DWORD>(std::size(queueDialogOnly))) > 0;
         for (const UINT dpi : dpis) {
             RunWebDavTransferQueueScenario(instance, theme, outputDir, state, dpi);
+            RunTooltipVisualScenario(
+                owner, instance, theme, outputDir, state, dpi,
+                L"report.zip  ·  136 MB\nD:\\项目资料\\report.zip\n上传中（3 / 4） · 46 MB / 136 MB（33%）",
+                L"webdav-transfer-row-tooltip");
             if (!queueDialogOnlyRequested) {
                 RunWebDavFileManagerQueueEntryScenario(owner, instance, theme, config, outputDir, state, dpi);
                 RunWebDavFileDetailsScenario(owner, instance, theme, config, outputDir, state, dpi);
