@@ -1303,6 +1303,54 @@ int wmain() {
         providerIcons.back().providerId == ShellContextMenuProviderId::Vim,
         "Provider icon load preserves the shared provider order");
 
+    const std::filesystem::path providerPresentationCacheRoot =
+        std::filesystem::temp_directory_path() /
+        (L"quattro_unit_provider_presentation_" + std::to_wstring(GetCurrentProcessId()));
+    std::filesystem::remove_all(providerPresentationCacheRoot, ec);
+    int persistentProviderResolveCount = 0;
+    auto persistentProviderResolver = [&](const TrackedContextMenuProviderBinding& provider,
+                                          const std::optional<ShellContextMenuCachedIcon>&,
+                                          std::stop_token) {
+        ++persistentProviderResolveCount;
+        ContextMenuProviderIconInfo info;
+        info.providerId = provider.providerId;
+        info.installed = true;
+        info.installedViaProbe = true;
+        info.attempted = true;
+        info.icon.width = 2;
+        info.icon.height = 2;
+        info.icon.quality = 1;
+        info.icon.pixels.assign(4, 0xFF2468ACu);
+        return info;
+    };
+    ContextMenuProviderIconService persistentProviderIcons(
+        providerPresentationCacheRoot,
+        persistentProviderResolver);
+    const auto firstPersistentProviderLoad = persistentProviderIcons.Load();
+    Check(
+        firstPersistentProviderLoad.size() == TrackedContextMenuProviderCount &&
+        persistentProviderResolveCount == static_cast<int>(TrackedContextMenuProviderCount),
+        "Provider presentation cache resolves every provider on first load");
+    const auto cachedProviderPresentation = persistentProviderIcons.LoadCached();
+    Check(
+        cachedProviderPresentation &&
+        cachedProviderPresentation->size() == TrackedContextMenuProviderCount,
+        "Provider presentation cache persists a complete provider set");
+    const auto secondPersistentProviderLoad = persistentProviderIcons.Load();
+    Check(
+        secondPersistentProviderLoad.size() == TrackedContextMenuProviderCount &&
+        persistentProviderResolveCount == static_cast<int>(TrackedContextMenuProviderCount),
+        "Provider presentation cache avoids repeated icon resolution");
+    Check(
+        persistentProviderIcons.ResetCache() && !persistentProviderIcons.LoadCached(),
+        "Provider presentation cache is removed only by explicit reset");
+    const auto afterResetProviderLoad = persistentProviderIcons.Load();
+    Check(
+        afterResetProviderLoad.size() == TrackedContextMenuProviderCount &&
+        persistentProviderResolveCount == static_cast<int>(TrackedContextMenuProviderCount * 2),
+        "Provider presentation icons resolve again after explicit reset");
+    std::filesystem::remove_all(providerPresentationCacheRoot, ec);
+
     // A DLL-only ContextMenuHandler has no trustworthy provider icon. The old
     // fallback extracted resource 0 (or the generic file association icon) from
     // InprocServer32, which made unrelated providers such as TortoiseGit and

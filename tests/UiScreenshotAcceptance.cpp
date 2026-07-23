@@ -5109,7 +5109,10 @@ int wmain() {
                 nullptr, false, false, false, {},
                 [&]() {
                     ++resetCallbackCount;
-                    return resetReopenCache.Reset();
+                    const bool menuReset = resetReopenCache.Reset();
+                    const bool providerReset =
+                        ContextMenuProviderIconService(resetReopenRoot).ResetCache();
+                    return menuReset && providerReset;
                 },
                 {}, {}, {},
                 [&](std::stop_token stopToken) {
@@ -5122,6 +5125,9 @@ int wmain() {
                 !resetReopenCache.BestIconForProvider(ShellContextMenuProviderId::Git).has_value() &&
                 !resetReopenCache.BestIconForProvider(ShellContextMenuProviderId::Svn).has_value(),
                 L"context-menu reset retained native provider icon cache");
+            state.Check(
+                !ContextMenuProviderIconService(resetReopenRoot).LoadCached(),
+                L"context-menu reset retained provider presentation icon cache");
 
             const std::vector<ContextMenuProviderIconInfo> reopenedIcons =
                 ContextMenuProviderIconService(resetReopenRoot).Load();
@@ -5219,6 +5225,41 @@ int wmain() {
                                 : refreshedIcons;
                         });
                 });
+
+            {
+                ScopedAcceptanceChildEnvironment cachedProviderEnvironment;
+                const std::vector<ContextMenuProviderIconInfo> preparedCache =
+                    ContextMenuProviderIconService(cachedProviderEnvironment.root()).Load();
+                state.Check(
+                    preparedCache.size() == TrackedContextMenuProviderCount &&
+                    ContextMenuProviderIconService(cachedProviderEnvironment.root()).LoadCached().has_value(),
+                    L"settings context-menu provider cache-hit fixture was not prepared");
+                Scenario cacheHitScenario = settingsScenario;
+                cacheHitScenario.name = L"settings-dialog-右键菜单-provider-cache-hit";
+                cacheHitScenario.screenshotName = L"settings-dialog-右键菜单-provider-cache-hit.png";
+                cacheHitScenario.waitForContextMenuIconLoad = false;
+                cacheHitScenario.validateContextMenuIconTransparency = false;
+                cacheHitScenario.unexpectedVisibleChildTexts.push_back(L"检测中...");
+                cacheHitScenario.unexpectedVisibleChildTexts.push_back(L"获取图标中...");
+                const auto cachedGit = std::find_if(
+                    preparedCache.begin(), preparedCache.end(), [](const auto& info) {
+                        return info.providerId == ShellContextMenuProviderId::Git;
+                    });
+                if (cachedGit != preparedCache.end() && cachedGit->installedViaProbe) {
+                    cacheHitScenario.expectedContextMenuProvider = L"Git (TortoiseGit)";
+                    cacheHitScenario.expectedContextMenuStatus = L"已安装(注册表)";
+                }
+                RunDialogScenario(
+                    cacheHitScenario,
+                    outputDir,
+                    state,
+                    [&]() {
+                        bool imported = false;
+                        ShowSettingsDialog(
+                            owner, instance, resetConfig, theme,
+                            std::filesystem::current_path(), std::filesystem::current_path(), &imported);
+                    });
+            }
             DestroyWindow(owner);
             OleUninitialize();
             Gdiplus::GdiplusShutdown(gdiplusToken);
@@ -5329,6 +5370,7 @@ int wmain() {
         busyScenario.actionButtonText = L"从Windows菜单刷新";
         busyScenario.closeDelayMs = 700;
         std::atomic_bool refreshApplied{false};
+        std::atomic_int refreshScenarioIconLoads{0};
         RunDialogScenario(
             busyScenario,
             outputDir,
@@ -5355,9 +5397,15 @@ int wmain() {
                     [&](const ShellContextMenuRefreshResult&) {
                         refreshApplied = true;
                     },
-                    AcceptanceContextMenuProviderIcons);
+                    [&](std::stop_token stopToken) {
+                        ++refreshScenarioIconLoads;
+                        return AcceptanceContextMenuProviderIcons(stopToken);
+                    });
             });
         state.Check(refreshApplied.load(), L"settings context menu refresh result was not applied on completion");
+        state.Check(
+            refreshScenarioIconLoads.load() == 1,
+            L"settings context menu refresh reloaded provider presentation icons");
 
         DestroyWindow(owner);
         OleUninitialize();

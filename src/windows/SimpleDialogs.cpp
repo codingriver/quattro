@@ -3408,6 +3408,20 @@ private:
             return;
         }
         contextMenuIconAutoRequested_ = true;
+        // Provider 展示缓存体积很小且固定有上限；同步读取可让重复打开设置页
+        // 直接显示已有图标，避免先绘制 fallback 再异步替换造成闪烁。
+        // 注入 runner 的测试/专用入口继续走原异步链路，避免读取正式缓存。
+        if (!contextMenuProviderIconRunner_) {
+            if (auto cached = ContextMenuProviderIconService().LoadCached();
+                cached && cached->size() == TrackedContextMenuProviders().size()) {
+                contextMenuProviderIcons_ = std::move(*cached);
+                contextMenuProviderLoadCompleted_ = true;
+                contextMenuProviderLoadFailed_ = false;
+                RebuildContextMenuImageList();
+                AddContextMenuTableRows();
+                return;
+            }
+        }
         PostMessageW(hwnd_, WM_CONTEXT_MENU_ICON_LOAD_REQUEST, 0, 0);
     }
 
@@ -3863,7 +3877,6 @@ private:
         }
         SetContextMenuRefreshBusy(false);
         if (!result) {
-            StartContextMenuIconLoad(true);
             ShowThemedMessageBox(
                 hwnd_, instance_, theme_, L"刷新线程未返回结果。", L"从Windows菜单刷新", MB_OK | MB_ICONWARNING);
             return;
@@ -3875,7 +3888,8 @@ private:
         if (result->succeededLinks > 0 && contextMenuRefreshApplyCallback_) {
             contextMenuRefreshApplyCallback_(*result);
         }
-        StartContextMenuIconLoad(true);
+        // 原生菜单刷新只更新具体命令及其图标缓存；provider 品牌图标是
+        // 独立持久化数据，不在这里重新加载或重建 ImageList。
         if (result->failures.empty()) {
             const std::wstring message =
                 L"已刷新 " + std::to_wstring(result->succeededLinks) +
@@ -3895,13 +3909,11 @@ private:
         }
         const ShellContextMenuTrackingOptions tracking = ContextMenuTrackingDraft();
         if (!tracking.Any()) {
-            StartContextMenuIconLoad(true);
             ShowThemedMessageBox(
                 hwnd_, instance_, theme_, L"没有启用需要跟踪的工具。", L"从Windows菜单刷新", MB_OK | MB_ICONINFORMATION);
             return;
         }
         if (contextMenuLinks_.empty()) {
-            StartContextMenuIconLoad(true);
             ShowThemedMessageBox(
                 hwnd_, instance_, theme_, L"当前没有可刷新的启动项。", L"从Windows菜单刷新", MB_OK | MB_ICONINFORMATION);
             return;

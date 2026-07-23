@@ -5188,7 +5188,9 @@ void MainWindow::OpenSettings() {
         return mainHotKeyRegistered_;
     };
     auto resetContextMenu = [this, &next]() -> bool {
-        if (!shellContextMenuCache_.Reset()) {
+        const bool menuCacheReset = shellContextMenuCache_.Reset();
+        const bool providerIconCacheReset = ContextMenuProviderIconService().ResetCache();
+        if (!menuCacheReset || !providerIconCacheReset) {
             return false;
         }
         AppConfig reset = config_;
