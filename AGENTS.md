@@ -72,6 +72,14 @@
 - `tools/tabler-icons.json` 必须覆盖所有当前 `MenuIconGlyph` 值、菜单 `chevron-down`/`chevron-right` 以及系统图标失败时的 Tabler 后备 glyph。所有构建必须运行 Tabler 覆盖扫描；正式构建及显式 `-SubsetTablerFont` 构建还必须执行“源码引用集合 = JSON 清单 = 子集字体 cmap”校验，发现缺失、重复冲突、未登记 glyph、绕过公共接口或硬编码码点时必须失败，不得依赖运行时回退掩盖裁剪错误。
 - Tabler 字体统一接口和 JSON 清单属于公共基础设施；修改后必须运行直接相关的字体加载、所有图标 glyph 绘制/回退、100%/125%/150% DPI 以及正式版子集包体验收。完整字体仅允许作为本地开发/测试输入，正式包不得回退使用完整字体。
 
+## Public Icon Resolver Rules
+
+- 所有业务需要获取应用、启动项、文件、文件夹、URL、Shell 位置、PIDL、Windows 商店应用、命令行、右键菜单 provider 或系统默认图标时，必须使用 `src/services/IconResolverService.*` 提供的公共接口构造 `IconRequest` 并读取 `ResolvedIcon`。业务窗口、对话框、工具箱、设置页、导入流程、右键菜单列表和独立 EXE 禁止自行调用 `SHGetFileInfoW`、`ExtractIconExW`、`SHGetStockIconInfo`、`SHParseDisplayName` 后取图标、`AddFontResourceExW` 或其它等价 Win32/注册表/字体解析逻辑来获取 app 图标。
+- `IconResolverService` 是图标来源解析的唯一入口，负责处理 `Link`、文件路径、目录路径、URL、Shell parse name、PIDL blob、icon location、命令行、右键菜单 provider 和 stock fallback 等来源。新增图标来源、fallback 策略、尺寸策略、透明像素处理、图标质量标记或缓存 key 规则时必须先扩展该公共服务及其测试，再由业务调用；禁止在业务层先落私有解析分支。
+- 业务层只允许把公共解析结果适配成当前 UI 需要的载体，例如 `HIMAGELIST`、D2D bitmap、菜单 bitmap 或 Table cell image index；适配层不得重新判断来源或重新解析 app 图标。公共 UI/helper 若提供 `ResolvedIcon` 到控件资源的转换，应只处理缩放、背景合成、像素格式和资源生命周期，不得承载业务来源判断。
+- `IconService` 只负责主窗口图标缓存和 D2D 位图转换，底层来源解析必须委托 `IconResolverService`；`ContextMenuProviderIconService` 只负责 provider 安装状态、顺序和持久缓存，provider 图标解析必须委托 `IconResolverService`；`QuickImportDialog`、设置右键菜单列表、终端右键菜单候选项和后续 Windows 商店应用导入列表都必须经由同一公共接口获取图标。
+- 修改公共图标接口后至少验证：文件/目录/URL/PIDL/Shell parse name/命令行/右键菜单 provider/stock fallback 均能返回有效像素；无效来源不会崩溃且按公共 fallback 处理；同一业务表格刷新图标时保持 row key、选择和滚动状态；涉及可视变化时按相关窗口进行后台截图验收。
+
 ## Acceptance Rules
 
 - 每次新增需求完成后，只验收与本次需求直接相关的功能和受影响范围，不要求运行完整冒烟测试。

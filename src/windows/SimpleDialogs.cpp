@@ -8,6 +8,7 @@
 #include "DialogLayout.h"
 #include "FileDialog.h"
 #include "HotKeyEditor.h"
+#include "IconResolverService.h"
 #include "JsonValue.h"
 #include "LocalHttpServerService.h"
 #include "MainHotKey.h"
@@ -2126,6 +2127,7 @@ private:
         ID_FILE_ACTION_DETAILS = 432,
         ID_FILE_ACTION_DELETE = 433,
         ID_FILE_ROW_MENU = 434,
+        ID_FILE_ACTION_OPEN_LOCATION = 435,
     };
 
     struct ListResult {
@@ -2452,6 +2454,16 @@ private:
         if (checked) for (const auto& record : records_) checkedIds_.insert(record.id);
         PopulateTable();
     }
+    void ShowToast(const std::wstring& text, ThemedToastRole role, int durationMs = 0) {
+        if (!windowUi_) return;
+        ThemedToastOptions options{};
+        options.role = role;
+        if (durationMs > 0) options.durationMs = durationMs;
+        windowUi_->ui().ShowToast(text, options);
+    }
+    bool ValidateDownloadTarget(const WebDavFileRecord& record, std::filesystem::path& target, std::wstring& error) const {
+        return WebDavFileService::ValidateDownloadTargetPath(record.absolutePath, target, error);
+    }
     void Download(int index = -1) {
         if (index < 0) index = Selected();
         if (index < 0 || index >= static_cast<int>(records_.size())) { ShowThemedMessageBox(hwnd_, instance_, theme_, L"请选择一个文件。", L"WebDAV 文件管理", MB_OK | MB_ICONWARNING); return; }
@@ -2462,36 +2474,51 @@ private:
                 L"WebDAV 文件管理", MB_OK | MB_ICONWARNING);
             return;
         }
-        if (FileExists(record.absolutePath) && MessageBoxW(hwnd_, (L"本地文件已存在，将覆盖：\n" + record.absolutePath).c_str(), L"确认覆盖", MB_OKCANCEL | MB_ICONWARNING) != IDOK) return;
+        std::filesystem::path target;
         std::wstring error;
+        if (!ValidateDownloadTarget(record, target, error)) {
+            ShowToast(error.empty() ? L"文件保存路径无效。" : error, ThemedToastRole::Warning, 5000);
+            return;
+        }
+        if (FileExists(target) && MessageBoxW(hwnd_, (L"本地文件已存在，将覆盖：\n" + target.wstring()).c_str(), L"确认覆盖", MB_OKCANCEL | MB_ICONWARNING) != IDOK) return;
         if (!WebDavTransferCoordinator::SubmitDownloads({record}, error)) {
             ShowThemedMessageBox(hwnd_, instance_, theme_, error, L"下载失败", MB_OK | MB_ICONWARNING);
             return;
         }
-        ThemedToastOptions toast{}; toast.role = ThemedToastRole::Success;
-        windowUi_->ui().ShowToast(L"已加入 WebDAV 下载队列。", toast);
+        ShowToast(L"已加入 WebDAV 下载队列。", ThemedToastRole::Success);
     }
     void DownloadSelected() {
         const auto selected = CheckedRecords();
         if (selected.empty()) return;
         std::vector<WebDavFileRecord> downloadable;
-        int skipped = 0, existing = 0;
+        int skipped = 0, existing = 0, invalid = 0;
         for (const auto& record : selected) {
             if (!IsHealthy(record) || !record.contentReady || ToLower(record.uploadState) != L"complete") { ++skipped; continue; }
-            if (FileExists(record.absolutePath)) ++existing;
+            std::filesystem::path target;
+            std::wstring error;
+            if (!ValidateDownloadTarget(record, target, error)) { ++invalid; continue; }
+            if (FileExists(target)) ++existing;
             downloadable.push_back(record);
         }
         if (downloadable.empty()) {
-            ShowThemedMessageBox(hwnd_, instance_, theme_, L"选中的文件均尚未上传完成，无法下载。", L"批量下载", MB_OK | MB_ICONWARNING);
+            ShowToast(invalid > 0 ? L"选中的文件没有可下载到本地的有效路径。" : L"选中的文件均尚未上传完成，无法下载。",
+                ThemedToastRole::Warning, 5000);
             return;
         }
         std::wstring message = L"准备下载 " + std::to_wstring(downloadable.size()) + L" 个文件。";
         if (existing > 0) message += L"\n其中 " + std::to_wstring(existing) + L" 个本地文件将被覆盖。";
         if (skipped > 0) message += L"\n另有 " + std::to_wstring(skipped) + L" 个未完成记录将跳过。";
+        if (invalid > 0) message += L"\n另有 " + std::to_wstring(invalid) + L" 个路径无效，将跳过。";
         if (MessageBoxW(hwnd_, message.c_str(), L"确认批量下载", MB_OKCANCEL | MB_ICONWARNING) != IDOK) return;
         std::wstring error;
         if (!WebDavTransferCoordinator::SubmitDownloads(downloadable, error)) {
             ShowThemedMessageBox(hwnd_, instance_, theme_, error, L"批量下载失败", MB_OK | MB_ICONWARNING);
+            return;
+        }
+        if (invalid > 0) {
+            ShowToast(L"已跳过 " + std::to_wstring(invalid) + L" 个路径无效的文件。", ThemedToastRole::Warning, 5000);
+        } else {
+            ShowToast(L"已加入 WebDAV 下载队列。", ThemedToastRole::Success);
         }
     }
     void DeleteSelected(int index = -1) {
@@ -2676,6 +2703,19 @@ private:
             WebDavFileService::FilesDirectory(config_), record.id);
         WebDavFileDetailsDialog(hwnd_, instance_, theme_, record, remoteRecordPath).Run();
     }
+    void OpenContainingLocation(int index) {
+        if (index < 0 || index >= static_cast<int>(records_.size())) return;
+        const auto& record = records_[static_cast<std::size_t>(index)];
+        std::filesystem::path target;
+        std::wstring error;
+        if (!ValidateDownloadTarget(record, target, error)) {
+            ShowToast(error.empty() ? L"文件路径无效。" : error, ThemedToastRole::Warning, 5000);
+            return;
+        }
+        if (!ShellItemService::OpenFileSystemContainingLocation(hwnd_, target, error)) {
+            ShowToast(error.empty() ? L"无法打开文件所在位置。" : error, ThemedToastRole::Warning, 5000);
+        }
+    }
     int RowFromScreenPoint(POINT screenPoint) const {
         return ThemedUi::TableScreenHitTest(table_, screenPoint);
     }
@@ -2696,6 +2736,13 @@ private:
         AppendMenuW(menu, MF_STRING |
             (IsHealthy(records_[static_cast<std::size_t>(row)]) ? 0 : MF_GRAYED),
             ID_FILE_ACTION_DOWNLOAD, L"下载");
+        AppendMenuW(menu, MF_STRING |
+            (IsHealthy(records_[static_cast<std::size_t>(row)]) ? 0 : MF_GRAYED),
+            ID_FILE_ACTION_OPEN_LOCATION, L"打开文件所在位置");
+        if (QuattroTestMode()) {
+            SetPropW(hwnd_, L"QuattroWebDavFileActionMenuHasOpenLocation",
+                reinterpret_cast<HANDLE>(static_cast<INT_PTR>(1)));
+        }
         AppendMenuW(menu, MF_STRING, ID_FILE_ACTION_DETAILS, L"查看详情");
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(menu, MF_STRING, ID_FILE_ACTION_DELETE, L"删除");
@@ -2706,6 +2753,7 @@ private:
         const UINT command = ThemedUi::ShowPopupMenu(hwnd_, menu, anchor, options).command;
         DestroyMenu(menu);
         if (command == ID_FILE_ACTION_DOWNLOAD) Download(row);
+        else if (command == ID_FILE_ACTION_OPEN_LOCATION) OpenContainingLocation(row);
         else if (command == ID_FILE_ACTION_DETAILS) ShowDetails(row);
         else if (command == ID_FILE_ACTION_DELETE) DeleteSelected(row);
     }
@@ -2853,7 +2901,7 @@ private:
         }
         case WM_COMMAND: if (LOWORD(wParam)==ID_WEBDAV_FILE_REFRESH) { StartRefresh(); return 0; } if (LOWORD(wParam)==ID_WEBDAV_FILE_TRANSFER_QUEUE) { ShowTransferQueue(); return 0; } if (LOWORD(wParam)==ID_WEBDAV_FILE_SELECT_ALL) { SelectAll(true); return 0; } if (LOWORD(wParam)==ID_WEBDAV_FILE_CLEAR_SELECTION) { SelectAll(false); return 0; } if (LOWORD(wParam)==ID_WEBDAV_FILE_DOWNLOAD_SELECTED) { DownloadSelected(); return 0; } if (LOWORD(wParam)==ID_WEBDAV_FILE_DELETE_SELECTED) { DeleteChecked(); return 0; } if (LOWORD(wParam)==ID_WEBDAV_FILE_DOWNLOAD) { Download(); return 0; } if (LOWORD(wParam)==ID_WEBDAV_FILE_DELETE) { DeleteSelected(); return 0; } return 0;
         case WM_CLOSE: refreshStop_.request_stop(); done_=true; DestroyWindow(hwnd_); return 0;
-        case WM_NCDESTROY: refreshStop_.request_stop(); alive_->store(false); RemovePropW(hwnd_, L"QuattroWebDavIncrementalApplied"); done_=true; hwnd_=nullptr; return 0;
+        case WM_NCDESTROY: refreshStop_.request_stop(); alive_->store(false); RemovePropW(hwnd_, L"QuattroWebDavIncrementalApplied"); RemovePropW(hwnd_, L"QuattroWebDavFileActionMenuHasOpenLocation"); done_=true; hwnd_=nullptr; return 0;
         default: return DefWindowProcW(hwnd_, message, wParam, lParam);
         }
     }
@@ -3251,20 +3299,17 @@ private:
             return;
         }
 
-        SHSTOCKICONINFO stockInfo{};
-        stockInfo.cbSize = sizeof(stockInfo);
-        HICON fallback = nullptr;
-        bool destroyFallback = false;
-        if (SUCCEEDED(SHGetStockIconInfo(SIID_APPLICATION, SHGSI_ICON | SHGSI_SMALLICON, &stockInfo))) {
-            fallback = stockInfo.hIcon;
-            destroyFallback = fallback != nullptr;
-        }
-        if (!fallback) {
-            fallback = LoadIconW(nullptr, IDI_APPLICATION);
-        }
-        int fallbackIndex = fallback ? ImageList_AddIcon(images, fallback) : -1;
-        if (destroyFallback) {
-            DestroyIcon(fallback);
+        IconRequest fallbackRequest;
+        fallbackRequest.kind = IconSourceKind::Stock;
+        fallbackRequest.size = iconSize;
+        const ResolvedIcon fallbackIcon = IconResolverService(appDirectory_).Resolve(fallbackRequest);
+        HBITMAP fallbackBitmap = IconResolverService::CreateBitmapFromPixels(
+            fallbackIcon,
+            iconSize,
+            ThemedUi::ListSurfaceColor(theme_));
+        int fallbackIndex = fallbackBitmap ? ImageList_Add(images, fallbackBitmap, nullptr) : -1;
+        if (fallbackBitmap) {
+            DeleteObject(fallbackBitmap);
         }
         if (fallbackIndex < 0) {
             BITMAPINFO bitmapInfo{};

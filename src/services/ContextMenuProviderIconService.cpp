@@ -1,7 +1,7 @@
 #include "ContextMenuProviderIconService.h"
 
 #include "AppLog.h"
-#include "TerminalContextMenuService.h"
+#include "IconResolverService.h"
 #include "Utilities.h"
 
 #include <algorithm>
@@ -86,17 +86,16 @@ void WriteCachedIcon(std::ostream& stream, const ShellContextMenuCachedIcon& ico
     }
 }
 
-ShellContextMenuCachedIcon CachedIconFrom(const ShellContextMenuItem& item) {
-    ShellContextMenuCachedIcon icon;
-    if (item.iconWidth <= 0 || item.iconHeight <= 0 || item.iconWidth > 64 || item.iconHeight > 64 ||
-        item.iconPixels.size() != static_cast<std::size_t>(item.iconWidth * item.iconHeight)) {
-        return icon;
+ShellContextMenuCachedIcon CachedIconFrom(const ResolvedIcon& icon) {
+    ShellContextMenuCachedIcon cached;
+    if (!IconResolverService::HasPixels(icon) || icon.width > 64 || icon.height > 64) {
+        return cached;
     }
-    icon.width = item.iconWidth;
-    icon.height = item.iconHeight;
-    icon.quality = std::max(1, item.iconQuality);
-    icon.pixels = item.iconPixels;
-    return icon;
+    cached.width = icon.width;
+    cached.height = icon.height;
+    cached.quality = std::max(1, icon.quality);
+    cached.pixels = icon.pixels;
+    return cached;
 }
 
 bool HasIcon(const ShellContextMenuCachedIcon& icon) {
@@ -104,15 +103,6 @@ bool HasIcon(const ShellContextMenuCachedIcon& icon) {
         icon.pixels.size() == static_cast<std::size_t>(icon.width * icon.height);
 }
 
-const wchar_t* IconSourceText(TrackedProviderIconSource source) {
-    switch (source) {
-    case TrackedProviderIconSource::ExplicitRegistry: return L"registry-icon";
-    case TrackedProviderIconSource::CommandExecutable: return L"command-executable";
-    case TrackedProviderIconSource::BrandExecutable: return L"brand-executable";
-    case TrackedProviderIconSource::ApplicationExecutable: return L"application-executable";
-    default: return L"fallback";
-    }
-}
 }
 
 ContextMenuProviderIconService::ContextMenuProviderIconService()
@@ -293,29 +283,12 @@ ContextMenuProviderIconInfo ContextMenuProviderIconService::ResolveProvider(
     }
 
     info.attempted = true;
-    ShellContextMenuItem item;
-    TrackedProviderIconSource source = TrackedProviderIconSource::None;
-    if (info.providerId == ShellContextMenuProviderId::Terminal) {
-        const TerminalContextMenuRefreshContext context = TerminalContextMenuService::DetectAvailablePrograms();
-        for (const auto& program : context.programs) {
-            if (!program.iconTemplate.iconPixels.empty()) {
-                item = program.iconTemplate;
-                break;
-            }
-            if (ShellItemService::LoadExecutableMenuIcon(program.executable, item)) {
-                break;
-            }
-        }
-    } else {
-        ShellItemService::LoadTrackedProviderIcon(binding, item, &source);
-    }
-    info.icon = CachedIconFrom(item);
+    const ResolvedIcon resolved = IconResolverService().ResolveContextMenuProvider(binding, 32, stopToken);
+    info.icon = CachedIconFrom(resolved);
     if (HasIcon(info.icon)) {
         WriteAppLog(
             L"右键菜单 provider 图标：provider=" + info.providerId + L"，source=" +
-            (info.providerId == ShellContextMenuProviderId::Terminal
-                ? L"terminal-executable"
-                : IconSourceText(source)));
+            (resolved.source.empty() ? L"icon-resolver" : resolved.source));
         return info;
     }
     if (cachedIcon && HasIcon(*cachedIcon)) {

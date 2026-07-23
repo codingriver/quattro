@@ -497,6 +497,7 @@ add_executable(Quattro WIN32
     src/common/EmbeddedAssetInstaller.cpp
     src/common/Elevation.cpp
     src/windows/HotKeyEditor.cpp
+    src/services/IconResolverService.cpp
     src/services/IconService.cpp
     src/common/JsonValue.cpp
     src/domain/LinkSorting.cpp
@@ -588,11 +589,13 @@ add_executable(QuattroTests
     src/services/ExplorerWebDavUploadContextMenuService.cpp
     src/common/FileDialog.cpp
     src/services/FileLockQueryService.cpp
+    src/services/IconResolverService.cpp
     src/services/Launcher.cpp
     src/common/JsonValue.cpp
     src/domain/LinkSorting.cpp
     src/domain/MenuCatalog.cpp
     src/domain/PluginRegistry.cpp
+    src/services/QuickImportService.cpp
     src/services/ShellContextMenuCacheService.cpp
     src/services/ShellContextMenuRefreshService.cpp
     src/services/ShellItemService.cpp
@@ -681,6 +684,7 @@ add_executable(QuattroUiScreenshotAcceptance
     src/common/FileDialog.cpp
     src/services/FileLockQueryService.cpp
     src/windows/HotKeyEditor.cpp
+    src/services/IconResolverService.cpp
     src/common/JsonValue.cpp
     src/services/Launcher.cpp
     src/services/LocalHttpServerService.cpp
@@ -1214,6 +1218,7 @@ add_executable(QuattroSettingsHttpButtonsAcceptance
     src/common/FileDialog.cpp
     src/services/FileLockQueryService.cpp
     src/windows/HotKeyEditor.cpp
+    src/services/IconResolverService.cpp
     src/common/JsonValue.cpp
     src/services/Launcher.cpp
     src/services/LocalHttpServerService.cpp

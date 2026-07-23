@@ -1,8 +1,12 @@
 #include "QuickImportService.h"
 
+#include "ShellItemService.h"
 #include "Utilities.h"
 
 #include <shobjidl.h>
+#include <shlobj.h>
+#include <shlwapi.h>
+#include <algorithm>
 #include <stack>
 #include <system_error>
 #include <windows.h>
@@ -19,6 +23,29 @@ std::wstring DisplayNameFromPath(const std::filesystem::path& path) {
         name = path.filename().wstring();
     }
     return Trim(name);
+}
+
+template <typename T>
+void SafeRelease(T*& value) {
+    if (value) {
+        value->Release();
+        value = nullptr;
+    }
+}
+
+std::wstring ShellDisplayName(IShellFolder* folder, PCUITEMID_CHILD child) {
+    if (!folder || !child) {
+        return {};
+    }
+    STRRET value{};
+    if (FAILED(folder->GetDisplayNameOf(child, SHGDN_NORMAL, &value))) {
+        return {};
+    }
+    wchar_t buffer[1024]{};
+    if (FAILED(StrRetToBufW(&value, child, buffer, static_cast<UINT>(std::size(buffer))))) {
+        return {};
+    }
+    return Trim(buffer);
 }
 
 std::wstring ReadInternetShortcutUrl(const std::filesystem::path& path) {
@@ -146,6 +173,7 @@ bool QuickImportService::TryCreateShortcutItem(const std::filesystem::path& path
             item.sourcePath = path;
             item.sourceName = L"快捷方式";
             item.status = L"可导入";
+            item.stableKey = L"shortcut:" + ToLower(item.link.path) + L"\n" + ToLower(item.link.parameter);
             ok = true;
         }
     }
@@ -172,6 +200,7 @@ bool QuickImportService::TryCreateUrlItem(const std::filesystem::path& path, Ite
     item.sourcePath = path;
     item.sourceName = L"网址";
     item.status = L"可导入";
+    item.stableKey = L"url:" + ToLower(item.link.path);
     return true;
 }
 
@@ -186,5 +215,99 @@ bool QuickImportService::TryCreateExecutableItem(const std::filesystem::path& pa
     item.sourcePath = path;
     item.sourceName = L"程序";
     item.status = L"可导入";
+    item.stableKey = L"exe:" + ToLower(item.link.path);
     return true;
+}
+
+std::vector<QuickImportService::Item> QuickImportService::ScanStoreApps(
+    std::wstring& error,
+    std::stop_token stopToken) const {
+    error.clear();
+    std::vector<Item> items;
+
+    PIDLIST_ABSOLUTE appsFolderPidl = nullptr;
+    HRESULT hr = SHParseDisplayName(L"shell:AppsFolder", nullptr, &appsFolderPidl, 0, nullptr);
+    if (FAILED(hr) || !appsFolderPidl) {
+        error = L"无法读取 Windows 应用列表。";
+        return items;
+    }
+
+    IShellFolder* desktop = nullptr;
+    IShellFolder* appsFolder = nullptr;
+    hr = SHGetDesktopFolder(&desktop);
+    if (SUCCEEDED(hr) && desktop) {
+        hr = desktop->BindToObject(appsFolderPidl, nullptr, IID_PPV_ARGS(&appsFolder));
+    }
+    if (FAILED(hr) || !appsFolder) {
+        SafeRelease(desktop);
+        CoTaskMemFree(appsFolderPidl);
+        error = L"无法打开 Windows 应用列表。";
+        return items;
+    }
+
+    IEnumIDList* enumList = nullptr;
+    hr = appsFolder->EnumObjects(nullptr, SHCONTF_NONFOLDERS | SHCONTF_FOLDERS, &enumList);
+    if (FAILED(hr) || !enumList) {
+        SafeRelease(appsFolder);
+        SafeRelease(desktop);
+        CoTaskMemFree(appsFolderPidl);
+        error = L"Windows 应用列表为空或无法枚举。";
+        return items;
+    }
+
+    for (;;) {
+        if (stopToken.stop_requested()) {
+            break;
+        }
+        PITEMID_CHILD child = nullptr;
+        ULONG fetched = 0;
+        hr = enumList->Next(1, &child, &fetched);
+        if (hr != S_OK || fetched == 0 || !child) {
+            break;
+        }
+
+        PIDLIST_ABSOLUTE absolute = ILCombine(appsFolderPidl, child);
+        if (absolute) {
+            if (auto ref = ShellItemService::FromAbsolutePidl(absolute)) {
+                Link link;
+                link.name = ShellDisplayName(appsFolder, child);
+                if (link.name.empty()) {
+                    link.name = ref->displayName;
+                }
+                link.path = ref->parseName.empty() ? L"shell:AppsFolder" : ref->parseName;
+                link.type = 3;
+                link.pos = -1;
+                link.showCmd = SW_SHOWNORMAL;
+                link.pidl = ref->pidl;
+
+                if (!Trim(link.name).empty() && !link.pidl.empty()) {
+                    Item item;
+                    item.link = std::move(link);
+                    item.sourceName = L"商店应用";
+                    item.status = L"可导入";
+                    item.stableKey = ref->parseName.empty()
+                        ? L"store-pidl:" + std::to_wstring(items.size())
+                        : L"store:" + ToLower(ref->parseName);
+                    items.push_back(std::move(item));
+                }
+            }
+            CoTaskMemFree(absolute);
+        }
+        CoTaskMemFree(child);
+    }
+
+    SafeRelease(enumList);
+    SafeRelease(appsFolder);
+    SafeRelease(desktop);
+    CoTaskMemFree(appsFolderPidl);
+
+    std::sort(items.begin(), items.end(), [](const Item& left, const Item& right) {
+        return CompareStringOrdinal(
+            left.link.name.c_str(),
+            -1,
+            right.link.name.c_str(),
+            -1,
+            TRUE) == CSTR_LESS_THAN;
+    });
+    return items;
 }

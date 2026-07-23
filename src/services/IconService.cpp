@@ -1,5 +1,6 @@
 #include "IconService.h"
 
+#include "IconResolverService.h"
 #include "MenuCatalog.h"
 #include "ShellItemService.h"
 #include "SystemFunctions.h"
@@ -45,19 +46,6 @@ std::wstring UrlHost(const std::wstring& value) {
     return {};
 }
 
-HICON DuplicateIconHandle(HICON icon) {
-    return icon ? CopyIcon(icon) : nullptr;
-}
-
-HICON StockIcon(SHSTOCKICONID id) {
-    SHSTOCKICONINFO info{};
-    info.cbSize = sizeof(info);
-    if (SUCCEEDED(SHGetStockIconInfo(id, SHGSI_ICON | SHGSI_LARGEICON, &info))) {
-        return info.hIcon;
-    }
-    return nullptr;
-}
-
 std::wstring LinkIconCacheToken(const Link& link) {
     const MenuIcon icon = SystemFunctionMenuIconForLink(link);
     if (MenuIconIsRenderable(icon)) {
@@ -66,58 +54,6 @@ std::wstring LinkIconCacheToken(const Link& link) {
     return link.icon;
 }
 
-std::wstring ResolveExecutableLikePath(const std::wstring& value) {
-    const std::wstring expanded = ExpandEnvironmentStringsSafe(value);
-    if (expanded.empty()) {
-        return {};
-    }
-    if (PathIsRelativeW(expanded.c_str()) && expanded.find(L'\\') == std::wstring::npos && expanded.find(L'/') == std::wstring::npos) {
-        wchar_t resolved[MAX_PATH]{};
-        if (SearchPathW(nullptr, expanded.c_str(), nullptr, static_cast<DWORD>(sizeof(resolved) / sizeof(resolved[0])), resolved, nullptr) > 0) {
-            return resolved;
-        }
-    }
-    return expanded;
-}
-
-HICON ExtractIconFromPidlBlob(const std::vector<std::uint8_t>& pidl) {
-    if (!ShellItemService::IsPidlBlobPlausible(pidl)) {
-        return nullptr;
-    }
-    SHFILEINFOW info{};
-    if (SHGetFileInfoW(
-            reinterpret_cast<LPCWSTR>(pidl.data()),
-            0,
-            &info,
-            sizeof(info),
-            SHGFI_PIDL | SHGFI_ICON | SHGFI_LARGEICON)) {
-        return info.hIcon;
-    }
-    return nullptr;
-}
-
-HICON ExtractIconFromShellParseName(const std::wstring& value) {
-    const std::wstring target = ExpandEnvironmentStringsSafe(Trim(value));
-    if (target.empty() || !ShellItemService::IsShellParseName(target)) {
-        return nullptr;
-    }
-    PIDLIST_ABSOLUTE pidl = nullptr;
-    if (FAILED(SHParseDisplayName(target.c_str(), nullptr, &pidl, 0, nullptr)) || !pidl) {
-        return nullptr;
-    }
-    SHFILEINFOW info{};
-    HICON icon = nullptr;
-    if (SHGetFileInfoW(
-            reinterpret_cast<LPCWSTR>(pidl),
-            0,
-            &info,
-            sizeof(info),
-            SHGFI_PIDL | SHGFI_ICON | SHGFI_LARGEICON)) {
-        icon = info.hIcon;
-    }
-    CoTaskMemFree(pidl);
-    return icon;
-}
 }
 
 IconService::IconService(std::filesystem::path appDirectory)
@@ -162,16 +98,12 @@ ID2D1Bitmap* IconService::GetBitmap(ID2D1RenderTarget* renderTarget, const Link&
     }
 
     if (!bitmap) {
-        HICON icon = ExtractIconForLink(link);
-        if (!icon) {
-            icon = DuplicateIconHandle(LoadIconW(nullptr, IDI_APPLICATION));
-        }
-        if (icon) {
+        const ResolvedIcon icon = IconResolverService(appDirectory_).Resolve(
+            IconResolverService::ForLink(link, 54));
+        if (CreateBitmapFromResolvedIcon(renderTarget, icon, &bitmap)) {
             std::error_code ec;
             std::filesystem::create_directories(cachePath.parent_path(), ec);
-            SaveIconPng(icon, cachePath);
-            CreateBitmapFromIcon(renderTarget, icon, &bitmap);
-            DestroyIcon(icon);
+            SaveResolvedIconPng(icon, cachePath);
         }
     }
 
@@ -297,68 +229,69 @@ bool IconService::SaveIconPng(HICON icon, const std::filesystem::path& path) con
     return ok;
 }
 
-HICON IconService::ExtractIconForLink(const Link& link) const {
-    const MenuIcon menuIcon = SystemFunctionMenuIconForLink(link);
-    if (MenuIconIsRenderable(menuIcon)) {
-        const bool danger = menuIcon == MenuIconDelete || menuIcon == MenuIconClear ||
-            menuIcon == MenuIconExit || menuIcon == MenuIconPower;
-        if (HICON icon = CreateTablerIconHandle(
-                appDirectory_,
-                MenuIconTablerId(menuIcon),
-                54,
-                danger ? RGB(228, 48, 58) : RGB(0, 153, 215))) {
-            return icon;
+bool IconService::SaveResolvedIconPng(const ResolvedIcon& icon, const std::filesystem::path& path) const {
+    if (!wicFactory_ || !IconResolverService::HasPixels(icon) || path.empty()) {
+        return false;
+    }
+
+    IWICBitmap* bitmap = nullptr;
+    IWICStream* stream = nullptr;
+    IWICBitmapEncoder* encoder = nullptr;
+    IWICBitmapFrameEncode* frame = nullptr;
+    bool ok = false;
+    const UINT width = static_cast<UINT>(icon.width);
+    const UINT height = static_cast<UINT>(icon.height);
+    const UINT stride = static_cast<UINT>(icon.width * sizeof(std::uint32_t));
+    const UINT bytes = static_cast<UINT>(icon.pixels.size() * sizeof(std::uint32_t));
+
+    if (SUCCEEDED(wicFactory_->CreateBitmapFromMemory(
+            width,
+            height,
+            GUID_WICPixelFormat32bppBGRA,
+            stride,
+            bytes,
+            reinterpret_cast<BYTE*>(const_cast<std::uint32_t*>(icon.pixels.data())),
+            &bitmap)) &&
+        SUCCEEDED(wicFactory_->CreateStream(&stream)) &&
+        SUCCEEDED(stream->InitializeFromFilename(path.c_str(), GENERIC_WRITE)) &&
+        SUCCEEDED(wicFactory_->CreateEncoder(GUID_ContainerFormatPng, nullptr, &encoder)) &&
+        SUCCEEDED(encoder->Initialize(stream, WICBitmapEncoderNoCache)) &&
+        SUCCEEDED(encoder->CreateNewFrame(&frame, nullptr))) {
+        WICPixelFormatGUID format = GUID_WICPixelFormat32bppBGRA;
+        if (SUCCEEDED(frame->Initialize(nullptr)) &&
+            SUCCEEDED(frame->SetSize(width, height)) &&
+            SUCCEEDED(frame->SetPixelFormat(&format)) &&
+            SUCCEEDED(frame->WriteSource(bitmap, nullptr)) &&
+            SUCCEEDED(frame->Commit()) &&
+            SUCCEEDED(encoder->Commit())) {
+            ok = true;
         }
     }
 
-    const std::wstring iconPath = Trim(link.icon);
-    if (!iconPath.empty() && iconPath != L"#url" && iconPath != L"默认系统缓存图标") {
-        const std::wstring resolvedIcon = ResolveExecutableLikePath(iconPath);
-        SHFILEINFOW iconInfo{};
-        if (SHGetFileInfoW(resolvedIcon.c_str(), 0, &iconInfo, sizeof(iconInfo), SHGFI_ICON | SHGFI_LARGEICON)) {
-            return iconInfo.hIcon;
-        }
-    }
+    SafeRelease(frame);
+    SafeRelease(encoder);
+    SafeRelease(stream);
+    SafeRelease(bitmap);
+    return ok;
+}
 
-    if (LooksLikeUrl(link)) {
-        if (HICON icon = StockIcon(SIID_WORLD)) {
-            return icon;
-        }
+bool IconService::CreateBitmapFromResolvedIcon(
+    ID2D1RenderTarget* renderTarget,
+    const ResolvedIcon& icon,
+    ID2D1Bitmap** bitmap) const {
+    if (!renderTarget || !bitmap || !IconResolverService::HasPixels(icon)) {
+        return false;
     }
-
-    if (HICON icon = ExtractIconFromPidlBlob(link.pidl)) {
-        return icon;
-    }
-    if (HICON icon = ExtractIconFromShellParseName(link.path)) {
-        return icon;
-    }
-
-    std::wstring path = ResolveExecutableLikePath(link.path);
-    SHFILEINFOW info{};
-    DWORD flags = SHGFI_ICON | SHGFI_LARGEICON;
-    DWORD attrs = FILE_ATTRIBUTE_NORMAL;
-    std::error_code ec;
-    if (std::filesystem::is_directory(path, ec) || link.type == 1) {
-        attrs = FILE_ATTRIBUTE_DIRECTORY;
-    }
-    if (SHGetFileInfoW(path.c_str(), attrs, &info, sizeof(info), flags)) {
-        return info.hIcon;
-    }
-    flags |= SHGFI_USEFILEATTRIBUTES;
-    if (SHGetFileInfoW(path.c_str(), attrs, &info, sizeof(info), flags)) {
-        return info.hIcon;
-    }
-    if (link.type == 1) {
-        if (HICON icon = StockIcon(SIID_FOLDER)) {
-            return icon;
-        }
-    }
-    if (link.type == 3 || link.type == 4) {
-        if (HICON icon = StockIcon(SIID_APPLICATION)) {
-            return icon;
-        }
-    }
-    return nullptr;
+    D2D1_BITMAP_PROPERTIES properties{};
+    properties.pixelFormat.format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    properties.pixelFormat.alphaMode = D2D1_ALPHA_MODE_PREMULTIPLIED;
+    const HRESULT hr = renderTarget->CreateBitmap(
+        D2D1::SizeU(static_cast<UINT32>(icon.width), static_cast<UINT32>(icon.height)),
+        icon.pixels.data(),
+        static_cast<UINT32>(icon.width * sizeof(std::uint32_t)),
+        &properties,
+        bitmap);
+    return SUCCEEDED(hr);
 }
 
 std::filesystem::path IconService::FindUrlIconFile(const Link& link) const {

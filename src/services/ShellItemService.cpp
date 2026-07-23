@@ -1471,6 +1471,33 @@ bool ShellItemService::OpenContainingLocation(HWND owner, const Link& link, std:
     return false;
 }
 
+bool ShellItemService::OpenFileSystemContainingLocation(
+    HWND owner,
+    const std::filesystem::path& path,
+    std::wstring& errorMessage) {
+    errorMessage.clear();
+
+    std::error_code ec;
+    if (std::filesystem::is_regular_file(path, ec)) {
+        const std::wstring args = L"/select," + QuoteForCommandLine(path.wstring());
+        return ExecuteFile(owner, L"explorer.exe", args, SW_SHOWNORMAL, errorMessage);
+    }
+
+    ec.clear();
+    if (std::filesystem::is_directory(path, ec)) {
+        return ExecutePath(owner, path.wstring(), SW_SHOWNORMAL, errorMessage);
+    }
+
+    const auto parent = path.parent_path();
+    ec.clear();
+    if (!parent.empty() && std::filesystem::is_directory(parent, ec)) {
+        return ExecutePath(owner, parent.wstring(), SW_SHOWNORMAL, errorMessage);
+    }
+
+    errorMessage = L"文件所在文件夹不存在。";
+    return false;
+}
+
 bool ShellItemService::QueryTrackedContextMenu(
     HWND owner,
     const Link& link,

@@ -2,6 +2,7 @@
 
 #include "DialogLayout.h"
 #include "FileDialog.h"
+#include "IconResolverService.h"
 #include "ThemedControls.h"
 #include "ThemedUi.h"
 #include "ThemedWindowUi.h"
@@ -10,10 +11,12 @@
 
 #include <algorithm>
 #include <commctrl.h>
+#include <functional>
 #include <memory>
 #include <shellapi.h>
 #include <shlobj.h>
 #include <system_error>
+#include <unordered_map>
 #include <windowsx.h>
 
 namespace {
@@ -33,6 +36,7 @@ constexpr int IdDirectory = 1010;
 constexpr int IdSourceDesktop = 1011;
 constexpr int IdSourceStartMenu = 1012;
 constexpr int IdViewListTab = 1013;
+constexpr int IdSourceStoreApps = 1014;
 
 std::wstring GetText(HWND hwnd) {
     const int length = GetWindowTextLengthW(hwnd);
@@ -55,61 +59,6 @@ std::wstring TypeText(int type) {
     default:
         return L"程序";
     }
-}
-
-HICON StockIcon(SHSTOCKICONID id, bool useSmallIcon) {
-    SHSTOCKICONINFO info{};
-    info.cbSize = sizeof(info);
-    const UINT sizeFlag = useSmallIcon ? SHGSI_SMALLICON : SHGSI_LARGEICON;
-    if (SUCCEEDED(SHGetStockIconInfo(id, SHGSI_ICON | sizeFlag, &info))) {
-        return info.hIcon;
-    }
-    return nullptr;
-}
-
-HICON ExtractDisplayIcon(const Link& link, bool useSmallIcon) {
-    if (link.icon == L"#url" || link.type == 2) {
-        if (HICON icon = StockIcon(SIID_WORLD, useSmallIcon)) {
-            return icon;
-        }
-    }
-
-    const std::wstring iconPath = Trim(link.icon);
-    if (!iconPath.empty() && iconPath != L"#url" && iconPath != L"默认系统缓存图标") {
-        SHFILEINFOW info{};
-        const std::wstring path = ExpandEnvironmentStringsSafe(iconPath);
-        const UINT sizeFlag = useSmallIcon ? SHGFI_SMALLICON : SHGFI_LARGEICON;
-        if (SHGetFileInfoW(path.c_str(), 0, &info, sizeof(info), SHGFI_ICON | sizeFlag)) {
-            return info.hIcon;
-        }
-    }
-
-    const std::wstring path = ExpandEnvironmentStringsSafe(Trim(link.path));
-    SHFILEINFOW info{};
-    DWORD attrs = FILE_ATTRIBUTE_NORMAL;
-    std::error_code ec;
-    if (std::filesystem::is_directory(path, ec) || link.type == 1) {
-        attrs = FILE_ATTRIBUTE_DIRECTORY;
-    }
-
-    UINT flags = SHGFI_ICON | (useSmallIcon ? SHGFI_SMALLICON : SHGFI_LARGEICON);
-    if (SHGetFileInfoW(path.c_str(), attrs, &info, sizeof(info), flags)) {
-        return info.hIcon;
-    }
-    flags |= SHGFI_USEFILEATTRIBUTES;
-    if (SHGetFileInfoW(path.c_str(), attrs, &info, sizeof(info), flags)) {
-        return info.hIcon;
-    }
-
-    if (link.type == 1) {
-        if (HICON icon = StockIcon(SIID_FOLDER, useSmallIcon)) {
-            return icon;
-        }
-    }
-    if (HICON icon = StockIcon(SIID_APPLICATION, useSmallIcon)) {
-        return icon;
-    }
-    return CopyIcon(LoadIconW(nullptr, IDI_APPLICATION));
 }
 
 bool PickFolder(HWND owner, std::filesystem::path& directory) {
@@ -278,7 +227,7 @@ private:
         const int buttonHeight = ui.footerButtonHeight();
         const int tabHeight = ui.tabButtonHeight();
         const int topY = layout_.contentInsetY;
-        const int sourceWidth = ui.scale(180);
+        const int sourceWidth = ui.scale(252);
         const int pickDirectoryWidth = ui.buttonWidth(L"选择目录", ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
         const int scanWidth = ui.buttonWidth(L"扫描", ThemedButtonRole::Primary, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
         const int selectAllWidth = ui.buttonWidth(L"全选", ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Text);
@@ -298,6 +247,7 @@ private:
             {
                 ThemedTabItem{IdSourceDesktop, L"桌面", true},
                 ThemedTabItem{IdSourceStartMenu, L"开始菜单", true},
+                ThemedTabItem{IdSourceStoreApps, L"商店应用", true},
             },
             sourceOptions);
 
@@ -393,7 +343,7 @@ private:
         const int topY = layout_.contentInsetY;
         const int contentLeft = layout_.contentInsetX;
         const int contentRight = clientWidth - layout_.contentInsetX;
-        const int sourceWidth = ui.scale(180);
+        const int sourceWidth = ui.scale(252);
         const int pickDirectoryWidth = ui.buttonWidth(L"选择目录", ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
         const int scanWidth = ui.buttonWidth(L"扫描", ThemedButtonRole::Primary, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
         const int selectAllWidth = ui.buttonWidth(L"全选", ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Text);
@@ -451,7 +401,20 @@ private:
     }
 
     void ApplySelectedSource() {
-        REFKNOWNFOLDERID folderId = ThemedUi::ActiveTab(sourceTabs_) == 0 ? FOLDERID_Desktop : FOLDERID_StartMenu;
+        const int active = ThemedUi::ActiveTab(sourceTabs_);
+        const bool storeApps = active == 2;
+        if (storeApps) {
+            selectedDirectory_.clear();
+            SetWindowTextW(directoryText_, L"Windows 已安装应用");
+            windowUi_->SetEditEnabled(directoryText_, false);
+            EnableWindow(pickDirectoryButton_, FALSE);
+            windowUi_->SetEditFrameState(directoryText_, false, false);
+            SetWindowTextW(status_, L"尚未扫描");
+            return;
+        }
+        windowUi_->SetEditEnabled(directoryText_, true);
+        EnableWindow(pickDirectoryButton_, TRUE);
+        REFKNOWNFOLDERID folderId = active == 0 ? FOLDERID_Desktop : FOLDERID_StartMenu;
         selectedDirectory_ = KnownFolderPathOrEmpty(folderId);
         SetWindowTextW(directoryText_, selectedDirectory_.wstring().c_str());
         windowUi_->SetEditFrameState(directoryText_, false, selectedDirectory_.empty());
@@ -558,30 +521,39 @@ private:
             return -1;
         }
 
-        HICON smallIcon = ExtractDisplayIcon(item.link, true);
-        HICON mediumIcon = ExtractDisplayIcon(item.link, false);
-        const int index = smallIcon ? ImageList_AddIcon(smallImages_, smallIcon) : -1;
-        if (mediumIcon) {
-            ImageList_AddIcon(mediumImages_, mediumIcon);
-        } else if (smallIcon) {
-            ImageList_AddIcon(mediumImages_, smallIcon);
+        IconResolverService resolver;
+        const ResolvedIcon smallIcon = resolver.Resolve(IconResolverService::ForLink(item.link, smallSize_));
+        const ResolvedIcon mediumIcon = resolver.Resolve(IconResolverService::ForLink(item.link, mediumSize_));
+        HBITMAP smallBitmap = IconResolverService::CreateBitmapFromPixels(
+            smallIcon,
+            smallSize_,
+            ThemedUi::ListSurfaceColor(theme_));
+        HBITMAP mediumBitmap = IconResolverService::CreateBitmapFromPixels(
+            mediumIcon,
+            mediumSize_,
+            ThemedUi::ListSurfaceColor(theme_));
+        const int index = smallBitmap ? ImageList_Add(smallImages_, smallBitmap, nullptr) : -1;
+        if (mediumBitmap) {
+            ImageList_Add(mediumImages_, mediumBitmap, nullptr);
+        } else if (smallBitmap) {
+            ImageList_Add(mediumImages_, smallBitmap, nullptr);
         }
-        if (smallIcon) {
-            DestroyIcon(smallIcon);
+        if (smallBitmap) {
+            DeleteObject(smallBitmap);
         }
-        if (mediumIcon) {
-            DestroyIcon(mediumIcon);
+        if (mediumBitmap) {
+            DeleteObject(mediumBitmap);
         }
         return index;
     }
 
     void RebuildImageLists() {
         DestroyImageLists();
-        const int smallSize = std::max(16, GetSystemMetrics(SM_CXSMICON));
-        constexpr int mediumSize = 32;
+        smallSize_ = std::max(16, GetSystemMetrics(SM_CXSMICON));
+        mediumSize_ = 32;
         const int initialCount = std::max(1, static_cast<int>(items_.size()));
-        smallImages_ = ImageList_Create(smallSize, smallSize, ILC_COLOR32 | ILC_MASK, initialCount, 8);
-        mediumImages_ = ImageList_Create(mediumSize, mediumSize, ILC_COLOR32 | ILC_MASK, initialCount, 8);
+        smallImages_ = ImageList_Create(smallSize_, smallSize_, ILC_COLOR32 | ILC_MASK, initialCount, 8);
+        mediumImages_ = ImageList_Create(mediumSize_, mediumSize_, ILC_COLOR32 | ILC_MASK, initialCount, 8);
         itemImageIndexes_.clear();
         itemImageIndexes_.reserve(items_.size());
         for (const auto& item : items_) {
@@ -593,6 +565,7 @@ private:
     }
 
     void Scan() {
+        const bool storeApps = ThemedUi::ActiveTab(sourceTabs_) == 2;
         const std::wstring directoryText = Trim(GetText(directoryText_));
         const std::filesystem::path directory(directoryText);
 
@@ -602,7 +575,9 @@ private:
         UpdateWindow(hwnd_);
 
         std::wstring error;
-        items_ = scanner_.Scan(directory, error);
+        items_ = storeApps ? scanner_.ScanStoreApps(error) : scanner_.Scan(directory, error);
+        rowKeys_.clear();
+        nextRowKey_ = 1;
         RebuildImageLists();
         PopulateList();
 
@@ -622,18 +597,31 @@ private:
         for (std::size_t i = 0; i < items_.size(); ++i) {
             const auto& item = items_[i];
             ThemedTableRow row{};
-            row.key = static_cast<std::intptr_t>(i);
+            row.key = RowKeyForItem(item, i);
             row.checked = item.selected;
             row.enabled = true;
             row.cells = {
                 ThemedTableCell{item.link.name, i < itemImageIndexes_.size() ? itemImageIndexes_[i] : -1},
-                ThemedTableCell{TypeText(item.link.type)},
+                ThemedTableCell{item.sourceName.empty() ? TypeText(item.link.type) : item.sourceName},
                 ThemedTableCell{item.link.path},
                 ThemedTableCell{item.status},
             };
             rows.push_back(std::move(row));
         }
         ThemedUi::SetTableRows(list_, rows);
+    }
+
+    std::intptr_t RowKeyForItem(const QuickImportService::Item& item, std::size_t fallbackIndex) {
+        const std::wstring stableKey = item.stableKey.empty()
+            ? L"quick-import-row:" + std::to_wstring(fallbackIndex + 1)
+            : item.stableKey;
+        const auto found = rowKeys_.find(stableKey);
+        if (found != rowKeys_.end()) {
+            return found->second;
+        }
+        const std::intptr_t rowKey = nextRowKey_++;
+        rowKeys_.emplace(stableKey, rowKey);
+        return rowKey;
     }
 
     void SetAllChecks(bool checked) {
@@ -694,6 +682,8 @@ private:
     DialogLayoutMetrics layout_{};
     std::vector<QuickImportService::Item> items_;
     std::vector<int> itemImageIndexes_;
+    std::unordered_map<std::wstring, std::intptr_t> rowKeys_;
+    std::intptr_t nextRowKey_ = 1;
     std::filesystem::path selectedDirectory_;
     HWND sourceTabs_ = nullptr;
     HWND directoryText_ = nullptr;
@@ -710,6 +700,8 @@ private:
     RECT listFrame_{};
     HIMAGELIST smallImages_ = nullptr;
     HIMAGELIST mediumImages_ = nullptr;
+    int smallSize_ = 16;
+    int mediumSize_ = 32;
     std::unique_ptr<ThemedWindowUi> windowUi_;
     bool done_ = false;
     bool accepted_ = false;

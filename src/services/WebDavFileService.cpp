@@ -138,6 +138,52 @@ std::wstring WebDavFileService::CanonicalPath(const std::filesystem::path& path)
     return ToLower(value);
 }
 
+bool WebDavFileService::ValidateDownloadTargetPath(
+    const std::wstring& absolutePath,
+    std::filesystem::path& target,
+    std::wstring& error) {
+    error.clear();
+    target.clear();
+
+    const std::wstring trimmed = Trim(absolutePath);
+    if (trimmed.empty()) {
+        error = L"文件保存路径为空。";
+        return false;
+    }
+    const std::filesystem::path raw(trimmed);
+    if (!raw.is_absolute()) {
+        error = L"文件保存路径必须是有效的绝对文件路径。";
+        return false;
+    }
+
+    std::wstring full(32768, L'\0');
+    DWORD length = GetFullPathNameW(trimmed.c_str(), static_cast<DWORD>(full.size()), full.data(), nullptr);
+    if (length == 0 || length >= full.size()) {
+        error = L"文件保存路径无效。";
+        return false;
+    }
+    full.resize(length);
+
+    target = std::filesystem::path(full);
+    if (!target.is_absolute() || target.filename().empty() || target.parent_path().empty()) {
+        error = L"文件保存路径必须是有效的绝对文件路径。";
+        target.clear();
+        return false;
+    }
+    const std::wstring invalidChars = L"<>:\"|?*";
+    for (const auto& part : target.relative_path()) {
+        const std::wstring text = part.wstring();
+        if (text.empty() || text == L"." || text == L".." ||
+            text.find_first_of(invalidChars) != std::wstring::npos ||
+            std::any_of(text.begin(), text.end(), [](wchar_t ch) { return ch >= 0 && ch < 32; })) {
+            error = L"文件保存路径包含无效字符。";
+            target.clear();
+            return false;
+        }
+    }
+    return true;
+}
+
 std::wstring WebDavFileService::RecordId(const std::wstring& canonicalPath) {
     BCRYPT_ALG_HANDLE algorithm = nullptr;
     BCRYPT_HASH_HANDLE hash = nullptr;
@@ -391,7 +437,8 @@ WebDavFileOperationResult WebDavFileService::Download(const WebDavFileRecord& re
     WebDavFileProgressCallback progress, std::stop_token stopToken) {
     WebDavFileOperationResult result; std::wstring password, error; if (!LoadPassword(password, error)) { result.message = error; return result; }
     if (!record.contentReady || ToLower(record.uploadState) != L"complete") { result.message = L"远端文件尚未上传完成。"; return result; }
-    const auto target = std::filesystem::path(record.absolutePath); std::error_code ec; std::filesystem::create_directories(target.parent_path(), ec); if (ec) { result.message = L"无法创建目标目录。"; return result; }
+    std::filesystem::path target; if (!ValidateDownloadTargetPath(record.absolutePath, target, error)) { result.message = error; return result; }
+    std::error_code ec; std::filesystem::create_directories(target.parent_path(), ec); if (ec) { result.message = L"无法创建目标文件夹。"; return result; }
     WebDavClient client(config_, password); const auto base = WebDavClient::CombineRemotePath(FilesDirectory(config_), record.id);
     const auto temp = target.wstring() + L".quattro-download.tmp";
     if (!client.DownloadFile(WebDavClient::CombineRemotePath(base, L"content"), temp,

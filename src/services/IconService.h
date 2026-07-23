@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Models.h"
+#include "IconResolverService.h"
 
 #include <d2d1.h>
 #include <wincodec.h>
@@ -23,7 +24,8 @@ public:
 private:
     ID2D1Bitmap* LoadBitmapFile(ID2D1RenderTarget* renderTarget, const std::filesystem::path& path) const;
     bool SaveIconPng(HICON icon, const std::filesystem::path& path) const;
-    HICON ExtractIconForLink(const Link& link) const;
+    bool SaveResolvedIconPng(const ResolvedIcon& icon, const std::filesystem::path& path) const;
+    bool CreateBitmapFromResolvedIcon(ID2D1RenderTarget* renderTarget, const ResolvedIcon& icon, ID2D1Bitmap** bitmap) const;
     std::filesystem::path FindUrlIconFile(const Link& link) const;
     bool CreateBitmapFromIcon(ID2D1RenderTarget* renderTarget, HICON icon, ID2D1Bitmap** bitmap) const;
     std::wstring CacheKey(const Link& link) const;

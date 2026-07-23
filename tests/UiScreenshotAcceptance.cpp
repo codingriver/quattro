@@ -4273,7 +4273,7 @@ void RunQuickImportScenarios(
             L"QuattroQuickImportDialog",
             L"快速导入",
             L"quick-import-dialog-" + dpiSuffix + L".png",
-            {L"快速导入", L"桌面", L"开始菜单", L"选择目录", L"扫描", L"列表", L"全选", L"清空", L"导入选中", L"取消"},
+            {L"快速导入", L"桌面", L"开始菜单", L"商店应用", L"选择目录", L"扫描", L"列表", L"全选", L"清空", L"导入选中", L"取消"},
             {},
             1,
             7,
@@ -4286,6 +4286,31 @@ void RunQuickImportScenarios(
             scenario.actionButtonText = L"开始菜单";
         }
         scenario.forcedDpi = dpi;
+        scenario.requireThemedEditFrames = true;
+        RunDialogScenario(
+            scenario,
+            outputDir,
+            state,
+            [&]() {
+                QuickImportDialog::Show(owner, instance, theme, model.links, selected);
+            });
+    }
+    {
+        std::vector<Link> selected;
+        Scenario scenario{
+            L"quick-import-dialog-store-apps",
+            L"QuattroQuickImportDialog",
+            L"快速导入",
+            L"quick-import-dialog-store-apps.png",
+            {L"快速导入", L"桌面", L"开始菜单", L"商店应用", L"Windows 已安装应用", L"扫描", L"列表", L"导入选中", L"取消"},
+            {},
+            1,
+            7,
+            false,
+            true,
+            true};
+        scenario.actionButtonText = L"商店应用";
+        scenario.expectedEditTexts = {L"Windows 已安装应用"};
         scenario.requireThemedEditFrames = true;
         RunDialogScenario(
             scenario,
@@ -4502,6 +4527,39 @@ void RunWebDavFileManagerQueueEntryScenario(
             L"远端目录：/Quattro/files/", L"已选择 0 项 · 共 2 项"};
         scenario.unexpectedVisibleChildTexts = {L"关闭"};
         ValidateAndCapture(window, scenario, outputDir, state);
+        if (table) {
+            RECT rowRect{};
+            if (ListView_GetItemRect(table, 0, &rowRect, LVIR_BOUNDS)) {
+                POINT anchor{rowRect.right - 8, (rowRect.top + rowRect.bottom) / 2};
+                ClientToScreen(table, &anchor);
+                PostMessageW(window, WM_CONTEXTMENU, reinterpret_cast<WPARAM>(table),
+                    MAKELPARAM(anchor.x, anchor.y));
+                HWND popup = WaitForTopWindow(FindWindowRequest{L"#32768", L"", GetCurrentProcessId()}, 5000);
+                state.Check(popup != nullptr, L"webdav file manager action menu: popup did not appear");
+                state.Check(reinterpret_cast<INT_PTR>(GetPropW(
+                        window, L"QuattroWebDavFileActionMenuHasOpenLocation")) == 1,
+                    L"webdav file manager action menu missing open-location command");
+                if (popup) {
+                    BitmapCapture popupCapture = CaptureWindowBitmap(popup);
+                    state.Check(
+                        popupCapture.bitmap && BitmapHasVisualContent(
+                            popupCapture.bitmap, popupCapture.width, popupCapture.height),
+                        L"webdav file manager action menu: popup screenshot is invalid");
+                    if (popupCapture.bitmap) {
+                        state.Check(
+                            SavePng(
+                                popupCapture.bitmap,
+                                outputDir / (L"webdav-file-manager-action-menu-" + DpiPercentSuffix(dpi) + L".png")),
+                            L"webdav file manager action menu: screenshot save failed");
+                        DeleteObject(popupCapture.bitmap);
+                    }
+                    PostMessageW(popup, WM_CANCELMODE, 0, 0);
+                    PostMessageW(window, WM_CANCELMODE, 0, 0);
+                }
+            } else {
+                state.Check(false, L"webdav file manager action menu: first row rect unavailable");
+            }
+        }
         PostMessageW(window, WM_CLOSE, 0, 0);
     });
     ShowWebDavFileManagerDialog(owner, instance, theme, config);

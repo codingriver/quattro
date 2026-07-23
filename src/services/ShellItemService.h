@@ -7,6 +7,7 @@
 #include <windows.h>
 
 #include <cstdint>
+#include <filesystem>
 #include <optional>
 #include <string>
 #include <vector>
@@ -95,6 +96,7 @@ public:
         TrackedProviderIconSource* source = nullptr);
     static bool OpenShellTarget(HWND owner, const Link& link, int showCmd, std::wstring& errorMessage);
     static bool OpenContainingLocation(HWND owner, const Link& link, std::wstring& errorMessage);
+    static bool OpenFileSystemContainingLocation(HWND owner, const std::filesystem::path& path, std::wstring& errorMessage);
     static bool QueryTrackedContextMenu(
         HWND owner,
         const Link& link,

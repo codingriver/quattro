@@ -81,6 +81,8 @@ public:
         WebDavFileDeleteProgressCallback progress = {});
 
     static std::wstring CanonicalPath(const std::filesystem::path& path);
+    static bool ValidateDownloadTargetPath(const std::wstring& absolutePath,
+        std::filesystem::path& target, std::wstring& error);
     static std::wstring RecordId(const std::wstring& canonicalPath);
     static std::wstring FilesDirectory(const AppConfig& config);
     static std::wstring FormatUploadedAtLocal(const std::wstring& uploadedAtUtc);

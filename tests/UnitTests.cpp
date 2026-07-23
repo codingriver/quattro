@@ -13,7 +13,9 @@
 #include "../src/services/WebDavFileIndexCache.h"
 #include "../src/services/WebDavTransferQueueController.h"
 #include "../src/services/FileLockQueryService.h"
+#include "../src/services/IconResolverService.h"
 #include "../src/services/Launcher.h"
+#include "../src/services/QuickImportService.h"
 #include "../src/domain/MenuCatalog.h"
 #include "../src/domain/PluginRegistry.h"
 #include "../src/services/ShellContextMenuCacheService.h"
@@ -110,6 +112,20 @@ void Check(bool condition, const char* name) {
         std::cerr << "FAILED: " << name << "\n";
         ++failures;
     }
+}
+
+void TestWebDavDownloadTargetPathValidation() {
+    std::filesystem::path target;
+    std::wstring error;
+    Check(WebDavFileService::ValidateDownloadTargetPath(L"C:\\QuattroTest\\nested\\file.txt", target, error),
+        "webdav download target accepts absolute file path");
+    Check(target.filename() == L"file.txt", "webdav download target preserves file name");
+    Check(!WebDavFileService::ValidateDownloadTargetPath(L"relative\\file.txt", target, error),
+        "webdav download target rejects relative path");
+    Check(!WebDavFileService::ValidateDownloadTargetPath(L"C:\\", target, error),
+        "webdav download target rejects root directory");
+    Check(!WebDavFileService::ValidateDownloadTargetPath(L"   ", target, error),
+        "webdav download target rejects blank path");
 }
 
 bool Near(float left, float right) {
@@ -237,6 +253,7 @@ int wmain() {
     Check(FormatByteSizeForDisplay(0) == L"0 B", "Byte size display zero");
     Check(FormatByteSizeForDisplay(1024) == L"1.00 KB", "Byte size display kilobytes");
     Check(FormatByteSizeForDisplay(12ull * 1024ull * 1024ull) == L"12.0 MB", "Byte size display megabytes");
+    TestWebDavDownloadTargetPathValidation();
     {
         const std::filesystem::path fileLockRoot = std::filesystem::temp_directory_path() /
             (L"quattro_file_lock_unit_" + std::to_wstring(GetCurrentProcessId()));
@@ -1459,6 +1476,58 @@ int wmain() {
         !ShellItemService::LoadExecutableMenuIcon(L"C:\\does-not-exist\\nope.exe", missingIconItem) &&
         missingIconItem.iconPixels.empty(),
         "Executable menu icon reports failure for a missing target");
+    {
+        IconResolverService resolver;
+        IconRequest stockRequest;
+        stockRequest.kind = IconSourceKind::Stock;
+        stockRequest.size = 16;
+        const ResolvedIcon stockIcon = resolver.Resolve(stockRequest);
+        Check(
+            IconResolverService::HasPixels(stockIcon) && stockIcon.width == 16 && stockIcon.height == 16,
+            "Public icon resolver returns stock icon pixels");
+
+        IconRequest fileRequest;
+        fileRequest.kind = IconSourceKind::FilePath;
+        fileRequest.size = 32;
+        fileRequest.value = L"C:\\Windows\\System32\\cmd.exe";
+        const ResolvedIcon fileIcon = resolver.Resolve(fileRequest);
+        Check(
+            IconResolverService::HasPixels(fileIcon) && fileIcon.width == 32 && fileIcon.height == 32,
+            "Public icon resolver returns executable icon pixels");
+
+        IconRequest commandRequest;
+        commandRequest.kind = IconSourceKind::CommandLine;
+        commandRequest.size = 32;
+        commandRequest.value = L"\"C:\\Windows\\System32\\cmd.exe\" /K";
+        const ResolvedIcon commandIcon = resolver.Resolve(commandRequest);
+        Check(
+            IconResolverService::HasPixels(commandIcon),
+            "Public icon resolver returns command-line icon pixels");
+
+        Link fileLink;
+        fileLink.name = L"cmd";
+        fileLink.path = L"C:\\Windows\\System32\\cmd.exe";
+        fileLink.type = 0;
+        const ResolvedIcon linkIcon = resolver.Resolve(IconResolverService::ForLink(fileLink, 32));
+        Check(
+            IconResolverService::HasPixels(linkIcon),
+            "Public icon resolver returns link icon pixels");
+    }
+    {
+        std::wstring appsError;
+        const auto apps = QuickImportService().ScanStoreApps(appsError);
+        Check(appsError.empty() || apps.empty(), "Store app import reports errors only when no app list is returned");
+        bool storeLinksValid = true;
+        for (const auto& app : apps) {
+            storeLinksValid = storeLinksValid &&
+                app.link.type == 3 &&
+                !Trim(app.link.name).empty() &&
+                !app.link.pidl.empty() &&
+                !Trim(app.stableKey).empty() &&
+                app.sourceName == L"商店应用";
+        }
+        Check(storeLinksValid, "Store app import creates shell links with stable keys");
+    }
 
     // Save() must be atomic: a successful update leaves no stray temp file, and a
     // leftover temp file from a previous crash must not corrupt the real cache.

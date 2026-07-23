@@ -1,5 +1,6 @@
 #include "TerminalContextMenuService.h"
 
+#include "IconResolverService.h"
 #include "Utilities.h"
 
 #include <shellapi.h>
@@ -156,6 +157,16 @@ bool ContainsCdOption(const std::vector<unsigned char>& output) {
         std::search(output.begin(), output.end(), utf16.begin(), utf16.end()) != output.end();
 }
 
+void ApplyResolvedIcon(const ResolvedIcon& icon, ShellContextMenuItem& item) {
+    if (!IconResolverService::HasPixels(icon)) {
+        return;
+    }
+    item.iconWidth = icon.width;
+    item.iconHeight = icon.height;
+    item.iconQuality = std::max(1, icon.quality);
+    item.iconPixels = icon.pixels;
+}
+
 void AddProgram(
     TerminalContextMenuRefreshContext& context,
     std::wstring id,
@@ -170,7 +181,11 @@ void AddProgram(
     program.executable = std::move(executable);
     program.iconTemplate.providerId = ShellContextMenuProviderId::Terminal;
     program.iconTemplate.verb = program.id;
-    ShellItemService::LoadExecutableMenuIcon(program.executable, program.iconTemplate);
+    IconRequest request;
+    request.kind = IconSourceKind::FilePath;
+    request.size = 32;
+    request.value = program.executable;
+    ApplyResolvedIcon(IconResolverService().Resolve(request), program.iconTemplate);
     context.programs.push_back(std::move(program));
 }
 

@@ -1,6 +1,4 @@
-table-alternating-rows: adjacent unselected rows share the same background (zebra striping missing)
-table-alternating-rows: an unselected normal row is painted with the selected background
-table-grid-lines-enabled: column grid line is not visible
-ad-block: window did not appear
-ad-block: DPI acceptance window did not appear
-ad-block: DPI acceptance window did not appear
+builtin-clock-100-seconds: changed the foreground window
+builtin-clock-100-milliseconds: changed the foreground window
+builtin-clock-125-milliseconds: changed the foreground window
+builtin-clock-150-seconds: changed the foreground window
