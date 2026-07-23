@@ -2072,11 +2072,11 @@ LRESULT CALLBACK MainWindow::WindowProc(HWND hwnd, UINT message, WPARAM wParam, 
 LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
     switch (message) {
     case WM_QUATTRO_WAKEUP:
-        WakeUp();
+        WakeUp(L"single-instance");
         return 0;
     case WM_QUATTRO_DOCK_PEEK_ACTIVATE:
         if (dockHidden_) {
-            DockRestore();
+            DockRestore(L"dock-peek");
         }
         return 0;
     case WM_QUATTRO_TEST_DOCK_HIDE:
@@ -2227,7 +2227,7 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             return 0;
         }
         if (LOWORD(lParam) == WM_LBUTTONUP) {
-            WakeUp();
+            WakeUp(L"tray-left-click");
             return 0;
         }
         if (LOWORD(lParam) == WM_RBUTTONUP) {
@@ -2241,15 +2241,11 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         OnUrlIconDownloaded(static_cast<int>(wParam), lParam != 0);
         return 0;
     case WM_NCHITTEST: {
-        // The auto-hidden main window intentionally leaves a narrow strip on
-        // screen. Normally the separate dock-peek window receives the hover,
-        // but z-order changes (for example after activating from the tray) can
-        // briefly leave the main window's resize frame above that window. In
-        // that case treating the strip as HTLEFT/HTRIGHT only shows a resize
-        // cursor and the window can never restore. Make the main strip an
-        // equivalent restore target so either window reliably reveals it.
         if (dockHidden_) {
-            SendMessageW(hwnd_, WM_QUATTRO_DOCK_PEEK_ACTIVATE, 0, 0);
+            POINT screenPoint{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+            if (IsNearDockEdge(screenPoint)) {
+                DockRestore(L"dock-hidden-hit-test");
+            }
             return HTCLIENT;
         }
 
@@ -2334,19 +2330,14 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         }
         if (!wParam && config_.hideWhenInactive && IsWindowVisible(hwnd_) && !DockAutoHidePaused()) {
             HideMainWindow();
-        } else if (wParam && dockHidden_) {
-            WakeUp();
         }
         return 0;
     case WM_ACTIVATE:
-        if (LOWORD(wParam) != WA_INACTIVE && dockHidden_) {
-            WakeUp();
-        }
         return DefWindowProcW(hwnd_, message, wParam, lParam);
     case WM_SYSCOMMAND: {
         const UINT command = static_cast<UINT>(wParam) & 0xFFF0u;
         if (dockHidden_ && (command == SC_MINIMIZE || command == SC_RESTORE)) {
-            WakeUp();
+            WakeUp(L"system-command");
             return 0;
         }
         return DefWindowProcW(hwnd_, message, wParam, lParam);
@@ -5960,7 +5951,7 @@ void MainWindow::BeginDockAutoHidePause(bool restoreHidden) {
     dockHideDueTick_ = 0;
     HideDockPeek();
     if (restoreHidden && dockHidden_) {
-        DockRestore();
+        DockRestore(L"dock-auto-hide-pause");
         ActivateWindow(hwnd_);
     }
 }
@@ -6094,7 +6085,7 @@ void MainWindow::UpdateDockState() {
     GetCursorPos(&cursor);
     if (dockHidden_) {
         if (IsNearDockEdge(cursor)) {
-            DockRestore();
+            DockRestore(L"dock-timer");
         } else {
             EnsureDockPeekZOrder(true);
         }
@@ -6261,7 +6252,7 @@ bool MainWindow::DockHide(bool persistWindowState) {
     return true;
 }
 
-void MainWindow::DockRestore() {
+void MainWindow::DockRestore(const wchar_t* source) {
     if (!dockHidden_) {
         return;
     }
@@ -6277,6 +6268,7 @@ void MainWindow::DockRestore() {
                  MainWindowMoveFlags(config_.topMost, SWP_NOZORDER | SWP_NOACTIVATE));
     dockHidden_ = false;
     dockHideDueTick_ = GetTickCount64() + kDockRestoreGraceMs;
+    WriteAppLog(L"停靠窗口已恢复: source=" + std::wstring(source ? source : L""));
 }
 
 bool MainWindow::SnapDockWindowRect(RECT& window) const {
@@ -7895,13 +7887,13 @@ void MainWindow::SaveWindowState() {
     configService_.SaveWindowState(config_);
 }
 
-void MainWindow::WakeUp() {
+void MainWindow::WakeUp(const wchar_t* source) {
     if (popupMenuDepth_ > 0) {
         popupWakePending_ = true;
         return;
     }
     if (dockHidden_) {
-        DockRestore();
+        DockRestore(source);
     }
     dockHideDueTick_ = GetTickCount64() + kDockRestoreGraceMs;
     if (!IsWindowVisible(hwnd_)) {
@@ -7917,7 +7909,8 @@ void MainWindow::WakeUp() {
                  SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED | SWP_SHOWWINDOW);
     const bool activated = ActivateWindow(hwnd_);
     WriteAppLog(
-        L"主窗口唤起完成: topmost=" + std::wstring(config_.topMost ? L"1" : L"0") +
+        L"主窗口唤起完成: source=" + std::wstring(source ? source : L"") +
+        L", topmost=" + std::wstring(config_.topMost ? L"1" : L"0") +
         L", dock_hidden=" + std::wstring(dockHidden_ ? L"1" : L"0") +
         L", activated=" + std::wstring(activated ? L"1" : L"0"));
 }

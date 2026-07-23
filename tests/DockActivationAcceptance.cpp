@@ -282,13 +282,28 @@ int wmain() {
     }
 
     if (result == 0 && !DockAtAvailableEdge(mainWindow)) {
-        std::cerr << "unable to re-enter dock-hidden state for activation\n";
+        std::cerr << "unable to re-enter dock-hidden state for stray activation\n";
         result = 1;
     }
     if (result == 0) {
+        SendMessageW(mainWindow, WM_ACTIVATEAPP, TRUE, 0);
+        if (!IsDockHidden(mainWindow)) {
+            std::cerr << "stray app activation revealed the docked window\n";
+            result = 1;
+        }
+    }
+    if (result == 0) {
         SendMessageW(mainWindow, WM_ACTIVATE, WA_ACTIVE, 0);
+        if (!IsDockHidden(mainWindow)) {
+            std::cerr << "stray activation revealed the docked window\n";
+            result = 1;
+        }
+    }
+
+    if (result == 0) {
+        SendMessageW(mainWindow, WM_QUATTRO_DOCK_PEEK_ACTIVATE, 0, 0);
         if (IsDockHidden(mainWindow)) {
-            std::cerr << "taskbar activation did not reveal the docked window\n";
+            std::cerr << "explicit dock peek activation did not reveal the docked window\n";
             result = 1;
         }
     }

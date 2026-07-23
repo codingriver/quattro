@@ -293,7 +293,7 @@ private:
     void CancelPendingToolOpenHide();
     void UpdateDockState();
     bool DockHide(bool persistWindowState = true);
-    void DockRestore();
+    void DockRestore(const wchar_t* source = L"dock");
     void ShowDockPeek(const RECT& peekRect);
     void EnsureDockPeekZOrder(bool showWindow);
     void HideDockPeek();
@@ -364,7 +364,7 @@ private:
     void AppendTagTargetMenu(HMENU menu, UINT commandBase, std::vector<int>& targetIds, int excludedTagId);
     void AppendGroupedTagTargetMenu(HMENU menu, UINT commandBase, std::vector<int>& targetIds, int excludedTagId);
     void SaveWindowState();
-    void WakeUp();
+    void WakeUp(const wchar_t* source = L"explicit");
 
     void DiscardDeviceResources();
     HRESULT CreateDeviceResources();
