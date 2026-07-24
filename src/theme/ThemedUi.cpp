@@ -123,6 +123,26 @@ int SplitButtonMenuMetric(
         : static_cast<int>(std::lround(fallback));
 }
 
+int SplitButtonGlobalMetric(
+    const Theme& theme,
+    const SplitButtonMenuRuntimeItem& item,
+    const wchar_t* name,
+    float fallback) {
+    return item.fontCache
+        ? item.fontCache->Scale(static_cast<int>(std::lround(theme.metric(L"global", name, fallback))))
+        : static_cast<int>(std::lround(fallback));
+}
+
+int SplitButtonSystemMenuIconSize(
+    const Theme& theme,
+    const SplitButtonMenuRuntimeItem& item) {
+    const int fallback = SplitButtonMenuMetric(theme, item, L"iconSize", 16.0f);
+    const UINT dpi = item.fontCache ? item.fontCache->dpi() : USER_DEFAULT_SCREEN_DPI;
+    const int width = GetSystemMetricsForDpi(SM_CXMENUCHECK, dpi);
+    const int height = GetSystemMetricsForDpi(SM_CYMENUCHECK, dpi);
+    return width > 0 && height > 0 ? std::max(width, height) : std::max(1, fallback);
+}
+
 bool MeasureSplitButtonMenuItem(
     const Theme& theme,
     MEASUREITEMSTRUCT* measure) {
@@ -133,7 +153,11 @@ bool MeasureSplitButtonMenuItem(
     const int minTextWidth = SplitButtonMenuMetric(theme, *item, L"minTextWidth", 64.0f);
     const int maxTextWidth = SplitButtonMenuMetric(theme, *item, L"maxTextWidth", 360.0f);
     const int widthBase = SplitButtonMenuMetric(theme, *item, L"widthBase", 54.0f);
-    measure->itemHeight = static_cast<UINT>(SplitButtonMenuMetric(theme, *item, L"height", 28.0f));
+    const int iconInsetY = SplitButtonMenuMetric(theme, *item, L"iconInsetY", 6.0f);
+    const int iconSize = SplitButtonSystemMenuIconSize(theme, *item);
+    measure->itemHeight = static_cast<UINT>(std::max(
+        SplitButtonMenuMetric(theme, *item, L"height", 28.0f),
+        iconSize + iconInsetY * 2));
     measure->itemWidth = static_cast<UINT>(
         widthBase + std::min(maxTextWidth, std::max(minTextWidth, static_cast<int>(textSize.cx))));
     return true;
@@ -166,13 +190,14 @@ bool DrawSplitButtonMenuItem(
     }
 
     const int iconLeft = SplitButtonMenuMetric(theme, *item, L"iconLeft", 8.0f);
-    const int iconInsetY = SplitButtonMenuMetric(theme, *item, L"iconInsetY", 6.0f);
-    const int iconSize = SplitButtonMenuMetric(theme, *item, L"iconSize", 16.0f);
+    const int iconSize = SplitButtonSystemMenuIconSize(theme, *item);
+    const int itemHeight = static_cast<int>(draw->rcItem.bottom - draw->rcItem.top);
+    const int iconY = draw->rcItem.top + std::max(0, (itemHeight - iconSize) / 2);
     const RECT iconRect{
         draw->rcItem.left + iconLeft,
-        draw->rcItem.top + iconInsetY,
+        iconY,
         draw->rcItem.left + iconLeft + iconSize,
-        draw->rcItem.bottom - iconInsetY};
+        iconY + iconSize};
     if (TablerIconGlyph(item->icon) != L'\0') {
         paint.DrawTablerIcon(
             {}, item->icon, iconRect, ThemedPaintComponent::MenuItem,
@@ -180,7 +205,9 @@ bool DrawSplitButtonMenuItem(
     }
 
     RECT textRect = draw->rcItem;
-    textRect.left += SplitButtonMenuMetric(theme, *item, L"textLeft", 34.0f);
+    textRect.left += std::max(
+        SplitButtonMenuMetric(theme, *item, L"textLeft", 34.0f),
+        iconLeft + iconSize + SplitButtonGlobalMetric(theme, *item, L"denseGap", 4.0f) * 2);
     textRect.right -= SplitButtonMenuMetric(theme, *item, L"textRight", 8.0f);
     ThemedPaintTextOptions textOptions;
     textOptions.verticalAlign = ThemedPaintVerticalAlign::Center;
@@ -1083,7 +1110,7 @@ void RecalculateToolWidth(HWND toolbar, ToolRuntimeItem& item) {
     const ThemedButtonSize size = state.compact ? ThemedButtonSize::Compact : ThemedButtonSize::Normal;
     const UINT dpi = ThemedD2D::DpiFor(toolbar, nullptr);
     const int iconSize = ThemedD2D::ScaleDip(
-        static_cast<int>(state.theme->metric(L"toolbarItem", L"iconSize", 16.0f)), dpi);
+        static_cast<int>(state.theme->metric(L"toolbarItem", L"iconSize", 20.0f)), dpi);
     const int iconGap = ThemedD2D::ScaleDip(
         static_cast<int>(state.theme->metric(L"toolbarItem", L"iconGap", 6.0f)), dpi);
     const int iconPadding = ThemedD2D::ScaleDip(
@@ -2140,7 +2167,7 @@ HWND ThemedUi::ToolBar(
             display = item.icon ? (item.text.empty() ? ThemedToolItemDisplay::IconOnly : ThemedToolItemDisplay::IconAndText)
                                 : ThemedToolItemDisplay::TextOnly;
         }
-        const int iconSize = scale(static_cast<int>(theme_.metric(L"toolbarItem", L"iconSize", 16.0f)));
+        const int iconSize = scale(static_cast<int>(theme_.metric(L"toolbarItem", L"iconSize", 20.0f)));
         const int iconGap = scale(static_cast<int>(theme_.metric(L"toolbarItem", L"iconGap", 6.0f)));
         const int iconPadding = scale(static_cast<int>(theme_.metric(L"toolbarItem", L"iconPaddingX", 8.0f)));
         const std::wstring displayText = display == ThemedToolItemDisplay::IconOnly ? L"" : item.text;

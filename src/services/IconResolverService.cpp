@@ -715,7 +715,7 @@ HICON IconResolverService::ResolveLinkIcon(const Link& link, std::wstring& sourc
         if (HICON icon = CreateTablerIconHandle(
                 appDirectory_,
                 MenuIconTablerId(menuIcon),
-                54,
+                64,
                 RGB(0, 153, 215))) {
             source = L"tabler-system";
             return icon;

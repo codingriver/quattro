@@ -17,7 +17,7 @@
 #include <cstdint>
 
 namespace {
-constexpr wchar_t kResolverCacheVersion[] = L"resolver-v3";
+constexpr wchar_t kResolverCacheVersion[] = L"resolver-v4";
 
 template <typename T>
 void SafeRelease(T*& value) {
@@ -112,7 +112,7 @@ ID2D1Bitmap* IconService::GetBitmap(ID2D1RenderTarget* renderTarget, const Link&
 
     if (!bitmap) {
         const ResolvedIcon icon = IconResolverService(appDirectory_).Resolve(
-            IconResolverService::ForLink(link, 54));
+            IconResolverService::ForLink(link, 64));
         if (CreateBitmapFromResolvedIcon(renderTarget, icon, &bitmap)) {
             std::error_code ec;
             std::filesystem::create_directories(cachePath.parent_path(), ec);
@@ -383,5 +383,5 @@ std::filesystem::path IconService::CachePath(const Link& link) const {
     const std::wstring hash = Hex8(StablePathHash(
         std::wstring(kResolverCacheVersion) + L"|" + ToLower(link.path + L"|" + LinkIconCacheToken(link))));
     const std::wstring prefix = link.id > 0 ? (L"link_" + std::to_wstring(link.id)) : L"link";
-    return appDirectory_ / L"icons" / L"cache" / (prefix + L"_" + hash + L"_32.png");
+    return appDirectory_ / L"icons" / L"cache" / (prefix + L"_" + hash + L"_64.png");
 }

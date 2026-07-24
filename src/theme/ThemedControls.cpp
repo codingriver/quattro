@@ -1502,7 +1502,7 @@ void DrawButton(const Theme& theme, const DRAWITEMSTRUCT* draw) {
     if (hasTablerIcon || icon) {
         const int iconSize = hasTablerIcon
             ? ControlScaledMetric(draw->hwndItem, theme, L"iconButton", L"iconSize", 20.0f)
-            : ControlScaledMetric(draw->hwndItem, theme, L"toolbarItem", L"iconSize", 16.0f);
+            : ControlScaledMetric(draw->hwndItem, theme, L"toolbarItem", L"iconSize", 20.0f);
         const int iconGap = text.empty() ? 0
             : ControlScaledMetric(draw->hwndItem, theme, L"toolbarItem", L"iconGap", 6.0f);
         SIZE textSize{};
@@ -2072,7 +2072,7 @@ void DrawTabButton(const Theme& theme, const DRAWITEMSTRUCT* draw) {
     RECT textRect = ThemedControls::TabButtonTextRect(theme, rect);
     HICON icon = ButtonIcon(draw->hwndItem);
     if (icon) {
-        const int iconSize = ActiveScaledMetric(theme, L"toolbarItem", L"iconSize", 16.0f);
+        const int iconSize = ActiveScaledMetric(theme, L"toolbarItem", L"iconSize", 20.0f);
         const int iconGap = text.empty() ? 0 : ActiveScaledMetric(theme, L"toolbarItem", L"iconGap", 6.0f);
         SIZE textSize{};
         if (!text.empty()) textSize.cx = ThemedD2D::MeasureTextWidth(font, text);

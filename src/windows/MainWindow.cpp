@@ -930,7 +930,13 @@ bool IsFullScreenForegroundWindow() {
 
 int EffectiveIconSize(const Group* tag) {
     const int value = tag && tag->iconSize > 0 ? tag->iconSize : 32;
-    return std::max(24, std::min(48, value));
+    if (value <= 32) {
+        return 32;
+    }
+    if (value >= 64) {
+        return 64;
+    }
+    return 48;
 }
 
 int EffectiveLinkLayout(const Group* tag) {
@@ -945,7 +951,7 @@ float LinkTileSide(const Theme& theme, int iconSize) {
     return std::max(
         Metric(theme, L"linkItem", L"tileMinSide", 74.0f),
         std::min(
-            Metric(theme, L"linkItem", L"tileMaxSide", 96.0f),
+            Metric(theme, L"linkItem", L"tileMaxSide", 116.0f),
             static_cast<float>(iconSize) + Metric(theme, L"linkItem", L"tileIconExtra", 42.0f)));
 }
 
@@ -1013,7 +1019,7 @@ LinkLayoutMetrics MakeLinkLayout(const Theme& theme, const D2D1_RECT_F& rect, co
     metrics.leftInset = Metric(theme, L"linkItem", L"gridLeftInset", 8.0f);
     metrics.topInset = Metric(theme, L"linkItem", L"gridTopInset", 8.0f);
     metrics.bottomInset = Metric(theme, L"linkItem", L"gridBottomInset", 8.0f);
-    if (metrics.iconSize <= 24) {
+    if (metrics.iconSize < 32) {
         metrics.compactTile = true;
         metrics.gapX = Metric(theme, L"linkItem", L"compactGapX", 6.0f);
         metrics.gapY = Metric(theme, L"linkItem", L"compactGapY", 4.0f);
@@ -1583,6 +1589,12 @@ std::wstring MenuTextFromRaw(const std::wstring& text) {
         result.push_back(text[i]);
     }
     return result;
+}
+
+int SystemMenuIconSize(UINT dpi, int fallback) {
+    const int width = GetSystemMetricsForDpi(SM_CXMENUCHECK, dpi);
+    const int height = GetSystemMetricsForDpi(SM_CYMENUCHECK, dpi);
+    return width > 0 && height > 0 ? std::max(width, height) : std::max(1, fallback);
 }
 
 bool DrawStockMenuIcon(ThemedPaint& paint, const RECT& rect, SHSTOCKICONID id, bool disabled = false) {
@@ -2974,13 +2986,13 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             SetCurrentTagLayout(1);
             return 0;
         case ID_MENU_ICON_SMALL:
-            SetCurrentTagIconSize(24);
-            return 0;
-        case ID_MENU_ICON_MEDIUM:
             SetCurrentTagIconSize(32);
             return 0;
-        case ID_MENU_ICON_LARGE:
+        case ID_MENU_ICON_MEDIUM:
             SetCurrentTagIconSize(48);
+            return 0;
+        case ID_MENU_ICON_LARGE:
+            SetCurrentTagIconSize(64);
             return 0;
         case ID_MENU_ALL_SORT_POS:
             SetAllTagsSort(0);
@@ -2998,13 +3010,13 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             SetAllTagsLayout(1);
             return 0;
         case ID_MENU_ALL_ICON_SMALL:
-            SetAllTagsIconSize(24);
-            return 0;
-        case ID_MENU_ALL_ICON_MEDIUM:
             SetAllTagsIconSize(32);
             return 0;
-        case ID_MENU_ALL_ICON_LARGE:
+        case ID_MENU_ALL_ICON_MEDIUM:
             SetAllTagsIconSize(48);
+            return 0;
+        case ID_MENU_ALL_ICON_LARGE:
+            SetAllTagsIconSize(64);
             return 0;
         case ID_MENU_TOGGLE_TITLE:
             ToggleConfigVisibility(&AppConfig::showTitle);
@@ -3589,12 +3601,12 @@ void MainWindow::SetCurrentTagIconSize(int iconSize) {
         return;
     }
     Group edited = *tag;
-    if (iconSize <= 24) {
-        edited.iconSize = 24;
-    } else if (iconSize >= 48) {
-        edited.iconSize = 48;
-    } else {
+    if (iconSize <= 32) {
         edited.iconSize = 32;
+    } else if (iconSize >= 64) {
+        edited.iconSize = 64;
+    } else {
+        edited.iconSize = 48;
     }
     if (!storageService_.UpdateGroup(edited)) {
         MessageBoxW(hwnd_, storageService_.lastError().c_str(), L"图标尺寸", MB_OK | MB_ICONWARNING);
@@ -3672,9 +3684,11 @@ void MainWindow::SetAllTagsLayout(int layout) {
 
 void MainWindow::SetAllTagsIconSize(int iconSize) {
     int normalized = 32;
-    if (iconSize <= 24) {
-        normalized = 24;
-    } else if (iconSize >= 48) {
+    if (iconSize <= 32) {
+        normalized = 32;
+    } else if (iconSize >= 64) {
+        normalized = 64;
+    } else {
         normalized = 48;
     }
 
@@ -3694,7 +3708,7 @@ void MainWindow::SetAllTagsIconSize(int iconSize) {
     }
     linkScrollOffset_ = 0.0f;
     InvalidateRect(hwnd_, nullptr, FALSE);
-    const wchar_t* sizeText = normalized == 24 ? L"小" : (normalized == 48 ? L"大" : L"中等");
+    const wchar_t* sizeText = normalized == 32 ? L"小" : (normalized == 64 ? L"大" : L"中等");
     ShowToast(
         L"已将 " + std::to_wstring(updatedCount) + L" 个标签统一为" + sizeText + L"图标。",
         ThemedToastRole::Success);
@@ -7624,9 +7638,9 @@ void MainWindow::AppendViewOptionItems(HMENU menu, const Group* tag) {
     // These submenus reflect the selected tag page, not a global display preference.
     HMENU iconMenu = CreatePopupMenu();
     const int iconSize = EffectiveIconSize(tag);
-    AppendThemedStateMenuItem(iconMenu, MF_STRING, ID_MENU_ICON_SMALL, L"小图标", iconSize == 24, MenuIconSize);
-    AppendThemedStateMenuItem(iconMenu, MF_STRING, ID_MENU_ICON_MEDIUM, L"中图标", iconSize == 32, MenuIconSize);
-    AppendThemedStateMenuItem(iconMenu, MF_STRING, ID_MENU_ICON_LARGE, L"大图标", iconSize == 48, MenuIconSize);
+    AppendThemedStateMenuItem(iconMenu, MF_STRING, ID_MENU_ICON_SMALL, L"小图标", iconSize == 32, MenuIconSize);
+    AppendThemedStateMenuItem(iconMenu, MF_STRING, ID_MENU_ICON_MEDIUM, L"中图标", iconSize == 48, MenuIconSize);
+    AppendThemedStateMenuItem(iconMenu, MF_STRING, ID_MENU_ICON_LARGE, L"大图标", iconSize == 64, MenuIconSize);
     AppendThemedMenuItem(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(iconMenu), L"图标大小", true);
 
     HMENU layoutMenu = CreatePopupMenu();
@@ -7687,9 +7701,9 @@ void MainWindow::AppendUnifiedViewOptionItems(HMENU menu) {
         hasTag = true;
         const int iconSize = EffectiveIconSize(&tag);
         const int layout = EffectiveLinkLayout(&tag);
-        allSmall = allSmall && iconSize == 24;
-        allMedium = allMedium && iconSize == 32;
-        allLarge = allLarge && iconSize == 48;
+        allSmall = allSmall && iconSize == 32;
+        allMedium = allMedium && iconSize == 48;
+        allLarge = allLarge && iconSize == 64;
         allList = allList && layout == 0;
         allTile = allTile && layout == 1;
         allSortPos = allSortPos && tag.sort == 0;
@@ -9131,7 +9145,13 @@ bool MainWindow::MeasureThemedMenuItem(MEASUREITEMSTRUCT* measure) {
     const int minTextWidth = scaledMetric(L"menuItem", L"minTextWidth", 64.0f);
     const int maxTextWidth = scaledMetric(L"menuItem", L"maxTextWidth", 360.0f);
     const int widthBase = scaledMetric(L"menuItem", L"widthBase", 54.0f);
-    measure->itemHeight = static_cast<UINT>(scaledMetric(L"menuItem", L"height", 28.0f));
+    const int iconTopInset = scaledMetric(L"menuItem", L"iconInsetY", 6.0f);
+    const int iconSize = SystemMenuIconSize(
+        menuFont_->dpi(),
+        scaledMetric(L"menuItem", L"iconSize", 16.0f));
+    measure->itemHeight = static_cast<UINT>(std::max(
+        scaledMetric(L"menuItem", L"height", 28.0f),
+        iconSize + iconTopInset * 2));
     measure->itemWidth = static_cast<UINT>(
         widthBase + std::min(maxTextWidth, std::max(minTextWidth, static_cast<int>(textSize.cx))));
     return true;
@@ -9176,9 +9196,12 @@ bool MainWindow::DrawThemedMenuItem(const DRAWITEMSTRUCT* draw) {
         }
 
         const int iconLeft = scaledMetric(L"menuItem", L"iconLeft", 8.0f);
-        const int iconTopInset = scaledMetric(L"menuItem", L"iconInsetY", 6.0f);
-        const int iconSize = scaledMetric(L"menuItem", L"iconSize", 16.0f);
-        const RECT iconRect{rc.left + iconLeft, rc.top + iconTopInset, rc.left + iconLeft + iconSize, rc.bottom - iconTopInset};
+        const int iconSize = SystemMenuIconSize(
+            menuFont_->dpi(),
+            scaledMetric(L"menuItem", L"iconSize", 16.0f));
+        const int itemHeight = static_cast<int>(rc.bottom - rc.top);
+        const int iconY = rc.top + std::max(0, (itemHeight - iconSize) / 2);
+        const RECT iconRect{rc.left + iconLeft, iconY, rc.left + iconLeft + iconSize, iconY + iconSize};
         ThemedPaintState iconState = item->disabled ? ThemedPaintState::Disabled : ThemedPaintState::Accent;
         if (!item->disabled && item->iconTone == MenuIconTone::Muted) {
             iconState = ThemedPaintState::Normal;
@@ -9202,7 +9225,9 @@ bool MainWindow::DrawThemedMenuItem(const DRAWITEMSTRUCT* draw) {
         }
 
         RECT textRect = rc;
-        textRect.left += scaledMetric(L"menuItem", L"textLeft", 34.0f);
+        textRect.left += std::max(
+            scaledMetric(L"menuItem", L"textLeft", 34.0f),
+            iconLeft + iconSize + scaledMetric(L"global", L"denseGap", 4.0f) * 2);
         textRect.right -= item->submenu
             ? scaledMetric(L"menuItem", L"submenuRight", 22.0f)
             : scaledMetric(L"menuItem", L"textRight", 8.0f);
@@ -9222,7 +9247,7 @@ bool MainWindow::DrawThemedMenuItem(const DRAWITEMSTRUCT* draw) {
                 : (selected ? ThemedPaintState::Hover : ThemedPaintState::Normal);
             const int midY = (rc.top + rc.bottom) / 2;
             const int arrowRight = scaledMetric(L"menuItem", L"arrowRight", 9.0f);
-            const int arrowIconSize = scaledMetric(L"menuItem", L"iconSize", 16.0f);
+            const int arrowIconSize = iconSize;
             const RECT arrowRect{
                 rc.right - arrowRight - arrowIconSize,
                 midY - arrowIconSize / 2,

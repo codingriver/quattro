@@ -818,7 +818,7 @@ void Theme::SetDefaults() {
     PutMetric(L"minorNavItem", L"visibilityPadding", 8.0f);
     PutMetric(L"linkItem", L"viewportPaddingX", 16.0f);
     PutMetric(L"linkItem", L"tileMinSide", 74.0f);
-    PutMetric(L"linkItem", L"tileMaxSide", 96.0f);
+    PutMetric(L"linkItem", L"tileMaxSide", 116.0f);
     PutMetric(L"linkItem", L"tileIconExtra", 42.0f);
     PutMetric(L"linkItem", L"listLeftInset", 4.0f);
     PutMetric(L"linkItem", L"listTopInset", 6.0f);
@@ -1099,6 +1099,9 @@ void Theme::SetDefaults() {
     PutMetric(L"toolbar", L"paddingX", 6.0f);
     PutMetric(L"toolbar", L"itemGap", 4.0f);
     PutMetric(L"toolbar", L"separatorWidth", 9.0f);
+    PutMetric(L"toolbarItem", L"iconSize", 20.0f);
+    PutMetric(L"toolbarItem", L"iconGap", 6.0f);
+    PutMetric(L"toolbarItem", L"iconPaddingX", 8.0f);
     PutMetric(L"slider", L"height", 24.0f);
     PutMetric(L"slider", L"trackHeight", 4.0f);
     PutMetric(L"slider", L"thumbSize", 14.0f);

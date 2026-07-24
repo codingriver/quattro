@@ -163,8 +163,7 @@ bool IsValidCachedIcon(const ShellContextMenuCachedIcon& icon) {
 
 HBITMAP CreateScaledBitmapFromCachedPixels(
     const ShellContextMenuCachedIcon& icon,
-    int targetSize,
-    COLORREF compositeBackground) {
+    int targetSize) {
     if (!IsValidCachedIcon(icon) || targetSize <= 0) {
         return nullptr;
     }
@@ -189,43 +188,15 @@ HBITMAP CreateScaledBitmapFromCachedPixels(
 
     auto* output = static_cast<std::uint32_t*>(targetPixels);
     for (int y = 0; y < targetSize; ++y) {
-        const double sourceY =
-            (static_cast<double>(y) + 0.5) * icon.height / targetSize - 0.5;
-        const int rawY0 = static_cast<int>(std::floor(sourceY));
-        const int rawY1 = rawY0 + 1;
-        const int y0 = std::clamp(rawY0, 0, icon.height - 1);
-        const int y1 = std::clamp(rawY1, 0, icon.height - 1);
-        const double fy = sourceY - rawY0;
+        const int sourceY = std::clamp(y * icon.height / targetSize, 0, icon.height - 1);
         for (int x = 0; x < targetSize; ++x) {
-            const double sourceX =
-                (static_cast<double>(x) + 0.5) * icon.width / targetSize - 0.5;
-            const int rawX0 = static_cast<int>(std::floor(sourceX));
-            const int rawX1 = rawX0 + 1;
-            const int x0 = std::clamp(rawX0, 0, icon.width - 1);
-            const int x1 = std::clamp(rawX1, 0, icon.width - 1);
-            const double fx = sourceX - rawX0;
-            const std::uint32_t samples[] = {
-                icon.pixels[static_cast<std::size_t>(y0) * icon.width + x0],
-                icon.pixels[static_cast<std::size_t>(y0) * icon.width + x1],
-                icon.pixels[static_cast<std::size_t>(y1) * icon.width + x0],
-                icon.pixels[static_cast<std::size_t>(y1) * icon.width + x1],
-            };
-            std::uint32_t pixel = 0;
-            for (int shift : {0, 8, 16, 24}) {
-                const double top =
-                    ((samples[0] >> shift) & 0xFFu) * (1.0 - fx) +
-                    ((samples[1] >> shift) & 0xFFu) * fx;
-                const double bottom =
-                    ((samples[2] >> shift) & 0xFFu) * (1.0 - fx) +
-                    ((samples[3] >> shift) & 0xFFu) * fx;
-                const auto channel = static_cast<std::uint32_t>(
-                    std::clamp(top * (1.0 - fy) + bottom * fy, 0.0, 255.0) + 0.5);
-                pixel |= channel << shift;
-            }
-            // Cached shell icons are stored as premultiplied BGRA. GDI
-            // ImageList/DrawIconEx is not reliable for translucent pixels on
-            // every Windows image-list implementation, so restore straight
-            // alpha and composite the edge against the themed list surface.
+            const int sourceX = std::clamp(x * icon.width / targetSize, 0, icon.width - 1);
+            std::uint32_t pixel = icon.pixels[
+                static_cast<std::size_t>(sourceY) * icon.width + sourceX];
+            // Cached shell icons are stored as premultiplied BGRA, while the
+            // GDI image-list input expects straight-alpha RGB. Convert only
+            // the color channels and keep alpha intact; no background is
+            // baked into the provider bitmap.
             const std::uint32_t alpha = pixel >> 24;
             if (alpha < 255) {
                 const auto unpremultiply = [alpha](std::uint32_t channel) {
@@ -233,19 +204,10 @@ HBITMAP CreateScaledBitmapFromCachedPixels(
                         ? 0u
                         : std::min<std::uint32_t>(255u, (channel * 255u + alpha / 2u) / alpha);
                 };
-                const std::uint32_t blue = unpremultiply(pixel & 0xFFu);
-                const std::uint32_t green = unpremultiply((pixel >> 8) & 0xFFu);
-                const std::uint32_t red = unpremultiply((pixel >> 16) & 0xFFu);
-                const std::uint32_t bgBlue = GetBValue(compositeBackground);
-                const std::uint32_t bgGreen = GetGValue(compositeBackground);
-                const std::uint32_t bgRed = GetRValue(compositeBackground);
-                const auto composite = [alpha](std::uint32_t foreground, std::uint32_t background) {
-                    return (foreground * alpha + background * (255u - alpha) + 127u) / 255u;
-                };
-                pixel = (0xFFu << 24) |
-                    (composite(red, bgRed) << 16) |
-                    (composite(green, bgGreen) << 8) |
-                    composite(blue, bgBlue);
+                pixel = (alpha << 24) |
+                    (unpremultiply((pixel >> 16) & 0xFFu) << 16) |
+                    (unpremultiply((pixel >> 8) & 0xFFu) << 8) |
+                    unpremultiply(pixel & 0xFFu);
             }
             output[static_cast<std::size_t>(y) * targetSize + x] = pixel;
         }
@@ -3398,7 +3360,8 @@ private:
         HBITMAP fallbackBitmap = IconResolverService::CreateBitmapFromPixels(
             fallbackIcon,
             iconSize,
-            ThemedUi::ListSurfaceColor(theme_));
+            ThemedUi::ListSurfaceColor(theme_),
+            true);
         int fallbackIndex = fallbackBitmap ? ImageList_Add(images, fallbackBitmap, nullptr) : -1;
         if (fallbackBitmap) {
             DeleteObject(fallbackBitmap);
@@ -3428,8 +3391,7 @@ private:
         for (std::size_t index = 0; index < contextMenuProviderIcons_.size(); ++index) {
             HBITMAP bitmap = CreateScaledBitmapFromCachedPixels(
                 contextMenuProviderIcons_[index].icon,
-                iconSize,
-                ThemedUi::ListSurfaceColor(theme_));
+                iconSize);
             if (!bitmap) {
                 continue;
             }

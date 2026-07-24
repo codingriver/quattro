@@ -258,7 +258,7 @@
     <Component name="linkItem">
         <Metric name="viewportPaddingX" value="16"/>
         <Metric name="tileMinSide" value="74"/>
-        <Metric name="tileMaxSide" value="96"/>
+        <Metric name="tileMaxSide" value="116"/>
         <Metric name="tileIconExtra" value="42"/>
         <Metric name="listLeftInset" value="4"/>
         <Metric name="listTopInset" value="6"/>
@@ -661,7 +661,7 @@
         <State name="disabled" bg="@background" border="@line"/>
     </Component>
     <Component name="toolbarItem">
-        <Metric name="iconSize" value="16"/>
+        <Metric name="iconSize" value="20"/>
         <Metric name="iconGap" value="6"/>
         <Metric name="iconPaddingX" value="8"/>
         <State name="normal" bg="@surface" text="@text"/>

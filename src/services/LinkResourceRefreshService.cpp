@@ -105,7 +105,7 @@ LinkResourceRefreshResult LinkResourceRefreshService::Refresh(
             ResolvedIcon icon;
             if (apartment.ready()) {
                 icon = IconResolverService(request.appDirectory).Resolve(
-                    IconResolverService::ForLink(link, 54),
+                    IconResolverService::ForLink(link, 64),
                     workerContext.StopToken());
             }
             if (IconResolverService::HasPixels(icon)) {

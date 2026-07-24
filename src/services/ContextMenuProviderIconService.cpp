@@ -283,7 +283,7 @@ ContextMenuProviderIconInfo ContextMenuProviderIconService::ResolveProvider(
     }
 
     info.attempted = true;
-    const ResolvedIcon resolved = IconResolverService().ResolveContextMenuProvider(binding, 32, stopToken);
+    const ResolvedIcon resolved = IconResolverService().ResolveContextMenuProvider(binding, 48, stopToken);
     info.icon = CachedIconFrom(resolved);
     if (HasIcon(info.icon)) {
         WriteAppLog(

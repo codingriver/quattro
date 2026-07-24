@@ -1106,6 +1106,24 @@ void ValidateAndCapture(HWND hwnd, const Scenario& scenario, const std::filesyst
             state.Check(
                 spacingY >= MulDiv(104, static_cast<int>(scenario.forcedDpi), USER_DEFAULT_SCREEN_DPI),
                 scenario.name + L": quick import icon spacing Y is too short");
+            HIMAGELIST smallImages = ListView_GetImageList(table, LVSIL_SMALL);
+            int smallWidth = 0;
+            int smallHeight = 0;
+            const bool hasSmallSize = smallImages &&
+                ImageList_GetIconSize(smallImages, &smallWidth, &smallHeight) != FALSE;
+            const int expectedSmallSize = std::max(16, GetSystemMetrics(SM_CXSMICON));
+            state.Check(
+                hasSmallSize && smallWidth == expectedSmallSize && smallHeight == expectedSmallSize,
+                scenario.name + L": quick import small image list changed its display size");
+
+            HIMAGELIST normalImages = ListView_GetImageList(table, LVSIL_NORMAL);
+            int normalWidth = 0;
+            int normalHeight = 0;
+            const bool hasNormalSize = normalImages &&
+                ImageList_GetIconSize(normalImages, &normalWidth, &normalHeight) != FALSE;
+            state.Check(
+                hasNormalSize && normalWidth == 32 && normalHeight == 32,
+                scenario.name + L": quick import normal image list changed its display size");
         }
     }
 
@@ -1272,8 +1290,10 @@ void ValidateAndCapture(HWND hwnd, const Scenario& scenario, const std::filesyst
                 int imageWidth = 0;
                 int imageHeight = 0;
                 const bool hasImageSize = ImageList_GetIconSize(images, &imageWidth, &imageHeight) != FALSE;
-                state.Check(hasImageSize && imageWidth >= 8 && imageHeight >= 8,
-                    scenario.name + L": context-menu provider image size is invalid");
+                const int expectedIconSize = ThemedWindowUi::ScaleForDpi(16, scenario.forcedDpi);
+                state.Check(
+                    hasImageSize && imageWidth == expectedIconSize && imageHeight == expectedIconSize,
+                    scenario.name + L": context-menu provider image list changed its display size");
                 if (hasImageSize && imageWidth >= 8 && imageHeight >= 8) {
                     HDC screen = GetDC(nullptr);
                     HDC memory = CreateCompatibleDC(screen);

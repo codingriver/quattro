@@ -42,11 +42,11 @@ constexpr int IdViewListTab = 1013;
 constexpr int IdSourceStoreApps = 1014;
 constexpr UINT_PTR IdScanPollTimer = 1015;
 constexpr UINT WM_QUICK_IMPORT_ICONS_DONE = WM_APP + 0x8D;
+constexpr int kQuickImportIconCaptureSize = 48;
 
 struct QuickImportIconResult {
     std::wstring stableKey;
-    ResolvedIcon smallIcon;
-    ResolvedIcon mediumIcon;
+    ResolvedIcon icon;
 };
 
 struct QuickImportIconLoadResult {
@@ -582,15 +582,15 @@ private:
         }
 
         IconResolverService resolver;
-        const ResolvedIcon smallIcon = resolver.Resolve(IconResolverService::ForLink(item.link, smallSize_));
-        const ResolvedIcon mediumIcon = resolver.Resolve(IconResolverService::ForLink(item.link, mediumSize_));
+        const ResolvedIcon icon = resolver.Resolve(
+            IconResolverService::ForLink(item.link, kQuickImportIconCaptureSize));
         HBITMAP smallBitmap = IconResolverService::CreateBitmapFromPixels(
-            smallIcon,
+            icon,
             smallSize_,
             ThemedUi::ListSurfaceColor(theme_),
             true);
         HBITMAP mediumBitmap = IconResolverService::CreateBitmapFromPixels(
-            mediumIcon,
+            icon,
             mediumSize_,
             ThemedUi::ListSurfaceColor(theme_),
             true);
@@ -698,8 +698,6 @@ private:
         StopIconLoadTask();
         const std::uint64_t generation = iconGeneration_;
         const HWND target = hwnd_;
-        const int smallSize = smallSize_;
-        const int mediumSize = mediumSize_;
         const std::vector<QuickImportService::Item> items = items_;
         const DWORD testIconDelayMs = QuickImportTestIconDelayMs();
 
@@ -712,7 +710,7 @@ private:
         };
         iconTask_ = TaskExecutionService::StartTyped<QuickImportIconLoadResult>(
             std::move(options),
-            [generation, items, smallSize, mediumSize, testIconDelayMs](TaskContext& context) {
+            [generation, items, testIconDelayMs](TaskContext& context) {
                 QuickImportIconLoadResult result;
                 result.generation = generation;
                 TaskProgressUpdate progress{};
@@ -735,14 +733,8 @@ private:
                     }
                     QuickImportIconResult icon;
                     icon.stableKey = item.stableKey;
-                    icon.smallIcon = resolver.Resolve(
-                        IconResolverService::ForLink(item.link, smallSize),
-                        context.StopToken());
-                    if (context.StopRequested()) {
-                        break;
-                    }
-                    icon.mediumIcon = resolver.Resolve(
-                        IconResolverService::ForLink(item.link, mediumSize),
+                    icon.icon = resolver.Resolve(
+                        IconResolverService::ForLink(item.link, kQuickImportIconCaptureSize),
                         context.StopToken());
                     result.icons.push_back(std::move(icon));
                     ++completed;
@@ -803,7 +795,7 @@ private:
                 continue;
             }
             const std::size_t index = found->second;
-            const int imageIndex = AddResolvedImagePair(icon.smallIcon, icon.mediumIcon);
+            const int imageIndex = AddResolvedImagePair(icon.icon, icon.icon);
             if (imageIndex < 0 || index >= itemImageIndexes_.size()) {
                 continue;
             }
