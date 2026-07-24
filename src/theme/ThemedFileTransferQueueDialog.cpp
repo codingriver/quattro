@@ -174,10 +174,12 @@ void ThemedFileTransferQueueDialog::CreateControls() {
     status_ = ui.StatusText(L"等待传输", ui.contentLeft(), ui.contentTop(), ui.contentWidth(),
         ThemedStatusTextOptions{ThemedStatusRole::Info, ThemedTextAlign::Start});
     detail_ = ui.Label(L"尚未添加文件。", ui.contentLeft(), ui.contentTop(), ui.contentWidth());
-    progress_ = ui.ProgressBar(ID_PROGRESS, ui.contentLeft(), ui.contentTop(), ui.contentWidth(),
-        ThemedProgressBarOptions{0.0, false, true});
-    currentProgress_ = ui.ProgressBar(ID_CURRENT_PROGRESS, ui.contentLeft(), ui.contentTop(), ui.contentWidth(),
-        ThemedProgressBarOptions{0.0, false, true});
+    ThemedProgressBarOptions progressOptions{};
+    progressOptions.value = 0.0;
+    progressOptions.indeterminate = false;
+    progressOptions.showPercent = true;
+    progress_ = ui.ProgressBar(ID_PROGRESS, ui.contentLeft(), ui.contentTop(), ui.contentWidth(), progressOptions);
+    currentProgress_ = ui.ProgressBar(ID_CURRENT_PROGRESS, ui.contentLeft(), ui.contentTop(), ui.contentWidth(), progressOptions);
     table_ = ui.Table(ID_TABLE, RECT{0,0,1,1}, {
         {L"name", L"文件名", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, ui.scale(180)},
         {L"path", L"绝对路径", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Remaining},

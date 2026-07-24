@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ShellItemService.h"
+#include "ScanExecutionService.h"
 
 #include <functional>
 #include <stop_token>
@@ -10,6 +11,8 @@
 struct ShellContextMenuRefreshRequest {
     std::vector<Link> links;
     ShellContextMenuTrackingOptions tracking;
+    std::wstring progressTitle;
+    std::wstring progressStatus;
 };
 
 struct ShellContextMenuRefreshUpdate {
@@ -50,7 +53,18 @@ public:
     ShellContextMenuRefreshResult Refresh(
         const ShellContextMenuRefreshRequest& request,
         std::stop_token stopToken = {}) const;
+    ShellContextMenuRefreshResult RefreshInTask(
+        const ShellContextMenuRefreshRequest& request,
+        TaskContext& context,
+        std::stop_token stopToken = {}) const;
+    std::shared_ptr<ScanTaskHandle> StartRefresh(
+        ShellContextMenuRefreshRequest request,
+        std::function<void()> completionCallback = {}) const;
 
 private:
+    ShellContextMenuRefreshResult RefreshCore(
+        const ShellContextMenuRefreshRequest& request,
+        std::stop_token stopToken,
+        TaskContext& context) const;
     QueryFunction query_;
 };

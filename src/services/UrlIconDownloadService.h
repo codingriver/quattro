@@ -6,6 +6,7 @@
 
 #include <filesystem>
 #include <mutex>
+#include <stop_token>
 #include <string>
 #include <thread>
 #include <unordered_set>
@@ -21,6 +22,11 @@ public:
 
     void RequestInitialDownload(HWND notifyHwnd, UINT notifyMessage, Link link);
     bool RequestManualRefresh(HWND notifyHwnd, UINT notifyMessage, Link link);
+    static std::wstring HostForLink(const Link& link);
+    static bool RefreshNow(
+        const std::filesystem::path& appDirectory,
+        const Link& link,
+        std::stop_token stopToken = {});
     void Shutdown();
 
 private:

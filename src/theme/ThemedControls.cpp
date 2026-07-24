@@ -30,6 +30,8 @@ constexpr int kTabOrientationVertical = 1;
 constexpr int kTabContainerStyleAppearanceDefault = 0;
 constexpr int kTabContainerStyleFramed = 1;
 constexpr int kTabContainerStyleBorderless = 2;
+constexpr UINT_PTR kProgressAnimationTimer = 1;
+constexpr UINT kProgressAnimationIntervalMs = 32;
 HICON ButtonIcon(HWND hwnd) {
     return reinterpret_cast<HICON>(SendMessageW(hwnd, BM_GETIMAGE, IMAGE_ICON, 0));
 }
@@ -85,6 +87,9 @@ struct ControlState {
     int radioGroup = 0;
     bool progressIndeterminate = false;
     double progressValue = 0.0;
+    bool progressActivity = false;
+    bool progressShowPercent = false;
+    std::wstring progressText;
     double sliderMinimum = 0.0;
     double sliderMaximum = 100.0;
     double sliderStep = 1.0;
@@ -598,6 +603,29 @@ bool ProgressIndeterminate(HWND hwnd) {
     return state && state->progressIndeterminate;
 }
 
+bool ProgressActivity(HWND hwnd) {
+    auto state = FindState(hwnd);
+    return state && state->progressActivity;
+}
+
+bool ProgressShowPercent(HWND hwnd) {
+    auto state = FindState(hwnd);
+    return state && state->progressShowPercent;
+}
+
+std::wstring ProgressText(HWND hwnd) {
+    auto state = FindState(hwnd);
+    return state ? state->progressText : std::wstring{};
+}
+
+std::wstring FormatProgressPercent(double value) {
+    const int percent = std::clamp(
+        static_cast<int>(std::lround(std::clamp(value, 0.0, 1.0) * 100.0)),
+        0,
+        100);
+    return std::to_wstring(percent) + L"%";
+}
+
 void DrawStatusBadge(HWND hwnd, HDC dc, RECT rect) {
     auto controlState = FindState(hwnd);
     const Theme* theme = controlState ? controlState->theme : nullptr;
@@ -827,9 +855,10 @@ void DrawProgressBar(HWND hwnd, HDC targetDc = nullptr) {
         ToColorRef(theme->color(L"progressBar", state, L"border")),
         borderWidth);
 
-    RECT fillRect = rect;
-    InflateRect(&fillRect, -std::max(1, borderWidth), -std::max(1, borderWidth));
-    if (fillRect.right > fillRect.left && fillRect.bottom > fillRect.top) {
+    RECT contentRect = rect;
+    InflateRect(&contentRect, -std::max(1, borderWidth), -std::max(1, borderWidth));
+    if (contentRect.right > contentRect.left && contentRect.bottom > contentRect.top) {
+        RECT fillRect = contentRect;
         if (ProgressIndeterminate(hwnd)) {
             const int width = fillRect.right - fillRect.left;
             const int segmentWidth = std::max(width / 3, 24);
@@ -851,6 +880,47 @@ void DrawProgressBar(HWND hwnd, HDC targetDc = nullptr) {
                 ToColorRef(theme->color(L"progressBar", state, L"fill")),
                 ToColorRef(theme->color(L"progressBar", state, L"fill")),
                 1);
+            if (!ProgressIndeterminate(hwnd) && ProgressActivity(hwnd)) {
+                RECT activityRect = fillRect;
+                const int filledWidth = fillRect.right - fillRect.left;
+                const int segmentWidth = std::max(filledWidth / 4, 18);
+                const int span = filledWidth + segmentWidth;
+                const int offset = static_cast<int>((GetTickCount() / 16) %
+                    static_cast<DWORD>(std::max(1, span)));
+                activityRect.left = fillRect.left + offset - segmentWidth;
+                activityRect.right = std::min(fillRect.right, activityRect.left + segmentWidth);
+                activityRect.left = std::max(fillRect.left, activityRect.left);
+                if (activityRect.right > activityRect.left) {
+                    FillRoundRect(
+                        dc,
+                        activityRect,
+                        std::max(0, radius - borderWidth),
+                        ToColorRef(theme->color(L"progressBar", state, L"activity")),
+                        ToColorRef(theme->color(L"progressBar", state, L"activity")),
+                        1);
+                }
+            }
+        }
+    }
+
+    if (!ProgressIndeterminate(hwnd)) {
+        std::wstring text = ProgressText(hwnd);
+        if (text.empty() && ProgressShowPercent(hwnd)) {
+            text = FormatProgressPercent(ProgressValue(hwnd));
+        }
+        if (!text.empty()) {
+            HFONT font = reinterpret_cast<HFONT>(SendMessageW(hwnd, WM_GETFONT, 0, 0));
+            if (!font) {
+                font = reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
+            }
+            DrawThemedText(
+                dc,
+                font,
+                text.c_str(),
+                static_cast<int>(text.size()),
+                rect,
+                DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+                ToColorRef(theme->color(L"progressBar", state, L"text")));
         }
     }
 
@@ -1221,6 +1291,14 @@ LRESULT CALLBACK ThemedControlProc(HWND hwnd, UINT message, WPARAM wParam, LPARA
         }
         return result;
     }
+    case WM_TIMER:
+        if (KindFor(hwnd) == ControlKind::ProgressBar &&
+            wParam == kProgressAnimationTimer &&
+            (ProgressIndeterminate(hwnd) || ProgressActivity(hwnd))) {
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
+        }
+        break;
     case WM_PRINTCLIENT: {
         ControlKind kind = KindFor(hwnd);
         if (IsOwnerDrawButtonKind(kind)) {
@@ -1337,6 +1415,9 @@ LRESULT CALLBACK ThemedControlProc(HWND hwnd, UINT message, WPARAM wParam, LPARA
         }
         break;
     case WM_DESTROY: {
+        if (KindFor(hwnd) == ControlKind::ProgressBar) {
+            KillTimer(hwnd, kProgressAnimationTimer);
+        }
         EraseState(hwnd);
         RemoveWindowSubclass(hwnd, ThemedControlProc, subclassId);
         break;
@@ -3659,13 +3740,35 @@ HWND CreateProgressBar(HINSTANCE instance, HWND parent, int id, const Theme& the
     return hwnd;
 }
 
-void SetProgressBarValue(HWND hwnd, double value, bool indeterminate) {
+void SetProgressBarValue(
+    HWND hwnd,
+    double value,
+    bool indeterminate,
+    bool activity,
+    bool showPercent,
+    const std::wstring& text) {
     if (!hwnd) {
         return;
     }
     auto& s = StateFor(hwnd);
+    const bool wasAnimated = s.progressIndeterminate || s.progressActivity;
     s.progressValue = std::max(0.0, std::min(1.0, value));
     s.progressIndeterminate = indeterminate;
+    s.progressActivity = activity && !indeterminate;
+    s.progressShowPercent = showPercent;
+    s.progressText = indeterminate ? std::wstring{} : text;
+    const bool isAnimated = s.progressIndeterminate || s.progressActivity;
+    if (wasAnimated != isAnimated) {
+        if (isAnimated) {
+            SetTimer(hwnd, kProgressAnimationTimer, kProgressAnimationIntervalMs, nullptr);
+        } else {
+            KillTimer(hwnd, kProgressAnimationTimer);
+        }
+    }
+    const std::wstring displayText = indeterminate
+        ? std::wstring{}
+        : (!text.empty() ? text : (showPercent ? FormatProgressPercent(s.progressValue) : std::wstring{}));
+    SetWindowTextW(hwnd, displayText.c_str());
     InvalidateRect(hwnd, nullptr, FALSE);
 }
 

@@ -1,5 +1,6 @@
 #include "AppLaunchLockerWindow.h"
 
+#include "ThemedTaskProgressDialog.h"
 #include "ThemedUi.h"
 #include "ThemedWindowUi.h"
 #include "Utilities.h"
@@ -25,12 +26,6 @@ constexpr int ID_RESTORE = 1022;
 constexpr int ID_CATEGORY_TABLE = 1030;
 constexpr UINT WM_APP_SCAN_COMPLETE = WM_APP + 0x150;
 constexpr UINT WM_APP_OPERATION_COMPLETE = WM_APP + 0x151;
-
-struct ScanPayload {
-    ScanResult scan;
-    std::vector<DisabledRecord> disabled;
-    std::wstring storeError;
-};
 
 struct OperationPayload {
     OperationResult result;
@@ -286,6 +281,8 @@ AppLaunchLockerWindow::AppLaunchLockerWindow(HINSTANCE instance, Theme theme)
 
 AppLaunchLockerWindow::~AppLaunchLockerWindow() {
     closing_ = true;
+    if (scanTask_) scanTask_->RequestStop();
+    if (scanProgressDialog_) scanProgressDialog_->Close();
     JoinWorker();
 }
 
@@ -354,6 +351,8 @@ LRESULT AppLaunchLockerWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam
         if (message == WM_DESTROY) {
             SaveWindowPosition(hwnd_);
             closing_ = true;
+            if (scanTask_) scanTask_->RequestStop();
+            if (scanProgressDialog_) scanProgressDialog_->Close();
             JoinWorker();
             PostQuitMessage(0);
         }
@@ -399,9 +398,20 @@ LRESULT AppLaunchLockerWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam
         break;
     }
     case WM_APP_SCAN_COMPLETE: {
-        std::unique_ptr<ScanPayload> payload(reinterpret_cast<ScanPayload*>(lParam));
-        JoinWorker();
-        CompleteScan(std::move(payload->scan), std::move(payload->disabled), std::move(payload->storeError));
+        if (!scanTask_ || !scanTask_->IsFinished()) return 0;
+        scanTask_->Wait();
+        ScanResult scan;
+        if (scanTask_->Status() == ScanTaskStatus::Failed) {
+            scan.warnings.push_back(scanTask_->Snapshot().error);
+        } else {
+            scan = scanTask_->ResultCopy<ScanResult>();
+        }
+        scanTask_.reset();
+        if (scanProgressDialog_) scanProgressDialog_->Close();
+        std::vector<DisabledRecord> disabled;
+        std::wstring storeError;
+        StartupManager().LoadDisabled(disabled, storeError);
+        CompleteScan(std::move(scan), std::move(disabled), std::move(storeError));
         return 0;
     }
     case WM_APP_OPERATION_COMPLETE: {
@@ -471,19 +481,26 @@ void AppLaunchLockerWindow::JoinWorker() {
 
 void AppLaunchLockerWindow::StartScan() {
     if (busy_) return;
-    JoinWorker();
     busy_ = true;
     ThemedUi::SetText(statusText_, L"正在扫描…");
     UpdateButtons();
     const HWND target = hwnd_;
-    worker_ = std::thread([target]() {
-        auto payload = std::make_unique<ScanPayload>();
-        StartupManager manager;
-        payload->scan = manager.ScanAll();
-        manager.LoadDisabled(payload->disabled, payload->storeError);
-        if (!PostMessageW(target, WM_APP_SCAN_COMPLETE, 0, reinterpret_cast<LPARAM>(payload.get()))) return;
-        payload.release();
-    });
+    scanTask_ = StartupManager().StartScanAll(
+        [target]() { PostMessageW(target, WM_APP_SCAN_COMPLETE, 0, 0); });
+    ThemedTaskProgressDialogOptions progressOptions{};
+    progressOptions.owner = hwnd_;
+    progressOptions.instance = instance_;
+    progressOptions.theme = theme_;
+    progressOptions.icon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_QUATTRO_APP_ICON));
+    progressOptions.className = L"AppLaunchLockerScanProgress_" +
+        std::to_wstring(GetCurrentProcessId()) + L"_" + std::to_wstring(GetTickCount64());
+    progressOptions.title = L"启动项扫描进度";
+    progressOptions.readSnapshot = [task = scanTask_]() {
+        return ToThemedTaskProgressSnapshot(task->Snapshot());
+    };
+    progressOptions.requestStop = [task = scanTask_]() { task->RequestStop(); };
+    scanProgressDialog_ = std::make_unique<ThemedTaskProgressDialog>(std::move(progressOptions));
+    scanProgressDialog_->Show();
 }
 
 void AppLaunchLockerWindow::StartDisable() {

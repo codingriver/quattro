@@ -88,12 +88,55 @@ ShellContextMenuRefreshService::ShellContextMenuRefreshService(QueryFunction que
 ShellContextMenuRefreshResult ShellContextMenuRefreshService::Refresh(
     const ShellContextMenuRefreshRequest& request,
     std::stop_token stopToken) const {
+    ScanTaskOptions options;
+    options.mode = ScanExecutionMode::CallerSingle;
+    return ScanExecutionService::Run<ShellContextMenuRefreshResult>(options,
+        [&](TaskContext& context) {
+            return RefreshCore(request, stopToken, context);
+        });
+}
+
+ShellContextMenuRefreshResult ShellContextMenuRefreshService::RefreshInTask(
+    const ShellContextMenuRefreshRequest& request,
+    TaskContext& context,
+    std::stop_token stopToken) const {
+    return RefreshCore(request, stopToken, context);
+}
+
+std::shared_ptr<ScanTaskHandle> ShellContextMenuRefreshService::StartRefresh(
+    ShellContextMenuRefreshRequest request,
+    std::function<void()> completionCallback) const {
+    ScanTaskOptions options;
+    options.mode = ScanExecutionMode::BackgroundSingle;
+    options.completionCallback = std::move(completionCallback);
+    const QueryFunction query = query_;
+    return ScanExecutionService::StartTyped<ShellContextMenuRefreshResult>(options,
+        [request = std::move(request), query](TaskContext& context) {
+            return ShellContextMenuRefreshService(query).RefreshCore(request, {}, context);
+        });
+}
+
+ShellContextMenuRefreshResult ShellContextMenuRefreshService::RefreshCore(
+    const ShellContextMenuRefreshRequest& request,
+    std::stop_token stopToken,
+    TaskContext& context) const {
     ShellContextMenuRefreshResult result;
     result.tracking = request.tracking;
     result.totalLinks = static_cast<int>(request.links.size());
     if (!request.tracking.Any()) {
         return result;
     }
+    ScanProgressUpdate progress;
+    progress.phase = L"shell-context-menu";
+    progress.title = request.progressTitle.empty()
+        ? L"Windows 菜单扫描进度"
+        : request.progressTitle;
+    progress.status = request.progressStatus.empty()
+        ? L"正在扫描 Windows 原生菜单"
+        : request.progressStatus;
+    progress.total = request.links.size();
+    progress.indeterminate = false;
+    context.Report(std::move(progress));
 
     ComApartment apartment;
     HiddenOwnerWindow owner;
@@ -113,13 +156,25 @@ ShellContextMenuRefreshResult ShellContextMenuRefreshService::Refresh(
         terminalContext = TerminalContextMenuService::DetectAvailablePrograms();
     }
 
+    const auto reportLink = [&context](const Link& link, bool succeeded, bool skipped, bool failed) {
+        context.UpdateProgress([&](ScanProgressUpdate& value) {
+            ++value.completed;
+            value.current = value.completed;
+            if (succeeded) ++value.succeeded;
+            if (skipped) ++value.skipped;
+            if (failed) ++value.failed;
+            value.detail = link.name;
+        });
+    };
+
     for (Link link : request.links) {
-        if (stopToken.stop_requested()) {
+        if (stopToken.stop_requested() || context.StopRequested()) {
             result.cancelled = true;
             break;
         }
         if (IsUrlLink(link) || BuiltinSystemFunctionForLink(link)) {
             ++result.skippedLinks;
+            reportLink(link, false, true, false);
             continue;
         }
         if ((!ShellItemService::IsPidlBlobPlausible(link.pidl)
@@ -129,6 +184,7 @@ ShellContextMenuRefreshResult ShellContextMenuRefreshService::Refresh(
                 link.name,
                 L"目标路径不存在或无法解析为 Windows Shell 对象。",
             });
+            reportLink(link, false, false, true);
             continue;
         }
 
@@ -151,6 +207,7 @@ ShellContextMenuRefreshResult ShellContextMenuRefreshService::Refresh(
                 link.name,
                 L"无法读取该启动项的 Windows 原生菜单。",
             });
+            reportLink(link, false, false, true);
             continue;
         }
 
@@ -158,6 +215,12 @@ ShellContextMenuRefreshResult ShellContextMenuRefreshService::Refresh(
         CountItems(update.terminalSnapshot.items, result.menuItemCount);
         result.updates.push_back(std::move(update));
         ++result.succeededLinks;
+        reportLink(link, true, false, false);
     }
+    context.UpdateProgress([&result](ScanProgressUpdate& value) {
+        value.status = result.cancelled ? L"扫描已停止" : L"扫描完成";
+        value.skipped = result.skippedLinks;
+        value.failed = result.failures.size();
+    });
     return result;
 }

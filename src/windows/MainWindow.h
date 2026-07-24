@@ -55,8 +55,11 @@ constexpr UINT WM_QUATTRO_TEST_MAIN_MENU = WM_APP + 0x76;
 constexpr UINT WM_QUATTRO_TEST_TOOL_MENU = WM_APP + 0x77;
 constexpr UINT WM_QUATTRO_TEST_LINK_MENU = WM_APP + 0x78;
 constexpr UINT WM_QUATTRO_TEST_TAG_MENU = WM_APP + 0x79;
+constexpr UINT WM_QUATTRO_RESOURCE_REFRESH_DONE = WM_APP + 0x7A;
 
 class OleDropTarget;
+class TaskHandle;
+class ThemedTaskProgressDialog;
 
 class MainWindow {
 public:
@@ -257,16 +260,9 @@ private:
     void RefreshAllIcons();
     void RefreshTagLinks(int tagId);
     void RefreshGroupLinks(int groupId);
-    enum class LinkResourceRefreshState {
-        Complete,
-        Pending,
-        Failed,
-    };
-    LinkResourceRefreshState RefreshLinkResources(
-        Link& link,
-        const TerminalContextMenuRefreshContext* terminalContext = nullptr);
-    void BeginResourceRefresh(const std::wstring& scopeText);
-    void CompleteResourceRefreshStart(int completed, int pending, int failed);
+    void StartResourceRefresh(std::vector<Link> links, std::wstring scopeText);
+    void CompleteResourceRefresh(std::uint64_t generation);
+    void CancelResourceRefresh();
     void ShowResourceRefreshResult(int completed, int failed);
     void RefreshLinkIcon(int linkId);
     void RequestInitialUrlIconDownload(const Link& link);
@@ -520,10 +516,10 @@ private:
     bool hasClipboardLink_ = false;
     bool clipboardCut_ = false;
     int clipboardSourceId_ = 0;
-    std::unordered_set<int> pendingUrlIconRefreshIds_;
     std::wstring pendingResourceRefreshScope_;
-    int pendingResourceRefreshCompleted_ = 0;
-    int pendingResourceRefreshFailed_ = 0;
+    std::shared_ptr<TaskHandle> resourceRefreshTask_;
+    std::unique_ptr<ThemedTaskProgressDialog> resourceRefreshProgressDialog_;
+    std::uint64_t resourceRefreshGeneration_ = 0;
     std::wstring tooltipText_;
     HitKind tooltipItemKind_ = HitKind::None;
     int tooltipItemId_ = 0;

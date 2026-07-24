@@ -4,6 +4,7 @@
 
 #include <filesystem>
 #include <optional>
+#include <span>
 #include <unordered_map>
 #include <vector>
 
@@ -37,6 +38,7 @@ public:
     void UpdateBatch(const std::vector<ShellContextMenuCacheUpdate>& updates);
     bool Reset();
     void Remove(int linkId);
+    void RemoveBatch(std::span<const int> linkIds);
     void RemoveProvider(const std::wstring& providerId);
 
     // 新增: 增量更新缓存（Phase 2新功能）

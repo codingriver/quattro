@@ -28,6 +28,35 @@ void SafeRelease(T*& value) {
     }
 }
 
+bool ContainsStraightAlphaPixels(const std::vector<std::uint32_t>& pixels) {
+    return std::any_of(pixels.begin(), pixels.end(), [](std::uint32_t pixel) {
+        const std::uint32_t alpha = pixel >> 24;
+        if (alpha == 0 || alpha == 255) {
+            return false;
+        }
+        const std::uint32_t blue = pixel & 0xFFu;
+        const std::uint32_t green = (pixel >> 8) & 0xFFu;
+        const std::uint32_t red = (pixel >> 16) & 0xFFu;
+        return red > alpha || green > alpha || blue > alpha;
+    });
+}
+
+void PremultiplyTranslucentPixels(std::vector<std::uint32_t>& pixels) {
+    for (auto& pixel : pixels) {
+        const std::uint32_t alpha = pixel >> 24;
+        if (alpha == 0 || alpha == 255) {
+            continue;
+        }
+        const std::uint32_t blue = pixel & 0xFFu;
+        const std::uint32_t green = (pixel >> 8) & 0xFFu;
+        const std::uint32_t red = (pixel >> 16) & 0xFFu;
+        pixel = (alpha << 24) |
+                (((red * alpha + 127u) / 255u) << 16) |
+                (((green * alpha + 127u) / 255u) << 8) |
+                ((blue * alpha + 127u) / 255u);
+    }
+}
+
 bool LooksLikeUrl(const Link& link) {
     const std::wstring lower = ToLower(Trim(link.path));
     return link.type == 2 ||
@@ -190,12 +219,17 @@ ResolvedIcon IconResolverService::Resolve(const IconRequest& request, std::stop_
     if (stopToken.stop_requested()) {
         return {};
     }
+    const int size = std::clamp(request.size, 1, 256);
+    ResolvedIcon result = ResolveShellItemImage(request, size);
+    if (HasPixels(result)) {
+        return result;
+    }
     std::wstring source;
     HICON icon = ResolveIconHandle(request, source);
     if (!icon && request.allowFallback) {
         icon = ResolveStockIcon(request.stockIcon, source);
     }
-    ResolvedIcon result = CaptureIcon(icon, std::clamp(request.size, 1, 256), 1, source);
+    result = CaptureIcon(icon, size, 1, source);
     if (icon) {
         DestroyIcon(icon);
     }
@@ -213,6 +247,146 @@ std::vector<ResolvedIcon> IconResolverService::ResolveBatch(
         }
         result.push_back(Resolve(request, stopToken));
     }
+    return result;
+}
+
+ResolvedIcon IconResolverService::ResolveShellItemImage(const IconRequest& request, int size) const {
+    switch (request.kind) {
+    case IconSourceKind::Link:
+        return ResolveLinkShellItemImage(request.link, size);
+    case IconSourceKind::PidlBlob:
+        return ResolvePidlImage(request.pidl, size, L"shell-item-image-pidl");
+    case IconSourceKind::ShellParseName:
+        return ResolveShellParseNameImage(request.value, size, L"shell-item-image-parse-name");
+    default:
+        return {};
+    }
+}
+
+ResolvedIcon IconResolverService::ResolveLinkShellItemImage(const Link& link, int size) const {
+    if (MenuIconIsRenderable(SystemFunctionMenuIconForLink(link)) || LooksLikeUrl(link)) {
+        return {};
+    }
+    const std::wstring iconPath = Trim(link.icon);
+    if (!iconPath.empty() && iconPath != L"#url" && iconPath != L"默认系统缓存图标") {
+        return {};
+    }
+    ResolvedIcon result = ResolvePidlImage(link.pidl, size, L"shell-item-image-link-pidl");
+    if (HasPixels(result)) {
+        return result;
+    }
+    return ResolveShellParseNameImage(link.path, size, L"shell-item-image-link-parse-name");
+}
+
+ResolvedIcon IconResolverService::ResolvePidlImage(
+    const std::vector<std::uint8_t>& pidl,
+    int size,
+    const std::wstring& source) const {
+    if (!ShellItemService::IsPidlBlobPlausible(pidl)) {
+        return {};
+    }
+    IShellItemImageFactory* factory = nullptr;
+    if (FAILED(SHCreateItemFromIDList(
+            reinterpret_cast<PCIDLIST_ABSOLUTE>(pidl.data()),
+            IID_PPV_ARGS(&factory))) || !factory) {
+        return {};
+    }
+    HBITMAP bitmap = nullptr;
+    const SIZE requested{size, size};
+    const HRESULT hr = factory->GetImage(requested, SIIGBF_ICONONLY, &bitmap);
+    SafeRelease(factory);
+    if (FAILED(hr) || !bitmap) {
+        if (bitmap) {
+            DeleteObject(bitmap);
+        }
+        return {};
+    }
+    ResolvedIcon result = CaptureBitmap(bitmap, 2, source);
+    DeleteObject(bitmap);
+    return result;
+}
+
+ResolvedIcon IconResolverService::ResolveShellParseNameImage(
+    const std::wstring& value,
+    int size,
+    const std::wstring& source) const {
+    const std::wstring target = ExpandEnvironmentStringsSafe(Trim(value));
+    if (target.empty() || !ShellItemService::IsShellParseName(target)) {
+        return {};
+    }
+    PIDLIST_ABSOLUTE pidl = nullptr;
+    if (FAILED(SHParseDisplayName(target.c_str(), nullptr, &pidl, 0, nullptr)) || !pidl) {
+        return {};
+    }
+    const UINT bytes = ILGetSize(pidl);
+    std::vector<std::uint8_t> blob(bytes);
+    if (bytes > 0) {
+        std::memcpy(blob.data(), pidl, bytes);
+    }
+    CoTaskMemFree(pidl);
+    return ResolvePidlImage(blob, size, source);
+}
+
+ResolvedIcon IconResolverService::CaptureBitmap(
+    HBITMAP bitmap,
+    int quality,
+    const std::wstring& source) const {
+    BITMAP object{};
+    if (!bitmap || GetObjectW(bitmap, sizeof(object), &object) != sizeof(object) ||
+        object.bmWidth <= 0 || object.bmHeight == 0) {
+        return {};
+    }
+    const int width = object.bmWidth;
+    const int height = std::abs(object.bmHeight);
+    BITMAPINFO info{};
+    info.bmiHeader.biSize = sizeof(info.bmiHeader);
+    info.bmiHeader.biWidth = width;
+    info.bmiHeader.biHeight = -height;
+    info.bmiHeader.biPlanes = 1;
+    info.bmiHeader.biBitCount = 32;
+    info.bmiHeader.biCompression = BI_RGB;
+
+    ResolvedIcon result;
+    result.width = width;
+    result.height = height;
+    result.quality = quality;
+    result.pixels.resize(static_cast<std::size_t>(width) * height);
+    HDC dc = CreateCompatibleDC(nullptr);
+    const int rows = dc ? GetDIBits(
+        dc,
+        bitmap,
+        0,
+        static_cast<UINT>(height),
+        result.pixels.data(),
+        &info,
+        DIB_RGB_COLORS) : 0;
+    if (dc) {
+        DeleteDC(dc);
+    }
+    if (rows != height) {
+        return {};
+    }
+
+    bool hasAlpha = false;
+    bool hasColor = false;
+    for (const auto pixel : result.pixels) {
+        hasAlpha = hasAlpha || (pixel >> 24) != 0;
+        hasColor = hasColor || (pixel & 0x00FFFFFFu) != 0;
+    }
+    if (!hasAlpha && hasColor) {
+        for (auto& pixel : result.pixels) {
+            if ((pixel & 0x00FFFFFFu) != 0) {
+                pixel |= 0xFF000000u;
+            }
+        }
+    } else if (ContainsStraightAlphaPixels(result.pixels)) {
+        // The main UI uploads resolved icons as premultiplied BGRA. Some Shell
+        // item images arrive as straight-alpha DIBs, which makes translucent
+        // folder edges appear too bright unless normalized here.
+        PremultiplyTranslucentPixels(result.pixels);
+    }
+    result.ok = hasColor || hasAlpha;
+    result.source = source;
     return result;
 }
 
@@ -501,19 +675,7 @@ ResolvedIcon IconResolverService::CaptureIcon(HICON icon, int size, int quality,
         result.ok = std::any_of(result.pixels.begin(), result.pixels.end(), [](std::uint32_t pixel) {
             return (pixel >> 24) != 0 || (pixel & 0x00FFFFFFu) != 0;
         });
-        for (auto& pixel : result.pixels) {
-            const std::uint32_t alpha = pixel >> 24;
-            if (alpha == 0 || alpha == 255) {
-                continue;
-            }
-            const std::uint32_t blue = pixel & 0xFFu;
-            const std::uint32_t green = (pixel >> 8) & 0xFFu;
-            const std::uint32_t red = (pixel >> 16) & 0xFFu;
-            pixel = (alpha << 24) |
-                    ((red * alpha / 255) << 16) |
-                    ((green * alpha / 255) << 8) |
-                    (blue * alpha / 255);
-        }
+        PremultiplyTranslucentPixels(result.pixels);
         result.source = source;
     }
     DeleteDC(dc);

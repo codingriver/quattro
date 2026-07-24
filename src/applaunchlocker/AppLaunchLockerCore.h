@@ -1,10 +1,13 @@
 #pragma once
 
+#include "ScanExecutionService.h"
+
 #include <chrono>
 #include <cstddef>
 #include <filesystem>
 #include <functional>
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -127,11 +130,14 @@ public:
     explicit StartupManager(DisabledItemStore store);
 
     ScanResult ScanAll() const;
+    std::shared_ptr<ScanTaskHandle> StartScanAll(
+        std::function<void()> completionCallback = {}) const;
     bool LoadDisabled(std::vector<DisabledRecord>& records, std::wstring& error) const;
     OperationResult Disable(const std::wstring& itemId) const;
     OperationResult Restore(const std::wstring& recordId) const;
 
 private:
+    ScanResult ScanAllCore(ScanTaskContext& context) const;
     DisabledItemStore store_;
 };
 
@@ -150,12 +156,22 @@ public:
         const AdBlockCancelCheck& shouldCancel = {},
         const AdBlockProgressCallback& reportProgress = {},
         AdBlockScanOptions options = {}) const;
+    std::shared_ptr<ScanTaskHandle> StartScanPathDetailed(
+        std::wstring fileOrDir,
+        AdBlockScanOptions options = {},
+        std::function<void()> completionCallback = {}) const;
     // mode = L"exact"（精确路径）| L"name"（同名程序）| L"startup"（仅禁自启，系统开关）。
     OperationResult Block(const std::wstring& targetPath, const std::wstring& mode) const;
     OperationResult Unblock(const std::wstring& recordId) const;
     bool ListBlocked(std::vector<DisabledRecord>& records, std::wstring& error) const;
 
 private:
+    AdBlockScanResult ScanPathDetailedCore(
+        const std::wstring& fileOrDir,
+        const AdBlockCancelCheck& shouldCancel,
+        const AdBlockProgressCallback& reportProgress,
+        AdBlockScanOptions options,
+        ScanTaskContext& context) const;
     // 启动拦截：禁用目标 exe 的所有开机自启动注册项（StartupApproved 系统开关）。
     OperationResult BlockStartup(const std::wstring& targetExe) const;
 

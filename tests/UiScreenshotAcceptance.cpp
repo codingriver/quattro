@@ -3110,13 +3110,16 @@ void RunAppLaunchLockerScenario(const std::filesystem::path& outputDir, TestStat
     ScopedAcceptanceChildEnvironment childEnvironment;
     const std::wstring dpiText = std::to_wstring(dpi);
     SetEnvironmentVariableW(L"QUATTRO_APP_LAUNCH_LOCKER_ACCEPTANCE_DPI", dpiText.c_str());
+    SetEnvironmentVariableW(L"QUATTRO_TEST_APP_LAUNCH_LOCKER_SCAN_DELAY_MS", L"400");
     if (!CreateProcessW(exe.c_str(), command.data(), nullptr, nullptr, FALSE, 0, nullptr, ModuleDirectory().c_str(), &startup, &process)) {
         SetEnvironmentVariableW(L"QUATTRO_APP_LAUNCH_LOCKER_ACCEPTANCE_DPI", nullptr);
+        SetEnvironmentVariableW(L"QUATTRO_TEST_APP_LAUNCH_LOCKER_SCAN_DELAY_MS", nullptr);
         state.Check(false, L"app-launch-locker: CreateProcess failed");
         AcceptanceLog(L"create app-launch-locker failed");
         return;
     }
     SetEnvironmentVariableW(L"QUATTRO_APP_LAUNCH_LOCKER_ACCEPTANCE_DPI", nullptr);
+    SetEnvironmentVariableW(L"QUATTRO_TEST_APP_LAUNCH_LOCKER_SCAN_DELAY_MS", nullptr);
 
     WaitForInputIdle(process.hProcess, 10000);
     AcceptanceLog(L"wait app-launch-locker");
@@ -3145,6 +3148,30 @@ void RunAppLaunchLockerScenario(const std::filesystem::path& outputDir, TestStat
         SetWindowPos(hwnd, HWND_BOTTOM, captureX, captureY, 0, 0,
             SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
         UpdateWindow(hwnd);
+        HWND progressWindow = WaitForTopWindow(
+            FindWindowRequest{L"", L"启动项扫描进度", process.dwProcessId}, 5000);
+        state.Check(progressWindow != nullptr,
+            L"app-launch-locker: startup scan progress window did not appear");
+        if (progressWindow) {
+            ShowWindow(progressWindow, SW_SHOWNOACTIVATE);
+            SetWindowPos(progressWindow, HWND_BOTTOM, 0, 0, 0, 0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+            state.Check(WaitForWindowText(progressWindow, L"个工作线程", 5000),
+                L"app-launch-locker: startup scan progress did not report workers");
+            BitmapCapture progressCapture = CaptureWindowBitmap(progressWindow);
+            state.Check(progressCapture.bitmap != nullptr,
+                L"app-launch-locker: startup scan progress screenshot failed");
+            if (progressCapture.bitmap) {
+                state.Check(BitmapHasVisualContent(
+                        progressCapture.bitmap, progressCapture.width, progressCapture.height),
+                    L"app-launch-locker: startup scan progress screenshot looks blank");
+                state.Check(SavePng(
+                        progressCapture.bitmap,
+                        outputDir / (L"app-launch-locker-progress-" + dpiSuffix + L".png")),
+                    L"app-launch-locker: startup scan progress screenshot save failed");
+                DeleteObject(progressCapture.bitmap);
+            }
+        }
         RECT windowRect{};
         RECT clientRect{};
         GetWindowRect(hwnd, &windowRect);
@@ -3387,7 +3414,7 @@ void RunAdBlockScenario(const std::filesystem::path& outputDir, TestState& state
                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
                 state.Check(WaitForWindowText(progressWindow, L"个工作线程", 5000),
                     L"ad-block: progress dialog did not report parallel workers");
-                state.Check(WindowContainsText(progressWindow, L"已注册开机/登录自启动"),
+                state.Check(WaitForWindowText(progressWindow, L"已注册开机/登录自启动", 5000),
                     L"ad-block: progress dialog did not distinguish registered auto-start entries");
                 state.Check(WindowText(checkPath) == L"查看进度",
                     L"ad-block: running check action did not switch to view-progress state");
@@ -3429,17 +3456,11 @@ void RunAdBlockScenario(const std::filesystem::path& outputDir, TestState& state
             state.Check(IsWindowEnabled(clearResults) != FALSE,
                 L"ad-block: clear-results action was not enabled after scanning");
             if (progressWindow) {
-                state.Check(WaitForWindowText(progressWindow, L"检查完成", 3000),
-                    L"ad-block: progress dialog did not enter completed state");
-                state.Check(WindowContainsText(progressWindow, L"个可启动程序") &&
-                        WindowContainsText(progressWindow, L"已注册开机/登录自启动"),
-                    L"ad-block: completed progress summary is ambiguous");
-                capture(progressWindow, L"ad-block-progress-completed.png", L"ad-block completed progress");
-                HWND closeProgress = ChildById(progressWindow, 3);
-                if (closeProgress) {
-                    DWORD_PTR closeResult = 0;
-                    SendMessageTimeoutW(closeProgress, BM_CLICK, 0, 0, SMTO_ABORTIFHUNG, 5000, &closeResult);
+                for (int elapsed = 0; IsWindow(progressWindow) && elapsed < 3000; elapsed += 20) {
+                    Sleep(20);
                 }
+                state.Check(!IsWindow(progressWindow),
+                    L"ad-block: completed progress dialog did not close automatically");
             }
             PostMessageW(hwnd, WM_APP + 0x164, 0, 0);
             Sleep(500);
@@ -4256,6 +4277,243 @@ void ValidateQuickImportService(
     std::filesystem::remove_all(root, ec);
 }
 
+void RunQuickImportProgressScenario(
+    HWND owner,
+    HINSTANCE instance,
+    const Theme& theme,
+    const AppModel& model,
+    const std::filesystem::path& outputDir,
+    TestState& state) {
+    const std::wstring scenarioName = L"quick-import-progress";
+    AcceptanceLog(L"begin " + scenarioName);
+    const std::filesystem::path root = outputDir / L"quick-import-progress-input";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    std::filesystem::create_directories(root / L"nested" / L"folder-only", ec);
+    for (int index = 0; index < 256; ++index) {
+        const std::filesystem::path parent = index % 2 == 0 ? root : root / L"nested";
+        std::ofstream(parent / (L"candidate-" + std::to_wstring(index) + L".exe"), std::ios::binary)
+            << "not-a-real-pe";
+    }
+
+    SetEnvironmentVariableW(L"QUATTRO_TEST_MODE", L"1");
+    SetEnvironmentVariableW(L"QUATTRO_TEST_QUICK_IMPORT_ITEM_DELAY_MS", L"20");
+    std::vector<Link> selected;
+    std::atomic_bool inspected{false};
+    std::thread controller([&]() {
+        HWND dialog = WaitForTopWindow(
+            FindWindowRequest{L"QuattroQuickImportDialog", L"快速导入", GetCurrentProcessId()},
+            7000);
+        state.Check(dialog != nullptr, scenarioName + L": quick import dialog did not appear");
+        if (!dialog) {
+            inspected = true;
+            return;
+        }
+
+        HWND directoryEdit = ChildById(dialog, 1010);
+        HWND scanButton = ChildById(dialog, 1002);
+        HWND table = ChildById(dialog, 1003);
+        state.Check(directoryEdit && scanButton && table,
+            scenarioName + L": quick import controls are incomplete");
+        if (!directoryEdit || !scanButton || !table) {
+            inspected = true;
+            PostMessageW(dialog, WM_CLOSE, 0, 0);
+            return;
+        }
+
+        const auto setDirectoryAndScan = [&]() {
+            SendMessageW(directoryEdit, WM_SETTEXT, 0, reinterpret_cast<LPARAM>(root.c_str()));
+            SendMessageW(scanButton, BM_CLICK, 0, 0);
+            return WaitForTopWindow(
+                FindWindowRequest{L"", L"快速导入扫描进度", GetCurrentProcessId()},
+                5000);
+        };
+
+        HWND progress = setDirectoryAndScan();
+        state.Check(progress != nullptr, scenarioName + L": progress dialog did not appear");
+        if (progress) {
+            state.Check(WaitForWindowText(progress, L"个工作线程", 5000),
+                scenarioName + L": parallel worker progress was not displayed");
+            HWND progressBar = ChildById(progress, 1);
+            state.Check(progressBar != nullptr,
+                scenarioName + L": shared progress bar was not created");
+            if (progressBar) {
+                const BitmapCapture firstProgressFrame = CaptureWindowBitmap(progressBar);
+                Sleep(160);
+                const BitmapCapture secondProgressFrame = CaptureWindowBitmap(progressBar);
+                state.Check(
+                    firstProgressFrame.bitmap && secondProgressFrame.bitmap &&
+                        CountChangedPixelSamples(firstProgressFrame, secondProgressFrame) > 0,
+                    scenarioName + L": progress bar pixels did not change while scanning");
+                if (firstProgressFrame.bitmap) DeleteObject(firstProgressFrame.bitmap);
+                if (secondProgressFrame.bitmap) DeleteObject(secondProgressFrame.bitmap);
+            }
+            Scenario running{
+                scenarioName + L"-running",
+                L"",
+                L"快速导入扫描进度",
+                L"quick-import-progress-running.png",
+                {L"快速导入扫描进度", L"正在解析可导入项目", L"个工作线程", L"停止", L"关闭"},
+                {},
+                0,
+                2};
+            ValidateAndCapture(progress, running, outputDir, state);
+            state.Check(WaitForWindowText(dialog, L"扫描到 256 项", 15000),
+                scenarioName + L": scan did not complete");
+            for (int elapsed = 0; IsWindow(progress) && elapsed < 3000; elapsed += 20) {
+                Sleep(20);
+            }
+            state.Check(!IsWindow(progress),
+                scenarioName + L": completed progress dialog did not close automatically");
+        }
+
+        state.Check(WaitForWindowText(dialog, L"扫描到 256 项", 5000),
+            scenarioName + L": completed results were not applied");
+        state.Check(WindowText(directoryEdit) == root.wstring(),
+            scenarioName + L": completed scan replaced the selected directory");
+        const int rowCount = ListView_GetItemCount(table);
+        state.Check(rowCount == 256, scenarioName + L": result count includes missing or folder rows");
+        bool containsFolder = false;
+        for (int row = 0; row < rowCount; ++row) {
+            wchar_t typeText[64]{};
+            ListView_GetItemText(table, row, 1, typeText, static_cast<int>(std::size(typeText)));
+            containsFolder = containsFolder || std::wstring(typeText) == L"文件夹";
+        }
+        state.Check(!containsFolder, scenarioName + L": folder rows were displayed");
+        if (HWND startMenuButton = VisibleButtonByText(dialog, L"开始菜单")) {
+            SendMessageW(startMenuButton, BM_CLICK, 0, 0);
+            Sleep(80);
+            state.Check(
+                ListView_GetItemCount(table) == 0,
+                scenarioName + L": switching source did not clear scanned rows");
+        } else {
+            state.Check(false, scenarioName + L": start-menu source button was not found");
+        }
+
+        progress = setDirectoryAndScan();
+        state.Check(progress != nullptr, scenarioName + L": second progress dialog did not appear");
+        if (progress) {
+            state.Check(WaitForWindowText(progress, L"个工作线程", 5000),
+                scenarioName + L": second scan did not enter parallel processing");
+            if (HWND stopButton = VisibleButtonByText(progress, L"停止")) {
+                SendMessageW(stopButton, BM_CLICK, 0, 0);
+            } else {
+                state.Check(false, scenarioName + L": stop button was not found");
+            }
+            state.Check(WaitForWindowText(progress, L"扫描已停止", 10000),
+                scenarioName + L": stop request did not finish");
+            Scenario stopped{
+                scenarioName + L"-stopped",
+                L"",
+                L"快速导入扫描进度",
+                L"quick-import-progress-stopped.png",
+                {L"快速导入扫描进度", L"扫描已停止", L"停止", L"关闭"},
+                {},
+                0,
+                2};
+            ValidateAndCapture(progress, stopped, outputDir, state);
+            if (HWND closeButton = VisibleButtonByText(progress, L"关闭")) {
+                SendMessageW(closeButton, BM_CLICK, 0, 0);
+            }
+        }
+
+        inspected = true;
+        PostMessageW(dialog, WM_COMMAND, MAKEWPARAM(IDCANCEL, BN_CLICKED), 0);
+        PostMessageW(dialog, WM_CLOSE, 0, 0);
+    });
+
+    QuickImportDialog::Show(owner, instance, theme, model.links, selected);
+    controller.join();
+    SetEnvironmentVariableW(L"QUATTRO_TEST_QUICK_IMPORT_ITEM_DELAY_MS", nullptr);
+    SetEnvironmentVariableW(L"QUATTRO_TEST_MODE", nullptr);
+    std::filesystem::remove_all(root, ec);
+    state.Check(inspected.load(), scenarioName + L": controller did not finish");
+    AcceptanceLog(L"end " + scenarioName);
+}
+
+void RunQuickImportStoreIconProgressScenario(
+    HWND owner,
+    HINSTANCE instance,
+    const Theme& theme,
+    const AppModel& model,
+    const std::filesystem::path& outputDir,
+    TestState& state) {
+    const std::wstring scenarioName = L"quick-import-store-icon-progress";
+    AcceptanceLog(L"begin " + scenarioName);
+    SetEnvironmentVariableW(L"QUATTRO_TEST_MODE", L"1");
+    SetEnvironmentVariableW(L"QUATTRO_TEST_QUICK_IMPORT_ICON_DELAY_MS", L"5");
+    std::vector<Link> selected;
+    std::atomic_bool inspected{false};
+    std::thread controller([&]() {
+        HWND dialog = WaitForTopWindow(
+            FindWindowRequest{L"QuattroQuickImportDialog", L"快速导入", GetCurrentProcessId()},
+            7000);
+        state.Check(dialog != nullptr, scenarioName + L": quick import dialog did not appear");
+        if (!dialog) {
+            inspected = true;
+            return;
+        }
+
+        HWND storeButton = VisibleButtonByText(dialog, L"商店应用");
+        HWND scanButton = ChildById(dialog, 1002);
+        HWND table = ChildById(dialog, 1003);
+        state.Check(storeButton && scanButton && table,
+            scenarioName + L": quick import store controls are incomplete");
+        if (!storeButton || !scanButton || !table) {
+            inspected = true;
+            PostMessageW(dialog, WM_CLOSE, 0, 0);
+            return;
+        }
+
+        SendMessageW(storeButton, BM_CLICK, 0, 0);
+        Sleep(80);
+        SendMessageW(scanButton, BM_CLICK, 0, 0);
+        HWND progress = WaitForTopWindow(
+            FindWindowRequest{L"", L"快速导入扫描进度", GetCurrentProcessId()},
+            7000);
+        state.Check(progress != nullptr, scenarioName + L": progress dialog did not appear");
+        if (progress) {
+            state.Check(WaitForWindowText(progress, L"正在刷新应用图标", 60000),
+                scenarioName + L": progress dialog did not wait for icon refresh");
+            const int rowCountDuringIcons = ListView_GetItemCount(table);
+            state.Check(rowCountDuringIcons > 0,
+                scenarioName + L": store app rows were not applied before icon refresh");
+            state.Check(IsWindow(progress),
+                scenarioName + L": progress dialog closed before icon refresh completed");
+            Scenario refreshing{
+                scenarioName,
+                L"",
+                L"快速导入扫描进度",
+                L"quick-import-store-icon-progress.png",
+                {L"快速导入扫描进度", L"正在刷新应用图标", L"已刷新", L"停止", L"关闭"},
+                {},
+                0,
+                2};
+            ValidateAndCapture(progress, refreshing, outputDir, state);
+            for (int elapsed = 0; IsWindow(progress) && elapsed < 90000; elapsed += 20) {
+                Sleep(20);
+            }
+            state.Check(!IsWindow(progress),
+                scenarioName + L": completed icon refresh progress dialog did not close");
+        }
+        state.Check(ListView_GetItemCount(table) > 0,
+            scenarioName + L": store app rows disappeared after icon refresh");
+        state.Check(WindowContainsText(dialog, L"扫描到"),
+            scenarioName + L": final scan status was not restored after icon refresh");
+
+        inspected = true;
+        PostMessageW(dialog, WM_COMMAND, MAKEWPARAM(IDCANCEL, BN_CLICKED), 0);
+        PostMessageW(dialog, WM_CLOSE, 0, 0);
+    });
+
+    QuickImportDialog::Show(owner, instance, theme, model.links, selected);
+    controller.join();
+    SetEnvironmentVariableW(L"QUATTRO_TEST_QUICK_IMPORT_ICON_DELAY_MS", nullptr);
+    SetEnvironmentVariableW(L"QUATTRO_TEST_MODE", nullptr);
+    state.Check(inspected.load(), scenarioName + L": controller did not finish");
+    AcceptanceLog(L"end " + scenarioName);
+}
+
 void RunQuickImportScenarios(
     HWND owner,
     HINSTANCE instance,
@@ -4264,6 +4522,8 @@ void RunQuickImportScenarios(
     const std::filesystem::path& outputDir,
     TestState& state) {
     ValidateQuickImportService(outputDir, state);
+    RunQuickImportProgressScenario(owner, instance, theme, model, outputDir, state);
+    RunQuickImportStoreIconProgressScenario(owner, instance, theme, model, outputDir, state);
     for (const UINT dpi : {96u, 120u, 144u}) {
         const std::wstring dpiSuffix = DpiPercentSuffix(dpi);
         const bool switchToStartMenu = dpi != USER_DEFAULT_SCREEN_DPI;
@@ -4474,6 +4734,7 @@ void RunWebDavFileManagerQueueEntryScenario(
     SetEnvironmentVariableW(L"QUATTRO_TEST_MODE", L"1");
     SetEnvironmentVariableW(L"QUATTRO_TEST_WEBDAV_FILE_MANAGER_SKIP_REFRESH", L"1");
     SetEnvironmentVariableW(L"QUATTRO_TEST_WEBDAV_FILE_MANAGER_INCREMENTAL", L"1");
+    SetEnvironmentVariableW(L"QUATTRO_TEST_WEBDAV_FILE_MANAGER_SIMULATE_REFRESH", L"1");
     const std::filesystem::path cacheRoot = outputDir /
         (L"webdav-file-manager-cache-" + DpiPercentSuffix(dpi));
     std::filesystem::create_directories(cacheRoot);
@@ -4539,6 +4800,9 @@ void RunWebDavFileManagerQueueEntryScenario(
                 state.Check(reinterpret_cast<INT_PTR>(GetPropW(
                         window, L"QuattroWebDavFileActionMenuHasOpenLocation")) == 1,
                     L"webdav file manager action menu missing open-location command");
+                state.Check(reinterpret_cast<INT_PTR>(GetPropW(
+                        window, L"QuattroWebDavFileActionMenuHasUpload")) == 1,
+                    L"webdav file manager action menu missing upload command");
                 if (popup) {
                     BitmapCapture popupCapture = CaptureWindowBitmap(popup);
                     state.Check(
@@ -4560,11 +4824,57 @@ void RunWebDavFileManagerQueueEntryScenario(
                 state.Check(false, L"webdav file manager action menu: first row rect unavailable");
             }
         }
+        HWND refreshButton = VisibleButtonByText(window, L"刷新");
+        state.Check(refreshButton != nullptr,
+            L"webdav file manager background refresh: refresh button not found");
+        if (refreshButton) {
+            SendMessageW(refreshButton, BM_CLICK, 0, 0);
+            state.Check(WaitForWindowText(window, L"正在后台刷新", 2000),
+                L"webdav file manager background refresh: inline status did not appear");
+            Scenario refreshScenario = scenario;
+            refreshScenario.name = L"webdav-file-manager-background-refresh-" + DpiPercentSuffix(dpi);
+            refreshScenario.screenshotName = refreshScenario.name + L".png";
+            refreshScenario.expectedVisibleChildTexts = {
+                L"远端目录：/Quattro/files/ · 正在后台刷新...",
+                L"刷新中",
+                L"已选择 0 项 · 共 2 项"};
+            ValidateAndCapture(window, refreshScenario, outputDir, state);
+            if (table) {
+                RECT rowRect{};
+                if (ListView_GetItemRect(table, 0, &rowRect, LVIR_BOUNDS)) {
+                    POINT anchor{rowRect.right - 8, (rowRect.top + rowRect.bottom) / 2};
+                    ClientToScreen(table, &anchor);
+                    PostMessageW(window, WM_CONTEXTMENU, reinterpret_cast<WPARAM>(table),
+                        MAKELPARAM(anchor.x, anchor.y));
+                    HWND popup = WaitForTopWindow(FindWindowRequest{L"#32768", L"", GetCurrentProcessId()}, 1500);
+                    state.Check(popup != nullptr,
+                        L"webdav file manager action menu did not appear during background refresh");
+                    if (popup) {
+                        PostMessageW(popup, WM_CANCELMODE, 0, 0);
+                        PostMessageW(window, WM_CANCELMODE, 0, 0);
+                    }
+                }
+            }
+            bool progressAppeared = false;
+            const ULONGLONG refreshDeadline = GetTickCount64() + 3000;
+            while (GetTickCount64() < refreshDeadline &&
+                   WindowContainsText(window, L"正在后台刷新")) {
+                progressAppeared = progressAppeared || FindTopWindow(
+                    FindWindowRequest{L"", L"WebDAV 文件扫描进度", GetCurrentProcessId()}) != nullptr;
+                Sleep(20);
+            }
+            state.Check(!progressAppeared,
+                L"webdav file manager background refresh opened a progress dialog");
+            state.Check(!WindowContainsText(window, L"正在后台刷新") &&
+                    WindowContainsText(window, L"远端目录：/Quattro/files/"),
+                L"webdav file manager background refresh did not restore inline status");
+        }
         PostMessageW(window, WM_CLOSE, 0, 0);
     });
     ShowWebDavFileManagerDialog(owner, instance, theme, config);
     inspector.join();
     SetEnvironmentVariableW(L"QUATTRO_USER_CONFIG_DIR", nullptr);
+    SetEnvironmentVariableW(L"QUATTRO_TEST_WEBDAV_FILE_MANAGER_SIMULATE_REFRESH", nullptr);
     SetEnvironmentVariableW(L"QUATTRO_TEST_WEBDAV_FILE_MANAGER_INCREMENTAL", nullptr);
     SetEnvironmentVariableW(L"QUATTRO_TEST_WEBDAV_FILE_MANAGER_SKIP_REFRESH", nullptr);
 }
@@ -4593,7 +4903,8 @@ void RunWebDavFileDetailsScenario(
         scenario.forcedDpi = dpi;
         scenario.expectedVisibleChildTexts = {
             L"文件名：", L"EntryFlow.md", L"文件大小：", L"5 KB",
-            L"上传时间：", WebDavFileService::FormatUploadedAtLocal(L"2026-07-21T08:31:35.872Z"), L"上传状态：",
+            L"远程更新时间：", WebDavFileService::FormatUploadedAtLocal(L"2026-07-21T08:31:35.872Z"),
+            L"本地修改时间：", L"-", L"上传状态：",
             L"complete · 内容可用", L"系统绝对路径", L"远端记录路径", L"SHA-256"};
         ValidateAndCapture(details, scenario, outputDir, state);
         PostMessageW(details, WM_CLOSE, 0, 0);

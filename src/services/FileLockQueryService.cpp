@@ -1,21 +1,25 @@
 #include "FileLockQueryService.h"
 
+#include "ScanExecutionService.h"
 #include "Utilities.h"
 
 #include <restartmanager.h>
 #include <windows.h>
 
 #include <algorithm>
-#include <atomic>
 #include <filesystem>
 #include <iterator>
+#include <limits>
 #include <map>
-#include <mutex>
 #include <set>
-#include <thread>
 #include <tuple>
 
 namespace {
+std::size_t SaturatingSize(std::uint64_t value) {
+    constexpr std::uint64_t maximum = static_cast<std::uint64_t>((std::numeric_limits<std::size_t>::max)());
+    return static_cast<std::size_t>((std::min)(value, maximum));
+}
+
 std::wstring Utf8ToWide(const std::string& value) {
     if (value.empty()) return {};
     const int length = MultiByteToWideChar(
@@ -171,7 +175,9 @@ HandleScanResult QueryDirectoryHandles(
     const std::wstring& targetPath,
     const FileLockCancelCheck& shouldCancel,
     const FileLockProgressCallback& reportProgress,
-    const FileLockQueryOptions& options) {
+    const FileLockQueryOptions& options,
+    ScanTaskContext& scanContext) {
+    (void)options;
     HandleScanResult result;
     if (IsCancelled(shouldCancel)) {
         result.cancelled = true;
@@ -266,34 +272,38 @@ HandleScanResult QueryDirectoryHandles(
     }
     if (processes.empty()) return result;
 
-    const std::size_t hardware = std::max<std::size_t>(1, std::thread::hardware_concurrency());
-    const std::size_t configured = options.maxHandleWorkers == 0
-        ? hardware
-        : std::max<std::size_t>(1, options.maxHandleWorkers);
-    const std::size_t workerCount = std::min({processes.size(), hardware, configured});
-    std::atomic_size_t nextProcess{0};
-    std::atomic_size_t checkedProcesses{0};
-    std::atomic_size_t inaccessibleProcesses{0};
-    std::mutex resultMutex;
-    std::mutex progressMutex;
-    std::set<std::tuple<unsigned long, std::wstring, bool>> evidenceKeys;
-
-    auto worker = [&]() {
-        while (!IsCancelled(shouldCancel)) {
-            const std::size_t index = nextProcess.fetch_add(1);
-            if (index >= processes.size()) break;
-            const DWORD pid = processes[index].first;
+    struct HandleLocalResult {
+        std::vector<FileLockEvidence> evidence;
+        std::size_t checkedProcesses = 0;
+        std::size_t inaccessibleProcesses = 0;
+    };
+    ScanProgressUpdate scanProgress;
+    scanProgress.phase = L"file-lock-handles";
+    scanProgress.title = L"文件占用检查进度";
+    scanProgress.status = L"正在检查系统句柄";
+    scanProgress.total = processes.size();
+    scanProgress.indeterminate = false;
+    scanContext.Report(std::move(scanProgress));
+    scanContext.ForEach<std::pair<DWORD, std::vector<ULONG_PTR>>, HandleLocalResult>(
+        processes,
+        [] { return HandleLocalResult{}; },
+        [&](const auto& processEntry, HandleLocalResult& local, ScanTaskContext& context) {
+            if (IsCancelled(shouldCancel)) {
+                context.RequestStop();
+                return;
+            }
+            const DWORD pid = processEntry.first;
             HANDLE process = OpenProcess(
                 PROCESS_DUP_HANDLE,
                 FALSE,
                 pid);
             if (!process) {
                 if (GetLastError() == ERROR_ACCESS_DENIED) {
-                    inaccessibleProcesses.fetch_add(1);
+                    ++local.inaccessibleProcesses;
                 }
             } else {
-                for (ULONG_PTR handleValue : processes[index].second) {
-                    if (IsCancelled(shouldCancel)) break;
+                for (ULONG_PTR handleValue : processEntry.second) {
+                    if (IsCancelled(shouldCancel) || context.StopRequested()) break;
                     HANDLE duplicate = nullptr;
                     if (!DuplicateHandle(
                             process,
@@ -314,46 +324,46 @@ HandleScanResult QueryDirectoryHandles(
                                 FileStandardInfo,
                                 &standard,
                                 sizeof(standard)) && standard.Directory;
-                            std::lock_guard lock(resultMutex);
-                            const auto key = std::make_tuple(
-                                static_cast<unsigned long>(pid), path, directory);
-                            if (evidenceKeys.insert(key).second) {
-                                result.evidence.push_back(FileLockEvidence{
-                                    static_cast<unsigned long>(pid),
-                                    FileLockSource::SystemHandle,
-                                    path,
-                                    directory});
-                            }
+                            local.evidence.push_back(FileLockEvidence{
+                                static_cast<unsigned long>(pid),
+                                FileLockSource::SystemHandle,
+                                path,
+                                directory});
                         }
                     }
                     CloseHandle(duplicate);
                 }
                 CloseHandle(process);
             }
-
-            const std::size_t checked = checkedProcesses.fetch_add(1) + 1;
+            ++local.checkedProcesses;
+            context.UpdateProgress([&](ScanProgressUpdate& value) {
+                ++value.completed;
+                value.current = value.completed;
+                value.detail = L"已检查 " + std::to_wstring(value.completed) + L" / " +
+                    std::to_wstring(value.total) + L" 个进程";
+            });
             if (reportProgress) {
-                std::lock_guard lock(progressMutex);
+                const ScanProgressSnapshot snapshot = context.Snapshot();
                 FileLockQueryProgress progress{};
                 progress.phase = FileLockQueryPhase::ScanningHandles;
-                progress.checkedProcesses = checked;
+                progress.checkedProcesses = SaturatingSize(snapshot.completed);
                 progress.totalProcesses = result.totalProcesses;
-                progress.inaccessibleProcesses = inaccessibleProcesses.load();
-                progress.workerCount = workerCount;
-                reportProgress(progress);
+                progress.workerCount = snapshot.workerCount;
+                context.Publish([&]() { reportProgress(progress); });
             }
-        }
-    };
-
-    std::vector<std::thread> workers;
-    workers.reserve(workerCount);
-    for (std::size_t index = 0; index < workerCount; ++index) {
-        workers.emplace_back(worker);
-    }
-    for (std::thread& thread : workers) thread.join();
-
-    result.checkedProcesses = std::min(checkedProcesses.load(), result.totalProcesses);
-    result.inaccessibleProcesses = inaccessibleProcesses.load();
+        },
+        [&result](HandleLocalResult&& local) {
+            result.checkedProcesses += local.checkedProcesses;
+            result.inaccessibleProcesses += local.inaccessibleProcesses;
+            result.evidence.insert(result.evidence.end(),
+                std::make_move_iterator(local.evidence.begin()),
+                std::make_move_iterator(local.evidence.end()));
+        });
+    std::set<std::tuple<unsigned long, std::wstring, bool>> evidenceKeys;
+    std::erase_if(result.evidence, [&evidenceKeys](const FileLockEvidence& evidence) {
+        return !evidenceKeys.insert({evidence.processId, evidence.lockedPath, evidence.directory}).second;
+    });
+    result.checkedProcesses = std::min(result.checkedProcesses, result.totalProcesses);
     result.cancelled = IsCancelled(shouldCancel) &&
         result.checkedProcesses < result.totalProcesses;
     if (result.inaccessibleProcesses > 0) {
@@ -420,24 +430,12 @@ BatchResult QueryBatch(const std::vector<std::wstring>& resources, std::size_t b
     return batch;
 }
 
-std::size_t ResolveWorkerCount(std::size_t totalPaths, const FileLockQueryOptions& options, bool directory) {
-    const std::size_t batchSize = std::max<std::size_t>(1, options.batchSize);
-    const std::size_t batchCount = (totalPaths + batchSize - 1) / batchSize;
-    if (batchCount == 0) {
-        return 0;
-    }
-    const std::size_t hardware = std::max<std::size_t>(1, std::thread::hardware_concurrency());
-    const std::size_t configured = options.maxWorkers == 0 ? hardware : options.maxWorkers;
-    const std::size_t desired = directory ? std::max<std::size_t>(1, configured) : 1;
-    return std::max<std::size_t>(1, std::min({batchCount, hardware, desired}));
-}
-}
-
-FileLockQueryResult QueryFileLocks(
+FileLockQueryResult QueryFileLocksCore(
     const std::wstring& rawPath,
     const FileLockCancelCheck& shouldCancel,
     const FileLockProgressCallback& reportProgress,
-    FileLockQueryOptions options) {
+    FileLockQueryOptions options,
+    ScanTaskContext& scanContext) {
     FileLockQueryResult result;
     if (reportProgress) {
         reportProgress(FileLockQueryProgress{FileLockQueryPhase::Validating});
@@ -530,7 +528,18 @@ FileLockQueryResult QueryFileLocks(
     }
 
     options.batchSize = std::max<std::size_t>(1, options.batchSize);
-    result.workerCount = ResolveWorkerCount(resources.size(), options, result.directory);
+    const std::size_t batchSize = std::max<std::size_t>(1, options.batchSize);
+    struct BatchRange {
+        std::size_t begin = 0;
+        std::size_t end = 0;
+    };
+    std::vector<BatchRange> batches;
+    for (std::size_t begin = 0; begin < resources.size(); begin += batchSize) {
+        batches.push_back(BatchRange{begin, std::min(resources.size(), begin + batchSize)});
+    }
+    result.workerCount = result.directory
+        ? std::min<std::size_t>(batches.size(), options.maxWorkers == 0 ? 8 : options.maxWorkers)
+        : 1;
     if (reportProgress) {
         reportProgress(FileLockQueryProgress{
             FileLockQueryPhase::Querying,
@@ -540,63 +549,75 @@ FileLockQueryResult QueryFileLocks(
             result.workerCount});
     }
 
-    std::atomic_size_t nextIndex{0};
-    std::atomic_size_t checkedPaths{0};
-    std::mutex resultMutex;
-    std::mutex progressMutex;
+    struct QueryLocalResult {
+        std::set<unsigned long> processIds;
+        std::wstring firstError;
+        std::size_t failedBatches = 0;
+        std::size_t checkedPaths = 0;
+    };
     std::set<unsigned long> processIds;
     std::wstring firstBatchError;
     std::size_t failedBatchCount = 0;
-
-    auto worker = [&]() {
-        while (!IsCancelled(shouldCancel)) {
-            const std::size_t begin = nextIndex.fetch_add(options.batchSize);
-            if (begin >= resources.size()) {
-                break;
+    ScanProgressUpdate taskProgress;
+    taskProgress.phase = L"file-lock-query";
+    taskProgress.title = L"文件占用检查进度";
+    taskProgress.status = L"正在并行检查目录占用";
+    taskProgress.total = result.totalPaths;
+    taskProgress.indeterminate = false;
+    scanContext.Report(std::move(taskProgress));
+    scanContext.ForEach<BatchRange, QueryLocalResult>(
+        batches,
+        [] { return QueryLocalResult{}; },
+        [&](const BatchRange& range, QueryLocalResult& local, ScanTaskContext& context) {
+            if (IsCancelled(shouldCancel)) {
+                context.RequestStop();
+                return;
             }
-            const std::size_t finish = std::min(resources.size(), begin + options.batchSize);
             if (options.batchDelay.count() > 0) {
                 std::this_thread::sleep_for(options.batchDelay);
             }
-            if (IsCancelled(shouldCancel)) {
-                break;
+            if (IsCancelled(shouldCancel) || context.StopRequested()) {
+                context.RequestStop();
+                return;
             }
 
-            BatchResult batch = QueryBatch(resources, begin, finish);
-            {
-                std::lock_guard lock(resultMutex);
-                processIds.insert(batch.processIds.begin(), batch.processIds.end());
-                if (!batch.error.empty()) {
-                    if (firstBatchError.empty()) {
-                        firstBatchError = batch.error;
-                    }
-                    ++failedBatchCount;
+            BatchResult batch = QueryBatch(resources, range.begin, range.end);
+            local.processIds.insert(batch.processIds.begin(), batch.processIds.end());
+            if (!batch.error.empty()) {
+                if (local.firstError.empty()) {
+                    local.firstError = batch.error;
                 }
+                ++local.failedBatches;
             }
-            checkedPaths.fetch_add(finish - begin);
+            local.checkedPaths += range.end - range.begin;
+            context.UpdateProgress([&](ScanProgressUpdate& value) {
+                value.completed += range.end - range.begin;
+                value.current = value.completed;
+                value.detail = L"已检查 " + std::to_wstring(value.completed) + L" / " +
+                    std::to_wstring(value.total) + L" 个路径";
+            });
             if (reportProgress) {
-                std::lock_guard progressLock(progressMutex);
-                reportProgress(FileLockQueryProgress{
+                const ScanProgressSnapshot snapshot = context.Snapshot();
+                const FileLockQueryProgress progress{
                     FileLockQueryPhase::Querying,
                     result.totalPaths,
-                    checkedPaths.load(),
+                    SaturatingSize(snapshot.completed),
                     result.totalPaths,
-                    result.workerCount});
+                    snapshot.workerCount};
+                context.Publish([&]() { reportProgress(progress); });
             }
-        }
-    };
+        },
+        [&](QueryLocalResult&& local) {
+            processIds.insert(local.processIds.begin(), local.processIds.end());
+            result.checkedPaths += local.checkedPaths;
+            failedBatchCount += local.failedBatches;
+            if (firstBatchError.empty()) firstBatchError = std::move(local.firstError);
+        });
 
-    std::vector<std::thread> workers;
-    workers.reserve(result.workerCount);
-    for (std::size_t index = 0; index < result.workerCount; ++index) {
-        workers.emplace_back(worker);
-    }
-    for (std::thread& thread : workers) {
-        thread.join();
-    }
-
-    result.checkedPaths = std::min(checkedPaths.load(), result.totalPaths);
-    result.cancelled = IsCancelled(shouldCancel) && result.checkedPaths < result.totalPaths;
+    result.workerCount = scanContext.Snapshot().workerCount;
+    result.checkedPaths = std::min(result.checkedPaths, result.totalPaths);
+    result.cancelled = (IsCancelled(shouldCancel) || scanContext.StopRequested()) &&
+        result.checkedPaths < result.totalPaths;
     result.processIds.assign(processIds.begin(), processIds.end());
     for (unsigned long pid : result.processIds) {
         result.evidence.push_back(FileLockEvidence{
@@ -616,7 +637,8 @@ FileLockQueryResult QueryFileLocks(
             std::filesystem::path(rawPath).wstring(),
             shouldCancel,
             reportProgress,
-            options);
+            options,
+            scanContext);
         result.checkedProcesses = handles.checkedProcesses;
         result.totalProcesses = handles.totalProcesses;
         result.inaccessibleProcesses = handles.inaccessibleProcesses;
@@ -647,5 +669,47 @@ FileLockQueryResult QueryFileLocks(
         progress.inaccessibleProcesses = result.inaccessibleProcesses;
         reportProgress(progress);
     }
+    scanContext.UpdateProgress([&result](ScanProgressUpdate& value) {
+        value.status = result.cancelled ? L"检查已停止" : L"检查完成";
+        if (result.totalProcesses > 0) {
+            value.detail = L"已检查 " + std::to_wstring(result.checkedProcesses) + L" / " +
+                std::to_wstring(result.totalProcesses) + L" 个进程";
+        } else {
+            value.detail = L"已检查 " + std::to_wstring(result.checkedPaths) + L" / " +
+                std::to_wstring(result.totalPaths) + L" 个路径";
+        }
+        value.current = result.cancelled ? result.checkedPaths : result.totalPaths;
+        value.total = result.totalPaths;
+        value.indeterminate = false;
+    });
     return result;
+}
+}
+
+FileLockQueryResult QueryFileLocks(
+    const std::wstring& rawPath,
+    const FileLockCancelCheck& shouldCancel,
+    const FileLockProgressCallback& reportProgress,
+    FileLockQueryOptions options) {
+    ScanTaskOptions scanOptions;
+    scanOptions.mode = ScanExecutionMode::CallerParallel;
+    scanOptions.maxWorkers = std::max(options.maxWorkers, options.maxHandleWorkers);
+    return ScanExecutionService::Run<FileLockQueryResult>(scanOptions,
+        [&](ScanTaskContext& context) {
+            return QueryFileLocksCore(rawPath, shouldCancel, reportProgress, options, context);
+        });
+}
+
+std::shared_ptr<ScanTaskHandle> StartFileLockQuery(
+    std::wstring rawPath,
+    FileLockQueryOptions options,
+    std::function<void()> completionCallback) {
+    ScanTaskOptions scanOptions;
+    scanOptions.mode = ScanExecutionMode::BackgroundParallel;
+    scanOptions.maxWorkers = std::max(options.maxWorkers, options.maxHandleWorkers);
+    scanOptions.completionCallback = std::move(completionCallback);
+    return ScanExecutionService::StartTyped<FileLockQueryResult>(scanOptions,
+        [rawPath = std::move(rawPath), options](ScanTaskContext& context) {
+            return QueryFileLocksCore(rawPath, {}, {}, options, context);
+        });
 }

@@ -17,6 +17,8 @@
 #include <cstdint>
 
 namespace {
+constexpr wchar_t kResolverCacheVersion[] = L"resolver-v3";
+
 template <typename T>
 void SafeRelease(T*& value) {
     if (value) {
@@ -85,7 +87,18 @@ ID2D1Bitmap* IconService::GetBitmap(ID2D1RenderTarget* renderTarget, const Link&
 
     ID2D1Bitmap* bitmap = nullptr;
 
-    if (LooksLikeUrl(link)) {
+    auto prepared = preparedIconCache_.find(key);
+    if (prepared != preparedIconCache_.end()) {
+        const std::filesystem::path cachePath = CachePath(link);
+        if (CreateBitmapFromResolvedIcon(renderTarget, prepared->second, &bitmap)) {
+            std::error_code ec;
+            std::filesystem::create_directories(cachePath.parent_path(), ec);
+            SaveResolvedIconPng(prepared->second, cachePath);
+        }
+        preparedIconCache_.erase(prepared);
+    }
+
+    if (!bitmap && LooksLikeUrl(link)) {
         const std::filesystem::path urlIcon = FindUrlIconFile(link);
         if (!urlIcon.empty()) {
             bitmap = LoadBitmapFile(renderTarget, urlIcon);
@@ -118,6 +131,7 @@ void IconService::Clear() {
         SafeRelease(bitmap);
     }
     bitmapCache_.clear();
+    preparedIconCache_.clear();
 }
 
 bool IconService::ClearDiskCache() {
@@ -136,12 +150,7 @@ bool IconService::ClearDiskCache() {
 }
 
 bool IconService::RefreshDiskCache(const Link& link) {
-    const std::wstring key = CacheKey(link);
-    auto found = bitmapCache_.find(key);
-    if (found != bitmapCache_.end()) {
-        SafeRelease(found->second);
-        bitmapCache_.erase(found);
-    }
+    InvalidateMemoryCache(link);
 
     const std::filesystem::path cachePath = CachePath(link);
     std::error_code ec;
@@ -149,6 +158,30 @@ bool IconService::RefreshDiskCache(const Link& link) {
         std::filesystem::remove(cachePath, ec);
         return !ec;
     }
+    return true;
+}
+
+void IconService::InvalidateMemoryCache(const Link& link) {
+    const std::wstring key = CacheKey(link);
+    auto found = bitmapCache_.find(key);
+    if (found != bitmapCache_.end()) {
+        SafeRelease(found->second);
+        bitmapCache_.erase(found);
+    }
+    preparedIconCache_.erase(key);
+}
+
+bool IconService::ApplyPreparedRefresh(const Link& link, ResolvedIcon icon) {
+    if (!IconResolverService::HasPixels(icon)) {
+        return false;
+    }
+    const std::wstring key = CacheKey(link);
+    auto found = bitmapCache_.find(key);
+    if (found != bitmapCache_.end()) {
+        SafeRelease(found->second);
+        bitmapCache_.erase(found);
+    }
+    preparedIconCache_[key] = std::move(icon);
     return true;
 }
 
@@ -342,11 +375,13 @@ bool IconService::CreateBitmapFromIcon(ID2D1RenderTarget* renderTarget, HICON ic
 }
 
 std::wstring IconService::CacheKey(const Link& link) const {
-    return std::to_wstring(link.id) + L"|" + ToLower(link.path) + L"|" + LinkIconCacheToken(link);
+    return std::wstring(kResolverCacheVersion) + L"|" + std::to_wstring(link.id) + L"|" +
+        ToLower(link.path) + L"|" + LinkIconCacheToken(link);
 }
 
 std::filesystem::path IconService::CachePath(const Link& link) const {
-    const std::wstring hash = Hex8(StablePathHash(ToLower(link.path + L"|" + LinkIconCacheToken(link))));
+    const std::wstring hash = Hex8(StablePathHash(
+        std::wstring(kResolverCacheVersion) + L"|" + ToLower(link.path + L"|" + LinkIconCacheToken(link))));
     const std::wstring prefix = link.id > 0 ? (L"link_" + std::to_wstring(link.id)) : L"link";
     return appDirectory_ / L"icons" / L"cache" / (prefix + L"_" + hash + L"_32.png");
 }

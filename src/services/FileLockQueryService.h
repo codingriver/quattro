@@ -1,8 +1,11 @@
 #pragma once
 
+#include "ScanExecutionService.h"
+
 #include <chrono>
 #include <cstddef>
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -70,3 +73,8 @@ FileLockQueryResult QueryFileLocks(
     const FileLockCancelCheck& shouldCancel = {},
     const FileLockProgressCallback& reportProgress = {},
     FileLockQueryOptions options = {});
+
+std::shared_ptr<ScanTaskHandle> StartFileLockQuery(
+    std::wstring rawPath,
+    FileLockQueryOptions options = {},
+    std::function<void()> completionCallback = {});

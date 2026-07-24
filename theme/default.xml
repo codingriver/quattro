@@ -681,8 +681,8 @@
         <Metric name="height" value="16"/>
         <Metric name="radius" value="7"/>
         <Metric name="borderWidth" value="1"/>
-        <State name="normal" track="@line" fill="@accent" border="@border"/>
-        <State name="disabled" track="@line" fill="@border" border="@line"/>
+        <State name="normal" track="@line" fill="@accent" activity="@focus" text="rgb(255,255,255)" border="@border"/>
+        <State name="disabled" track="@line" fill="@border" activity="@surfaceRaised" text="@textMuted" border="@line"/>
     </Component>
     <Component name="tooltip">
         <Metric name="radius" value="6"/>

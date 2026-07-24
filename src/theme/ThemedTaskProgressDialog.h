@@ -2,6 +2,7 @@
 
 #include "Theme.h"
 #include "ThemedUi.h"
+#include "TaskExecutionService.h"
 
 #include <windows.h>
 
@@ -18,7 +19,11 @@ struct ThemedTaskProgressSnapshot {
     ThemedStatusRole role = ThemedStatusRole::Info;
     double value = 0.0;
     bool indeterminate = true;
+    bool activity = false;
+    bool showPercent = true;
+    std::wstring text;
     bool finished = false;
+    bool completed = false;
     bool stopRequested = false;
 };
 
@@ -39,9 +44,12 @@ struct ThemedTaskProgressDialogOptions {
     int closeButtonId = 3;
     int clientWidth = 420;
     int clientHeight = 164;
+    bool closeOnCompleted = true;
     std::function<ThemedTaskProgressSnapshot()> readSnapshot;
     std::function<void()> requestStop;
 };
+
+ThemedTaskProgressSnapshot ToThemedTaskProgressSnapshot(const TaskProgressSnapshot& snapshot);
 
 // 无业务依赖的公共后台任务进度窗口。关闭窗口不会停止任务，停止行为由调用方回调决定。
 class ThemedTaskProgressDialog final {
@@ -69,6 +77,7 @@ private:
     HWND stop_ = nullptr;
     HWND close_ = nullptr;
     bool stopEnabled_ = true;
+    bool closePosted_ = false;
     bool hasSnapshot_ = false;
     ThemedTaskProgressSnapshot lastSnapshot_{};
 };

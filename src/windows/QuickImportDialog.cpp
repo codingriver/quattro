@@ -3,7 +3,8 @@
 #include "DialogLayout.h"
 #include "FileDialog.h"
 #include "IconResolverService.h"
-#include "ThemedControls.h"
+#include "TaskExecutionService.h"
+#include "ThemedTaskProgressDialog.h"
 #include "ThemedUi.h"
 #include "ThemedWindowUi.h"
 #include "Utilities.h"
@@ -11,6 +12,8 @@
 
 #include <algorithm>
 #include <commctrl.h>
+#include <cstdlib>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <shellapi.h>
@@ -37,6 +40,19 @@ constexpr int IdSourceDesktop = 1011;
 constexpr int IdSourceStartMenu = 1012;
 constexpr int IdViewListTab = 1013;
 constexpr int IdSourceStoreApps = 1014;
+constexpr UINT_PTR IdScanPollTimer = 1015;
+constexpr UINT WM_QUICK_IMPORT_ICONS_DONE = WM_APP + 0x8D;
+
+struct QuickImportIconResult {
+    std::wstring stableKey;
+    ResolvedIcon smallIcon;
+    ResolvedIcon mediumIcon;
+};
+
+struct QuickImportIconLoadResult {
+    std::uint64_t generation = 0;
+    std::vector<QuickImportIconResult> icons;
+};
 
 std::wstring GetText(HWND hwnd) {
     const int length = GetWindowTextLengthW(hwnd);
@@ -59,6 +75,22 @@ std::wstring TypeText(int type) {
     default:
         return L"程序";
     }
+}
+
+DWORD QuickImportTestIconDelayMs() {
+    wchar_t testMode[8]{};
+    if (GetEnvironmentVariableW(
+            L"QUATTRO_TEST_MODE", testMode, static_cast<DWORD>(std::size(testMode))) == 0) {
+        return 0;
+    }
+    wchar_t delayText[16]{};
+    if (GetEnvironmentVariableW(
+            L"QUATTRO_TEST_QUICK_IMPORT_ICON_DELAY_MS",
+            delayText,
+            static_cast<DWORD>(std::size(delayText))) == 0) {
+        return 0;
+    }
+    return (std::min<DWORD>)(wcstoul(delayText, nullptr, 10), 100);
 }
 
 bool PickFolder(HWND owner, std::filesystem::path& directory) {
@@ -92,6 +124,10 @@ public:
         : owner_(owner), instance_(instance), theme_(theme), selectedLinks_(selectedLinks) {}
 
     ~DialogWindow() {
+        if (scanTask_) {
+            scanTask_->RequestStop();
+        }
+        StopIconLoadTask();
         DestroyImageLists();
     }
 
@@ -170,6 +206,15 @@ private:
             }
             return 0;
         }
+        case WM_TIMER:
+            if (wParam == IdScanPollTimer) {
+                FinishScanIfReady();
+                return 0;
+            }
+            break;
+        case WM_QUICK_IMPORT_ICONS_DONE:
+            ApplyIconLoadResult(static_cast<std::uint64_t>(wParam));
+            return 0;
         case WM_COMMAND:
             switch (LOWORD(wParam)) {
             case IdSource:
@@ -181,6 +226,9 @@ private:
                 return 0;
             case IdDirectory:
                 if (HIWORD(wParam) == EN_CHANGE && status_) {
+                    if (!applyingDirectoryText_) {
+                        ClearScanResults();
+                    }
                     windowUi_->SetEditFrameState(directoryText_, false, false);
                     SetWindowTextW(status_, L"尚未扫描");
                 }
@@ -213,6 +261,7 @@ private:
         default:
             return DefWindowProcW(hwnd_, message, wParam, lParam);
         }
+        return DefWindowProcW(hwnd_, message, wParam, lParam);
     }
 
     void CreateControls() {
@@ -403,9 +452,12 @@ private:
     void ApplySelectedSource() {
         const int active = ThemedUi::ActiveTab(sourceTabs_);
         const bool storeApps = active == 2;
+        ClearScanResults();
         if (storeApps) {
             selectedDirectory_.clear();
+            applyingDirectoryText_ = true;
             SetWindowTextW(directoryText_, L"Windows 已安装应用");
+            applyingDirectoryText_ = false;
             windowUi_->SetEditEnabled(directoryText_, false);
             EnableWindow(pickDirectoryButton_, FALSE);
             windowUi_->SetEditFrameState(directoryText_, false, false);
@@ -416,7 +468,9 @@ private:
         EnableWindow(pickDirectoryButton_, TRUE);
         REFKNOWNFOLDERID folderId = active == 0 ? FOLDERID_Desktop : FOLDERID_StartMenu;
         selectedDirectory_ = KnownFolderPathOrEmpty(folderId);
+        applyingDirectoryText_ = true;
         SetWindowTextW(directoryText_, selectedDirectory_.wstring().c_str());
+        applyingDirectoryText_ = false;
         windowUi_->SetEditFrameState(directoryText_, false, selectedDirectory_.empty());
         SetWindowTextW(status_, selectedDirectory_.empty() ? L"无法定位所选目录" : L"尚未扫描");
     }
@@ -427,7 +481,10 @@ private:
             return false;
         }
         selectedDirectory_ = std::move(directory);
+        ClearScanResults();
+        applyingDirectoryText_ = true;
         SetWindowTextW(directoryText_, selectedDirectory_.wstring().c_str());
+        applyingDirectoryText_ = false;
         windowUi_->SetEditFrameState(directoryText_, false, false);
         SetWindowTextW(status_, L"尚未扫描");
         return true;
@@ -442,6 +499,7 @@ private:
             result = 0;
             return true;
         case ThemedTableEventKind::CheckChanged:
+            SyncItemSelection(event.row, event.checked);
             RefreshSelectedStatus();
             result = 0;
             return true;
@@ -478,12 +536,14 @@ private:
             return;
         }
 
-        const auto itemIndex = static_cast<std::size_t>(index);
+        const std::intptr_t rowKey = ThemedUi::TableRowKey(list_, index);
+        const auto itemIndex = ItemIndexForRowKey(rowKey);
         if (itemIndex >= items_.size()) {
             return;
         }
 
         ThemedUi::SetTableChecked(list_, index, checked);
+        items_[itemIndex].selected = checked;
     }
 
     void RefreshSelectedStatus() {
@@ -547,7 +607,34 @@ private:
         return index;
     }
 
-    void RebuildImageLists() {
+    int AddResolvedImagePair(const ResolvedIcon& smallIcon, const ResolvedIcon& mediumIcon) {
+        if (!smallImages_ || !mediumImages_) {
+            return -1;
+        }
+        HBITMAP smallBitmap = IconResolverService::CreateBitmapFromPixels(
+            smallIcon,
+            smallSize_,
+            ThemedUi::ListSurfaceColor(theme_));
+        HBITMAP mediumBitmap = IconResolverService::CreateBitmapFromPixels(
+            mediumIcon,
+            mediumSize_,
+            ThemedUi::ListSurfaceColor(theme_));
+        const int index = smallBitmap ? ImageList_Add(smallImages_, smallBitmap, nullptr) : -1;
+        if (mediumBitmap) {
+            ImageList_Add(mediumImages_, mediumBitmap, nullptr);
+        } else if (smallBitmap) {
+            ImageList_Add(mediumImages_, smallBitmap, nullptr);
+        }
+        if (smallBitmap) {
+            DeleteObject(smallBitmap);
+        }
+        if (mediumBitmap) {
+            DeleteObject(mediumBitmap);
+        }
+        return index;
+    }
+
+    void RebuildImageLists(bool resolveIcons = true) {
         DestroyImageLists();
         smallSize_ = std::max(16, GetSystemMetrics(SM_CXSMICON));
         mediumSize_ = 32;
@@ -557,56 +644,313 @@ private:
         itemImageIndexes_.clear();
         itemImageIndexes_.reserve(items_.size());
         for (const auto& item : items_) {
-            itemImageIndexes_.push_back(AddImageForItem(item));
+            itemImageIndexes_.push_back(resolveIcons ? AddImageForItem(item) : -1);
         }
         if (list_) {
             ThemedUi::SetTableImageLists(list_, smallImages_, mediumImages_);
         }
     }
 
-    void Scan() {
-        const bool storeApps = ThemedUi::ActiveTab(sourceTabs_) == 2;
-        const std::wstring directoryText = Trim(GetText(directoryText_));
-        const std::filesystem::path directory(directoryText);
+    ThemedTableRow RowForItem(const QuickImportService::Item& item, std::size_t index) {
+        ThemedTableRow row{};
+        row.key = RowKeyForItem(item, index);
+        row.checked = item.selected;
+        row.enabled = true;
+        row.cells = {
+            ThemedTableCell{item.link.name, index < itemImageIndexes_.size() ? itemImageIndexes_[index] : -1},
+            ThemedTableCell{item.sourceName.empty() ? TypeText(item.link.type) : item.sourceName},
+            ThemedTableCell{item.link.path},
+            ThemedTableCell{item.status},
+        };
+        return row;
+    }
 
-        SetWindowTextW(status_, L"正在扫描，请稍候……");
-        windowUi_->SetEditFrameState(directoryText_, false, false);
-        EnableWindow(scanButton_, FALSE);
-        UpdateWindow(hwnd_);
+    void StopIconLoadTask() {
+        ++iconGeneration_;
+        if (iconTask_) {
+            iconTask_->RequestStop();
+            if (iconTask_->IsFinished()) {
+                iconTask_.reset();
+            }
+        }
+    }
 
-        std::wstring error;
-        items_ = storeApps ? scanner_.ScanStoreApps(error) : scanner_.Scan(directory, error);
+    void ClearScanResults() {
+        StopIconLoadTask();
+        items_.clear();
+        itemImageIndexes_.clear();
         rowKeys_.clear();
         nextRowKey_ = 1;
         RebuildImageLists();
-        PopulateList();
+        if (list_) {
+            ThemedUi::ClearTable(list_);
+        }
+    }
 
-        EnableWindow(scanButton_, TRUE);
-        windowUi_->SetEditFrameState(directoryText_, false, !error.empty());
+    void StartStoreAppIconLoad() {
+        if (!scanWasStoreApps_ || items_.empty() || !hwnd_) {
+            return;
+        }
+        StopIconLoadTask();
+        const std::uint64_t generation = iconGeneration_;
+        const HWND target = hwnd_;
+        const int smallSize = smallSize_;
+        const int mediumSize = mediumSize_;
+        const std::vector<QuickImportService::Item> items = items_;
+        const DWORD testIconDelayMs = QuickImportTestIconDelayMs();
+
+        TaskOptions options{};
+        options.mode = TaskExecutionMode::BackgroundSingle;
+        options.completionCallback = [target, generation] {
+            if (IsWindow(target)) {
+                PostMessageW(target, WM_QUICK_IMPORT_ICONS_DONE, static_cast<WPARAM>(generation), 0);
+            }
+        };
+        iconTask_ = TaskExecutionService::StartTyped<QuickImportIconLoadResult>(
+            std::move(options),
+            [generation, items, smallSize, mediumSize, testIconDelayMs](TaskContext& context) {
+                QuickImportIconLoadResult result;
+                result.generation = generation;
+                TaskProgressUpdate progress{};
+                progress.phase = L"store-app-icons";
+                progress.title = L"快速导入扫描进度";
+                progress.status = L"正在刷新应用图标";
+                progress.detail = L"Windows 已安装应用";
+                progress.total = items.size();
+                progress.current = 0;
+                progress.workerCount = 1;
+                progress.indeterminate = false;
+                context.Report(std::move(progress));
+                const HRESULT comResult = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+                IconResolverService resolver;
+                result.icons.reserve(items.size());
+                std::uint64_t completed = 0;
+                for (const auto& item : items) {
+                    if (context.StopRequested()) {
+                        break;
+                    }
+                    QuickImportIconResult icon;
+                    icon.stableKey = item.stableKey;
+                    icon.smallIcon = resolver.Resolve(
+                        IconResolverService::ForLink(item.link, smallSize),
+                        context.StopToken());
+                    if (context.StopRequested()) {
+                        break;
+                    }
+                    icon.mediumIcon = resolver.Resolve(
+                        IconResolverService::ForLink(item.link, mediumSize),
+                        context.StopToken());
+                    result.icons.push_back(std::move(icon));
+                    ++completed;
+                    context.UpdateProgress([completed, total = static_cast<std::uint64_t>(items.size())](TaskProgressUpdate& value) {
+                        value.current = completed;
+                        value.completed = completed;
+                        value.total = total;
+                        value.status = L"正在刷新应用图标";
+                        value.detail = L"已刷新 " + std::to_wstring(completed) + L" / " + std::to_wstring(total) + L" 个图标";
+                        value.indeterminate = false;
+                    });
+                    if (testIconDelayMs > 0) {
+                        Sleep(testIconDelayMs);
+                    }
+                }
+                if (SUCCEEDED(comResult)) {
+                    CoUninitialize();
+                }
+                context.UpdateProgress([completed, total = static_cast<std::uint64_t>(items.size())](TaskProgressUpdate& value) {
+                    value.current = completed;
+                    value.completed = completed;
+                    value.total = total;
+                    value.status = completed >= total ? L"应用图标刷新完成" : L"应用图标刷新已停止";
+                    value.detail = L"已刷新 " + std::to_wstring(completed) + L" / " + std::to_wstring(total) + L" 个图标";
+                    value.indeterminate = false;
+                });
+                return result;
+            });
+    }
+
+    void ApplyIconLoadResult(std::uint64_t generation) {
+        if (!iconTask_ || generation != iconGeneration_ || !iconTask_->IsFinished()) {
+            return;
+        }
+        if (iconTask_->Status() != TaskStatus::Completed) {
+            CompleteScanWorkflow(L"应用图标刷新已停止。", false, false);
+            return;
+        }
+
+        QuickImportIconLoadResult result = iconTask_->ResultCopy<QuickImportIconLoadResult>();
+        if (result.generation != iconGeneration_) {
+            iconTask_.reset();
+            return;
+        }
+
+        std::unordered_map<std::wstring, std::size_t> indexByStableKey;
+        indexByStableKey.reserve(items_.size());
+        for (std::size_t index = 0; index < items_.size(); ++index) {
+            if (!items_[index].stableKey.empty()) {
+                indexByStableKey.emplace(items_[index].stableKey, index);
+            }
+        }
+
+        bool updated = false;
+        for (const QuickImportIconResult& icon : result.icons) {
+            const auto found = indexByStableKey.find(icon.stableKey);
+            if (found == indexByStableKey.end()) {
+                continue;
+            }
+            const std::size_t index = found->second;
+            const int imageIndex = AddResolvedImagePair(icon.smallIcon, icon.mediumIcon);
+            if (imageIndex < 0 || index >= itemImageIndexes_.size()) {
+                continue;
+            }
+            itemImageIndexes_[index] = imageIndex;
+            const std::intptr_t rowKey = RowKeyForItem(items_[index], index);
+            const int rowIndex = ThemedUi::FindTableRowByKey(list_, rowKey);
+            if (rowIndex >= 0) {
+                ThemedUi::UpdateTableRow(list_, rowIndex, RowForItem(items_[index], index));
+                updated = true;
+            }
+        }
+        if (updated) {
+            InvalidateRect(list_, nullptr, FALSE);
+        }
+        iconTask_.reset();
+        CompleteScanWorkflow(L"扫描到 " + std::to_wstring(items_.size()) +
+            L" 项，可导入 " + std::to_wstring(SelectedCount()) + L" 项。", false, true);
+    }
+
+    void Scan() {
+        if (scanTask_ && !scanTask_->IsFinished()) {
+            if (scanProgressDialog_) scanProgressDialog_->Show();
+            return;
+        }
+        const bool storeApps = ThemedUi::ActiveTab(sourceTabs_) == 2;
+        const std::wstring directoryText = Trim(GetText(directoryText_));
+
+        ClearScanResults();
+        SetWindowTextW(status_, L"正在后台扫描，可在进度窗口中查看或停止。");
+        windowUi_->SetEditFrameState(directoryText_, false, false);
+        EnableWindow(scanButton_, FALSE);
+        EnableWindow(sourceTabs_, FALSE);
+        EnableWindow(pickDirectoryButton_, FALSE);
+        windowUi_->SetEditEnabled(directoryText_, false);
+
+        QuickImportService::ScanRequest request;
+        request.source = storeApps
+            ? QuickImportService::Source::StoreApps
+            : QuickImportService::Source::Directory;
+        request.directory = std::filesystem::path(directoryText);
+        scanWasStoreApps_ = storeApps;
+        scanTask_ = scanner_.StartScan(request);
+
+        ThemedTaskProgressDialogOptions progressOptions{};
+        progressOptions.owner = hwnd_;
+        progressOptions.instance = instance_;
+        progressOptions.theme = theme_;
+        progressOptions.icon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_QUATTRO_APP_ICON));
+        progressOptions.className = L"QuattroQuickImportProgress_" +
+            std::to_wstring(GetCurrentProcessId()) + L"_" + std::to_wstring(GetTickCount64());
+        progressOptions.title = L"快速导入扫描进度";
+        progressOptions.initialStatus = L"正在准备扫描";
+        progressOptions.initialDetail = directoryText;
+        progressOptions.closeOnCompleted = false;
+        progressOptions.readSnapshot = [this]() {
+            return ReadProgressSnapshot();
+        };
+        progressOptions.requestStop = [this]() { RequestProgressStop(); };
+        scanProgressDialog_ = std::make_unique<ThemedTaskProgressDialog>(std::move(progressOptions));
+        scanProgressDialog_->Show();
+        SetTimer(hwnd_, IdScanPollTimer, 80, nullptr);
+    }
+
+    void FinishScanIfReady() {
+        if (!scanTask_ || !scanTask_->IsFinished()) {
+            return;
+        }
+        KillTimer(hwnd_, IdScanPollTimer);
+        scanTask_->Wait();
+        const ScanProgressSnapshot snapshot = scanTask_->Snapshot();
+        QuickImportService::ScanResult result;
+        if (snapshot.taskStatus == ScanTaskStatus::Failed) {
+            result.error = snapshot.error.empty() ? L"扫描失败，请稍后重试。" : snapshot.error;
+        } else {
+            result = scanTask_->ResultCopy<QuickImportService::ScanResult>();
+        }
+        items_ = std::move(result.items);
+        StopIconLoadTask();
+        rowKeys_.clear();
+        nextRowKey_ = 1;
+        RebuildImageLists(!scanWasStoreApps_);
+        PopulateList();
+        windowUi_->SetEditFrameState(directoryText_, false, !result.error.empty());
         const int selected = SelectedCount();
         std::wstring status = L"扫描到 " + std::to_wstring(items_.size()) + L" 项，可导入 " + std::to_wstring(selected) + L" 项。";
-        if (!error.empty()) {
-            status = error;
+        if (result.cancelled) {
+            status = L"扫描已停止，保留 " + std::to_wstring(items_.size()) + L" 项结果。";
+        } else if (!result.error.empty()) {
+            status = result.error;
         }
         SetWindowTextW(status_, status.c_str());
+        if (scanWasStoreApps_ && result.error.empty() && !result.cancelled && !items_.empty()) {
+            scanTask_.reset();
+            StartStoreAppIconLoad();
+            if (iconTask_) {
+                SetWindowTextW(status_, L"正在刷新应用图标，请稍候。");
+                return;
+            }
+        }
+        const bool scanSucceeded = result.error.empty() && !result.cancelled;
+        CompleteScanWorkflow(status, !result.error.empty(), scanSucceeded);
+        if (scanSucceeded) {
+            scanTask_.reset();
+        }
+    }
+
+    ThemedTaskProgressSnapshot ReadProgressSnapshot() const {
+        if (iconTask_) {
+            return ToThemedTaskProgressSnapshot(iconTask_->Snapshot());
+        }
+        if (scanTask_) {
+            return ToThemedTaskProgressSnapshot(scanTask_->Snapshot());
+        }
+        TaskProgressSnapshot snapshot{};
+        snapshot.taskStatus = TaskStatus::Completed;
+        snapshot.title = L"快速导入扫描进度";
+        snapshot.status = L"扫描完成";
+        snapshot.indeterminate = false;
+        snapshot.current = 1;
+        snapshot.total = 1;
+        return ToThemedTaskProgressSnapshot(snapshot);
+    }
+
+    void RequestProgressStop() {
+        if (iconTask_ && !iconTask_->IsFinished()) {
+            iconTask_->RequestStop();
+            return;
+        }
+        if (scanTask_ && !scanTask_->IsFinished()) {
+            scanTask_->RequestStop();
+        }
+    }
+
+    void CompleteScanWorkflow(const std::wstring& status, bool directoryError, bool closeProgress) {
+        EnableWindow(scanButton_, TRUE);
+        EnableWindow(sourceTabs_, TRUE);
+        const bool storeApps = ThemedUi::ActiveTab(sourceTabs_) == 2;
+        windowUi_->SetEditEnabled(directoryText_, !storeApps);
+        EnableWindow(pickDirectoryButton_, storeApps ? FALSE : TRUE);
+        windowUi_->SetEditFrameState(directoryText_, false, directoryError);
+        SetWindowTextW(status_, status.c_str());
+        if (closeProgress && scanProgressDialog_) {
+            scanProgressDialog_->Close();
+        }
     }
 
     void PopulateList() {
         std::vector<ThemedTableRow> rows;
         rows.reserve(items_.size());
         for (std::size_t i = 0; i < items_.size(); ++i) {
-            const auto& item = items_[i];
-            ThemedTableRow row{};
-            row.key = RowKeyForItem(item, i);
-            row.checked = item.selected;
-            row.enabled = true;
-            row.cells = {
-                ThemedTableCell{item.link.name, i < itemImageIndexes_.size() ? itemImageIndexes_[i] : -1},
-                ThemedTableCell{item.sourceName.empty() ? TypeText(item.link.type) : item.sourceName},
-                ThemedTableCell{item.link.path},
-                ThemedTableCell{item.status},
-            };
-            rows.push_back(std::move(row));
+            rows.push_back(RowForItem(items_[i], i));
         }
         ThemedUi::SetTableRows(list_, rows);
     }
@@ -625,27 +969,44 @@ private:
     }
 
     void SetAllChecks(bool checked) {
-        for (int i = 0; i < ThemedUi::TableRowCount(list_); ++i) {
-            SetItemCheck(i, checked);
+        if (!list_) {
+            return;
         }
+        for (auto& item : items_) {
+            item.selected = checked;
+        }
+        ThemedUi::SetTableCheckedAll(list_, checked);
         RefreshSelectedStatus();
     }
 
-    int SelectedCount() const {
-        int count = 0;
-        for (int i = 0; i < ThemedUi::TableRowCount(list_); ++i) {
-            if (ThemedUi::IsTableChecked(list_, i)) {
-                ++count;
-            }
+    void SyncItemSelection(int row, bool checked) {
+        if (row < 0 || row >= ThemedUi::TableRowCount(list_)) {
+            return;
         }
-        return count;
+        const std::intptr_t rowKey = ThemedUi::TableRowKey(list_, row);
+        const auto index = ItemIndexForRowKey(rowKey);
+        if (index < items_.size()) {
+            items_[index].selected = checked;
+        }
+    }
+
+    std::size_t ItemIndexForRowKey(std::intptr_t rowKey) {
+        for (std::size_t index = 0; index < items_.size(); ++index) {
+            if (RowKeyForItem(items_[index], index) == rowKey) return index;
+        }
+        return items_.size();
+    }
+
+    int SelectedCount() const {
+        return static_cast<int>(std::count_if(items_.begin(), items_.end(), [](const auto& item) {
+            return item.selected;
+        }));
     }
 
     void Accept() {
         selectedLinks_.clear();
-        for (int i = 0; i < ThemedUi::TableRowCount(list_); ++i) {
-            const auto& item = items_[static_cast<std::size_t>(i)];
-            if (ThemedUi::IsTableChecked(list_, i)) {
+        for (const auto& item : items_) {
+            if (item.selected) {
                 selectedLinks_.push_back(item.link);
             }
         }
@@ -667,6 +1028,15 @@ private:
     }
 
     void Close(bool accepted) {
+        KillTimer(hwnd_, IdScanPollTimer);
+        if (scanTask_) {
+            scanTask_->RequestStop();
+            scanTask_.reset();
+        }
+        StopIconLoadTask();
+        if (scanProgressDialog_) {
+            scanProgressDialog_->Close();
+        }
         accepted_ = accepted;
         done_ = true;
         DestroyImageLists();
@@ -685,6 +1055,7 @@ private:
     std::unordered_map<std::wstring, std::intptr_t> rowKeys_;
     std::intptr_t nextRowKey_ = 1;
     std::filesystem::path selectedDirectory_;
+    bool applyingDirectoryText_ = false;
     HWND sourceTabs_ = nullptr;
     HWND directoryText_ = nullptr;
     HWND pickDirectoryButton_ = nullptr;
@@ -703,6 +1074,11 @@ private:
     int smallSize_ = 16;
     int mediumSize_ = 32;
     std::unique_ptr<ThemedWindowUi> windowUi_;
+    std::shared_ptr<ScanTaskHandle> scanTask_;
+    std::shared_ptr<TaskHandle> iconTask_;
+    std::unique_ptr<ThemedTaskProgressDialog> scanProgressDialog_;
+    std::uint64_t iconGeneration_ = 1;
+    bool scanWasStoreApps_ = false;
     bool done_ = false;
     bool accepted_ = false;
 };

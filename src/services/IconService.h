@@ -20,6 +20,8 @@ public:
     void Clear();
     bool ClearDiskCache();
     bool RefreshDiskCache(const Link& link);
+    void InvalidateMemoryCache(const Link& link);
+    bool ApplyPreparedRefresh(const Link& link, ResolvedIcon icon);
 
 private:
     ID2D1Bitmap* LoadBitmapFile(ID2D1RenderTarget* renderTarget, const std::filesystem::path& path) const;
@@ -34,4 +36,5 @@ private:
     std::filesystem::path appDirectory_;
     IWICImagingFactory* wicFactory_ = nullptr;
     std::unordered_map<std::wstring, ID2D1Bitmap*> bitmapCache_;
+    std::unordered_map<std::wstring, ResolvedIcon> preparedIconCache_;
 };

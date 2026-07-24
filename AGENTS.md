@@ -30,6 +30,7 @@
 - 扩展公共控件时必须同步完成：在 `ThemedUi.h` 增加语义接口；在 `ThemedUi.cpp`/`ThemedControls.*` 实现统一状态和绘制；必要时补 `Theme.cpp` fallback、`theme/default.xml`、主题白名单/文档和 lint；为行为补 `UnitTests.cpp` 直接测试；涉及视觉则补后台 HWND 截图验收。公共接口未完成前，业务窗口不得先落一个私有版本。
 - 公共布局扩展优先补充可复用的“计算结果”而不是新常量，例如统一 label 列宽、整组居中、剩余内容区、Footer 位置、Table 可用高度和滚动区。布局 helper 必须返回已按目标 DPI 缩放的结果，并让绘制与命中测试共同消费。
 - 窗口中需要异步 busy、空状态、错误、成功、警告、危险操作、行内动作或二级说明时，应优先使用现有 `StatusText`/`StatusBadge`、Toast、Progress、Table cell role、two-line row、enabled/active 状态；不要靠临时颜色、禁用整个窗口或修改按钮高度表达业务状态。
+- 所有进度展示必须按是否知道最大值选择公共语义：已知最大值/总数/总字节数时必须使用百分比进度条，传递真实 current/total 并显示 0%~100%（需要表达仍在处理时使用公共 activity/动画语义叠加滚动效果）；未知最大值时才使用滚动/不确定进度条。禁止在已知最大值时仍使用纯滚动进度条，也禁止通过私有文本、私绘或定时器绕过公共 ProgressBar/TaskProgress 接口模拟进度。
 - 新窗口的最小实现骨架是：`DialogOptions`/`CreateWindowHandle` 创建，WndProc 最前调用 `HandleCommonMessage`，`ThemedWindowUi::ui()` 创建控件和取得缩放布局，公共 facade 修改状态，DPI 回调重新布局，析构/`WM_NCDESTROY` 释放异步和窗口资源。缺少其中任一环节时应先参照现有独立窗口，而不是复制裸 Win32 模板。
 
 ## Interface Composition Rules
@@ -79,6 +80,26 @@
 - 业务层只允许把公共解析结果适配成当前 UI 需要的载体，例如 `HIMAGELIST`、D2D bitmap、菜单 bitmap 或 Table cell image index；适配层不得重新判断来源或重新解析 app 图标。公共 UI/helper 若提供 `ResolvedIcon` 到控件资源的转换，应只处理缩放、背景合成、像素格式和资源生命周期，不得承载业务来源判断。
 - `IconService` 只负责主窗口图标缓存和 D2D 位图转换，底层来源解析必须委托 `IconResolverService`；`ContextMenuProviderIconService` 只负责 provider 安装状态、顺序和持久缓存，provider 图标解析必须委托 `IconResolverService`；`QuickImportDialog`、设置右键菜单列表、终端右键菜单候选项和后续 Windows 商店应用导入列表都必须经由同一公共接口获取图标。
 - 修改公共图标接口后至少验证：文件/目录/URL/PIDL/Shell parse name/命令行/右键菜单 provider/stock fallback 均能返回有效像素；无效来源不会崩溃且按公共 fallback 处理；同一业务表格刷新图标时保持 row key、选择和滚动状态；涉及可视变化时按相关窗口进行后台截图验收。
+
+## Public Background Task Rules
+
+- 所有用户发起的多项刷新、扫描、批量解析、批量校验及其它需要停止、进度或并发控制的后台任务，必须通过 `src/services/TaskExecutionService.*` 启动。业务窗口、对话框和业务服务禁止为此类任务创建 `std::thread`、`std::jthread`、`std::async`、私有线程池、原子任务索引、私有停止源或私有进度快照；普通单文件上传/下载、传输队列、日志和服务器监听等具有独立生命周期的持续型服务不受此条约束。
+- `TaskExecutionService` 是无 HWND、无 Theme、无具体业务依赖的公共执行层，统一负责后台协调、最大 8 工作线程限制、任务分配、协作式停止、异常收敛、进度节流、确定性结果合并和任务状态。公共执行层不得直接创建、显示或操作窗口。
+- UI 发起的任务默认使用 `TaskExecutionMode::BackgroundParallel`；线程亲和、STA Shell 或明确不适合并行的整个任务使用 `BackgroundSingle`。同一任务包含不同线程要求时，必须通过 `TaskContext::ForEach` 的公共阶段选项组合有限并行和单线程阶段，禁止嵌套启动公共任务或在业务层补私有 worker loop。
+- 文件读取、图标解析等独立工作单元默认最多 8 线程；面向外部服务的网络请求应进一步限制并发。第三方 Shell 扩展、STA COM 和具有线程亲和要求的系统操作必须在后台单线程 STA 阶段执行，禁止为追求速度并行调用不受控 Shell handler。
+- `TaskOptions::completionCallback` 在任务完成线程执行，只允许 `PostMessage`、设置线程安全信号或调用等价通知入口；禁止直接读取或修改窗口对象、HWND、Table、ImageList、D2D/WIC 窗口资源或主窗口模型。任务结果必须使用稳定业务 key 表达，并回到 UI 线程后重新验证对象和 generation。
+- 用户主动发起且需要独立查看或停止的长任务应通过 `ToThemedTaskProgressSnapshot` 和 `ThemedTaskProgressDialog` 显示标题、阶段、详情、确定或不确定进度及停止能力；页面打开时的自动刷新和不阻断当前操作的后台刷新使用同一公共任务快照更新原位状态，不得弹出进度窗口。成功完成后已显示的进度窗口默认自动关闭，停止或失败时保留窗口；关闭窗口不等于停止任务，停止必须调用 `TaskHandle::RequestStop()`。
+- 后台任务发布进度时必须尽早区分确定与不确定进度：能计算总量时设置 `total` 并持续更新 `current`，让公共进度窗口呈现百分比进度条；枚举中、预估中或总量确实不可知时才设置不确定/滚动进度。任务从未知总量进入已知总量阶段时必须切换到确定百分比进度；确定进度阶段若仍需证明处理活跃，应使用公共 activity/动画语义，而不是退回不确定滚动条。
+- 窗口销毁、数据来源切换或新一代任务开始时，必须请求停止旧任务并使用 generation、稳定业务 key 或等价机制丢弃过期结果。UI 线程不得等待尚未结束的后台任务；无法中断的单次系统调用返回后必须立即检查 stop token，停止后不得继续发布或持久化结果。
+- 多项刷新和扫描必须先在业务层构造差异或结果批次，再进行一次或有限次数的批量持久化。禁止每完成一项就重写完整缓存、配置或数据库；持久化成功后才能更新内存模型和界面状态。刷新过程中应保留已有可用图标和数据，新结果成功后再按 key 原子替换，单项失败不得清除仍可用的旧结果。
+- 公共任务能力修改后至少验证：后台与调用线程模式；单线程与阶段级有限并行；最大 8 工作线程限制；进度发布节流；停止；异常转为 Failed；完成回调线程语义；确定性合并；generation 丢弃过期结果；业务任务不直接操作 UI；批量任务不逐项全量写盘。涉及进度窗口的表现变化还必须按后台 HWND 规则截图验收运行中、停止、失败和完成状态。
+
+## Public Scan Service Rules
+
+- `ScanExecutionService` 是 `TaskExecutionService` 的扫描领域兼容 facade。所有文件系统、WebDAV 远端记录、Shell 菜单、注册表、服务、进程、端口及其它系统来源扫描必须通过该 facade 或直接使用通用任务接口启动，不得恢复扫描私有线程、私有停止源或私有进度状态。
+- 扫描默认使用后台有限并行；线程亲和、STA Shell 或明确无并行收益的来源使用后台单线程。`CallerParallel` 和 `CallerSingle` 仅允许用于 CLI、自动化测试和保留的同步兼容入口，UI 发起扫描禁止使用调用线程模式。
+- 业务扫描只负责候选枚举、单项处理、局部结果和确定性合并；线程数、停止、异常、进度和串行发布由公共任务上下文管理。`QuickImportService`、`FileLockQueryService`、`WebDavFileService`、`ShellContextMenuRefreshService`、AppLaunchLocker 启动来源扫描和广告扫描都属于强制使用方。
+- 修改扫描 facade 或扫描调用方后必须运行扫描规则检查和直接相关测试，禁止恢复 `hardware_concurrency`、worker vector、`*ScanThread` 或 `*ScanState` 实现。
 
 ## Acceptance Rules
 

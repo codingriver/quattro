@@ -1,5 +1,7 @@
 #include "AppLaunchLockerCore.h"
 
+#include "ScanExecutionService.h"
+
 #include "JsonValue.h"
 
 #include <windows.h>
@@ -18,6 +20,7 @@
 #include <cwctype>
 #include <fstream>
 #include <iomanip>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <set>
@@ -26,6 +29,27 @@
 #include <thread>
 
 namespace {
+std::size_t SaturatingSize(std::uint64_t value) {
+    constexpr std::uint64_t maximum = static_cast<std::uint64_t>((std::numeric_limits<std::size_t>::max)());
+    return static_cast<std::size_t>((std::min)(value, maximum));
+}
+
+DWORD AppLaunchLockerScanTestDelayMs() {
+    wchar_t testMode[8]{};
+    if (GetEnvironmentVariableW(
+            L"QUATTRO_TEST_MODE", testMode, static_cast<DWORD>(std::size(testMode))) == 0) {
+        return 0;
+    }
+    wchar_t delayText[16]{};
+    if (GetEnvironmentVariableW(
+            L"QUATTRO_TEST_APP_LAUNCH_LOCKER_SCAN_DELAY_MS",
+            delayText,
+            static_cast<DWORD>(std::size(delayText))) == 0) {
+        return 0;
+    }
+    return (std::min<DWORD>)(wcstoul(delayText, nullptr, 10), 1000);
+}
+
 template <typename T>
 void ReleaseCom(T*& value) {
     if (value) {
@@ -1924,21 +1948,77 @@ StartupManager::StartupManager(DisabledItemStore store)
     : store_(std::move(store)) {}
 
 ScanResult StartupManager::ScanAll() const {
+    ScanTaskOptions options;
+    options.mode = ScanExecutionMode::CallerParallel;
+    return ScanExecutionService::Run<ScanResult>(options,
+        [&](ScanTaskContext& context) { return ScanAllCore(context); });
+}
+
+std::shared_ptr<ScanTaskHandle> StartupManager::StartScanAll(
+    std::function<void()> completionCallback) const {
+    ScanTaskOptions options;
+    options.mode = ScanExecutionMode::BackgroundParallel;
+    options.completionCallback = std::move(completionCallback);
+    const StartupManager manager = *this;
+    return ScanExecutionService::StartTyped<ScanResult>(options,
+        [manager](ScanTaskContext& context) { return manager.ScanAllCore(context); });
+}
+
+ScanResult StartupManager::ScanAllCore(ScanTaskContext& context) const {
     ScanResult result;
-    bool uninitialize = false;
-    if (!InitializeComForScan(uninitialize)) result.warnings.push_back(L"COM 初始化失败，部分来源无法扫描。");
-    ScanRegistry(result);
-    ScanActiveSetup(result);
-    ScanStartupFolder(result, FOLDERID_Startup, false);
-    ScanStartupFolder(result, FOLDERID_CommonStartup, true);
-    ScanScheduledTasks(result);
-    ScanServices(result);
-    ScanWmi(result);
-    ScanIfeo(result);
-    ScanWinlogonNotify(result);
-    ScanSessionManager(result);
-    ScanAppCertDlls(result);
-    ScanShellExtensions(result);
+    using SourceScanner = std::function<void(ScanResult&)>;
+    const std::vector<SourceScanner> scanners = {
+        [](ScanResult& local) { ScanRegistry(local); },
+        [](ScanResult& local) { ScanActiveSetup(local); },
+        [](ScanResult& local) {
+            ScanStartupFolder(local, FOLDERID_Startup, false);
+            ScanStartupFolder(local, FOLDERID_CommonStartup, true);
+        },
+        [](ScanResult& local) { ScanScheduledTasks(local); },
+        [](ScanResult& local) { ScanServices(local); },
+        [](ScanResult& local) { ScanWmi(local); },
+        [](ScanResult& local) { ScanIfeo(local); },
+        [](ScanResult& local) {
+            ScanWinlogonNotify(local);
+            ScanSessionManager(local);
+            ScanAppCertDlls(local);
+        },
+        [](ScanResult& local) { ScanShellExtensions(local); },
+    };
+    ScanProgressUpdate progress;
+    progress.phase = L"startup-sources";
+    progress.title = L"启动项扫描进度";
+    progress.status = L"正在扫描 Windows 启动来源";
+    progress.total = scanners.size();
+    progress.indeterminate = false;
+    context.Report(std::move(progress));
+    const DWORD testDelayMs = AppLaunchLockerScanTestDelayMs();
+    context.ForEach<SourceScanner, ScanResult>(
+        scanners,
+        [] { return ScanResult{}; },
+        [testDelayMs](const SourceScanner& scanner, ScanResult& local, ScanTaskContext& workerContext) {
+            bool uninitialize = false;
+            if (!InitializeComForScan(uninitialize)) {
+                local.warnings.push_back(L"COM 初始化失败，部分来源无法扫描。");
+            }
+            if (testDelayMs > 0) Sleep(testDelayMs);
+            scanner(local);
+            if (uninitialize) CoUninitialize();
+            workerContext.UpdateProgress([](ScanProgressUpdate& value) {
+                ++value.completed;
+                value.current = value.completed;
+                value.detail = L"已完成 " + std::to_wstring(value.completed) + L" / " +
+                    std::to_wstring(value.total) + L" 个来源";
+            });
+        },
+        [&result](ScanResult&& local) {
+            result.items.insert(result.items.end(),
+                std::make_move_iterator(local.items.begin()),
+                std::make_move_iterator(local.items.end()));
+            result.warnings.insert(result.warnings.end(),
+                std::make_move_iterator(local.warnings.begin()),
+                std::make_move_iterator(local.warnings.end()));
+        });
     AlignStartupApproved(result);
     // 对账：本工具经 StartupApproved 禁用的项其注册表值/文件仍在，扫描仍会命中；
     // 若系统侧仍为禁用则从“当前自启动”移除（只留在“已禁用”），若被系统改回启用则保留。
@@ -1958,7 +2038,10 @@ ScanResult StartupManager::ScanAll() const {
         if (leftName != rightName) return leftName < rightName;
         return left.id < right.id;
     });
-    if (uninitialize) CoUninitialize();
+    context.UpdateProgress([&result](ScanProgressUpdate& value) {
+        value.status = L"扫描完成";
+        value.detail = L"发现 " + std::to_wstring(result.items.size()) + L" 个启动项";
+    });
     return result;
 }
 
@@ -2045,6 +2128,36 @@ AdBlockScanResult AdBlockManager::ScanPathDetailed(
     const AdBlockCancelCheck& shouldCancel,
     const AdBlockProgressCallback& reportProgress,
     AdBlockScanOptions options) const {
+    ScanTaskOptions scanOptions;
+    scanOptions.mode = ScanExecutionMode::CallerParallel;
+    scanOptions.maxWorkers = options.maxWorkers;
+    return ScanExecutionService::Run<AdBlockScanResult>(scanOptions,
+        [&](ScanTaskContext& context) {
+            return ScanPathDetailedCore(fileOrDir, shouldCancel, reportProgress, options, context);
+        });
+}
+
+std::shared_ptr<ScanTaskHandle> AdBlockManager::StartScanPathDetailed(
+    std::wstring fileOrDir,
+    AdBlockScanOptions options,
+    std::function<void()> completionCallback) const {
+    ScanTaskOptions scanOptions;
+    scanOptions.mode = ScanExecutionMode::BackgroundParallel;
+    scanOptions.maxWorkers = options.maxWorkers;
+    scanOptions.completionCallback = std::move(completionCallback);
+    const AdBlockManager manager = *this;
+    return ScanExecutionService::StartTyped<AdBlockScanResult>(scanOptions,
+        [manager, fileOrDir = std::move(fileOrDir), options](ScanTaskContext& context) {
+            return manager.ScanPathDetailedCore(fileOrDir, {}, {}, options, context);
+        });
+}
+
+AdBlockScanResult AdBlockManager::ScanPathDetailedCore(
+    const std::wstring& fileOrDir,
+    const AdBlockCancelCheck& shouldCancel,
+    const AdBlockProgressCallback& reportProgress,
+    AdBlockScanOptions options,
+    ScanTaskContext& context) const {
     AdBlockScanResult result;
     auto cancelled = [&]() { return shouldCancel && shouldCancel(); };
     auto report = [&](AdBlockScanProgress progress) {
@@ -2182,10 +2295,8 @@ AdBlockScanResult AdBlockManager::ScanPathDetailed(
 
     options.batchSize = std::max<std::size_t>(1, options.batchSize);
     const std::size_t batchCount = (candidates.size() + options.batchSize - 1) / options.batchSize;
-    const std::size_t hardware = std::max<std::size_t>(1, std::thread::hardware_concurrency());
-    const std::size_t configured = options.maxWorkers == 0 ? hardware : options.maxWorkers;
     result.workerCount = candidates.empty() ? 0 : (result.directory
-        ? std::max<std::size_t>(1, std::min({batchCount, hardware, configured}))
+        ? std::max<std::size_t>(1, std::min<std::size_t>(batchCount, options.maxWorkers == 0 ? 8 : options.maxWorkers))
         : 1);
     report(AdBlockScanProgress{
         AdBlockScanPhase::Analyzing,
@@ -2197,14 +2308,7 @@ AdBlockScanResult AdBlockManager::ScanPathDetailed(
         result.inaccessibleDirectories,
         result.workerCount});
 
-    std::atomic_size_t nextIndex{0};
-    std::atomic_size_t checkedCandidates{0};
-    std::atomic_size_t autoStartMatches{0};
-    std::atomic_bool comUnavailable{false};
-    std::mutex resultMutex;
-    std::mutex progressMutex;
-
-    auto analyzeCandidate = [&](const std::wstring& candidate, ScanResult& local) {
+    auto analyzeCandidate = [&](const std::wstring& candidate, ScanResult& local, std::size_t& autoStartMatches) {
         const std::wstring displayName = FileNameOf(candidate);
         const LaunchTarget target = ResolveLaunchTarget(candidate);
         if (!target.valid) {
@@ -2229,54 +2333,93 @@ AdBlockScanResult AdBlockManager::ScanPathDetailed(
         if (autoStartIt != autoStartExeLower.end()) {
             original[L"hasAutoStart"] = L"1";
             if (autoStartIt->second) original[L"autoStartRequiresAdmin"] = L"1";
-            autoStartMatches.fetch_add(1);
+            ++autoStartMatches;
         }
         AddItem(local, StartupSourceType::Ifeo, displayName, candidate, target.path,
             true, guard.allow, std::move(original));
     };
 
-    auto worker = [&]() {
-        ComApartment apartment;
-        if (!apartment.usable()) comUnavailable.store(true);
-        ScanResult local;
-        while (!cancelled()) {
-            const std::size_t begin = nextIndex.fetch_add(options.batchSize);
-            if (begin >= candidates.size()) break;
-            const std::size_t finish = std::min(candidates.size(), begin + options.batchSize);
-            if (options.batchDelay.count() > 0) std::this_thread::sleep_for(options.batchDelay);
-            for (std::size_t index = begin; index < finish && !cancelled(); ++index) {
-                analyzeCandidate(candidates[index], local);
-                checkedCandidates.fetch_add(1);
+    struct CandidateBatch {
+        std::size_t begin = 0;
+        std::size_t end = 0;
+    };
+    std::vector<CandidateBatch> batches;
+    for (std::size_t begin = 0; begin < candidates.size(); begin += options.batchSize) {
+        batches.push_back(CandidateBatch{begin, std::min(candidates.size(), begin + options.batchSize)});
+    }
+    struct AnalyzeLocalResult {
+        std::unique_ptr<ComApartment> apartment;
+        ScanResult scan;
+        std::size_t checked = 0;
+        std::size_t autoStartMatches = 0;
+        bool comUnavailable = false;
+    };
+    bool comUnavailable = false;
+    ScanProgressUpdate scanProgress;
+    scanProgress.phase = L"ad-block-analyzing";
+    scanProgress.title = L"广告拦截检查进度";
+    scanProgress.status = L"正在并行分析可启动项目";
+    scanProgress.total = result.totalCandidates;
+    scanProgress.indeterminate = false;
+    context.Report(std::move(scanProgress));
+    context.ForEach<CandidateBatch, AnalyzeLocalResult>(
+        batches,
+        [] { return AnalyzeLocalResult{}; },
+        [&](const CandidateBatch& batch, AnalyzeLocalResult& local, ScanTaskContext& workerContext) {
+            if (!local.apartment) {
+                local.apartment = std::make_unique<ComApartment>();
+                local.comUnavailable = !local.apartment->usable();
             }
+            if (cancelled()) {
+                workerContext.RequestStop();
+                return;
+            }
+            const std::size_t checkedBefore = local.checked;
+            const std::size_t matchesBefore = local.autoStartMatches;
+            if (options.batchDelay.count() > 0) std::this_thread::sleep_for(options.batchDelay);
+            for (std::size_t index = batch.begin; index < batch.end && !cancelled() && !workerContext.StopRequested(); ++index) {
+                analyzeCandidate(candidates[index], local.scan, local.autoStartMatches);
+                ++local.checked;
+            }
+            const std::size_t checkedDelta = local.checked - checkedBefore;
+            const std::size_t matchesDelta = local.autoStartMatches - matchesBefore;
+            workerContext.UpdateProgress([checkedDelta, matchesDelta](ScanProgressUpdate& value) {
+                value.completed += checkedDelta;
+                value.current = value.completed;
+                value.succeeded += matchesDelta;
+                value.detail = std::to_wstring(value.succeeded) +
+                    L" 个已注册开机/登录自启动，已检查 " +
+                    std::to_wstring(value.completed) + L" / " +
+                    std::to_wstring(value.total) + L" 个项目";
+            });
             if (reportProgress) {
-                std::lock_guard progressLock(progressMutex);
-                report(AdBlockScanProgress{
+                const ScanProgressSnapshot snapshot = workerContext.Snapshot();
+                const AdBlockScanProgress progress{
                     AdBlockScanPhase::Analyzing,
                     result.enumeratedFiles,
                     result.totalCandidates,
-                    std::min(checkedCandidates.load(), result.totalCandidates),
+                    (std::min)(SaturatingSize(snapshot.completed), result.totalCandidates),
                     result.totalCandidates,
-                    autoStartMatches.load(),
+                    SaturatingSize(snapshot.succeeded),
                     result.inaccessibleDirectories,
-                    result.workerCount});
+                    snapshot.workerCount};
+                workerContext.Publish([&]() { report(progress); });
             }
-        }
-        std::lock_guard resultLock(resultMutex);
-        result.scan.items.insert(result.scan.items.end(),
-            std::make_move_iterator(local.items.begin()), std::make_move_iterator(local.items.end()));
-        result.scan.warnings.insert(result.scan.warnings.end(),
-            std::make_move_iterator(local.warnings.begin()), std::make_move_iterator(local.warnings.end()));
-    };
+        },
+        [&](AnalyzeLocalResult&& local) {
+            result.checkedCandidates += local.checked;
+            result.autoStartMatches += local.autoStartMatches;
+            comUnavailable = comUnavailable || local.comUnavailable;
+            result.scan.items.insert(result.scan.items.end(),
+                std::make_move_iterator(local.scan.items.begin()), std::make_move_iterator(local.scan.items.end()));
+            result.scan.warnings.insert(result.scan.warnings.end(),
+                std::make_move_iterator(local.scan.warnings.begin()), std::make_move_iterator(local.scan.warnings.end()));
+        });
 
-    std::vector<std::thread> workers;
-    workers.reserve(result.workerCount);
-    for (std::size_t index = 0; index < result.workerCount; ++index) workers.emplace_back(worker);
-    for (std::thread& thread : workers) thread.join();
-
-    result.checkedCandidates = std::min(checkedCandidates.load(), result.totalCandidates);
-    result.autoStartMatches = autoStartMatches.load();
-    result.cancelled = cancelled() && result.checkedCandidates < result.totalCandidates;
-    if (comUnavailable.load()) result.scan.warnings.push_back(L"COM 初始化失败，部分快捷方式可能无法解析。");
+    result.workerCount = context.Snapshot().workerCount;
+    result.checkedCandidates = std::min(result.checkedCandidates, result.totalCandidates);
+    result.cancelled = (cancelled() || context.StopRequested()) && result.checkedCandidates < result.totalCandidates;
+    if (comUnavailable) result.scan.warnings.push_back(L"COM 初始化失败，部分快捷方式可能无法解析。");
     if (result.inaccessibleDirectories > 0) {
         result.scan.warnings.push_back(
             L"有 " + std::to_wstring(result.inaccessibleDirectories) + L" 个目录无法访问，已跳过。");
@@ -2298,6 +2441,16 @@ AdBlockScanResult AdBlockManager::ScanPathDetailed(
         result.autoStartMatches,
         result.inaccessibleDirectories,
         result.workerCount});
+    context.UpdateProgress([&result](ScanProgressUpdate& value) {
+        value.status = result.cancelled ? L"检查已停止" : L"检查完成";
+        value.detail = L"发现 " + std::to_wstring(result.scan.items.size()) +
+            L" 个可启动程序，其中 " + std::to_wstring(result.autoStartMatches) +
+            L" 个已注册开机/登录自启动";
+        value.current = result.cancelled ? result.checkedCandidates : result.totalCandidates;
+        value.total = result.totalCandidates;
+        value.succeeded = result.autoStartMatches;
+        value.indeterminate = false;
+    });
     return result;
 }
 

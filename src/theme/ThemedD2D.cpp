@@ -121,7 +121,7 @@ public:
                 ? D2D1_ALPHA_MODE_PREMULTIPLIED
                 : D2D1_ALPHA_MODE_IGNORE;
             const D2D1_RENDER_TARGET_PROPERTIES properties = D2D1::RenderTargetProperties(
-                D2D1_RENDER_TARGET_TYPE_DEFAULT,
+                D2D1_RENDER_TARGET_TYPE_SOFTWARE,
                 D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, alphaMode),
                 96.0f,
                 96.0f,

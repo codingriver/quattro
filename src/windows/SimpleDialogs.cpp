@@ -65,6 +65,7 @@ constexpr int ID_MAIN_HOTKEY_CLEAR = 302;
 constexpr int ID_PROCESS_LOCATOR_HOTKEY_CAPTURE = 303;
 constexpr int ID_HOTKEY_TABLE = 304;
 constexpr int ID_COPY_SELECTED_PATHS_HOTKEY_CAPTURE = 305;
+constexpr int ID_RESET_DEFAULT_HOTKEYS = 306;
 constexpr int ID_GROUP_WIDTH = 401;
 constexpr int ID_TAG_WIDTH = 402;
 constexpr int ID_DOCK_DELAY = 403;
@@ -2023,7 +2024,7 @@ private:
             const auto& layout = ui.layout();
             int y = ui.contentTop();
             const int labelWidth = form.labelWidthForTexts({
-                L"文件名：", L"文件大小：", L"上传时间：", L"上传状态："});
+                L"文件名：", L"文件大小：", L"远程更新时间：", L"本地修改时间：", L"上传状态："});
             const int valueX = ui.contentLeft() + labelWidth + layout.labelGap;
             const int valueWidth = ui.contentWidth() - labelWidth - layout.labelGap;
             auto addValueRow = [&](const std::wstring& label, const std::wstring& value) {
@@ -2039,7 +2040,9 @@ private:
             addValueRow(L"文件名：", record_.displayName);
             addValueRow(L"文件大小：", healthy ? FormatFileSize(record_.size) : L"—");
             const std::wstring uploadedAtLocal = WebDavFileService::FormatUploadedAtLocal(record_.uploadedAtUtc);
-            addValueRow(L"上传时间：", healthy && !uploadedAtLocal.empty() ? uploadedAtLocal : L"获取失败");
+            addValueRow(L"远程更新时间：", healthy && !uploadedAtLocal.empty() ? uploadedAtLocal : L"获取失败");
+            const std::wstring localModifiedAt = WebDavFileService::FormatLocalModifiedAt(record_.absolutePath);
+            addValueRow(L"本地修改时间：", localModifiedAt.empty() ? L"-" : localModifiedAt);
             addValueRow(L"上传状态：", healthy ? record_.uploadState +
                 (record_.contentReady ? L" · 内容可用" : L" · 内容不可用") : healthText);
 
@@ -2128,6 +2131,7 @@ private:
         ID_FILE_ACTION_DELETE = 433,
         ID_FILE_ROW_MENU = 434,
         ID_FILE_ACTION_OPEN_LOCATION = 435,
+        ID_FILE_ACTION_UPLOAD = 436,
     };
 
     struct ListResult {
@@ -2307,8 +2311,11 @@ private:
         }
     }
     void StartRefresh() {
-        refreshStop_.request_stop();
-        refreshStop_ = std::stop_source{};
+        if (refreshTask_) {
+            refreshTask_->RequestStop();
+            refreshTask_->Wait();
+            refreshTask_.reset();
+        }
         refreshBusy_ = true;
         const std::uint64_t generation = ++refreshGeneration_;
         ThemedUi::SetText(directoryLabel_, L"远端目录：" + WebDavFileService::FilesDirectory(config_) + L" · 正在后台刷新...");
@@ -2320,33 +2327,57 @@ private:
         const HWND target = hwnd_;
         const AppConfig config = config_;
         const std::shared_ptr<std::atomic<bool>> alive = alive_;
-        const std::stop_token stopToken = refreshStop_.get_token();
-        std::thread([target, config, alive, generation, stopToken]() {
-            auto result = std::make_unique<ListResult>();
-            result->generation = generation;
-            WebDavFileService service(config);
-            result->ok = service.Enumerate({}, [&](std::vector<WebDavFileRecord> batch) {
-                result->records.insert(result->records.end(), batch.begin(), batch.end());
-                auto message = std::make_unique<BatchResult>();
-                message->generation = generation;
-                message->records = std::move(batch);
-                BatchResult* raw = message.release();
-                if (!alive->load() || !PostMessageW(target, WM_WEBDAV_FILE_BATCH, 0, reinterpret_cast<LPARAM>(raw))) {
-                    delete raw; return false;
+        wchar_t simulateRefresh[8]{};
+        const bool simulateRefreshForTest = QuattroTestMode() && GetEnvironmentVariableW(
+            L"QUATTRO_TEST_WEBDAV_FILE_MANAGER_SIMULATE_REFRESH",
+            simulateRefresh,
+            static_cast<DWORD>(std::size(simulateRefresh))) > 0;
+        const std::vector<WebDavFileRecord> simulatedRecords =
+            simulateRefreshForTest ? records_ : std::vector<WebDavFileRecord>{};
+        ScanTaskOptions scanOptions;
+        scanOptions.mode = ScanExecutionMode::BackgroundParallel;
+        scanOptions.maxWorkers = 4;
+        scanOptions.completionCallback = [target, alive]() {
+            if (alive->load()) PostMessageW(target, WM_WEBDAV_FILE_LIST_DONE, 0, 0);
+        };
+        refreshTask_ = ScanExecutionService::StartTyped<ListResult>(scanOptions,
+            [target, config, alive, generation, simulateRefreshForTest, simulatedRecords](ScanTaskContext& context) {
+            ListResult result;
+            result.generation = generation;
+            context.Report(ScanProgressUpdate{
+                L"webdav-files", L"WebDAV 文件扫描进度", L"正在读取远端文件记录", L"正在连接 WebDAV 服务器"});
+            if (simulateRefreshForTest) {
+                for (int elapsed = 0; elapsed < 1500 && !context.StopRequested(); elapsed += 20) {
+                    Sleep(20);
                 }
-                return !stopToken.stop_requested();
-            }, stopToken, result->error);
-            if (!stopToken.stop_requested()) {
+                result.ok = !context.StopRequested();
+                result.records = simulatedRecords;
+            } else {
+                WebDavFileService service(config);
+                result.ok = service.Enumerate({}, [&](std::vector<WebDavFileRecord> batch) {
+                    result.records.insert(result.records.end(), batch.begin(), batch.end());
+                    auto message = std::make_unique<BatchResult>();
+                    message->generation = generation;
+                    message->records = std::move(batch);
+                    BatchResult* raw = message.release();
+                    if (!alive->load() || !PostMessageW(target, WM_WEBDAV_FILE_BATCH, 0, reinterpret_cast<LPARAM>(raw))) {
+                        delete raw; return false;
+                    }
+                    return !context.StopRequested();
+                }, context.StopToken(), result.error);
+            }
+            if (!context.StopRequested()) {
                 SYSTEMTIME utc{}; GetSystemTime(&utc); wchar_t stamp[64]{};
                 swprintf_s(stamp, L"%04u-%02u-%02uT%02u:%02u:%02u.%03uZ", utc.wYear, utc.wMonth, utc.wDay,
                     utc.wHour, utc.wMinute, utc.wSecond, utc.wMilliseconds);
-                result->refreshedAtUtc = stamp;
+                result.refreshedAtUtc = stamp;
             }
-            ListResult* raw = result.release();
-            if (!alive->load() || !PostMessageW(target, WM_WEBDAV_FILE_LIST_DONE, 0, reinterpret_cast<LPARAM>(raw))) {
-                delete raw;
-            }
-        }).detach();
+            context.UpdateProgress([&result](ScanProgressUpdate& value) {
+                value.status = result.ok ? L"扫描完成" : L"扫描未完成";
+                value.detail = result.error;
+            });
+            return result;
+        });
     }
     void ApplyBatch(std::unique_ptr<BatchResult> batch) {
         if (!batch || batch->generation != refreshGeneration_) return;
@@ -2356,6 +2387,13 @@ private:
             L"，未变化 " + std::to_wstring(summary.unchanged));
     }
     void FinishRefresh(std::unique_ptr<ListResult> result) {
+        if (!result && refreshTask_ && refreshTask_->IsFinished()) {
+            refreshTask_->Wait();
+            if (refreshTask_->Status() != ScanTaskStatus::Failed) {
+                result = std::make_unique<ListResult>(refreshTask_->ResultCopy<ListResult>());
+            }
+            refreshTask_.reset();
+        }
         if (!result || result->generation != refreshGeneration_) return;
         refreshBusy_ = false;
         ThemedUi::SetText(directoryLabel_, L"远端目录：" + WebDavFileService::FilesDirectory(config_));
@@ -2463,6 +2501,41 @@ private:
     }
     bool ValidateDownloadTarget(const WebDavFileRecord& record, std::filesystem::path& target, std::wstring& error) const {
         return WebDavFileService::ValidateDownloadTargetPath(record.absolutePath, target, error);
+    }
+    bool LocalUploadTarget(const WebDavFileRecord& record, std::filesystem::path& target, std::wstring& error) const {
+        if (!ValidateDownloadTarget(record, target, error)) return false;
+        std::error_code ec;
+        if (!std::filesystem::is_regular_file(target, ec)) {
+            error = L"本地文件不存在，无法上传。";
+            target.clear();
+            return false;
+        }
+        return true;
+    }
+    bool CanUploadLocal(const WebDavFileRecord& record) const {
+        if (!IsHealthy(record)) return false;
+        std::filesystem::path target;
+        std::wstring error;
+        return LocalUploadTarget(record, target, error);
+    }
+    void Upload(int index = -1) {
+        if (index < 0) index = Selected();
+        if (index < 0 || index >= static_cast<int>(records_.size())) {
+            ShowThemedMessageBox(hwnd_, instance_, theme_, L"请选择一个文件。", L"WebDAV 文件管理", MB_OK | MB_ICONWARNING);
+            return;
+        }
+        const auto& record = records_[static_cast<std::size_t>(index)];
+        std::filesystem::path target;
+        std::wstring error;
+        if (!LocalUploadTarget(record, target, error)) {
+            ShowToast(error.empty() ? L"本地文件不存在，无法上传。" : error, ThemedToastRole::Warning, 5000);
+            return;
+        }
+        if (!WebDavTransferCoordinator::SubmitUploads({target}, error)) {
+            ShowThemedMessageBox(hwnd_, instance_, theme_, error, L"上传失败", MB_OK | MB_ICONWARNING);
+            return;
+        }
+        ShowToast(L"已加入 WebDAV 上传队列。", ThemedToastRole::Success);
     }
     void Download(int index = -1) {
         if (index < 0) index = Selected();
@@ -2729,18 +2802,25 @@ private:
         return POINT{window.left, window.top};
     }
     void ShowFileActionMenu(int row, POINT anchor) {
-        if (refreshBusy_ || row < 0 || row >= static_cast<int>(records_.size())) return;
+        if (row < 0 || row >= static_cast<int>(records_.size())) return;
         ThemedUi::SetTableSelectedIndex(table_, row);
+        const auto& record = records_[static_cast<std::size_t>(row)];
+        const bool healthy = IsHealthy(record);
+        const bool canUpload = CanUploadLocal(record);
         HMENU menu = CreatePopupMenu();
         if (!menu) return;
         AppendMenuW(menu, MF_STRING |
-            (IsHealthy(records_[static_cast<std::size_t>(row)]) ? 0 : MF_GRAYED),
+            (healthy ? 0 : MF_GRAYED),
             ID_FILE_ACTION_DOWNLOAD, L"下载");
+        AppendMenuW(menu, MF_STRING | (canUpload ? 0 : MF_GRAYED),
+            ID_FILE_ACTION_UPLOAD, L"上传");
         AppendMenuW(menu, MF_STRING |
-            (IsHealthy(records_[static_cast<std::size_t>(row)]) ? 0 : MF_GRAYED),
+            (healthy ? 0 : MF_GRAYED),
             ID_FILE_ACTION_OPEN_LOCATION, L"打开文件所在位置");
         if (QuattroTestMode()) {
             SetPropW(hwnd_, L"QuattroWebDavFileActionMenuHasOpenLocation",
+                reinterpret_cast<HANDLE>(static_cast<INT_PTR>(1)));
+            SetPropW(hwnd_, L"QuattroWebDavFileActionMenuHasUpload",
                 reinterpret_cast<HANDLE>(static_cast<INT_PTR>(1)));
         }
         AppendMenuW(menu, MF_STRING, ID_FILE_ACTION_DETAILS, L"查看详情");
@@ -2753,6 +2833,7 @@ private:
         const UINT command = ThemedUi::ShowPopupMenu(hwnd_, menu, anchor, options).command;
         DestroyMenu(menu);
         if (command == ID_FILE_ACTION_DOWNLOAD) Download(row);
+        else if (command == ID_FILE_ACTION_UPLOAD) Upload(row);
         else if (command == ID_FILE_ACTION_OPEN_LOCATION) OpenContainingLocation(row);
         else if (command == ID_FILE_ACTION_DETAILS) ShowDetails(row);
         else if (command == ID_FILE_ACTION_DELETE) DeleteSelected(row);
@@ -2900,8 +2981,8 @@ private:
             return 0;
         }
         case WM_COMMAND: if (LOWORD(wParam)==ID_WEBDAV_FILE_REFRESH) { StartRefresh(); return 0; } if (LOWORD(wParam)==ID_WEBDAV_FILE_TRANSFER_QUEUE) { ShowTransferQueue(); return 0; } if (LOWORD(wParam)==ID_WEBDAV_FILE_SELECT_ALL) { SelectAll(true); return 0; } if (LOWORD(wParam)==ID_WEBDAV_FILE_CLEAR_SELECTION) { SelectAll(false); return 0; } if (LOWORD(wParam)==ID_WEBDAV_FILE_DOWNLOAD_SELECTED) { DownloadSelected(); return 0; } if (LOWORD(wParam)==ID_WEBDAV_FILE_DELETE_SELECTED) { DeleteChecked(); return 0; } if (LOWORD(wParam)==ID_WEBDAV_FILE_DOWNLOAD) { Download(); return 0; } if (LOWORD(wParam)==ID_WEBDAV_FILE_DELETE) { DeleteSelected(); return 0; } return 0;
-        case WM_CLOSE: refreshStop_.request_stop(); done_=true; DestroyWindow(hwnd_); return 0;
-        case WM_NCDESTROY: refreshStop_.request_stop(); alive_->store(false); RemovePropW(hwnd_, L"QuattroWebDavIncrementalApplied"); RemovePropW(hwnd_, L"QuattroWebDavFileActionMenuHasOpenLocation"); done_=true; hwnd_=nullptr; return 0;
+        case WM_CLOSE: if (refreshTask_) refreshTask_->RequestStop(); done_=true; DestroyWindow(hwnd_); return 0;
+        case WM_NCDESTROY: if (refreshTask_) refreshTask_->RequestStop(); alive_->store(false); RemovePropW(hwnd_, L"QuattroWebDavIncrementalApplied"); RemovePropW(hwnd_, L"QuattroWebDavFileActionMenuHasOpenLocation"); RemovePropW(hwnd_, L"QuattroWebDavFileActionMenuHasUpload"); done_=true; hwnd_=nullptr; return 0;
         default: return DefWindowProcW(hwnd_, message, wParam, lParam);
         }
     }
@@ -2915,7 +2996,7 @@ private:
     std::shared_ptr<DeleteTaskState> deleteTaskState_;
     std::unique_ptr<ThemedTaskProgressDialog> deleteProgressDialog_;
     std::shared_ptr<std::atomic<bool>> alive_ = std::make_shared<std::atomic<bool>>(true);
-    std::stop_source refreshStop_; std::uint64_t refreshGeneration_=0; bool refreshBusy_=false; bool deleteBusy_=false; bool done_=false;
+    std::shared_ptr<ScanTaskHandle> refreshTask_; std::uint64_t refreshGeneration_=0; bool refreshBusy_=false; bool deleteBusy_=false; bool done_=false;
 };
 
 class SettingsDialog {
@@ -2991,10 +3072,12 @@ public:
         if (windowUi_) {
             windowUi_->RestoreModalOwner();
         }
-        if (contextMenuRefreshThread_.joinable()) {
-            contextMenuRefreshThread_.request_stop();
-            contextMenuRefreshThread_.join();
+        if (contextMenuRefreshTask_) {
+            contextMenuRefreshTask_->RequestStop();
+            contextMenuRefreshTask_->Wait();
+            contextMenuRefreshTask_.reset();
         }
+        if (contextMenuRefreshProgressDialog_) contextMenuRefreshProgressDialog_->Close();
         return accepted_;
     }
 
@@ -3246,6 +3329,15 @@ private:
                 },
             },
         });
+    }
+
+    void ResetDefaultHotKeys() {
+        AppConfig defaults{};
+        draft_.mainHotKey = defaults.mainHotKey;
+        draft_.processLocatorHotKey = defaults.processLocatorHotKey;
+        draft_.copySelectedPathsHotKey = defaults.copySelectedPathsHotKey;
+        UpdateHotKeyLabels();
+        ShowToast(L"已恢复默认热键，保存设置后生效。", ThemedToastRole::Info);
     }
 
     void UpdateCopyPathContextMenuStatus(bool enabled) {
@@ -3579,7 +3671,10 @@ private:
             return true;
         }
         if (event.actionId == ID_MAIN_HOTKEY_CAPTURE) {
-            TrySetMainHotKey(ShowHotKeyCaptureDialog(hwnd_, instance_, theme_, draft_.mainHotKey));
+            HotKeyCaptureDialogOptions options{};
+            options.allowDoubleAlt = true;
+            options.useMainHotKeyText = true;
+            TrySetMainHotKey(ShowHotKeyCaptureDialog(hwnd_, instance_, theme_, draft_.mainHotKey, options));
         } else if (event.actionId == ID_PROCESS_LOCATOR_HOTKEY_CAPTURE) {
             TrySetProcessLocatorHotKey(ShowHotKeyCaptureDialog(hwnd_, instance_, theme_, draft_.processLocatorHotKey));
         } else if (event.actionId == ID_COPY_SELECTED_PATHS_HOTKEY_CAPTURE) {
@@ -3637,6 +3732,7 @@ private:
             value.globalHotKeysEnabled = ThemedUi::IsChecked(globalHotKeysEnabled_);
             value.mainHotKey = draft_.mainHotKey;
             value.processLocatorHotKey = draft_.processLocatorHotKey;
+            value.copySelectedPathsHotKey = draft_.copySelectedPathsHotKey;
             break;
         case TabLinks:
             value.openDirCommand = GetText(openDirEdit_);
@@ -3911,15 +4007,16 @@ private:
     }
 
     void CompleteContextMenuRefresh() {
+        if (!contextMenuRefreshTask_ || !contextMenuRefreshTask_->IsFinished()) {
+            return;
+        }
+        contextMenuRefreshTask_->Wait();
         std::optional<ShellContextMenuRefreshResult> result;
-        {
-            std::lock_guard lock(contextMenuRefreshMutex_);
-            result = std::move(contextMenuRefreshResult_);
-            contextMenuRefreshResult_.reset();
+        if (contextMenuRefreshTask_->Status() != ScanTaskStatus::Failed) {
+            result = contextMenuRefreshTask_->ResultCopy<ShellContextMenuRefreshResult>();
         }
-        if (contextMenuRefreshThread_.joinable()) {
-            contextMenuRefreshThread_.join();
-        }
+        contextMenuRefreshTask_.reset();
+        if (contextMenuRefreshProgressDialog_) contextMenuRefreshProgressDialog_->Close();
         SetContextMenuRefreshBusy(false);
         if (!result) {
             ShowThemedMessageBox(
@@ -3963,8 +4060,10 @@ private:
                 hwnd_, instance_, theme_, L"当前没有可刷新的启动项。", L"从Windows菜单刷新", MB_OK | MB_ICONINFORMATION);
             return;
         }
-        if (contextMenuRefreshThread_.joinable()) {
-            contextMenuRefreshThread_.join();
+        if (contextMenuRefreshTask_) {
+            contextMenuRefreshTask_->RequestStop();
+            contextMenuRefreshTask_->Wait();
+            contextMenuRefreshTask_.reset();
         }
 
         ShellContextMenuRefreshRequest request{contextMenuLinks_, tracking};
@@ -3972,25 +4071,42 @@ private:
         const SettingsContextMenuRefreshRunner runner = contextMenuRefreshRunner_;
         SetContextMenuRefreshBusy(true);
         ShowToast(L"正在扫描 Windows 原生菜单...", ThemedToastRole::Info, 5000);
-        contextMenuRefreshThread_ = std::jthread(
-            [this, target, request = std::move(request), runner](std::stop_token stopToken) mutable {
+        ScanTaskOptions scanOptions;
+        scanOptions.mode = ScanExecutionMode::BackgroundSingle;
+        scanOptions.completionCallback = [target]() {
+            PostMessageW(target, WM_CONTEXT_MENU_REFRESH_DONE, 0, 0);
+        };
+        contextMenuRefreshTask_ = ScanExecutionService::StartTyped<ShellContextMenuRefreshResult>(
+            std::move(scanOptions),
+            [request = std::move(request), runner](ScanTaskContext& context) mutable {
                 ShellContextMenuRefreshResult result;
                 try {
                     result = runner
-                        ? runner(request, stopToken)
-                        : ShellContextMenuRefreshService().Refresh(request, stopToken);
+                        ? runner(request, context.StopToken())
+                        : ShellContextMenuRefreshService().Refresh(request, context.StopToken());
                 } catch (...) {
                     result.tracking = request.tracking;
                     result.totalLinks = static_cast<int>(request.links.size());
                     result.failures.push_back(ShellContextMenuRefreshFailure{
                         0, L"", L"刷新过程中发生未处理异常。"});
                 }
-                {
-                    std::lock_guard lock(contextMenuRefreshMutex_);
-                    contextMenuRefreshResult_ = std::move(result);
-                }
-                PostMessageW(target, WM_CONTEXT_MENU_REFRESH_DONE, 0, 0);
+                return result;
             });
+        ThemedTaskProgressDialogOptions progressOptions{};
+        progressOptions.owner = hwnd_;
+        progressOptions.instance = instance_;
+        progressOptions.theme = theme_;
+        progressOptions.icon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_QUATTRO_APP_ICON));
+        progressOptions.className = L"QuattroShellMenuScanProgress_" +
+            std::to_wstring(GetCurrentProcessId()) + L"_" + std::to_wstring(GetTickCount64());
+        progressOptions.title = L"Windows 菜单扫描进度";
+        progressOptions.readSnapshot = [task = contextMenuRefreshTask_]() {
+            return ToThemedTaskProgressSnapshot(task->Snapshot());
+        };
+        progressOptions.requestStop = [task = contextMenuRefreshTask_]() { task->RequestStop(); };
+        contextMenuRefreshProgressDialog_ =
+            std::make_unique<ThemedTaskProgressDialog>(std::move(progressOptions));
+        contextMenuRefreshProgressDialog_->Show();
     }
 
     bool PrepareWebDavOperation(AppConfig& value) {
@@ -4939,9 +5055,28 @@ private:
             };
             HWND hotKeyGroup = AddSectionFrame(TabHotKeys, L"全局快捷键", hotKeyGroupFrame);
             const int hotKeyToggleY = hotKeyContent.top;
+            const int resetDefaultHotKeysWidth = settingsUi.buttonWidth(
+                L"重置默认热键",
+                ThemedButtonRole::Normal,
+                ThemedButtonSize::Compact,
+                ThemedButtonWidthMode::Text);
             globalHotKeysEnabled_ = Toggle(
                 TabHotKeys, ID_GLOBAL_HOTKEYS_ENABLED, L"启用全局快捷键", behaviorLeft,
-                hotKeyToggleY, draft_.globalHotKeysEnabled, behaviorContentWidth);
+                hotKeyToggleY, draft_.globalHotKeysEnabled,
+                behaviorContentWidth - resetDefaultHotKeysWidth - behaviorLayout.controlGapX);
+            resetDefaultHotKeysButton_ = Button(
+                TabHotKeys,
+                ID_RESET_DEFAULT_HOTKEYS,
+                L"重置默认热键",
+                behaviorLeft + behaviorContentWidth - resetDefaultHotKeysWidth,
+                hotKeyToggleY + (settingsUi.toggleHeight() - settingsUi.compactButtonHeight()) / 2,
+                resetDefaultHotKeysWidth);
+            ThemedTooltipOptions resetDefaultHotKeysTooltipOptions{};
+            resetDefaultHotKeysTooltipOptions.placement = ThemedTooltipPlacement::Cursor;
+            settingsUi.SetTooltip(
+                resetDefaultHotKeysButton_,
+                L"恢复主窗口、进程定位器和复制路径的默认热键；启用状态保持不变。",
+                resetDefaultHotKeysTooltipOptions);
             const int hotKeyStatusY = hotKeyContent.bottom - settingsUi.labelHeight();
             const int hotKeyTableTop = hotKeyToggleY + settingsUi.toggleHeight() + behaviorLayout.rowGap;
             const int hotKeyTableBottom = hotKeyStatusY - behaviorLayout.rowGap;
@@ -4982,7 +5117,7 @@ private:
                 TabHotKeys, L"", behaviorLeft,
                 hotKeyStatusY, behaviorContentWidth);
             ThemedUi::BindGroupChildren(hotKeyGroup, {
-                globalHotKeysEnabled_, hotKeyTable_, mainHotKeyStatus_});
+                globalHotKeysEnabled_, resetDefaultHotKeysButton_, hotKeyTable_, mainHotKeyStatus_});
             UpdateHotKeyLabels();
 
             const ThemedSectionGeometry directoryCommandSection = behaviorForm.section(
@@ -5273,7 +5408,10 @@ private:
             }
         }
             if (LOWORD(wParam) == ID_MAIN_HOTKEY_CAPTURE) {
-                TrySetMainHotKey(ShowHotKeyCaptureDialog(hwnd_, instance_, theme_, draft_.mainHotKey));
+                HotKeyCaptureDialogOptions options{};
+                options.allowDoubleAlt = true;
+                options.useMainHotKeyText = true;
+                TrySetMainHotKey(ShowHotKeyCaptureDialog(hwnd_, instance_, theme_, draft_.mainHotKey, options));
                 return 0;
             }
             if (LOWORD(wParam) == ID_PROCESS_LOCATOR_HOTKEY_CAPTURE) {
@@ -5287,6 +5425,10 @@ private:
             if (LOWORD(wParam) == ID_GLOBAL_HOTKEYS_ENABLED) {
                 draft_.globalHotKeysEnabled = ThemedUi::IsChecked(globalHotKeysEnabled_);
                 UpdateHotKeyLabels();
+                return 0;
+            }
+            if (LOWORD(wParam) == ID_RESET_DEFAULT_HOTKEYS) {
+                ResetDefaultHotKeys();
                 return 0;
             }
             if (LOWORD(wParam) == ID_MAIN_HOTKEY_CLEAR) {
@@ -5529,6 +5671,7 @@ private:
     HWND tagAlignCenter_ = nullptr;
     HWND tagAlignRight_ = nullptr;
     HWND globalHotKeysEnabled_ = nullptr;
+    HWND resetDefaultHotKeysButton_ = nullptr;
     HWND hotKeyTable_ = nullptr;
     HWND mainHotKeyStatus_ = nullptr;
     HWND openDirEdit_ = nullptr;
@@ -5582,9 +5725,8 @@ private:
     SettingsContextMenuProviderIconRunner contextMenuProviderIconRunner_;
     SettingsCopyPathContextMenuCallback copyPathContextMenuCallback_;
     SettingsWebDavUploadContextMenuCallback webDavUploadContextMenuCallback_;
-    std::jthread contextMenuRefreshThread_;
-    std::mutex contextMenuRefreshMutex_;
-    std::optional<ShellContextMenuRefreshResult> contextMenuRefreshResult_;
+    std::shared_ptr<ScanTaskHandle> contextMenuRefreshTask_;
+    std::unique_ptr<ThemedTaskProgressDialog> contextMenuRefreshProgressDialog_;
     std::shared_ptr<SettingsContextMenuIconAsyncState> contextMenuIconAsyncState_;
     std::uintptr_t contextMenuIconLoadGeneration_ = 0;
 };

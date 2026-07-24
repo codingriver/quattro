@@ -63,6 +63,13 @@ std::filesystem::path UrlIconDirectory(const std::filesystem::path& appDirectory
     return appDirectory / L"icons" / L"url";
 }
 
+std::filesystem::path TemporaryIconPath(const std::filesystem::path& target) {
+    std::filesystem::path result = target;
+    result += L".tmp." + std::to_wstring(GetCurrentProcessId()) + L"." +
+        std::to_wstring(GetCurrentThreadId());
+    return result;
+}
+
 bool HasExistingIcon(const std::filesystem::path& directory, const std::wstring& fileName) {
     return FileExists(directory / (fileName + L".png")) ||
            FileExists(directory / (fileName + L".ico"));
@@ -113,11 +120,17 @@ std::string WideToUtf8(const std::wstring& value) {
     return result;
 }
 
+struct CurlDownloadContext {
+    std::vector<std::uint8_t>* data = nullptr;
+    std::stop_token stopToken;
+};
+
 std::size_t WriteCurlData(char* ptr, std::size_t size, std::size_t nmemb, void* userdata) {
     constexpr std::size_t kMaxIconBytes = 1024 * 1024;
-    auto* data = static_cast<std::vector<std::uint8_t>*>(userdata);
+    auto* context = static_cast<CurlDownloadContext*>(userdata);
+    auto* data = context ? context->data : nullptr;
     const std::size_t bytes = size * nmemb;
-    if (!data || bytes == 0) {
+    if (!data || bytes == 0 || context->stopToken.stop_requested()) {
         return 0;
     }
     if (data->size() + bytes > kMaxIconBytes) {
@@ -128,7 +141,15 @@ std::size_t WriteCurlData(char* ptr, std::size_t size, std::size_t nmemb, void* 
     return bytes;
 }
 
-bool DownloadBytes(const std::wstring& url, std::vector<std::uint8_t>& data) {
+int CurlProgress(void* userdata, curl_off_t, curl_off_t, curl_off_t, curl_off_t) {
+    const auto* context = static_cast<const CurlDownloadContext*>(userdata);
+    return context && context->stopToken.stop_requested() ? 1 : 0;
+}
+
+bool DownloadBytes(
+    const std::wstring& url,
+    std::vector<std::uint8_t>& data,
+    std::stop_token stopToken) {
     data.clear();
     CURL* curl = curl_easy_init();
     if (!curl) {
@@ -137,6 +158,7 @@ bool DownloadBytes(const std::wstring& url, std::vector<std::uint8_t>& data) {
 
     const std::string urlUtf8 = WideToUtf8(url);
     char errorBuffer[CURL_ERROR_SIZE]{};
+    CurlDownloadContext context{&data, stopToken};
     curl_easy_setopt(curl, CURLOPT_URL, urlUtf8.c_str());
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "Quattro URL Icon/1.0");
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
@@ -144,7 +166,10 @@ bool DownloadBytes(const std::wstring& url, std::vector<std::uint8_t>& data) {
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 10L);
     curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, errorBuffer);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCurlData);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &data);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &context);
+    curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+    curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, CurlProgress);
+    curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &context);
 
     const CURLcode code = curl_easy_perform(curl);
     long status = 0;
@@ -153,7 +178,7 @@ bool DownloadBytes(const std::wstring& url, std::vector<std::uint8_t>& data) {
     return code == CURLE_OK && status >= 200 && status < 300 && !data.empty();
 }
 #else
-bool DownloadBytes(const std::wstring&, std::vector<std::uint8_t>& data) {
+bool DownloadBytes(const std::wstring&, std::vector<std::uint8_t>& data, std::stop_token) {
     data.clear();
     return false;
 }
@@ -174,6 +199,64 @@ void UrlIconDownloadService::RequestInitialDownload(HWND notifyHwnd, UINT notify
 
 bool UrlIconDownloadService::RequestManualRefresh(HWND notifyHwnd, UINT notifyMessage, Link link) {
     return RequestDownload(notifyHwnd, notifyMessage, std::move(link), true);
+}
+
+std::wstring UrlIconDownloadService::HostForLink(const Link& link) {
+    return LooksLikeWebUrl(link) ? UrlHost(link.path) : std::wstring{};
+}
+
+bool UrlIconDownloadService::RefreshNow(
+    const std::filesystem::path& appDirectory,
+    const Link& link,
+    std::stop_token stopToken) {
+    if (stopToken.stop_requested()) {
+        return false;
+    }
+    const std::wstring scheme = SchemeForUrl(link.path);
+    const std::wstring host = UrlHost(link.path);
+    if ((scheme != L"http" && scheme != L"https") || host.empty()) {
+        return false;
+    }
+
+    const std::wstring fileName = SafeHostFileName(host);
+    const std::filesystem::path iconDirectory = UrlIconDirectory(appDirectory);
+    std::error_code ec;
+    std::filesystem::create_directories(iconDirectory, ec);
+    if (ec || stopToken.stop_requested()) {
+        return false;
+    }
+
+    std::vector<std::uint8_t> data;
+    const std::wstring url = scheme + L"://" + host + L"/favicon.ico";
+    if (!DownloadBytes(url, data, stopToken) || stopToken.stop_requested()) {
+        return false;
+    }
+
+    const IconFormat format = DetectIconFormat(data);
+    if (format == IconFormat::Unknown) {
+        return false;
+    }
+    const std::wstring extension = format == IconFormat::Png ? L".png" : L".ico";
+    const std::wstring opposite = format == IconFormat::Png ? L".ico" : L".png";
+    const std::filesystem::path target = iconDirectory / (fileName + extension);
+    const std::filesystem::path temp = TemporaryIconPath(target);
+    if (!WriteFileBytes(temp, data)) {
+        std::filesystem::remove(temp, ec);
+        return false;
+    }
+    std::filesystem::rename(temp, target, ec);
+    if (ec) {
+        ec.clear();
+        std::filesystem::remove(target, ec);
+        ec.clear();
+        std::filesystem::rename(temp, target, ec);
+    }
+    if (ec) {
+        std::filesystem::remove(temp, ec);
+        return false;
+    }
+    std::filesystem::remove(iconDirectory / (fileName + opposite), ec);
+    return true;
 }
 
 bool UrlIconDownloadService::RequestDownload(HWND notifyHwnd, UINT notifyMessage, Link link, bool overwrite) {
@@ -240,9 +323,13 @@ bool UrlIconDownloadService::DownloadIconForLink(const Link& link, bool overwrit
         return false;
     }
 
+    if (overwrite) {
+        return RefreshNow(appDirectory_, link);
+    }
+
     std::vector<std::uint8_t> data;
     const std::wstring url = scheme + L"://" + host + L"/favicon.ico";
-    if (!DownloadBytes(url, data)) {
+    if (!DownloadBytes(url, data, {})) {
         return false;
     }
 
@@ -254,7 +341,7 @@ bool UrlIconDownloadService::DownloadIconForLink(const Link& link, bool overwrit
     const std::wstring extension = format == IconFormat::Png ? L".png" : L".ico";
     const std::wstring opposite = format == IconFormat::Png ? L".ico" : L".png";
     const std::filesystem::path target = iconDirectory / (fileName + extension);
-    const std::filesystem::path temp = iconDirectory / (fileName + extension + L".tmp");
+    const std::filesystem::path temp = TemporaryIconPath(target);
     if (!WriteFileBytes(temp, data)) {
         std::filesystem::remove(temp, ec);
         return false;

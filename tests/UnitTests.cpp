@@ -15,7 +15,10 @@
 #include "../src/services/FileLockQueryService.h"
 #include "../src/services/IconResolverService.h"
 #include "../src/services/Launcher.h"
+#include "../src/services/LinkResourceRefreshService.h"
 #include "../src/services/QuickImportService.h"
+#include "../src/services/ScanExecutionService.h"
+#include "../src/services/TaskExecutionService.h"
 #include "../src/domain/MenuCatalog.h"
 #include "../src/domain/PluginRegistry.h"
 #include "../src/services/ShellContextMenuCacheService.h"
@@ -31,6 +34,7 @@
 #include "../src/theme/ThemedFormLayout.h"
 #include "../src/theme/ThemedUi.h"
 #include "../src/theme/ThemedControls.h"
+#include "../src/theme/ThemedTaskProgressDialog.h"
 #include "../src/theme/ThemedWindowUi.h"
 #include "../src/theme/ThemedD2D.h"
 #include "../src/theme/ThemedGdiFallback.h"
@@ -56,6 +60,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <numeric>
 #include <thread>
 #include <unordered_set>
 #include <string>
@@ -253,6 +258,280 @@ int wmain() {
     Check(FormatByteSizeForDisplay(0) == L"0 B", "Byte size display zero");
     Check(FormatByteSizeForDisplay(1024) == L"1.00 KB", "Byte size display kilobytes");
     Check(FormatByteSizeForDisplay(12ull * 1024ull * 1024ull) == L"12.0 MB", "Byte size display megabytes");
+    {
+        const std::thread::id callerThread = std::this_thread::get_id();
+        TaskOptions genericOptions;
+        genericOptions.mode = TaskExecutionMode::CallerSingle;
+        genericOptions.maxWorkers = 1;
+        const std::size_t stageWorkers = TaskExecutionService::Run<std::size_t>(
+            genericOptions,
+            [](TaskContext& context) {
+                const std::array<int, 16> items{};
+                std::vector<int> merged;
+                context.ForEach<int, std::vector<int>>(
+                    items,
+                    TaskForEachOptions{TaskForEachMode::Parallel, 4},
+                    [] { return std::vector<int>{}; },
+                    [](int, std::vector<int>& local, TaskContext&) { local.push_back(1); },
+                    [&](std::vector<int>&& local) {
+                        merged.insert(merged.end(), local.begin(), local.end());
+                    });
+                Check(merged.size() == items.size(),
+                    "Generic task stage processes every item");
+                return context.Snapshot().workerCount;
+            });
+        Check(stageWorkers > 1 && stageWorkers <= 4,
+            "Generic task supports stage-level bounded parallelism");
+
+        std::atomic_bool completionCalled{false};
+        std::thread::id completionThread;
+        TaskOptions completionOptions;
+        completionOptions.mode = TaskExecutionMode::BackgroundSingle;
+        completionOptions.completionCallback = [&] {
+            completionThread = std::this_thread::get_id();
+            completionCalled = true;
+        };
+        auto completionTask = TaskExecutionService::StartTyped<int>(
+            completionOptions,
+            [](TaskContext&) { return 1; });
+        completionTask->Wait();
+        for (int elapsed = 0; !completionCalled.load() && elapsed < 1000; ++elapsed) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        Check(completionCalled.load() && completionThread != callerThread,
+            "Generic task completion callback stays on the completion thread");
+
+        ScanTaskOptions callerSingleOptions;
+        callerSingleOptions.mode = ScanExecutionMode::CallerSingle;
+        const std::thread::id callerSingleThread = ScanExecutionService::Run<std::thread::id>(
+            callerSingleOptions,
+            [](ScanTaskContext& context) {
+                context.Report(ScanProgressUpdate{
+                    L"unit", L"扫描测试", L"调用线程扫描", L"单线程"});
+                return std::this_thread::get_id();
+            });
+        Check(callerSingleThread == callerThread, "Scan caller single runs on caller thread");
+
+        ScanTaskOptions backgroundSingleOptions;
+        backgroundSingleOptions.mode = ScanExecutionMode::BackgroundSingle;
+        auto backgroundSingle = ScanExecutionService::StartTyped<std::thread::id>(
+            backgroundSingleOptions,
+            [](ScanTaskContext&) { return std::this_thread::get_id(); });
+        backgroundSingle->Wait();
+        Check(backgroundSingle->ResultCopy<std::thread::id>() != callerThread,
+            "Scan background single leaves caller thread");
+
+        ScanTaskOptions backgroundParallelOptions;
+        backgroundParallelOptions.maxWorkers = 64;
+        auto backgroundParallel = ScanExecutionService::StartTyped<std::pair<std::thread::id, std::size_t>>(
+            backgroundParallelOptions,
+            [](ScanTaskContext& context) {
+                const std::array<int, 32> items{};
+                std::vector<int> merged;
+                context.ForEach<int, std::vector<int>>(
+                    items,
+                    [] { return std::vector<int>{}; },
+                    [](int, std::vector<int>& local, ScanTaskContext&) { local.push_back(1); },
+                    [&](std::vector<int>&& local) {
+                        merged.insert(merged.end(), local.begin(), local.end());
+                    });
+                return std::pair{std::this_thread::get_id(), context.Snapshot().workerCount};
+            });
+        backgroundParallel->Wait();
+        const auto [backgroundThread, cappedWorkers] =
+            backgroundParallel->ResultCopy<std::pair<std::thread::id, std::size_t>>();
+        Check(backgroundThread != callerThread, "Scan default mode runs outside the caller thread");
+        Check(cappedWorkers > 1 && cappedWorkers <= 8, "Scan worker count is capped at eight");
+
+        std::vector<int> work(32);
+        std::iota(work.begin(), work.end(), 0);
+        ScanTaskOptions callerParallelOptions;
+        callerParallelOptions.mode = ScanExecutionMode::CallerParallel;
+        callerParallelOptions.maxWorkers = 4;
+        const std::vector<int> parallelResult = ScanExecutionService::Run<std::vector<int>>(
+            callerParallelOptions,
+            [&](ScanTaskContext& context) {
+                std::vector<int> values;
+                context.Report(ScanProgressUpdate{
+                    L"parallel", L"扫描测试", L"并行扫描", L"准备", 0, 0, 0, 0, 0, 0,
+                    work.size(), 0, false});
+                context.ForEach<int, std::vector<int>>(
+                    work,
+                    [] { return std::vector<int>{}; },
+                    [](int value, std::vector<int>& local, ScanTaskContext& workerContext) {
+                        local.push_back(value);
+                        workerContext.UpdateProgress([](ScanProgressUpdate& progress) {
+                            ++progress.completed;
+                            progress.current = progress.completed;
+                        });
+                    },
+                    [&](std::vector<int>&& local) {
+                        values.insert(values.end(), local.begin(), local.end());
+                    });
+                return values;
+            });
+        Check(parallelResult.size() == work.size(), "Scan parallel processes every item");
+
+        struct OrderedLocal {
+            int worker = 0;
+            std::vector<int> values;
+        };
+        std::atomic_int nextWorker{0};
+        const std::vector<int> deterministicMerge = ScanExecutionService::Run<std::vector<int>>(
+            callerParallelOptions,
+            [&](ScanTaskContext& context) {
+                std::vector<int> merged;
+                context.ForEach<int, OrderedLocal>(
+                    std::span<const int>(work.data(), 4),
+                    [&] { return OrderedLocal{nextWorker.fetch_add(1), {}}; },
+                    [](int value, OrderedLocal& local, ScanTaskContext&) { local.values.push_back(value); },
+                    [&](OrderedLocal&& local) { merged.push_back(local.worker); });
+                return merged;
+            });
+        Check(deterministicMerge == std::vector<int>({0, 1, 2, 3}),
+            "Scan local results merge in worker order");
+
+        ScanTaskOptions failedOptions;
+        failedOptions.mode = ScanExecutionMode::BackgroundSingle;
+        auto failedTask = ScanExecutionService::StartTyped<int>(failedOptions,
+            [](ScanTaskContext&) -> int { throw std::runtime_error("expected scan failure"); });
+        failedTask->Wait();
+        Check(failedTask->Status() == ScanTaskStatus::Failed && !failedTask->Snapshot().error.empty(),
+            "Scan exceptions become failed tasks");
+
+        ScanTaskOptions progressOptions;
+        progressOptions.mode = ScanExecutionMode::CallerSingle;
+        auto progressTask = ScanExecutionService::StartTyped<int>(progressOptions,
+            [](ScanTaskContext& context) {
+                context.Report(ScanProgressUpdate{
+                    L"phase-text", L"扫描标题", L"扫描状态", L"扫描详情"});
+                return 1;
+            });
+        const ScanProgressSnapshot progressSnapshot = progressTask->Snapshot();
+        Check(progressSnapshot.phase == L"phase-text" && progressSnapshot.title == L"扫描标题" &&
+                progressSnapshot.status == L"扫描状态" && progressSnapshot.detail == L"扫描详情",
+            "Scan progress preserves phase and text fields");
+
+        ScanProgressSnapshot completedProgress;
+        completedProgress.taskStatus = ScanTaskStatus::Completed;
+        const ThemedTaskProgressSnapshot completedUiProgress =
+            ToThemedTaskProgressSnapshot(completedProgress);
+        ScanProgressSnapshot stoppedProgress;
+        stoppedProgress.taskStatus = ScanTaskStatus::Stopped;
+        const ThemedTaskProgressSnapshot stoppedUiProgress =
+            ToThemedTaskProgressSnapshot(stoppedProgress);
+        Check(completedUiProgress.finished && completedUiProgress.completed &&
+                stoppedUiProgress.finished && !stoppedUiProgress.completed,
+            "Scan progress adapter auto-closes only successful completion");
+
+        ScanProgressSnapshot startedDeterminate;
+        startedDeterminate.taskStatus = ScanTaskStatus::Running;
+        startedDeterminate.indeterminate = false;
+        startedDeterminate.current = 0;
+        startedDeterminate.total = 100;
+        const ThemedTaskProgressSnapshot startedDeterminateUi =
+            ToThemedTaskProgressSnapshot(startedDeterminate);
+        Check(!startedDeterminateUi.indeterminate && startedDeterminateUi.showPercent &&
+                startedDeterminateUi.activity && startedDeterminateUi.value == 0.01,
+            "Scan progress adapter shows visual one percent and activity for known running work");
+
+        ScanProgressSnapshot midwayDeterminate = startedDeterminate;
+        midwayDeterminate.current = 42;
+        const ThemedTaskProgressSnapshot midwayDeterminateUi =
+            ToThemedTaskProgressSnapshot(midwayDeterminate);
+        Check(!midwayDeterminateUi.indeterminate && midwayDeterminateUi.showPercent &&
+                midwayDeterminateUi.activity && midwayDeterminateUi.value > 0.41 &&
+                midwayDeterminateUi.value < 0.43,
+            "Scan progress adapter preserves middle percentage and activity");
+
+        ScanProgressSnapshot completedDeterminate = startedDeterminate;
+        completedDeterminate.taskStatus = ScanTaskStatus::Completed;
+        completedDeterminate.current = 100;
+        const ThemedTaskProgressSnapshot completedDeterminateUi =
+            ToThemedTaskProgressSnapshot(completedDeterminate);
+        Check(!completedDeterminateUi.indeterminate && completedDeterminateUi.showPercent &&
+                !completedDeterminateUi.activity && completedDeterminateUi.value == 1.0,
+            "Scan progress adapter stops activity at one hundred percent");
+
+        ScanTaskOptions throttledOptions;
+        throttledOptions.mode = ScanExecutionMode::BackgroundSingle;
+        throttledOptions.progressInterval = std::chrono::milliseconds(200);
+        std::atomic_bool updatesReady{false};
+        std::atomic_bool releaseThrottledTask{false};
+        auto throttledTask = ScanExecutionService::StartTyped<int>(throttledOptions,
+            [&](ScanTaskContext& context) {
+                context.Report(ScanProgressUpdate{
+                    L"throttle", L"扫描测试", L"扫描中", L"初始", 0, 0});
+                for (int index = 0; index < 20; ++index) {
+                    context.UpdateProgress([](ScanProgressUpdate& value) { ++value.completed; });
+                }
+                updatesReady = true;
+                while (!releaseThrottledTask.load()) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                }
+                return 20;
+            });
+        while (!updatesReady.load()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        Check(throttledTask->Snapshot().completed == 0,
+            "Scan progress publication is throttled");
+        releaseThrottledTask = true;
+        throttledTask->Wait();
+        Check(throttledTask->Snapshot().completed == 20,
+            "Scan completion flushes throttled progress");
+
+        ScanTaskOptions stopOptions;
+        stopOptions.mode = ScanExecutionMode::BackgroundSingle;
+        auto stoppedTask = ScanExecutionService::StartTyped<int>(stopOptions,
+            [](ScanTaskContext& context) {
+                int completed = 0;
+                while (!context.StopRequested() && completed < 1000) {
+                    ++completed;
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                }
+                return completed;
+            });
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        stoppedTask->RequestStop();
+        stoppedTask->Wait();
+        Check(stoppedTask->Status() == ScanTaskStatus::Stopped,
+            "Scan task supports cooperative stop");
+        const int partialResult = stoppedTask->ResultCopy<int>();
+        Check(partialResult > 0 && partialResult < 1000,
+            "Scan stop preserves partial results");
+
+        Link invalidUrl;
+        invalidUrl.id = 7001;
+        invalidUrl.name = L"无效网址一";
+        invalidUrl.type = 2;
+        invalidUrl.path = L"ftp://example.invalid/resource";
+        Link duplicateHostUrl = invalidUrl;
+        duplicateHostUrl.id = 7002;
+        duplicateHostUrl.name = L"无效网址二";
+        duplicateHostUrl.path = L"ftp://example.invalid/other";
+        Link secondHostUrl = invalidUrl;
+        secondHostUrl.id = 7003;
+        secondHostUrl.name = L"无效网址三";
+        secondHostUrl.path = L"ftp://second.invalid/resource";
+        LinkResourceRefreshRequest refreshRequest;
+        refreshRequest.appDirectory = unitUserConfigRoot;
+        refreshRequest.links = {invalidUrl, duplicateHostUrl, secondHostUrl};
+        refreshRequest.scopeText = L"单元测试启动项";
+        TaskOptions refreshOptions;
+        refreshOptions.mode = TaskExecutionMode::CallerParallel;
+        auto refreshTask = TaskExecutionService::StartTyped<LinkResourceRefreshResult>(
+            refreshOptions,
+            [&](TaskContext& context) {
+                return LinkResourceRefreshService().Refresh(refreshRequest, context);
+            });
+        const LinkResourceRefreshResult refreshResult =
+            refreshTask->ResultCopy<LinkResourceRefreshResult>();
+        Check(refreshResult.failed == 3 && refreshResult.urlUpdates.size() == 2 &&
+                refreshTask->Snapshot().workerCount == 2,
+            "Resource refresh deduplicates URL hosts and uses bounded task workers");
+        Check(refreshTask->Snapshot().title == L"刷新单元测试启动项" &&
+                refreshTask->Snapshot().status == L"刷新完成",
+            "Resource refresh publishes task-specific progress text");
+    }
     TestWebDavDownloadTargetPathValidation();
     {
         const std::filesystem::path fileLockRoot = std::filesystem::temp_directory_path() /
@@ -408,6 +687,8 @@ int wmain() {
         "WebDAV upload time is converted to local time with second precision");
     Check(WebDavFileService::FormatUploadedAtLocal(L"invalid").empty(),
         "WebDAV upload time rejects invalid UTC metadata");
+    Check(WebDavFileService::FormatLocalModifiedAt(L"C:\\quattro\\definitely-missing-file.txt").empty(),
+        "WebDAV local modified time returns empty for missing file");
     WebDavFileRecord tooltipRecord;
     tooltipRecord.displayName = L"报告.txt";
     tooltipRecord.absolutePath = L"C:\\资料\\报告.txt";
@@ -1195,6 +1476,19 @@ int wmain() {
             batchCache.ItemsFor(cachedLink, allTracking).size() == 6 &&
             batchCache.ItemsFor(secondCachedLink, allTracking).size() == 3,
             "Shell menu cache batch update persists once for all snapshots");
+        const std::array<int, 2> removedIds{cachedLink.id, secondCachedLink.id};
+        batchCache.RemoveBatch(removedIds);
+        Check(
+            batchCache.ItemsFor(cachedLink, allTracking).empty() &&
+            batchCache.ItemsFor(secondCachedLink, allTracking).empty(),
+            "Shell menu cache batch removal clears every requested link");
+    }
+    {
+        ShellContextMenuCacheService batchCache(shellMenuBatchRoot);
+        Check(
+            batchCache.ItemsFor(cachedLink, allTracking).empty() &&
+            batchCache.ItemsFor(secondCachedLink, allTracking).empty(),
+            "Shell menu cache batch removal persists once for all links");
     }
     std::filesystem::remove_all(shellMenuBatchRoot, ec);
 
@@ -1296,6 +1590,14 @@ int wmain() {
         refreshResult.updates.size() == 2 && refreshResult.menuItemCount == 2 &&
         refreshResult.updates.front().nativeSnapshot.complete,
         "Shell menu refresh returns cache-ready snapshots");
+    auto refreshTask = refreshService.StartRefresh(refreshRequest);
+    refreshTask->Wait();
+    const ScanProgressSnapshot refreshProgress = refreshTask->Snapshot();
+    Check(
+        refreshProgress.taskStatus == ScanTaskStatus::Completed &&
+        refreshProgress.completed == 4 && refreshProgress.current == 4 && refreshProgress.total == 4 &&
+        refreshProgress.succeeded == 2 && refreshProgress.skipped == 1 && refreshProgress.failed == 1,
+        "Shell menu refresh progress accounts for success, skip, and failure outcomes");
 
     int providerResolveCount = 0;
     ContextMenuProviderIconService providerIconService(
@@ -1514,10 +1816,66 @@ int wmain() {
             "Public icon resolver returns link icon pixels");
     }
     {
+        const std::filesystem::path importRoot = std::filesystem::temp_directory_path() /
+            (L"quattro_quick_import_deep_" + std::to_wstring(GetCurrentProcessId()));
+        std::filesystem::remove_all(importRoot, ec);
+        std::filesystem::path deep = importRoot;
+        for (int depth = 0; depth < 8; ++depth) {
+            deep /= L"level-" + std::to_wstring(depth);
+        }
+        std::filesystem::create_directories(deep / L"folder-only");
+        std::ofstream(deep / L"deep-tool.exe", std::ios::binary) << "MZ";
+        std::wstring importError;
+        const auto imported = QuickImportService().Scan(importRoot, importError);
+        Check(importError.empty(), "Quick import deep directory scan succeeds");
+        Check(imported.size() == 1 && imported.front().link.name == L"deep-tool",
+            "Quick import scans beyond five levels and omits folders");
+        std::filesystem::remove_all(importRoot, ec);
+    }
+    {
+        const std::filesystem::path importRoot = std::filesystem::temp_directory_path() /
+            (L"quattro_quick_import_progress_" + std::to_wstring(GetCurrentProcessId()));
+        std::filesystem::remove_all(importRoot, ec);
+        std::filesystem::create_directories(importRoot, ec);
+        for (int index = 0; index < 96; ++index) {
+            std::ofstream(importRoot / (L"tool-" + std::to_wstring(index) + L".exe"),
+                std::ios::binary) << "MZ";
+        }
+
+        SetEnvironmentVariableW(L"QUATTRO_TEST_MODE", L"1");
+        SetEnvironmentVariableW(L"QUATTRO_TEST_QUICK_IMPORT_ITEM_DELAY_MS", L"20");
+        QuickImportService::ScanRequest request;
+        request.directory = importRoot;
+        const auto task = QuickImportService().StartScan(request);
+        std::unordered_set<std::uint64_t> intermediateValues;
+        while (!task->IsFinished()) {
+            const ScanProgressSnapshot snapshot = task->Snapshot();
+            if (!snapshot.indeterminate && snapshot.current > 0 &&
+                snapshot.current < snapshot.total) {
+                intermediateValues.insert(snapshot.current);
+                const ThemedTaskProgressSnapshot uiSnapshot =
+                    ToThemedTaskProgressSnapshot(snapshot);
+                Check(!uiSnapshot.indeterminate && uiSnapshot.value > 0.0 && uiSnapshot.value < 1.0,
+                    "Quick import progress adapter exposes an intermediate determinate value");
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        task->Wait();
+        SetEnvironmentVariableW(L"QUATTRO_TEST_QUICK_IMPORT_ITEM_DELAY_MS", nullptr);
+        SetEnvironmentVariableW(L"QUATTRO_TEST_MODE", nullptr);
+        const ScanProgressSnapshot completed = task->Snapshot();
+        Check(intermediateValues.size() >= 2,
+            "Quick import publishes changing intermediate progress values");
+        Check(completed.current == completed.total && completed.total == 96,
+            "Quick import publishes complete current and total progress");
+        std::filesystem::remove_all(importRoot, ec);
+    }
+    {
         std::wstring appsError;
         const auto apps = QuickImportService().ScanStoreApps(appsError);
         Check(appsError.empty() || apps.empty(), "Store app import reports errors only when no app list is returned");
         bool storeLinksValid = true;
+        bool storeIconResolvedByShellItem = apps.empty();
         for (const auto& app : apps) {
             storeLinksValid = storeLinksValid &&
                 app.link.type == 3 &&
@@ -1525,8 +1883,15 @@ int wmain() {
                 !app.link.pidl.empty() &&
                 !Trim(app.stableKey).empty() &&
                 app.sourceName == L"商店应用";
+            const ResolvedIcon icon = IconResolverService().Resolve(
+                IconResolverService::ForLink(app.link, 48));
+            storeIconResolvedByShellItem = storeIconResolvedByShellItem ||
+                (IconResolverService::HasPixels(icon) &&
+                 icon.source.rfind(L"shell-item-image-", 0) == 0);
         }
         Check(storeLinksValid, "Store app import creates shell links with stable keys");
+        Check(storeIconResolvedByShellItem,
+            "Store app icons use the public shell-item image resolver");
     }
 
     // Save() must be atomic: a successful update leaves no stray temp file, and a

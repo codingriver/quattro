@@ -83,7 +83,7 @@ struct AppConfig {
     int currentTagId = 0;
     bool globalHotKeysEnabled = true;
     int mainHotKey = -1;
-    int processLocatorHotKey = L'P';
+    int processLocatorHotKey = L'U';
     int copySelectedPathsHotKey = L'C';
     bool ignoreHotKeyConflictWarning = false;
 

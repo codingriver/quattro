@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Models.h"
+#include "ScanExecutionService.h"
 
 #include <filesystem>
 #include <stop_token>
@@ -23,13 +24,27 @@ public:
         bool selected = true;
     };
 
-    static constexpr int kMaxDepth = 5;
+    struct ScanRequest {
+        Source source = Source::Directory;
+        std::filesystem::path directory;
+    };
+
+    struct ScanResult {
+        std::vector<Item> items;
+        std::wstring error;
+        bool cancelled = false;
+    };
 
     std::vector<Item> Scan(const std::filesystem::path& directory, std::wstring& error) const;
     std::vector<Item> ScanStoreApps(std::wstring& error, std::stop_token stopToken = {}) const;
+    std::shared_ptr<ScanTaskHandle> StartScan(const ScanRequest& request) const;
 
 private:
-    void ScanRoot(const std::filesystem::path& root, std::vector<Item>& items) const;
+    ScanResult RunScan(const ScanRequest& request, ScanTaskContext& context,
+        std::stop_token externalStopToken = {}) const;
+    void EnumerateRoot(const std::filesystem::path& root, std::vector<std::filesystem::path>& candidates,
+        ScanTaskContext& context) const;
+    ScanResult ScanStoreAppsCore(ScanTaskContext& context, std::stop_token externalStopToken) const;
     bool TryCreateItem(const std::filesystem::path& path, Item& item) const;
     bool TryCreateShortcutItem(const std::filesystem::path& path, Item& item) const;
     bool TryCreateUrlItem(const std::filesystem::path& path, Item& item) const;

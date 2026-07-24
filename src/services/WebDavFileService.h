@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Models.h"
+#include "ScanExecutionService.h"
 
 #include <cstdint>
 #include <filesystem>
@@ -86,11 +87,14 @@ public:
     static std::wstring RecordId(const std::wstring& canonicalPath);
     static std::wstring FilesDirectory(const AppConfig& config);
     static std::wstring FormatUploadedAtLocal(const std::wstring& uploadedAtUtc);
+    static std::wstring FormatLocalModifiedAt(const std::wstring& absolutePath);
     static std::wstring FormatRecordTooltip(const WebDavFileRecord& record);
     static bool IsCollectionSelfResponse(const std::wstring& remotePath, const WebDavRemoteFile& entry);
     static bool IsRecordDirectoryName(const std::wstring& name);
 
 private:
+    bool EnumerateCore(const WebDavFileEnumerationOptions& options, WebDavFileBatchCallback callback,
+        std::stop_token stopToken, std::wstring& error, ScanTaskContext& context);
     bool LoadPassword(std::wstring& password, std::wstring& error) const;
     bool EnsureFilesDirectory(class WebDavClient& client, std::wstring& error) const;
     bool ReadMetadata(const std::wstring& text, WebDavFileRecord& record) const;

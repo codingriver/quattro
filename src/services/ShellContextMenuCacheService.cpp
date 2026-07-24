@@ -375,6 +375,16 @@ void ShellContextMenuCacheService::Remove(int linkId) {
     }
 }
 
+void ShellContextMenuCacheService::RemoveBatch(std::span<const int> linkIds) {
+    bool changed = false;
+    for (const int linkId : linkIds) {
+        changed = entries_.erase(linkId) != 0 || changed;
+    }
+    if (changed) {
+        Save();
+    }
+}
+
 void ShellContextMenuCacheService::RemoveProvider(const std::wstring& providerId) {
     bool changed = false;
     for (auto entry = entries_.begin(); entry != entries_.end();) {

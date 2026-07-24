@@ -2940,6 +2940,20 @@ void ThemedUi::SetTableView(HWND table, ThemedTableView view) {
 void ThemedUi::SetTableChecked(HWND table, int index, bool checked) {
     if (table && IsTableRowEnabled(table, index)) ListView_SetCheckState(table, index, checked ? TRUE : FALSE);
 }
+
+void ThemedUi::SetTableCheckedAll(HWND table, bool checked) {
+    if (!table) return;
+    const ScopedTableRowsUpdate update(table);
+    SendMessageW(table, WM_SETREDRAW, FALSE, 0);
+    const int count = ListView_GetItemCount(table);
+    for (int index = 0; index < count; ++index) {
+        if (IsTableRowEnabled(table, index)) {
+            ListView_SetCheckState(table, index, checked ? TRUE : FALSE);
+        }
+    }
+    SendMessageW(table, WM_SETREDRAW, TRUE, 0);
+    InvalidateRect(table, nullptr, FALSE);
+}
 bool ThemedUi::IsTableChecked(HWND table, int index) { return table && ListView_GetCheckState(table, index) != FALSE; }
 bool ThemedUi::IsTableRowEnabled(HWND table, int index) { return ThemedControls::IsTableRowEnabled(table, index); }
 bool ThemedUi::IsTableRowActive(HWND table, int index) { return ThemedControls::IsTableRowActive(table, index); }
@@ -3234,13 +3248,29 @@ HWND ThemedUi::ProgressBar(int id, int x, int y, int width, ThemedProgressBarOpt
         progressBarHeight());
     if (hwnd) {
         EnableWindow(hwnd, options.enabled ? TRUE : FALSE);
-        ThemedControls::SetProgressBarValue(hwnd, options.value, options.indeterminate);
+        ThemedControls::SetProgressBarValue(
+            hwnd,
+            options.value,
+            options.indeterminate,
+            options.activity,
+            options.showPercent,
+            options.text);
     }
     return hwnd;
 }
 
 void ThemedUi::SetProgress(HWND hwnd, double value, bool indeterminate) {
     ThemedControls::SetProgressBarValue(hwnd, value, indeterminate);
+}
+
+void ThemedUi::SetProgress(HWND hwnd, ThemedProgressBarOptions options) {
+    ThemedControls::SetProgressBarValue(
+        hwnd,
+        options.value,
+        options.indeterminate,
+        options.activity,
+        options.showPercent,
+        options.text);
 }
 
 HWND ThemedUi::Slider(int id, int x, int y, int width, ThemedSliderOptions options) const {

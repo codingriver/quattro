@@ -363,6 +363,75 @@ add_library(QuattroThemedUi STATIC
 )
 add_dependencies(QuattroThemedUi QuattroTablerIconReady)
 
+add_library(QuattroTaskCore STATIC
+    src/services/TaskExecutionService.cpp
+)
+
+add_library(QuattroScanCore STATIC
+    src/services/ScanExecutionService.cpp
+)
+target_link_libraries(QuattroScanCore PUBLIC QuattroTaskCore)
+
+add_library(QuattroPortScan STATIC
+    src/services/PortScanService.cpp
+)
+target_link_libraries(QuattroPortScan PUBLIC QuattroScanCore iphlpapi ws2_32)
+target_include_directories(QuattroPortScan PUBLIC src src/services)
+target_compile_definitions(QuattroPortScan PUBLIC UNICODE _UNICODE WINVER=0x0A00 _WIN32_WINNT=0x0A00 NOMINMAX)
+target_compile_options(QuattroPortScan PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/W4 /permissive- /EHsc /utf-8>)
+
+add_custom_target(QuattroScanServiceRules ALL
+    COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+        -File "${CMAKE_CURRENT_SOURCE_DIR}/tools/check-scan-service-usage.ps1"
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+    COMMENT "Checking public scan service usage"
+    VERBATIM
+)
+add_dependencies(QuattroScanCore QuattroScanServiceRules)
+
+add_custom_target(QuattroTaskServiceRules ALL
+    COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+        -File "${CMAKE_CURRENT_SOURCE_DIR}/tools/check-task-service-usage.ps1"
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+    COMMENT "Checking public background task usage"
+    VERBATIM
+)
+add_dependencies(QuattroTaskCore QuattroTaskServiceRules)
+
+target_compile_definitions(QuattroTaskCore PUBLIC
+    UNICODE
+    _UNICODE
+    WINVER=0x0A00
+    _WIN32_WINNT=0x0A00
+    NOMINMAX
+)
+
+target_compile_options(QuattroTaskCore PRIVATE
+    $<$<CXX_COMPILER_ID:MSVC>:/W4 /permissive- /EHsc /utf-8>
+)
+
+target_include_directories(QuattroTaskCore PUBLIC
+    src
+    src/services
+)
+
+target_compile_definitions(QuattroScanCore PUBLIC
+    UNICODE
+    _UNICODE
+    WINVER=0x0A00
+    _WIN32_WINNT=0x0A00
+    NOMINMAX
+)
+
+target_compile_options(QuattroScanCore PRIVATE
+    $<$<CXX_COMPILER_ID:MSVC>:/W4 /permissive- /EHsc /utf-8>
+)
+
+target_include_directories(QuattroScanCore PUBLIC
+    src
+    src/services
+)
+
 target_compile_definitions(QuattroThemedUi PUBLIC
     UNICODE
     _UNICODE
@@ -376,6 +445,7 @@ target_compile_options(QuattroThemedUi PRIVATE
 )
 
 target_link_libraries(QuattroThemedUi PUBLIC
+    QuattroScanCore
     pugixml
     user32
     gdi32
@@ -406,6 +476,7 @@ target_compile_options(AppLaunchLockerCore PRIVATE
 )
 
 target_link_libraries(AppLaunchLockerCore PUBLIC
+    QuattroScanCore
     advapi32
     ole32
     oleaut32
@@ -502,6 +573,7 @@ add_executable(Quattro WIN32
     src/common/JsonValue.cpp
     src/domain/LinkSorting.cpp
     src/services/Launcher.cpp
+    src/services/LinkResourceRefreshService.cpp
     src/services/LocalHttpServerService.cpp
     src/windows/LinkEditDialog.cpp
     src/windows/MainHotKey.cpp
@@ -591,6 +663,7 @@ add_executable(QuattroTests
     src/services/FileLockQueryService.cpp
     src/services/IconResolverService.cpp
     src/services/Launcher.cpp
+    src/services/LinkResourceRefreshService.cpp
     src/common/JsonValue.cpp
     src/domain/LinkSorting.cpp
     src/domain/MenuCatalog.cpp
@@ -601,6 +674,7 @@ add_executable(QuattroTests
     src/services/ShellItemService.cpp
     src/services/SelectedPathCopyService.cpp
     src/services/TerminalContextMenuService.cpp
+    src/services/UrlIconDownloadService.cpp
     src/services/Storage.cpp
     src/services/SystemFunctions.cpp
     src/domain/TodoSchedule.cpp
@@ -934,6 +1008,7 @@ target_link_libraries(QuattroToastAcceptance PRIVATE
 
 target_link_libraries(QuattroTests PRIVATE
     QuattroThemedUi
+    QuattroScanCore
     sqlite3
     ccronexpr
     advapi32
@@ -1002,6 +1077,8 @@ target_link_libraries(QuattroThemeStateProbe PRIVATE
 
 target_link_libraries(QuattroUiScreenshotAcceptance PRIVATE
     QuattroThemedUi
+    QuattroScanCore
+    QuattroPortScan
     sqlite3
     ccronexpr
     advapi32
@@ -1075,6 +1152,7 @@ target_include_directories(QuattroFileLockQueryServiceTests PRIVATE
 )
 
 target_link_libraries(QuattroFileLockQueryServiceTests PRIVATE
+    QuattroScanCore
     rstrtmgr
     shell32
     shlwapi
@@ -1213,6 +1291,7 @@ add_executable(QuattroSettingsHttpButtonsAcceptance
     src/windows/AboutDialog.cpp
     src/windows/BuiltinTools.cpp
     src/windows/ConfirmDialog.cpp
+    src/domain/ClockDisplay.cpp
     src/services/ConfigPackageService.cpp
     src/services/ContextMenuProviderIconService.cpp
     src/common/FileDialog.cpp
@@ -1275,6 +1354,7 @@ target_include_directories(QuattroSettingsHttpButtonsAcceptance PRIVATE
 
 target_link_libraries(QuattroSettingsHttpButtonsAcceptance PRIVATE
     QuattroThemedUi
+    QuattroPortScan
     sqlite3
     ccronexpr
     advapi32
@@ -1319,6 +1399,8 @@ endif()
 
 target_link_libraries(Quattro PRIVATE
     QuattroThemedUi
+    QuattroScanCore
+    QuattroPortScan
     sqlite3
     ccronexpr
     advapi32

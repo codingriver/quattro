@@ -231,7 +231,10 @@ struct ThemedCheckBoxOptions {
 struct ThemedProgressBarOptions {
     double value = 0.0;
     bool indeterminate = false;
+    bool activity = false;
+    bool showPercent = true;
     bool enabled = true;
+    std::wstring text;
 };
 
 struct ThemedToggleOptions {
@@ -888,6 +891,7 @@ public:
     static int FindTableRowByKey(HWND table, std::intptr_t key);
     static void SetTableView(HWND table, ThemedTableView view);
     static void SetTableChecked(HWND table, int index, bool checked);
+    static void SetTableCheckedAll(HWND table, bool checked);
     static bool IsTableChecked(HWND table, int index);
     static bool IsTableRowEnabled(HWND table, int index);
     static bool IsTableRowActive(HWND table, int index);
@@ -924,6 +928,7 @@ public:
     HWND FramedStatic(const std::wstring& value, RECT frame, ThemedFramedTextOptions options = {}) const;
     HWND ProgressBar(int id, int x, int y, int width, ThemedProgressBarOptions options = {}) const;
     static void SetProgress(HWND hwnd, double value, bool indeterminate = false);
+    static void SetProgress(HWND hwnd, ThemedProgressBarOptions options);
     HWND Slider(int id, int x, int y, int width, ThemedSliderOptions options = {}) const;
     static void SetSliderValue(HWND hwnd, double value, bool notify = false);
     static double SliderValue(HWND hwnd);

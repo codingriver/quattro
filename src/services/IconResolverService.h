@@ -70,6 +70,17 @@ public:
         COLORREF background);
 
 private:
+    ResolvedIcon ResolveShellItemImage(const IconRequest& request, int size) const;
+    ResolvedIcon ResolveLinkShellItemImage(const Link& link, int size) const;
+    ResolvedIcon ResolvePidlImage(
+        const std::vector<std::uint8_t>& pidl,
+        int size,
+        const std::wstring& source) const;
+    ResolvedIcon ResolveShellParseNameImage(
+        const std::wstring& value,
+        int size,
+        const std::wstring& source) const;
+    ResolvedIcon CaptureBitmap(HBITMAP bitmap, int quality, const std::wstring& source) const;
     HICON ResolveIconHandle(const IconRequest& request, std::wstring& source) const;
     HICON ResolveLinkIcon(const Link& link, std::wstring& source) const;
     HICON ResolveProviderIcon(const std::wstring& providerId, std::wstring& source) const;

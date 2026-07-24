@@ -348,7 +348,13 @@ HWND CreateProgressBar(
     int width,
     int height);
 
-void SetProgressBarValue(HWND hwnd, double value, bool indeterminate = false);
+void SetProgressBarValue(
+    HWND hwnd,
+    double value,
+    bool indeterminate = false,
+    bool activity = false,
+    bool showPercent = false,
+    const std::wstring& text = {});
 int ProgressBarHeight(const Theme& theme);
 
 HWND CreateSlider(

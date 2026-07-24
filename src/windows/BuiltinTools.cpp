@@ -9,6 +9,7 @@
 #include "MainHotKey.h"
 #include "SimpleDialogs.h"
 #include "FileLockQueryService.h"
+#include "PortScanService.h"
 #include "ThemedControls.h"
 #include "ThemedTaskProgressDialog.h"
 #include "ThemedUi.h"
@@ -19,10 +20,7 @@
 #include <commctrl.h>
 #include <shobjidl.h>
 #include <shellapi.h>
-#include <iphlpapi.h>
-#include <tcpmib.h>
 #include <tlhelp32.h>
-#include <udpmib.h>
 #include <windowsx.h>
 
 #include <algorithm>
@@ -111,6 +109,7 @@ constexpr UINT WM_QUATTRO_PROCESS_TOOLS_ACTIVATE = WM_APP + 0x82;
 constexpr UINT WM_QUATTRO_FILE_LOCK_COMPLETE = WM_APP + 0x83;
 constexpr UINT WM_QUATTRO_CLOCK_ACTIVATE = WM_APP + 0x84;
 constexpr UINT WM_QUATTRO_TOOL_ACTIVATE = WM_APP + 0x85;
+constexpr UINT WM_QUATTRO_PORT_SCAN_COMPLETE = WM_APP + 0x86;
 constexpr wchar_t kProcessToolsWindowClass[] = L"QuattroProcessTools";
 constexpr wchar_t kClockWindowClass[] = L"QuattroClockTool";
 constexpr wchar_t kFileLockProgressWindowTitle[] = L"文件占用检查进度";
@@ -355,28 +354,6 @@ ProcessInfo QueryProcessInfo(DWORD pid) {
     return info;
 }
 
-unsigned short NetworkOrderPort(DWORD value) {
-    return static_cast<unsigned short>(((value & 0x00ff) << 8) | ((value & 0xff00) >> 8));
-}
-
-std::wstring TcpStateText(DWORD state) {
-    switch (state) {
-    case MIB_TCP_STATE_CLOSED: return L"CLOSED";
-    case MIB_TCP_STATE_LISTEN: return L"LISTENING";
-    case MIB_TCP_STATE_SYN_SENT: return L"SYN_SENT";
-    case MIB_TCP_STATE_SYN_RCVD: return L"SYN_RCVD";
-    case MIB_TCP_STATE_ESTAB: return L"ESTABLISHED";
-    case MIB_TCP_STATE_FIN_WAIT1: return L"FIN_WAIT1";
-    case MIB_TCP_STATE_FIN_WAIT2: return L"FIN_WAIT2";
-    case MIB_TCP_STATE_CLOSE_WAIT: return L"CLOSE_WAIT";
-    case MIB_TCP_STATE_CLOSING: return L"CLOSING";
-    case MIB_TCP_STATE_LAST_ACK: return L"LAST_ACK";
-    case MIB_TCP_STATE_TIME_WAIT: return L"TIME_WAIT";
-    case MIB_TCP_STATE_DELETE_TCB: return L"DELETE_TCB";
-    default: return L"UNKNOWN";
-    }
-}
-
 std::wstring JoinStrings(const std::set<std::wstring>& values, const wchar_t* separator) {
     std::wstring joined;
     for (const auto& value : values) {
@@ -394,138 +371,15 @@ struct ProcessDisplayRow {
     std::wstring detail;
 };
 
-struct PortProcessBucket {
-    DWORD pid = 0;
-    std::set<std::wstring> endpoints;
-};
-
-struct Tcp6RowOwnerPidCompat {
-    UCHAR localAddr[16]{};
-    DWORD localScopeId = 0;
-    DWORD localPort = 0;
-    UCHAR remoteAddr[16]{};
-    DWORD remoteScopeId = 0;
-    DWORD remotePort = 0;
-    DWORD state = 0;
-    DWORD owningPid = 0;
-};
-
-struct Tcp6TableOwnerPidCompat {
-    DWORD entryCount = 0;
-    Tcp6RowOwnerPidCompat table[1]{};
-};
-
-struct Udp6RowOwnerPidCompat {
-    UCHAR localAddr[16]{};
-    DWORD localScopeId = 0;
-    DWORD localPort = 0;
-    DWORD owningPid = 0;
-};
-
-struct Udp6TableOwnerPidCompat {
-    DWORD entryCount = 0;
-    Udp6RowOwnerPidCompat table[1]{};
-};
-
-void AddPortBucket(std::map<DWORD, PortProcessBucket>& buckets, DWORD pid, const std::wstring& endpoint) {
-    auto& bucket = buckets[pid];
-    bucket.pid = pid;
-    bucket.endpoints.insert(endpoint);
-}
-
-void CollectTcp4Port(unsigned short port, std::map<DWORD, PortProcessBucket>& buckets) {
-    DWORD size = 0;
-    DWORD result = GetExtendedTcpTable(nullptr, &size, FALSE, AF_INET, TCP_TABLE_OWNER_PID_ALL, 0);
-    if (result != ERROR_INSUFFICIENT_BUFFER || size == 0) {
-        return;
-    }
-    std::vector<BYTE> buffer(size);
-    result = GetExtendedTcpTable(buffer.data(), &size, FALSE, AF_INET, TCP_TABLE_OWNER_PID_ALL, 0);
-    if (result != NO_ERROR) {
-        return;
-    }
-    auto* table = reinterpret_cast<MIB_TCPTABLE_OWNER_PID*>(buffer.data());
-    for (DWORD i = 0; i < table->dwNumEntries; ++i) {
-        const auto& row = table->table[i];
-        if (NetworkOrderPort(row.dwLocalPort) == port) {
-            AddPortBucket(buckets, row.dwOwningPid, L"TCP " + TcpStateText(row.dwState));
-        }
-    }
-}
-
-void CollectTcp6Port(unsigned short port, std::map<DWORD, PortProcessBucket>& buckets) {
-    DWORD size = 0;
-    DWORD result = GetExtendedTcpTable(nullptr, &size, FALSE, AF_INET6, TCP_TABLE_OWNER_PID_ALL, 0);
-    if (result != ERROR_INSUFFICIENT_BUFFER || size == 0) {
-        return;
-    }
-    std::vector<BYTE> buffer(size);
-    result = GetExtendedTcpTable(buffer.data(), &size, FALSE, AF_INET6, TCP_TABLE_OWNER_PID_ALL, 0);
-    if (result != NO_ERROR) {
-        return;
-    }
-    auto* table = reinterpret_cast<Tcp6TableOwnerPidCompat*>(buffer.data());
-    for (DWORD i = 0; i < table->entryCount; ++i) {
-        const auto& row = table->table[i];
-        if (NetworkOrderPort(row.localPort) == port) {
-            AddPortBucket(buckets, row.owningPid, L"TCP6 " + TcpStateText(row.state));
-        }
-    }
-}
-
-void CollectUdp4Port(unsigned short port, std::map<DWORD, PortProcessBucket>& buckets) {
-    DWORD size = 0;
-    DWORD result = GetExtendedUdpTable(nullptr, &size, FALSE, AF_INET, UDP_TABLE_OWNER_PID, 0);
-    if (result != ERROR_INSUFFICIENT_BUFFER || size == 0) {
-        return;
-    }
-    std::vector<BYTE> buffer(size);
-    result = GetExtendedUdpTable(buffer.data(), &size, FALSE, AF_INET, UDP_TABLE_OWNER_PID, 0);
-    if (result != NO_ERROR) {
-        return;
-    }
-    auto* table = reinterpret_cast<MIB_UDPTABLE_OWNER_PID*>(buffer.data());
-    for (DWORD i = 0; i < table->dwNumEntries; ++i) {
-        const auto& row = table->table[i];
-        if (NetworkOrderPort(row.dwLocalPort) == port) {
-            AddPortBucket(buckets, row.dwOwningPid, L"UDP");
-        }
-    }
-}
-
-void CollectUdp6Port(unsigned short port, std::map<DWORD, PortProcessBucket>& buckets) {
-    DWORD size = 0;
-    DWORD result = GetExtendedUdpTable(nullptr, &size, FALSE, AF_INET6, UDP_TABLE_OWNER_PID, 0);
-    if (result != ERROR_INSUFFICIENT_BUFFER || size == 0) {
-        return;
-    }
-    std::vector<BYTE> buffer(size);
-    result = GetExtendedUdpTable(buffer.data(), &size, FALSE, AF_INET6, UDP_TABLE_OWNER_PID, 0);
-    if (result != NO_ERROR) {
-        return;
-    }
-    auto* table = reinterpret_cast<Udp6TableOwnerPidCompat*>(buffer.data());
-    for (DWORD i = 0; i < table->entryCount; ++i) {
-        const auto& row = table->table[i];
-        if (NetworkOrderPort(row.localPort) == port) {
-            AddPortBucket(buckets, row.owningPid, L"UDP6");
-        }
-    }
-}
-
 std::vector<ProcessDisplayRow> QueryPortRows(unsigned short port) {
-    std::map<DWORD, PortProcessBucket> buckets;
-    CollectTcp4Port(port, buckets);
-    CollectTcp6Port(port, buckets);
-    CollectUdp4Port(port, buckets);
-    CollectUdp6Port(port, buckets);
-
+    const PortScanResult scan = PortScanService().Scan(port);
     std::vector<ProcessDisplayRow> rows;
-    for (const auto& [pid, bucket] : buckets) {
+    for (const PortScanRecord& record : scan.records) {
+        const DWORD pid = record.processId;
         const ProcessInfo info = QueryProcessInfo(pid);
         ProcessDisplayRow row{};
         row.pid = pid;
-        row.title = JoinStrings(bucket.endpoints, L" / ") + L"  PID " + std::to_wstring(pid) + L"  " + info.name;
+        row.title = JoinStrings(record.endpoints, L" / ") + L"  PID " + std::to_wstring(pid) + L"  " + info.name;
         row.detail = info.path.empty() ? L"进程路径不可读，仍可尝试结束进程" : info.path;
         rows.push_back(std::move(row));
     }
@@ -2099,35 +1953,40 @@ private:
         const int width = ui.contentWidth();
         int y = ui.contentTop();
 
-        ThemedLabelOptions dateOptions{};
-        dateOptions.align = ThemedTextAlign::Center;
-        date_ = ui.Label(L"", left, y, width, dateOptions);
-        y = ui.nextRowY(y, ui.labelHeight());
-
-        time_ = ui.TimeDisplay(L"", left, y, width);
-        y += ui.timeDisplayHeight() + ui.layout().sectionGap;
-
         showMilliseconds_ = registry_.GetSetting(
             L"quattro.builtin.clock", L"showMilliseconds", L"0") != L"0";
         ThemedCheckBoxOptions options{};
         options.checked = showMilliseconds_;
-        const std::wstring text = L"显示毫秒";
+        const std::wstring text = L"毫秒";
         const int checkWidth = ui.textWidth(text) + ui.checkBoxHeight() + ui.layout().controlGapX;
+        const int rowHeight = std::max(ui.labelHeight(), ui.checkBoxHeight());
+
+        ThemedLabelOptions dateOptions{};
+        dateOptions.align = ThemedTextAlign::Start;
+        date_ = ui.Label(
+            L"",
+            left,
+            y,
+            std::max(0, width - checkWidth - ui.layout().controlGapX),
+            dateOptions);
         showMillisecondsCheck_ = ui.CheckBox(
             ID_CLOCK_MILLISECONDS,
             text,
-            ui.centeredGroupX(checkWidth),
-            y,
+            left + width - checkWidth,
+            y + (rowHeight - ui.checkBoxHeight()) / 2,
             checkWidth,
             options);
+        y = ui.nextRowY(y, rowHeight);
+
+        time_ = ui.TimeDisplay(L"", left, y, width);
     }
 
     void ResizeForTimeDisplay() {
         const ThemedUi ui = windowUi_->ui();
         const SIZE display = ui.timeDisplayPreferredSize(L"00:00:00.000");
         int y = ui.contentTop();
-        y = ui.nextRowY(y, ui.labelHeight());
-        y += display.cy + ui.layout().sectionGap + ui.checkBoxHeight();
+        y = ui.nextRowY(y, std::max(ui.labelHeight(), ui.checkBoxHeight()));
+        y += display.cy;
         const int clientWidth = display.cx + ui.contentLeft() * 2;
         const int clientHeight = y + ui.contentTop();
         windowUi_->ResizeClientArea(clientWidth, clientHeight);
@@ -3068,42 +2927,6 @@ private:
     bool done_ = false;
 };
 
-struct FileLockScanState {
-    struct Snapshot {
-        FileLockQueryProgress progress;
-        bool finished = false;
-        bool stopRequested = false;
-        std::wstring error;
-    };
-
-    Snapshot ReadSnapshot() const {
-        std::lock_guard lock(mutex);
-        return Snapshot{progress, finished, cancelRequested.load(), result.error};
-    }
-
-    void UpdateProgress(const FileLockQueryProgress& value) {
-        std::lock_guard lock(mutex);
-        progress = value;
-    }
-
-    void Complete(FileLockQueryResult value) {
-        std::lock_guard lock(mutex);
-        result = std::move(value);
-        finished = true;
-    }
-
-    FileLockQueryResult ReadResult() const {
-        std::lock_guard lock(mutex);
-        return result;
-    }
-
-    mutable std::mutex mutex;
-    FileLockQueryProgress progress{};
-    FileLockQueryResult result{};
-    bool finished = false;
-    std::atomic_bool cancelRequested{false};
-};
-
 FileLockQueryOptions BackgroundFileLockQueryOptions() {
     FileLockQueryOptions options;
     if (!QuattroTestMode()) {
@@ -3121,87 +2944,6 @@ FileLockQueryOptions BackgroundFileLockQueryOptions() {
         options.batchDelay = std::chrono::milliseconds(std::min(*delay, 1000));
     }
     return options;
-}
-
-ThemedTaskProgressSnapshot FileLockTaskProgressSnapshot(const std::shared_ptr<FileLockScanState>& state) {
-    ThemedTaskProgressSnapshot output;
-    if (!state) {
-        output.status = L"检查失败";
-        output.detail = L"检查状态不可用。";
-        output.role = ThemedStatusRole::Danger;
-        output.finished = true;
-        output.indeterminate = false;
-        return output;
-    }
-    const FileLockScanState::Snapshot snapshot = state->ReadSnapshot();
-    output.finished = snapshot.finished;
-    output.stopRequested = snapshot.stopRequested;
-    if (snapshot.finished && !snapshot.error.empty()) {
-        output.status = L"检查失败";
-        output.detail = snapshot.error;
-        output.role = ThemedStatusRole::Danger;
-        output.indeterminate = false;
-        return output;
-    }
-    switch (snapshot.progress.phase) {
-    case FileLockQueryPhase::Validating:
-        output.status = snapshot.stopRequested ? L"正在停止检查…" : L"正在准备检查…";
-        output.detail = L"正在读取路径信息。";
-        output.role = snapshot.stopRequested ? ThemedStatusRole::Warning : ThemedStatusRole::Info;
-        output.indeterminate = true;
-        break;
-    case FileLockQueryPhase::Enumerating:
-        output.status = snapshot.stopRequested ? L"正在停止检查…" : L"正在统计目录内容…";
-        output.detail = L"已发现 " + std::to_wstring(snapshot.progress.discoveredPaths) + L" 个路径。";
-        output.role = snapshot.stopRequested ? ThemedStatusRole::Warning : ThemedStatusRole::Info;
-        output.indeterminate = true;
-        break;
-    case FileLockQueryPhase::Querying:
-        output.status = snapshot.stopRequested ? L"正在停止检查…" : L"正在并行检查目录占用…";
-        output.detail = L"已检查 " + std::to_wstring(snapshot.progress.checkedPaths) + L" / " +
-            std::to_wstring(snapshot.progress.totalPaths) + L" 个路径，" +
-            std::to_wstring(snapshot.progress.workerCount) + L" 个工作线程。";
-        output.role = snapshot.stopRequested ? ThemedStatusRole::Warning : ThemedStatusRole::Info;
-        output.indeterminate = false;
-        output.value = snapshot.progress.totalPaths == 0 ? 0.0
-            : static_cast<double>(snapshot.progress.checkedPaths) /
-                static_cast<double>(snapshot.progress.totalPaths);
-        break;
-    case FileLockQueryPhase::ScanningHandles:
-        output.status = snapshot.stopRequested ? L"正在停止检查…" : L"正在检查目录句柄…";
-        output.detail = L"已检查 " + std::to_wstring(snapshot.progress.checkedProcesses) + L" / " +
-            std::to_wstring(snapshot.progress.totalProcesses) + L" 个进程";
-        if (snapshot.progress.inaccessibleProcesses > 0) {
-            output.detail += L"，" + std::to_wstring(snapshot.progress.inaccessibleProcesses) +
-                L" 个高权限进程无法访问";
-        }
-        output.detail += L"。";
-        output.role = snapshot.stopRequested ? ThemedStatusRole::Warning : ThemedStatusRole::Info;
-        output.indeterminate = false;
-        output.value = snapshot.progress.totalProcesses == 0 ? 1.0
-            : static_cast<double>(snapshot.progress.checkedProcesses) /
-                static_cast<double>(snapshot.progress.totalProcesses);
-        break;
-    case FileLockQueryPhase::Completed:
-        output.status = L"检查完成";
-        output.detail = L"已检查 " + std::to_wstring(snapshot.progress.checkedPaths) + L" 个路径、" +
-            std::to_wstring(snapshot.progress.checkedProcesses) + L" 个进程。";
-        output.role = ThemedStatusRole::Success;
-        output.indeterminate = false;
-        output.value = 1.0;
-        break;
-    case FileLockQueryPhase::Cancelled:
-        output.status = L"检查已停止";
-        output.detail = L"已检查 " + std::to_wstring(snapshot.progress.checkedPaths) + L" / " +
-            std::to_wstring(snapshot.progress.totalPaths) + L" 个路径。";
-        output.role = ThemedStatusRole::Warning;
-        output.indeterminate = false;
-        output.value = snapshot.progress.totalPaths == 0 ? 0.0
-            : static_cast<double>(snapshot.progress.checkedPaths) /
-                static_cast<double>(snapshot.progress.totalPaths);
-        break;
-    }
-    return output;
 }
 
 class ProcessToolsDialog final {
@@ -3322,6 +3064,9 @@ private:
             return DefWindowProcW(hwnd_, message, wParam, lParam);
         case WM_QUATTRO_FILE_LOCK_COMPLETE:
             FinishDirectoryFileLockQuery();
+            return 0;
+        case WM_QUATTRO_PORT_SCAN_COMPLETE:
+            FinishPortQuery();
             return 0;
         case WM_QUATTRO_PROCESS_TOOLS_ACTIVATE: {
             const int requestedPage = std::clamp(static_cast<int>(wParam), 0, kPageCount - 1);
@@ -4126,13 +3871,41 @@ private:
 
         const int port = *parsedPort;
         registry_.SetSetting(L"quattro.builtin.process-tools", L"port", std::to_wstring(port));
-        const std::vector<ProcessDisplayRow> rows = QueryPortRows(static_cast<unsigned short>(port));
+        if (portScanTask_ && !portScanTask_->IsFinished()) {
+            portScanTask_->RequestStop();
+        }
+        portScanValue_ = static_cast<unsigned short>(port);
+        const HWND notifyWindow = hwnd_;
+        portScanTask_ = PortScanService().StartScan(portScanValue_, [notifyWindow]() {
+            PostMessageW(notifyWindow, WM_QUATTRO_PORT_SCAN_COMPLETE, 0, 0);
+        });
+        SetStatus(portStatus_, L"正在后台扫描端口占用…", ThemedStatusRole::Info);
+    }
+
+    void FinishPortQuery() {
+        if (!portScanTask_ || !portScanTask_->IsFinished()) return;
+        portScanTask_->Wait();
+        PortScanResult scan;
+        if (portScanTask_->Status() != ScanTaskStatus::Failed) {
+            scan = portScanTask_->ResultCopy<PortScanResult>();
+        }
+        portScanTask_.reset();
+        std::vector<ProcessDisplayRow> rows;
+        for (const PortScanRecord& record : scan.records) {
+            const ProcessInfo info = QueryProcessInfo(record.processId);
+            rows.push_back(ProcessDisplayRow{
+                record.processId,
+                JoinStrings(record.endpoints, L" / ") + L"  PID " +
+                    std::to_wstring(record.processId) + L"  " + info.name,
+                info.path.empty() ? L"进程路径不可读，仍可尝试结束进程" : info.path,
+            });
+        }
         SetProcessRows(portTable_, rows);
         SetStatus(
             portStatus_,
             rows.empty()
                 ? L"未发现占用进程。"
-                : L"发现 " + std::to_wstring(rows.size()) + L" 个占用端口 " + std::to_wstring(port) + L" 的进程。",
+                : L"发现 " + std::to_wstring(rows.size()) + L" 个占用端口 " + std::to_wstring(portScanValue_) + L" 的进程。",
             rows.empty() ? ThemedStatusRole::Normal : ThemedStatusRole::Success);
     }
 
@@ -4176,9 +3949,8 @@ private:
         }
 
         registry_.SetSetting(L"quattro.builtin.process-tools", L"path", path);
-        if (fileLockScanState_) {
-            const FileLockScanState::Snapshot snapshot = fileLockScanState_->ReadSnapshot();
-            if (!snapshot.finished) {
+        if (fileLockTask_) {
+            if (!fileLockTask_->IsFinished()) {
                 if (fileLockProgressDialog_) {
                     fileLockProgressDialog_->Show();
                 }
@@ -4225,9 +3997,6 @@ private:
     }
 
     void StartDirectoryFileLockQuery(const std::wstring& path) {
-        if (fileLockThread_.joinable()) {
-            fileLockThread_.join();
-        }
         if (fileLockProgressDialog_) {
             fileLockProgressDialog_->Close();
         }
@@ -4238,7 +4007,11 @@ private:
         fileProtectedPids_.clear();
         UpdateFileKillAllButton();
         SetStatus(fileStatus_, L"正在后台检查目录占用…", ThemedStatusRole::Info);
-        fileLockScanState_ = std::make_shared<FileLockScanState>();
+        const HWND notifyWindow = hwnd_;
+        const FileLockQueryOptions options = BackgroundFileLockQueryOptions();
+        fileLockTask_ = StartFileLockQuery(path, options, [notifyWindow]() {
+            PostMessageW(notifyWindow, WM_QUATTRO_FILE_LOCK_COMPLETE, 0, 0);
+        });
         ThemedTaskProgressDialogOptions progressOptions{};
         progressOptions.owner = hwnd_;
         progressOptions.instance = instance_;
@@ -4250,42 +4023,30 @@ private:
         progressOptions.progressBarId = ID_FILE_LOCK_PROGRESS_BAR;
         progressOptions.stopButtonId = ID_FILE_LOCK_PROGRESS_STOP;
         progressOptions.closeButtonId = ID_FILE_LOCK_PROGRESS_CLOSE;
-        progressOptions.readSnapshot = [state = fileLockScanState_]() {
-            return FileLockTaskProgressSnapshot(state);
+        progressOptions.readSnapshot = [task = fileLockTask_]() {
+            return ToThemedTaskProgressSnapshot(task->Snapshot());
         };
-        progressOptions.requestStop = [state = fileLockScanState_]() {
-            state->cancelRequested.store(true);
-        };
+        progressOptions.requestStop = [task = fileLockTask_]() { task->RequestStop(); };
         fileLockProgressDialog_ = std::make_unique<ThemedTaskProgressDialog>(std::move(progressOptions));
         fileLockProgressDialog_->Show();
 
-        const std::shared_ptr<FileLockScanState> state = fileLockScanState_;
-        const HWND notifyWindow = hwnd_;
-        const FileLockQueryOptions options = BackgroundFileLockQueryOptions();
-        fileLockThread_ = std::thread([state, path, notifyWindow, options]() {
-            FileLockQueryResult result = QueryFileLocks(
-                path,
-                [state]() { return state->cancelRequested.load(); },
-                [state](const FileLockQueryProgress& progress) { state->UpdateProgress(progress); },
-                options);
-            state->Complete(std::move(result));
-            PostMessageW(notifyWindow, WM_QUATTRO_FILE_LOCK_COMPLETE, 0, 0);
-        });
     }
 
     void FinishDirectoryFileLockQuery() {
-        if (!fileLockScanState_) {
+        if (!fileLockTask_) {
             return;
         }
-        const FileLockScanState::Snapshot snapshot = fileLockScanState_->ReadSnapshot();
-        if (!snapshot.finished) {
+        if (!fileLockTask_->IsFinished()) {
             return;
         }
-        if (fileLockThread_.joinable()) {
-            fileLockThread_.join();
+        fileLockTask_->Wait();
+        FileLockQueryResult result;
+        if (fileLockTask_->Status() == ScanTaskStatus::Failed) {
+            result.error = fileLockTask_->Snapshot().error;
+        } else {
+            result = fileLockTask_->ResultCopy<FileLockQueryResult>();
         }
-
-        const FileLockQueryResult result = fileLockScanState_->ReadResult();
+        fileLockTask_.reset();
         const std::vector<ProcessDisplayRow> rows = FileLockRowsFromResult(result);
         fileRows_ = rows;
         fileTerminatedPids_.clear();
@@ -4346,12 +4107,12 @@ private:
     }
 
     void CancelFileLockQueryAndWait() {
-        if (fileLockScanState_) {
-            fileLockScanState_->cancelRequested.store(true);
+        if (portScanTask_) {
+            portScanTask_->RequestStop();
+            portScanTask_->Wait();
+            portScanTask_.reset();
         }
-        if (fileLockThread_.joinable()) {
-            fileLockThread_.join();
-        }
+        if (fileLockTask_) fileLockTask_->RequestStop();
         if (fileLockProgressDialog_) {
             fileLockProgressDialog_->Close();
         }
@@ -4388,6 +4149,8 @@ private:
     HWND portInput_ = nullptr;
     HWND portTable_ = nullptr;
     HWND portStatus_ = nullptr;
+    std::shared_ptr<ScanTaskHandle> portScanTask_;
+    unsigned short portScanValue_ = 0;
     HWND filePathInput_ = nullptr;
     ThemedSplitButton filePickSplit_{};
     HWND fileTable_ = nullptr;
@@ -4396,9 +4159,8 @@ private:
     std::vector<ProcessDisplayRow> fileRows_;
     std::set<DWORD> fileTerminatedPids_;
     std::set<DWORD> fileProtectedPids_;
-    std::shared_ptr<FileLockScanState> fileLockScanState_;
+    std::shared_ptr<ScanTaskHandle> fileLockTask_;
     std::unique_ptr<ThemedTaskProgressDialog> fileLockProgressDialog_;
-    std::thread fileLockThread_;
 };
 }
 

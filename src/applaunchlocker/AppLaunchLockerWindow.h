@@ -11,7 +11,7 @@
 #include <vector>
 
 class ThemedWindowUi;
-
+class ThemedTaskProgressDialog;
 class AppLaunchLockerWindow {
 public:
     AppLaunchLockerWindow(HINSTANCE instance, Theme theme);
@@ -67,6 +67,8 @@ private:
     std::vector<std::size_t> visibleDisabledIndexes_;
     std::vector<DisabledRecord> disabled_;
     std::thread worker_;
+    std::shared_ptr<ScanTaskHandle> scanTask_;
+    std::unique_ptr<ThemedTaskProgressDialog> scanProgressDialog_;
     std::atomic<bool> closing_{false};
     bool busy_ = false;
     bool storeAvailable_ = true;

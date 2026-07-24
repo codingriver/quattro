@@ -10,6 +10,58 @@ namespace {
 constexpr UINT_PTR kRefreshTimer = 1;
 }
 
+ThemedTaskProgressSnapshot ToThemedTaskProgressSnapshot(const TaskProgressSnapshot& snapshot) {
+    ThemedTaskProgressSnapshot output;
+    output.title = snapshot.title;
+    output.status = snapshot.status;
+    output.detail = snapshot.detail;
+    if ((snapshot.taskStatus == TaskStatus::Pending || snapshot.taskStatus == TaskStatus::Running) &&
+        snapshot.workerCount > 0) {
+        std::wstring workerDetail = L"使用 " + std::to_wstring(snapshot.workerCount) + L" 个工作线程";
+        if (!output.detail.empty()) workerDetail += L"，" + output.detail;
+        output.detail = std::move(workerDetail);
+    }
+    output.finished = snapshot.taskStatus == TaskStatus::Completed ||
+        snapshot.taskStatus == TaskStatus::Stopped ||
+        snapshot.taskStatus == TaskStatus::Failed;
+    output.completed = snapshot.taskStatus == TaskStatus::Completed;
+    output.stopRequested = snapshot.stopRequested;
+    output.indeterminate = snapshot.indeterminate || snapshot.total == 0;
+    if (!output.indeterminate) {
+        const double rawValue = std::clamp(
+            static_cast<double>(snapshot.current) / static_cast<double>(snapshot.total),
+            0.0,
+            1.0);
+        const bool running = snapshot.taskStatus == TaskStatus::Pending ||
+            snapshot.taskStatus == TaskStatus::Running;
+        if (output.completed) {
+            output.value = 1.0;
+        } else if (running && rawValue <= 0.0) {
+            output.value = 0.01;
+        } else {
+            output.value = rawValue;
+        }
+    }
+    output.activity = !output.indeterminate &&
+        (snapshot.taskStatus == TaskStatus::Pending || snapshot.taskStatus == TaskStatus::Running) &&
+        !output.stopRequested;
+    output.showPercent = !output.indeterminate;
+    if (snapshot.taskStatus == TaskStatus::Failed) {
+        output.role = ThemedStatusRole::Danger;
+        if (output.status.empty()) output.status = L"任务失败";
+        if (output.detail.empty()) output.detail = snapshot.error;
+    } else if (snapshot.taskStatus == TaskStatus::Stopped) {
+        output.role = ThemedStatusRole::Warning;
+        if (output.status.empty()) output.status = L"任务已停止";
+    } else if (snapshot.taskStatus == TaskStatus::Completed) {
+        output.role = ThemedStatusRole::Success;
+        if (output.status.empty()) output.status = L"任务完成";
+    } else {
+        output.role = ThemedStatusRole::Info;
+    }
+    return output;
+}
+
 ThemedTaskProgressDialog::ThemedTaskProgressDialog(ThemedTaskProgressDialogOptions options)
     : options_(std::move(options)) {}
 
@@ -24,6 +76,8 @@ bool ThemedTaskProgressDialog::Show() {
         return true;
     }
     if (!options_.instance || options_.className.empty() || options_.title.empty()) return false;
+    closePosted_ = false;
+    hasSnapshot_ = false;
     ThemedWindowCreateOptions create = ThemedWindowUi::DialogOptions(
         options_.instance,
         options_.owner,
@@ -130,8 +184,11 @@ void ThemedTaskProgressDialog::CreateControls() {
     y = ui.nextRowY(y, ui.labelHeight());
     detail_ = ui.Label(options_.initialDetail, left, y, ui.contentWidth());
     y += ui.labelHeight() + layout.sectionGap;
-    progress_ = ui.ProgressBar(options_.progressBarId, left, y, ui.contentWidth(),
-        ThemedProgressBarOptions{0.0, true, true});
+    ThemedProgressBarOptions progressOptions{};
+    progressOptions.value = 0.0;
+    progressOptions.indeterminate = true;
+    progressOptions.showPercent = false;
+    progress_ = ui.ProgressBar(options_.progressBarId, left, y, ui.contentWidth(), progressOptions);
     stop_ = ui.FooterButton(options_.stopButtonId, options_.stopText, 0, 2, false, false);
     close_ = ui.FooterButton(options_.closeButtonId, options_.closeText, 1, 2, true, true);
 }
@@ -147,8 +204,18 @@ void ThemedTaskProgressDialog::Refresh() {
     if (!hasSnapshot_ || snapshot.role != lastSnapshot_.role) ui.SetStatusTextRole(status_, snapshot.role);
     if (!hasSnapshot_ || snapshot.status != lastSnapshot_.status) ThemedUi::SetText(status_, snapshot.status);
     if (!hasSnapshot_ || snapshot.detail != lastSnapshot_.detail) ThemedUi::SetText(detail_, snapshot.detail);
-    if (!hasSnapshot_ || snapshot.value != lastSnapshot_.value || snapshot.indeterminate != lastSnapshot_.indeterminate) {
-        ThemedUi::SetProgress(progress_, std::clamp(snapshot.value, 0.0, 1.0), snapshot.indeterminate);
+    if (!hasSnapshot_ || snapshot.value != lastSnapshot_.value ||
+        snapshot.indeterminate != lastSnapshot_.indeterminate ||
+        snapshot.activity != lastSnapshot_.activity ||
+        snapshot.showPercent != lastSnapshot_.showPercent ||
+        snapshot.text != lastSnapshot_.text) {
+        ThemedProgressBarOptions progressOptions{};
+        progressOptions.value = std::clamp(snapshot.value, 0.0, 1.0);
+        progressOptions.indeterminate = snapshot.indeterminate;
+        progressOptions.activity = snapshot.activity;
+        progressOptions.showPercent = snapshot.showPercent;
+        progressOptions.text = snapshot.text;
+        ThemedUi::SetProgress(progress_, progressOptions);
     }
     const bool stopEnabled = !snapshot.finished && !snapshot.stopRequested;
     if (stopEnabled_ != stopEnabled) {
@@ -158,4 +225,8 @@ void ThemedTaskProgressDialog::Refresh() {
     }
     lastSnapshot_ = std::move(snapshot);
     hasSnapshot_ = true;
+    if (options_.closeOnCompleted && lastSnapshot_.completed && !closePosted_) {
+        closePosted_ = true;
+        PostMessageW(hwnd_, WM_CLOSE, 0, 0);
+    }
 }

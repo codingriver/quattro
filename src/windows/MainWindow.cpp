@@ -10,6 +10,7 @@
 #include "FileDialog.h"
 #include "HotKeyEditor.h"
 #include "LinkEditDialog.h"
+#include "LinkResourceRefreshService.h"
 #include "LinkSorting.h"
 #include "MainHotKey.h"
 #include "MainTitleBuildMarkerLayout.h"
@@ -22,6 +23,7 @@
 #include "StartupService.h"
 #include "SystemFunctions.h"
 #include "ThemedControls.h"
+#include "ThemedTaskProgressDialog.h"
 #include "ThemedWindowUi.h"
 #include "TodoEditDialog.h"
 #include "TodoSchedule.h"
@@ -1872,6 +1874,7 @@ MainWindow::MainWindow(
 }
 
 MainWindow::~MainWindow() {
+    CancelResourceRefresh();
     httpServerService_.Stop();
     SaveCurrentNotePage();
     if (dockPeek_) {
@@ -2239,6 +2242,9 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         return 0;
     case WM_QUATTRO_URL_ICON_DOWNLOADED:
         OnUrlIconDownloaded(static_cast<int>(wParam), lParam != 0);
+        return 0;
+    case WM_QUATTRO_RESOURCE_REFRESH_DONE:
+        CompleteResourceRefresh(static_cast<std::uint64_t>(wParam));
         return 0;
     case WM_NCHITTEST: {
         if (dockHidden_) {
@@ -3102,6 +3108,7 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         return DefWindowProcW(hwnd_, message, wParam, lParam);
     case WM_DESTROY:
         WriteAppLog(L"主窗口销毁，准备退出消息循环。");
+        CancelResourceRefresh();
         CancelNavDrag();
         CancelLinkDrag();
         RemoveTrayIcon();
@@ -5460,101 +5467,129 @@ void MainWindow::ClearIconCache() {
 }
 
 void MainWindow::RefreshAllIcons() {
-    BeginResourceRefresh(L"全部启动项");
     std::unordered_set<int> ordinaryTagIds;
     for (const auto& tag : model_.groups) {
         if (IsOrdinaryTag(tag)) {
             ordinaryTagIds.insert(tag.id);
         }
     }
-    TerminalContextMenuRefreshContext terminalContext;
-    const TerminalContextMenuRefreshContext* terminalContextPtr = nullptr;
-    if (config_.trackTerminalContextMenu) {
-        terminalContext = TerminalContextMenuService::DetectAvailablePrograms();
-        terminalContextPtr = &terminalContext;
-    }
-    int completed = 0;
-    int pending = 0;
-    int failed = 0;
-    for (auto& link : model_.links) {
+    std::vector<Link> links;
+    for (const auto& link : model_.links) {
         if (ordinaryTagIds.contains(link.parentGroup) && !BuiltinSystemFunctionForLink(link)) {
-            switch (RefreshLinkResources(link, terminalContextPtr)) {
-            case LinkResourceRefreshState::Complete: ++completed; break;
-            case LinkResourceRefreshState::Pending: ++pending; break;
-            case LinkResourceRefreshState::Failed: ++failed; break;
+            links.push_back(link);
+        }
+    }
+    StartResourceRefresh(std::move(links), L"全部启动项");
+}
+
+void MainWindow::StartResourceRefresh(std::vector<Link> links, std::wstring scopeText) {
+    if (links.empty()) {
+        pendingResourceRefreshScope_ = std::move(scopeText);
+        ShowResourceRefreshResult(0, 0);
+        return;
+    }
+    CancelResourceRefresh();
+    pendingResourceRefreshScope_ = std::move(scopeText);
+    const std::uint64_t generation = ++resourceRefreshGeneration_;
+    LinkResourceRefreshRequest request{
+        appDirectory_, std::move(links), TrackedShellMenuOptions(), pendingResourceRefreshScope_};
+    TaskOptions options;
+    options.mode = TaskExecutionMode::BackgroundParallel;
+    const HWND target = hwnd_;
+    options.completionCallback = [target, generation] {
+        if (IsWindow(target)) {
+            PostMessageW(target, WM_QUATTRO_RESOURCE_REFRESH_DONE, static_cast<WPARAM>(generation), 0);
+        }
+    };
+    resourceRefreshTask_ = TaskExecutionService::StartTyped<LinkResourceRefreshResult>(
+        std::move(options),
+        [request = std::move(request)](TaskContext& context) {
+            return LinkResourceRefreshService().Refresh(request, context);
+        });
+
+    ThemedTaskProgressDialogOptions progressOptions{};
+    progressOptions.owner = hwnd_;
+    progressOptions.instance = instance_;
+    progressOptions.theme = theme_;
+    progressOptions.className = L"QuattroLinkResourceRefreshProgress";
+    progressOptions.title = L"刷新" + pendingResourceRefreshScope_;
+    progressOptions.initialStatus = L"正在准备刷新";
+    progressOptions.initialDetail = L"正在整理启动项。";
+    progressOptions.readSnapshot = [task = resourceRefreshTask_]() {
+        return ToThemedTaskProgressSnapshot(task->Snapshot());
+    };
+    progressOptions.requestStop = [task = resourceRefreshTask_]() { task->RequestStop(); };
+    resourceRefreshProgressDialog_ =
+        std::make_unique<ThemedTaskProgressDialog>(std::move(progressOptions));
+    resourceRefreshProgressDialog_->Show();
+}
+
+void MainWindow::CompleteResourceRefresh(std::uint64_t generation) {
+    if (generation != resourceRefreshGeneration_ || !resourceRefreshTask_ ||
+        !resourceRefreshTask_->IsFinished()) {
+        return;
+    }
+    if (resourceRefreshTask_->Status() == TaskStatus::Failed) {
+        const std::wstring error = resourceRefreshTask_->Snapshot().error;
+        WriteAppLog(L"启动项刷新任务失败：" + error);
+        ShowToast(L"刷新失败，请稍后重试。", ThemedToastRole::Danger, 5000);
+        return;
+    }
+    if (resourceRefreshTask_->Status() == TaskStatus::Stopped) {
+        ShowToast(L"已停止刷新" + pendingResourceRefreshScope_ + L"。", ThemedToastRole::Info);
+        return;
+    }
+
+    const LinkResourceRefreshResult result =
+        resourceRefreshTask_->ResultCopy<LinkResourceRefreshResult>();
+    for (const auto& update : result.iconUpdates) {
+        if (Link* link = FindLink(update.linkId)) {
+            iconService_.ApplyPreparedRefresh(*link, update.icon);
+        }
+    }
+    std::vector<int> refreshedUrlLinkIds;
+    for (const auto& update : result.urlUpdates) {
+        if (!update.succeeded) {
+            continue;
+        }
+        for (const int linkId : update.linkIds) {
+            if (Link* link = FindLink(linkId)) {
+                iconService_.InvalidateMemoryCache(*link);
+                refreshedUrlLinkIds.push_back(linkId);
             }
         }
     }
-    InvalidateRect(hwnd_, nullptr, FALSE);
-    CompleteResourceRefreshStart(completed, pending, failed);
-}
+    shellContextMenuCache_.RemoveBatch(refreshedUrlLinkIds);
 
-MainWindow::LinkResourceRefreshState MainWindow::RefreshLinkResources(
-    Link& link,
-    const TerminalContextMenuRefreshContext* terminalContext) {
-    if (IsUrlLink(link)) {
-        shellContextMenuCache_.Remove(link.id);
-        if (urlIconDownloadService_.RequestManualRefresh(hwnd_, WM_QUATTRO_URL_ICON_DOWNLOADED, link)) {
-            pendingUrlIconRefreshIds_.insert(link.id);
-            return LinkResourceRefreshState::Pending;
-        }
-        return LinkResourceRefreshState::Failed;
-    }
-    bool success = iconService_.RefreshDiskCache(link);
-    const ShellContextMenuTrackingOptions tracking = TrackedShellMenuOptions();
-    if (!tracking.Any()) {
-        return success ? LinkResourceRefreshState::Complete : LinkResourceRefreshState::Failed;
-    }
-    ShellContextMenuTrackingOptions nativeTracking = tracking;
+    ShellContextMenuTrackingOptions nativeTracking = result.shellMenuResult.tracking;
     nativeTracking.terminal = false;
-    if (nativeTracking.Any()) {
-        ShellContextMenuSnapshot snapshot;
-        if (ShellItemService::QueryTrackedContextMenu(hwnd_, link, nativeTracking, snapshot)) {
-            shellContextMenuCache_.Update(link, snapshot, nativeTracking);
-        } else {
-            success = false;
+    ShellContextMenuTrackingOptions terminalTracking;
+    terminalTracking.terminal = result.shellMenuResult.tracking.terminal;
+    std::vector<ShellContextMenuCacheUpdate> cacheUpdates;
+    cacheUpdates.reserve(result.shellMenuResult.updates.size() * 2);
+    for (const auto& update : result.shellMenuResult.updates) {
+        if (update.hasNativeSnapshot) {
+            cacheUpdates.push_back({update.link, update.nativeSnapshot, nativeTracking});
+        }
+        if (update.hasTerminalSnapshot) {
+            cacheUpdates.push_back({update.link, update.terminalSnapshot, terminalTracking});
         }
     }
-    if (tracking.terminal) {
-        TerminalContextMenuRefreshContext localContext;
-        if (!terminalContext) {
-            localContext = TerminalContextMenuService::DetectAvailablePrograms();
-            terminalContext = &localContext;
-        }
-        ShellContextMenuTrackingOptions terminalOnly;
-        terminalOnly.terminal = true;
-        ShellContextMenuSnapshot terminalSnapshot;
-        terminalSnapshot.complete = true;
-        terminalSnapshot.items = TerminalContextMenuService::ItemsFor(link, *terminalContext);
-        shellContextMenuCache_.Update(link, terminalSnapshot, terminalOnly);
-    }
-    return success ? LinkResourceRefreshState::Complete : LinkResourceRefreshState::Failed;
+    shellContextMenuCache_.UpdateBatch(cacheUpdates);
+    InvalidateRect(hwnd_, nullptr, FALSE);
+    ShowResourceRefreshResult(result.completed, result.failed);
 }
 
-void MainWindow::BeginResourceRefresh(const std::wstring& scopeText) {
-    pendingUrlIconRefreshIds_.clear();
-    pendingResourceRefreshScope_ = scopeText;
-    pendingResourceRefreshCompleted_ = 0;
-    pendingResourceRefreshFailed_ = 0;
-    ShowToast(L"正在刷新" + scopeText + L"…", ThemedToastRole::Info, 5000);
-}
-
-void MainWindow::CompleteResourceRefreshStart(int completed, int pending, int failed) {
-    pendingResourceRefreshCompleted_ = completed;
-    pendingResourceRefreshFailed_ = failed;
-    if (pending <= 0) {
-        ShowResourceRefreshResult(completed, failed);
-        return;
+void MainWindow::CancelResourceRefresh() {
+    ++resourceRefreshGeneration_;
+    if (resourceRefreshTask_ && !resourceRefreshTask_->IsFinished()) {
+        resourceRefreshTask_->RequestStop();
     }
-    std::wstring message = L"正在刷新" + pendingResourceRefreshScope_ + L"：" + std::to_wstring(pending) + L" 个网址图标在后台处理";
-    if (completed > 0) {
-        message += L"，" + std::to_wstring(completed) + L" 项已处理";
+    resourceRefreshTask_.reset();
+    if (resourceRefreshProgressDialog_) {
+        resourceRefreshProgressDialog_->Close();
+        resourceRefreshProgressDialog_.reset();
     }
-    if (failed > 0) {
-        message += L"，" + std::to_wstring(failed) + L" 项未能开始";
-    }
-    message += L"。";
-    ShowToast(message, failed > 0 ? ThemedToastRole::Warning : ThemedToastRole::Info, 5000);
 }
 
 void MainWindow::ShowResourceRefreshResult(int completed, int failed) {
@@ -5579,27 +5614,13 @@ void MainWindow::RefreshTagLinks(int tagId) {
     if (!tag || !IsOrdinaryTag(*tag)) {
         return;
     }
-    BeginResourceRefresh(L"标签“" + tag->name + L"”");
-    TerminalContextMenuRefreshContext terminalContext;
-    const TerminalContextMenuRefreshContext* terminalContextPtr = nullptr;
-    if (config_.trackTerminalContextMenu) {
-        terminalContext = TerminalContextMenuService::DetectAvailablePrograms();
-        terminalContextPtr = &terminalContext;
-    }
-    int completed = 0;
-    int pending = 0;
-    int failed = 0;
-    for (auto& link : model_.links) {
+    std::vector<Link> links;
+    for (const auto& link : model_.links) {
         if (link.parentGroup == tagId && !BuiltinSystemFunctionForLink(link)) {
-            switch (RefreshLinkResources(link, terminalContextPtr)) {
-            case LinkResourceRefreshState::Complete: ++completed; break;
-            case LinkResourceRefreshState::Pending: ++pending; break;
-            case LinkResourceRefreshState::Failed: ++failed; break;
-            }
+            links.push_back(link);
         }
     }
-    InvalidateRect(hwnd_, nullptr, FALSE);
-    CompleteResourceRefreshStart(completed, pending, failed);
+    StartResourceRefresh(std::move(links), L"标签“" + tag->name + L"”");
 }
 
 void MainWindow::RefreshGroupLinks(int groupId) {
@@ -5607,33 +5628,19 @@ void MainWindow::RefreshGroupLinks(int groupId) {
     if (!group || group->parentGroup != 0) {
         return;
     }
-    BeginResourceRefresh(L"分组“" + group->name + L"”");
     std::unordered_set<int> ordinaryTagIds;
     for (const auto& tag : model_.groups) {
         if (tag.parentGroup == groupId && IsOrdinaryTag(tag)) {
             ordinaryTagIds.insert(tag.id);
         }
     }
-    TerminalContextMenuRefreshContext terminalContext;
-    const TerminalContextMenuRefreshContext* terminalContextPtr = nullptr;
-    if (config_.trackTerminalContextMenu) {
-        terminalContext = TerminalContextMenuService::DetectAvailablePrograms();
-        terminalContextPtr = &terminalContext;
-    }
-    int completed = 0;
-    int pending = 0;
-    int failed = 0;
-    for (auto& link : model_.links) {
+    std::vector<Link> links;
+    for (const auto& link : model_.links) {
         if (ordinaryTagIds.contains(link.parentGroup) && !BuiltinSystemFunctionForLink(link)) {
-            switch (RefreshLinkResources(link, terminalContextPtr)) {
-            case LinkResourceRefreshState::Complete: ++completed; break;
-            case LinkResourceRefreshState::Pending: ++pending; break;
-            case LinkResourceRefreshState::Failed: ++failed; break;
-            }
+            links.push_back(link);
         }
     }
-    InvalidateRect(hwnd_, nullptr, FALSE);
-    CompleteResourceRefreshStart(completed, pending, failed);
+    StartResourceRefresh(std::move(links), L"分组“" + group->name + L"”");
 }
 
 void MainWindow::RefreshLinkIcon(int linkId) {
@@ -5641,13 +5648,7 @@ void MainWindow::RefreshLinkIcon(int linkId) {
     if (!link) {
         return;
     }
-    BeginResourceRefresh(L"“" + link->name + L"”");
-    const LinkResourceRefreshState state = RefreshLinkResources(*link);
-    InvalidateRect(hwnd_, nullptr, FALSE);
-    CompleteResourceRefreshStart(
-        state == LinkResourceRefreshState::Complete ? 1 : 0,
-        state == LinkResourceRefreshState::Pending ? 1 : 0,
-        state == LinkResourceRefreshState::Failed ? 1 : 0);
+    StartResourceRefresh({*link}, L"“" + link->name + L"”");
 }
 
 void MainWindow::RequestInitialUrlIconDownload(const Link& link) {
@@ -5657,25 +5658,11 @@ void MainWindow::RequestInitialUrlIconDownload(const Link& link) {
 }
 
 void MainWindow::OnUrlIconDownloaded(int linkId, bool success) {
-    bool refreshed = success;
     if (success) {
         if (Link* link = FindLink(linkId)) {
-            refreshed = iconService_.RefreshDiskCache(*link);
-        } else {
-            refreshed = false;
+            iconService_.InvalidateMemoryCache(*link);
+            InvalidateRect(hwnd_, nullptr, FALSE);
         }
-        InvalidateRect(hwnd_, nullptr, FALSE);
-    }
-    if (pendingUrlIconRefreshIds_.erase(linkId) == 0) {
-        return;
-    }
-    if (refreshed) {
-        ++pendingResourceRefreshCompleted_;
-    } else {
-        ++pendingResourceRefreshFailed_;
-    }
-    if (pendingUrlIconRefreshIds_.empty()) {
-        ShowResourceRefreshResult(pendingResourceRefreshCompleted_, pendingResourceRefreshFailed_);
     }
 }
 
@@ -7984,7 +7971,7 @@ HRESULT MainWindow::CreateDeviceResources() {
     GetClientRect(hwnd_, &rect);
     const D2D1_SIZE_U size = D2D1::SizeU(rect.right - rect.left, rect.bottom - rect.top);
     const HRESULT hr = d2dFactory_->CreateHwndRenderTarget(
-        D2D1::RenderTargetProperties(D2D1_RENDER_TARGET_TYPE_DEFAULT),
+        D2D1::RenderTargetProperties(D2D1_RENDER_TARGET_TYPE_SOFTWARE),
         D2D1::HwndRenderTargetProperties(hwnd_, size),
         &renderTarget_);
     if (SUCCEEDED(hr) && renderTarget_) {

@@ -19,37 +19,6 @@
 #include <string>
 #include <utility>
 
-struct AdBlockScanState {
-    struct Snapshot {
-        AdBlockScanProgress progress;
-        bool finished = false;
-        bool stopRequested = false;
-        std::wstring error;
-    };
-
-    Snapshot ReadSnapshot() const {
-        std::lock_guard lock(mutex);
-        return Snapshot{progress, finished, cancelRequested.load(), error};
-    }
-
-    void UpdateProgress(const AdBlockScanProgress& value) {
-        std::lock_guard lock(mutex);
-        progress = value;
-    }
-
-    void Complete(const AdBlockScanResult& result) {
-        std::lock_guard lock(mutex);
-        error = result.error;
-        finished = true;
-    }
-
-    mutable std::mutex mutex;
-    AdBlockScanProgress progress{};
-    bool finished = false;
-    std::wstring error;
-    std::atomic_bool cancelRequested{false};
-};
-
 namespace {
 constexpr int ID_TAB_CONTROL = 1200;
 constexpr int ID_TAB_BLOCK = 1201;
@@ -78,9 +47,6 @@ constexpr UINT WM_APP_TEST_OPERATION_COMPLETE = WM_APP + 0x164;
 constexpr int kClientWidth = 780;
 constexpr int kClientHeight = 448;
 
-struct ScanPayload {
-    AdBlockScanResult scan;
-};
 struct BlockedPayload {
     std::vector<DisabledRecord> blocked;
     std::wstring storeError;
@@ -250,83 +216,6 @@ std::wstring BlockConfirmationPrompt(std::size_t targetCount, const std::wstring
     return prompt + L"\n模式：" + modeText + L"\n" + detailText;
 }
 
-ThemedTaskProgressSnapshot AdBlockTaskProgressSnapshot(const std::shared_ptr<AdBlockScanState>& state) {
-    ThemedTaskProgressSnapshot output;
-    if (!state) {
-        output.status = L"检查失败";
-        output.detail = L"检查状态不可用。";
-        output.role = ThemedStatusRole::Danger;
-        output.indeterminate = false;
-        output.finished = true;
-        return output;
-    }
-    const AdBlockScanState::Snapshot snapshot = state->ReadSnapshot();
-    output.finished = snapshot.finished;
-    output.stopRequested = snapshot.stopRequested;
-    if (snapshot.finished && !snapshot.error.empty()) {
-        output.status = L"检查失败";
-        output.detail = snapshot.error;
-        output.role = ThemedStatusRole::Danger;
-        output.indeterminate = false;
-        return output;
-    }
-    const AdBlockScanProgress& progress = snapshot.progress;
-    switch (progress.phase) {
-    case AdBlockScanPhase::Validating:
-        output.status = snapshot.stopRequested ? L"正在停止检查…" : L"正在准备检查…";
-        output.detail = L"正在读取路径信息。";
-        output.role = snapshot.stopRequested ? ThemedStatusRole::Warning : ThemedStatusRole::Info;
-        output.indeterminate = true;
-        break;
-    case AdBlockScanPhase::Enumerating:
-        output.status = snapshot.stopRequested ? L"正在停止检查…" : L"正在枚举目录内容…";
-        output.detail = L"已枚举 " + std::to_wstring(progress.enumeratedFiles) + L" 个文件，发现 " +
-            std::to_wstring(progress.discoveredCandidates) + L" 个可启动候选";
-        if (progress.inaccessibleDirectories > 0) {
-            output.detail += L"，跳过 " + std::to_wstring(progress.inaccessibleDirectories) + L" 个目录";
-        }
-        output.detail += L"。";
-        output.role = snapshot.stopRequested ? ThemedStatusRole::Warning : ThemedStatusRole::Info;
-        output.indeterminate = true;
-        break;
-    case AdBlockScanPhase::IndexingStartup:
-        output.status = snapshot.stopRequested ? L"正在停止检查…" : L"正在读取开机/登录自启动项…";
-        output.detail = L"已发现 " + std::to_wstring(progress.discoveredCandidates) + L" 个可启动候选。";
-        output.role = snapshot.stopRequested ? ThemedStatusRole::Warning : ThemedStatusRole::Info;
-        output.indeterminate = true;
-        break;
-    case AdBlockScanPhase::Analyzing:
-        output.status = snapshot.stopRequested ? L"正在停止检查…" : L"正在并行检查可启动程序…";
-        output.detail = L"已检查 " + std::to_wstring(progress.checkedCandidates) + L" / " +
-            std::to_wstring(progress.totalCandidates) + L" 个可启动候选，其中 " +
-            std::to_wstring(progress.autoStartMatches) + L" 个已注册开机/登录自启动，" +
-            std::to_wstring(progress.workerCount) + L" 个工作线程。";
-        output.role = snapshot.stopRequested ? ThemedStatusRole::Warning : ThemedStatusRole::Info;
-        output.indeterminate = false;
-        output.value = progress.totalCandidates == 0 ? 1.0
-            : static_cast<double>(progress.checkedCandidates) / static_cast<double>(progress.totalCandidates);
-        break;
-    case AdBlockScanPhase::Completed:
-        output.status = L"检查完成";
-        output.detail = L"发现 " + std::to_wstring(progress.checkedCandidates) + L" 个可启动程序，其中 " +
-            std::to_wstring(progress.autoStartMatches) + L" 个已注册开机/登录自启动。";
-        output.role = ThemedStatusRole::Success;
-        output.indeterminate = false;
-        output.value = 1.0;
-        break;
-    case AdBlockScanPhase::Cancelled:
-        output.status = L"检查已停止";
-        output.detail = L"已检查 " + std::to_wstring(progress.checkedCandidates) + L" / " +
-            std::to_wstring(progress.totalCandidates) + L" 个可启动候选，其中 " +
-            std::to_wstring(progress.autoStartMatches) + L" 个已注册开机/登录自启动；结果可能不完整。";
-        output.role = ThemedStatusRole::Warning;
-        output.indeterminate = false;
-        output.value = progress.totalCandidates == 0 ? 0.0
-            : static_cast<double>(progress.checkedCandidates) / static_cast<double>(progress.totalCandidates);
-        break;
-    }
-    return output;
-}
 }
 
 AdBlockWindow::AdBlockWindow(HINSTANCE instance, Theme theme)
@@ -334,7 +223,7 @@ AdBlockWindow::AdBlockWindow(HINSTANCE instance, Theme theme)
 
 AdBlockWindow::~AdBlockWindow() {
     closing_ = true;
-    if (scanState_) scanState_->cancelRequested.store(true);
+    if (scanTask_) scanTask_->RequestStop();
     if (scanProgressDialog_) scanProgressDialog_->Close();
     JoinWorker();
 }
@@ -407,7 +296,7 @@ LRESULT AdBlockWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam) {
         if (message == WM_DESTROY) {
             SaveWindowPosition(hwnd_);
             closing_ = true;
-            if (scanState_) scanState_->cancelRequested.store(true);
+            if (scanTask_) scanTask_->RequestStop();
             if (scanProgressDialog_) scanProgressDialog_->Close();
             JoinWorker();
             PostQuitMessage(0);
@@ -471,9 +360,16 @@ LRESULT AdBlockWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam) {
         break;
     }
     case WM_APP_SCAN_COMPLETE: {
-        std::unique_ptr<ScanPayload> payload(reinterpret_cast<ScanPayload*>(lParam));
-        JoinWorker();
-        CompleteScan(std::move(payload->scan));
+        if (!scanTask_ || !scanTask_->IsFinished()) return 0;
+        scanTask_->Wait();
+        AdBlockScanResult scan;
+        if (scanTask_->Status() == ScanTaskStatus::Failed) {
+            scan.error = scanTask_->Snapshot().error;
+        } else {
+            scan = scanTask_->ResultCopy<AdBlockScanResult>();
+        }
+        scanTask_.reset();
+        CompleteScan(std::move(scan));
         return 0;
     }
     case WM_APP_BLOCKED_COMPLETE: {
@@ -706,13 +602,23 @@ void AdBlockWindow::StartScan() {
         ThemedUi::SetText(statusText_, L"请先选择文件或文件夹。");
         return;
     }
-    JoinWorker();
     busy_ = true;
     scanRunning_ = true;
     scanItems_.clear();
     ThemedUi::ClearTable(scanTable_);
     ThemedUi::SetText(statusText_, L"正在后台递归检查目录…");
-    scanState_ = std::make_shared<AdBlockScanState>();
+    AdBlockScanOptions scanOptions{};
+    wchar_t delayText[32]{};
+    if (GetEnvironmentVariableW(L"QUATTRO_TEST_AD_BLOCK_BATCH_DELAY_MS", delayText,
+            static_cast<DWORD>(std::size(delayText))) > 0) {
+        scanOptions.batchDelay = std::chrono::milliseconds(
+            std::min<unsigned long>(wcstoul(delayText, nullptr, 10), 1000));
+    }
+    const HWND target = hwnd_;
+    scanTask_ = AdBlockManager().StartScanPathDetailed(
+        path,
+        scanOptions,
+        [target]() { PostMessageW(target, WM_APP_SCAN_COMPLETE, 0, 0); });
     ThemedTaskProgressDialogOptions progressOptions{};
     progressOptions.owner = hwnd_;
     progressOptions.instance = instance_;
@@ -722,30 +628,13 @@ void AdBlockWindow::StartScan() {
         std::to_wstring(GetCurrentProcessId()) + L"_" + std::to_wstring(GetTickCount64());
     progressOptions.title = L"广告拦截检查进度";
     progressOptions.clientWidth = 520;
-    progressOptions.readSnapshot = [state = scanState_]() { return AdBlockTaskProgressSnapshot(state); };
-    progressOptions.requestStop = [state = scanState_]() { state->cancelRequested.store(true); };
+    progressOptions.readSnapshot = [task = scanTask_]() {
+        return ToThemedTaskProgressSnapshot(task->Snapshot());
+    };
+    progressOptions.requestStop = [task = scanTask_]() { task->RequestStop(); };
     scanProgressDialog_ = std::make_unique<ThemedTaskProgressDialog>(std::move(progressOptions));
     scanProgressDialog_->Show();
     UpdateButtons();
-    const HWND target = hwnd_;
-    const std::shared_ptr<AdBlockScanState> state = scanState_;
-    worker_ = std::thread([target, path, state]() {
-        auto payload = std::make_unique<ScanPayload>();
-        AdBlockScanOptions options{};
-        wchar_t delayText[32]{};
-        if (GetEnvironmentVariableW(L"QUATTRO_TEST_AD_BLOCK_BATCH_DELAY_MS", delayText,
-                static_cast<DWORD>(std::size(delayText))) > 0) {
-            options.batchDelay = std::chrono::milliseconds(std::min<unsigned long>(wcstoul(delayText, nullptr, 10), 1000));
-        }
-        payload->scan = AdBlockManager().ScanPathDetailed(
-            path,
-            [state]() { return state->cancelRequested.load(); },
-            [state](const AdBlockScanProgress& progress) { state->UpdateProgress(progress); },
-            options);
-        state->Complete(payload->scan);
-        if (!PostMessageW(target, WM_APP_SCAN_COMPLETE, 0, reinterpret_cast<LPARAM>(payload.get()))) return;
-        payload.release();
-    });
 }
 
 void AdBlockWindow::ClearScanResults() {
