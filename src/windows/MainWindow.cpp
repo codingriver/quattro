@@ -1051,6 +1051,13 @@ float LinkContentHeight(std::size_t count, const LinkLayoutMetrics& metrics) {
            metrics.bottomInset;
 }
 
+int LinkNameMaxLines(const LinkLayoutMetrics& metrics, bool singleLine) {
+    if (singleLine || metrics.layout == 0 || metrics.compactTile) {
+        return 1;
+    }
+    return metrics.iconSize <= 24 ? 2 : 3;
+}
+
 float NavigationItemWidth(const Theme& theme, const std::wstring& text) {
     return std::max(
         Metric(theme, L"majorNavItem", L"textMinWidth", 86.0f),
@@ -1891,6 +1898,8 @@ MainWindow::~MainWindow() {
     SafeRelease(textFormat_);
     SafeRelease(navSelectedFormat_);
     SafeRelease(smallFormat_);
+    SafeRelease(linkNameFormat_);
+    SafeRelease(linkNameSmallFormat_);
     SafeRelease(uiWicFactory_);
     SafeRelease(dwriteFactory_);
     SafeRelease(d2dFactory_);
@@ -1934,15 +1943,23 @@ bool MainWindow::Create() {
                                      DWRITE_FONT_STRETCH_NORMAL, 13.0f, L"zh-cn", &navSelectedFormat_);
     dwriteFactory_->CreateTextFormat(L"Microsoft YaHei UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
                                      DWRITE_FONT_STRETCH_NORMAL, 11.0f, L"zh-cn", &smallFormat_);
-    if (!titleFormat_ || !textFormat_ || !smallFormat_) {
+    dwriteFactory_->CreateTextFormat(L"Microsoft YaHei UI", nullptr, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_FONT_STYLE_NORMAL,
+                                     DWRITE_FONT_STRETCH_NORMAL, 13.0f, L"zh-cn", &linkNameFormat_);
+    dwriteFactory_->CreateTextFormat(L"Microsoft YaHei UI", nullptr, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_FONT_STYLE_NORMAL,
+                                     DWRITE_FONT_STRETCH_NORMAL, 11.0f, L"zh-cn", &linkNameSmallFormat_);
+    if (!titleFormat_ || !textFormat_ || !smallFormat_ || !linkNameFormat_ || !linkNameSmallFormat_) {
         return false;
     }
     titleFormat_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
     textFormat_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
     smallFormat_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+    linkNameFormat_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+    linkNameSmallFormat_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
     titleFormat_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
     textFormat_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
     smallFormat_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+    linkNameFormat_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+    linkNameSmallFormat_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
     if (navSelectedFormat_) {
         navSelectedFormat_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
         navSelectedFormat_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
@@ -8482,7 +8499,7 @@ void MainWindow::DrawLinks(D2D1_RECT_F rect) {
 
         D2D1_RECT_F icon{};
         D2D1_RECT_F nameRect{};
-        IDWriteTextFormat* nameFormat = textFormat_;
+        IDWriteTextFormat* nameFormat = linkNameFormat_;
         if (metrics.layout == 0 || metrics.compactTile) {
             const float iconTop = item.top + (Height(item) - metrics.iconSize) * 0.5f;
             const float iconLeft = item.left + Metric(theme_, L"linkItem", L"listIconLeft", 8.0f);
@@ -8490,18 +8507,24 @@ void MainWindow::DrawLinks(D2D1_RECT_F rect) {
             nameRect = D2D1::RectF(icon.right + Metric(theme_, L"linkItem", L"listTextGap", 8.0f), item.top, item.right - Metric(theme_, L"linkItem", L"listTextRightInset", 6.0f), item.bottom);
             nameFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
             nameFormat->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+            nameFormat->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
         } else {
             const float iconLeft = item.left + (Width(item) - metrics.iconSize) * 0.5f;
             const float iconTop = item.top + Metric(theme_, L"linkItem", L"gridIconTop", 8.0f);
             icon = D2D1::RectF(iconLeft, iconTop, iconLeft + metrics.iconSize, iconTop + metrics.iconSize);
+            const float textPaddingX = Metric(theme_, L"linkItem", L"gridTextPaddingX", 4.0f);
+            const float textPaddingBottom = Metric(theme_, L"linkItem", L"gridTextPaddingBottom", 4.0f);
+            const float lineHeight = Metric(theme_, L"linkItem", L"gridTextLineHeight", 16.0f);
+            const int maxLines = LinkNameMaxLines(metrics, config_.linkNameSingleLine);
             nameRect = D2D1::RectF(
-                item.left + Metric(theme_, L"linkItem", L"gridTextPaddingX", 4.0f),
-                icon.bottom + Metric(theme_, L"linkItem", L"gridTextGap", 4.0f),
-                item.right - Metric(theme_, L"linkItem", L"gridTextPaddingX", 4.0f),
-                item.bottom - Metric(theme_, L"linkItem", L"gridTextPaddingBottom", 4.0f));
-            nameFormat = metrics.itemWidth <= Metric(theme_, L"linkItem", L"smallTextWidthThreshold", 78.0f) ? smallFormat_ : textFormat_;
+                item.left + textPaddingX,
+                item.bottom - textPaddingBottom - lineHeight * static_cast<float>(maxLines),
+                item.right - textPaddingX,
+                item.bottom - textPaddingBottom);
+            nameFormat = metrics.itemWidth <= Metric(theme_, L"linkItem", L"smallTextWidthThreshold", 78.0f) ? linkNameSmallFormat_ : linkNameFormat_;
             nameFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
             nameFormat->SetWordWrapping(config_.linkNameSingleLine ? DWRITE_WORD_WRAPPING_NO_WRAP : DWRITE_WORD_WRAPPING_WRAP);
+            nameFormat->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_FAR);
         }
 
         if (ID2D1Bitmap* bitmap = iconService_.GetBitmap(renderTarget_, *link)) {

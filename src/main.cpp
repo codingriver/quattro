@@ -664,30 +664,60 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
         return *commandResult;
     }
     ResetStartupTiming();
+    WriteStartupTiming(L"process entry", L"pid=" + CurrentPidText());
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    WriteStartupTiming(L"dpi awareness configured");
 
     std::wstring testEnvironmentError;
     if (!ValidateTestEnvironment(testEnvironmentError)) {
         OutputDebugStringW((testEnvironmentError + L"\n").c_str());
         return 2;
     }
+    WriteStartupTiming(L"test environment validated", L"test_mode=" + BoolText(QuattroTestMode()));
 
     const std::filesystem::path moduleDirectory = GetModuleDirectory();
+    WriteStartupTiming(L"module directory resolved", moduleDirectory.wstring());
     EmbeddedAssetInstallResult assetInstall = PrepareEmbeddedAssets(moduleDirectory);
     const std::filesystem::path appDirectory = assetInstall.appDirectory;
+    WriteStartupTiming(
+        L"embedded assets prepared",
+        L"module=" + moduleDirectory.wstring() +
+            L", app=" + appDirectory.wstring() +
+            L", written=" + std::to_wstring(assetInstall.filesWritten) +
+            L", updated=" + std::to_wstring(assetInstall.filesUpdated) +
+            L", backed_up=" + std::to_wstring(assetInstall.filesBackedUp) +
+            L", skipped=" + std::to_wstring(assetInstall.filesSkipped) +
+            L", decompressed=" + std::to_wstring(assetInstall.filesDecompressed) +
+            L", raw_assets=" + std::to_wstring(assetInstall.rawAssets) +
+            L", compressed_assets=" + std::to_wstring(assetInstall.compressedAssets) +
+            L", failures=" + std::to_wstring(assetInstall.failures) +
+            L", validation_ms=" + std::to_wstring(assetInstall.validationMilliseconds) +
+            L", decompression_ms=" + std::to_wstring(assetInstall.decompressionMilliseconds) +
+            L", total_ms=" + std::to_wstring(assetInstall.totalMilliseconds) +
+            L", fallback_dir=" + BoolText(assetInstall.usedFallbackDirectory));
     SetCurrentDirectoryW(appDirectory.c_str());
     std::filesystem::create_directories(appDirectory / L"db");
+    WriteStartupTiming(L"app directory prepared", appDirectory.wstring());
     ConfigService configService(appDirectory / L"conf.ini");
+    WriteStartupTiming(L"config service created");
     AppConfig config = configService.Load();
+    WriteStartupTiming(
+        L"config file loaded",
+        L"theme=" + config.theme +
+            L", logging=" + BoolText(config.loggingEnabled) +
+            L", schema=" + std::to_wstring(config.version));
     InitializeAppLog(appDirectory, config.loggingEnabled);
+    WriteStartupTiming(L"app log initialized", L"enabled=" + BoolText(config.loggingEnabled));
     struct AppLogShutdownGuard {
         ~AppLogShutdownGuard() { ShutdownAppLog(); }
     } appLogShutdownGuard;
     const std::filesystem::path commandThemeDirectory = appDirectory / L"theme";
     Theme commandTheme = Theme::Load(commandThemeDirectory, config.theme);
+    WriteStartupTiming(L"command theme loaded", L"theme=" + config.theme);
     if (const std::optional<int> commandResult = TryRunWebDavTransferCommand(config, instance, commandTheme)) {
         return *commandResult;
     }
+    WriteStartupTiming(L"command line dispatch checked");
     WriteAppLog(L"应用启动。pid=" + CurrentPidText());
     {
         ExplorerCopyPathContextMenuService contextMenuService =
@@ -699,6 +729,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
                 contextMenuError)) {
             WriteAppLog(L"复制绝对路径右键菜单对账失败: " + contextMenuError);
         }
+        WriteStartupTiming(L"copy path context menu reconciled", L"enabled=" + BoolText(config.registerCopyPathContextMenu));
     }
     {
         ExplorerWebDavUploadContextMenuService contextMenuService;
@@ -709,23 +740,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
                 contextMenuError)) {
             WriteAppLog(L"WebDAV 上传右键菜单对账失败: " + contextMenuError);
         }
+        WriteStartupTiming(L"webdav context menu reconciled", L"enabled=" + BoolText(config.registerWebDavUploadContextMenu));
     }
-    WriteStartupTiming(
-        L"app directory ready",
-        L"module=" + moduleDirectory.wstring() +
-            L", app=" + appDirectory.wstring() +
-            L", embedded_written=" + std::to_wstring(assetInstall.filesWritten) +
-            L", embedded_updated=" + std::to_wstring(assetInstall.filesUpdated) +
-            L", embedded_backed_up=" + std::to_wstring(assetInstall.filesBackedUp) +
-            L", embedded_skipped=" + std::to_wstring(assetInstall.filesSkipped) +
-            L", embedded_decompressed=" + std::to_wstring(assetInstall.filesDecompressed) +
-            L", embedded_raw_assets=" + std::to_wstring(assetInstall.rawAssets) +
-            L", embedded_compressed_assets=" + std::to_wstring(assetInstall.compressedAssets) +
-            L", embedded_failures=" + std::to_wstring(assetInstall.failures) +
-            L", embedded_validation_ms=" + std::to_wstring(assetInstall.validationMilliseconds) +
-            L", embedded_decompression_ms=" + std::to_wstring(assetInstall.decompressionMilliseconds) +
-            L", embedded_total_ms=" + std::to_wstring(assetInstall.totalMilliseconds) +
-            L", fallback_dir=" + BoolText(assetInstall.usedFallbackDirectory));
     if (assetInstall.filesWritten > 0) {
         WriteAppLog(L"已释放内置资源: " + std::to_wstring(assetInstall.filesWritten));
     }

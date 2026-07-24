@@ -3692,7 +3692,7 @@ private:
             value.showTag = ThemedUi::IsChecked(showTag_);
             value.showToolboxButton = ThemedUi::IsChecked(showToolboxButton_);
             value.showSkinButton = ThemedUi::IsChecked(showSkinButton_);
-            value.linkNameSingleLine = ThemedUi::IsChecked(linkNameSingleLine_);
+            value.linkNameSingleLine = !ThemedUi::IsChecked(linkNameSingleLine_);
             value.showTooltip = ThemedUi::IsChecked(showTooltip_);
             value.groupRight = ThemedUi::IsChecked(groupRight_);
             value.tagRight = ThemedUi::IsChecked(tagRight_);
@@ -4804,7 +4804,7 @@ private:
             HWND displayLayoutGroup = AddSectionFrame(TabDisplay, L"布局与外观", displayLayoutSection.frame);
             const int displayLayoutFirstY = behaviorForm.sectionItemY(displayLayoutSection, 0, behaviorCheckHeight);
             const int displayLayoutSecondY = behaviorForm.sectionItemY(displayLayoutSection, 1, behaviorCheckHeight);
-            linkNameSingleLine_ = CheckBox(TabDisplay, 118, L"启动项名称单行", behaviorLeft, displayLayoutFirstY, draft_.linkNameSingleLine, behaviorCheckWidth);
+            linkNameSingleLine_ = CheckBox(TabDisplay, 118, L"启动项名称多行显示", behaviorLeft, displayLayoutFirstY, !draft_.linkNameSingleLine, behaviorCheckWidth);
             groupRight_ = CheckBox(TabDisplay, 120, L"分组栏在右侧", behaviorRight, displayLayoutFirstY, draft_.groupRight, behaviorCheckWidth);
             tagRight_ = CheckBox(TabDisplay, 122, L"标签栏在右侧", behaviorLeft, displayLayoutSecondY, draft_.tagRight, behaviorCheckWidth);
 

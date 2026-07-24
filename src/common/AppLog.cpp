@@ -18,6 +18,9 @@ LARGE_INTEGER g_startCounter{};
 LARGE_INTEGER g_lastCounter{};
 LARGE_INTEGER g_counterFrequency{};
 bool g_startupTimingActive = false;
+bool g_appLogInitialized = false;
+std::mutex g_startupTimingMutex;
+std::vector<std::wstring> g_pendingStartupTiming;
 
 long long ElapsedMilliseconds(LARGE_INTEGER start, LARGE_INTEGER end) {
     if (g_counterFrequency.QuadPart <= 0) {
@@ -303,6 +306,19 @@ AsyncAppLogger& AppLogger() {
 
 void InitializeAppLog(const std::filesystem::path& appDirectory, bool enabled) {
     AppLogger().Initialize(appDirectory, enabled);
+    std::vector<std::wstring> pending;
+    {
+        std::lock_guard lock(g_startupTimingMutex);
+        g_appLogInitialized = true;
+        if (enabled) {
+            pending.swap(g_pendingStartupTiming);
+        } else {
+            g_pendingStartupTiming.clear();
+        }
+    }
+    for (const std::wstring& message : pending) {
+        WriteAppLog(message);
+    }
 }
 
 void SetAppLogEnabled(bool enabled) {
@@ -323,20 +339,27 @@ void FlushAppLog() {
 
 void ShutdownAppLog() {
     AppLogger().Shutdown();
+    std::lock_guard lock(g_startupTimingMutex);
+    g_appLogInitialized = false;
 }
 
 void ResetStartupTiming() {
+    std::lock_guard lock(g_startupTimingMutex);
     QueryPerformanceFrequency(&g_counterFrequency);
     QueryPerformanceCounter(&g_startCounter);
     g_lastCounter = g_startCounter;
+    g_pendingStartupTiming.clear();
     g_startupTimingActive = true;
 }
 
 void FinishStartupTiming() {
+    std::lock_guard lock(g_startupTimingMutex);
     g_startupTimingActive = false;
+    g_pendingStartupTiming.clear();
 }
 
 bool IsStartupTimingActive() {
+    std::lock_guard lock(g_startupTimingMutex);
     return g_startupTimingActive;
 }
 
@@ -345,25 +368,41 @@ void WriteStartupTiming(const std::wstring& stage) {
 }
 
 void WriteStartupTiming(const std::wstring& stage, const std::wstring& detail) {
-    if (!IsAppLogEnabled() || !g_startupTimingActive) {
-        return;
-    }
-    if (g_startCounter.QuadPart == 0 || g_lastCounter.QuadPart == 0 || g_counterFrequency.QuadPart == 0) {
-        ResetStartupTiming();
-    }
-
     LARGE_INTEGER now{};
-    QueryPerformanceCounter(&now);
-    const long long totalMs = ElapsedMilliseconds(g_startCounter, now);
-    const long long deltaMs = ElapsedMilliseconds(g_lastCounter, now);
-    g_lastCounter = now;
+    std::wstring line;
+    bool writeNow = false;
+    {
+        std::lock_guard lock(g_startupTimingMutex);
+        if (!g_startupTimingActive) {
+            return;
+        }
+        if (g_startCounter.QuadPart == 0 || g_lastCounter.QuadPart == 0 || g_counterFrequency.QuadPart == 0) {
+            QueryPerformanceFrequency(&g_counterFrequency);
+            QueryPerformanceCounter(&g_startCounter);
+            g_lastCounter = g_startCounter;
+        }
 
-    std::wstringstream message;
-    message << L"[startup] +" << totalMs << L"ms";
-    message << L" delta=" << deltaMs << L"ms ";
-    message << stage;
-    if (!detail.empty()) {
-        message << L" | " << detail;
+        QueryPerformanceCounter(&now);
+        const long long totalMs = ElapsedMilliseconds(g_startCounter, now);
+        const long long deltaMs = ElapsedMilliseconds(g_lastCounter, now);
+        g_lastCounter = now;
+
+        std::wstringstream message;
+        message << L"[startup] +" << totalMs << L"ms";
+        message << L" delta=" << deltaMs << L"ms ";
+        message << stage;
+        if (!detail.empty()) {
+            message << L" | " << detail;
+        }
+        line = message.str();
+
+        if (!g_appLogInitialized) {
+            g_pendingStartupTiming.push_back(line);
+            return;
+        }
+        writeNow = IsAppLogEnabled();
     }
-    WriteAppLog(message.str());
+    if (writeNow) {
+        WriteAppLog(line);
+    }
 }

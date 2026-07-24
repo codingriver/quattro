@@ -590,6 +590,8 @@ private:
     IDWriteTextFormat* textFormat_ = nullptr;
     IDWriteTextFormat* navSelectedFormat_ = nullptr;
     IDWriteTextFormat* smallFormat_ = nullptr;
+    IDWriteTextFormat* linkNameFormat_ = nullptr;
+    IDWriteTextFormat* linkNameSmallFormat_ = nullptr;
     std::unordered_map<std::wstring, ID2D1Bitmap*> uiBitmapCache_;
     std::unique_ptr<ThemedMenuFontCache> menuFont_;
     std::vector<std::unique_ptr<MenuItemData>> activeMenuItems_;
