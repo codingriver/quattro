@@ -1023,6 +1023,7 @@ target_link_libraries(QuattroTests PRIVATE
     uuid
     user32
     wininet
+    windowscodecs
 )
 
 if(QUATTRO_WITH_WEBDAV_LIBS)
@@ -1094,6 +1095,7 @@ target_link_libraries(QuattroUiScreenshotAcceptance PRIVATE
     uuid
     user32
     wininet
+    windowscodecs
 )
 
 target_link_libraries(QuattroAboutTrayExitAcceptance PRIVATE
@@ -1370,6 +1372,7 @@ target_link_libraries(QuattroSettingsHttpButtonsAcceptance PRIVATE
     uuid
     user32
     wininet
+    windowscodecs
 )
 
 if(QUATTRO_WITH_WEBDAV_LIBS)

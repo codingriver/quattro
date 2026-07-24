@@ -1875,7 +1875,7 @@ int wmain() {
         const auto apps = QuickImportService().ScanStoreApps(appsError);
         Check(appsError.empty() || apps.empty(), "Store app import reports errors only when no app list is returned");
         bool storeLinksValid = true;
-        bool storeIconResolvedByShellItem = apps.empty();
+        bool storeIconResolvedByPublicResolver = apps.empty();
         for (const auto& app : apps) {
             storeLinksValid = storeLinksValid &&
                 app.link.type == 3 &&
@@ -1885,13 +1885,14 @@ int wmain() {
                 app.sourceName == L"商店应用";
             const ResolvedIcon icon = IconResolverService().Resolve(
                 IconResolverService::ForLink(app.link, 48));
-            storeIconResolvedByShellItem = storeIconResolvedByShellItem ||
+            storeIconResolvedByPublicResolver = storeIconResolvedByPublicResolver ||
                 (IconResolverService::HasPixels(icon) &&
-                 icon.source.rfind(L"shell-item-image-", 0) == 0);
+                 (icon.source.rfind(L"shell-item-image-", 0) == 0 ||
+                  icon.source.rfind(L"appx-unplated-", 0) == 0));
         }
         Check(storeLinksValid, "Store app import creates shell links with stable keys");
-        Check(storeIconResolvedByShellItem,
-            "Store app icons use the public shell-item image resolver");
+        Check(storeIconResolvedByPublicResolver,
+            "Store app icons use the public appx or shell-item image resolver");
     }
 
     // Save() must be atomic: a successful update leaves no stray temp file, and a

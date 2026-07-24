@@ -7,9 +7,11 @@
 #include "ThemedUi.h"
 #include "Utilities.h"
 
+#include <appmodel.h>
 #include <commctrl.h>
 #include <shellapi.h>
 #include <shlwapi.h>
+#include <wincodec.h>
 #include <windows.h>
 
 #include <algorithm>
@@ -17,6 +19,8 @@
 #include <cmath>
 #include <cstring>
 #include <system_error>
+
+#include <pugixml.hpp>
 
 namespace {
 
@@ -64,6 +68,224 @@ bool LooksLikeUrl(const Link& link) {
            lower.rfind(L"https://", 0) == 0 ||
            lower.rfind(L"ftp://", 0) == 0 ||
            lower.rfind(L"www.", 0) == 0;
+}
+
+std::wstring Utf8ToWide(const char* text) {
+    if (!text || !*text) {
+        return {};
+    }
+    const int length = MultiByteToWideChar(CP_UTF8, 0, text, -1, nullptr, 0);
+    if (length <= 1) {
+        return {};
+    }
+    std::wstring result(static_cast<std::size_t>(length - 1), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, text, -1, result.data(), length);
+    return result;
+}
+
+std::wstring NodeLocalName(const char* name) {
+    if (!name) {
+        return {};
+    }
+    const char* local = std::strrchr(name, ':');
+    return Utf8ToWide(local ? local + 1 : name);
+}
+
+bool NodeIs(const pugi::xml_node& node, const wchar_t* localName) {
+    return NodeLocalName(node.name()) == localName;
+}
+
+std::optional<std::wstring> PackageFamilyFromAumid(const std::wstring& value) {
+    const std::wstring trimmed = Trim(value);
+    const auto bang = trimmed.find(L'!');
+    if (bang == std::wstring::npos || bang == 0) {
+        return std::nullopt;
+    }
+    const std::wstring family = trimmed.substr(0, bang);
+    if (family.find_first_of(L"\\/:") != std::wstring::npos) {
+        return std::nullopt;
+    }
+    return family;
+}
+
+std::optional<std::filesystem::path> PackageInstallPath(const std::wstring& packageFamily) {
+    UINT32 count = 0;
+    UINT32 bufferLength = 0;
+    LONG rc = GetPackagesByPackageFamily(
+        packageFamily.c_str(),
+        &count,
+        nullptr,
+        &bufferLength,
+        nullptr);
+    if (rc != ERROR_INSUFFICIENT_BUFFER || count == 0 || bufferLength == 0) {
+        return std::nullopt;
+    }
+
+    std::vector<PWSTR> packageNames(count);
+    std::vector<wchar_t> packageNameBuffer(bufferLength);
+    rc = GetPackagesByPackageFamily(
+        packageFamily.c_str(),
+        &count,
+        packageNames.data(),
+        &bufferLength,
+        packageNameBuffer.data());
+    if (rc != ERROR_SUCCESS || count == 0) {
+        return std::nullopt;
+    }
+
+    for (UINT32 index = 0; index < count; ++index) {
+        if (!packageNames[index] || !*packageNames[index]) {
+            continue;
+        }
+        UINT32 pathLength = 0;
+        rc = GetPackagePathByFullName(packageNames[index], &pathLength, nullptr);
+        if (rc != ERROR_INSUFFICIENT_BUFFER || pathLength == 0) {
+            continue;
+        }
+        std::vector<wchar_t> path(pathLength);
+        rc = GetPackagePathByFullName(packageNames[index], &pathLength, path.data());
+        if (rc == ERROR_SUCCESS && pathLength > 0 && path.front() != L'\0') {
+            return std::filesystem::path(path.data());
+        }
+    }
+    return std::nullopt;
+}
+
+std::optional<std::wstring> AppxVisualElementLogo(const std::filesystem::path& manifestPath) {
+    pugi::xml_document document;
+    if (!document.load_file(manifestPath.c_str())) {
+        return std::nullopt;
+    }
+    pugi::xml_node package = document.document_element();
+    for (pugi::xml_node applications : package.children()) {
+        if (!NodeIs(applications, L"Applications")) {
+            continue;
+        }
+        for (pugi::xml_node application : applications.children()) {
+            if (!NodeIs(application, L"Application")) {
+                continue;
+            }
+            for (pugi::xml_node visual : application.children()) {
+                if (!NodeIs(visual, L"VisualElements")) {
+                    continue;
+                }
+                const char* logo = visual.attribute("Square44x44Logo").value();
+                if (!logo || !*logo) {
+                    logo = visual.attribute("Square150x150Logo").value();
+                }
+                if (logo && *logo) {
+                    return Utf8ToWide(logo);
+                }
+            }
+        }
+    }
+    return std::nullopt;
+}
+
+std::vector<int> AppxTargetSizesByPreference(int requestedSize) {
+    std::vector<int> sizes{16, 20, 24, 30, 32, 36, 40, 44, 48, 60, 64, 72, 80, 96, 256};
+    sizes.push_back(std::clamp(requestedSize, 1, 256));
+    std::sort(sizes.begin(), sizes.end());
+    sizes.erase(std::unique(sizes.begin(), sizes.end()), sizes.end());
+    std::sort(sizes.begin(), sizes.end(), [requestedSize](int left, int right) {
+        const int leftDistance = std::abs(left - requestedSize);
+        const int rightDistance = std::abs(right - requestedSize);
+        if (leftDistance != rightDistance) {
+            return leftDistance < rightDistance;
+        }
+        return left > right;
+    });
+    return sizes;
+}
+
+void AppendUniquePath(std::vector<std::filesystem::path>& paths, const std::filesystem::path& path) {
+    if (path.empty()) {
+        return;
+    }
+    const std::wstring key = ToLower(path.wstring());
+    const auto duplicate = std::any_of(paths.begin(), paths.end(), [&](const std::filesystem::path& existing) {
+        return ToLower(existing.wstring()) == key;
+    });
+    if (!duplicate) {
+        paths.push_back(path);
+    }
+}
+
+std::vector<std::filesystem::path> AppxLogoCandidates(
+    const std::filesystem::path& packageRoot,
+    const std::wstring& manifestLogo,
+    int requestedSize) {
+    std::vector<std::filesystem::path> result;
+    const std::filesystem::path relativeLogo = std::filesystem::path(manifestLogo);
+    const std::filesystem::path base = packageRoot / relativeLogo;
+    const std::filesystem::path directory = base.parent_path();
+    const std::wstring stem = base.stem().wstring();
+    const std::wstring extension = base.extension().empty() ? L".png" : base.extension().wstring();
+
+    for (const int size : AppxTargetSizesByPreference(requestedSize)) {
+        AppendUniquePath(result, directory / (stem + L".targetsize-" + std::to_wstring(size) + L"_altform-lightunplated" + extension));
+        AppendUniquePath(result, directory / (stem + L".targetsize-" + std::to_wstring(size) + L"_altform-unplated" + extension));
+    }
+    for (const int size : AppxTargetSizesByPreference(requestedSize)) {
+        AppendUniquePath(result, directory / (stem + L".targetsize-" + std::to_wstring(size) + extension));
+    }
+    AppendUniquePath(result, base);
+    AppendUniquePath(result, directory / (stem + L".scale-200" + extension));
+    return result;
+}
+
+ResolvedIcon LoadPngIcon(const std::filesystem::path& path, const std::wstring& source) {
+    IWICImagingFactory* factory = nullptr;
+    IWICBitmapDecoder* decoder = nullptr;
+    IWICBitmapFrameDecode* frame = nullptr;
+    IWICFormatConverter* converter = nullptr;
+    ResolvedIcon result;
+
+    if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory))) ||
+        !factory) {
+        return result;
+    }
+
+    UINT width = 0;
+    UINT height = 0;
+    if (SUCCEEDED(factory->CreateDecoderFromFilename(
+            path.c_str(),
+            nullptr,
+            GENERIC_READ,
+            WICDecodeMetadataCacheOnLoad,
+            &decoder)) &&
+        SUCCEEDED(decoder->GetFrame(0, &frame)) &&
+        SUCCEEDED(frame->GetSize(&width, &height)) &&
+        width > 0 && height > 0 && width <= 1024 && height <= 1024 &&
+        SUCCEEDED(factory->CreateFormatConverter(&converter)) &&
+        SUCCEEDED(converter->Initialize(
+            frame,
+            GUID_WICPixelFormat32bppPBGRA,
+            WICBitmapDitherTypeNone,
+            nullptr,
+            0.0,
+            WICBitmapPaletteTypeMedianCut))) {
+        result.width = static_cast<int>(width);
+        result.height = static_cast<int>(height);
+        result.quality = 3;
+        result.pixels.resize(static_cast<std::size_t>(width) * height);
+        const UINT stride = width * sizeof(std::uint32_t);
+        const UINT bytes = static_cast<UINT>(result.pixels.size() * sizeof(std::uint32_t));
+        if (SUCCEEDED(converter->CopyPixels(nullptr, stride, bytes, reinterpret_cast<BYTE*>(result.pixels.data())))) {
+            result.ok = std::any_of(result.pixels.begin(), result.pixels.end(), [](std::uint32_t pixel) {
+                return pixel != 0;
+            });
+            result.source = source;
+        } else {
+            result = {};
+        }
+    }
+
+    SafeRelease(converter);
+    SafeRelease(frame);
+    SafeRelease(decoder);
+    SafeRelease(factory);
+    return result;
 }
 
 std::wstring RegistryString(HKEY root, const std::wstring& subkey, const wchar_t* valueName) {
@@ -250,6 +472,34 @@ std::vector<ResolvedIcon> IconResolverService::ResolveBatch(
     return result;
 }
 
+ResolvedIcon IconResolverService::ResolveAppxUnplatedIcon(const std::wstring& parseName, int size) const {
+    const auto packageFamily = PackageFamilyFromAumid(parseName);
+    if (!packageFamily) {
+        return {};
+    }
+    const auto packageRoot = PackageInstallPath(*packageFamily);
+    if (!packageRoot) {
+        return {};
+    }
+    const std::filesystem::path manifestPath = *packageRoot / L"AppxManifest.xml";
+    const auto manifestLogo = AppxVisualElementLogo(manifestPath);
+    if (!manifestLogo || Trim(*manifestLogo).empty()) {
+        return {};
+    }
+
+    for (const auto& candidate : AppxLogoCandidates(*packageRoot, *manifestLogo, size)) {
+        std::error_code ec;
+        if (!std::filesystem::is_regular_file(candidate, ec)) {
+            continue;
+        }
+        ResolvedIcon icon = LoadPngIcon(candidate, L"appx-unplated-logo");
+        if (HasPixels(icon)) {
+            return icon;
+        }
+    }
+    return {};
+}
+
 ResolvedIcon IconResolverService::ResolveShellItemImage(const IconRequest& request, int size) const {
     switch (request.kind) {
     case IconSourceKind::Link:
@@ -271,7 +521,11 @@ ResolvedIcon IconResolverService::ResolveLinkShellItemImage(const Link& link, in
     if (!iconPath.empty() && iconPath != L"#url" && iconPath != L"默认系统缓存图标") {
         return {};
     }
-    ResolvedIcon result = ResolvePidlImage(link.pidl, size, L"shell-item-image-link-pidl");
+    ResolvedIcon result = ResolveAppxUnplatedIcon(link.path, size);
+    if (HasPixels(result)) {
+        return result;
+    }
+    result = ResolvePidlImage(link.pidl, size, L"shell-item-image-link-pidl");
     if (HasPixels(result)) {
         return result;
     }
@@ -313,6 +567,11 @@ ResolvedIcon IconResolverService::ResolveShellParseNameImage(
     const std::wstring target = ExpandEnvironmentStringsSafe(Trim(value));
     if (target.empty() || !ShellItemService::IsShellParseName(target)) {
         return {};
+    }
+    ResolvedIcon appxIcon = ResolveAppxUnplatedIcon(target, size);
+    if (HasPixels(appxIcon)) {
+        appxIcon.source = source + L"-appx-unplated";
+        return appxIcon;
     }
     PIDLIST_ABSOLUTE pidl = nullptr;
     if (FAILED(SHParseDisplayName(target.c_str(), nullptr, &pidl, 0, nullptr)) || !pidl) {
@@ -686,7 +945,8 @@ ResolvedIcon IconResolverService::CaptureIcon(HICON icon, int size, int quality,
 HBITMAP IconResolverService::CreateBitmapFromPixels(
     const ResolvedIcon& icon,
     int targetSize,
-    COLORREF background) {
+    COLORREF background,
+    bool preserveTransparency) {
     if (!HasPixels(icon) || targetSize <= 0) {
         return nullptr;
     }
@@ -706,11 +966,12 @@ HBITMAP IconResolverService::CreateBitmapFromPixels(
         return nullptr;
     }
     auto* target = static_cast<std::uint32_t*>(bits);
-    const std::uint32_t bg =
-        0xFF000000u |
-        (static_cast<std::uint32_t>(GetRValue(background)) << 16) |
-        (static_cast<std::uint32_t>(GetGValue(background)) << 8) |
-        static_cast<std::uint32_t>(GetBValue(background));
+    const std::uint32_t bg = preserveTransparency
+        ? 0u
+        : 0xFF000000u |
+            (static_cast<std::uint32_t>(GetRValue(background)) << 16) |
+            (static_cast<std::uint32_t>(GetGValue(background)) << 8) |
+            static_cast<std::uint32_t>(GetBValue(background));
     std::fill_n(target, static_cast<std::size_t>(targetSize) * targetSize, bg);
 
     const double scale = std::min(
@@ -731,6 +992,10 @@ HBITMAP IconResolverService::CreateBitmapFromPixels(
                 continue;
             }
             const std::size_t dstIndex = static_cast<std::size_t>(offsetY + y) * targetSize + offsetX + x;
+            if (preserveTransparency) {
+                target[dstIndex] = src;
+                continue;
+            }
             if (alpha == 255) {
                 target[dstIndex] = src;
                 continue;

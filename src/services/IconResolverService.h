@@ -67,9 +67,11 @@ public:
     static HBITMAP CreateBitmapFromPixels(
         const ResolvedIcon& icon,
         int targetSize,
-        COLORREF background);
+        COLORREF background,
+        bool preserveTransparency = false);
 
 private:
+    ResolvedIcon ResolveAppxUnplatedIcon(const std::wstring& parseName, int size) const;
     ResolvedIcon ResolveShellItemImage(const IconRequest& request, int size) const;
     ResolvedIcon ResolveLinkShellItemImage(const Link& link, int size) const;
     ResolvedIcon ResolvePidlImage(

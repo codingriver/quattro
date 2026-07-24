@@ -587,11 +587,13 @@ private:
         HBITMAP smallBitmap = IconResolverService::CreateBitmapFromPixels(
             smallIcon,
             smallSize_,
-            ThemedUi::ListSurfaceColor(theme_));
+            ThemedUi::ListSurfaceColor(theme_),
+            true);
         HBITMAP mediumBitmap = IconResolverService::CreateBitmapFromPixels(
             mediumIcon,
             mediumSize_,
-            ThemedUi::ListSurfaceColor(theme_));
+            ThemedUi::ListSurfaceColor(theme_),
+            true);
         const int index = smallBitmap ? ImageList_Add(smallImages_, smallBitmap, nullptr) : -1;
         if (mediumBitmap) {
             ImageList_Add(mediumImages_, mediumBitmap, nullptr);
@@ -614,11 +616,13 @@ private:
         HBITMAP smallBitmap = IconResolverService::CreateBitmapFromPixels(
             smallIcon,
             smallSize_,
-            ThemedUi::ListSurfaceColor(theme_));
+            ThemedUi::ListSurfaceColor(theme_),
+            true);
         HBITMAP mediumBitmap = IconResolverService::CreateBitmapFromPixels(
             mediumIcon,
             mediumSize_,
-            ThemedUi::ListSurfaceColor(theme_));
+            ThemedUi::ListSurfaceColor(theme_),
+            true);
         const int index = smallBitmap ? ImageList_Add(smallImages_, smallBitmap, nullptr) : -1;
         if (mediumBitmap) {
             ImageList_Add(mediumImages_, mediumBitmap, nullptr);
