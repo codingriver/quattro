@@ -1,4 +1,11 @@
-builtin-clock-100-seconds: changed the foreground window
-builtin-clock-100-milliseconds: changed the foreground window
-builtin-clock-125-milliseconds: changed the foreground window
-builtin-clock-150-seconds: changed the foreground window
+app-launch-locker: AppLaunchLocker.exe not found beside acceptance executable
+app-launch-locker: AppLaunchLocker.exe not found beside acceptance executable
+app-launch-locker: AppLaunchLocker.exe not found beside acceptance executable
+ad-block: AppLaunchLocker.exe not found beside acceptance executable
+quick-import-store-icon-progress: expected text not found: ???
+builtin-clock-100-seconds: expected text not found: ????
+builtin-clock-100-milliseconds: expected text not found: ????
+builtin-clock-125-seconds: expected text not found: ????
+builtin-clock-125-milliseconds: expected text not found: ????
+builtin-clock-150-seconds: expected text not found: ????
+builtin-clock-150-milliseconds: expected text not found: ????

@@ -465,6 +465,13 @@ ThemedPopupMenuResult ThemedUi::ShowPopupMenu(
         const HWND foreground = GetForegroundWindow();
         const HWND foregroundRoot = foreground ? GetAncestor(foreground, GA_ROOT) : nullptr;
         result.foregroundReady = foregroundRoot == rootOwner || ActivateWindow(rootOwner);
+        if (!result.foregroundReady) {
+            BringWindowToTop(rootOwner);
+            result.foregroundReady = ActivateWindow(rootOwner);
+        }
+        if (result.foregroundReady) {
+            SetActiveWindow(rootOwner);
+        }
     }
 
     UINT flags = 0;
@@ -617,12 +624,17 @@ int TextWidth(HWND parent, HFONT font, const std::wstring& text) {
     return size.cx;
 }
 
-void ApplySplitButtonMenuIcon(HWND button) {
+void ApplySplitButtonMenuIcon(HWND button, bool expanded = false) {
     if (!button) {
         return;
     }
     SetWindowTextW(button, L"");
-    ThemedControls::SetButtonTablerIcon(button, TablerIconId::ChevronDown);
+    ThemedControls::SetButtonTablerIcon(button, expanded ? TablerIconId::ChevronUp : TablerIconId::ChevronDown);
+}
+
+int SplitButtonMenuWidth(const Theme& theme, UINT dpi, int buttonHeight) {
+    const int minimum = ScaleDialogMetric(static_cast<int>(theme.metric(L"splitButton", L"menuWidth", 32.0f)), dpi);
+    return std::max(buttonHeight, minimum);
 }
 
 struct GroupBoxRuntime {
@@ -1581,7 +1593,8 @@ int ThemedUi::splitButtonWidth(
     if (widthMode == ThemedButtonWidthMode::Fixed && fixedWidth > 0) {
         return fixedWidth;
     }
-    return buttonWidth(text, role, size, ThemedButtonWidthMode::Text) + buttonHeight(role, size);
+    const int height = buttonHeight(role, size);
+    return buttonWidth(text, role, size, ThemedButtonWidthMode::Text) + SplitButtonMenuWidth(theme_, dpi_, height);
 }
 
 namespace {
@@ -2443,7 +2456,7 @@ ThemedSplitButton ThemedUi::SplitButton(
     bool defaultButton) const {
     const int height = buttonHeight(role, size);
     const int totalWidth = splitButtonWidth(text, role, size, widthMode, fixedWidth);
-    const int menuWidth = height;
+    const int menuWidth = SplitButtonMenuWidth(theme_, dpi_, height);
     const int primaryWidth = std::max(height, totalWidth - menuWidth);
     ThemedSplitButton split{};
     split.primary = Button(primaryId, text, x, y, role, size, ThemedButtonWidthMode::Fixed, primaryWidth, defaultButton);
@@ -2516,7 +2529,9 @@ UINT ThemedUi::ShowSplitButtonMenu(
     ThemedPopupMenuOptions options{};
     options.horizontalAlign = ThemedPopupMenuHorizontalAlign::Right;
     options.returnCommand = true;
+    ApplySplitButtonMenuIcon(menuButton, true);
     const UINT command = ShowPopupMenu(notificationWindow, menu, POINT{button.right, button.bottom}, options).command;
+    ApplySplitButtonMenuIcon(menuButton, false);
     for (const auto& runtime : runtimeItems) {
         SplitButtonMenuRuntimeItems().erase(reinterpret_cast<ULONG_PTR>(&runtime));
     }

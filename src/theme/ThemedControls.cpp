@@ -1516,15 +1516,17 @@ void DrawButton(const Theme& theme, const DRAWITEMSTRUCT* draw) {
             const COLORREF iconColor = ToColorRef(themedIconColor.a > 0.0f
                 ? themedIconColor
                 : theme.color(L"button", state, L"text"));
-            if (!::DrawTablerIcon(draw->hDC, iconRect, {}, tablerIcon, iconColor)) {
+            const bool useGeometricChevron =
+                tablerIcon == TablerIconId::ChevronDown || tablerIcon == TablerIconId::ChevronUp;
+            if (useGeometricChevron || !::DrawTablerIcon(draw->hDC, iconRect, {}, tablerIcon, iconColor)) {
                 const int halfWidth = std::max(2, iconSize / 4);
                 const int halfHeight = std::max(1, iconSize / 8);
                 const int centerX = (iconRect.left + iconRect.right) / 2;
                 const int centerY = (iconRect.top + iconRect.bottom) / 2;
                 const POINT points[]{
-                    {centerX - halfWidth, centerY - halfHeight},
-                    {centerX, centerY + halfHeight},
-                    {centerX + halfWidth, centerY - halfHeight},
+                    {centerX - halfWidth, centerY + (tablerIcon == TablerIconId::ChevronUp ? halfHeight : -halfHeight)},
+                    {centerX, centerY + (tablerIcon == TablerIconId::ChevronUp ? -halfHeight : halfHeight)},
+                    {centerX + halfWidth, centerY + (tablerIcon == TablerIconId::ChevronUp ? halfHeight : -halfHeight)},
                 };
                 const float stroke = static_cast<float>(std::max(
                     1,

@@ -1621,12 +1621,12 @@ private:
             ID_FILE_LOCK_PICK_MENU,
             L"文件",
             fieldX + fieldW + layout.controlGapX,
-            row0 + 1,
+            row0,
             ThemedButtonRole::Normal,
             ThemedButtonSize::Normal,
             ThemedButtonWidthMode::Fixed,
             pickW);
-        ui.Button(ID_FILE_LOCK_SCAN, L"检查(&C)", fieldX + fieldW + layout.controlGapX * 2 + pickW, row0 + 1, ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, scanW, true);
+        ui.Button(ID_FILE_LOCK_SCAN, L"检查(&C)", fieldX + fieldW + layout.controlGapX * 2 + pickW, row0, ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, scanW, true);
 
         const int frameTop = row0 + layout.RowStep(bh) + layout.rowGap;
         const int statusY = height_ - layout.contentInsetY - labelHeight;
@@ -3452,7 +3452,6 @@ private:
         const int rowHeight = std::max(ui.editHeight(), ui.buttonHeight());
         const int labelOffsetY = std::max(0, (rowHeight - ui.labelHeight()) / 2);
         const int fieldOffsetY = std::max(0, (rowHeight - ui.editHeight()) / 2);
-        const int buttonOffsetY = std::max(0, (rowHeight - ui.buttonHeight()) / 2);
 
         AddLabel(page, L"路径", left, pageTop + labelOffsetY, layout.labelWidth);
         filePathInput_ = AddEdit(
@@ -3470,14 +3469,14 @@ private:
             ID_FILE_LOCK_PICK_MENU,
             L"文件",
             buttonX,
-            pageTop + buttonOffsetY,
+            pageTop + fieldOffsetY,
             ThemedButtonRole::Normal,
             ThemedButtonSize::Normal,
             ThemedButtonWidthMode::Fixed,
             pickWidth);
         buttonX += pickWidth + layout.controlGapX;
         AddButton(
-            page, ID_FILE_LOCK_SCAN, L"检查(&C)", buttonX, pageTop + buttonOffsetY,
+            page, ID_FILE_LOCK_SCAN, L"检查(&C)", buttonX, pageTop + fieldOffsetY,
             ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, checkWidth, true);
 
         const int killAllWidth = ui.buttonWidth(

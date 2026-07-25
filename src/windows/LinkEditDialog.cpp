@@ -293,7 +293,7 @@ private:
             IdBrowsePathMenu,
             L"文件",
             pathBrowseButtonX,
-            y + ui.scale(1),
+            y,
             ThemedButtonRole::Normal,
             ThemedButtonSize::Normal,
             ThemedButtonWidthMode::Fixed,

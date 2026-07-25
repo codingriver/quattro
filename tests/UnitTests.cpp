@@ -1270,7 +1270,7 @@ int wmain() {
                 DestroyIcon(handle);
             }
         }
-        for (const TablerIconId extra : {TablerIconId::ChevronDown, TablerIconId::ChevronRight}) {
+        for (const TablerIconId extra : {TablerIconId::ChevronDown, TablerIconId::ChevronRight, TablerIconId::ChevronUp}) {
             HICON handle = CreateTablerIconHandle(firstInstall.appDirectory, extra);
             Check(handle != nullptr, "Embedded Tabler subset renders every extra glyph");
             if (handle) {
@@ -3230,6 +3230,8 @@ int wmain() {
     }
     Check(TablerIconGlyph(TablerIconId::ChevronDown) != L'\0',
           "Tabler manifest contains split-button chevron");
+    Check(TablerIconGlyph(TablerIconId::ChevronUp) != L'\0',
+          "Tabler manifest contains expanded split-button chevron");
     Check(TablerIconGlyph(TablerIconId::ChevronRight) != L'\0',
           "Tabler manifest contains submenu chevron");
     Check(MenuIconForToolEngine(L"clicker") == MenuIconRun, "Clicker tool menu icon");

@@ -2386,6 +2386,11 @@ void RunSplitButtonMenuScenario(
             FindWindowRequest{L"#32768", L"", GetCurrentProcessId()}, 5000);
         state.Check(popup != nullptr, scenarioName + L": popup did not appear");
         if (popup) {
+            TablerIconManifest::Id expandedIcon{};
+            state.Check(
+                ThemedControls::ButtonTablerIcon(host.split_.menu, expandedIcon) &&
+                    expandedIcon == TablerIconId::ChevronUp,
+                scenarioName + L": split-button menu segment did not switch to ChevronUp while expanded");
             BitmapCapture capture = CaptureWindowBitmap(popup);
             state.Check(capture.bitmap != nullptr, scenarioName + L": popup capture failed");
             if (capture.bitmap) {
@@ -2421,6 +2426,11 @@ void RunSplitButtonMenuScenario(
     });
     SendMessageW(hwnd, kShowSplitButtonMenuAcceptance, 0, 0);
     controller.join();
+    TablerIconManifest::Id restoredIcon{};
+    state.Check(
+        ThemedControls::ButtonTablerIcon(host.split_.menu, restoredIcon) &&
+            restoredIcon == TablerIconId::ChevronDown,
+        scenarioName + L": split-button menu segment did not restore ChevronDown after closing");
     state.Check(GetForegroundWindow() == foregroundBefore, scenarioName + L": changed the foreground window");
     state.Check(GetActiveWindow() == activeBefore, scenarioName + L": changed the active window");
     DestroyWindow(hwnd);
