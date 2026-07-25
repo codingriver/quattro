@@ -16,7 +16,7 @@
 
 namespace {
 constexpr std::uint32_t kMagic = 0x51544657;
-constexpr std::uint32_t kVersion = 1;
+constexpr std::uint32_t kVersion = 2;
 constexpr std::uint32_t kUpload = 1;
 constexpr std::uint32_t kDownload = 2;
 constexpr std::uint32_t kShow = 3;
@@ -127,7 +127,8 @@ std::vector<std::uint8_t> SerializeDownloads(const std::vector<WebDavFileRecord>
         const auto& record = records[i];
         AppendString(data, record.id); AppendString(data, record.absolutePath); AppendString(data, record.displayName);
         Append(data, record.size); AppendString(data, record.sha256); AppendString(data, record.uploadedAtUtc);
-        AppendString(data, record.uploadState); const std::uint8_t ready = record.contentReady ? 1 : 0; Append(data, ready);
+        AppendString(data, record.sourceLastWriteTimeUtc); AppendString(data, record.uploadState);
+        const std::uint8_t ready = record.contentReady ? 1 : 0; Append(data, ready);
     }
     return data;
 }
@@ -142,7 +143,7 @@ std::vector<std::uint8_t> SerializeShow() {
 bool Deserialize(const std::vector<std::uint8_t>& data, Request& request) {
     std::size_t offset = 0; std::uint32_t magic = 0, version = 0, count = 0;
     if (!Read(data, offset, magic) || !Read(data, offset, version) || !Read(data, offset, request.kind) ||
-        !Read(data, offset, count) || magic != kMagic || version != kVersion || count > kMaxItems) return false;
+        !Read(data, offset, count) || magic != kMagic || (version != 1 && version != kVersion) || count > kMaxItems) return false;
     if (request.kind == kUpload) {
         for (std::uint32_t i = 0; i < count; ++i) { std::wstring path; if (!ReadString(data, offset, path)) return false; request.uploads.emplace_back(path); }
     } else if (request.kind == kDownload) {
@@ -150,7 +151,9 @@ bool Deserialize(const std::vector<std::uint8_t>& data, Request& request) {
             WebDavFileRecord record; std::uint8_t ready = 0;
             if (!ReadString(data, offset, record.id) || !ReadString(data, offset, record.absolutePath) ||
                 !ReadString(data, offset, record.displayName) || !Read(data, offset, record.size) ||
-                !ReadString(data, offset, record.sha256) || !ReadString(data, offset, record.uploadedAtUtc) ||
+                !ReadString(data, offset, record.sha256) || !ReadString(data, offset, record.uploadedAtUtc)) return false;
+            if (version >= 2 && !ReadString(data, offset, record.sourceLastWriteTimeUtc)) return false;
+            if (
                 !ReadString(data, offset, record.uploadState) || !Read(data, offset, ready)) return false;
             record.contentReady = ready != 0; request.downloads.push_back(std::move(record));
         }

@@ -1986,7 +1986,8 @@ private:
             const auto& layout = ui.layout();
             int y = ui.contentTop();
             const int labelWidth = form.labelWidthForTexts({
-                L"文件名：", L"文件大小：", L"远程更新时间：", L"本地修改时间：", L"上传状态："});
+                L"文件名：", L"文件大小：", L"远程更新时间：", L"远端记录时间：",
+                L"本地修改时间：", L"本地状态：", L"上传状态："});
             const int valueX = ui.contentLeft() + labelWidth + layout.labelGap;
             const int valueWidth = ui.contentWidth() - labelWidth - layout.labelGap;
             auto addValueRow = [&](const std::wstring& label, const std::wstring& value) {
@@ -2003,8 +2004,11 @@ private:
             addValueRow(L"文件大小：", healthy ? FormatFileSize(record_.size) : L"—");
             const std::wstring uploadedAtLocal = WebDavFileService::FormatUploadedAtLocal(record_.uploadedAtUtc);
             addValueRow(L"远程更新时间：", healthy && !uploadedAtLocal.empty() ? uploadedAtLocal : L"获取失败");
+            const std::wstring sourceModifiedAt = WebDavFileService::FormatSourceModifiedAtLocal(record_);
+            addValueRow(L"远端记录时间：", healthy && !sourceModifiedAt.empty() ? sourceModifiedAt : L"-");
             const std::wstring localModifiedAt = WebDavFileService::FormatLocalModifiedAt(record_.absolutePath);
             addValueRow(L"本地修改时间：", localModifiedAt.empty() ? L"-" : localModifiedAt);
+            addValueRow(L"本地状态：", WebDavFileService::LocalSyncStatusText(record_));
             addValueRow(L"上传状态：", healthy ? record_.uploadState +
                 (record_.contentReady ? L" · 内容可用" : L" · 内容不可用") : healthText);
 
@@ -2162,6 +2166,7 @@ private:
         return left.id == right.id && left.absolutePath == right.absolutePath &&
             left.displayName == right.displayName && left.size == right.size &&
             left.sha256 == right.sha256 && left.uploadedAtUtc == right.uploadedAtUtc &&
+            left.sourceLastWriteTimeUtc == right.sourceLastWriteTimeUtc &&
             left.uploadState == right.uploadState && left.contentReady == right.contentReady &&
             left.health == right.health && left.recordError == right.recordError;
     }
@@ -2180,9 +2185,9 @@ private:
         return ThemedTableRow{
             RowKey(record.id),
             {ThemedTableCell{record.displayName},
-             ThemedTableCell{healthy ? record.absolutePath : record.recordError},
              ThemedTableCell{healthy ? FormatFileSize(record.size) : L"—"},
-             ThemedTableCell{healthy ? UploadedAtText(record) : HealthText(record)}, action},
+             ThemedTableCell{healthy ? UploadedAtText(record) : HealthText(record)},
+             ThemedTableCell{WebDavFileService::LocalSyncStatusText(record)}, action},
             checkedIds_.contains(record.id),
             !deletingIds_.contains(record.id)};
     }
@@ -2416,6 +2421,7 @@ private:
         appended.size = 2048;
         appended.sha256 = std::wstring(64, L'3');
         appended.uploadedAtUtc = L"2026-07-21T14:36:00.000Z";
+        appended.sourceLastWriteTimeUtc = L"2026-07-21T14:35:59.0000000Z";
         auto batch = std::make_unique<BatchResult>();
         batch->generation = refreshGeneration_;
         batch->records = {updated, appended};
@@ -2842,18 +2848,18 @@ private:
 
             const int top = ui.nextRowY(actionY, compactHeight);
             RECT frame{ui.contentLeft(), top, ui.contentLeft()+ui.contentWidth(), ui.clientHeight()-layout.contentInsetY};
-            const int fileNameWidth = ui.tableColumnWidth({L"文件名", L"quattro-file-name.ext"});
             const int fileSizeWidth = ui.tableColumnWidth({L"大小", L"999.99 GB"});
             const int uploadTimeWidth = ui.tableColumnWidth({L"上传时间", L"2000-00-00 00:00:00"});
+            const int statusWidth = ui.tableColumnWidth({L"本地状态", L"本地不存在", L"本地较新"});
             const int actionWidth = ui.buttonWidth(
                 L"…", ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Text) + ui.denseGap();
             ThemedTableOptions tableOptions{}; tableOptions.checkable = true; tableOptions.allowColumnResize = true;
             tableOptions.reserveScrollBarGutter = true;
             table_ = ui.Table(430, frame, {
-                {L"name", L"文件名", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, fileNameWidth},
-                {L"path", L"系统绝对路径", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Remaining},
+                {L"name", L"文件名", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Remaining},
                 {L"size", L"大小", ThemedTableColumnAlign::End, ThemedTableColumnWidth::Fixed, fileSizeWidth},
                 {L"time", L"上传时间", ThemedTableColumnAlign::End, ThemedTableColumnWidth::Fixed, uploadTimeWidth},
+                {L"status", L"本地状态", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, statusWidth},
                 {L"action", L"操作", ThemedTableColumnAlign::Center, ThemedTableColumnWidth::Fixed, actionWidth},
             }, tableOptions);
             ThemedTooltipOptions rowTooltipOptions{};
@@ -2876,6 +2882,7 @@ private:
                 sample.size = 5 * 1024;
                 sample.sha256 = L"8df94ef5e2ab2d8ee2f6fcf011c6391b41e69d5d7a2e966ac4dd094fcf533c2e";
                 sample.uploadedAtUtc = L"2026-07-21T08:31:35.872Z";
+                sample.sourceLastWriteTimeUtc = L"2026-07-21T08:31:35.8720000Z";
                 records_ = {std::move(sample)};
                 PopulateTable();
                 PostMessageW(hwnd_, WM_WEBDAV_FILE_SHOW_TEST_DETAILS, 0, 0);

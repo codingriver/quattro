@@ -1584,6 +1584,29 @@ int ThemedUi::splitButtonWidth(
     return buttonWidth(text, role, size, ThemedButtonWidthMode::Text) + buttonHeight(role, size);
 }
 
+namespace {
+std::wstring PathPickerKindButtonText(CommonPathPickerKind kind) {
+    return kind == CommonPathPickerKind::Folder ? L"文件夹" : L"文件";
+}
+
+std::wstring PathPickerKindMenuText(CommonPathPickerKind kind) {
+    return kind == CommonPathPickerKind::Folder ? L"选择文件夹" : L"选择文件";
+}
+
+CommonPathPickerKind OppositePathPickerKind(CommonPathPickerKind kind) {
+    return kind == CommonPathPickerKind::Folder ? CommonPathPickerKind::File : CommonPathPickerKind::Folder;
+}
+}
+
+int ThemedUi::pathPickerSplitButtonWidth(
+    CommonPathPickerKind defaultKind,
+    ThemedButtonRole role,
+    ThemedButtonSize size,
+    ThemedButtonWidthMode widthMode,
+    int fixedWidth) const {
+    return splitButtonWidth(PathPickerKindButtonText(defaultKind), role, size, widthMode, fixedWidth);
+}
+
 int ThemedUi::textWidth(const std::wstring& text) const {
     return TextWidth(parent_, font_, text);
 }
@@ -2427,6 +2450,34 @@ ThemedSplitButton ThemedUi::SplitButton(
     split.menu = Button(menuId, L"", x + primaryWidth, y, role, size, ThemedButtonWidthMode::Fixed, menuWidth);
     ApplySplitButtonMenuIcon(split.menu);
     return split;
+}
+
+ThemedPathPickerSplitButton ThemedUi::PathPickerSplitButton(
+    const ThemedPathPickerSplitButtonOptions& options) const {
+    ThemedPathPickerSplitButton picker{};
+    picker.primaryKind = options.defaultKind;
+    picker.menuKind = OppositePathPickerKind(options.defaultKind);
+    picker.split = SplitButton(
+        options.primaryId,
+        options.menuId,
+        PathPickerKindButtonText(options.defaultKind),
+        options.x,
+        options.y,
+        options.role,
+        options.size,
+        options.widthMode,
+        options.fixedWidth,
+        options.defaultButton);
+    SetControlSurface(picker.split.primary, options.surface);
+    SetControlSurface(picker.split.menu, options.surface);
+    return picker;
+}
+
+std::vector<ThemedSplitButtonMenuItem> ThemedUi::PathPickerSplitButtonMenuItems(
+    const ThemedPathPickerSplitButton& picker,
+    int menuCommandId) const {
+    return {{menuCommandId, PathPickerKindMenuText(picker.menuKind), true,
+        picker.menuKind == CommonPathPickerKind::Folder ? TablerIconId::Folder : TablerIconId{}}};
 }
 
 UINT ThemedUi::ShowSplitButtonMenu(

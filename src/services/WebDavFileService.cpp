@@ -13,6 +13,7 @@
 #include <iomanip>
 #include <sstream>
 #include <chrono>
+#include <cwctype>
 
 namespace {
 std::wstring JsonEscape(const std::wstring& value) {
@@ -43,6 +44,93 @@ std::wstring NowUtc() {
     wchar_t buffer[64]{};
     swprintf_s(buffer, L"%04u-%02u-%02uT%02u:%02u:%02u.%03uZ", time.wYear, time.wMonth, time.wDay,
         time.wHour, time.wMinute, time.wSecond, time.wMilliseconds);
+    return buffer;
+}
+
+bool ParseUtcFileTime(const std::wstring& value, FILETIME& fileTime) {
+    fileTime = {};
+    const std::wstring text = Trim(value);
+    int year = 0, month = 0, day = 0, hour = 0, minute = 0, second = 0;
+    int offset = 0;
+    if (swscanf_s(text.c_str(), L"%4d-%2d-%2dT%2d:%2d:%2d%n",
+            &year, &month, &day, &hour, &minute, &second, &offset) != 6) {
+        return false;
+    }
+    std::uint64_t fractionalTicks = 0;
+    if (offset < static_cast<int>(text.size()) && text[static_cast<std::size_t>(offset)] == L'.') {
+        ++offset;
+        std::wstring digits;
+        while (offset < static_cast<int>(text.size()) &&
+               std::iswdigit(text[static_cast<std::size_t>(offset)]) &&
+               digits.size() < 7) {
+            digits.push_back(text[static_cast<std::size_t>(offset)]);
+            ++offset;
+        }
+        while (offset < static_cast<int>(text.size()) &&
+               std::iswdigit(text[static_cast<std::size_t>(offset)])) {
+            ++offset;
+        }
+        while (digits.size() < 7) digits.push_back(L'0');
+        if (!digits.empty()) fractionalTicks = std::stoull(digits);
+    }
+    if (offset >= static_cast<int>(text.size()) || text[static_cast<std::size_t>(offset)] != L'Z' ||
+        offset + 1 != static_cast<int>(text.size())) {
+        return false;
+    }
+    SYSTEMTIME utc{};
+    utc.wYear = static_cast<WORD>(year);
+    utc.wMonth = static_cast<WORD>(month);
+    utc.wDay = static_cast<WORD>(day);
+    utc.wHour = static_cast<WORD>(hour);
+    utc.wMinute = static_cast<WORD>(minute);
+    utc.wSecond = static_cast<WORD>(second);
+    FILETIME base{};
+    if (!SystemTimeToFileTime(&utc, &base)) return false;
+    ULARGE_INTEGER ticks{};
+    ticks.LowPart = base.dwLowDateTime;
+    ticks.HighPart = base.dwHighDateTime;
+    ticks.QuadPart += fractionalTicks;
+    fileTime.dwLowDateTime = ticks.LowPart;
+    fileTime.dwHighDateTime = ticks.HighPart;
+    return true;
+}
+
+std::wstring FormatUtcFileTime(const FILETIME& fileTime) {
+    SYSTEMTIME utc{};
+    if (!FileTimeToSystemTime(&fileTime, &utc)) return {};
+    ULARGE_INTEGER ticks{};
+    ticks.LowPart = fileTime.dwLowDateTime;
+    ticks.HighPart = fileTime.dwHighDateTime;
+    const std::uint64_t fractionalTicks = ticks.QuadPart % 10000000ull;
+    wchar_t buffer[80]{};
+    swprintf_s(buffer, L"%04u-%02u-%02uT%02u:%02u:%02u.%07lluZ",
+        utc.wYear, utc.wMonth, utc.wDay, utc.wHour, utc.wMinute, utc.wSecond,
+        static_cast<unsigned long long>(fractionalTicks));
+    return buffer;
+}
+
+bool LocalFileLastWriteTime(const std::wstring& absolutePath, FILETIME& fileTime) {
+    const std::wstring path = Trim(absolutePath);
+    if (path.empty()) return false;
+    WIN32_FILE_ATTRIBUTE_DATA attributes{};
+    if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &attributes) ||
+        (attributes.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+        return false;
+    }
+    fileTime = attributes.ftLastWriteTime;
+    return true;
+}
+
+std::wstring FormatFileTimeLocal(const FILETIME& utcFileTime) {
+    FILETIME localFile{};
+    SYSTEMTIME local{};
+    if (!FileTimeToLocalFileTime(&utcFileTime, &localFile) ||
+        !FileTimeToSystemTime(&localFile, &local)) {
+        return {};
+    }
+    wchar_t buffer[32]{};
+    swprintf_s(buffer, L"%04u-%02u-%02u %02u:%02u:%02u",
+        local.wYear, local.wMonth, local.wDay, local.wHour, local.wMinute, local.wSecond);
     return buffer;
 }
 
@@ -80,48 +168,32 @@ std::wstring WebDavFileService::FilesDirectory(const AppConfig& config) {
 }
 
 std::wstring WebDavFileService::FormatUploadedAtLocal(const std::wstring& uploadedAtUtc) {
-    SYSTEMTIME utc{};
-    wchar_t suffix = L'\0';
-    const int matched = swscanf_s(
-        uploadedAtUtc.c_str(),
-        L"%4hu-%2hu-%2huT%2hu:%2hu:%2hu.%3hu%c",
-        &utc.wYear, &utc.wMonth, &utc.wDay,
-        &utc.wHour, &utc.wMinute, &utc.wSecond, &utc.wMilliseconds,
-        &suffix, 1u);
-    if (matched != 8 || suffix != L'Z') return {};
-    FILETIME validation{};
-    if (!SystemTimeToFileTime(&utc, &validation)) return {};
-    DYNAMIC_TIME_ZONE_INFORMATION timeZone{};
-    GetDynamicTimeZoneInformation(&timeZone);
-    SYSTEMTIME local{};
-    if (!SystemTimeToTzSpecificLocalTimeEx(&timeZone, &utc, &local)) return {};
-    wchar_t buffer[32]{};
-    swprintf_s(buffer, L"%04u-%02u-%02u %02u:%02u:%02u",
-        local.wYear, local.wMonth, local.wDay, local.wHour, local.wMinute, local.wSecond);
-    return buffer;
+    FILETIME fileTime{};
+    return ParseUtcFileTime(uploadedAtUtc, fileTime) ? FormatFileTimeLocal(fileTime) : std::wstring{};
+}
+
+std::wstring WebDavFileService::FormatSourceModifiedAtLocal(const WebDavFileRecord& record) {
+    return FormatUploadedAtLocal(record.sourceLastWriteTimeUtc);
 }
 
 std::wstring WebDavFileService::FormatLocalModifiedAt(const std::wstring& absolutePath) {
-    const std::wstring path = Trim(absolutePath);
-    if (path.empty()) return {};
+    FILETIME fileTime{};
+    return LocalFileLastWriteTime(absolutePath, fileTime) ? FormatFileTimeLocal(fileTime) : std::wstring{};
+}
 
-    WIN32_FILE_ATTRIBUTE_DATA attributes{};
-    if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &attributes) ||
-        (attributes.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
-        return {};
-    }
-
-    FILETIME localFile{};
-    SYSTEMTIME local{};
-    if (!FileTimeToLocalFileTime(&attributes.ftLastWriteTime, &localFile) ||
-        !FileTimeToSystemTime(&localFile, &local)) {
-        return {};
-    }
-
-    wchar_t buffer[32]{};
-    swprintf_s(buffer, L"%04u-%02u-%02u %02u:%02u:%02u",
-        local.wYear, local.wMonth, local.wDay, local.wHour, local.wMinute, local.wSecond);
-    return buffer;
+std::wstring WebDavFileService::LocalSyncStatusText(const WebDavFileRecord& record) {
+    if (record.health == WebDavFileRecordHealth::MissingMetadata) return L"Meta 缺失";
+    if (record.health == WebDavFileRecordHealth::InvalidMetadata) return L"Meta 无效";
+    if (record.health == WebDavFileRecordHealth::MetadataReadFailed) return L"Meta 读取失败";
+    if (!record.contentReady || ToLower(record.uploadState) != L"complete") return L"未完成";
+    FILETIME remoteWrite{};
+    if (!ParseUtcFileTime(record.sourceLastWriteTimeUtc, remoteWrite)) return L"无法判断";
+    FILETIME localWrite{};
+    if (!LocalFileLastWriteTime(record.absolutePath, localWrite)) return L"本地不存在";
+    const int comparison = CompareFileTime(&localWrite, &remoteWrite);
+    if (comparison > 0) return L"本地较新";
+    if (comparison < 0) return L"远端较新";
+    return L"相同";
 }
 
 std::wstring WebDavFileService::FormatRecordTooltip(const WebDavFileRecord& record) {
@@ -131,8 +203,14 @@ std::wstring WebDavFileService::FormatRecordTooltip(const WebDavFileRecord& reco
     }
     const std::wstring uploadedAt = FormatUploadedAtLocal(record.uploadedAtUtc);
     if (uploadedAt.empty()) return L"获取失败";
+    const std::wstring sourceModifiedAt = FormatSourceModifiedAtLocal(record);
+    const std::wstring localModifiedAt = FormatLocalModifiedAt(record.absolutePath);
     return record.displayName + L"  ·  " + FormatRecordSize(record.size) + L"\n" +
-        record.absolutePath + L"\n上传时间：" + uploadedAt;
+        L"本地状态：" + LocalSyncStatusText(record) + L"\n" +
+        L"上传时间：" + uploadedAt + L"\n" +
+        L"远端记录时间：" + (sourceModifiedAt.empty() ? L"-" : sourceModifiedAt) + L"\n" +
+        L"本地修改时间：" + (localModifiedAt.empty() ? L"-" : localModifiedAt) + L"\n" +
+        L"路径：" + record.absolutePath;
 }
 
 bool WebDavFileService::IsCollectionSelfResponse(const std::wstring& remotePath, const WebDavRemoteFile& entry) {
@@ -268,10 +346,11 @@ bool WebDavFileService::Sha256(const std::filesystem::path& path, std::wstring& 
 }
 
 std::wstring WebDavFileService::MetadataJson(const WebDavFileRecord& record) const {
-    return L"{\"schemaVersion\":2,\"absolutePath\":\"" + JsonEscape(record.absolutePath) +
+    return L"{\"schemaVersion\":3,\"absolutePath\":\"" + JsonEscape(record.absolutePath) +
         L"\",\"displayName\":\"" + JsonEscape(record.displayName) + L"\",\"size\":" +
         std::to_wstring(record.size) + L",\"sha256\":\"" + record.sha256 + L"\",\"uploadedAtUtc\":\"" +
-        JsonEscape(record.uploadedAtUtc) + L"\",\"contentName\":\"content\",\"uploadState\":\"" +
+        JsonEscape(record.uploadedAtUtc) + L"\",\"sourceLastWriteTimeUtc\":\"" +
+        JsonEscape(record.sourceLastWriteTimeUtc) + L"\",\"contentName\":\"content\",\"uploadState\":\"" +
         record.uploadState + L"\",\"contentReady\":" + (record.contentReady ? L"true" : L"false") + L"}";
 }
 
@@ -284,6 +363,7 @@ bool WebDavFileService::ReadMetadata(const std::wstring& text, WebDavFileRecord&
     record.absolutePath = path->stringValue; record.displayName = root.get(L"displayName") ? root.get(L"displayName")->stringOr() : std::filesystem::path(record.absolutePath).filename().wstring();
     record.size = static_cast<std::uint64_t>(size->numberValue); record.sha256 = hash->stringValue;
     record.uploadedAtUtc = root.get(L"uploadedAtUtc") ? root.get(L"uploadedAtUtc")->stringOr() : L"";
+    record.sourceLastWriteTimeUtc = root.get(L"sourceLastWriteTimeUtc") ? root.get(L"sourceLastWriteTimeUtc")->stringOr() : L"";
     record.uploadState = root.get(L"uploadState") ? root.get(L"uploadState")->stringOr(L"complete") : L"complete";
     record.contentReady = root.get(L"contentReady") ? root.get(L"contentReady")->boolOr(true) : true;
     record.id = RecordId(CanonicalPath(record.absolutePath)); return true;
@@ -456,6 +536,9 @@ WebDavFileOperationResult WebDavFileService::Upload(const std::filesystem::path&
     if (!std::filesystem::is_regular_file(localPath, ec)) { result.message = L"不是普通文件。"; return result; }
     std::wstring password, error; if (!LoadPassword(password, error)) { result.message = error; return result; }
     WebDavFileRecord record; record.absolutePath = CanonicalPath(localPath); record.displayName = localPath.filename().wstring(); record.id = RecordId(record.absolutePath);
+    FILETIME sourceWrite{};
+    if (!LocalFileLastWriteTime(record.absolutePath, sourceWrite)) { result.message = L"无法读取本地文件修改时间。"; return result; }
+    record.sourceLastWriteTimeUtc = FormatUtcFileTime(sourceWrite);
     record.size = std::filesystem::file_size(localPath, ec); if (ec || !Sha256(localPath, record.sha256, error)) { result.message = ec ? L"无法读取文件大小。" : error; return result; }
     record.uploadedAtUtc = NowUtc(); record.uploadState = L"pending"; record.contentReady = false;
     if (progress && !progress(WebDavFileTransferPhase::Preparing, 0, record.size)) { result.message = L"上传已停止。"; return result; }
@@ -471,6 +554,14 @@ WebDavFileOperationResult WebDavFileService::Upload(const std::filesystem::path&
     const bool contentOk = client.UploadFile(localPath, WebDavClient::CombineRemotePath(base, L"content"),
         [&](std::uint64_t transferred, std::uint64_t total) { return !progress || progress(WebDavFileTransferPhase::UploadingContent, transferred, total); }, stopToken);
     if (!contentOk) { std::filesystem::remove(meta, ec); result.message = client.lastError(); return result; }
+    FILETIME finalWrite{};
+    const std::uint64_t finalSize = std::filesystem::file_size(localPath, ec);
+    if (ec || !LocalFileLastWriteTime(record.absolutePath, finalWrite) ||
+        finalSize != record.size || CompareFileTime(&finalWrite, &sourceWrite) != 0) {
+        std::filesystem::remove(meta, ec);
+        result.message = L"上传期间本地文件发生变化，请重新上传。";
+        return result;
+    }
     record.uploadState = L"complete"; record.contentReady = true;
     if (progress && !progress(WebDavFileTransferPhase::FinalizingMeta, 0, 0)) { std::filesystem::remove(meta, ec); result.message = L"上传已停止。"; return result; }
     if (!SaveUtf8(meta, MetadataJson(record)) || !client.UploadFile(meta, WebDavClient::CombineRemotePath(base, L"metadata.json"),
@@ -493,6 +584,15 @@ WebDavFileOperationResult WebDavFileService::Download(const WebDavFileRecord& re
     if (progress && !progress(WebDavFileTransferPhase::Verifying, 0, 0)) { std::filesystem::remove(temp, ec); result.message = L"下载已停止。"; return result; }
     std::wstring actual; if (std::filesystem::file_size(temp, ec) != record.size || !Sha256(temp, actual, error) || ToLower(actual) != ToLower(record.sha256)) { std::filesystem::remove(temp, ec); result.message = L"下载文件校验失败。"; return result; }
     std::filesystem::remove(target, ec); std::filesystem::rename(temp, target, ec); if (ec) { result.message = L"替换本地文件失败。"; return result; }
+    FILETIME sourceWrite{};
+    if (!record.sourceLastWriteTimeUtc.empty() && ParseUtcFileTime(record.sourceLastWriteTimeUtc, sourceWrite)) {
+        HANDLE file = CreateFileW(target.c_str(), FILE_WRITE_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (file != INVALID_HANDLE_VALUE) {
+            SetFileTime(file, nullptr, nullptr, &sourceWrite);
+            CloseHandle(file);
+        }
+    }
     result.ok = true; result.record = record; result.message = L"下载完成。"; return result;
 }
 

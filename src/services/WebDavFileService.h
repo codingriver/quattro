@@ -26,6 +26,7 @@ struct WebDavFileRecord {
     std::uint64_t size = 0;
     std::wstring sha256;
     std::wstring uploadedAtUtc;
+    std::wstring sourceLastWriteTimeUtc;
     std::wstring uploadState = L"complete";
     bool contentReady = true;
     WebDavFileRecordHealth health = WebDavFileRecordHealth::Healthy;
@@ -87,7 +88,9 @@ public:
     static std::wstring RecordId(const std::wstring& canonicalPath);
     static std::wstring FilesDirectory(const AppConfig& config);
     static std::wstring FormatUploadedAtLocal(const std::wstring& uploadedAtUtc);
+    static std::wstring FormatSourceModifiedAtLocal(const WebDavFileRecord& record);
     static std::wstring FormatLocalModifiedAt(const std::wstring& absolutePath);
+    static std::wstring LocalSyncStatusText(const WebDavFileRecord& record);
     static std::wstring FormatRecordTooltip(const WebDavFileRecord& record);
     static bool IsCollectionSelfResponse(const std::wstring& remotePath, const WebDavRemoteFile& entry);
     static bool IsRecordDirectoryName(const std::wstring& name);

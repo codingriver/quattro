@@ -292,6 +292,41 @@ bool CommonFileDialogSupportsNativeMode(CommonFileDialogMode mode) {
     return mode == CommonFileDialogMode::FileOnly || mode == CommonFileDialogMode::FolderOnly;
 }
 
+CommonFileDialogOptions BuildCommonPathPickerDialogOptions(
+    CommonPathPickerKind kind,
+    const CommonPathPickerDialogOptions& options) {
+    CommonFileDialogOptions dialogOptions{};
+    dialogOptions.owner = options.owner;
+    dialogOptions.defaultPath = options.defaultPath;
+    switch (kind) {
+    case CommonPathPickerKind::Folder:
+        dialogOptions.mode = CommonFileDialogMode::FolderOnly;
+        dialogOptions.context = options.folderContext.empty() ? L"文件夹选择" : options.folderContext;
+        dialogOptions.title = options.folderTitle;
+        dialogOptions.forceFileSystem = options.folderForceFileSystem;
+        dialogOptions.allowShellFolderParsingName = options.folderAllowShellFolderParsingName;
+        break;
+    case CommonPathPickerKind::File:
+    default:
+        dialogOptions.mode = CommonFileDialogMode::FileOnly;
+        dialogOptions.context = options.fileContext.empty() ? L"文件选择" : options.fileContext;
+        dialogOptions.title = options.fileTitle;
+        dialogOptions.legacyFilter = options.fileFilter;
+        break;
+    }
+    return dialogOptions;
+}
+
+bool ShowCommonPathPickerDialog(
+    CommonPathPickerKind kind,
+    const CommonPathPickerDialogOptions& options,
+    CommonPathPickerResult& result) {
+    result = {};
+    result.kind = kind;
+    const CommonFileDialogOptions dialogOptions = BuildCommonPathPickerDialogOptions(kind, options);
+    return ShowCommonFileDialog(dialogOptions, result.dialog);
+}
+
 bool ShowCommonFileDialog(const CommonFileDialogOptions& options, CommonFileDialogResult& result) {
     result = {};
     LARGE_INTEGER frequency{};

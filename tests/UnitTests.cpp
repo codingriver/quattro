@@ -689,14 +689,66 @@ int wmain() {
         "WebDAV upload time rejects invalid UTC metadata");
     Check(WebDavFileService::FormatLocalModifiedAt(L"C:\\quattro\\definitely-missing-file.txt").empty(),
         "WebDAV local modified time returns empty for missing file");
+    Check(WebDavFileService::LocalSyncStatusText(WebDavFileRecord{}) == L"无法判断",
+        "WebDAV sync status treats old metadata without source modified time as unknown");
+    {
+        const std::filesystem::path syncRoot = std::filesystem::temp_directory_path() /
+            (L"quattro_unit_webdav_sync_" + std::to_wstring(GetCurrentProcessId()));
+        std::filesystem::create_directories(syncRoot);
+        const std::filesystem::path syncFile = syncRoot / L"report.txt";
+        {
+            std::ofstream stream(syncFile, std::ios::binary | std::ios::trunc);
+            stream << "unit";
+        }
+        SYSTEMTIME utc{};
+        utc.wYear = 2026;
+        utc.wMonth = 7;
+        utc.wDay = 21;
+        utc.wHour = 14;
+        utc.wMinute = 35;
+        utc.wSecond = 10;
+        FILETIME base{};
+        Check(SystemTimeToFileTime(&utc, &base), "WebDAV sync status builds test file time");
+        auto setWriteTime = [&](FILETIME value) {
+            HANDLE file = CreateFileW(syncFile.c_str(), FILE_WRITE_ATTRIBUTES,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+            const bool ok = file != INVALID_HANDLE_VALUE && SetFileTime(file, nullptr, nullptr, &value);
+            if (file != INVALID_HANDLE_VALUE) CloseHandle(file);
+            return ok;
+        };
+        Check(setWriteTime(base), "WebDAV sync status sets equal local write time");
+        WebDavFileRecord syncRecord;
+        syncRecord.displayName = L"report.txt";
+        syncRecord.absolutePath = WebDavFileService::CanonicalPath(syncFile);
+        syncRecord.size = 4;
+        syncRecord.uploadedAtUtc = L"2026-07-21T14:35:11.000Z";
+        syncRecord.sourceLastWriteTimeUtc = L"2026-07-21T14:35:10.0000000Z";
+        Check(WebDavFileService::LocalSyncStatusText(syncRecord) == L"相同",
+            "WebDAV sync status detects equal local and remote modified time");
+        ULARGE_INTEGER ticks{};
+        ticks.LowPart = base.dwLowDateTime;
+        ticks.HighPart = base.dwHighDateTime;
+        ticks.QuadPart += 10000000ull;
+        FILETIME newer{ticks.LowPart, ticks.HighPart};
+        Check(setWriteTime(newer) && WebDavFileService::LocalSyncStatusText(syncRecord) == L"本地较新",
+            "WebDAV sync status detects newer local file");
+        ticks.QuadPart -= 20000000ull;
+        FILETIME older{ticks.LowPart, ticks.HighPart};
+        Check(setWriteTime(older) && WebDavFileService::LocalSyncStatusText(syncRecord) == L"远端较新",
+            "WebDAV sync status detects newer remote record");
+        std::filesystem::remove_all(syncRoot);
+    }
     WebDavFileRecord tooltipRecord;
     tooltipRecord.displayName = L"报告.txt";
     tooltipRecord.absolutePath = L"C:\\资料\\报告.txt";
     tooltipRecord.size = 2048;
     tooltipRecord.uploadedAtUtc = L"2026-07-21T14:35:10.872Z";
+    tooltipRecord.sourceLastWriteTimeUtc = L"2026-07-21T14:35:10.8720000Z";
     Check(WebDavFileService::FormatRecordTooltip(tooltipRecord) ==
-            L"报告.txt  ·  2 KB\nC:\\资料\\报告.txt\n上传时间：" + localUploadTime,
-        "WebDAV row tooltip formats name, size, full path, and local upload time");
+            L"报告.txt  ·  2 KB\n本地状态：本地不存在\n上传时间：" + localUploadTime +
+            L"\n远端记录时间：" + localUploadTime + L"\n本地修改时间：-\n路径：C:\\资料\\报告.txt",
+        "WebDAV row tooltip formats status, times, full path, and local upload time");
     tooltipRecord.health = WebDavFileRecordHealth::MissingMetadata;
     Check(WebDavFileService::FormatRecordTooltip(tooltipRecord) == L"获取失败",
         "WebDAV row tooltip hides internal metadata errors behind the failure text");
@@ -713,6 +765,7 @@ int wmain() {
         first.size = 123;
         first.sha256 = std::wstring(64, L'1');
         first.uploadedAtUtc = L"2026-07-21T14:35:10.000Z";
+        first.sourceLastWriteTimeUtc = L"2026-07-21T14:35:09.0000000Z";
         WebDavFileRecord second = first;
         second.id = std::wstring(64, L'b');
         second.absolutePath = L"\\\\server\\share\\数据.bin";
@@ -728,6 +781,7 @@ int wmain() {
         std::wstring refreshedAt;
         Check(cache.Load(cachedRecords, refreshedAt) && cachedRecords.size() == 1 &&
                 cachedRecords[0].absolutePath == first.absolutePath &&
+                cachedRecords[0].sourceLastWriteTimeUtc == first.sourceLastWriteTimeUtc &&
                 refreshedAt == L"2026-07-21T14:36:00.000Z",
             "WebDAV file index cache loads complete records and refresh time");
         Check(cache.Upsert(second), "WebDAV file index cache upserts records");

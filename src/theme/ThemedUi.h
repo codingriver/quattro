@@ -3,6 +3,7 @@
 #include "DialogLayout.h"
 #include "ThemedControls.h"
 #include "TablerIconManifest.h"
+#include "../common/FileDialog.h"
 
 #include <string>
 #include <string_view>
@@ -554,6 +555,26 @@ struct ThemedSplitButtonMenuItem {
     TablerIconId icon{};
 };
 
+struct ThemedPathPickerSplitButton {
+    ThemedSplitButton split{};
+    CommonPathPickerKind primaryKind = CommonPathPickerKind::File;
+    CommonPathPickerKind menuKind = CommonPathPickerKind::Folder;
+};
+
+struct ThemedPathPickerSplitButtonOptions {
+    int primaryId = 0;
+    int menuId = 0;
+    int x = 0;
+    int y = 0;
+    CommonPathPickerKind defaultKind = CommonPathPickerKind::File;
+    ThemedButtonRole role = ThemedButtonRole::Normal;
+    ThemedButtonSize size = ThemedButtonSize::Normal;
+    ThemedButtonWidthMode widthMode = ThemedButtonWidthMode::Fixed;
+    int fixedWidth = 0;
+    bool defaultButton = false;
+    ThemedControlSurface surface = ThemedControlSurface::Panel;
+};
+
 enum class ThemedEditMode {
     SingleLine,
     MultiLine,
@@ -755,6 +776,12 @@ public:
         ThemedButtonSize size,
         ThemedButtonWidthMode widthMode,
         int fixedWidth = 0) const;
+    int pathPickerSplitButtonWidth(
+        CommonPathPickerKind defaultKind = CommonPathPickerKind::File,
+        ThemedButtonRole role = ThemedButtonRole::Normal,
+        ThemedButtonSize size = ThemedButtonSize::Normal,
+        ThemedButtonWidthMode widthMode = ThemedButtonWidthMode::Text,
+        int fixedWidth = 0) const;
     int textWidth(const std::wstring& text) const;
     int comboBoxWidth(const std::vector<std::wstring>& items) const;
     int tableColumnWidth(const std::wstring& widestText) const;
@@ -855,6 +882,10 @@ public:
         ThemedButtonWidthMode widthMode = ThemedButtonWidthMode::Fixed,
         int fixedWidth = 0,
         bool defaultButton = false) const;
+    ThemedPathPickerSplitButton PathPickerSplitButton(const ThemedPathPickerSplitButtonOptions& options) const;
+    std::vector<ThemedSplitButtonMenuItem> PathPickerSplitButtonMenuItems(
+        const ThemedPathPickerSplitButton& picker,
+        int menuCommandId) const;
     UINT ShowSplitButtonMenu(
         HWND notificationWindow,
         HWND menuButton,

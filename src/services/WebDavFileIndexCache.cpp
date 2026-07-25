@@ -64,6 +64,7 @@ bool ParseRecord(const JsonValue& value, WebDavFileRecord& record) {
     record.displayName = name ? name->stringOr() : std::filesystem::path(record.absolutePath).filename().wstring();
     record.size = static_cast<std::uint64_t>(size->numberValue); record.sha256 = hash->stringValue;
     record.uploadedAtUtc = value.get(L"uploadedAtUtc") ? value.get(L"uploadedAtUtc")->stringOr() : L"";
+    record.sourceLastWriteTimeUtc = value.get(L"sourceLastWriteTimeUtc") ? value.get(L"sourceLastWriteTimeUtc")->stringOr() : L"";
     record.uploadState = value.get(L"uploadState") ? value.get(L"uploadState")->stringOr(L"complete") : L"complete";
     record.contentReady = value.get(L"contentReady") ? value.get(L"contentReady")->boolOr(true) : true;
     const int health = value.get(L"health") ? value.get(L"health")->intOr() : 0;
@@ -112,6 +113,7 @@ bool WebDavFileIndexCache::SaveUnlocked(const std::vector<WebDavFileRecord>& rec
         json << L"{\"id\":\"" << Escape(record.id) << L"\",\"absolutePath\":\"" << Escape(record.absolutePath)
              << L"\",\"displayName\":\"" << Escape(record.displayName) << L"\",\"size\":" << record.size
              << L",\"sha256\":\"" << Escape(record.sha256) << L"\",\"uploadedAtUtc\":\"" << Escape(record.uploadedAtUtc)
+             << L"\",\"sourceLastWriteTimeUtc\":\"" << Escape(record.sourceLastWriteTimeUtc)
              << L"\",\"uploadState\":\"" << Escape(record.uploadState) << L"\",\"contentReady\":" << (record.contentReady ? L"true" : L"false")
              << L",\"health\":" << static_cast<int>(record.health)
              << L",\"recordError\":\"" << Escape(record.recordError) << L"\"}";

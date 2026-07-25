@@ -43,10 +43,24 @@ std::filesystem::path GuiLogDirectory() {
     return QuattroUserConfigDirectory();
 }
 
+bool GuiLoggingEnabled() {
+    const std::filesystem::path configPath = QuattroUserConfigDirectory() / L"conf.ini";
+    constexpr int missingValue = -1;
+    const int configured = GetPrivateProfileIntW(L"main", L"bLoggingEnabled", missingValue, configPath.c_str());
+    if (configured == 0) {
+        return false;
+    }
+    if (configured == 1) {
+        return true;
+    }
+    return true;
+}
+
 template <typename RunWindow>
 int RunGui(const wchar_t* mode, RunWindow&& runWindow) {
     const std::filesystem::path logDirectory = GuiLogDirectory();
-    InitializeAppLog(logDirectory, true);
+    const bool loggingEnabled = GuiLoggingEnabled();
+    InitializeAppLog(logDirectory, loggingEnabled);
     struct AppLogShutdownGuard {
         ~AppLogShutdownGuard() { ShutdownAppLog(); }
     } appLogShutdownGuard;
@@ -54,7 +68,8 @@ int RunGui(const wchar_t* mode, RunWindow&& runWindow) {
         L"AppLaunchLocker GUI 启动: mode=" + std::wstring(mode) +
         L", pid=" + std::to_wstring(GetCurrentProcessId()) +
         L", moduleDir=\"" + ModuleDirectory().wstring() + L"\"" +
-        L", logRoot=\"" + logDirectory.wstring() + L"\"");
+        L", logRoot=\"" + logDirectory.wstring() + L"\"" +
+        L", logging=" + std::wstring(loggingEnabled ? L"1" : L"0"));
 
     const HRESULT ole = OleInitialize(nullptr);
     WriteAppLog(

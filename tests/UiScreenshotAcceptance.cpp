@@ -2192,13 +2192,13 @@ struct TableHostWindow {
                 : ui.scale(240);
             const std::vector<ThemedTableColumn> columns = webDavColumns_
                 ? std::vector<ThemedTableColumn>{
-                    {L"name", L"文件名", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed,
-                        ui.tableColumnWidth({L"文件名", L"quattro-file-name.ext"})},
-                    {L"path", L"系统绝对路径", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Remaining},
+                    {L"name", L"文件名", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Remaining},
                     {L"size", L"大小", ThemedTableColumnAlign::End, ThemedTableColumnWidth::Fixed,
                         ui.tableColumnWidth({L"大小", L"999.99 GB"})},
                     {L"time", L"上传时间", ThemedTableColumnAlign::End, ThemedTableColumnWidth::Fixed,
                         ui.tableColumnWidth({L"上传时间", L"2000-00-00T00:00:00.000Z"})},
+                    {L"status", L"本地状态", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed,
+                        ui.tableColumnWidth({L"本地状态", L"本地不存在", L"本地较新"})},
                     {L"action", L"操作", ThemedTableColumnAlign::Center, ThemedTableColumnWidth::Fixed,
                         ui.buttonWidth(L"…", ThemedButtonRole::Normal, ThemedButtonSize::Compact,
                             ThemedButtonWidthMode::Text) + ui.denseGap()},
@@ -2219,10 +2219,9 @@ struct TableHostWindow {
                 ThemedTableCell secondAction = firstAction;
                 ThemedUi::SetTableRows(table_, {
                     {1, {{L"quattro-webdav-rightclick-test-6d19acf4b6a74a4ab51a525522e4a38.ext"},
-                         {L"C:\\Users\\tester\\Documents\\quattro-webdav-rightclick-test.ext"},
-                         {L"51 B"}, {L"2026-07-21T06:50:00.000Z"}, firstAction}, false, true},
-                    {2, {{L"AGENTS.md"}, {L"E:\\work\\quattro\\AGENTS.md"}, {L"4 KB"},
-                         {L"2026-07-21T07:42:00.000Z"}, secondAction}, false, true},
+                         {L"51 B"}, {L"2026-07-21T06:50:00.000Z"}, {L"本地较新"}, firstAction}, false, true},
+                    {2, {{L"AGENTS.md"}, {L"4 KB"},
+                         {L"2026-07-21T07:42:00.000Z"}, {L"相同"}, secondAction}, false, true},
                 });
             } else if (checkable_) {
                 ThemedUi::SetTableRows(table_, {
@@ -2679,9 +2678,13 @@ void RunWebDavFileColumnsScenario(const std::filesystem::path& outputDir, TestSt
 
     HWND header = ListView_GetHeader(host.table_);
     state.Check(header && Header_GetItemCount(header) == 5, scenario + L": expected five columns");
-    const int pathWidth = ListView_GetColumnWidth(host.table_, 1);
-    state.Check(pathWidth >= host.windowUi_->ui().tableColumnWidth(L"系统绝对路径"),
-        scenario + L": remaining absolute-path column is not visibly wide");
+    wchar_t headerText[64]{};
+    HDITEMW headerItem{};
+    headerItem.mask = HDI_TEXT;
+    headerItem.pszText = headerText;
+    headerItem.cchTextMax = static_cast<int>(std::size(headerText));
+    state.Check(Header_GetItem(header, 3, &headerItem) && std::wstring(headerText) == L"本地状态",
+        scenario + L": local-status column is missing");
     int actionId = 0;
     state.Check(ThemedControls::TableCellAction(host.table_, 0, 4, actionId) && actionId == 434,
         scenario + L": three-dot action cell is not invokable");
@@ -4924,7 +4927,8 @@ void RunWebDavFileDetailsScenario(
         scenario.expectedVisibleChildTexts = {
             L"文件名：", L"EntryFlow.md", L"文件大小：", L"5 KB",
             L"远程更新时间：", WebDavFileService::FormatUploadedAtLocal(L"2026-07-21T08:31:35.872Z"),
-            L"本地修改时间：", L"-", L"上传状态：",
+            L"远端记录时间：", WebDavFileService::FormatUploadedAtLocal(L"2026-07-21T08:31:35.8720000Z"),
+            L"本地修改时间：", L"-", L"本地状态：", L"本地不存在", L"上传状态：",
             L"complete · 内容可用", L"系统绝对路径", L"远端记录路径", L"SHA-256"};
         ValidateAndCapture(details, scenario, outputDir, state);
         PostMessageW(details, WM_CLOSE, 0, 0);
@@ -5035,6 +5039,7 @@ int wmain() {
         record.absolutePath = L"C:\\Users\\demo\\Documents\\report.zip";
         record.size = 8 * 1024 * 1024;
         record.uploadedAtUtc = L"2026-07-21T14:32:00.000Z";
+        record.sourceLastWriteTimeUtc = L"2026-07-21T14:31:59.0000000Z";
         const std::wstring tooltipText = WebDavFileService::FormatRecordTooltip(record);
         for (const UINT dpi : {96u, 120u, 144u}) {
             RunTooltipVisualScenario(

@@ -12,6 +12,11 @@ enum class CommonFileDialogMode {
     FileOrFolder,
 };
 
+enum class CommonPathPickerKind {
+    File,
+    Folder,
+};
+
 struct CommonFileDialogOptions {
     HWND owner = nullptr;
     CommonFileDialogMode mode = CommonFileDialogMode::FileOnly;
@@ -37,7 +42,31 @@ struct CommonFileDialogResult {
     long long elapsedMs = 0;
 };
 
+struct CommonPathPickerDialogOptions {
+    HWND owner = nullptr;
+    std::wstring defaultPath;
+    std::wstring fileContext;
+    std::wstring folderContext;
+    std::wstring fileTitle;
+    std::wstring folderTitle;
+    const wchar_t* fileFilter = L"所有文件\0*.*\0";
+    bool folderForceFileSystem = true;
+    bool folderAllowShellFolderParsingName = false;
+};
+
+struct CommonPathPickerResult {
+    CommonPathPickerKind kind = CommonPathPickerKind::File;
+    CommonFileDialogResult dialog;
+};
+
 std::filesystem::path ResolveCommonFileDialogInitialDirectory(const std::wstring& defaultPath);
 std::wstring CommonFileDialogModeName(CommonFileDialogMode mode);
 bool CommonFileDialogSupportsNativeMode(CommonFileDialogMode mode);
+CommonFileDialogOptions BuildCommonPathPickerDialogOptions(
+    CommonPathPickerKind kind,
+    const CommonPathPickerDialogOptions& options);
+bool ShowCommonPathPickerDialog(
+    CommonPathPickerKind kind,
+    const CommonPathPickerDialogOptions& options,
+    CommonPathPickerResult& result);
 bool ShowCommonFileDialog(const CommonFileDialogOptions& options, CommonFileDialogResult& result);

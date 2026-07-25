@@ -229,6 +229,14 @@ private:
         file = INVALID_HANDLE_VALUE;
     }
 
+    static void CloseFile(HANDLE& file) {
+        if (file == INVALID_HANDLE_VALUE) {
+            return;
+        }
+        CloseHandle(file);
+        file = INVALID_HANDLE_VALUE;
+    }
+
     void Run() {
         HANDLE file = INVALID_HANDLE_VALUE;
         for (;;) {
@@ -266,6 +274,16 @@ private:
                 if (file != INVALID_HANDLE_VALUE && !WriteAll(file, batch)) {
                     CloseHandle(file);
                     file = INVALID_HANDLE_VALUE;
+                }
+                bool hasPendingLine = false;
+                {
+                    std::lock_guard lock(mutex_);
+                    hasPendingLine =
+                        !commands_.empty() &&
+                        commands_.front().type == AppLogCommandType::Line;
+                }
+                if (!hasPendingLine) {
+                    CloseFile(file);
                 }
                 continue;
             }

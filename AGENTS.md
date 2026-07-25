@@ -7,6 +7,7 @@
 - 构建目标必须先分清边界：`Quattro` 是快速启动器主程序，`QuattroThemedUi` 是可被多个 EXE 独立链接的公共 UI 静态库，`AppLaunchLockerCore` 是无 Quattro 窗口依赖的治理核心，`AppLaunchLocker` 与 `QuattroUpdater` 是独立 EXE。不得为了复用方便把独立 EXE 的业务实现重新塞回 `Quattro.exe`。
 - 数据入口以 `src/domain/Models.h` 的 `AppModel`、`Group`、`Link`、`NotePage`、`TodoItem` 为准；持久化以 `StorageService` 和 `ConfigService` 的公开能力为准。`conf.ini` 保存窗口、显示、行为、热键和网络等配置，`db/link.db` 保存分组、标签、启动项、便签、待办和工具数据。新增字段前必须先判断它属于配置、业务数据库、缓存还是纯运行期状态，不得在多个位置重复保存同一事实。
 - 普通业务修改采用“校验输入 -> 持久化成功 -> 更新内存模型 -> 局部更新界面/运行时 -> 记录日志或反馈”的顺序。数据库写入失败时不得先让界面表现为成功；单条增删改不得通过重新 `Load()` 整个数据库来同步内存，只有配置包导入、恢复、迁移或明确的整体重建流程可以全量重载。
+- 应用日志只用于排查问题，正式版本默认不应开启；`AppLog` 可以异步排队并批量追加写入，但不得把 `logs/app.log` 文件句柄持有到程序结束。队列中还有连续日志待写时可以复用句柄；一旦日志队列 drain 到没有待写日志，必须立即关闭文件句柄，避免长期占用日志文件影响 Shell 文件选择器、杀软、索引器或文件系统过滤驱动。
 - `Group.id`、`Link.id`、`TodoItem.id`、`groupUid`、`todoUid` 等稳定标识用于关联、选择恢复、异步结果合并和 Table 行 key；排序位置 `pos`、当前 vector 下标和屏幕行号都不是业务身份，禁止把它们长期保存为对象身份。
 - 新增异步任务时，耗时 I/O、网络、Shell 扫描和系统查询必须离开 UI 线程；结果通过明确拥有权的消息/回调回到窗口线程，并使用 generation、stop token 或等价机制丢弃过期结果。后台线程不得直接操作 HWND、公共控件状态或主窗口模型容器。
 - `SimpleDialogs.cpp` 目前承载设置、WebDAV 管理等历史界面；只在既有小型同类流程中继续维护。新增具备独立状态、异步任务、多个关键状态或较多控件的窗口应优先拆成独立 `.h/.cpp`，不要继续扩大单文件匿名类；公共通用对话框则放入 `src/theme/` 并保持无 Quattro 业务依赖。
