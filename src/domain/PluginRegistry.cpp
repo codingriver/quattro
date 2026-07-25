@@ -171,10 +171,8 @@ std::vector<PluginRecord> PluginRegistry::BuiltinPlugins() {
         stopwatch,
         processTools,
         webDavManager,
+        appLaunchLocker,
     };
-    if (!QuattroIsOfficialBuild()) {
-        plugins.push_back(std::move(appLaunchLocker));
-    }
     plugins.push_back(std::move(adBlock));
     return plugins;
 }

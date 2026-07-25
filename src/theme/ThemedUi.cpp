@@ -476,7 +476,7 @@ ThemedPopupMenuResult ThemedUi::ShowPopupMenu(
 
     UINT flags = 0;
     if (options.rightButton) flags |= TPM_RIGHTBUTTON;
-    if (options.returnCommand) flags |= TPM_RETURNCMD;
+    if (options.returnCommand) flags |= TPM_RETURNCMD | TPM_NONOTIFY;
     flags |= options.horizontalAlign == ThemedPopupMenuHorizontalAlign::Right
         ? TPM_RIGHTALIGN
         : TPM_LEFTALIGN;
@@ -485,6 +485,9 @@ ThemedPopupMenuResult ThemedUi::ShowPopupMenu(
         : TPM_TOPALIGN;
 
     result.opened = true;
+    if (GetCapture()) {
+        ReleaseCapture();
+    }
     result.command = static_cast<UINT>(::TrackPopupMenuEx(
         menu,
         flags,

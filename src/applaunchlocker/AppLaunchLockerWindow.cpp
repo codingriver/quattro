@@ -23,7 +23,7 @@ constexpr int ID_DISABLE = 1014;
 constexpr int ID_ELEVATE_SCAN = 1015;
 constexpr int ID_DISABLED_DETAILS = 1021;
 constexpr int ID_RESTORE = 1022;
-constexpr int ID_CATEGORY_TABLE = 1030;
+constexpr int ID_TAB_CONTROL = 1030;
 constexpr UINT WM_APP_SCAN_COMPLETE = WM_APP + 0x150;
 constexpr UINT WM_APP_OPERATION_COMPLETE = WM_APP + 0x151;
 
@@ -163,6 +163,82 @@ bool OpenElevatedGui(HWND owner) {
 std::wstring DisplayTimestamp(std::wstring value) {
     if (value.size() >= 10) return value.substr(0, 10);
     return value;
+}
+
+std::wstring MapField(const std::map<std::wstring, std::wstring>& values, const wchar_t* key) {
+    const auto found = values.find(key);
+    return found == values.end() ? std::wstring{} : found->second;
+}
+
+bool IsAdvancedSource(StartupSourceType source) {
+    switch (source) {
+    case StartupSourceType::WmiSubscription:
+    case StartupSourceType::Winlogon:
+    case StartupSourceType::WinlogonNotify:
+    case StartupSourceType::AppInitDll:
+    case StartupSourceType::AppCertDll:
+    case StartupSourceType::BootExecute:
+    case StartupSourceType::KnownDll:
+    case StartupSourceType::ShellExtension:
+    case StartupSourceType::Ifeo:
+        return true;
+    default:
+        return false;
+    }
+}
+
+bool SourceBelongsToTab(StartupSourceType source, AppLaunchLockerWindow::MainTab tab) {
+    switch (tab) {
+    case AppLaunchLockerWindow::MainTab::StartupItems:
+        return source == StartupSourceType::Registry ||
+            source == StartupSourceType::StartupFolder ||
+            source == StartupSourceType::ActiveSetup;
+    case AppLaunchLockerWindow::MainTab::Services:
+        return source == StartupSourceType::Service;
+    case AppLaunchLockerWindow::MainTab::ScheduledTasks:
+        return source == StartupSourceType::ScheduledTask;
+    case AppLaunchLockerWindow::MainTab::Drivers:
+        return source == StartupSourceType::Driver;
+    case AppLaunchLockerWindow::MainTab::Advanced:
+        return IsAdvancedSource(source);
+    }
+    return false;
+}
+
+std::wstring EntrySummary(const StartupItem& item) {
+    if (item.source == StartupSourceType::Registry) {
+        const std::wstring hive = MapField(item.original, L"hive");
+        const std::wstring key = MapField(item.original, L"key");
+        if (!hive.empty() && !key.empty()) {
+            const std::wstring lowerKey = ToLower(key);
+            if (lowerKey.find(L"runonce") != std::wstring::npos) return hive + L" RunOnce";
+            if (lowerKey.find(L"run") != std::wstring::npos) return hive + L" Run";
+            return hive + L" 注册表";
+        }
+    }
+    if (item.source == StartupSourceType::StartupFolder) {
+        return item.requiresAdmin ? L"公共启动目录" : L"当前用户启动目录";
+    }
+    if (item.source == StartupSourceType::ScheduledTask) {
+        return L"计划任务";
+    }
+    if (item.source == StartupSourceType::Service) {
+        const std::wstring serviceName = MapField(item.original, L"serviceName");
+        return serviceName.empty() ? L"服务" : L"服务：" + serviceName;
+    }
+    if (item.source == StartupSourceType::Driver) {
+        return L"驱动服务";
+    }
+    if (IsAdvancedSource(item.source)) {
+        return StartupSourceText(item.source);
+    }
+    return StartupSourceText(item.source);
+}
+
+std::wstring EntryStateText(const StartupItem& item) {
+    if (item.readOnly || !item.canDisable) return L"仅查看";
+    if (item.source == StartupSourceType::Service) return L"可管理";
+    return L"已启用";
 }
 
 std::wstring DetailsText(const StartupItem& item) {
@@ -374,7 +450,8 @@ LRESULT AppLaunchLockerWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam
     }
     case WM_COMMAND: {
         const int id = LOWORD(wParam);
-        if (id == ID_REFRESH) StartScan();
+        if (id == ID_TAB_CONTROL && HIWORD(wParam) == CBN_SELCHANGE) SelectTab(ThemedUi::ActiveTab(tabControl_));
+        else if (id == ID_REFRESH) StartScan();
         else if (id == ID_DISABLE) StartDisable();
         else if (id == ID_RESTORE) StartRestore();
         else if (id == ID_CURRENT_DETAILS || id == ID_DISABLED_DETAILS) ShowSelectedDetails();
@@ -384,12 +461,6 @@ LRESULT AppLaunchLockerWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam
     }
     case WM_NOTIFY: {
         ThemedTableEvent event{};
-        if (ThemedUi::DecodeTableEvent(categoryTable_, lParam, event)) {
-            if (event.kind == ThemedTableEventKind::SelectionChanged || event.kind == ThemedTableEventKind::Click) {
-                SelectCategory(event.row);
-            }
-            return 0;
-        }
         if (ThemedUi::DecodeTableEvent(itemTable_, lParam, event)) {
             if (event.kind == ThemedTableEventKind::Activated) ShowSelectedDetails();
             UpdateButtons();
@@ -434,34 +505,43 @@ void AppLaunchLockerWindow::CreateControls() {
     const RECT content = ui.contentRect();
     const int scanWidth = ui.buttonWidth(L"扫描", ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
     const int headerY = content.top;
-    const int listTop = ui.nextRowY(headerY, ui.buttonHeight(ThemedButtonRole::Normal, ThemedButtonSize::Normal));
+    const int tabTop = ui.nextRowY(headerY, ui.buttonHeight(ThemedButtonRole::Normal, ThemedButtonSize::Normal));
+    const int tabHeight = ui.tabButtonHeight() + ui.layout().rowGap;
+    const int listTop = tabTop + tabHeight + ui.layout().rowGap;
     const int footerY = ui.footerButtonY(ui.footerButtonHeight());
     const int statusY = footerY - ui.layout().sectionGap - ui.labelHeight();
     const int tableBottom = statusY - ui.layout().rowGap;
-    const int categoryWidth = ui.scale(176);
-    const int splitGap = ui.layout().controlGapX;
-    const int categoryRight = content.left + categoryWidth;
-    const int itemLeft = categoryRight + splitGap;
     const int elevateWidth = ui.textWidth(L"以管理员身份重新打开");
 
-    ui.Label(L"自启动项管理", content.left, headerY, content.right - content.left - scanWidth - ui.layout().controlGapX);
+    ui.Label(L"AppLaunchLocker 自启动管理", content.left, headerY, content.right - content.left - scanWidth - ui.layout().controlGapX);
     ui.Button(ID_REFRESH, L"扫描", content.right - scanWidth, headerY,
         ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
+    ThemedTabControlOptions tabOptions{};
+    tabOptions.activeIndex = 0;
+    tabOptions.appearance = ThemedTabControlAppearance::ConnectedTabs;
+    tabOptions.orientation = ThemedTabControlOrientation::Horizontal;
+    tabOptions.containerStyle = ThemedTabControlContainerStyle::Borderless;
+    tabControl_ = ui.TabControl(ID_TAB_CONTROL, RECT{content.left, tabTop, content.right, tabTop + tabHeight},
+        {{100, L"自启动项", true},
+         {101, L"服务", true},
+         {102, L"计划任务", true},
+         {103, L"驱动", true},
+         {104, L"系统高级项", true}},
+        tabOptions);
     ThemedTableOptions gridTableOptions{};
     gridTableOptions.allowColumnResize = true;
     gridTableOptions.showRowGridLines = true;
     gridTableOptions.showColumnGridLines = true;
-    categoryTable_ = ui.Table(ID_CATEGORY_TABLE, RECT{content.left, listTop, categoryRight, tableBottom},
-        {{L"name", L"范围与分类", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Remaining},
-         {L"count", L"数量", ThemedTableColumnAlign::End, ThemedTableColumnWidth::Fixed, ui.tableColumnWidth(L"9999")}},
-        gridTableOptions);
-    itemTable_ = ui.Table(ID_CURRENT_TABLE, RECT{itemLeft, listTop, content.right, tableBottom},
+    itemTable_ = ui.Table(ID_CURRENT_TABLE, RECT{content.left, listTop, content.right, tableBottom},
         {{L"name", L"名称", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Remaining},
          {L"source", L"来源", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, ui.tableColumnWidth(L"WMI 永久订阅")},
-         {L"state", L"状态", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, ui.tableColumnWidth(L"可禁用")}},
+         {L"entry", L"入口", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, ui.tableColumnWidth(L"公共启动目录")},
+         {L"state", L"状态", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, ui.tableColumnWidth(L"外部状态变化")},
+         {L"details", L"详情", ThemedTableColumnAlign::Center, ThemedTableColumnWidth::Fixed, ui.tableColumnWidth(L"详情")},
+         {L"operation", L"操作", ThemedTableColumnAlign::Center, ThemedTableColumnWidth::Fixed, ui.tableColumnWidth(L"改手动")}},
         gridTableOptions);
-    statusText_ = ui.StatusText(L"正在扫描…", itemLeft, statusY,
-        content.right - itemLeft - elevateWidth - ui.layout().controlGapX,
+    statusText_ = ui.StatusText(L"正在扫描…", content.left, statusY,
+        content.right - content.left - elevateWidth - ui.layout().controlGapX,
         {ThemedStatusRole::Info, ThemedTextAlign::Start});
     elevateLink_ = ui.LinkText(ID_ELEVATE_SCAN, L"以管理员身份重新打开", content.right - elevateWidth, statusY, elevateWidth,
         {ThemedLinkRole::Normal, ThemedTextAlign::End, true, false});
@@ -470,7 +550,7 @@ void AppLaunchLockerWindow::CreateControls() {
     disableButton_ = ui.FooterButton(ID_DISABLE, L"禁用", 1, 2, true, true);
     restoreButton_ = ui.FooterButton(ID_RESTORE, L"恢复", 1, 2, true, true);
     ThemedUi::SetVisible(restoreButton_, false);
-    RebuildCategories();
+    RebuildTabs();
     RebuildRows();
     UpdateButtons();
 }
@@ -556,7 +636,7 @@ void AppLaunchLockerWindow::CompleteScan(ScanResult result, std::vector<Disabled
     storeAvailable_ = storeError.empty();
     items_ = std::move(result.items);
     disabled_ = std::move(disabled);
-    RebuildCategories();
+    RebuildTabs();
     RebuildRows();
     if (!storeError.empty()) {
         AppendAppLaunchLockerLog(storeError);
@@ -565,7 +645,10 @@ void AppLaunchLockerWindow::CompleteScan(ScanResult result, std::vector<Disabled
     }
     if (!result.warnings.empty()) {
         for (const auto& warning : result.warnings) AppendAppLaunchLockerLog(L"扫描警告：" + warning);
-        const std::wstring status = L"当前范围：" + (categories_.empty() ? std::wstring(L"当前自启动") : categories_[static_cast<std::size_t>(selectedCategory_)].title) +
+        const std::wstring title = activeTab_ >= 0 && activeTab_ < static_cast<int>(tabs_.size())
+            ? tabs_[static_cast<std::size_t>(activeTab_)].title
+            : std::wstring(L"自启动项");
+        const std::wstring status = L"当前页：" + title +
             L"，共 " + std::to_wstring(visibleItemIndexes_.size() + visibleDisabledIndexes_.size()) + L" 项；部分系统项目未能读取。";
         ThemedUi::SetText(statusText_, status);
         windowUi_->ui().SetStatusTextRole(statusText_, ThemedStatusRole::Warning);
@@ -588,102 +671,82 @@ void AppLaunchLockerWindow::CompleteOperation(OperationResult result) {
     StartScan();
 }
 
-void AppLaunchLockerWindow::RebuildCategories() {
-    const StartupSourceType sources[] = {
-        StartupSourceType::Registry,
-        StartupSourceType::StartupFolder,
-        StartupSourceType::ScheduledTask,
-        StartupSourceType::Service,
-        StartupSourceType::ActiveSetup,
-        StartupSourceType::Driver,
-        StartupSourceType::WmiSubscription,
-        StartupSourceType::Winlogon,
-        StartupSourceType::WinlogonNotify,
-        StartupSourceType::AppInitDll,
-        StartupSourceType::AppCertDll,
-        StartupSourceType::BootExecute,
-        StartupSourceType::KnownDll,
-        StartupSourceType::ShellExtension,
-        StartupSourceType::Ifeo,
+void AppLaunchLockerWindow::RebuildTabs() {
+    const auto countFor = [&](MainTab tab) {
+        const int live = static_cast<int>(std::count_if(items_.begin(), items_.end(), [&](const StartupItem& item) {
+            return SourceBelongsToTab(item.source, tab);
+        }));
+        const int disabled = static_cast<int>(std::count_if(disabled_.begin(), disabled_.end(), [&](const DisabledRecord& record) {
+            return SourceBelongsToTab(record.source, tab);
+        }));
+        return live + disabled;
     };
 
-    categories_.clear();
-    categories_.push_back(CategoryEntry{CategoryKind::Current, StartupSourceType::Registry, L"当前自启动", static_cast<int>(items_.size())});
-    categories_.push_back(CategoryEntry{CategoryKind::Disabled, StartupSourceType::Registry, L"已禁用", static_cast<int>(disabled_.size())});
-    for (StartupSourceType source : sources) {
-        const int count = static_cast<int>(std::count_if(items_.begin(), items_.end(), [&](const StartupItem& item) {
-            return item.source == source;
-        }));
-        if (count > 0) {
-            categories_.push_back(CategoryEntry{CategoryKind::Source, source, StartupSourceText(source), count});
-        }
-    }
+    tabs_ = {
+        {MainTab::StartupItems, L"自启动项", countFor(MainTab::StartupItems)},
+        {MainTab::Services, L"服务", countFor(MainTab::Services)},
+        {MainTab::ScheduledTasks, L"计划任务", countFor(MainTab::ScheduledTasks)},
+        {MainTab::Drivers, L"驱动", countFor(MainTab::Drivers)},
+        {MainTab::Advanced, L"系统高级项", countFor(MainTab::Advanced)},
+    };
 
-    if (selectedCategory_ < 0 || selectedCategory_ >= static_cast<int>(categories_.size())) {
-        selectedCategory_ = 0;
-    }
-
-    std::vector<ThemedTableRow> rows;
-    rows.reserve(categories_.size());
-    for (std::size_t index = 0; index < categories_.size(); ++index) {
-        rows.push_back({static_cast<std::intptr_t>(index + 1),
-            {{categories_[index].title}, {std::to_wstring(categories_[index].count)}},
-            false, true});
-    }
-    ThemedUi::SetTableRows(categoryTable_, rows);
-    ThemedUi::SetTableSelectedIndex(categoryTable_, selectedCategory_);
+    if (activeTab_ < 0 || activeTab_ >= static_cast<int>(tabs_.size())) activeTab_ = 0;
+    if (tabControl_) ThemedUi::SetActiveTab(tabControl_, activeTab_, false);
 }
 
 void AppLaunchLockerWindow::RebuildRows() {
     visibleItemIndexes_.clear();
     visibleDisabledIndexes_.clear();
     std::vector<ThemedTableRow> rows;
-    CategoryEntry category{};
-    if (!categories_.empty() && selectedCategory_ >= 0 && selectedCategory_ < static_cast<int>(categories_.size())) {
-        category = categories_[static_cast<std::size_t>(selectedCategory_)];
-    } else {
-        category.title = L"当前自启动";
-    }
+    const TabEntry tab = activeTab_ >= 0 && activeTab_ < static_cast<int>(tabs_.size())
+        ? tabs_[static_cast<std::size_t>(activeTab_)]
+        : TabEntry{MainTab::StartupItems, L"自启动项", 0};
 
-    if (category.kind == CategoryKind::Disabled) {
-        rows.reserve(disabled_.size());
-        for (std::size_t index = 0; index < disabled_.size(); ++index) {
-            visibleDisabledIndexes_.push_back(index);
-            rows.push_back({static_cast<std::intptr_t>(visibleDisabledIndexes_.size()),
-                {{disabled_[index].name}, {StartupSourceText(disabled_[index].source)}, {L"已禁用"}},
-                false, true});
-        }
-    } else {
-        for (std::size_t index = 0; index < items_.size(); ++index) {
-            if (category.kind == CategoryKind::Source && items_[index].source != category.source) continue;
-            visibleItemIndexes_.push_back(index);
-            rows.push_back({static_cast<std::intptr_t>(visibleItemIndexes_.size()),
-                {{items_[index].name}, {StartupSourceText(items_[index].source)}, {items_[index].canDisable ? L"可禁用" : L"仅查看"}},
-                false, true});
-        }
+    for (std::size_t index = 0; index < items_.size(); ++index) {
+        const StartupItem& item = items_[index];
+        if (!SourceBelongsToTab(item.source, tab.tab)) continue;
+        visibleItemIndexes_.push_back(index);
+        const std::wstring operation = item.canDisable
+            ? (item.source == StartupSourceType::Service ? std::wstring(L"改手动") : std::wstring(L"禁用"))
+            : std::wstring(L"—");
+        rows.push_back({static_cast<std::intptr_t>(visibleItemIndexes_.size()),
+            {{item.name},
+             {StartupSourceText(item.source)},
+             {EntrySummary(item)},
+             {EntryStateText(item)},
+             {L"详情"},
+             {operation}},
+            false, true});
+    }
+    for (std::size_t index = 0; index < disabled_.size(); ++index) {
+        const DisabledRecord& record = disabled_[index];
+        if (!SourceBelongsToTab(record.source, tab.tab)) continue;
+        visibleDisabledIndexes_.push_back(index);
+        rows.push_back({static_cast<std::intptr_t>(100000 + visibleDisabledIndexes_.size()),
+            {{record.name},
+             {StartupSourceText(record.source)},
+             {EntrySummary(StartupItem{record.itemId, record.name, record.source, L"", L"", record.requiresAdmin, false, true, record.original})},
+             {L"已禁用"},
+             {L"详情"},
+             {L"恢复"}},
+            false, true});
     }
 
     ThemedUi::SetTableRows(itemTable_, rows);
-    const std::wstring status = L"当前范围：" + category.title + L"，共 " + std::to_wstring(rows.size()) + L" 项";
+    const std::wstring status = L"当前页：" + tab.title + L"，共 " + std::to_wstring(rows.size()) + L" 项";
     ThemedUi::SetText(statusText_, status);
     windowUi_->ui().SetStatusTextRole(statusText_, ThemedStatusRole::Normal);
     UpdateButtons();
 }
 
-void AppLaunchLockerWindow::SelectCategory(int index) {
-    if (index < 0 || index >= static_cast<int>(categories_.size()) || index == selectedCategory_) {
-        return;
-    }
-    selectedCategory_ = index;
-    ThemedUi::SetTableSelectedIndex(categoryTable_, selectedCategory_);
+void AppLaunchLockerWindow::SelectTab(int index) {
+    if (index < 0 || index >= static_cast<int>(tabs_.size()) || index == activeTab_) return;
+    activeTab_ = index;
+    ThemedUi::SetActiveTab(tabControl_, activeTab_, false);
     RebuildRows();
 }
 
 const StartupItem* AppLaunchLockerWindow::SelectedStartupItem() const {
-    if (categories_.empty() || selectedCategory_ < 0 || selectedCategory_ >= static_cast<int>(categories_.size()) ||
-        categories_[static_cast<std::size_t>(selectedCategory_)].kind == CategoryKind::Disabled) {
-        return nullptr;
-    }
     const int row = ThemedUi::TableSelectedIndex(itemTable_);
     if (row < 0 || static_cast<std::size_t>(row) >= visibleItemIndexes_.size()) return nullptr;
     const std::size_t index = visibleItemIndexes_[static_cast<std::size_t>(row)];
@@ -691,13 +754,12 @@ const StartupItem* AppLaunchLockerWindow::SelectedStartupItem() const {
 }
 
 const DisabledRecord* AppLaunchLockerWindow::SelectedDisabledRecord() const {
-    if (categories_.empty() || selectedCategory_ < 0 || selectedCategory_ >= static_cast<int>(categories_.size()) ||
-        categories_[static_cast<std::size_t>(selectedCategory_)].kind != CategoryKind::Disabled) {
-        return nullptr;
-    }
     const int row = ThemedUi::TableSelectedIndex(itemTable_);
-    if (row < 0 || static_cast<std::size_t>(row) >= visibleDisabledIndexes_.size()) return nullptr;
-    const std::size_t index = visibleDisabledIndexes_[static_cast<std::size_t>(row)];
+    const std::size_t disabledOffset = visibleItemIndexes_.size();
+    if (row < 0 || static_cast<std::size_t>(row) < disabledOffset) return nullptr;
+    const std::size_t disabledRow = static_cast<std::size_t>(row) - disabledOffset;
+    if (disabledRow >= visibleDisabledIndexes_.size()) return nullptr;
+    const std::size_t index = visibleDisabledIndexes_[disabledRow];
     return index < disabled_.size() ? &disabled_[index] : nullptr;
 }
 
@@ -709,13 +771,9 @@ void AppLaunchLockerWindow::UpdateButtons() {
     ui.SetEnabled(detailsButton_, !busy_ && (item != nullptr || record != nullptr));
     ui.SetEnabled(disableButton_, !busy_ && storeAvailable_ && item && item->canDisable);
     ui.SetEnabled(restoreButton_, !busy_ && storeAvailable_ && record != nullptr);
-    const bool disabledCategory = !categories_.empty() &&
-        selectedCategory_ >= 0 &&
-        selectedCategory_ < static_cast<int>(categories_.size()) &&
-        categories_[static_cast<std::size_t>(selectedCategory_)].kind == CategoryKind::Disabled;
-    ThemedUi::SetVisible(disableButton_, !disabledCategory);
-    ThemedUi::SetVisible(restoreButton_, disabledCategory);
-    ThemedUi::SetVisible(elevateLink_, !disabledCategory && showElevateLink_);
+    ThemedUi::SetVisible(disableButton_, record == nullptr);
+    ThemedUi::SetVisible(restoreButton_, record != nullptr);
+    ThemedUi::SetVisible(elevateLink_, showElevateLink_);
 }
 
 void AppLaunchLockerWindow::ShowSelectedDetails() {

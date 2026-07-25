@@ -79,6 +79,7 @@ struct Scenario {
     std::wstring expectedContextMenuProvider;
     std::wstring expectedContextMenuStatus;
     int splitButtonMenuId = 0;
+    bool validateSplitButtonPopup = false;
 };
 
 struct TestState {
@@ -1473,13 +1474,63 @@ void ValidateAndCapture(HWND hwnd, const Scenario& scenario, const std::filesyst
 
     if (scenario.splitButtonMenuId != 0) {
         const Theme validationTheme = Theme::Load(std::filesystem::current_path() / L"theme", L"default");
+        HWND splitMenuButton = ChildById(hwnd, scenario.splitButtonMenuId);
         ValidateSplitButtonChevron(
-            ChildById(hwnd, scenario.splitButtonMenuId),
+            splitMenuButton,
             validationTheme,
             scenario.forcedDpi,
             state,
             scenario.name,
             true);
+        if (scenario.validateSplitButtonPopup && splitMenuButton) {
+            std::thread popupWatcher([&]() {
+                HWND popup = WaitForTopWindow(
+                    FindWindowRequest{L"#32768", L"", GetCurrentProcessId()}, 3000);
+                state.Check(popup != nullptr, scenario.name + L": split-button popup did not appear");
+                if (popup) {
+                    Sleep(250);
+                    state.Check(
+                        IsWindowVisible(popup) != FALSE,
+                        scenario.name + L": split-button popup closed immediately");
+                    RECT popupRect{};
+                    RECT buttonRect{};
+                    GetWindowRect(popup, &popupRect);
+                    GetWindowRect(splitMenuButton, &buttonRect);
+                    state.Check(
+                        popupRect.right >= buttonRect.left && popupRect.left <= buttonRect.right &&
+                            popupRect.bottom >= buttonRect.top,
+                        scenario.name + L": split-button popup appeared at an unexpected position");
+                    BitmapCapture popupCapture = CaptureWindowBitmap(popup);
+                    state.Check(
+                        popupCapture.bitmap != nullptr,
+                        scenario.name + L": split-button popup capture failed");
+                    if (popupCapture.bitmap) {
+                        state.Check(
+                            BitmapHasVisualContent(popupCapture.bitmap, popupCapture.width, popupCapture.height),
+                            scenario.name + L": split-button popup screenshot is blank");
+                        SavePng(
+                            popupCapture.bitmap,
+                            outputDir / (scenario.name + L"-split-menu.png"));
+                        DeleteObject(popupCapture.bitmap);
+                    }
+                    PostMessageW(popup, WM_CANCELMODE, 0, 0);
+                    PostMessageW(hwnd, WM_CANCELMODE, 0, 0);
+                }
+            });
+            RECT splitClient{};
+            GetClientRect(splitMenuButton, &splitClient);
+            const LPARAM centerPoint = MAKELPARAM(
+                (splitClient.right - splitClient.left) / 2,
+                (splitClient.bottom - splitClient.top) / 2);
+            SendMessageW(splitMenuButton, WM_LBUTTONDOWN, MK_LBUTTON, centerPoint);
+            SendMessageW(splitMenuButton, WM_LBUTTONUP, 0, centerPoint);
+            popupWatcher.join();
+            TablerIconManifest::Id restoredIcon{};
+            state.Check(
+                ThemedControls::ButtonTablerIcon(splitMenuButton, restoredIcon) &&
+                    restoredIcon == TablerIconId::ChevronDown,
+                scenario.name + L": split-button did not restore ChevronDown after popup close");
+        }
     }
 
     BitmapCapture capture = CaptureWindowBitmap(hwnd);
@@ -4069,6 +4120,8 @@ void RunProcessToolsScenarios(
         false,
         {L"路径", L"检查(&C)", L"已检查 1 个路径"}};
     fileScenario.actionButtonText = L"检查(&C)";
+    fileScenario.splitButtonMenuId = 7606;
+    fileScenario.validateSplitButtonPopup = true;
     run(std::move(fileScenario), L"file-lock-inspector");
 }
 

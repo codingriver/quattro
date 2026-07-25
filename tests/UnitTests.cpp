@@ -3303,20 +3303,20 @@ int wmain() {
     Check(hasProcessTools, "Plugin process tools registration");
     Check(hasWebDavManager, "Plugin WebDAV manager registration");
     Check(!hasLegacyProcessTool, "Legacy process tools are hidden from the toolbox registry");
-    Check(hasAppLaunchLocker == !QuattroIsOfficialBuild(),
-        "Plugin AppLaunchLocker registration follows build identity");
+    Check(hasAppLaunchLocker,
+        "Plugin AppLaunchLocker registration is available in all builds");
     Check(hasAdBlock, "Plugin AdBlock external tool registration");
     Check(pluginRegistry.IsEnabled(L"quattro.builtin.clicker"), "Plugin clicker enabled by default");
     Check(pluginRegistry.IsEnabled(L"quattro.builtin.clock"), "Plugin clock enabled by default");
     Check(pluginRegistry.IsEnabled(L"quattro.builtin.timer"), "Plugin timer enabled by default");
     Check(pluginRegistry.IsEnabled(L"quattro.builtin.process-tools"), "Plugin process tools enabled by default");
     Check(pluginRegistry.IsEnabled(L"quattro.builtin.webdav-manager"), "Plugin WebDAV manager enabled by default");
-    Check(pluginRegistry.IsEnabled(L"quattro.builtin.app-launch-locker") == !QuattroIsOfficialBuild(),
-        "Plugin AppLaunchLocker availability follows build identity");
-    if (QuattroIsOfficialBuild()) {
-        Check(!pluginRegistry.SetEnabled(L"quattro.builtin.app-launch-locker", true),
-            "Plugin AppLaunchLocker cannot be enabled in official builds");
-    }
+    Check(pluginRegistry.IsEnabled(L"quattro.builtin.app-launch-locker"),
+        "Plugin AppLaunchLocker enabled by default");
+    Check(pluginRegistry.SetEnabled(L"quattro.builtin.app-launch-locker", false),
+        "Plugin AppLaunchLocker can be disabled");
+    Check(!pluginRegistry.IsEnabled(L"quattro.builtin.app-launch-locker"),
+        "Plugin AppLaunchLocker disable persists in runtime registry");
     Check(pluginRegistry.IsEnabled(L"quattro.builtin.ad-block"), "Plugin AdBlock enabled by default");
     Check(pluginRegistry.SetEnabled(L"quattro.builtin.clicker", false), "Plugin builtin disable");
     Check(!pluginRegistry.IsEnabled(L"quattro.builtin.clicker"), "Plugin builtin can be disabled");

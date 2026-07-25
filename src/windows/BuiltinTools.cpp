@@ -2997,6 +2997,12 @@ public:
             WriteAppLog(L"进程工具窗口创建失败: " + error);
             return false;
         }
+        // Process tools is a long-lived modeless tool window. It may outlive or
+        // remain visible after the launcher owner is hidden, so detach the
+        // top-level owner after creation. Keeping a hidden owner in the window
+        // chain makes native popup menus (the file/folder split button menu)
+        // cancel immediately on some systems.
+        SetWindowLongPtrW(hwnd_, GWLP_HWNDPARENT, 0);
         gProcessToolsWindow.store(hwnd_);
         RestoreWindowPosition();
         deleteOnDestroy_ = true;
@@ -3542,7 +3548,7 @@ private:
             const UINT command = windowUi_->ui().ShowSplitButtonMenu(
                 hwnd_,
                 filePickSplit_.menu,
-                {{ID_FILE_LOCK_PICK_DIR, L"选择目录", true, TablerIconId::Folder}});
+                {{ID_FILE_LOCK_PICK_DIR, L"选择文件夹", true, TablerIconId::Folder}});
             if (command != 0) {
                 SendMessageW(hwnd_, WM_COMMAND, MAKEWPARAM(command, BN_CLICKED), 0);
             }
