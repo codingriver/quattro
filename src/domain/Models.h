@@ -28,6 +28,7 @@ struct AppConfig {
     bool showGroup = true;
     bool showTag = true;
     bool linkNameSingleLine = false;
+    bool linkNameBold = true;
     bool showTooltip = true;
 
     bool autoDock = true;

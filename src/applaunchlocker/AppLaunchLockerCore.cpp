@@ -1827,6 +1827,168 @@ void AppendAppLaunchLockerLog(const std::wstring& message) {
     file.write(line.data(), static_cast<std::streamsize>(line.size()));
 }
 
+std::wstring StartupItemStateKey(const StartupItem& item) {
+    if (item.readOnly || !item.canDisable) return L"readonly";
+    return L"enabled";
+}
+
+std::wstring StartupItemTargetPath(const StartupItem& item) {
+    const std::wstring originalPath = MapValue(item.original, L"originalPath");
+    if (!originalPath.empty()) return originalPath;
+    const std::wstring targetPath = MapValue(item.original, L"targetPath");
+    if (!targetPath.empty()) return targetPath;
+    return item.location;
+}
+
+StartupSnapshot BuildStartupSnapshot(const ScanResult& scan, const std::wstring& scanId) {
+    StartupSnapshot snapshot;
+    snapshot.capturedAt = CurrentTimestamp();
+    snapshot.scanId = scanId.empty() ? StableId(StartupSourceType::Registry, snapshot.capturedAt, std::to_wstring(scan.items.size())) : scanId;
+    snapshot.entries.reserve(scan.items.size());
+    for (const StartupItem& item : scan.items) {
+        StartupSnapshotEntry entry;
+        entry.entryId = item.id;
+        entry.source = item.source;
+        entry.displayName = item.name;
+        entry.targetPath = StartupItemTargetPath(item);
+        entry.state = StartupItemStateKey(item);
+        entry.fingerprint = HashHex(
+            item.id + L"|" + StartupSourceKey(item.source) + L"|" + item.name + L"|" +
+            item.location + L"|" + item.command + L"|" + entry.state);
+        snapshot.entries.push_back(std::move(entry));
+    }
+    std::sort(snapshot.entries.begin(), snapshot.entries.end(), [](const auto& left, const auto& right) {
+        return left.entryId < right.entryId;
+    });
+    return snapshot;
+}
+
+StartupSnapshotDiff DiffStartupSnapshots(const StartupSnapshot& previous, const StartupSnapshot& current) {
+    StartupSnapshotDiff diff;
+    std::map<std::wstring, StartupSnapshotEntry> previousById;
+    std::map<std::wstring, StartupSnapshotEntry> currentById;
+    for (const auto& entry : previous.entries) previousById[entry.entryId] = entry;
+    for (const auto& entry : current.entries) currentById[entry.entryId] = entry;
+
+    for (const auto& [entryId, entry] : currentById) {
+        const auto old = previousById.find(entryId);
+        if (old == previousById.end()) {
+            diff.added.push_back(entry);
+            continue;
+        }
+        if (old->second.state != entry.state) diff.stateChanged.push_back(entry);
+        else if (old->second.fingerprint != entry.fingerprint) diff.changed.push_back(entry);
+    }
+    for (const auto& [entryId, entry] : previousById) {
+        if (currentById.find(entryId) == currentById.end()) diff.removed.push_back(entry);
+    }
+    return diff;
+}
+
+StartupSnapshotStore::StartupSnapshotStore()
+    : path_(AppLaunchLockerDataDirectory() / L"startup-snapshot.json") {}
+
+StartupSnapshotStore::StartupSnapshotStore(std::filesystem::path path)
+    : path_(std::move(path)) {}
+
+bool StartupSnapshotStore::Load(StartupSnapshot& snapshot, std::wstring& error) const {
+    snapshot = {};
+    error.clear();
+    std::error_code existsError;
+    if (!std::filesystem::exists(path_, existsError)) return true;
+    std::ifstream file(path_, std::ios::binary);
+    if (!file) {
+        error = L"无法读取扫描快照。";
+        return false;
+    }
+    std::string bytes((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    JsonValue root;
+    if (!ParseJson(Utf8ToWide(bytes), root, error) || !root.isObject()) {
+        error = L"扫描快照文件已损坏：" + error;
+        return false;
+    }
+    const JsonValue* schemaVersion = root.get(L"schemaVersion");
+    if (!schemaVersion || schemaVersion->intOr(0) != 1) {
+        error = L"扫描快照版本不受支持。";
+        return false;
+    }
+    snapshot.capturedAt = root.get(L"capturedAt") ? root.get(L"capturedAt")->stringOr() : L"";
+    snapshot.scanId = root.get(L"scanId") ? root.get(L"scanId")->stringOr() : L"";
+    const JsonValue* entries = root.get(L"entries");
+    if (!entries || !entries->isArray()) {
+        error = L"扫描快照缺少 entries。";
+        return false;
+    }
+    for (const JsonValue& value : entries->arrayValue) {
+        if (!value.isObject()) continue;
+        const JsonValue* entryId = value.get(L"entryId");
+        const JsonValue* source = value.get(L"source");
+        if (!entryId || !source) continue;
+        StartupSnapshotEntry entry;
+        if (!StartupSourceFromKey(source->stringOr(), entry.source)) continue;
+        entry.entryId = entryId->stringOr();
+        entry.displayName = value.get(L"displayName") ? value.get(L"displayName")->stringOr() : L"";
+        entry.targetPath = value.get(L"targetPath") ? value.get(L"targetPath")->stringOr() : L"";
+        entry.state = value.get(L"state") ? value.get(L"state")->stringOr() : L"";
+        entry.fingerprint = value.get(L"fingerprint") ? value.get(L"fingerprint")->stringOr() : L"";
+        if (!entry.entryId.empty()) snapshot.entries.push_back(std::move(entry));
+    }
+    return true;
+}
+
+bool StartupSnapshotStore::Save(const StartupSnapshot& snapshot, std::wstring& error) const {
+    error.clear();
+    std::error_code directoryError;
+    std::filesystem::create_directories(path_.parent_path(), directoryError);
+    if (directoryError) {
+        error = L"无法创建数据目录：" + Utf8ToWide(directoryError.message());
+        return false;
+    }
+    std::wostringstream json;
+    json << L"{\n"
+         << L"  \"schemaVersion\": 1,\n"
+         << L"  \"capturedAt\": \"" << EscapeJson(snapshot.capturedAt) << L"\",\n"
+         << L"  \"scanId\": \"" << EscapeJson(snapshot.scanId) << L"\",\n"
+         << L"  \"entries\": [";
+    for (std::size_t index = 0; index < snapshot.entries.size(); ++index) {
+        const auto& entry = snapshot.entries[index];
+        json << (index == 0 ? L"\n" : L",\n")
+             << L"    {\n"
+             << L"      \"entryId\": \"" << EscapeJson(entry.entryId) << L"\",\n"
+             << L"      \"source\": \"" << StartupSourceKey(entry.source) << L"\",\n"
+             << L"      \"displayName\": \"" << EscapeJson(entry.displayName) << L"\",\n"
+             << L"      \"targetPath\": \"" << EscapeJson(entry.targetPath) << L"\",\n"
+             << L"      \"state\": \"" << EscapeJson(entry.state) << L"\",\n"
+             << L"      \"fingerprint\": \"" << EscapeJson(entry.fingerprint) << L"\"\n"
+             << L"    }";
+    }
+    if (!snapshot.entries.empty()) json << L"\n  ";
+    json << L"]\n}\n";
+
+    const std::filesystem::path temporary = path_.wstring() + L".tmp";
+    std::ofstream file(temporary, std::ios::binary | std::ios::trunc);
+    if (!file) {
+        error = L"无法写入扫描快照临时文件。";
+        return false;
+    }
+    const std::string utf8 = WideToUtf8(json.str());
+    file.write(utf8.data(), static_cast<std::streamsize>(utf8.size()));
+    file.close();
+    if (!file) {
+        error = L"写入扫描快照失败。";
+        std::error_code removeError;
+        std::filesystem::remove(temporary, removeError);
+        return false;
+    }
+    if (!MoveFileExW(temporary.c_str(), path_.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        error = L"保存扫描快照失败：" + LastErrorText();
+        std::error_code removeError;
+        std::filesystem::remove(temporary, removeError);
+        return false;
+    }
+    return true;
+}
+
 DisabledItemStore::DisabledItemStore()
     : path_(AppLaunchLockerDataDirectory() / L"disabled-items.json") {}
 
@@ -1849,23 +2011,26 @@ bool DisabledItemStore::Load(std::vector<DisabledRecord>& records, std::wstring&
         error = L"禁用记录文件已损坏：" + error;
         return false;
     }
-    const JsonValue* version = root.get(L"version");
-    if (!version || version->intOr(0) != 1) {
+    const JsonValue* schemaVersion = root.get(L"schemaVersion");
+    const bool version2 = schemaVersion && schemaVersion->intOr(0) == 2;
+    const JsonValue* legacyVersion = root.get(L"version");
+    const bool version1 = legacyVersion && legacyVersion->intOr(0) == 1;
+    if (!version1 && !version2) {
         error = L"禁用记录版本不受支持。";
         return false;
     }
-    const JsonValue* items = root.get(L"items");
+    const JsonValue* items = root.get(version2 ? L"records" : L"items");
     if (!items || !items->isArray()) {
-        error = L"禁用记录缺少 items。";
+        error = version2 ? L"禁用记录缺少 records。" : L"禁用记录缺少 items。";
         return false;
     }
     for (const JsonValue& value : items->arrayValue) {
         if (!value.isObject()) continue;
         DisabledRecord record;
         const JsonValue* recordId = value.get(L"recordId");
-        const JsonValue* itemId = value.get(L"itemId");
+        const JsonValue* itemId = value.get(version2 ? L"entryId" : L"itemId");
         const JsonValue* source = value.get(L"source");
-        const JsonValue* name = value.get(L"name");
+        const JsonValue* name = value.get(version2 ? L"displayName" : L"name");
         const JsonValue* disabledAt = value.get(L"disabledAt");
         if (!recordId || !itemId || !source || !name || !disabledAt) continue;
         if (!StartupSourceFromKey(source->stringOr(), record.source)) continue;
@@ -1875,7 +2040,7 @@ bool DisabledItemStore::Load(std::vector<DisabledRecord>& records, std::wstring&
         record.disabledAt = disabledAt->stringOr();
         const JsonValue* requiresAdmin = value.get(L"requiresAdmin");
         record.requiresAdmin = requiresAdmin && requiresAdmin->boolOr(false);
-        const JsonValue* original = value.get(L"original");
+        const JsonValue* original = value.get(version2 ? L"restore" : L"original");
         if (original && original->isObject()) {
             for (const auto& [key, field] : original->objectValue) {
                 if (field.isString()) record.original[key] = field.stringValue;
@@ -1895,18 +2060,22 @@ bool DisabledItemStore::Save(const std::vector<DisabledRecord>& records, std::ws
         return false;
     }
     std::wostringstream json;
-    json << L"{\n  \"version\": 1,\n  \"items\": [";
+    json << L"{\n"
+         << L"  \"schemaVersion\": 2,\n"
+         << L"  \"revision\": 1,\n"
+         << L"  \"updatedAt\": \"" << EscapeJson(CurrentTimestamp()) << L"\",\n"
+         << L"  \"records\": [";
     for (std::size_t index = 0; index < records.size(); ++index) {
         const auto& record = records[index];
         json << (index == 0 ? L"\n" : L",\n")
              << L"    {\n"
              << L"      \"recordId\": \"" << EscapeJson(record.recordId) << L"\",\n"
-             << L"      \"itemId\": \"" << EscapeJson(record.itemId) << L"\",\n"
+             << L"      \"entryId\": \"" << EscapeJson(record.itemId) << L"\",\n"
              << L"      \"source\": \"" << StartupSourceKey(record.source) << L"\",\n"
-             << L"      \"name\": \"" << EscapeJson(record.name) << L"\",\n"
+             << L"      \"displayName\": \"" << EscapeJson(record.name) << L"\",\n"
              << L"      \"disabledAt\": \"" << EscapeJson(record.disabledAt) << L"\",\n"
              << L"      \"requiresAdmin\": " << (record.requiresAdmin ? L"true" : L"false") << L",\n"
-             << L"      \"original\": {";
+             << L"      \"restore\": {";
         std::size_t fieldIndex = 0;
         for (const auto& [key, value] : record.original) {
             json << (fieldIndex++ == 0 ? L"\n" : L",\n")
@@ -1932,6 +2101,15 @@ bool DisabledItemStore::Save(const std::vector<DisabledRecord>& records, std::ws
         std::error_code removeError;
         std::filesystem::remove(temporary, removeError);
         return false;
+    }
+    const std::filesystem::path backup = path_.wstring() + L".bak";
+    if (std::filesystem::exists(path_)) {
+        if (!CopyFileW(path_.c_str(), backup.c_str(), FALSE)) {
+            error = L"无法备份现有禁用记录。";
+            std::error_code removeError;
+            std::filesystem::remove(temporary, removeError);
+            return false;
+        }
     }
     if (!MoveFileExW(temporary.c_str(), path_.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
         error = L"保存禁用记录失败：" + LastErrorText();

@@ -1,5 +1,7 @@
 #include "AppLaunchLockerWindow.h"
 
+#include "IconResolverService.h"
+#include "TaskExecutionService.h"
 #include "ThemedTaskProgressDialog.h"
 #include "ThemedUi.h"
 #include "ThemedWindowUi.h"
@@ -10,7 +12,9 @@
 #include <shellapi.h>
 
 #include <algorithm>
+#include <cstdint>
 #include <filesystem>
+#include <sstream>
 #include <optional>
 #include <string>
 #include <utility>
@@ -26,9 +30,25 @@ constexpr int ID_RESTORE = 1022;
 constexpr int ID_TAB_CONTROL = 1030;
 constexpr UINT WM_APP_SCAN_COMPLETE = WM_APP + 0x150;
 constexpr UINT WM_APP_OPERATION_COMPLETE = WM_APP + 0x151;
+constexpr UINT WM_APP_ICONS_COMPLETE = WM_APP + 0x152;
 
 struct OperationPayload {
     OperationResult result;
+};
+
+struct AppLaunchLockerIconLoadItem {
+    std::intptr_t rowKey = 0;
+    IconRequest request;
+};
+
+struct AppLaunchLockerIconResult {
+    std::intptr_t rowKey = 0;
+    ResolvedIcon icon;
+};
+
+struct AppLaunchLockerIconLoadResult {
+    std::uint64_t generation = 0;
+    std::vector<AppLaunchLockerIconResult> icons;
 };
 
 std::wstring QuoteArgument(const std::wstring& value) {
@@ -170,6 +190,47 @@ std::wstring MapField(const std::map<std::wstring, std::wstring>& values, const 
     return found == values.end() ? std::wstring{} : found->second;
 }
 
+IconRequest IconRequestFromFields(
+    const StartupSourceType source,
+    const std::wstring& command,
+    const std::map<std::wstring, std::wstring>& original,
+    const int size) {
+    IconRequest request;
+    request.size = size;
+    request.allowFallback = true;
+    request.stockIcon = source == StartupSourceType::Driver ? SIID_SHIELD : SIID_APPLICATION;
+
+    const std::wstring originalPath = MapField(original, L"originalPath");
+    if (!originalPath.empty()) {
+        request.kind = IconSourceKind::FilePath;
+        request.value = originalPath;
+        return request;
+    }
+
+    const std::wstring targetPath = MapField(original, L"targetPath");
+    if (!targetPath.empty()) {
+        request.kind = IconSourceKind::FilePath;
+        request.value = targetPath;
+        return request;
+    }
+
+    const std::wstring valueData = MapField(original, L"valueData");
+    if (!valueData.empty()) {
+        request.kind = IconSourceKind::CommandLine;
+        request.value = valueData;
+        return request;
+    }
+
+    if (!command.empty()) {
+        request.kind = IconSourceKind::CommandLine;
+        request.value = command;
+        return request;
+    }
+
+    request.kind = IconSourceKind::Stock;
+    return request;
+}
+
 bool IsAdvancedSource(StartupSourceType source) {
     switch (source) {
     case StartupSourceType::WmiSubscription:
@@ -239,6 +300,22 @@ std::wstring EntryStateText(const StartupItem& item) {
     if (item.readOnly || !item.canDisable) return L"仅查看";
     if (item.source == StartupSourceType::Service) return L"可管理";
     return L"已启用";
+}
+
+std::wstring SnapshotDiffSummary(const StartupSnapshotDiff& diff) {
+    std::wostringstream summary;
+    bool hasPart = false;
+    const auto append = [&](const wchar_t* label, std::size_t count) {
+        if (count == 0) return;
+        if (hasPart) summary << L" · ";
+        summary << label << L" " << count;
+        hasPart = true;
+    };
+    append(L"新增", diff.added.size());
+    append(L"移除", diff.removed.size());
+    append(L"变化", diff.changed.size());
+    append(L"状态变化", diff.stateChanged.size());
+    return hasPart ? summary.str() : std::wstring(L"无变化");
 }
 
 std::wstring DetailsText(const StartupItem& item) {
@@ -358,8 +435,10 @@ AppLaunchLockerWindow::AppLaunchLockerWindow(HINSTANCE instance, Theme theme)
 AppLaunchLockerWindow::~AppLaunchLockerWindow() {
     closing_ = true;
     if (scanTask_) scanTask_->RequestStop();
+    StopIconLoadTask();
     if (scanProgressDialog_) scanProgressDialog_->Close();
     JoinWorker();
+    DestroyItemImages();
 }
 
 int AppLaunchLockerWindow::Run() {
@@ -428,8 +507,10 @@ LRESULT AppLaunchLockerWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam
             SaveWindowPosition(hwnd_);
             closing_ = true;
             if (scanTask_) scanTask_->RequestStop();
+            StopIconLoadTask();
             if (scanProgressDialog_) scanProgressDialog_->Close();
             JoinWorker();
+            DestroyItemImages();
             PostQuitMessage(0);
         }
         return result;
@@ -479,12 +560,15 @@ LRESULT AppLaunchLockerWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam
         }
         scanTask_.reset();
         if (scanProgressDialog_) scanProgressDialog_->Close();
-        std::vector<DisabledRecord> disabled;
-        std::wstring storeError;
-        StartupManager().LoadDisabled(disabled, storeError);
-        CompleteScan(std::move(scan), std::move(disabled), std::move(storeError));
+            std::vector<DisabledRecord> disabled;
+            std::wstring storeError;
+            StartupManager().LoadDisabled(disabled, storeError);
+            CompleteScan(std::move(scan), std::move(disabled), std::move(storeError));
         return 0;
     }
+    case WM_APP_ICONS_COMPLETE:
+        ApplyIconLoadResult(static_cast<std::uint64_t>(wParam));
+        return 0;
     case WM_APP_OPERATION_COMPLETE: {
         std::unique_ptr<OperationPayload> payload(reinterpret_cast<OperationPayload*>(lParam));
         JoinWorker();
@@ -634,6 +718,8 @@ void AppLaunchLockerWindow::StartRestore() {
 void AppLaunchLockerWindow::CompleteScan(ScanResult result, std::vector<DisabledRecord> disabled, std::wstring storeError) {
     busy_ = false;
     storeAvailable_ = storeError.empty();
+    const StartupSnapshot currentSnapshot = BuildStartupSnapshot(result);
+    const bool completeScan = storeError.empty() && result.warnings.empty();
     items_ = std::move(result.items);
     disabled_ = std::move(disabled);
     RebuildTabs();
@@ -652,6 +738,33 @@ void AppLaunchLockerWindow::CompleteScan(ScanResult result, std::vector<Disabled
             L"，共 " + std::to_wstring(visibleItemIndexes_.size() + visibleDisabledIndexes_.size()) + L" 项；部分系统项目未能读取。";
         ThemedUi::SetText(statusText_, status);
         windowUi_->ui().SetStatusTextRole(statusText_, ThemedStatusRole::Warning);
+    }
+    if (completeScan) {
+        StartupSnapshot previousSnapshot;
+        std::wstring snapshotError;
+        StartupSnapshotStore snapshotStore;
+        if (!snapshotStore.Load(previousSnapshot, snapshotError)) {
+            AppendAppLaunchLockerLog(snapshotError);
+            ThemedUi::SetText(statusText_, L"扫描完成，但无法读取上次快照。");
+            windowUi_->ui().SetStatusTextRole(statusText_, ThemedStatusRole::Warning);
+        } else {
+            const StartupSnapshotDiff diff = DiffStartupSnapshots(previousSnapshot, currentSnapshot);
+            if (!snapshotStore.Save(currentSnapshot, snapshotError)) {
+                AppendAppLaunchLockerLog(snapshotError);
+                ThemedUi::SetText(statusText_, L"扫描完成，但无法保存本次快照。");
+                windowUi_->ui().SetStatusTextRole(statusText_, ThemedStatusRole::Warning);
+            } else {
+                const std::wstring title = activeTab_ >= 0 && activeTab_ < static_cast<int>(tabs_.size())
+                    ? tabs_[static_cast<std::size_t>(activeTab_)].title
+                    : std::wstring(L"自启动项");
+                ThemedUi::SetText(statusText_, L"当前页：" + title +
+                    L"，共 " + std::to_wstring(visibleItemIndexes_.size() + visibleDisabledIndexes_.size()) +
+                    L" 项；" + SnapshotDiffSummary(diff));
+                windowUi_->ui().SetStatusTextRole(statusText_, ThemedStatusRole::Normal);
+            }
+        }
+    } else if (!result.warnings.empty()) {
+        AppendAppLaunchLockerLog(L"扫描不完整，未覆盖启动项快照。");
     }
     showElevateLink_ = !result.warnings.empty() && !RunningAsAdmin();
     UpdateButtons();
@@ -695,12 +808,18 @@ void AppLaunchLockerWindow::RebuildTabs() {
 }
 
 void AppLaunchLockerWindow::RebuildRows() {
+    StopIconLoadTask();
     visibleItemIndexes_.clear();
     visibleDisabledIndexes_.clear();
     std::vector<ThemedTableRow> rows;
     const TabEntry tab = activeTab_ >= 0 && activeTab_ < static_cast<int>(tabs_.size())
         ? tabs_[static_cast<std::size_t>(activeTab_)]
         : TabEntry{MainTab::StartupItems, L"自启动项", 0};
+
+    DestroyItemImages();
+    itemIconSize_ = std::max(16, GetSystemMetrics(SM_CXSMICON));
+    itemSmallImages_ = ImageList_Create(itemIconSize_, itemIconSize_, ILC_COLOR32 | ILC_MASK,
+        std::max(1, static_cast<int>(items_.size() + disabled_.size())), 8);
 
     for (std::size_t index = 0; index < items_.size(); ++index) {
         const StartupItem& item = items_[index];
@@ -710,7 +829,7 @@ void AppLaunchLockerWindow::RebuildRows() {
             ? (item.source == StartupSourceType::Service ? std::wstring(L"改手动") : std::wstring(L"禁用"))
             : std::wstring(L"—");
         rows.push_back({static_cast<std::intptr_t>(visibleItemIndexes_.size()),
-            {{item.name},
+            {{item.name, -1},
              {StartupSourceText(item.source)},
              {EntrySummary(item)},
              {EntryStateText(item)},
@@ -723,7 +842,7 @@ void AppLaunchLockerWindow::RebuildRows() {
         if (!SourceBelongsToTab(record.source, tab.tab)) continue;
         visibleDisabledIndexes_.push_back(index);
         rows.push_back({static_cast<std::intptr_t>(100000 + visibleDisabledIndexes_.size()),
-            {{record.name},
+            {{record.name, -1},
              {StartupSourceText(record.source)},
              {EntrySummary(StartupItem{record.itemId, record.name, record.source, L"", L"", record.requiresAdmin, false, true, record.original})},
              {L"已禁用"},
@@ -732,11 +851,172 @@ void AppLaunchLockerWindow::RebuildRows() {
             false, true});
     }
 
+    ThemedUi::SetTableImageLists(itemTable_, itemSmallImages_, nullptr);
     ThemedUi::SetTableRows(itemTable_, rows);
     const std::wstring status = L"当前页：" + tab.title + L"，共 " + std::to_wstring(rows.size()) + L" 项";
     ThemedUi::SetText(statusText_, status);
     windowUi_->ui().SetStatusTextRole(statusText_, ThemedStatusRole::Normal);
     UpdateButtons();
+    StartIconLoadTask();
+}
+
+void AppLaunchLockerWindow::DestroyItemImages() {
+    if (itemTable_ && IsWindow(itemTable_)) {
+        ThemedUi::SetTableImageLists(itemTable_, nullptr, nullptr);
+    }
+    if (itemSmallImages_) {
+        ImageList_Destroy(itemSmallImages_);
+        itemSmallImages_ = nullptr;
+    }
+}
+
+void AppLaunchLockerWindow::StopIconLoadTask() {
+    ++iconGeneration_;
+    if (iconTask_) {
+        iconTask_->RequestStop();
+        if (iconTask_->IsFinished()) {
+            iconTask_.reset();
+        }
+    }
+}
+
+void AppLaunchLockerWindow::StartIconLoadTask() {
+    if (!hwnd_ || !itemTable_ || !itemSmallImages_) return;
+
+    std::vector<AppLaunchLockerIconLoadItem> iconItems;
+    iconItems.reserve(visibleItemIndexes_.size() + visibleDisabledIndexes_.size());
+    for (std::size_t row = 0; row < visibleItemIndexes_.size(); ++row) {
+        const std::size_t itemIndex = visibleItemIndexes_[row];
+        if (itemIndex >= items_.size()) continue;
+        const StartupItem& item = items_[itemIndex];
+        iconItems.push_back({static_cast<std::intptr_t>(row + 1),
+            IconRequestFromFields(item.source, item.command, item.original, itemIconSize_)});
+    }
+    for (std::size_t row = 0; row < visibleDisabledIndexes_.size(); ++row) {
+        const std::size_t recordIndex = visibleDisabledIndexes_[row];
+        if (recordIndex >= disabled_.size()) continue;
+        const DisabledRecord& record = disabled_[recordIndex];
+        iconItems.push_back({static_cast<std::intptr_t>(100000 + row + 1),
+            IconRequestFromFields(record.source, std::wstring{}, record.original, itemIconSize_)});
+    }
+    if (iconItems.empty()) return;
+
+    const std::uint64_t generation = iconGeneration_;
+    const HWND target = hwnd_;
+    TaskOptions options{};
+    options.mode = TaskExecutionMode::BackgroundSingle;
+    options.completionCallback = [target, generation] {
+        if (IsWindow(target)) {
+            PostMessageW(target, WM_APP_ICONS_COMPLETE, static_cast<WPARAM>(generation), 0);
+        }
+    };
+    iconTask_ = TaskExecutionService::StartTyped<AppLaunchLockerIconLoadResult>(
+        std::move(options),
+        [generation, iconItems = std::move(iconItems)](TaskContext& context) {
+            AppLaunchLockerIconLoadResult result;
+            result.generation = generation;
+            result.icons.reserve(iconItems.size());
+
+            TaskProgressUpdate progress{};
+            progress.phase = L"app-launch-locker-icons";
+            progress.title = L"自启动图标刷新";
+            progress.status = L"正在刷新图标";
+            progress.total = iconItems.size();
+            progress.current = 0;
+            progress.workerCount = 1;
+            progress.indeterminate = false;
+            context.Report(std::move(progress));
+
+            const HRESULT comResult = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+            IconResolverService resolver;
+            std::uint64_t completed = 0;
+            for (const AppLaunchLockerIconLoadItem& item : iconItems) {
+                if (context.StopRequested()) break;
+                AppLaunchLockerIconResult iconResult;
+                iconResult.rowKey = item.rowKey;
+                iconResult.icon = resolver.Resolve(item.request, context.StopToken());
+                result.icons.push_back(std::move(iconResult));
+                ++completed;
+                context.UpdateProgress([completed, total = static_cast<std::uint64_t>(iconItems.size())](TaskProgressUpdate& value) {
+                    value.current = completed;
+                    value.completed = completed;
+                    value.total = total;
+                    value.status = L"正在刷新图标";
+                    value.detail = L"已刷新 " + std::to_wstring(completed) + L" / " + std::to_wstring(total) + L" 个图标";
+                    value.indeterminate = false;
+                });
+            }
+            if (SUCCEEDED(comResult)) {
+                CoUninitialize();
+            }
+            return result;
+        });
+}
+
+void AppLaunchLockerWindow::ApplyIconLoadResult(std::uint64_t generation) {
+    if (!iconTask_ || generation != iconGeneration_ || !iconTask_->IsFinished()) return;
+    if (iconTask_->Status() != TaskStatus::Completed) {
+        iconTask_.reset();
+        return;
+    }
+
+    AppLaunchLockerIconLoadResult result = iconTask_->ResultCopy<AppLaunchLockerIconLoadResult>();
+    iconTask_.reset();
+    if (result.generation != iconGeneration_ || !itemTable_ || !itemSmallImages_) return;
+
+    bool updated = false;
+    for (const AppLaunchLockerIconResult& icon : result.icons) {
+        HBITMAP bitmap = IconResolverService::CreateBitmapFromPixels(
+            icon.icon,
+            itemIconSize_,
+            ThemedUi::ListSurfaceColor(theme_),
+            true);
+        if (!bitmap) continue;
+        const int imageIndex = ImageList_Add(itemSmallImages_, bitmap, nullptr);
+        DeleteObject(bitmap);
+        if (imageIndex < 0) continue;
+
+        const int rowIndex = ThemedUi::FindTableRowByKey(itemTable_, icon.rowKey);
+        if (rowIndex < 0) continue;
+
+        if (icon.rowKey > 0 && icon.rowKey < 100000) {
+            const std::size_t visibleIndex = static_cast<std::size_t>(icon.rowKey - 1);
+            if (visibleIndex >= visibleItemIndexes_.size()) continue;
+            const std::size_t itemIndex = visibleItemIndexes_[visibleIndex];
+            if (itemIndex >= items_.size()) continue;
+            const StartupItem& item = items_[itemIndex];
+            const std::wstring operation = item.canDisable
+                ? (item.source == StartupSourceType::Service ? std::wstring(L"改手动") : std::wstring(L"禁用"))
+                : std::wstring(L"—");
+            ThemedUi::UpdateTableRow(itemTable_, rowIndex, {icon.rowKey,
+                {{item.name, imageIndex},
+                 {StartupSourceText(item.source)},
+                 {EntrySummary(item)},
+                 {EntryStateText(item)},
+                 {L"详情"},
+                 {operation}},
+                false, true});
+            updated = true;
+        } else if (icon.rowKey > 100000) {
+            const std::size_t visibleIndex = static_cast<std::size_t>(icon.rowKey - 100001);
+            if (visibleIndex >= visibleDisabledIndexes_.size()) continue;
+            const std::size_t recordIndex = visibleDisabledIndexes_[visibleIndex];
+            if (recordIndex >= disabled_.size()) continue;
+            const DisabledRecord& record = disabled_[recordIndex];
+            ThemedUi::UpdateTableRow(itemTable_, rowIndex, {icon.rowKey,
+                {{record.name, imageIndex},
+                 {StartupSourceText(record.source)},
+                 {EntrySummary(StartupItem{record.itemId, record.name, record.source, L"", L"", record.requiresAdmin, false, true, record.original})},
+                 {L"已禁用"},
+                 {L"详情"},
+                 {L"恢复"}},
+                false, true});
+            updated = true;
+        }
+    }
+    if (updated) {
+        InvalidateRect(itemTable_, nullptr, FALSE);
+    }
 }
 
 void AppLaunchLockerWindow::SelectTab(int index) {

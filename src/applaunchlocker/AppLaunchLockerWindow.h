@@ -4,14 +4,17 @@
 #include "Theme.h"
 
 #include <windows.h>
+#include <commctrl.h>
 
 #include <atomic>
+#include <cstdint>
 #include <memory>
 #include <thread>
 #include <vector>
 
 class ThemedWindowUi;
 class ThemedTaskProgressDialog;
+class TaskHandle;
 class AppLaunchLockerWindow {
 public:
     enum class MainTab {
@@ -38,6 +41,10 @@ private:
     void CompleteOperation(OperationResult result);
     void RebuildTabs();
     void RebuildRows();
+    void DestroyItemImages();
+    void StopIconLoadTask();
+    void StartIconLoadTask();
+    void ApplyIconLoadResult(std::uint64_t generation);
     void UpdateButtons();
     void ShowSelectedDetails();
     void SelectTab(int index);
@@ -62,6 +69,8 @@ private:
     HWND detailsButton_ = nullptr;
     HWND disableButton_ = nullptr;
     HWND restoreButton_ = nullptr;
+    HIMAGELIST itemSmallImages_ = nullptr;
+    int itemIconSize_ = 16;
     std::vector<TabEntry> tabs_;
     std::vector<StartupItem> items_;
     std::vector<std::size_t> visibleItemIndexes_;
@@ -69,7 +78,9 @@ private:
     std::vector<DisabledRecord> disabled_;
     std::thread worker_;
     std::shared_ptr<ScanTaskHandle> scanTask_;
+    std::shared_ptr<TaskHandle> iconTask_;
     std::unique_ptr<ThemedTaskProgressDialog> scanProgressDialog_;
+    std::uint64_t iconGeneration_ = 1;
     std::atomic<bool> closing_{false};
     bool busy_ = false;
     bool storeAvailable_ = true;

@@ -253,6 +253,7 @@ private:
     bool EnsureNotificationIcon();
     void OpenSettings();
     void CommitSettingsConfig(const AppConfig& next, bool importedData);
+    bool CreateLinkNameTextFormats();
     void OpenBuiltinTool(std::size_t index);
     void OpenBuiltinToolEngine(const std::wstring& engine, bool locateProcessOnOpen = false);
     void ResetLayoutToDefaults();

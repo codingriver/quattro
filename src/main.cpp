@@ -550,6 +550,7 @@ void WriteStartupReport(
     file << "show_toolbox_button=" << (config.showToolboxButton ? 1 : 0) << "\n";
     file << "show_skin_button=" << (config.showSkinButton ? 1 : 0) << "\n";
     file << "link_name_single_line=" << (config.linkNameSingleLine ? 1 : 0) << "\n";
+    file << "link_name_bold=" << (config.linkNameBold ? 1 : 0) << "\n";
     file << "show_tooltip=" << (config.showTooltip ? 1 : 0) << "\n";
     file << "group_right=" << (config.groupRight ? 1 : 0) << "\n";
     file << "tag_right=" << (config.tagRight ? 1 : 0) << "\n";

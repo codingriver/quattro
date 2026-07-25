@@ -495,6 +495,12 @@ add_executable(AppLaunchLocker WIN32
     src/applaunchlocker/AdBlockWindow.cpp
     src/common/AppLog.cpp
     src/common/FileDialog.cpp
+    src/domain/MenuCatalog.cpp
+    src/domain/TrackedContextMenuProviders.cpp
+    src/services/IconResolverService.cpp
+    src/services/ShellItemService.cpp
+    src/services/SystemFunctions.cpp
+    src/services/TerminalContextMenuService.cpp
 )
 set_target_properties(AppLaunchLocker PROPERTIES
     EXCLUDE_FROM_ALL TRUE
@@ -517,6 +523,7 @@ target_compile_options(AppLaunchLocker PRIVATE
 target_link_libraries(AppLaunchLocker PRIVATE
     AppLaunchLockerCore
     QuattroThemedUi
+    windowscodecs
 )
 
 target_link_options(AppLaunchLocker PRIVATE

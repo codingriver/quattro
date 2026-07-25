@@ -1127,6 +1127,7 @@ int wmain() {
     Check(config.hideAfterLink, "Config default hide after link");
     Check(!config.hideWhenInactive, "Config default hide inactive");
     Check(!config.hideMainAfterToolOpen, "Config default keep main after tool open");
+    Check(config.linkNameBold, "Config default link name bold");
     Check(!config.hideOnStart, "Config default hide on start");
     Check(!config.autoRun, "Config default auto run");
     Check(!config.registerCopyPathContextMenu, "Config default copy path context menu disabled");
@@ -1152,6 +1153,7 @@ int wmain() {
     config.webDavKeepCount = 7;
     config.loggingEnabled = false;
     config.hideMainAfterToolOpen = true;
+    config.linkNameBold = false;
     for (const auto& provider : TrackedContextMenuProviders()) {
         config.*(provider.configMember) = true;
     }
@@ -1180,6 +1182,7 @@ int wmain() {
     Check(loaded.webDavKeepCount == 7, "Config webdav keep count");
     Check(!loaded.loggingEnabled, "Config logging enabled");
     Check(loaded.hideMainAfterToolOpen, "Config hide main after tool open round trip");
+    Check(!loaded.linkNameBold, "Config link name bold round trip");
     for (const auto& provider : TrackedContextMenuProviders()) {
         Check(loaded.*(provider.configMember), "Config context menu tracking round trip");
     }

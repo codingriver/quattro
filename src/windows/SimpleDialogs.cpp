@@ -3662,6 +3662,7 @@ private:
             value.showToolboxButton = ThemedUi::IsChecked(showToolboxButton_);
             value.showSkinButton = ThemedUi::IsChecked(showSkinButton_);
             value.linkNameSingleLine = !ThemedUi::IsChecked(linkNameSingleLine_);
+            value.linkNameBold = ThemedUi::IsChecked(linkNameBold_);
             value.showTooltip = ThemedUi::IsChecked(showTooltip_);
             value.groupRight = ThemedUi::IsChecked(groupRight_);
             value.tagRight = ThemedUi::IsChecked(tagRight_);
@@ -4776,6 +4777,7 @@ private:
             linkNameSingleLine_ = CheckBox(TabDisplay, 118, L"启动项名称多行显示", behaviorLeft, displayLayoutFirstY, !draft_.linkNameSingleLine, behaviorCheckWidth);
             groupRight_ = CheckBox(TabDisplay, 120, L"分组栏在右侧", behaviorRight, displayLayoutFirstY, draft_.groupRight, behaviorCheckWidth);
             tagRight_ = CheckBox(TabDisplay, 122, L"标签栏在右侧", behaviorLeft, displayLayoutSecondY, draft_.tagRight, behaviorCheckWidth);
+            linkNameBold_ = CheckBox(TabDisplay, 123, L"启动项文本加粗", behaviorRight, displayLayoutSecondY, draft_.linkNameBold, behaviorCheckWidth);
 
             const int displayLabelWidth = behaviorForm.labelWidthForTexts({L"透明度", L"标签文字", L"分组宽度", L"标签宽度"});
             const int displayFieldWidth = behaviorColumnWidth - displayLabelWidth - behaviorLayout.labelGap;
@@ -4800,7 +4802,7 @@ private:
             HWND tagWidthLabel = Label(TabDisplay, L"标签宽度", behaviorRight, displayFourthLabelY, displayLabelWidth);
             tagWidthEdit_ = NumberEdit(TabDisplay, ID_TAG_WIDTH, behaviorRight + displayLabelWidth + behaviorLayout.labelGap, displayFourthFieldY, displayFieldWidth, draft_.tagWidth);
             ThemedUi::BindGroupChildren(displayLayoutGroup, {
-                linkNameSingleLine_, groupRight_, tagRight_, alphaLabel, alphaEdit_, tagAlignLabel,
+                linkNameSingleLine_, groupRight_, tagRight_, linkNameBold_, alphaLabel, alphaEdit_, tagAlignLabel,
                 tagAlignLeft_, tagAlignCenter_, tagAlignRight_, groupWidthLabel, groupWidthEdit_, tagWidthLabel, tagWidthEdit_});
 
             const int behaviorDelayLabelWidth = behaviorForm.labelWidthForText(L"停靠延迟");
@@ -5624,6 +5626,7 @@ private:
     std::vector<ContextMenuProviderIconInfo> contextMenuProviderIcons_;
     std::vector<int> contextMenuProviderImageIndexes_;
     HWND linkNameSingleLine_ = nullptr;
+    HWND linkNameBold_ = nullptr;
     HWND showTooltip_ = nullptr;
     HWND groupRight_ = nullptr;
     HWND tagRight_ = nullptr;

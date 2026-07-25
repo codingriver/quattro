@@ -1,10 +1,26 @@
-app-launch-locker: AppLaunchLocker.exe not found beside acceptance executable
-app-launch-locker: AppLaunchLocker.exe not found beside acceptance executable
-app-launch-locker: AppLaunchLocker.exe not found beside acceptance executable
-ad-block: AppLaunchLocker.exe not found beside acceptance executable
-quick-import-store-icon-progress: expected text not found: ???
+table-checkable-states: first-column checkbox is not painted at the public column origin
+table-column-resize: header divider count is not column count - 1 after column width change
+ad-block: progress dialog did not report parallel workers
+ad-block: progress dialog did not distinguish registered auto-start entries
+ad-block: running check action did not switch to view-progress state
+ad-block running progress: screenshot bitmap was not created
+ad-block: check button did not complete recursive directory checking
+quick-import-service: missing path validation failed
+quick-import-service: valid directory returned an error
+quick-import-service: explicit directory scan returned unexpected items
+quick-import-progress: parallel worker progress was not displayed
+quick-import-progress-running: expected text not found: ?????????
+quick-import-progress-running: expected text not found: ?????
+quick-import-progress: scan did not complete
+quick-import-progress: completed progress dialog did not close automatically
+quick-import-progress: completed results were not applied
+quick-import-progress: result count includes missing or folder rows
+quick-import-progress: second scan did not enter parallel processing
+quick-import-progress: stop request did not finish
+quick-import-progress-stopped: expected text not found: ?????
 builtin-clock-100-seconds: expected text not found: ????
 builtin-clock-100-milliseconds: expected text not found: ????
+builtin-clock-100-milliseconds: changed the foreground window
 builtin-clock-125-seconds: expected text not found: ????
 builtin-clock-125-milliseconds: expected text not found: ????
 builtin-clock-150-seconds: expected text not found: ????

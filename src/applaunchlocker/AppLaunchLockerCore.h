@@ -56,6 +56,28 @@ struct ScanResult {
     std::vector<std::wstring> warnings;
 };
 
+struct StartupSnapshotEntry {
+    std::wstring entryId;
+    StartupSourceType source = StartupSourceType::Registry;
+    std::wstring displayName;
+    std::wstring targetPath;
+    std::wstring state;
+    std::wstring fingerprint;
+};
+
+struct StartupSnapshot {
+    std::wstring capturedAt;
+    std::wstring scanId;
+    std::vector<StartupSnapshotEntry> entries;
+};
+
+struct StartupSnapshotDiff {
+    std::vector<StartupSnapshotEntry> added;
+    std::vector<StartupSnapshotEntry> removed;
+    std::vector<StartupSnapshotEntry> changed;
+    std::vector<StartupSnapshotEntry> stateChanged;
+};
+
 enum class AdBlockScanPhase {
     Validating,
     Enumerating,
@@ -110,6 +132,21 @@ std::wstring StartupSourceText(StartupSourceType source);
 bool StartupSourceFromKey(const std::wstring& key, StartupSourceType& source);
 std::filesystem::path AppLaunchLockerDataDirectory();
 void AppendAppLaunchLockerLog(const std::wstring& message);
+StartupSnapshot BuildStartupSnapshot(const ScanResult& scan, const std::wstring& scanId = L"");
+StartupSnapshotDiff DiffStartupSnapshots(const StartupSnapshot& previous, const StartupSnapshot& current);
+
+class StartupSnapshotStore {
+public:
+    StartupSnapshotStore();
+    explicit StartupSnapshotStore(std::filesystem::path path);
+
+    bool Load(StartupSnapshot& snapshot, std::wstring& error) const;
+    bool Save(const StartupSnapshot& snapshot, std::wstring& error) const;
+    const std::filesystem::path& path() const { return path_; }
+
+private:
+    std::filesystem::path path_;
+};
 
 class DisabledItemStore {
 public:

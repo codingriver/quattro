@@ -140,6 +140,26 @@ bool JsonFormat(const std::vector<std::wstring>& arguments) {
     return ArgumentValue(arguments, L"--format") == L"json";
 }
 
+bool IsStartupGuiLaunchIntent(const std::vector<std::wstring>& arguments) {
+    if (arguments.empty()) return true;
+    bool sawLaunchSource = false;
+    bool sawProtocolVersion = false;
+    for (std::size_t index = 0; index < arguments.size();) {
+        if (arguments[index] == L"--launch-source" && index + 1 < arguments.size()) {
+            sawLaunchSource = true;
+            index += 2;
+            continue;
+        }
+        if (arguments[index] == L"--protocol-version" && index + 1 < arguments.size()) {
+            sawProtocolVersion = true;
+            index += 2;
+            continue;
+        }
+        return false;
+    }
+    return sawLaunchSource && sawProtocolVersion;
+}
+
 std::wstring ScanPlain(const ScanResult& result) {
     std::wostringstream output;
     for (const auto& item : result.items) {
@@ -331,14 +351,12 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int) {
         LocalFree(rawArguments);
         return 0;
     }
-    const bool adBlockMode =
-        argumentCount == 2 && rawArguments && wcscmp(rawArguments[1], L"--ad-block") == 0;
     std::vector<std::wstring> arguments;
-    if (!adBlockMode) {
-        for (int index = 1; rawArguments && index < argumentCount; ++index) arguments.emplace_back(rawArguments[index]);
-    }
+    for (int index = 1; rawArguments && index < argumentCount; ++index) arguments.emplace_back(rawArguments[index]);
     if (rawArguments) LocalFree(rawArguments);
-    if (!arguments.empty()) return RunCli(arguments);
+    const bool adBlockMode = arguments.size() == 1 && arguments[0] == L"--ad-block";
+    const bool startupGuiMode = IsStartupGuiLaunchIntent(arguments);
+    if (!adBlockMode && !startupGuiMode) return RunCli(arguments);
 
     // 广告拦截简化窗口入口：工具箱「广告拦截」以 --ad-block 拉起本 exe。
     if (adBlockMode) {

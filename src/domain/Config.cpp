@@ -69,6 +69,7 @@ AppConfig ConfigService::Load() const {
     config.showGroup = ReadBool(L"bShowGroup", config.showGroup);
     config.showTag = ReadBool(L"bShowTag", config.showTag);
     config.linkNameSingleLine = ReadBool(L"bLnkNameSingleline", config.linkNameSingleLine);
+    config.linkNameBold = ReadBool(L"bLnkNameBold", config.linkNameBold);
     config.showTooltip = ReadBool(L"bShowTooltip", config.showTooltip);
 
     config.autoDock = ReadBool(L"bAutoDock", ReadBool(L"bAutoDick", config.autoDock));
@@ -251,6 +252,7 @@ AppConfig ConfigService::LoadForSchemaUpgrade(int targetVersion, bool& compatibl
     readBool(L"bShowGroup", config.showGroup);
     readBool(L"bShowTag", config.showTag);
     readBool(L"bLnkNameSingleline", config.linkNameSingleLine);
+    readBool(L"bLnkNameBold", config.linkNameBold);
     readBool(L"bShowTooltip", config.showTooltip);
     readBoolLegacy(L"bAutoDock", L"bAutoDick", config.autoDock);
     readInt(L"bDockCorner", config.dockCorner);
@@ -395,6 +397,7 @@ void ConfigService::SaveWindowState(const AppConfig& config) const {
     WriteInt(L"bShowGroup", config.showGroup ? 1 : 0);
     WriteInt(L"bShowTag", config.showTag ? 1 : 0);
     WriteInt(L"bLnkNameSingleline", config.linkNameSingleLine ? 1 : 0);
+    WriteInt(L"bLnkNameBold", config.linkNameBold ? 1 : 0);
     WriteInt(L"bShowTooltip", config.showTooltip ? 1 : 0);
     WriteInt(L"bHideAfterLink", config.hideAfterLink ? 1 : 0);
     WriteInt(L"bHideMainAfterToolOpen", config.hideMainAfterToolOpen ? 1 : 0);
@@ -440,6 +443,7 @@ void ConfigService::Save(const AppConfig& config) const {
     SaveWindowState(config);
     WriteInt(L"bAutoRun", config.autoRun ? 1 : 0);
     WriteInt(L"bLnkNameSingleline", config.linkNameSingleLine ? 1 : 0);
+    WriteInt(L"bLnkNameBold", config.linkNameBold ? 1 : 0);
     WriteInt(L"bShowTooltip", config.showTooltip ? 1 : 0);
     WriteInt(L"nDockDelay", config.dockDelay);
     WriteInt(L"bHideOnStart", config.hideOnStart ? 1 : 0);

@@ -55,6 +55,14 @@ int wmain() {
     records = {registry, service};
 
     ok &= Check(store.Save(records, error), L"store save should succeed");
+    {
+        std::ifstream saved(file, std::ios::binary);
+        const std::string json((std::istreambuf_iterator<char>(saved)), std::istreambuf_iterator<char>());
+        ok &= Check(json.find("\"schemaVersion\": 2") != std::string::npos,
+            L"store save should use schema version 2");
+        ok &= Check(json.find("\"records\"") != std::string::npos && json.find("\"restore\"") != std::string::npos,
+            L"schema version 2 should use records and restore fields");
+    }
     std::vector<DisabledRecord> loaded;
     ok &= Check(store.Load(loaded, error), L"saved store should load");
     ok &= Check(loaded.size() == 2, L"saved store should preserve record count");
@@ -63,6 +71,37 @@ int wmain() {
         ok &= Check(loaded[0].original == registry.original, L"registry restore fields should round-trip");
         ok &= Check(loaded[1].requiresAdmin, L"requiresAdmin should round-trip");
         ok &= Check(loaded[1].original == service.original, L"service restore fields should round-trip");
+    }
+
+    {
+        const std::filesystem::path legacyFile = directory / L"legacy-disabled-items.json";
+        {
+            std::ofstream legacy(legacyFile, std::ios::binary | std::ios::trunc);
+            legacy << R"({
+  "version": 1,
+  "items": [{
+    "recordId": "legacy-record",
+    "itemId": "legacy-item",
+    "source": "registry",
+    "name": "Legacy Item",
+    "disabledAt": "2026-07-13T12:00:00Z",
+    "requiresAdmin": false,
+    "original": {"hive": "HKCU", "key": "Software\\Example"}
+  }]
+})";
+        }
+        DisabledItemStore legacyStore(legacyFile);
+        std::vector<DisabledRecord> legacyRecords;
+        ok &= Check(legacyStore.Load(legacyRecords, error), L"version 1 store should load for migration");
+        ok &= Check(legacyRecords.size() == 1 && legacyRecords[0].itemId == L"legacy-item",
+            L"version 1 record should preserve its entry id");
+        ok &= Check(legacyStore.Save(legacyRecords, error), L"version 1 store should save as version 2");
+        std::ifstream migrated(legacyFile, std::ios::binary);
+        const std::string migratedJson((std::istreambuf_iterator<char>(migrated)), std::istreambuf_iterator<char>());
+        ok &= Check(migratedJson.find("\"schemaVersion\": 2") != std::string::npos,
+            L"version 1 store should migrate to version 2");
+        ok &= Check(std::filesystem::exists(legacyFile.wstring() + L".bak"),
+            L"version 1 migration should preserve the previous file as backup");
     }
 
     for (StartupSourceType source : {StartupSourceType::Registry, StartupSourceType::StartupFolder,
@@ -83,6 +122,80 @@ int wmain() {
     loaded.clear();
     ok &= Check(!store.Load(loaded, error), L"malformed store should block modifications");
     ok &= Check(!error.empty(), L"malformed store should report an error");
+
+    {
+        ScanResult previousScan;
+        StartupItem oldItem;
+        oldItem.id = L"registry-old";
+        oldItem.source = StartupSourceType::Registry;
+        oldItem.name = L"Old App";
+        oldItem.location = L"HKCU\\Run";
+        oldItem.command = L"C:\\Old\\old.exe";
+        oldItem.canDisable = true;
+        oldItem.readOnly = false;
+        previousScan.items.push_back(oldItem);
+
+        StartupItem changedItem = oldItem;
+        changedItem.id = L"registry-changed";
+        changedItem.name = L"Changed App";
+        changedItem.command = L"C:\\Changed\\old.exe";
+        previousScan.items.push_back(changedItem);
+
+        StartupItem stateItem = oldItem;
+        stateItem.id = L"registry-state";
+        stateItem.name = L"State App";
+        previousScan.items.push_back(stateItem);
+
+        ScanResult currentScan;
+        StartupItem changedNow = changedItem;
+        changedNow.command = L"C:\\Changed\\new.exe";
+        currentScan.items.push_back(changedNow);
+
+        StartupItem stateNow = stateItem;
+        stateNow.canDisable = false;
+        stateNow.readOnly = true;
+        currentScan.items.push_back(stateNow);
+
+        StartupItem addedItem;
+        addedItem.id = L"registry-added";
+        addedItem.source = StartupSourceType::Registry;
+        addedItem.name = L"Added App";
+        addedItem.location = L"HKCU\\Run";
+        addedItem.command = L"C:\\Added\\added.exe";
+        addedItem.canDisable = true;
+        addedItem.readOnly = false;
+        currentScan.items.push_back(addedItem);
+
+        StartupSnapshot previous = BuildStartupSnapshot(previousScan, L"previous-scan");
+        StartupSnapshot current = BuildStartupSnapshot(currentScan, L"current-scan");
+        ok &= Check(previous.entries.size() == 3 && previous.scanId == L"previous-scan",
+            L"snapshot builder should preserve scan id and entries");
+
+        const std::filesystem::path snapshotFile = directory / L"startup-snapshot.json";
+        StartupSnapshotStore snapshotStore(snapshotFile);
+        ok &= Check(snapshotStore.Save(current, error), L"snapshot save should succeed");
+        StartupSnapshot loadedSnapshot;
+        ok &= Check(snapshotStore.Load(loadedSnapshot, error), L"snapshot load should succeed");
+        ok &= Check(loadedSnapshot.entries.size() == current.entries.size() && loadedSnapshot.scanId == L"current-scan",
+            L"snapshot should round-trip");
+
+        const StartupSnapshotDiff diff = DiffStartupSnapshots(previous, current);
+        ok &= Check(diff.added.size() == 1 && diff.added[0].entryId == L"registry-added",
+            L"snapshot diff should detect added entries");
+        ok &= Check(diff.removed.size() == 1 && diff.removed[0].entryId == L"registry-old",
+            L"snapshot diff should detect removed entries");
+        ok &= Check(diff.changed.size() == 1 && diff.changed[0].entryId == L"registry-changed",
+            L"snapshot diff should detect content changes");
+        ok &= Check(diff.stateChanged.size() == 1 && diff.stateChanged[0].entryId == L"registry-state",
+            L"snapshot diff should detect state changes");
+
+        {
+            std::ofstream malformedSnapshot(snapshotFile, std::ios::binary | std::ios::trunc);
+            malformedSnapshot << "{not-json";
+        }
+        ok &= Check(!snapshotStore.Load(loadedSnapshot, error), L"malformed snapshot should report an error");
+        ok &= Check(!error.empty(), L"malformed snapshot should not be silently accepted");
+    }
 
     const ScanResult scan = StartupManager(DisabledItemStore(directory / L"unused.json")).ScanAll();
     for (const auto& item : scan.items) {

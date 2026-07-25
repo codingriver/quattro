@@ -1955,23 +1955,18 @@ bool MainWindow::Create() {
                                      DWRITE_FONT_STRETCH_NORMAL, 13.0f, L"zh-cn", &navSelectedFormat_);
     dwriteFactory_->CreateTextFormat(L"Microsoft YaHei UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
                                      DWRITE_FONT_STRETCH_NORMAL, 11.0f, L"zh-cn", &smallFormat_);
-    dwriteFactory_->CreateTextFormat(L"Microsoft YaHei UI", nullptr, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_FONT_STYLE_NORMAL,
-                                     DWRITE_FONT_STRETCH_NORMAL, 13.0f, L"zh-cn", &linkNameFormat_);
-    dwriteFactory_->CreateTextFormat(L"Microsoft YaHei UI", nullptr, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_FONT_STYLE_NORMAL,
-                                     DWRITE_FONT_STRETCH_NORMAL, 11.0f, L"zh-cn", &linkNameSmallFormat_);
+    if (!CreateLinkNameTextFormats()) {
+        return false;
+    }
     if (!titleFormat_ || !textFormat_ || !smallFormat_ || !linkNameFormat_ || !linkNameSmallFormat_) {
         return false;
     }
     titleFormat_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
     textFormat_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
     smallFormat_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
-    linkNameFormat_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
-    linkNameSmallFormat_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
     titleFormat_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
     textFormat_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
     smallFormat_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-    linkNameFormat_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-    linkNameSmallFormat_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
     if (navSelectedFormat_) {
         navSelectedFormat_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
         navSelectedFormat_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
@@ -5348,6 +5343,44 @@ void MainWindow::CommitSettingsConfig(const AppConfig& next, bool importedData) 
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
+bool MainWindow::CreateLinkNameTextFormats() {
+    if (!dwriteFactory_) {
+        return false;
+    }
+    SafeRelease(linkNameFormat_);
+    SafeRelease(linkNameSmallFormat_);
+
+    const DWRITE_FONT_WEIGHT weight = config_.linkNameBold
+        ? DWRITE_FONT_WEIGHT_SEMI_BOLD
+        : DWRITE_FONT_WEIGHT_NORMAL;
+    dwriteFactory_->CreateTextFormat(
+        L"Microsoft YaHei UI",
+        nullptr,
+        weight,
+        DWRITE_FONT_STYLE_NORMAL,
+        DWRITE_FONT_STRETCH_NORMAL,
+        13.0f,
+        L"zh-cn",
+        &linkNameFormat_);
+    dwriteFactory_->CreateTextFormat(
+        L"Microsoft YaHei UI",
+        nullptr,
+        weight,
+        DWRITE_FONT_STYLE_NORMAL,
+        DWRITE_FONT_STRETCH_NORMAL,
+        11.0f,
+        L"zh-cn",
+        &linkNameSmallFormat_);
+    if (!linkNameFormat_ || !linkNameSmallFormat_) {
+        return false;
+    }
+    linkNameFormat_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+    linkNameSmallFormat_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+    linkNameFormat_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+    linkNameSmallFormat_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+    return true;
+}
+
 void MainWindow::OpenBuiltinTool(std::size_t index) {
     if (menuToolEngines_.empty()) {
         const auto plugins = BuiltinToolMenuPlugins(pluginRegistry_.LoadPlugins());
@@ -5384,11 +5417,15 @@ void MainWindow::OpenBuiltinToolEngine(const std::wstring& engine, bool locatePr
             ShowThemedMessageBox(hwnd_, instance_, theme_, prepared.message, L"自启动管理", MB_OK | MB_ICONWARNING);
             return;
         }
+        std::wstring commandLine = L"\"" + prepared.path.wstring() +
+            L"\" --launch-source quattro --protocol-version 1";
+        std::vector<wchar_t> commandBuffer(commandLine.begin(), commandLine.end());
+        commandBuffer.push_back(L'\0');
         STARTUPINFOW startup{};
         startup.cb = sizeof(startup);
         PROCESS_INFORMATION process{};
         if (!CreateProcessW(
-                prepared.path.c_str(), nullptr, nullptr, nullptr, FALSE, 0, nullptr,
+                prepared.path.c_str(), commandBuffer.data(), nullptr, nullptr, FALSE, 0, nullptr,
                 prepared.path.parent_path().c_str(), &startup, &process)) {
             const std::wstring error = L"无法启动自启动管理工具：" + FormatLastError(GetLastError());
             WriteAppLog(error);
@@ -6752,6 +6789,9 @@ void MainWindow::SyncHttpServerRuntime(const AppConfig& previous) {
 }
 
 void MainWindow::ApplyConfigRuntimeChanges(const AppConfig& previous) {
+    if (previous.linkNameBold != config_.linkNameBold) {
+        CreateLinkNameTextFormats();
+    }
     ApplyMainWindowAlpha(hwnd_, config_.alpha);
     SetWindowPos(hwnd_,
                  MainWindowTopMostInsertAfter(config_.topMost),
