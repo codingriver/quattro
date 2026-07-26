@@ -169,6 +169,77 @@ std::wstring EscapeJson(const std::wstring& value) {
     return output;
 }
 
+std::wstring SerializeJsonValue(const JsonValue& value) {
+    switch (value.type) {
+    case JsonValue::Type::Null:
+        return L"null";
+    case JsonValue::Type::Bool:
+        return value.boolValue ? L"true" : L"false";
+    case JsonValue::Type::Number: {
+        std::wostringstream output;
+        output << std::setprecision(17) << value.numberValue;
+        return output.str();
+    }
+    case JsonValue::Type::String:
+        return L"\"" + EscapeJson(value.stringValue) + L"\"";
+    case JsonValue::Type::Array: {
+        std::wstring output = L"[";
+        for (std::size_t index = 0; index < value.arrayValue.size(); ++index) {
+            if (index) output += L",";
+            output += SerializeJsonValue(value.arrayValue[index]);
+        }
+        return output + L"]";
+    }
+    case JsonValue::Type::Object: {
+        std::wstring output = L"{";
+        std::size_t index = 0;
+        for (const auto& [key, field] : value.objectValue) {
+            if (index++) output += L",";
+            output += L"\"" + EscapeJson(key) + L"\":" + SerializeJsonValue(field);
+        }
+        return output + L"}";
+    }
+    }
+    return L"null";
+}
+
+DisabledRecord::RestoreValueType DefaultRestoreValueType(const std::wstring& key) {
+    static const std::set<std::wstring> booleanFields{
+        L"delayed", L"protected", L"wasEnabled", L"autoStartTrigger", L"saHadOriginal",
+        L"ifeoHadOriginal", L"hasAutoStart", L"autoStartRequiresAdmin"};
+    static const std::set<std::wstring> numberFields{
+        L"valueType", L"serviceType", L"startType", L"currentState", L"ifeoView", L"ifeoOriginalType"};
+    if (booleanFields.contains(key)) return DisabledRecord::RestoreValueType::Boolean;
+    if (numberFields.contains(key)) return DisabledRecord::RestoreValueType::Number;
+    return DisabledRecord::RestoreValueType::String;
+}
+
+std::wstring SerializeRestoreValue(
+    const std::wstring& key,
+    const std::wstring& value,
+    const std::map<std::wstring, DisabledRecord::RestoreValueType>& types) {
+    const auto found = types.find(key);
+    const DisabledRecord::RestoreValueType type = found == types.end() ? DefaultRestoreValueType(key) : found->second;
+    switch (type) {
+    case DisabledRecord::RestoreValueType::Boolean:
+        return value == L"1" || value == L"true" || value == L"TRUE" ? L"true" : L"false";
+    case DisabledRecord::RestoreValueType::Number: {
+        wchar_t* end = nullptr;
+        wcstod(value.c_str(), &end);
+        return end && end != value.c_str() && *end == L'\0' ? value : L"0";
+    }
+    case DisabledRecord::RestoreValueType::Json: {
+        JsonValue parsed;
+        std::wstring error;
+        if (ParseJson(value, parsed, error)) return SerializeJsonValue(parsed);
+        return L"\"" + EscapeJson(value) + L"\"";
+    }
+    case DisabledRecord::RestoreValueType::String:
+    default:
+        return L"\"" + EscapeJson(value) + L"\"";
+    }
+}
+
 std::wstring CurrentTimestamp() {
     SYSTEMTIME time{};
     GetSystemTime(&time);
@@ -407,6 +478,60 @@ std::wstring TaskCommand(IRegisteredTask* task) {
     return command;
 }
 
+std::wstring TaskTriggerTypeText(TASK_TRIGGER_TYPE2 type) {
+    switch (type) {
+    case TASK_TRIGGER_EVENT: return L"事件";
+    case TASK_TRIGGER_TIME: return L"一次";
+    case TASK_TRIGGER_DAILY: return L"每天";
+    case TASK_TRIGGER_WEEKLY: return L"每周";
+    case TASK_TRIGGER_MONTHLY: return L"每月";
+    case TASK_TRIGGER_MONTHLYDOW: return L"每月按星期";
+    case TASK_TRIGGER_IDLE: return L"空闲";
+    case TASK_TRIGGER_REGISTRATION: return L"注册时";
+    case TASK_TRIGGER_BOOT: return L"开机";
+    case TASK_TRIGGER_LOGON: return L"登录";
+    case TASK_TRIGGER_SESSION_STATE_CHANGE: return L"会话变化";
+    case TASK_TRIGGER_CUSTOM_TRIGGER_01: return L"自定义";
+    default: return L"其它";
+    }
+}
+
+std::wstring TaskTriggerSummary(IRegisteredTask* task) {
+    ITaskDefinition* definition = nullptr;
+    if (FAILED(task->get_Definition(&definition)) || !definition) return {};
+    ITriggerCollection* triggers = nullptr;
+    if (FAILED(definition->get_Triggers(&triggers)) || !triggers) {
+        definition->Release();
+        return {};
+    }
+    LONG count = 0;
+    triggers->get_Count(&count);
+    std::vector<std::wstring> parts;
+    parts.reserve(static_cast<std::size_t>((std::max<LONG>)(count, 0)));
+    for (LONG index = 1; index <= count; ++index) {
+        ITrigger* trigger = nullptr;
+        if (FAILED(triggers->get_Item(index, &trigger)) || !trigger) continue;
+        TASK_TRIGGER_TYPE2 type{};
+        if (SUCCEEDED(trigger->get_Type(&type))) {
+            const std::wstring text = TaskTriggerTypeText(type);
+            if (std::find(parts.begin(), parts.end(), text) == parts.end()) {
+                parts.push_back(text);
+            }
+        }
+        trigger->Release();
+    }
+    triggers->Release();
+    definition->Release();
+    if (parts.empty()) return {};
+    std::wstring summary;
+    for (const std::wstring& part : parts) {
+        if (!summary.empty()) summary += L"、";
+        summary += part;
+    }
+    if (count > 1) summary += L"（共 " + std::to_wstring(count) + L" 个触发器）";
+    return summary;
+}
+
 bool TaskHasAutomaticTrigger(IRegisteredTask* task) {
     ITaskDefinition* definition = nullptr;
     if (FAILED(task->get_Definition(&definition)) || !definition) return false;
@@ -432,6 +557,33 @@ bool TaskHasAutomaticTrigger(IRegisteredTask* task) {
     return automatic;
 }
 
+bool TaskHasApplicationAutoStartTrigger(IRegisteredTask* task) {
+    ITaskDefinition* definition = nullptr;
+    if (FAILED(task->get_Definition(&definition)) || !definition) return false;
+    ITriggerCollection* triggers = nullptr;
+    if (FAILED(definition->get_Triggers(&triggers)) || !triggers) {
+        definition->Release();
+        return false;
+    }
+    LONG count = 0;
+    triggers->get_Count(&count);
+    bool autoStart = false;
+    for (LONG index = 1; index <= count && !autoStart; ++index) {
+        ITrigger* trigger = nullptr;
+        if (FAILED(triggers->get_Item(index, &trigger)) || !trigger) continue;
+        TASK_TRIGGER_TYPE2 type{};
+        if (SUCCEEDED(trigger->get_Type(&type))) {
+            autoStart = type == TASK_TRIGGER_BOOT ||
+                type == TASK_TRIGGER_LOGON ||
+                type == TASK_TRIGGER_SESSION_STATE_CHANGE;
+        }
+        trigger->Release();
+    }
+    triggers->Release();
+    definition->Release();
+    return autoStart;
+}
+
 void ScanTaskFolder(ITaskFolder* folder, ScanResult& result) {
     IRegisteredTaskCollection* tasks = nullptr;
     if (SUCCEEDED(folder->GetTasks(TASK_ENUM_HIDDEN, &tasks)) && tasks) {
@@ -446,7 +598,7 @@ void ScanTaskFolder(ITaskFolder* folder, ScanResult& result) {
             if (FAILED(tasks->get_Item(itemIndex, &task)) || !task) continue;
             VARIANT_BOOL enabled = VARIANT_FALSE;
             task->get_Enabled(&enabled);
-            if (enabled == VARIANT_FALSE || !TaskHasAutomaticTrigger(task)) {
+            if (!TaskHasAutomaticTrigger(task)) {
                 task->Release();
                 continue;
             }
@@ -457,8 +609,17 @@ void ScanTaskFolder(ITaskFolder* folder, ScanResult& result) {
             const std::wstring taskName = BstrText(name);
             const std::wstring taskPath = BstrText(path);
             const bool microsoft = Lower(taskPath).rfind(L"\\microsoft\\windows\\", 0) == 0;
-            AddItem(result, StartupSourceType::ScheduledTask, taskName, taskPath, TaskCommand(task), true, !microsoft,
-                {{L"taskPath", taskPath}, {L"wasEnabled", L"1"}});
+            const std::wstring command = TaskCommand(task);
+            const bool autoStartTrigger = TaskHasApplicationAutoStartTrigger(task);
+            const bool currentlyEnabled = enabled == VARIANT_TRUE;
+            AddItem(result, StartupSourceType::ScheduledTask, taskName, taskPath, command, true, currentlyEnabled && !microsoft,
+                {{L"taskPath", taskPath},
+                 {L"taskName", taskName},
+                 {L"triggerSummary", TaskTriggerSummary(task)},
+                 {L"autoStartTrigger", autoStartTrigger ? L"1" : L"0"},
+                 {L"actions", command},
+                 {L"currentlyEnabled", currentlyEnabled ? L"1" : L"0"},
+                 {L"wasEnabled", currentlyEnabled ? L"1" : L"0"}});
             if (name) SysFreeString(name);
             if (path) SysFreeString(path);
             task->Release();
@@ -600,11 +761,23 @@ void ScanServices(ScanResult& result) {
 #endif
         const std::wstring command = config->lpBinaryPathName ? config->lpBinaryPathName : L"";
         const bool canDisable = !driver && !protectedService && !IsWindowsPath(command);
+        const std::wstring serviceName = services[index].lpServiceName ? services[index].lpServiceName : L"";
+        const std::wstring displayName = services[index].lpDisplayName && *services[index].lpDisplayName
+            ? services[index].lpDisplayName
+            : serviceName;
         AddItem(result, driver ? StartupSourceType::Driver : StartupSourceType::Service,
-            services[index].lpDisplayName && *services[index].lpDisplayName ? services[index].lpDisplayName : services[index].lpServiceName,
-            services[index].lpServiceName, command, true, canDisable,
-            {{L"serviceName", services[index].lpServiceName}, {L"startType", std::to_wstring(config->dwStartType)},
-             {L"delayed", delayed ? L"1" : L"0"}});
+            displayName,
+            serviceName, command, true, canDisable,
+            {{L"displayName", displayName},
+             {L"serviceName", serviceName},
+             {L"serviceType", std::to_wstring(config->dwServiceType)},
+             {L"startType", std::to_wstring(config->dwStartType)},
+             {L"currentState", std::to_wstring(services[index].ServiceStatusProcess.dwCurrentState)},
+             {L"binaryPath", command},
+             {L"startName", config->lpServiceStartName ? config->lpServiceStartName : L""},
+             {L"delayed", delayed ? L"1" : L"0"},
+             {L"protected", protectedService ? L"1" : L"0"},
+             {L"driver", driver ? L"1" : L"0"}});
     }
 }
 
@@ -1265,8 +1438,68 @@ OperationResult SetServiceStart(const DisabledRecord& record, bool restore) {
     }
     SERVICE_DELAYED_AUTO_START_INFO delayed{};
     delayed.fDelayedAutostart = restore && MapValue(record.original, L"delayed") == L"1" ? TRUE : FALSE;
-    ChangeServiceConfig2W(rawService, SERVICE_CONFIG_DELAYED_AUTO_START_INFO, &delayed);
+    if (!ChangeServiceConfig2W(rawService, SERVICE_CONFIG_DELAYED_AUTO_START_INFO, &delayed) && restore) {
+        return {false, L"服务启动类型已恢复，但延迟启动状态恢复失败：" + LastErrorText()};
+    }
     return {true, restore ? L"已恢复。" : L"已改为手动启动，不会停止当前服务。"};
+}
+
+bool QueryTaskEnabled(const DisabledRecord& record, bool& enabled) {
+    enabled = false;
+    ComApartment apartment(COINIT_MULTITHREADED);
+    if (!apartment.usable()) return false;
+    ITaskService* service = nullptr;
+    if (FAILED(CoCreateInstance(CLSID_TaskScheduler, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&service))) || !service) return false;
+    VARIANT empty{};
+    VariantInit(&empty);
+    HRESULT hr = service->Connect(empty, empty, empty, empty);
+    const std::wstring path = MapValue(record.original, L"taskPath");
+    const std::size_t slash = path.find_last_of(L'\\');
+    const std::wstring folderPath = slash == 0 ? L"\\" : path.substr(0, slash);
+    const std::wstring taskName = slash == std::wstring::npos ? path : path.substr(slash + 1);
+    ITaskFolder* folder = nullptr;
+    if (SUCCEEDED(hr)) {
+        BSTR folderText = SysAllocString(folderPath.c_str());
+        hr = service->GetFolder(folderText, &folder);
+        SysFreeString(folderText);
+    }
+    IRegisteredTask* task = nullptr;
+    if (SUCCEEDED(hr) && folder) {
+        BSTR name = SysAllocString(taskName.c_str());
+        hr = folder->GetTask(name, &task);
+        SysFreeString(name);
+    }
+    VARIANT_BOOL value = VARIANT_FALSE;
+    if (SUCCEEDED(hr) && task) hr = task->get_Enabled(&value);
+    enabled = value == VARIANT_TRUE;
+    ReleaseCom(task);
+    ReleaseCom(folder);
+    service->Release();
+    return SUCCEEDED(hr);
+}
+
+bool QueryServiceRestoreState(const DisabledRecord& record, DWORD& startType, bool& delayed) {
+    startType = SERVICE_DISABLED;
+    delayed = false;
+    SC_HANDLE manager = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT);
+    if (!manager) return false;
+    SC_HANDLE service = OpenServiceW(manager, MapValue(record.original, L"serviceName").c_str(), SERVICE_QUERY_CONFIG);
+    if (!service) { CloseServiceHandle(manager); return false; }
+    DWORD bytes = 0;
+    QueryServiceConfigW(service, nullptr, 0, &bytes);
+    std::vector<BYTE> buffer(bytes);
+    auto* config = reinterpret_cast<QUERY_SERVICE_CONFIGW*>(buffer.data());
+    bool ok = bytes && QueryServiceConfigW(service, config, bytes, &bytes);
+    if (ok) startType = config->dwStartType;
+    SERVICE_DELAYED_AUTO_START_INFO delayedInfo{};
+    bytes = sizeof(delayedInfo);
+    if (QueryServiceConfig2W(service, SERVICE_CONFIG_DELAYED_AUTO_START_INFO,
+            reinterpret_cast<BYTE*>(&delayedInfo), sizeof(delayedInfo), &bytes)) {
+        delayed = delayedInfo.fDelayedAutostart != FALSE;
+    }
+    CloseServiceHandle(service);
+    CloseServiceHandle(manager);
+    return ok;
 }
 
 bool VerifyDisabled(const DisabledRecord& record) {
@@ -1284,22 +1517,52 @@ bool VerifyDisabled(const DisabledRecord& record) {
         return GetFileAttributesW(MapValue(record.original, L"originalPath").c_str()) == INVALID_FILE_ATTRIBUTES &&
             GetFileAttributesW(MapValue(record.original, L"backupPath").c_str()) != INVALID_FILE_ATTRIBUTES;
     case StartupSourceType::ScheduledTask: {
-        OperationResult result = SetTaskEnabled(record, false);
-        return result.success;
+        bool enabled = true;
+        return QueryTaskEnabled(record, enabled) && !enabled;
     }
     case StartupSourceType::Service: {
-        SC_HANDLE manager = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT);
-        if (!manager) return false;
-        SC_HANDLE service = OpenServiceW(manager, MapValue(record.original, L"serviceName").c_str(), SERVICE_QUERY_CONFIG);
-        if (!service) { CloseServiceHandle(manager); return false; }
+        DWORD startType = SERVICE_DISABLED;
+        bool delayed = false;
+        return QueryServiceRestoreState(record, startType, delayed) && startType == SERVICE_DEMAND_START;
+    }
+    default:
+        return false;
+    }
+}
+
+bool VerifyRestored(const DisabledRecord& record) {
+    if (MapValue(record.original, L"saMechanism") == L"1") return !IsStartupApprovedRecordDisabled(record);
+    switch (record.source) {
+    case StartupSourceType::Registry:
+    case StartupSourceType::ActiveSetup: {
+        HKEY hive = HiveFromText(MapValue(record.original, L"hive"));
+        HKEY rawKey = nullptr;
+        if (!hive || RegOpenKeyExW(hive, MapValue(record.original, L"key").c_str(), 0, KEY_QUERY_VALUE, &rawKey) != ERROR_SUCCESS) return false;
+        UniqueRegKey key(rawKey);
+        DWORD type = 0;
         DWORD bytes = 0;
-        QueryServiceConfigW(service, nullptr, 0, &bytes);
-        std::vector<BYTE> buffer(bytes);
-        auto* config = reinterpret_cast<QUERY_SERVICE_CONFIGW*>(buffer.data());
-        const bool ok = bytes && QueryServiceConfigW(service, config, bytes, &bytes) && config->dwStartType == SERVICE_DEMAND_START;
-        CloseServiceHandle(service);
-        CloseServiceHandle(manager);
-        return ok;
+        const std::wstring valueName = MapValue(record.original, L"valueName");
+        if (RegQueryValueExW(rawKey, valueName.c_str(), nullptr, &type, nullptr, &bytes) != ERROR_SUCCESS) return false;
+        std::vector<BYTE> data(static_cast<std::size_t>(bytes) + sizeof(wchar_t), 0);
+        if (RegQueryValueExW(rawKey, valueName.c_str(), nullptr, &type, data.data(), &bytes) != ERROR_SUCCESS) return false;
+        DWORD expectedType = 0;
+        if (!ParseUnsigned(MapValue(record.original, L"valueType"), expectedType) || type != expectedType) return false;
+        return std::wstring(reinterpret_cast<const wchar_t*>(data.data())) == MapValue(record.original, L"valueData");
+    }
+    case StartupSourceType::StartupFolder:
+        return GetFileAttributesW(MapValue(record.original, L"originalPath").c_str()) != INVALID_FILE_ATTRIBUTES;
+    case StartupSourceType::ScheduledTask: {
+        bool enabled = false;
+        const bool expected = MapValue(record.original, L"wasEnabled") != L"0";
+        return QueryTaskEnabled(record, enabled) && enabled == expected;
+    }
+    case StartupSourceType::Service: {
+        DWORD expectedStartType = 0;
+        if (!ParseUnsigned(MapValue(record.original, L"startType"), expectedStartType)) return false;
+        DWORD startType = SERVICE_DISABLED;
+        bool delayed = false;
+        return QueryServiceRestoreState(record, startType, delayed) && startType == expectedStartType &&
+            delayed == (MapValue(record.original, L"delayed") == L"1");
     }
     default:
         return false;
@@ -1679,6 +1942,49 @@ OperationResult RestoreIfeoBlock(const DisabledRecord& record) {
     return {true, L"已解除拦截。"};
 }
 
+bool VerifyIfeoBlock(const DisabledRecord& record);
+
+OperationResult ReapplyIfeoBlock(const DisabledRecord& record) {
+    const std::wstring imageName = MapValue(record.original, L"ifeoImageName");
+    const std::wstring targetPath = MapValue(record.original, L"targetPath");
+    if (imageName.empty() || targetPath.empty()) return {false, L"记录缺少 IFEO 修复信息。"};
+    if (GetFileAttributesW(targetPath.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        return {false, L"目标文件不存在，无法修复拦截。"};
+    }
+    const GuardVerdict guard = EvaluateGuard(targetPath, imageName);
+    if (!guard.allow) return {false, L"该程序不允许拦截：" + guard.reason};
+
+    const REGSAM view = IfeoView(record);
+    const std::wstring debugger = L"\"" + CurrentExecutablePath() + L"\" --ifeo-noop";
+    const std::wstring keyPath = std::wstring(kIfeoBase) + L"\\" + imageName;
+    HKEY rawKey = nullptr;
+    LSTATUS status = RegCreateKeyExW(HKEY_LOCAL_MACHINE, keyPath.c_str(), 0, nullptr, 0,
+        KEY_QUERY_VALUE | KEY_SET_VALUE | KEY_CREATE_SUB_KEY | view, nullptr, &rawKey, nullptr);
+    if (status != ERROR_SUCCESS) return {false, L"无法写入 IFEO 键：" + LastErrorText(status)};
+    UniqueRegKey key(rawKey);
+
+    if (MapValue(record.original, L"blockMode") == L"exact") {
+        const std::wstring subName = MapValue(record.original, L"ifeoSubKey");
+        if (subName.empty()) return {false, L"记录缺少 IFEO 过滤子键。"};
+        DWORD useFilter = 1;
+        RegSetValueExW(rawKey, L"UseFilter", 0, REG_DWORD, reinterpret_cast<const BYTE*>(&useFilter), sizeof(useFilter));
+        HKEY rawSub = nullptr;
+        status = RegCreateKeyExW(rawKey, subName.c_str(), 0, nullptr, 0,
+            KEY_SET_VALUE | view, nullptr, &rawSub, nullptr);
+        if (status != ERROR_SUCCESS) return {false, L"无法写入 IFEO 过滤子键：" + LastErrorText(status)};
+        UniqueRegKey sub(rawSub);
+        OperationResult wrote = WriteRegString(rawSub, L"FilterFullPath", REG_SZ, targetPath);
+        if (!wrote.success) return wrote;
+        wrote = WriteRegString(rawSub, L"Debugger", REG_SZ, debugger);
+        if (!wrote.success) return wrote;
+    } else {
+        OperationResult wrote = WriteRegString(rawKey, L"Debugger", REG_SZ, debugger);
+        if (!wrote.success) return wrote;
+    }
+    return VerifyIfeoBlock(record) ? OperationResult{true, L"已修复拦截。"}
+        : OperationResult{false, L"已尝试修复，但未能确认 IFEO 拦截生效。"};
+}
+
 bool VerifyIfeoBlock(const DisabledRecord& record) {
     const std::wstring imageName = MapValue(record.original, L"ifeoImageName");
     if (imageName.empty()) return false;
@@ -1702,6 +2008,118 @@ bool VerifyIfeoBlock(const DisabledRecord& record) {
     if (RegQueryValueExW(rawKey, L"Debugger", nullptr, &type, data.data(), &bytes) != ERROR_SUCCESS) return false;
     const std::wstring debugger = Lower(std::wstring(reinterpret_cast<const wchar_t*>(data.data())));
     return debugger.find(L"--ifeo-noop") != std::wstring::npos;
+}
+
+struct IfeoDebuggerState {
+    bool keyExists = false;
+    bool hasDebugger = false;
+    bool createdByThisTool = false;
+    std::wstring debugger;
+    std::wstring error;
+};
+
+IfeoDebuggerState ReadIfeoDebuggerState(const std::wstring& imageName, REGSAM view, const std::wstring& subKey = {}) {
+    IfeoDebuggerState state;
+    if (imageName.empty()) {
+        state.error = L"缺少 IFEO 映像名。";
+        return state;
+    }
+    std::wstring keyPath = std::wstring(kIfeoBase) + L"\\" + imageName;
+    if (!subKey.empty()) keyPath += L"\\" + subKey;
+    HKEY rawKey = nullptr;
+    const LSTATUS opened = RegOpenKeyExW(HKEY_LOCAL_MACHINE, keyPath.c_str(), 0, KEY_QUERY_VALUE | view, &rawKey);
+    if (opened == ERROR_FILE_NOT_FOUND) return state;
+    if (opened != ERROR_SUCCESS) {
+        state.error = L"无法读取 IFEO 键：" + LastErrorText(opened);
+        return state;
+    }
+    state.keyExists = true;
+    UniqueRegKey key(rawKey);
+    DWORD type = 0;
+    DWORD bytes = 0;
+    const LSTATUS queried = RegQueryValueExW(rawKey, L"Debugger", nullptr, &type, nullptr, &bytes);
+    if (queried == ERROR_FILE_NOT_FOUND) return state;
+    if (queried != ERROR_SUCCESS || (type != REG_SZ && type != REG_EXPAND_SZ) || !bytes) {
+        state.error = L"无法读取 IFEO Debugger 值。";
+        return state;
+    }
+    std::vector<BYTE> data(bytes + sizeof(wchar_t), 0);
+    if (RegQueryValueExW(rawKey, L"Debugger", nullptr, &type, data.data(), &bytes) != ERROR_SUCCESS) {
+        state.error = L"无法读取 IFEO Debugger 值。";
+        return state;
+    }
+    state.hasDebugger = true;
+    state.debugger = std::wstring(reinterpret_cast<const wchar_t*>(data.data()));
+    state.createdByThisTool = Lower(state.debugger).find(L"--ifeo-noop") != std::wstring::npos;
+    return state;
+}
+
+AdBlockRecordStatus CheckIfeoRecordStatus(const DisabledRecord& record) {
+    const std::wstring imageName = MapValue(record.original, L"ifeoImageName");
+    if (imageName.empty()) {
+        return {AdBlockRecordState::BrokenRecord, L"记录缺少 IFEO 映像名。", false, false};
+    }
+    const bool exact = MapValue(record.original, L"blockMode") == L"exact";
+    const std::wstring subKey = exact ? MapValue(record.original, L"ifeoSubKey") : std::wstring{};
+    if (exact && subKey.empty()) {
+        return {AdBlockRecordState::BrokenRecord, L"记录缺少精确路径 IFEO 子键。", false, true};
+    }
+    const IfeoDebuggerState state = ReadIfeoDebuggerState(imageName, IfeoView(record), subKey);
+    if (!state.error.empty()) return {AdBlockRecordState::Unknown, state.error, false, true};
+    if (!state.keyExists || !state.hasDebugger) {
+        return {AdBlockRecordState::Inactive, L"系统中已找不到本工具写入的 IFEO 拦截。", true, true};
+    }
+    if (!state.createdByThisTool) {
+        return {AdBlockRecordState::Overwritten, L"IFEO Debugger 已被外部程序改写，解除时将尝试恢复原值。", true, true};
+    }
+    return {AdBlockRecordState::Active, L"IFEO 拦截生效中。", false, true};
+}
+
+AdBlockRecordStatus CheckStartupApprovedRecordStatus(const DisabledRecord& record) {
+    if (MapValue(record.original, L"saKey").empty() || MapValue(record.original, L"saValueName").empty()) {
+        return {AdBlockRecordState::BrokenRecord, L"记录缺少 StartupApproved 恢复信息。", false, false};
+    }
+    if (IsStartupApprovedRecordDisabled(record)) {
+        return {AdBlockRecordState::Active, L"禁止自启仍生效。", false, true};
+    }
+    return {AdBlockRecordState::Inactive, L"该自启动项已不再处于禁用状态。", true, true};
+}
+
+class AdBlockBlockingProvider {
+public:
+    virtual ~AdBlockBlockingProvider() = default;
+    virtual const wchar_t* mechanism() const = 0;
+    virtual AdBlockRecordStatus Status(const DisabledRecord& record) const = 0;
+    virtual OperationResult Repair(DisabledRecord& record) const = 0;
+    virtual OperationResult Restore(const DisabledRecord& record) const = 0;
+};
+
+class IfeoBlockingProvider final : public AdBlockBlockingProvider {
+public:
+    const wchar_t* mechanism() const override { return L"ifeo"; }
+    AdBlockRecordStatus Status(const DisabledRecord& record) const override { return CheckIfeoRecordStatus(record); }
+    OperationResult Repair(DisabledRecord& record) const override { return ReapplyIfeoBlock(record); }
+    OperationResult Restore(const DisabledRecord& record) const override { return RestoreIfeoBlock(record); }
+};
+
+class StartupApprovedBlockingProvider final : public AdBlockBlockingProvider {
+public:
+    const wchar_t* mechanism() const override { return L"startup-approved"; }
+    AdBlockRecordStatus Status(const DisabledRecord& record) const override { return CheckStartupApprovedRecordStatus(record); }
+    OperationResult Repair(DisabledRecord& record) const override {
+        const StartupApprovedTarget target = ResolveStartupApprovedTarget(record);
+        if (!target.eligible) return {false, L"该自启动项不支持通过系统启动开关修复。"};
+        return DisableViaStartupApproved(record, target);
+    }
+    OperationResult Restore(const DisabledRecord& record) const override { return RestoreViaStartupApproved(record); }
+};
+
+const AdBlockBlockingProvider& BlockingProviderForRecord(const DisabledRecord& record) {
+    static const IfeoBlockingProvider ifeo;
+    static const StartupApprovedBlockingProvider startupApproved;
+    return MapValue(record.original, L"mechanism") == startupApproved.mechanism()
+        ? static_cast<const AdBlockBlockingProvider&>(startupApproved)
+        : static_cast<const AdBlockBlockingProvider&>(ifeo);
 }
 
 bool InitializeComForScan(bool& uninitialize) {
@@ -1745,6 +2163,92 @@ std::vector<StartupItem> FindAutoStartEntries(const std::wstring& targetPath) {
     }
     return matches;
 }
+
+std::uint64_t UnixTimeSeconds() {
+    return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count());
+}
+
+std::wstring NewProtocolId() {
+    GUID guid{};
+    if (FAILED(CoCreateGuid(&guid))) return {};
+    wchar_t text[40]{};
+    StringFromGUID2(guid, text, static_cast<int>(std::size(text)));
+    std::wstring value(text);
+    value.erase(std::remove_if(value.begin(), value.end(), [](wchar_t ch) {
+        return ch == L'{' || ch == L'}' || ch == L'-';
+    }), value.end());
+    return Lower(std::move(value));
+}
+
+bool WriteExclusiveUtf8File(const std::filesystem::path& path, const std::wstring& contents, std::wstring& error) {
+    const std::string bytes = WideToUtf8(contents);
+    HANDLE file = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
+        FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_WRITE_THROUGH, nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+        error = L"无法创建管理员操作请求：" + LastErrorText();
+        return false;
+    }
+    DWORD written = 0;
+    const bool ok = bytes.size() <= MAXDWORD &&
+        WriteFile(file, bytes.data(), static_cast<DWORD>(bytes.size()), &written, nullptr) &&
+        written == bytes.size() && FlushFileBuffers(file);
+    const DWORD code = ok ? ERROR_SUCCESS : GetLastError();
+    CloseHandle(file);
+    if (!ok) {
+        DeleteFileW(path.c_str());
+        error = L"写入管理员操作请求失败：" + LastErrorText(code);
+        return false;
+    }
+    return true;
+}
+
+bool WriteAtomicUtf8File(const std::filesystem::path& path, const std::wstring& contents, std::wstring& error) {
+    const std::filesystem::path temporary = path.wstring() + L".tmp";
+    DeleteFileW(temporary.c_str());
+    if (!WriteExclusiveUtf8File(temporary, contents, error)) return false;
+    if (!MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        error = L"写入管理员操作结果失败：" + LastErrorText();
+        DeleteFileW(temporary.c_str());
+        return false;
+    }
+    return true;
+}
+
+bool ReadUtf8FileLimited(const std::filesystem::path& path, std::wstring& contents, std::wstring& error) {
+    std::error_code sizeError;
+    const std::uintmax_t size = std::filesystem::file_size(path, sizeError);
+    if (sizeError || size > 1024 * 1024) {
+        error = L"管理员操作请求文件无效。";
+        return false;
+    }
+    std::ifstream file(path, std::ios::binary);
+    if (!file) {
+        error = L"无法读取管理员操作请求。";
+        return false;
+    }
+    const std::string bytes((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    contents = Utf8ToWide(bytes);
+    return true;
+}
+
+bool IsPathInRequestsDirectory(const std::filesystem::path& path) {
+    std::error_code error;
+    const std::filesystem::path expected = std::filesystem::absolute(
+        AppLaunchLockerDataDirectory() / L"requests", error).lexically_normal();
+    if (error) return false;
+    const std::filesystem::path actual = std::filesystem::absolute(path, error).lexically_normal();
+    if (error) return false;
+    return Lower(actual.parent_path().wstring()) == Lower(expected.wstring());
+}
+
+struct OperationAuditContext {
+    std::wstring requestId;
+    std::wstring launchSource = L"core";
+    bool elevated = false;
+};
+
+thread_local OperationAuditContext gOperationAuditContext;
 }
 
 std::wstring StartupSourceKey(StartupSourceType source) {
@@ -1789,6 +2293,62 @@ std::wstring StartupSourceText(StartupSourceType source) {
     return L"未知";
 }
 
+std::wstring StartupEntryStateText(StartupEntryState state) {
+    switch (state) {
+    case StartupEntryState::Enabled: return L"已启用";
+    case StartupEntryState::DisabledByTool: return L"已禁用";
+    case StartupEntryState::ReadOnly: return L"仅查看";
+    case StartupEntryState::Unknown: return L"状态未知";
+    }
+    return L"状态未知";
+}
+
+std::wstring AdBlockRecordStateKey(AdBlockRecordState state) {
+    switch (state) {
+    case AdBlockRecordState::Active: return L"active";
+    case AdBlockRecordState::Inactive: return L"inactive";
+    case AdBlockRecordState::PartiallyActive: return L"partial";
+    case AdBlockRecordState::Overwritten: return L"overwritten";
+    case AdBlockRecordState::BrokenRecord: return L"broken";
+    case AdBlockRecordState::Unknown: return L"unknown";
+    }
+    return L"unknown";
+}
+
+std::wstring AdBlockRecordStateText(AdBlockRecordState state) {
+    switch (state) {
+    case AdBlockRecordState::Active: return L"生效中";
+    case AdBlockRecordState::Inactive: return L"已失效";
+    case AdBlockRecordState::PartiallyActive: return L"部分生效";
+    case AdBlockRecordState::Overwritten: return L"被外部修改";
+    case AdBlockRecordState::BrokenRecord: return L"记录异常";
+    case AdBlockRecordState::Unknown: return L"状态未知";
+    }
+    return L"状态未知";
+}
+
+std::wstring StartupApplicationStateText(const StartupApplication& application) {
+    if (application.entries.empty()) return L"状态未知";
+    int enabled = 0;
+    int disabled = 0;
+    int readonly = 0;
+    int unknown = 0;
+    for (const StartupApplicationEntry& entry : application.entries) {
+        switch (entry.state) {
+        case StartupEntryState::Enabled: ++enabled; break;
+        case StartupEntryState::DisabledByTool: ++disabled; break;
+        case StartupEntryState::ReadOnly: ++readonly; break;
+        case StartupEntryState::Unknown: ++unknown; break;
+        }
+    }
+    if (enabled > 0 && disabled > 0) return L"部分禁用";
+    if (enabled > 0) return L"已启用";
+    if (disabled > 0 && readonly == 0 && unknown == 0) return L"已禁用";
+    if (readonly > 0 && enabled == 0 && disabled == 0 && unknown == 0) return L"仅查看";
+    if (disabled > 0 || readonly > 0) return L"部分禁用";
+    return L"状态未知";
+}
+
 bool StartupSourceFromKey(const std::wstring& key, StartupSourceType& source) {
     for (StartupSourceType candidate : {StartupSourceType::Registry, StartupSourceType::StartupFolder,
             StartupSourceType::ScheduledTask, StartupSourceType::Service, StartupSourceType::ActiveSetup,
@@ -1804,7 +2364,133 @@ bool StartupSourceFromKey(const std::wstring& key, StartupSourceType& source) {
     return false;
 }
 
+std::wstring StartupApplicationTargetPath(const StartupItem& item) {
+    if (item.source == StartupSourceType::Service || item.source == StartupSourceType::Driver) {
+        return {};
+    }
+    if (item.source == StartupSourceType::ScheduledTask && MapValue(item.original, L"autoStartTrigger") == L"0") {
+        return {};
+    }
+    const std::wstring explicitTarget = MapValue(item.original, L"targetPath");
+    if (!explicitTarget.empty()) return explicitTarget;
+    const std::wstring originalPath = MapValue(item.original, L"originalPath");
+    if (!originalPath.empty()) {
+        const std::filesystem::path path(originalPath);
+        if (Lower(path.extension().wstring()) == L".lnk") {
+            const std::wstring shortcutTarget = ExecutableFromCommand(item.command);
+            return shortcutTarget.empty() ? originalPath : shortcutTarget;
+        }
+        return originalPath;
+    }
+    const std::wstring executable = ExecutableFromCommand(item.command);
+    return executable.empty() ? std::wstring{} : executable;
+}
+
+std::wstring StartupApplicationIdentityForItem(const StartupItem& item) {
+    const std::wstring targetPath = StartupApplicationTargetPath(item);
+    if (!targetPath.empty()) {
+        return L"path:" + Lower(targetPath);
+    }
+    return L"entry:" + StartupSourceKey(item.source) + L"|" + Lower(item.location) + L"|" + Lower(item.name);
+}
+
+std::wstring StartupApplicationDisplayName(const StartupItem& item, const std::wstring& targetPath) {
+    if (!targetPath.empty()) {
+        const std::filesystem::path path(targetPath);
+        const std::wstring stem = path.stem().wstring();
+        if (!stem.empty()) return stem;
+    }
+    return item.name.empty() ? StartupSourceText(item.source) : item.name;
+}
+
+std::vector<StartupApplication> BuildStartupApplications(
+    const ScanResult& scan,
+    const std::vector<DisabledRecord>& disabled) {
+    std::map<std::wstring, StartupApplication> byIdentity;
+
+    const auto ensureApplication = [&](const std::wstring& identity,
+                                       const std::wstring& displayName,
+                                       const std::wstring& targetPath) -> StartupApplication& {
+        StartupApplication& application = byIdentity[identity];
+        if (application.appId.empty()) application.appId = HashHex(identity);
+        if (application.displayName.empty()) application.displayName = displayName;
+        if (application.targetPath.empty()) application.targetPath = targetPath;
+        return application;
+    };
+
+    for (const StartupItem& item : scan.items) {
+        const std::wstring targetPath = StartupApplicationTargetPath(item);
+        const std::wstring identity = StartupApplicationIdentityForItem(item);
+        StartupApplication& application = ensureApplication(identity, StartupApplicationDisplayName(item, targetPath), targetPath);
+        StartupApplicationEntry entry;
+        entry.entryId = item.id;
+        entry.source = item.source;
+        entry.name = item.name;
+        entry.location = item.location;
+        entry.command = item.command;
+        entry.state = item.canDisable && !item.readOnly ? StartupEntryState::Enabled : StartupEntryState::ReadOnly;
+        entry.requiresAdmin = item.requiresAdmin;
+        entry.canDisable = item.canDisable;
+        entry.readOnly = item.readOnly;
+        entry.original = item.original;
+        application.entries.push_back(std::move(entry));
+    }
+
+    for (const DisabledRecord& record : disabled) {
+        StartupItem probe{record.itemId, record.name, record.source, L"", MapValue(record.original, L"valueData"),
+            record.requiresAdmin, false, true, record.original};
+        const std::wstring targetPath = StartupApplicationTargetPath(probe);
+        const std::wstring identity = StartupApplicationIdentityForItem(probe);
+        StartupApplication& application = ensureApplication(identity, StartupApplicationDisplayName(probe, targetPath), targetPath);
+        StartupApplicationEntry entry;
+        entry.entryId = record.recordId;
+        entry.source = record.source;
+        entry.name = record.name;
+        entry.location = MapValue(record.original, L"originalPath");
+        if (entry.location.empty()) entry.location = MapValue(record.original, L"key");
+        if (entry.location.empty()) entry.location = MapValue(record.original, L"taskPath");
+        if (entry.location.empty()) entry.location = MapValue(record.original, L"serviceName");
+        entry.command = MapValue(record.original, L"valueData");
+        if (entry.command.empty()) entry.command = targetPath;
+        entry.state = StartupEntryState::DisabledByTool;
+        entry.requiresAdmin = record.requiresAdmin;
+        entry.canRestore = true;
+        entry.readOnly = false;
+        entry.original = record.original;
+        application.entries.push_back(std::move(entry));
+    }
+
+    std::vector<StartupApplication> applications;
+    applications.reserve(byIdentity.size());
+    for (auto& [identity, application] : byIdentity) {
+        std::sort(application.entries.begin(), application.entries.end(), [](const auto& left, const auto& right) {
+            if (left.state != right.state) return static_cast<int>(left.state) < static_cast<int>(right.state);
+            if (left.source != right.source) return StartupSourceKey(left.source) < StartupSourceKey(right.source);
+            return Lower(left.name) < Lower(right.name);
+        });
+        applications.push_back(std::move(application));
+    }
+    std::sort(applications.begin(), applications.end(), [](const auto& left, const auto& right) {
+        const std::wstring leftState = StartupApplicationStateText(left);
+        const std::wstring rightState = StartupApplicationStateText(right);
+        if (leftState == L"已禁用" && rightState != L"已禁用") return false;
+        if (leftState != L"已禁用" && rightState == L"已禁用") return true;
+        const std::wstring leftName = Lower(left.displayName);
+        const std::wstring rightName = Lower(right.displayName);
+        if (leftName != rightName) return leftName < rightName;
+        return left.appId < right.appId;
+    });
+    return applications;
+}
+
 std::filesystem::path AppLaunchLockerDataDirectory() {
+    std::wstring overridePath(32768, L'\0');
+    const DWORD overrideLength = GetEnvironmentVariableW(
+        L"APP_LAUNCH_LOCKER_DATA_DIR", overridePath.data(), static_cast<DWORD>(overridePath.size()));
+    if (overrideLength > 0 && overrideLength < overridePath.size()) {
+        overridePath.resize(overrideLength);
+        return overridePath;
+    }
     PWSTR rawPath = nullptr;
     if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, KF_FLAG_DEFAULT, nullptr, &rawPath)) && rawPath) {
         std::filesystem::path path(rawPath);
@@ -1818,6 +2504,7 @@ std::filesystem::path AppLaunchLockerDataDirectory() {
 void AppendAppLaunchLockerLog(const std::wstring& message) {
     if (message.empty()) return;
     const std::filesystem::path directory = AppLaunchLockerDataDirectory();
+    if (GetPrivateProfileIntW(L"main", L"loggingEnabled", 0, (directory / L"settings.ini").c_str()) == 0) return;
     std::error_code error;
     std::filesystem::create_directories(directory, error);
     if (error) return;
@@ -1827,7 +2514,269 @@ void AppendAppLaunchLockerLog(const std::wstring& message) {
     file.write(line.data(), static_cast<std::streamsize>(line.size()));
 }
 
+void SetOperationAuditContext(
+    const std::wstring& requestId,
+    const std::wstring& launchSource,
+    bool elevated) {
+    gOperationAuditContext.requestId = requestId;
+    gOperationAuditContext.launchSource = launchSource.empty() ? L"unknown" : launchSource;
+    gOperationAuditContext.elevated = elevated;
+}
+
+bool CreateElevatedOperationRequest(
+    const std::wstring& action,
+    const std::vector<std::wstring>& targets,
+    const std::wstring& mode,
+    ElevatedOperationRequest& request,
+    std::wstring& error) {
+    request = {};
+    error.clear();
+    static const std::set<std::wstring> allowedActions{
+        L"disable", L"disable-many", L"restore", L"restore-many",
+        L"adblock-block", L"adblock-unblock", L"adblock-unblock-all", L"adblock-repair"};
+    if (!allowedActions.contains(action) || targets.size() > 256 ||
+        ((action != L"adblock-unblock-all") && targets.empty())) {
+        error = L"管理员操作请求不受支持。";
+        return false;
+    }
+    if (action == L"adblock-block" && mode != L"exact" && mode != L"name" && mode != L"startup") {
+        error = L"管理员操作模式不受支持。";
+        return false;
+    }
+    request.requestId = NewProtocolId();
+    request.token = NewProtocolId() + NewProtocolId();
+    if (request.requestId.empty() || request.token.size() < 32) {
+        error = L"无法生成管理员操作凭据。";
+        return false;
+    }
+    request.action = action;
+    request.mode = mode;
+    request.targets = targets;
+    request.expiresAt = UnixTimeSeconds() + 120;
+    const std::filesystem::path directory = AppLaunchLockerDataDirectory() / L"requests";
+    std::error_code directoryError;
+    std::filesystem::create_directories(directory, directoryError);
+    if (directoryError) {
+        error = L"无法创建管理员操作请求目录。";
+        return false;
+    }
+    request.requestPath = directory / (request.requestId + L".request.json");
+    request.resultPath = directory / (request.requestId + L".result.json");
+    std::wostringstream json;
+    json << L"{\n"
+         << L"  \"schemaVersion\": 1,\n"
+         << L"  \"protocolVersion\": 1,\n"
+         << L"  \"requestId\": \"" << EscapeJson(request.requestId) << L"\",\n"
+         << L"  \"token\": \"" << EscapeJson(request.token) << L"\",\n"
+         << L"  \"action\": \"" << EscapeJson(request.action) << L"\",\n"
+         << L"  \"mode\": \"" << EscapeJson(request.mode) << L"\",\n"
+         << L"  \"expiresAt\": " << request.expiresAt << L",\n"
+         << L"  \"targets\": [";
+    for (std::size_t index = 0; index < request.targets.size(); ++index) {
+        if (index) json << L", ";
+        json << L"\"" << EscapeJson(request.targets[index]) << L"\"";
+    }
+    json << L"]\n}\n";
+    DeleteFileW(request.resultPath.c_str());
+    return WriteExclusiveUtf8File(request.requestPath, json.str(), error);
+}
+
+bool LoadAndConsumeElevatedOperationRequest(
+    const std::filesystem::path& requestPath,
+    const std::wstring& token,
+    ElevatedOperationRequest& request,
+    std::wstring& error) {
+    request = {};
+    error.clear();
+    if (token.size() < 32 || !IsPathInRequestsDirectory(requestPath)) {
+        error = L"管理员操作请求来源无效。";
+        return false;
+    }
+    std::wstring contents;
+    if (!ReadUtf8FileLimited(requestPath, contents, error)) return false;
+    JsonValue root;
+    if (!ParseJson(contents, root, error) || !root.isObject()) {
+        error = L"管理员操作请求格式无效。";
+        return false;
+    }
+    const JsonValue* schemaVersion = root.get(L"schemaVersion");
+    const JsonValue* protocolVersion = root.get(L"protocolVersion");
+    const JsonValue* requestId = root.get(L"requestId");
+    const JsonValue* storedToken = root.get(L"token");
+    const JsonValue* action = root.get(L"action");
+    const JsonValue* mode = root.get(L"mode");
+    const JsonValue* expiresAt = root.get(L"expiresAt");
+    const JsonValue* targets = root.get(L"targets");
+    if (!schemaVersion || schemaVersion->intOr(0) != 1 ||
+        !protocolVersion || protocolVersion->intOr(0) != 1 ||
+        !requestId || !requestId->isString() || !storedToken || !storedToken->isString() ||
+        !action || !action->isString() || !expiresAt || !expiresAt->isNumber() ||
+        !targets || !targets->isArray()) {
+        error = L"管理员操作请求缺少必要字段。";
+        return false;
+    }
+    request.requestId = requestId->stringValue;
+    request.token = storedToken->stringValue;
+    request.action = action->stringValue;
+    request.mode = mode && mode->isString() ? mode->stringValue : std::wstring{};
+    request.expiresAt = static_cast<std::uint64_t>(expiresAt->numberValue);
+    request.requestPath = requestPath;
+    request.resultPath = requestPath.parent_path() / (request.requestId + L".result.json");
+    const std::wstring expectedFileName = request.requestId + L".request.json";
+    if (request.token != token || Lower(requestPath.filename().wstring()) != Lower(expectedFileName) ||
+        request.expiresAt < UnixTimeSeconds() || request.expiresAt > UnixTimeSeconds() + 300) {
+        error = L"管理员操作请求凭据无效或已过期。";
+        return false;
+    }
+    static const std::set<std::wstring> allowedActions{
+        L"disable", L"disable-many", L"restore", L"restore-many",
+        L"adblock-block", L"adblock-unblock", L"adblock-unblock-all", L"adblock-repair"};
+    if (!allowedActions.contains(request.action) || targets->arrayValue.size() > 256) {
+        error = L"管理员操作动作不在白名单中。";
+        return false;
+    }
+    for (const JsonValue& value : targets->arrayValue) {
+        if (!value.isString() || value.stringValue.empty() || value.stringValue.size() > 32768) {
+            error = L"管理员操作目标无效。";
+            return false;
+        }
+        request.targets.push_back(value.stringValue);
+    }
+    if (request.action != L"adblock-unblock-all" && request.targets.empty()) {
+        error = L"管理员操作目标为空。";
+        return false;
+    }
+    if (request.action == L"adblock-block" && request.mode != L"exact" &&
+        request.mode != L"name" && request.mode != L"startup") {
+        error = L"管理员操作模式无效。";
+        return false;
+    }
+    // Consume before changing system state. Replaying the same request is then
+    // impossible even if the elevated operation later fails.
+    if (!DeleteFileW(requestPath.c_str())) {
+        error = L"无法消费管理员操作请求。";
+        return false;
+    }
+    return true;
+}
+
+bool WriteElevatedOperationResult(
+    const ElevatedOperationRequest& request,
+    const OperationResult& result,
+    std::wstring& error) {
+    if (request.requestId.empty() || !IsPathInRequestsDirectory(request.resultPath)) {
+        error = L"管理员操作结果路径无效。";
+        return false;
+    }
+    std::wostringstream json;
+    json << L"{\n  \"schemaVersion\": 1,\n"
+         << L"  \"requestId\": \"" << EscapeJson(request.requestId) << L"\",\n"
+         << L"  \"success\": " << (result.success ? L"true" : L"false") << L",\n"
+         << L"  \"partial\": " << (result.partial ? L"true" : L"false") << L",\n"
+         << L"  \"message\": \"" << EscapeJson(result.message) << L"\",\n"
+         << L"  \"items\": [";
+    for (std::size_t index = 0; index < result.items.size(); ++index) {
+        const OperationItemResult& item = result.items[index];
+        json << (index ? L",\n" : L"\n")
+             << L"    {\"targetId\":\"" << EscapeJson(item.targetId)
+             << L"\",\"action\":\"" << EscapeJson(item.action)
+             << L"\",\"success\":" << (item.success ? L"true" : L"false")
+             << L",\"rolledBack\":" << (item.rolledBack ? L"true" : L"false")
+             << L",\"message\":\"" << EscapeJson(item.message) << L"\"}";
+    }
+    if (!result.items.empty()) json << L"\n  ";
+    json << L"]\n}\n";
+    return WriteAtomicUtf8File(request.resultPath, json.str(), error);
+}
+
+bool ReadElevatedOperationResult(
+    const ElevatedOperationRequest& request,
+    OperationResult& result,
+    std::wstring& error) {
+    result = {};
+    error.clear();
+    if (request.requestId.empty() || !IsPathInRequestsDirectory(request.resultPath)) {
+        error = L"管理员操作结果来源无效。";
+        return false;
+    }
+    std::wstring contents;
+    if (!ReadUtf8FileLimited(request.resultPath, contents, error)) return false;
+    DeleteFileW(request.resultPath.c_str());
+    JsonValue root;
+    if (!ParseJson(contents, root, error) || !root.isObject() ||
+        !root.get(L"schemaVersion") || root.get(L"schemaVersion")->intOr(0) != 1 ||
+        !root.get(L"requestId") || root.get(L"requestId")->stringOr() != request.requestId) {
+        error = L"管理员操作结果与请求不匹配。";
+        return false;
+    }
+    const JsonValue* success = root.get(L"success");
+    const JsonValue* partial = root.get(L"partial");
+    const JsonValue* message = root.get(L"message");
+    const JsonValue* items = root.get(L"items");
+    if (!success || !success->isBool() || !partial || !partial->isBool() ||
+        !message || !message->isString() || !items || !items->isArray()) {
+        error = L"管理员操作结果格式无效。";
+        return false;
+    }
+    result.success = success->boolValue;
+    result.partial = partial->boolValue;
+    result.message = message->stringValue;
+    for (const JsonValue& value : items->arrayValue) {
+        if (!value.isObject()) continue;
+        OperationItemResult item;
+        if (const JsonValue* field = value.get(L"targetId")) item.targetId = field->stringOr();
+        if (const JsonValue* field = value.get(L"action")) item.action = field->stringOr();
+        if (const JsonValue* field = value.get(L"success")) item.success = field->boolOr(false);
+        if (const JsonValue* field = value.get(L"rolledBack")) item.rolledBack = field->boolOr(false);
+        if (const JsonValue* field = value.get(L"message")) item.message = field->stringOr();
+        result.items.push_back(std::move(item));
+    }
+    return true;
+}
+
+void AppendOperationAudit(
+    const std::wstring& action,
+    const std::wstring& targetId,
+    const std::wstring& source,
+    const std::wstring& displayName,
+    const OperationResult& result) {
+    const std::filesystem::path directory = AppLaunchLockerDataDirectory();
+    std::error_code error;
+    std::filesystem::create_directories(directory, error);
+    if (error) return;
+    HANDLE auditLock = INVALID_HANDLE_VALUE;
+    for (int attempt = 0; attempt < 100; ++attempt) {
+        auditLock = CreateFileW((directory / L"operation-audit.lock").c_str(),
+            GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_TEMPORARY, nullptr);
+        if (auditLock != INVALID_HANDLE_VALUE || GetLastError() != ERROR_SHARING_VIOLATION) break;
+        Sleep(20);
+    }
+    if (auditLock == INVALID_HANDLE_VALUE) return;
+    std::ofstream file(directory / L"operation-audit.jsonl", std::ios::binary | std::ios::app);
+    if (!file) { CloseHandle(auditLock); return; }
+    std::wostringstream line;
+    line << L"{\"timestamp\":\"" << EscapeJson(CurrentTimestamp()) << L"\",";
+    line << L"\"requestId\":\"" << EscapeJson(gOperationAuditContext.requestId) << L"\",";
+    line << L"\"launchSource\":\"" << EscapeJson(gOperationAuditContext.launchSource) << L"\",";
+    line << L"\"elevated\":" << (gOperationAuditContext.elevated ? L"true" : L"false") << L",";
+    line << L"\"action\":\"" << EscapeJson(action) << L"\",";
+    line << L"\"targetId\":\"" << EscapeJson(targetId) << L"\",";
+    line << L"\"source\":\"" << EscapeJson(source) << L"\",";
+    line << L"\"displayName\":\"" << EscapeJson(displayName) << L"\",";
+    line << L"\"success\":" << (result.success ? L"true" : L"false") << L",";
+    line << L"\"partial\":" << (result.partial ? L"true" : L"false") << L",";
+    line << L"\"errorCode\":\"" << (result.success ? L"" : L"operation-failed") << L"\",";
+    line << L"\"message\":\"" << EscapeJson(result.message) << L"\"}" << L"\n";
+    const std::string bytes = WideToUtf8(line.str());
+    file.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    file.flush();
+    CloseHandle(auditLock);
+}
+
 std::wstring StartupItemStateKey(const StartupItem& item) {
+    if (item.source == StartupSourceType::ScheduledTask && MapValue(item.original, L"currentlyEnabled") == L"0") {
+        return L"disabled-external";
+    }
     if (item.readOnly || !item.canDisable) return L"readonly";
     return L"enabled";
 }
@@ -1855,6 +2804,34 @@ StartupSnapshot BuildStartupSnapshot(const ScanResult& scan, const std::wstring&
         entry.fingerprint = HashHex(
             item.id + L"|" + StartupSourceKey(item.source) + L"|" + item.name + L"|" +
             item.location + L"|" + item.command + L"|" + entry.state);
+        snapshot.entries.push_back(std::move(entry));
+    }
+    std::sort(snapshot.entries.begin(), snapshot.entries.end(), [](const auto& left, const auto& right) {
+        return left.entryId < right.entryId;
+    });
+    return snapshot;
+}
+
+StartupSnapshot BuildStartupSnapshot(
+    const ScanResult& scan,
+    const std::vector<DisabledRecord>& disabled,
+    const std::wstring& scanId) {
+    StartupSnapshot snapshot = BuildStartupSnapshot(scan, scanId);
+    std::set<std::wstring> existingIds;
+    for (const StartupSnapshotEntry& entry : snapshot.entries) existingIds.insert(entry.entryId);
+    for (const DisabledRecord& record : disabled) {
+        if (record.itemId.empty() || existingIds.contains(record.itemId)) continue;
+        StartupSnapshotEntry entry;
+        entry.entryId = record.itemId;
+        entry.source = record.source;
+        entry.displayName = record.name;
+        entry.targetPath = MapValue(record.original, L"targetPath");
+        if (entry.targetPath.empty()) entry.targetPath = MapValue(record.original, L"originalPath");
+        if (entry.targetPath.empty()) entry.targetPath = MapValue(record.original, L"binaryPath");
+        if (entry.targetPath.empty()) entry.targetPath = MapValue(record.original, L"valueData");
+        entry.state = L"disabled";
+        entry.fingerprint = HashHex(entry.entryId + L"|" + StartupSourceKey(entry.source) + L"|" +
+            entry.displayName + L"|" + entry.targetPath + L"|" + entry.state);
         snapshot.entries.push_back(std::move(entry));
     }
     std::sort(snapshot.entries.begin(), snapshot.entries.end(), [](const auto& left, const auto& right) {
@@ -1902,6 +2879,7 @@ bool StartupSnapshotStore::Load(StartupSnapshot& snapshot, std::wstring& error) 
         return false;
     }
     std::string bytes((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    file.close();
     JsonValue root;
     if (!ParseJson(Utf8ToWide(bytes), root, error) || !root.isObject()) {
         error = L"扫描快照文件已损坏：" + error;
@@ -1980,6 +2958,26 @@ bool StartupSnapshotStore::Save(const StartupSnapshot& snapshot, std::wstring& e
         std::filesystem::remove(temporary, removeError);
         return false;
     }
+    {
+        StartupSnapshotStore validationStore(temporary);
+        StartupSnapshot validationSnapshot;
+        std::wstring validationError;
+        if (!validationStore.Load(validationSnapshot, validationError) ||
+            validationSnapshot.entries.size() != snapshot.entries.size()) {
+            error = L"扫描快照临时文件校验失败" +
+                (validationError.empty() ? std::wstring(L"。") : L"：" + validationError);
+            std::error_code removeError;
+            std::filesystem::remove(temporary, removeError);
+            return false;
+        }
+    }
+    const std::filesystem::path backup = path_.wstring() + L".bak";
+    if (std::filesystem::exists(path_) && !CopyFileW(path_.c_str(), backup.c_str(), FALSE)) {
+        error = L"无法备份现有扫描快照。";
+        std::error_code removeError;
+        std::filesystem::remove(temporary, removeError);
+        return false;
+    }
     if (!MoveFileExW(temporary.c_str(), path_.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
         error = L"保存扫描快照失败：" + LastErrorText();
         std::error_code removeError;
@@ -1995,10 +2993,69 @@ DisabledItemStore::DisabledItemStore()
 DisabledItemStore::DisabledItemStore(std::filesystem::path path)
     : path_(std::move(path)) {}
 
+class DisabledStoreWriteLock {
+public:
+    explicit DisabledStoreWriteLock(std::filesystem::path path)
+        : path_(std::move(path)) {}
+
+    ~DisabledStoreWriteLock() {
+        if (handle_ != INVALID_HANDLE_VALUE) CloseHandle(handle_);
+    }
+
+    bool Acquire(std::wstring& error) {
+        for (int attempt = 0; attempt < 100; ++attempt) {
+            handle_ = CreateFileW(path_.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr,
+                OPEN_ALWAYS, FILE_ATTRIBUTE_TEMPORARY, nullptr);
+            if (handle_ != INVALID_HANDLE_VALUE || GetLastError() != ERROR_SHARING_VIOLATION) break;
+            Sleep(20);
+        }
+        if (handle_ == INVALID_HANDLE_VALUE) {
+            error = L"无法取得禁用记录写锁：" + LastErrorText();
+            return false;
+        }
+        return true;
+    }
+
+private:
+    std::filesystem::path path_;
+    HANDLE handle_ = INVALID_HANDLE_VALUE;
+};
+
+bool ReadDisabledStoreRevision(const std::filesystem::path& path, int& revision, std::wstring& error) {
+    revision = 0;
+    std::error_code existsError;
+    if (!std::filesystem::exists(path, existsError)) return true;
+    std::ifstream file(path, std::ios::binary);
+    if (!file) {
+        error = L"无法读取禁用记录。";
+        return false;
+    }
+    std::string bytes((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    JsonValue root;
+    if (!ParseJson(Utf8ToWide(bytes), root, error) || !root.isObject()) {
+        error = L"禁用记录文件已损坏：" + error;
+        return false;
+    }
+    const JsonValue* schemaVersion = root.get(L"schemaVersion");
+    if (schemaVersion && schemaVersion->intOr(0) == 2) {
+        const JsonValue* value = root.get(L"revision");
+        revision = value ? value->intOr(0) : 0;
+        return true;
+    }
+    const JsonValue* legacyVersion = root.get(L"version");
+    if (legacyVersion && legacyVersion->intOr(0) == 1) {
+        revision = 0;
+        return true;
+    }
+    error = L"禁用记录版本不受支持。";
+    return false;
+}
+
 bool DisabledItemStore::Load(std::vector<DisabledRecord>& records, std::wstring& error) const {
     records.clear();
     error.clear();
     std::error_code existsError;
+    observedRevision_ = 0;
     if (!std::filesystem::exists(path_, existsError)) return true;
     std::ifstream file(path_, std::ios::binary);
     if (!file) {
@@ -2006,6 +3063,7 @@ bool DisabledItemStore::Load(std::vector<DisabledRecord>& records, std::wstring&
         return false;
     }
     std::string bytes((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    file.close();
     JsonValue root;
     if (!ParseJson(Utf8ToWide(bytes), root, error) || !root.isObject()) {
         error = L"禁用记录文件已损坏：" + error;
@@ -2019,21 +3077,33 @@ bool DisabledItemStore::Load(std::vector<DisabledRecord>& records, std::wstring&
         error = L"禁用记录版本不受支持。";
         return false;
     }
+    observedRevision_ = version2 && root.get(L"revision") ? root.get(L"revision")->intOr(0) : 0;
     const JsonValue* items = root.get(version2 ? L"records" : L"items");
     if (!items || !items->isArray()) {
         error = version2 ? L"禁用记录缺少 records。" : L"禁用记录缺少 items。";
         return false;
     }
     for (const JsonValue& value : items->arrayValue) {
-        if (!value.isObject()) continue;
+        if (!value.isObject()) {
+            error = L"禁用记录包含无效条目。";
+            return false;
+        }
         DisabledRecord record;
         const JsonValue* recordId = value.get(L"recordId");
         const JsonValue* itemId = value.get(version2 ? L"entryId" : L"itemId");
         const JsonValue* source = value.get(L"source");
         const JsonValue* name = value.get(version2 ? L"displayName" : L"name");
         const JsonValue* disabledAt = value.get(L"disabledAt");
-        if (!recordId || !itemId || !source || !name || !disabledAt) continue;
-        if (!StartupSourceFromKey(source->stringOr(), record.source)) continue;
+        if (!recordId || !recordId->isString() || !itemId || !itemId->isString() ||
+            !source || !source->isString() || !name || !name->isString() ||
+            !disabledAt || !disabledAt->isString()) {
+            error = L"禁用记录缺少必要字段。";
+            return false;
+        }
+        if (!StartupSourceFromKey(source->stringOr(), record.source)) {
+            error = L"禁用记录包含不支持的来源。";
+            return false;
+        }
         record.recordId = recordId->stringOr();
         record.itemId = itemId->stringOr();
         record.name = name->stringOr();
@@ -2041,12 +3111,41 @@ bool DisabledItemStore::Load(std::vector<DisabledRecord>& records, std::wstring&
         const JsonValue* requiresAdmin = value.get(L"requiresAdmin");
         record.requiresAdmin = requiresAdmin && requiresAdmin->boolOr(false);
         const JsonValue* original = value.get(version2 ? L"restore" : L"original");
-        if (original && original->isObject()) {
+        if (!original || !original->isObject()) {
+            error = L"禁用记录缺少恢复数据。";
+            return false;
+        }
+        {
             for (const auto& [key, field] : original->objectValue) {
-                if (field.isString()) record.original[key] = field.stringValue;
+                if (field.isString()) {
+                    record.original[key] = field.stringValue;
+                    if (version2) record.originalTypes[key] = DisabledRecord::RestoreValueType::String;
+                } else if (field.isBool()) {
+                    record.original[key] = field.boolValue ? L"1" : L"0";
+                    record.originalTypes[key] = DisabledRecord::RestoreValueType::Boolean;
+                } else if (field.isNumber()) {
+                    record.original[key] = SerializeJsonValue(field);
+                    record.originalTypes[key] = DisabledRecord::RestoreValueType::Number;
+                } else {
+                    record.original[key] = SerializeJsonValue(field);
+                    record.originalTypes[key] = DisabledRecord::RestoreValueType::Json;
+                }
             }
         }
-        if (!record.recordId.empty() && !record.itemId.empty()) records.push_back(std::move(record));
+        if (record.recordId.empty() || record.itemId.empty()) {
+            error = L"禁用记录标识无效。";
+            return false;
+        }
+        records.push_back(std::move(record));
+    }
+    if (version1) {
+        // Loading a legacy file performs the migration immediately. Save writes
+        // through a validated temporary file, retains the v1 source as .bak and
+        // atomically replaces the authoritative file.
+        if (!Save(records, error)) {
+            error = L"禁用记录 version 1 迁移失败：" + error;
+            return false;
+        }
     }
     return true;
 }
@@ -2059,10 +3158,19 @@ bool DisabledItemStore::Save(const std::vector<DisabledRecord>& records, std::ws
         error = L"无法创建数据目录：" + Utf8ToWide(directoryError.message());
         return false;
     }
+    DisabledStoreWriteLock lock(path_.wstring() + L".lock");
+    if (!lock.Acquire(error)) return false;
+    int currentRevision = 0;
+    if (!ReadDisabledStoreRevision(path_, currentRevision, error)) return false;
+    if (observedRevision_ >= 0 && currentRevision != observedRevision_) {
+        error = L"禁用记录已被其它进程更新，请重新扫描后再操作。";
+        return false;
+    }
+    const int nextRevision = currentRevision + 1;
     std::wostringstream json;
     json << L"{\n"
          << L"  \"schemaVersion\": 2,\n"
-         << L"  \"revision\": 1,\n"
+         << L"  \"revision\": " << nextRevision << L",\n"
          << L"  \"updatedAt\": \"" << EscapeJson(CurrentTimestamp()) << L"\",\n"
          << L"  \"records\": [";
     for (std::size_t index = 0; index < records.size(); ++index) {
@@ -2079,7 +3187,8 @@ bool DisabledItemStore::Save(const std::vector<DisabledRecord>& records, std::ws
         std::size_t fieldIndex = 0;
         for (const auto& [key, value] : record.original) {
             json << (fieldIndex++ == 0 ? L"\n" : L",\n")
-                 << L"        \"" << EscapeJson(key) << L"\": \"" << EscapeJson(value) << L"\"";
+                 << L"        \"" << EscapeJson(key) << L"\": "
+                 << SerializeRestoreValue(key, value, record.originalTypes);
         }
         if (!record.original.empty()) json << L"\n      ";
         json << L"}\n    }";
@@ -2102,6 +3211,18 @@ bool DisabledItemStore::Save(const std::vector<DisabledRecord>& records, std::ws
         std::filesystem::remove(temporary, removeError);
         return false;
     }
+    {
+        DisabledItemStore validationStore(temporary);
+        std::vector<DisabledRecord> validationRecords;
+        std::wstring validationError;
+        if (!validationStore.Load(validationRecords, validationError) || validationRecords.size() != records.size()) {
+            error = L"禁用记录临时文件校验失败" +
+                (validationError.empty() ? std::wstring(L"。") : L"：" + validationError);
+            std::error_code removeError;
+            std::filesystem::remove(temporary, removeError);
+            return false;
+        }
+    }
     const std::filesystem::path backup = path_.wstring() + L".bak";
     if (std::filesystem::exists(path_)) {
         if (!CopyFileW(path_.c_str(), backup.c_str(), FALSE)) {
@@ -2117,6 +3238,7 @@ bool DisabledItemStore::Save(const std::vector<DisabledRecord>& records, std::ws
         std::filesystem::remove(temporary, removeError);
         return false;
     }
+    observedRevision_ = nextRevision;
     return true;
 }
 
@@ -2228,16 +3350,26 @@ bool StartupManager::LoadDisabled(std::vector<DisabledRecord>& records, std::wst
 }
 
 OperationResult StartupManager::Disable(const std::wstring& itemId) const {
+    const auto audit = [&](const OperationResult& result, const StartupItem* item = nullptr) {
+        AppendOperationAudit(
+            L"disable",
+            itemId,
+            item ? StartupSourceKey(item->source) : std::wstring{},
+            item ? item->name : std::wstring{},
+            result);
+        return result;
+    };
+
     std::vector<DisabledRecord> records;
     std::wstring error;
-    if (!store_.Load(records, error)) return {false, error};
+    if (!store_.Load(records, error)) return audit({false, error});
     if (std::any_of(records.begin(), records.end(), [&](const DisabledRecord& record) { return record.itemId == itemId; })) {
-        return {false, L"此项目已经由本工具禁用。"};
+        return audit({false, L"此项目已经由本工具禁用。"});
     }
     ScanResult scan = ScanAll();
     const auto found = std::find_if(scan.items.begin(), scan.items.end(), [&](const StartupItem& item) { return item.id == itemId; });
-    if (found == scan.items.end()) return {false, L"启动项不存在或已发生变化，请刷新后重试。"};
-    if (!found->canDisable || found->readOnly) return {false, L"此项目仅供查看。"};
+    if (found == scan.items.end()) return audit({false, L"启动项不存在或已发生变化，请刷新后重试。"});
+    if (!found->canDisable || found->readOnly) return audit({false, L"此项目仅供查看。"}, &*found);
 
     DisabledRecord record;
     record.itemId = found->id;
@@ -2248,14 +3380,14 @@ OperationResult StartupManager::Disable(const std::wstring& itemId) const {
     record.requiresAdmin = found->requiresAdmin;
     record.original = found->original;
     records.push_back(record);
-    if (!store_.Save(records, error)) return {false, error};
+    if (!store_.Save(records, error)) return audit({false, error}, &*found);
 
     OperationResult operation = ApplyDisable(records.back());
     if (!operation.success) {
         records.pop_back();
         std::wstring cleanupError;
         store_.Save(records, cleanupError);
-        return operation;
+        return audit(operation, &*found);
     }
     // ApplyDisable 可能补充恢复信息（启动文件备份路径 / StartupApproved 原始状态），需要再次落盘。
     if (!store_.Save(records, error)) {
@@ -2263,30 +3395,197 @@ OperationResult StartupManager::Disable(const std::wstring& itemId) const {
         records.pop_back();
         std::wstring cleanupError;
         store_.Save(records, cleanupError);
-        return {false, L"无法保存恢复信息，操作已撤销。"};
+        return audit({false, L"无法保存恢复信息，操作已撤销。"}, &*found);
     }
     if (!VerifyDisabled(records.back())) {
-        return {false, L"操作已执行，但未能确认结果；恢复记录已保留。"};
+        return audit({false, L"操作已执行，但未能确认结果；恢复记录已保留。"}, &*found);
     }
-    return operation;
+    return audit(operation, &*found);
 }
+OperationResult StartupManager::DisableMany(const std::vector<std::wstring>& itemIds) const {
+    const auto audit = [&](const OperationResult& result) {
+        AppendOperationAudit(L"disable-many", std::to_wstring(itemIds.size()), L"batch", L"批量禁用", result);
+        return result;
+    };
+    if (itemIds.empty()) return audit({false, L"没有可禁用的入口。"});
 
+    int succeeded = 0;
+    std::vector<OperationItemResult> itemResults;
+    itemResults.reserve(itemIds.size());
+    std::vector<std::wstring> succeededItemIds;
+    succeededItemIds.reserve(itemIds.size());
+
+    const auto rollbackSucceeded = [&]() {
+        for (const std::wstring& succeededItemId : succeededItemIds) {
+            std::vector<DisabledRecord> records;
+            std::wstring error;
+            if (!store_.Load(records, error)) continue;
+            const auto found = std::find_if(records.begin(), records.end(), [&](const DisabledRecord& record) {
+                return record.itemId == succeededItemId;
+            });
+            if (found == records.end()) continue;
+            const std::wstring recordId = found->recordId;
+            const OperationResult rollback = Restore(recordId);
+            auto resultIt = std::find_if(itemResults.begin(), itemResults.end(), [&](const OperationItemResult& item) {
+                return item.targetId == succeededItemId && item.action == L"disable";
+            });
+            if (resultIt != itemResults.end()) {
+                resultIt->rolledBack = rollback.success;
+                if (rollback.success) {
+                    resultIt->message += L"（已回滚）";
+                } else if (!rollback.message.empty()) {
+                    resultIt->message += L"（回滚失败：" + rollback.message + L"）";
+                }
+            }
+        }
+    };
+
+    for (const std::wstring& itemId : itemIds) {
+        const OperationResult result = Disable(itemId);
+        itemResults.push_back({itemId, L"disable", result.success, result.message, false});
+        if (result.success) {
+            ++succeeded;
+            succeededItemIds.push_back(itemId);
+            continue;
+        }
+
+        rollbackSucceeded();
+        OperationResult batch{false,
+            L"批量禁用失败，已回滚 " + std::to_wstring(succeeded) + L" 个已完成入口：" +
+                (result.message.empty() ? itemId : result.message),
+            succeeded > 0};
+        batch.items = std::move(itemResults);
+        return audit(batch);
+    }
+
+    OperationResult result{true, L"已禁用 " + std::to_wstring(succeeded) + L" 个入口。"};
+    result.items = std::move(itemResults);
+    return audit(result);
+}
 OperationResult StartupManager::Restore(const std::wstring& recordId) const {
+    const auto audit = [&](const OperationResult& result, const DisabledRecord* record = nullptr) {
+        AppendOperationAudit(
+            L"restore",
+            recordId,
+            record ? StartupSourceKey(record->source) : std::wstring{},
+            record ? record->name : std::wstring{},
+            result);
+        return result;
+    };
+
     std::vector<DisabledRecord> records;
     std::wstring error;
-    if (!store_.Load(records, error)) return {false, error};
+    if (!store_.Load(records, error)) return audit({false, error});
     const auto found = std::find_if(records.begin(), records.end(), [&](const DisabledRecord& record) { return record.recordId == recordId; });
-    if (found == records.end()) return {false, L"恢复记录不存在。"};
+    if (found == records.end()) return audit({false, L"恢复记录不存在。"});
+    const DisabledRecord auditRecord = *found;
     const std::size_t index = static_cast<std::size_t>(std::distance(records.begin(), found));
+    if (!VerifyDisabled(*found)) {
+        return audit({false, L"系统状态已被其它程序修改，本次未覆盖；请刷新后检查详情。"}, &auditRecord);
+    }
     OperationResult operation = ApplyRestore(*found);
-    if (!operation.success) return operation;
+    if (!operation.success) return audit(operation, &auditRecord);
+    if (!VerifyRestored(*found)) {
+        return audit({false, L"恢复操作已执行，但未能确认系统最终状态；恢复记录已保留。"}, &auditRecord);
+    }
     records.erase(records.begin() + static_cast<std::ptrdiff_t>(index));
     if (!store_.Save(records, error)) {
-        return {true, L"项目已恢复，但无法清理恢复记录：" + error};
+        return audit({true, L"项目已恢复，但无法清理恢复记录：" + error, true}, &auditRecord);
     }
-    return operation;
+    return audit(operation, &auditRecord);
 }
+OperationResult StartupManager::RestoreMany(const std::vector<std::wstring>& recordIds) const {
+    const auto audit = [&](const OperationResult& result) {
+        AppendOperationAudit(L"restore-many", std::to_wstring(recordIds.size()), L"batch", L"批量恢复", result);
+        return result;
+    };
+    if (recordIds.empty()) return audit({false, L"没有可恢复的入口。"});
 
+    int succeeded = 0;
+    std::vector<OperationItemResult> itemResults;
+    itemResults.reserve(recordIds.size());
+    std::vector<DisabledRecord> restoredRecords;
+    restoredRecords.reserve(recordIds.size());
+
+    const auto findRecord = [&](const std::wstring& recordId, DisabledRecord& output, std::wstring& error) {
+        std::vector<DisabledRecord> records;
+        if (!store_.Load(records, error)) return false;
+        const auto found = std::find_if(records.begin(), records.end(), [&](const DisabledRecord& record) {
+            return record.recordId == recordId;
+        });
+        if (found == records.end()) {
+            error = L"恢复记录不存在。";
+            return false;
+        }
+        output = *found;
+        return true;
+    };
+
+    const auto rollbackRestored = [&]() {
+        for (const DisabledRecord& restoredRecord : restoredRecords) {
+            DisabledRecord rollbackRecord = restoredRecord;
+            OperationResult rollback = ApplyDisable(rollbackRecord);
+            bool saved = false;
+            std::wstring saveError;
+            if (rollback.success) {
+                std::vector<DisabledRecord> records;
+                if (store_.Load(records, saveError)) {
+                    const bool exists = std::any_of(records.begin(), records.end(), [&](const DisabledRecord& record) {
+                        return record.recordId == rollbackRecord.recordId;
+                    });
+                    if (!exists) records.push_back(rollbackRecord);
+                    saved = store_.Save(records, saveError);
+                }
+            }
+            auto resultIt = std::find_if(itemResults.begin(), itemResults.end(), [&](const OperationItemResult& item) {
+                return item.targetId == restoredRecord.recordId && item.action == L"restore";
+            });
+            if (resultIt != itemResults.end()) {
+                resultIt->rolledBack = rollback.success && saved;
+                if (rollback.success && saved) {
+                    resultIt->message += L"（已回滚）";
+                } else {
+                    const std::wstring reason = !rollback.message.empty() ? rollback.message : saveError;
+                    resultIt->message += L"（回滚失败：" + (reason.empty() ? std::wstring(L"未知错误") : reason) + L"）";
+                }
+            }
+        }
+    };
+
+    for (const std::wstring& recordId : recordIds) {
+        DisabledRecord beforeRestore;
+        std::wstring lookupError;
+        if (!findRecord(recordId, beforeRestore, lookupError)) {
+            itemResults.push_back({recordId, L"restore", false, lookupError, false});
+            rollbackRestored();
+            OperationResult batch{false,
+                L"批量恢复失败，已尝试回滚 " + std::to_wstring(succeeded) + L" 个已完成入口：" + lookupError,
+                succeeded > 0};
+            batch.items = std::move(itemResults);
+            return audit(batch);
+        }
+
+        const OperationResult result = Restore(recordId);
+        itemResults.push_back({recordId, L"restore", result.success, result.message, false});
+        if (result.success) {
+            ++succeeded;
+            restoredRecords.push_back(std::move(beforeRestore));
+            continue;
+        }
+
+        rollbackRestored();
+        OperationResult batch{false,
+            L"批量恢复失败，已尝试回滚 " + std::to_wstring(succeeded) + L" 个已完成入口：" +
+                (result.message.empty() ? recordId : result.message),
+            succeeded > 0};
+        batch.items = std::move(itemResults);
+        return audit(batch);
+    }
+
+    OperationResult result{true, L"已恢复 " + std::to_wstring(succeeded) + L" 个入口。"};
+    result.items = std::move(itemResults);
+    return audit(result);
+}
 // ================= AdBlockManager（广告拦截简化版） =================
 
 AdBlockManager::AdBlockManager()
@@ -2632,6 +3931,98 @@ AdBlockScanResult AdBlockManager::ScanPathDetailedCore(
     return result;
 }
 
+AdBlockPlan AdBlockManager::BuildBlockPlan(const std::vector<std::wstring>& targetPaths, const std::wstring& mode) const {
+    AdBlockPlan plan;
+    bool uninitialize = false;
+    InitializeComForScan(uninitialize);
+    for (const std::wstring& path : targetPaths) {
+        AdBlockPlanItem item;
+        item.mode = mode;
+        if (mode != L"exact" && mode != L"name" && mode != L"startup") {
+            item.targetPath = path;
+            item.riskLevel = L"blocked";
+            item.reason = L"未知拦截模式。";
+            item.impactText = L"无法拦截";
+            ++plan.blockedCount;
+            plan.items.push_back(std::move(item));
+            continue;
+        }
+
+        const LaunchTarget target = ResolveLaunchTarget(path);
+        item.targetPath = target.valid ? target.path : path;
+        item.imageName = target.imageName;
+        if (!target.valid) {
+            item.riskLevel = L"blocked";
+            item.reason = L"目标文件不存在或已发生变化。";
+            item.impactText = L"无法拦截";
+            ++plan.blockedCount;
+            plan.items.push_back(std::move(item));
+            continue;
+        }
+        if (target.category != L"exe") {
+            item.riskLevel = L"blocked";
+            item.reason = L"仅支持拦截可执行程序；脚本请从其自启动来源禁用。";
+            item.impactText = L"无法拦截";
+            ++plan.blockedCount;
+            plan.items.push_back(std::move(item));
+            continue;
+        }
+
+        const GuardVerdict guard = EvaluateGuard(target.path, target.imageName);
+        if (!guard.allow) {
+            item.riskLevel = L"blocked";
+            item.reason = L"该程序不允许拦截：" + guard.reason;
+            item.impactText = L"禁止拦截";
+            ++plan.blockedCount;
+            plan.items.push_back(std::move(item));
+            continue;
+        }
+
+        if (mode == L"startup") {
+            const std::vector<StartupItem> entries = FindAutoStartEntries(target.path);
+            item.willModifyStartupApproved = !entries.empty();
+            item.impactText = entries.empty()
+                ? L"未发现可禁用自启动项"
+                : L"仅禁止开机自启动，不影响手动运行";
+            if (entries.empty()) {
+                item.riskLevel = L"blocked";
+                item.reason = L"该程序未注册开机自启动项。";
+                ++plan.blockedCount;
+            } else {
+                item.riskLevel = L"ok";
+                ++plan.blockableCount;
+            }
+            plan.items.push_back(std::move(item));
+            continue;
+        }
+
+        item.willModifyIfeo = true;
+        item.impactText = mode == L"exact" ? L"仅阻止此完整路径" : L"阻止所有同名可执行程序";
+        const std::wstring subKey = mode == L"exact" ? (L"AppLaunchLocker_" + HashHex(Lower(target.path))) : std::wstring{};
+        const IfeoDebuggerState ifeo = ReadIfeoDebuggerState(target.imageName, DetectIfeoView(target.path) == L"32" ? KEY_WOW64_32KEY : KEY_WOW64_64KEY, subKey);
+        const IfeoDebuggerState parentIfeo = mode == L"exact"
+            ? ReadIfeoDebuggerState(target.imageName, DetectIfeoView(target.path) == L"32" ? KEY_WOW64_32KEY : KEY_WOW64_64KEY)
+            : ifeo;
+        item.hasExistingIfeoDebugger = (ifeo.hasDebugger && !ifeo.createdByThisTool) ||
+            (parentIfeo.hasDebugger && !parentIfeo.createdByThisTool);
+        if (item.hasExistingIfeoDebugger) {
+            item.riskLevel = L"warn";
+            item.reason = L"目标已有 IFEO Debugger，拦截会备份并在解除时恢复。";
+            ++plan.warningCount;
+        } else if (guard.warn) {
+            item.riskLevel = L"warn";
+            item.reason = guard.reason;
+            ++plan.warningCount;
+        } else {
+            item.riskLevel = L"ok";
+        }
+        ++plan.blockableCount;
+        plan.items.push_back(std::move(item));
+    }
+    if (uninitialize) CoUninitialize();
+    return plan;
+}
+
 OperationResult AdBlockManager::Block(const std::wstring& targetPath, const std::wstring& mode) const {
     if (mode != L"exact" && mode != L"name" && mode != L"startup") return {false, L"未知拦截模式。"};
     bool uninitialize = false;
@@ -2770,16 +4161,90 @@ OperationResult AdBlockManager::Unblock(const std::wstring& recordId) const {
         [&](const DisabledRecord& record) { return record.recordId == recordId; });
     if (found == records.end()) return {false, L"拦截记录不存在。"};
     const std::size_t index = static_cast<std::size_t>(std::distance(records.begin(), found));
-    // 按机制分派恢复：启动拦截走系统开关，其余走 IFEO。
-    OperationResult operation = MapValue(found->original, L"mechanism") == L"startup-approved"
-        ? RestoreViaStartupApproved(*found)
-        : RestoreIfeoBlock(*found);
+    OperationResult operation = BlockingProviderForRecord(*found).Restore(*found);
     if (!operation.success) return operation;
     records.erase(records.begin() + static_cast<std::ptrdiff_t>(index));
     if (!store_.Save(records, error)) {
         return {true, L"已解除拦截，但无法清理记录：" + error};
     }
     return operation;
+}
+
+OperationResult AdBlockManager::RepairRecord(const std::wstring& recordId) const {
+    std::vector<DisabledRecord> records;
+    std::wstring error;
+    if (!store_.Load(records, error)) return {false, error};
+    const auto found = std::find_if(records.begin(), records.end(),
+        [&](const DisabledRecord& record) { return record.recordId == recordId; });
+    if (found == records.end()) return {false, L"拦截记录不存在。"};
+
+    const AdBlockRecordStatus status = CheckRecordStatus(*found);
+    if (status.state == AdBlockRecordState::Active) return {false, L"该拦截记录仍在生效，无需修复。"};
+    if (!status.canRepair) return {false, L"该拦截记录无法自动修复：" + status.message};
+
+    OperationResult operation = BlockingProviderForRecord(*found).Repair(*found);
+    AppendOperationAudit(L"adblock-repair", found->recordId, StartupSourceKey(found->source), found->name, operation);
+    if (!operation.success) return operation;
+    if (!store_.Save(records, error)) {
+        return {true, L"已修复拦截，但无法保存修复记录：" + error, true};
+    }
+    return operation;
+}
+
+OperationResult AdBlockManager::UnblockAll() const {
+    std::vector<DisabledRecord> records;
+    std::wstring error;
+    if (!store_.Load(records, error)) return {false, error};
+    if (records.empty()) return {false, L"没有已拦截记录。"};
+
+    std::vector<DisabledRecord> remaining;
+    int succeeded = 0;
+    int failed = 0;
+    for (const DisabledRecord& record : records) {
+        const OperationResult operation = BlockingProviderForRecord(record).Restore(record);
+        AppendOperationAudit(L"adblock-unblock-all", record.recordId, StartupSourceKey(record.source), record.name, operation);
+        if (operation.success) {
+            ++succeeded;
+        } else {
+            ++failed;
+            remaining.push_back(record);
+        }
+    }
+
+    if (!store_.Save(remaining, error)) {
+        return {succeeded > 0, L"已解除 " + std::to_wstring(succeeded) +
+            L" 条拦截，但无法保存剩余记录：" + error, true};
+    }
+    if (failed > 0) {
+        return {succeeded > 0, L"已解除 " + std::to_wstring(succeeded) +
+            L" 条拦截，" + std::to_wstring(failed) + L" 条失败。", true};
+    }
+    return {true, L"已解除全部 " + std::to_wstring(succeeded) + L" 条拦截。"};
+}
+
+OperationResult AdBlockManager::CleanStaleRecords() const {
+    std::vector<DisabledRecord> records;
+    std::wstring error;
+    if (!store_.Load(records, error)) return {false, error};
+    std::vector<DisabledRecord> kept;
+    int removed = 0;
+    for (const DisabledRecord& record : records) {
+        const AdBlockRecordStatus status = CheckRecordStatus(record);
+        if (status.state == AdBlockRecordState::Inactive) {
+            ++removed;
+            AppendOperationAudit(L"adblock-clean-stale", record.recordId, StartupSourceKey(record.source), record.name,
+                {true, status.message});
+            continue;
+        }
+        kept.push_back(record);
+    }
+    if (removed == 0) return {false, L"没有可清理的失效记录。"};
+    if (!store_.Save(kept, error)) return {false, L"清理失败：" + error};
+    return {true, L"已清理 " + std::to_wstring(removed) + L" 条失效记录。"};
+}
+
+AdBlockRecordStatus AdBlockManager::CheckRecordStatus(const DisabledRecord& record) const {
+    return BlockingProviderForRecord(record).Status(record);
 }
 
 bool AdBlockManager::ListBlocked(std::vector<DisabledRecord>& records, std::wstring& error) const {

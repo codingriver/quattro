@@ -1,5 +1,7 @@
 #include "PluginRegistry.h"
 
+#include "AppLaunchLockerVersion.h"
+
 #include "Utilities.h"
 #include "Version.h"
 
@@ -135,7 +137,7 @@ std::vector<PluginRecord> PluginRegistry::BuiltinPlugins() {
     PluginRecord appLaunchLocker;
     appLaunchLocker.id = L"quattro.builtin.app-launch-locker";
     appLaunchLocker.name = L"自启动管理";
-    appLaunchLocker.version = L"1.0.0";
+    appLaunchLocker.version = AppLaunchLockerVersionText();
     appLaunchLocker.category = L"builtin-tools";
     appLaunchLocker.kind = L"builtin-tool";
     appLaunchLocker.engine = L"app-launch-locker";

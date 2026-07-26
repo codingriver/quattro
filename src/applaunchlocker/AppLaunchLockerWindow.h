@@ -8,8 +8,9 @@
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
+#include <map>
 #include <memory>
-#include <thread>
 #include <vector>
 
 class ThemedWindowUi;
@@ -37,6 +38,15 @@ private:
     void StartScan();
     void StartDisable();
     void StartRestore();
+    void StartEntryOperation(StartupApplicationEntry entry);
+    void ShowContextMenu(POINT screenPoint);
+    void CopySelectedStartupInfo();
+    void CopySelectedPath();
+    void CopySelectedName();
+    void CopySelectedCommand();
+    void CopySelectedSourceField(const wchar_t* key, const std::wstring& successMessage);
+    void OpenSelectedLocation();
+    void ShowSelectedFileProperties();
     void CompleteScan(ScanResult result, std::vector<DisabledRecord> disabled, std::wstring storeError);
     void CompleteOperation(OperationResult result);
     void RebuildTabs();
@@ -48,9 +58,11 @@ private:
     void UpdateButtons();
     void ShowSelectedDetails();
     void SelectTab(int index);
+    std::intptr_t RowKeyForIdentity(const std::wstring& identity);
+    const StartupApplication* SelectedApplication() const;
     const StartupItem* SelectedStartupItem() const;
     const DisabledRecord* SelectedDisabledRecord() const;
-    void JoinWorker();
+    void StartOperationTask(std::function<OperationResult()> operation);
 
     struct TabEntry {
         MainTab tab = MainTab::StartupItems;
@@ -65,25 +77,32 @@ private:
     HWND tabControl_ = nullptr;
     HWND itemTable_ = nullptr;
     HWND statusText_ = nullptr;
-    HWND elevateLink_ = nullptr;
+    HWND advancedSourceFilter_ = nullptr;
     HWND detailsButton_ = nullptr;
     HWND disableButton_ = nullptr;
     HWND restoreButton_ = nullptr;
     HIMAGELIST itemSmallImages_ = nullptr;
     int itemIconSize_ = 16;
     std::vector<TabEntry> tabs_;
+    std::vector<StartupApplication> applications_;
+    std::vector<std::size_t> visibleApplicationIndexes_;
+    std::vector<std::intptr_t> visibleApplicationRowKeys_;
     std::vector<StartupItem> items_;
     std::vector<std::size_t> visibleItemIndexes_;
+    std::vector<std::intptr_t> visibleItemRowKeys_;
     std::vector<std::size_t> visibleDisabledIndexes_;
+    std::vector<std::intptr_t> visibleDisabledRowKeys_;
+    std::map<std::wstring, std::intptr_t> stableRowKeys_;
+    std::intptr_t nextStableRowKey_ = 1;
     std::vector<DisabledRecord> disabled_;
-    std::thread worker_;
     std::shared_ptr<ScanTaskHandle> scanTask_;
     std::shared_ptr<TaskHandle> iconTask_;
+    std::shared_ptr<TaskHandle> operationTask_;
     std::unique_ptr<ThemedTaskProgressDialog> scanProgressDialog_;
     std::uint64_t iconGeneration_ = 1;
     std::atomic<bool> closing_{false};
     bool busy_ = false;
     bool storeAvailable_ = true;
-    bool showElevateLink_ = false;
-    int activeTab_ = 0;
+    int activeTab_{};
+    int advancedSourceFilterIndex_ = 0;
 };

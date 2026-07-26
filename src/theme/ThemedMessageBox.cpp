@@ -6,6 +6,8 @@
 #include <utility>
 
 namespace {
+constexpr int kMessageTextId = -2001;
+
 class CommonThemedMessageDialog {
 public:
     CommonThemedMessageDialog(
@@ -89,8 +91,13 @@ private:
                 kThemedMessageClientWidth, kThemedMessageClientHeight);
             const ThemedUi ui = windowUi_->ui();
             const RECT content = ui.contentRect();
-            ui.Label(message_, content.left, content.top, content.right - content.left,
-                {ThemedTextAlign::Start, ThemedLabelLines::Three});
+            const int footerHeight = ui.footerButtonHeight();
+            const RECT frame{
+                content.left,
+                content.top,
+                content.right,
+                ui.footerButtonY(footerHeight) - ui.layout().footerGap};
+            ui.ReadOnlyText(kMessageTextId, frame, message_);
             if (IsYesNoCancel()) {
                 const int defaultIndex = DefaultButtonIndex(3);
                 ui.FooterButton(IDYES, L"是", 0, 3, defaultIndex == 0, defaultIndex == 0);

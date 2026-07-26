@@ -18,6 +18,7 @@ constexpr int kDialogWidth = 360;
 constexpr int kDialogHeight = 150;
 constexpr int kDoubleAltMaxIntervalMs = 450;
 constexpr int IdHotKeyEdit = 1001;
+constexpr int IdInstructionText = 1002;
 constexpr int IdOk = IDOK;
 
 std::wstring GetText(HWND hwnd) {
@@ -327,17 +328,17 @@ private:
                 instance_, owner_, hwnd_, theme_, DialogLayoutKind::Compact, kDialogWidth, kDialogHeight);
             const ThemedUi ui = windowUi_->ui();
             const DialogLayoutMetrics& layout = ui.layout();
-            ThemedLabelOptions instructionOptions{};
-            instructionOptions.lines = ThemedLabelLines::Two;
             const int instructionY = layout.contentInsetY;
-            ui.Label(
+            ui.ReadOnlyText(
+                IdInstructionText,
+                RECT{
+                    layout.contentInsetX,
+                    instructionY,
+                    layout.contentInsetX + ui.contentWidth(),
+                    instructionY + ui.labelHeight() * 2},
                 options_.allowDoubleAlt
                     ? L"输入快捷键，或按一个键录入为 Ctrl+Alt+该键；也可快速按两次 Alt。"
-                    : L"输入快捷键，或按一个键录入为 Ctrl+Alt+该键。Backspace 清除，Esc 取消。",
-                layout.contentInsetX,
-                instructionY,
-                ui.contentWidth(),
-                instructionOptions);
+                    : L"输入快捷键，或按一个键录入为 Ctrl+Alt+该键。Backspace 清除，Esc 取消。");
 
             const int editWidth = ui.scale(220);
             const int buttonWidth = layout.footerButtonWidth;

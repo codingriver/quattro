@@ -8,6 +8,8 @@
 
 namespace {
 constexpr UINT_PTR kRefreshTimer = 1;
+constexpr int kStatusTextId = -1001;
+constexpr int kDetailTextId = -1002;
 }
 
 ThemedTaskProgressSnapshot ToThemedTaskProgressSnapshot(const TaskProgressSnapshot& snapshot) {
@@ -179,11 +181,12 @@ void ThemedTaskProgressDialog::CreateControls() {
     const DialogLayoutMetrics& layout = ui.layout();
     const int left = ui.contentLeft();
     int y = layout.contentInsetY;
-    status_ = ui.StatusText(options_.initialStatus, left, y, ui.contentWidth(),
-        ThemedStatusTextOptions{ThemedStatusRole::Info, ThemedTextAlign::Start});
-    y = ui.nextRowY(y, ui.labelHeight());
-    detail_ = ui.Label(options_.initialDetail, left, y, ui.contentWidth());
-    y += ui.labelHeight() + layout.sectionGap;
+    ThemedReadOnlyTextOptions lineOptions{};
+    lineOptions.mode = ThemedEditMode::SingleLine;
+    status_ = ui.ReadOnlyText(kStatusTextId, ui.rect(left, y, ui.contentWidth(), ui.editHeight()), options_.initialStatus, lineOptions);
+    y = ui.nextRowY(y, ui.editHeight());
+    detail_ = ui.ReadOnlyText(kDetailTextId, ui.rect(left, y, ui.contentWidth(), ui.editHeight()), options_.initialDetail, lineOptions);
+    y += ui.editHeight() + layout.sectionGap;
     ThemedProgressBarOptions progressOptions{};
     progressOptions.value = 0.0;
     progressOptions.indeterminate = true;
@@ -201,7 +204,6 @@ void ThemedTaskProgressDialog::Refresh() {
     if (options_.readSnapshot) snapshot = options_.readSnapshot();
     const ThemedUi ui = windowUi_->ui();
     if (!snapshot.title.empty() && (!hasSnapshot_ || snapshot.title != lastSnapshot_.title)) SetWindowTextW(hwnd_, snapshot.title.c_str());
-    if (!hasSnapshot_ || snapshot.role != lastSnapshot_.role) ui.SetStatusTextRole(status_, snapshot.role);
     if (!hasSnapshot_ || snapshot.status != lastSnapshot_.status) ThemedUi::SetText(status_, snapshot.status);
     if (!hasSnapshot_ || snapshot.detail != lastSnapshot_.detail) ThemedUi::SetText(detail_, snapshot.detail);
     if (!hasSnapshot_ || snapshot.value != lastSnapshot_.value ||

@@ -1,6 +1,7 @@
 #include "MainWindow.h"
 
 #include "AboutDialog.h"
+#include "AppLaunchLockerLocator.h"
 #include "AppLog.h"
 #include "BuiltinTools.h"
 #include "EmbeddedExecutableManager.h"
@@ -5405,13 +5406,30 @@ void MainWindow::OpenBuiltinTool(std::size_t index) {
 }
 
 void MainWindow::OpenBuiltinToolEngine(const std::wstring& engine, bool locateProcessOnOpen) {
+    const auto prepareAppLaunchLocker = []() {
+        const AppLaunchLockerLocationResult installed = FindInstalledAppLaunchLocker(1);
+        if (installed.found) {
+            WriteAppLog(installed.message + L" path=\"" + installed.path.wstring() + L"\"");
+            return EmbeddedExecutablePrepareResult{true, false, false, installed.path, installed.message};
+        }
+        if (!installed.message.empty()) WriteAppLog(installed.message);
+        EmbeddedExecutablePrepareResult prepared =
+            PrepareEmbeddedExecutable(L"app-launch-locker", {QuattroEmbeddedExecutableRootDirectory()});
+        if (prepared.success) {
+            std::wstring resourceError;
+            if (!PrepareAppLaunchLockerRuntimeResources(prepared.path, GetModuleDirectory(), resourceError)) {
+                prepared.success = false;
+                prepared.message = resourceError;
+            }
+        }
+        return prepared;
+    };
     if (engine == L"webdav-manager") {
         ShowWebDavFileManagerDialog(hwnd_, instance_, theme_, config_);
         return;
     }
     if (engine == L"app-launch-locker") {
-        const EmbeddedExecutablePrepareResult prepared = PrepareEmbeddedExecutable(
-            L"app-launch-locker", {QuattroEmbeddedExecutableRootDirectory()});
+        const EmbeddedExecutablePrepareResult prepared = prepareAppLaunchLocker();
         if (!prepared.success) {
             WriteAppLog(L"准备自启动管理工具失败: " + prepared.message);
             ShowThemedMessageBox(hwnd_, instance_, theme_, prepared.message, L"自启动管理", MB_OK | MB_ICONWARNING);
@@ -5438,8 +5456,7 @@ void MainWindow::OpenBuiltinToolEngine(const std::wstring& engine, bool locatePr
         return;
     }
     if (engine == L"ad-block") {
-        const EmbeddedExecutablePrepareResult prepared = PrepareEmbeddedExecutable(
-            L"app-launch-locker", {QuattroEmbeddedExecutableRootDirectory()});
+        const EmbeddedExecutablePrepareResult prepared = prepareAppLaunchLocker();
         if (!prepared.success) {
             WriteAppLog(L"准备广告拦截工具失败: " + prepared.message);
             ShowThemedMessageBox(hwnd_, instance_, theme_, prepared.message, L"广告拦截", MB_OK | MB_ICONWARNING);

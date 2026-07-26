@@ -7,17 +7,18 @@
 #include "../../resources/resource.h"
 
 #include <memory>
+#include <sstream>
 #include <string>
 
 namespace {
 constexpr int ID_OPEN_RELEASE = IDNO;
-constexpr int kNotesHeight = 48;
+constexpr int ID_UPDATE_DETAILS_TEXT = 2703;
 
-std::wstring TruncatedReleaseNotes(const std::wstring& notes) {
+std::wstring ReleaseNotesText(const std::wstring& notes) {
     if (notes.empty()) {
         return L"无";
     }
-    return notes.size() > 160 ? notes.substr(0, 160) + L"..." : notes;
+    return notes;
 }
 
 std::wstring UpdatePackageText(const UpdateReleaseInfo& info) {
@@ -116,6 +117,16 @@ private:
         y = form.nextRowY(y, {group});
     }
 
+    std::wstring DetailsText() const {
+        std::wostringstream text;
+        text << L"发现新版本。\r\n\r\n";
+        text << L"当前版本：" << FormatVersionForDisplay(info_.currentVersion) << L"\r\n";
+        text << L"最新版本：" << FormatVersionForDisplay(info_.latestVersion) << L"\r\n";
+        text << L"更新包：" << UpdatePackageText(info_) << L"\r\n\r\n";
+        text << L"发布说明：\r\n" << ReleaseNotesText(info_.releaseNotes);
+        return text.str();
+    }
+
     LRESULT Handle(UINT message, WPARAM wParam, LPARAM lParam) {
         LRESULT commonResult = 0;
         if (ThemedWindowUi::HandleCommonMessage(windowUi_, message, wParam, lParam, commonResult)) {
@@ -133,25 +144,13 @@ private:
                 kThemedDialogClientWidth,
                 kThemedDialogClientHeight);
             const ThemedUi ui = windowUi_->ui();
-            const ThemedFormLayout form(ui);
-            int y = ui.contentTop();
-
-            auto titleRow = form.row(y, ThemedRowAlign::Left, {form.text(ui.contentWidth())});
-            ui.Label(L"发现新版本。", titleRow[0].left, titleRow[0].top, titleRow[0].right - titleRow[0].left);
-            y = form.nextRowY(y, {form.text(ui.contentWidth())});
-
-            const int labelWidth = form.labelWidthForTexts({L"当前版本：", L"最新版本：", L"更新包：", L"发布说明："});
-            CreateLabelValueRow(ui, form, y, labelWidth, L"当前版本：", FormatVersionForDisplay(info_.currentVersion));
-            CreateLabelValueRow(ui, form, y, labelWidth, L"最新版本：", FormatVersionForDisplay(info_.latestVersion));
-            CreateLabelValueRow(ui, form, y, labelWidth, L"更新包：", UpdatePackageText(info_));
-
-            const int valueWidth = ui.contentWidth() - labelWidth - ui.layout().labelGap;
-            auto notesGroup = form.group({form.fixedLabel(labelWidth), form.field(valueWidth, kNotesHeight)});
-            auto notesRows = form.rowGroups(y, ThemedRowAlign::Left, {notesGroup});
-            ui.Label(L"发布说明：", notesRows[0][0].left, notesRows[0][0].top, notesRows[0][0].right - notesRows[0][0].left);
-            ThemedFramedTextOptions notesOptions{};
-            notesOptions.wrap = true;
-            ui.FramedStatic(TruncatedReleaseNotes(info_.releaseNotes), notesRows[0][1], notesOptions);
+            const int footerHeight = ui.footerButtonHeight();
+            const RECT frame{
+                ui.contentLeft(),
+                ui.contentTop(),
+                ui.contentLeft() + ui.contentWidth(),
+                ui.footerButtonY(footerHeight) - ui.layout().footerGap};
+            ui.ReadOnlyText(ID_UPDATE_DETAILS_TEXT, frame, DetailsText());
 
             ui.FooterButton(IDOK, L"下载更新", 0, 3, true, true);
             ui.FooterButton(ID_OPEN_RELEASE, L"发布页", 1, 3);

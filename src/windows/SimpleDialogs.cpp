@@ -1697,10 +1697,8 @@ private:
             const ThemedFormLayout form(ui);
             int y = ui.contentTop();
 
-            ThemedLabelOptions messageOptions{};
-            messageOptions.lines = ThemedLabelLines::Three;
             const auto messageRow = form.row(y, ThemedRowAlign::Left, {form.item(ui.contentWidth(), ui.labelHeight() * 3)});
-            ui.Label(message_, messageRow[0].left, messageRow[0].top, messageRow[0].right - messageRow[0].left, messageOptions);
+            ui.ReadOnlyText(ID_MESSAGE_TEXT, messageRow[0], message_);
 
             y = form.nextRowY(y, {form.item(ui.contentWidth(), ui.labelHeight() * 3)});
             ThemedToggleOptions toggleOptions{};
@@ -1961,6 +1959,36 @@ public:
     }
 
 private:
+    std::wstring DetailsText() const {
+        const bool healthy = record_.health == WebDavFileRecordHealth::Healthy;
+        std::wstring healthText = L"正常";
+        if (record_.health == WebDavFileRecordHealth::MissingMetadata) healthText = L"Meta 缺失";
+        else if (record_.health == WebDavFileRecordHealth::InvalidMetadata) healthText = L"Meta 无效";
+        else if (record_.health == WebDavFileRecordHealth::MetadataReadFailed) healthText = L"Meta 读取失败";
+
+        std::wostringstream text;
+        text << L"文件名：" << record_.displayName << L"\r\n";
+        text << L"文件大小：" << (healthy ? FormatFileSize(record_.size) : std::wstring(L"—")) << L"\r\n";
+        const std::wstring uploadedAtLocal = WebDavFileService::FormatUploadedAtLocal(record_.uploadedAtUtc);
+        text << L"远程更新时间：" << (healthy && !uploadedAtLocal.empty() ? uploadedAtLocal : std::wstring(L"获取失败")) << L"\r\n";
+        const std::wstring sourceModifiedAt = WebDavFileService::FormatSourceModifiedAtLocal(record_);
+        text << L"远端记录时间：" << (healthy && !sourceModifiedAt.empty() ? sourceModifiedAt : std::wstring(L"-")) << L"\r\n";
+        const std::wstring localModifiedAt = WebDavFileService::FormatLocalModifiedAt(record_.absolutePath);
+        text << L"本地修改时间：" << (localModifiedAt.empty() ? std::wstring(L"-") : localModifiedAt) << L"\r\n";
+        text << L"本地状态：" << WebDavFileService::LocalSyncStatusText(record_) << L"\r\n";
+        text << L"上传状态：";
+        if (healthy) {
+            text << record_.uploadState << (record_.contentReady ? L" · 内容可用" : L" · 内容不可用");
+        } else {
+            text << healthText;
+        }
+        text << L"\r\n\r\n";
+        text << (healthy ? L"系统绝对路径：" : L"错误信息：") << (healthy ? record_.absolutePath : record_.recordError) << L"\r\n\r\n";
+        text << L"远端记录路径：" << remoteRecordPath_ << L"\r\n\r\n";
+        text << (healthy ? L"SHA-256：" : L"记录 ID：") << (healthy ? record_.sha256 : record_.id);
+        return text.str();
+    }
+
     static LRESULT CALLBACK Proc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
         auto* dialog = reinterpret_cast<WebDavFileDetailsDialog*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
         if (message == WM_NCCREATE) {
@@ -1982,52 +2010,14 @@ private:
             windowUi_ = std::make_unique<ThemedWindowUi>(instance_, owner_, hwnd_, theme_,
                 DialogLayoutKind::Standard, client.right, client.bottom);
             const ThemedUi ui = windowUi_->ui();
-            const ThemedFormLayout form(ui);
             const auto& layout = ui.layout();
-            int y = ui.contentTop();
-            const int labelWidth = form.labelWidthForTexts({
-                L"文件名：", L"文件大小：", L"远程更新时间：", L"远端记录时间：",
-                L"本地修改时间：", L"本地状态：", L"上传状态："});
-            const int valueX = ui.contentLeft() + labelWidth + layout.labelGap;
-            const int valueWidth = ui.contentWidth() - labelWidth - layout.labelGap;
-            auto addValueRow = [&](const std::wstring& label, const std::wstring& value) {
-                ui.Label(label, ui.contentLeft(), y, labelWidth);
-                ui.Label(value, valueX, y, valueWidth);
-                y = ui.nextRowY(y, ui.labelHeight());
-            };
-            const bool healthy = record_.health == WebDavFileRecordHealth::Healthy;
-            std::wstring healthText = L"正常";
-            if (record_.health == WebDavFileRecordHealth::MissingMetadata) healthText = L"Meta 缺失";
-            else if (record_.health == WebDavFileRecordHealth::InvalidMetadata) healthText = L"Meta 无效";
-            else if (record_.health == WebDavFileRecordHealth::MetadataReadFailed) healthText = L"Meta 读取失败";
-            addValueRow(L"文件名：", record_.displayName);
-            addValueRow(L"文件大小：", healthy ? FormatFileSize(record_.size) : L"—");
-            const std::wstring uploadedAtLocal = WebDavFileService::FormatUploadedAtLocal(record_.uploadedAtUtc);
-            addValueRow(L"远程更新时间：", healthy && !uploadedAtLocal.empty() ? uploadedAtLocal : L"获取失败");
-            const std::wstring sourceModifiedAt = WebDavFileService::FormatSourceModifiedAtLocal(record_);
-            addValueRow(L"远端记录时间：", healthy && !sourceModifiedAt.empty() ? sourceModifiedAt : L"-");
-            const std::wstring localModifiedAt = WebDavFileService::FormatLocalModifiedAt(record_.absolutePath);
-            addValueRow(L"本地修改时间：", localModifiedAt.empty() ? L"-" : localModifiedAt);
-            addValueRow(L"本地状态：", WebDavFileService::LocalSyncStatusText(record_));
-            addValueRow(L"上传状态：", healthy ? record_.uploadState +
-                (record_.contentReady ? L" · 内容可用" : L" · 内容不可用") : healthText);
-
-            y += layout.sectionGap - layout.rowGap;
-            const int framedHeight = ui.labelHeight() * 2 + ui.denseGap();
-            ThemedFramedTextOptions framedOptions{};
-            framedOptions.wrap = true;
-            framedOptions.multiline = true;
-            auto addFramedValue = [&](const std::wstring& label, const std::wstring& value) {
-                ui.Label(label, ui.contentLeft(), y, ui.contentWidth());
-                y = ui.nextRowY(y, ui.labelHeight());
-                ui.FramedStatic(value, RECT{ui.contentLeft(), y,
-                    ui.contentLeft() + ui.contentWidth(), y + framedHeight}, framedOptions);
-                y += framedHeight + layout.sectionGap;
-            };
-            addFramedValue(healthy ? L"系统绝对路径" : L"错误信息",
-                healthy ? record_.absolutePath : record_.recordError);
-            addFramedValue(L"远端记录路径", remoteRecordPath_);
-            addFramedValue(healthy ? L"SHA-256" : L"记录 ID", healthy ? record_.sha256 : record_.id);
+            const int footerHeight = ui.footerButtonHeight();
+            const RECT frame{
+                ui.contentLeft(),
+                ui.contentTop(),
+                ui.contentLeft() + ui.contentWidth(),
+                ui.footerButtonY(footerHeight) - layout.footerGap};
+            ui.ReadOnlyText(ID_MESSAGE_TEXT, frame, DetailsText());
             ui.FooterButton(IDOK, L"确定", 0, 1, true, true);
             return 0;
         }

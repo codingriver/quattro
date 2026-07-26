@@ -7,12 +7,14 @@
 #include <windows.h>
 
 #include <atomic>
+#include <functional>
+#include <map>
 #include <memory>
-#include <thread>
 #include <vector>
 
 class ThemedWindowUi;
 class ThemedTaskProgressDialog;
+class TaskHandle;
 // 广告拦截（简化版）窗口：选文件/文件夹 → 扫描可启动文件 → 勾选 → 一键拦截；
 // 「已拦截」页可解除。与「自启动管理」窗口独立，机制为 IFEO 禁止运行。
 class AdBlockWindow {
@@ -32,6 +34,10 @@ private:
     void ClearScanResults();
     void StartBlockSelected();
     void StartUnblock();
+    void StartUnblockAll();
+    void StartCleanStale();
+    void StartRepairSelected();
+    void ShowSelectedDetails();
     void LoadBlockedAsync();
     void CompleteScan(AdBlockScanResult scan);
     void CompleteBlocked(std::vector<DisabledRecord> blocked, std::wstring storeError);
@@ -41,7 +47,8 @@ private:
     void RebuildBlockedRows();
     void UpdateButtons();
     std::wstring SelectedMode() const;
-    void JoinWorker();
+    std::intptr_t RowKeyForIdentity(const std::wstring& identity);
+    void StartOperationTask(std::function<OperationResult()> operation);
 
     HINSTANCE instance_ = nullptr;
     Theme theme_;
@@ -60,13 +67,21 @@ private:
     HWND scanTable_ = nullptr;
     HWND blockedTable_ = nullptr;
     HWND statusText_ = nullptr;
+    HWND detailsButton_ = nullptr;
+    HWND repairButton_ = nullptr;
     HWND blockButton_ = nullptr;
+    HWND refreshBlockedButton_ = nullptr;
+    HWND cleanStaleButton_ = nullptr;
+    HWND unblockAllButton_ = nullptr;
     HWND unblockButton_ = nullptr;
 
     std::vector<StartupItem> scanItems_;
     std::vector<DisabledRecord> blocked_;
-    std::thread worker_;
+    std::map<std::wstring, std::intptr_t> stableRowKeys_;
+    std::intptr_t nextStableRowKey_ = 1;
     std::shared_ptr<ScanTaskHandle> scanTask_;
+    std::shared_ptr<TaskHandle> operationTask_;
+    std::shared_ptr<TaskHandle> blockedTask_;
     std::unique_ptr<ThemedTaskProgressDialog> scanProgressDialog_;
     std::atomic<bool> closing_{false};
     bool busy_ = false;

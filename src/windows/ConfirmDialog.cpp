@@ -9,6 +9,7 @@
 
 namespace {
 constexpr int ID_SECONDARY = IDNO;
+constexpr int ID_CONFIRM_MESSAGE_TEXT = 2901;
 
 class ConfirmDialog {
 public:
@@ -101,11 +102,13 @@ private:
                 kThemedDialogClientWidth,
                 kThemedDialogClientHeight);
             const ThemedUi ui = windowUi_->ui();
-            const ThemedFormLayout form(ui);
-            int y = ui.contentTop();
-
-            auto messageRow = form.row(y, ThemedRowAlign::Left, {form.text(ui.contentWidth())});
-            ui.Label(message_, messageRow[0].left, messageRow[0].top, messageRow[0].right - messageRow[0].left);
+            const int footerHeight = ui.footerButtonHeight();
+            const RECT frame{
+                ui.contentLeft(),
+                ui.contentTop(),
+                ui.contentLeft() + ui.contentWidth(),
+                ui.footerButtonY(footerHeight) - ui.layout().footerGap};
+            ui.ReadOnlyText(ID_CONFIRM_MESSAGE_TEXT, frame, message_);
 
             ui.FooterButton(IDOK, primaryText_, 0, 2, true, true);
             ui.FooterButton(ID_SECONDARY, secondaryText_, 1, 2);

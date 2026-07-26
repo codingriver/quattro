@@ -2872,6 +2872,52 @@ HWND ThemedUi::Table(int id, RECT frame, const std::vector<ThemedTableColumn>& c
     return table;
 }
 
+void ThemedUi::SetTableColumns(HWND table, const std::vector<ThemedTableColumn>& columns) {
+    if (!table) return;
+    const int existing = Header_GetItemCount(ListView_GetHeader(table));
+    for (int index = existing - 1; index >= 0; --index) {
+        ListView_DeleteColumn(table, index);
+    }
+
+    RECT client{};
+    GetClientRect(table, &client);
+    int fixedWidth = 0;
+    int remainingCount = 0;
+    std::vector<int> widthModes;
+    widthModes.reserve(columns.size());
+    for (const auto& column : columns) {
+        if (column.widthMode == ThemedTableColumnWidth::Remaining) ++remainingCount;
+        else fixedWidth += std::max(0, column.fixedWidth);
+        widthModes.push_back(static_cast<int>(column.widthMode));
+    }
+    const int available = std::max(40, static_cast<int>(client.right - client.left) - fixedWidth);
+    int assignedRemainingWidth = 0;
+    int remainingIndex = 0;
+    for (std::size_t i = 0; i < columns.size(); ++i) {
+        const auto& source = columns[i];
+        LVCOLUMNW column{};
+        column.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM | LVCF_FMT;
+        column.pszText = const_cast<wchar_t*>(source.title.c_str());
+        column.iSubItem = static_cast<int>(i);
+        if (source.widthMode == ThemedTableColumnWidth::Remaining) {
+            ++remainingIndex;
+            column.cx = remainingIndex == remainingCount
+                ? std::max(24, available - assignedRemainingWidth)
+                : std::max(24, available / std::max(1, remainingCount));
+            assignedRemainingWidth += column.cx;
+        } else {
+            column.cx = std::max(24, source.fixedWidth);
+        }
+        column.fmt = source.align == ThemedTableColumnAlign::Center ? LVCFMT_CENTER
+            : (source.align == ThemedTableColumnAlign::End ? LVCFMT_RIGHT : LVCFMT_LEFT);
+        ListView_InsertColumn(table, static_cast<int>(i), &column);
+    }
+    ThemedControls::ConfigureTableColumns(table, widthModes);
+    InvalidateRect(table, nullptr, TRUE);
+    if (HWND header = ListView_GetHeader(table)) {
+        InvalidateRect(header, nullptr, TRUE);
+    }
+}
 void ThemedUi::MoveTable(HWND table, RECT frame) const {
     if (!table) return;
     const RECT inner = ThemedControls::TableFrameInnerRect(theme_, frame, dpi_);
@@ -3072,6 +3118,24 @@ std::intptr_t ThemedUi::TableRowKey(HWND table, int index) {
     item.iItem = index;
     return ListView_GetItem(table, &item) ? static_cast<std::intptr_t>(item.lParam) : 0;
 }
+std::intptr_t ThemedUi::TableTopVisibleRowKey(HWND table) {
+    if (!table) return 0;
+    return TableRowKey(table, ListView_GetTopIndex(table));
+}
+bool ThemedUi::RestoreTableTopVisibleRowByKey(HWND table, std::intptr_t key) {
+    if (!table || key == 0) return false;
+    const int target = FindTableRowByKey(table, key);
+    if (target < 0) return false;
+    ListView_EnsureVisible(table, target, FALSE);
+    const int currentTop = ListView_GetTopIndex(table);
+    if (currentTop == target) return true;
+    RECT currentRect{};
+    RECT targetRect{};
+    if (!ListView_GetItemRect(table, currentTop, &currentRect, LVIR_BOUNDS) ||
+        !ListView_GetItemRect(table, target, &targetRect, LVIR_BOUNDS)) return false;
+    ListView_Scroll(table, 0, targetRect.top - currentRect.top);
+    return true;
+}
 int ThemedUi::TableHitTest(HWND table, POINT point, bool fullRow, bool* stateIcon) {
     if (!table) return -1;
     LVHITTESTINFO hit{};
@@ -3271,8 +3335,8 @@ void ThemedUi::HideToast() const {
 HWND ThemedUi::Edit(int id, RECT frame, const std::wstring& value, ThemedEditOptions options) const {
     const bool multiline = options.mode == ThemedEditMode::MultiLine;
     DWORD style = multiline
-        ? ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL | WS_CLIPSIBLINGS
-        : ES_AUTOHSCROLL;
+        ? ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL | WS_CLIPSIBLINGS | ES_NOHIDESEL
+        : ES_AUTOHSCROLL | ES_NOHIDESEL;
     if (multiline && options.acceptsReturn) {
         style |= ES_WANTRETURN;
     }
@@ -3308,6 +3372,17 @@ HWND ThemedUi::Edit(int id, RECT frame, const std::wstring& value, ThemedEditOpt
         editFrameRegistry_->RegisterEditFrame(hwnd, frame, options);
     }
     return hwnd;
+}
+
+HWND ThemedUi::ReadOnlyText(int id, RECT frame, const std::wstring& value, ThemedReadOnlyTextOptions options) const {
+    ThemedEditOptions editOptions{};
+    editOptions.mode = options.mode;
+    editOptions.readOnly = true;
+    editOptions.enabled = options.enabled;
+    editOptions.selectAllOnFocus = options.selectAllOnFocus;
+    editOptions.acceptsReturn = options.acceptsReturn;
+    editOptions.placeholder = options.placeholder;
+    return Edit(id, frame, value, editOptions);
 }
 
 // 在字段框内部创建主题静态文本控件。

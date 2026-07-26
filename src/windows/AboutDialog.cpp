@@ -7,10 +7,12 @@
 #include "../../resources/resource.h"
 
 #include <memory>
+#include <sstream>
 #include <string>
 
 namespace {
 constexpr const wchar_t* kAppDisplayName = L"Quattro快速启动器";
+constexpr int ID_ABOUT_TEXT = 2801;
 
 class AboutDialog {
 public:
@@ -83,6 +85,17 @@ private:
         y = form.nextRowY(y, {group});
     }
 
+    std::wstring AboutText() const {
+        std::wostringstream text;
+        text << kAppDisplayName << L"\r\n\r\n";
+        text << L"版本：" << QuattroVersionText() << L"\r\n";
+        text << L"说明：轻量级 Windows 快速启动工具\r\n";
+        text << L"技术栈：C++ / Win32 / Direct2D / DirectWrite\r\n";
+        text << L"开源仓库：https://github.com/codingriver/quattro\r\n";
+        text << L"当前权限：" << (runningAsAdmin_ ? L"管理员" : L"普通用户");
+        return text.str();
+    }
+
     LRESULT Handle(UINT message, WPARAM wParam, LPARAM lParam) {
         LRESULT commonResult = 0;
         if (ThemedWindowUi::HandleCommonMessage(windowUi_, message, wParam, lParam, commonResult)) {
@@ -100,26 +113,13 @@ private:
                 kThemedDialogClientWidth,
                 kThemedDialogClientHeight);
             const ThemedUi ui = windowUi_->ui();
-            const ThemedFormLayout form(ui);
-            int y = ui.contentTop();
-
-            auto titleRow = form.row(y, ThemedRowAlign::Left, {form.text(ui.contentWidth())});
-            ui.Label(kAppDisplayName, titleRow[0].left, titleRow[0].top, titleRow[0].right - titleRow[0].left);
-            y = form.nextRowY(y, {form.text(ui.contentWidth())});
-
-            const int labelWidth = form.labelWidthForTexts({L"版本：", L"开源仓库：", L"当前权限："});
-            CreateLabelValueRow(ui, form, y, labelWidth, L"版本：", QuattroVersionText());
-
-            auto descriptionRow = form.row(y, ThemedRowAlign::Left, {form.text(ui.contentWidth())});
-            ui.Label(L"轻量级 Windows 快速启动工具", descriptionRow[0].left, descriptionRow[0].top, descriptionRow[0].right - descriptionRow[0].left);
-            y = form.nextRowY(y, {form.text(ui.contentWidth())});
-
-            auto stackRow = form.row(y, ThemedRowAlign::Left, {form.text(ui.contentWidth())});
-            ui.Label(L"C++ / Win32 / Direct2D / DirectWrite", stackRow[0].left, stackRow[0].top, stackRow[0].right - stackRow[0].left);
-            y = form.nextRowY(y, {form.text(ui.contentWidth())});
-
-            CreateLabelValueRow(ui, form, y, labelWidth, L"开源仓库：", L"https://github.com/codingriver/quattro");
-            CreateLabelValueRow(ui, form, y, labelWidth, L"当前权限：", runningAsAdmin_ ? L"管理员" : L"普通用户");
+            const int footerHeight = ui.footerButtonHeight();
+            const RECT frame{
+                ui.contentLeft(),
+                ui.contentTop(),
+                ui.contentLeft() + ui.contentWidth(),
+                ui.footerButtonY(footerHeight) - ui.layout().footerGap};
+            ui.ReadOnlyText(ID_ABOUT_TEXT, frame, AboutText());
             ui.FooterButton(IDOK, L"确定", 0, 1, true, true);
             return 0;
         }

@@ -197,6 +197,82 @@ int wmain() {
         ok &= Check(!error.empty(), L"malformed snapshot should not be silently accepted");
     }
 
+    {
+        ScanResult appScan;
+        StartupItem registryItem;
+        registryItem.id = L"entry-reg";
+        registryItem.source = StartupSourceType::Registry;
+        registryItem.name = L"Example";
+        registryItem.location = L"HKCU\\Run";
+        registryItem.command = L"\"C:\\Program Files\\Example\\Example.exe\" --background";
+        registryItem.canDisable = true;
+        registryItem.readOnly = false;
+        registryItem.original = {{L"valueData", registryItem.command}, {L"targetPath", L"C:\\Program Files\\Example\\Example.exe"}};
+        appScan.items.push_back(registryItem);
+
+        StartupItem taskItem = registryItem;
+        taskItem.id = L"entry-task";
+        taskItem.source = StartupSourceType::ScheduledTask;
+        taskItem.name = L"Example Update";
+        taskItem.location = L"\\Example\\Update";
+        taskItem.command = L"C:\\Program Files\\Example\\Example.exe --update";
+        taskItem.original = {
+            {L"taskPath", L"\\Example\\Update"},
+            {L"targetPath", L"C:\\Program Files\\Example\\Example.exe"},
+            {L"autoStartTrigger", L"1"},
+        };
+        appScan.items.push_back(taskItem);
+
+        DisabledRecord disabledEntry;
+        disabledEntry.recordId = L"record-disabled";
+        disabledEntry.itemId = L"entry-folder";
+        disabledEntry.source = StartupSourceType::StartupFolder;
+        disabledEntry.name = L"Example Shortcut";
+        disabledEntry.original = {
+            {L"originalPath", L"C:\\Users\\User\\Startup\\Example.lnk"},
+            {L"targetPath", L"C:\\Program Files\\Example\\Example.exe"},
+        };
+
+        const std::vector<StartupApplication> applications = BuildStartupApplications(appScan, {disabledEntry});
+        ok &= Check(applications.size() == 1, L"application builder should merge entries by target executable");
+        if (applications.size() == 1) {
+            ok &= Check(applications[0].entries.size() == 3, L"application builder should include live and disabled entries");
+            ok &= Check(StartupApplicationStateText(applications[0]) == L"部分禁用",
+                L"application state should reflect mixed enabled and disabled entries");
+            ok &= Check(applications[0].targetPath == L"C:\\Program Files\\Example\\Example.exe",
+                L"application target path should use executable identity");
+        }
+    }
+    {
+        ScanResult appScan;
+        StartupItem registryItem;
+        registryItem.id = L"entry-reg-autostart";
+        registryItem.source = StartupSourceType::Registry;
+        registryItem.name = L"Example";
+        registryItem.location = L"HKCU\\Run";
+        registryItem.command = L"\"C:\\Program Files\\Example\\Example.exe\" --background";
+        registryItem.canDisable = true;
+        registryItem.readOnly = false;
+        registryItem.original = {{L"targetPath", L"C:\\Program Files\\Example\\Example.exe"}};
+        appScan.items.push_back(registryItem);
+
+        StartupItem maintenanceTask = registryItem;
+        maintenanceTask.id = L"entry-task-maintenance";
+        maintenanceTask.source = StartupSourceType::ScheduledTask;
+        maintenanceTask.name = L"Example Maintenance";
+        maintenanceTask.location = L"\\Example\\Maintenance";
+        maintenanceTask.command = L"C:\\Program Files\\Example\\Example.exe --maintenance";
+        maintenanceTask.original = {
+            {L"taskPath", L"\\Example\\Maintenance"},
+            {L"targetPath", L"C:\\Program Files\\Example\\Example.exe"},
+            {L"autoStartTrigger", L"0"},
+        };
+        appScan.items.push_back(maintenanceTask);
+
+        const std::vector<StartupApplication> applications = BuildStartupApplications(appScan, {});
+        ok &= Check(applications.size() == 2,
+            L"non-autostart scheduled task should not merge into the startup application");
+    }
     const ScanResult scan = StartupManager(DisabledItemStore(directory / L"unused.json")).ScanAll();
     for (const auto& item : scan.items) {
         if (item.source == StartupSourceType::Driver || item.source == StartupSourceType::WmiSubscription ||
@@ -280,6 +356,23 @@ int wmain() {
                 progressEvents.back().phase == AdBlockScanPhase::Completed,
             L"detailed scan should report validating through completed phases");
 
+        const AdBlockPlan exactPlan = adBlock.BuildBlockPlan({exePath.wstring(), scriptPath.wstring()}, L"exact");
+        ok &= Check(exactPlan.items.size() == 2, L"adblock plan should include every requested target");
+        ok &= Check(exactPlan.blockableCount == 1 && exactPlan.warningCount == 1 && exactPlan.blockedCount == 1,
+            L"adblock plan should classify blockable warning and skipped targets");
+        ok &= Check(exactPlan.items[0].willModifyIfeo && exactPlan.items[0].impactText == L"仅阻止此完整路径",
+            L"exact plan should describe IFEO precise-path impact");
+        ok &= Check(exactPlan.items[1].riskLevel == L"blocked",
+            L"script plan item should be skipped");
+
+        const AdBlockPlan startupPlan = adBlock.BuildBlockPlan({exePath.wstring()}, L"startup");
+        ok &= Check(startupPlan.blockableCount == 0 && startupPlan.blockedCount == 1,
+            L"startup plan should skip targets without startup entries");
+
+        ok &= Check(AdBlockRecordStateKey(AdBlockRecordState::Overwritten) == L"overwritten" &&
+                AdBlockRecordStateText(AdBlockRecordState::Inactive) == L"已失效",
+            L"adblock record state text should be stable");
+
         // 取消：保留已完成的部分结果并以 Cancelled 结束。
         const std::filesystem::path cancelDir = adDir / L"cancel";
         std::filesystem::create_directories(cancelDir, cleanupError);
@@ -321,6 +414,43 @@ int wmain() {
 
         // 解除不存在的记录：拒绝。
         ok &= Check(!adBlock.Unblock(L"no-such-record").success, L"unblock of unknown record rejected");
+
+        // 失效 IFEO 记录：只读状态检查应标记失效；清理失效只改测试存储，不写 HKLM。
+        DisabledRecord staleIfeo;
+        staleIfeo.recordId = L"stale-ifeo";
+        staleIfeo.itemId = L"stale-item";
+        staleIfeo.source = StartupSourceType::Ifeo;
+        staleIfeo.name = L"stale.exe";
+        staleIfeo.disabledAt = L"2026-07-25T00:00:00Z";
+        staleIfeo.original = {
+            {L"mechanism", L"ifeo"},
+            {L"blockMode", L"name"},
+            {L"ifeoImageName", L"quattro-test-stale-never-exists.exe"},
+            {L"ifeoView", L"64"},
+            {L"targetPath", (adDir / L"stale.exe").wstring()},
+        };
+        std::vector<DisabledRecord> staleRecords{staleIfeo};
+        ok &= Check(DisabledItemStore(adDir / L"blocked-items.json").Save(staleRecords, blockedError),
+            L"test stale adblock record should save");
+        const AdBlockRecordStatus staleStatus = adBlock.CheckRecordStatus(staleIfeo);
+        ok &= Check(staleStatus.state == AdBlockRecordState::Inactive,
+            L"missing IFEO key should be reported as inactive");
+        ok &= Check(staleStatus.canRepair, L"inactive IFEO record should advertise repair when restore fields exist");
+        ok &= Check(!adBlock.RepairRecord(L"no-such-record").success,
+            L"repair of unknown record rejected");
+        ok &= Check(!adBlock.RepairRecord(staleIfeo.recordId).success,
+            L"repair should reject stale IFEO record when target file is missing");
+        ok &= Check(adBlock.CleanStaleRecords().success, L"clean stale records should remove inactive entries");
+        std::vector<DisabledRecord> afterClean;
+        ok &= Check(adBlock.ListBlocked(afterClean, blockedError) && afterClean.empty(),
+            L"clean stale records should persist removal");
+
+        ok &= Check(DisabledItemStore(adDir / L"blocked-items.json").Save(staleRecords, blockedError),
+            L"test stale adblock record should save before unblock all");
+        ok &= Check(adBlock.UnblockAll().success, L"unblock all should treat already-missing IFEO as restored");
+        std::vector<DisabledRecord> afterUnblockAll;
+        ok &= Check(adBlock.ListBlocked(afterUnblockAll, blockedError) && afterUnblockAll.empty(),
+            L"unblock all should remove restored records");
     }
 
     std::filesystem::remove_all(directory, cleanupError);

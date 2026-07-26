@@ -2,6 +2,7 @@
 
 #include "AppLog.h"
 #include "FileDialog.h"
+#include "TaskExecutionService.h"
 #include "ThemedTaskProgressDialog.h"
 #include "ThemedUi.h"
 #include "ThemedWindowUi.h"
@@ -16,6 +17,7 @@
 #include <filesystem>
 #include <mutex>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <utility>
 
@@ -37,6 +39,11 @@ constexpr int ID_CLEAR_RESULTS = 1217;
 constexpr int ID_BLOCKED_TABLE = 1220;
 constexpr int ID_UNBLOCK = 1221;
 constexpr int ID_CHECK_PATH = 1222;
+constexpr int ID_REFRESH_BLOCKED = 1223;
+constexpr int ID_CLEAN_STALE = 1224;
+constexpr int ID_UNBLOCK_ALL = 1225;
+constexpr int ID_DETAILS = 1226;
+constexpr int ID_REPAIR = 1227;
 
 constexpr UINT WM_APP_SCAN_COMPLETE = WM_APP + 0x160;
 constexpr UINT WM_APP_BLOCKED_COMPLETE = WM_APP + 0x161;
@@ -50,9 +57,6 @@ constexpr int kClientHeight = 448;
 struct BlockedPayload {
     std::vector<DisabledRecord> blocked;
     std::wstring storeError;
-};
-struct OperationPayload {
-    OperationResult result;
 };
 
 std::wstring QuoteArgument(const std::wstring& value) {
@@ -100,9 +104,17 @@ bool RunningAsAdmin() {
     return isAdmin != FALSE;
 }
 
-OperationResult RunElevated(const std::wstring& parameters) {
+OperationResult RunElevatedRequest(
+    const std::wstring& action,
+    const std::vector<std::wstring>& targets,
+    const std::wstring& mode = {}) {
     const std::wstring executable = CurrentExecutablePath();
     if (executable.empty()) return {false, L"无法确定程序路径。"};
+    ElevatedOperationRequest request;
+    std::wstring error;
+    if (!CreateElevatedOperationRequest(action, targets, mode, request, error)) return {false, error};
+    const std::wstring parameters = L"runas-operation --request " + QuoteArgument(request.requestPath.wstring()) +
+        L" --token " + QuoteArgument(request.token);
     SHELLEXECUTEINFOW info{};
     info.cbSize = sizeof(info);
     info.fMask = SEE_MASK_NOCLOSEPROCESS;
@@ -112,17 +124,22 @@ OperationResult RunElevated(const std::wstring& parameters) {
     info.nShow = SW_HIDE;
     if (!ShellExecuteExW(&info)) {
         const DWORD code = GetLastError();
+        DeleteFileW(request.requestPath.c_str());
+        DeleteFileW(request.resultPath.c_str());
         return {false, code == ERROR_CANCELLED ? L"已取消管理员授权。" : L"无法启动管理员操作：" + FormatLastError(code)};
     }
     WaitForSingleObject(info.hProcess, INFINITE);
-    DWORD exitCode = 1;
-    GetExitCodeProcess(info.hProcess, &exitCode);
     CloseHandle(info.hProcess);
-    return exitCode == 0 ? OperationResult{true, L"操作完成。"} : OperationResult{false, L"管理员操作失败，请刷新后重试。"};
+    OperationResult result;
+    if (!ReadElevatedOperationResult(request, result, error)) {
+        DeleteFileW(request.requestPath.c_str());
+        return {false, error.empty() ? L"管理员操作失败，请刷新后重试。" : error};
+    }
+    return result;
 }
 
 std::filesystem::path WindowStatePath() {
-    return QuattroUserConfigDirectory() / L"ad-block-window.ini";
+    return AppLaunchLockerDataDirectory() / L"ad-block-window.ini";
 }
 
 void RestoreWindowPosition(HWND hwnd) {
@@ -196,6 +213,50 @@ std::wstring ScanStatusText(const StartupItem& item) {
     return L"仅查看";
 }
 
+std::wstring ScanImpactText(const StartupItem& item, const std::wstring& mode) {
+    const std::wstring status = MapField(item.original, L"adBlockStatus");
+    if (!item.canDisable) {
+        const std::wstring reason = MapField(item.original, L"guardReason");
+        if (!reason.empty()) return reason;
+        if (status == L"script") return L"脚本仅提示";
+        if (status == L"unresolved") return L"无法解析目标";
+        return L"不可拦截";
+    }
+    if (mode == L"startup") {
+        return MapField(item.original, L"hasAutoStart") == L"1"
+            ? L"仅禁止自启"
+            : L"无自启动项";
+    }
+    if (mode == L"name") return L"所有同名 EXE";
+    return L"仅此路径";
+}
+
+std::wstring PlanConfirmationPrompt(const AdBlockPlan& plan) {
+    std::wostringstream prompt;
+    prompt << L"将拦截 " << plan.blockableCount << L" 个程序";
+    if (plan.warningCount > 0) prompt << L"，其中 " << plan.warningCount << L" 个需要注意";
+    if (plan.blockedCount > 0) prompt << L"，跳过 " << plan.blockedCount << L" 个";
+    prompt << L"。\n\n";
+    int shown = 0;
+    for (const AdBlockPlanItem& item : plan.items) {
+        if (shown >= 8) {
+            prompt << L"…其余项目请在列表中查看。\n";
+            break;
+        }
+        const bool blocked = item.riskLevel == L"blocked";
+        const bool warning = item.riskLevel == L"warn";
+        std::wstring name = item.imageName.empty() ? std::filesystem::path(item.targetPath).filename().wstring() : item.imageName;
+        if (name.empty()) name = item.targetPath;
+        prompt << (blocked ? L"× " : warning ? L"! " : L"✓ ")
+               << name << L"　" << item.impactText;
+        if (!item.reason.empty()) prompt << L"　" << item.reason;
+        prompt << L"\n";
+        ++shown;
+    }
+    prompt << L"\n确认继续？";
+    return prompt.str();
+}
+
 std::wstring BlockConfirmationPrompt(std::size_t targetCount, const std::wstring& mode, int skippedNoAutoStart) {
     std::wstring modeText;
     std::wstring detailText;
@@ -224,8 +285,9 @@ AdBlockWindow::AdBlockWindow(HINSTANCE instance, Theme theme)
 AdBlockWindow::~AdBlockWindow() {
     closing_ = true;
     if (scanTask_) scanTask_->RequestStop();
+    if (operationTask_) { operationTask_->RequestStop(); operationTask_.reset(); }
+    if (blockedTask_) { blockedTask_->RequestStop(); blockedTask_.reset(); }
     if (scanProgressDialog_) scanProgressDialog_->Close();
-    JoinWorker();
 }
 
 int AdBlockWindow::Run() {
@@ -297,8 +359,9 @@ LRESULT AdBlockWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam) {
             SaveWindowPosition(hwnd_);
             closing_ = true;
             if (scanTask_) scanTask_->RequestStop();
+            if (operationTask_) { operationTask_->RequestStop(); operationTask_.reset(); }
+            if (blockedTask_) { blockedTask_->RequestStop(); blockedTask_.reset(); }
             if (scanProgressDialog_) scanProgressDialog_->Close();
-            JoinWorker();
             PostQuitMessage(0);
         }
         return result;
@@ -342,6 +405,19 @@ LRESULT AdBlockWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam) {
             StartBlockSelected();
         } else if (id == ID_UNBLOCK) {
             StartUnblock();
+        } else if (id == ID_UNBLOCK_ALL) {
+            StartUnblockAll();
+        } else if (id == ID_CLEAN_STALE) {
+            StartCleanStale();
+        } else if (id == ID_REFRESH_BLOCKED) {
+            LoadBlockedAsync();
+        } else if (id == ID_DETAILS) {
+            ShowSelectedDetails();
+        } else if (id == ID_REPAIR) {
+            StartRepairSelected();
+        } else if (id == ID_MODE_EXACT || id == ID_MODE_NAME || id == ID_MODE_STARTUP) {
+            RebuildScanRows();
+            UpdateButtons();
         } else if (id == IDCANCEL) {
             DestroyWindow(hwnd_);
         }
@@ -373,15 +449,26 @@ LRESULT AdBlockWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam) {
         return 0;
     }
     case WM_APP_BLOCKED_COMPLETE: {
-        std::unique_ptr<BlockedPayload> payload(reinterpret_cast<BlockedPayload*>(lParam));
-        JoinWorker();
-        CompleteBlocked(std::move(payload->blocked), std::move(payload->storeError));
+        if (!blockedTask_ || !blockedTask_->IsFinished()) return 0;
+        BlockedPayload payload;
+        if (blockedTask_->Status() == TaskStatus::Completed) {
+            payload = blockedTask_->ResultCopy<BlockedPayload>();
+        } else {
+            payload.storeError = blockedTask_->Snapshot().error.empty()
+                ? L"加载已拦截记录已停止。" : blockedTask_->Snapshot().error;
+        }
+        blockedTask_.reset();
+        CompleteBlocked(std::move(payload.blocked), std::move(payload.storeError));
         return 0;
     }
     case WM_APP_OPERATION_COMPLETE: {
-        std::unique_ptr<OperationPayload> payload(reinterpret_cast<OperationPayload*>(lParam));
-        JoinWorker();
-        CompleteOperation(std::move(payload->result));
+        if (!operationTask_ || !operationTask_->IsFinished()) return 0;
+        OperationResult operation;
+        if (operationTask_->Status() == TaskStatus::Completed) operation = operationTask_->ResultCopy<OperationResult>();
+        else operation = {false, operationTask_->Snapshot().error.empty()
+            ? std::wstring(L"操作已停止。") : operationTask_->Snapshot().error};
+        operationTask_.reset();
+        CompleteOperation(std::move(operation));
         return 0;
     }
     case WM_APP_TEST_SHOW_CONFIRMATION:
@@ -492,6 +579,7 @@ void AdBlockWindow::CreateControls() {
     scanTable_ = ui.Table(ID_SCAN_TABLE, RECT{pageContent.left, listTop, pageContent.right, tableBottom},
         {{L"name", L"名称", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Remaining},
          {L"path", L"路径", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, ui.tableColumnWidth(L"C:\\Program Files\\Example\\example.exe")},
+         {L"impact", L"影响范围", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, ui.tableColumnWidth(L"所有同名 EXE")},
          {L"state", L"状态", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, ui.tableColumnWidth(L"可拦截（未签名）")}},
         tableOptions);
 
@@ -502,16 +590,22 @@ void AdBlockWindow::CreateControls() {
     blockedOptions.showColumnGridLines = true;
     blockedTable_ = ui.Table(ID_BLOCKED_TABLE, RECT{pageContent.left, bodyTop, pageContent.right, tableBottom},
         {{L"name", L"名称", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Remaining},
-         {L"path", L"路径", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, ui.tableColumnWidth(L"C:\\Program Files\\Example\\example.exe")},
          {L"mode", L"模式", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, ui.tableColumnWidth(L"同名程序")},
+         {L"state", L"状态", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, ui.tableColumnWidth(L"被外部修改")},
+         {L"path", L"路径", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, ui.tableColumnWidth(L"C:\\Program Files\\Example\\example.exe")},
          {L"time", L"拦截时间", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, ui.tableColumnWidth(L"2026-07-15")}},
         blockedOptions);
 
     statusText_ = ui.StatusText(L"输入或选择文件、文件夹后点击“检查”。", content.left, statusY,
         content.right - content.left, {ThemedStatusRole::Info, ThemedTextAlign::Start});
 
-    blockButton_ = ui.FooterButton(ID_BLOCK_SELECTED, L"拦截所选", 0, 1, true, true);
-    unblockButton_ = ui.FooterButton(ID_UNBLOCK, L"解除拦截", 0, 1, true, true);
+    detailsButton_ = ui.FooterButton(ID_DETAILS, L"详情", 0, 6);
+    repairButton_ = ui.FooterButton(ID_REPAIR, L"修复", 1, 6);
+    refreshBlockedButton_ = ui.FooterButton(ID_REFRESH_BLOCKED, L"刷新状态", 2, 6);
+    cleanStaleButton_ = ui.FooterButton(ID_CLEAN_STALE, L"清理失效", 3, 6);
+    unblockAllButton_ = ui.FooterButton(ID_UNBLOCK_ALL, L"全部解除", 4, 6);
+    blockButton_ = ui.FooterButton(ID_BLOCK_SELECTED, L"拦截所选", 5, 6, true, true);
+    unblockButton_ = ui.FooterButton(ID_UNBLOCK, L"解除拦截", 5, 6, true, true);
 
     const std::vector<HWND> panelChildren{
         pathEdit_, clearButton_, pickPathSplit_.primary, pickPathSplit_.menu, checkButton_, scanTable_, blockedTable_};
@@ -529,8 +623,21 @@ void AdBlockWindow::CreateControls() {
     SelectTab(0);
 }
 
-void AdBlockWindow::JoinWorker() {
-    if (worker_.joinable()) worker_.join();
+void AdBlockWindow::StartOperationTask(std::function<OperationResult()> operation) {
+    const HWND target = hwnd_;
+    TaskOptions options{};
+    options.mode = TaskExecutionMode::BackgroundSingle;
+    options.maxWorkers = 1;
+    options.completionCallback = [target]() { PostMessageW(target, WM_APP_OPERATION_COMPLETE, 0, 0); };
+    operationTask_ = TaskExecutionService::StartTyped<OperationResult>(
+        std::move(options),
+        [operation = std::move(operation)](TaskContext&) mutable {
+            SetOperationAuditContext(
+                L"gui-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()),
+                L"gui",
+                RunningAsAdmin());
+            return operation();
+        });
 }
 
 std::wstring AdBlockWindow::SelectedMode() const {
@@ -650,56 +757,54 @@ void AdBlockWindow::StartBlockSelected() {
     if (busy_ || activeTab_ != 0) return;
     const std::wstring mode = SelectedMode();
     std::vector<std::wstring> targets;
-    int skippedNoAutoStart = 0;
     bool anyRequiresAdmin = false;
     for (int index = 0; index < static_cast<int>(scanItems_.size()); ++index) {
         if (!ThemedUi::IsTableChecked(scanTable_, index)) continue;
         const StartupItem& item = scanItems_[static_cast<std::size_t>(index)];
         if (!item.canDisable) continue;
-        // 启动拦截仅适用于已注册开机自启动的程序；无自启动项的勾选项跳过。
-        if (mode == L"startup" && MapField(item.original, L"hasAutoStart") != L"1") {
-            ++skippedNoAutoStart;
-            continue;
-        }
         if (MapField(item.original, L"autoStartRequiresAdmin") == L"1") anyRequiresAdmin = true;
         targets.push_back(MapField(item.original, L"targetPath"));
     }
     if (targets.empty()) {
-        const std::wstring message = (mode == L"startup" && skippedNoAutoStart > 0)
-            ? L"所选程序均未注册开机自启动项，「禁止自启」模式无可处理项。"
-            : L"请勾选至少一个可拦截的程序。";
-        ThemedWindowUi::ShowMessageBox(hwnd_, instance_, theme_, message, L"广告拦截",
+        ThemedWindowUi::ShowMessageBox(hwnd_, instance_, theme_, L"请勾选至少一个可拦截的程序。", L"广告拦截",
             MB_OK | MB_ICONINFORMATION);
         return;
     }
-    const std::wstring prompt = BlockConfirmationPrompt(targets.size(), mode, skippedNoAutoStart);
+    const AdBlockPlan plan = AdBlockManager().BuildBlockPlan(targets, mode);
+    std::vector<std::wstring> runnableTargets;
+    for (const AdBlockPlanItem& item : plan.items) {
+        if (item.riskLevel != L"blocked") runnableTargets.push_back(item.targetPath);
+    }
+    if (runnableTargets.empty()) {
+        ThemedWindowUi::ShowMessageBox(hwnd_, instance_, theme_,
+            PlanConfirmationPrompt(plan), L"广告拦截", MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+    const std::wstring prompt = PlanConfirmationPrompt(plan);
     if (ThemedWindowUi::ShowMessageBox(hwnd_, instance_, theme_, prompt, L"确认拦截",
             MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) != IDYES) return;
 
     // 启动拦截：仅 HKLM 项需提权，全 HKCU 时免 UAC；IFEO 始终需管理员。
     const bool needAdmin = (mode == L"startup") ? anyRequiresAdmin : true;
     const bool elevate = needAdmin && !RunningAsAdmin();
-    JoinWorker();
     busy_ = true;
     ThemedUi::SetText(statusText_, L"正在拦截…");
     UpdateButtons();
-    const HWND target = hwnd_;
-    worker_ = std::thread([target, targets, mode, elevate]() {
-        auto payload = std::make_unique<OperationPayload>();
+    StartOperationTask([targets = std::move(runnableTargets), mode, elevate]() {
+        if (elevate) {
+            return RunElevatedRequest(L"adblock-block", targets, mode);
+        }
         int ok = 0;
         int fail = 0;
         std::wstring lastError;
         for (const std::wstring& path : targets) {
             OperationResult result;
-            if (elevate) result = RunElevated(L"block --path " + QuoteArgument(path) + L" --mode " + mode);
-            else result = AdBlockManager().Block(path, mode);
+            result = AdBlockManager().Block(path, mode);
             if (result.success) ++ok; else { ++fail; lastError = result.message; }
         }
-        if (fail == 0) payload->result = {true, L"已拦截 " + std::to_wstring(ok) + L" 个程序。"};
-        else payload->result = {ok > 0, L"已拦截 " + std::to_wstring(ok) + L" 个，" + std::to_wstring(fail) +
+        if (fail == 0) return OperationResult{true, L"已拦截 " + std::to_wstring(ok) + L" 个程序。"};
+        return OperationResult{ok > 0, L"已拦截 " + std::to_wstring(ok) + L" 个，" + std::to_wstring(fail) +
             L" 个失败：" + lastError, ok > 0};
-        if (!PostMessageW(target, WM_APP_OPERATION_COMPLETE, 0, reinterpret_cast<LPARAM>(payload.get()))) return;
-        payload.release();
     });
 }
 
@@ -712,18 +817,102 @@ void AdBlockWindow::StartUnblock() {
             L"解除拦截", MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) != IDYES) return;
     const std::wstring recordId = record.recordId;
     const bool elevate = !RunningAsAdmin();
-    JoinWorker();
     busy_ = true;
     ThemedUi::SetText(statusText_, L"正在解除…");
     UpdateButtons();
-    const HWND target = hwnd_;
-    worker_ = std::thread([target, recordId, elevate]() {
-        auto payload = std::make_unique<OperationPayload>();
-        if (elevate) payload->result = RunElevated(L"unblock --record-id " + QuoteArgument(recordId));
-        else payload->result = AdBlockManager().Unblock(recordId);
-        if (!PostMessageW(target, WM_APP_OPERATION_COMPLETE, 0, reinterpret_cast<LPARAM>(payload.get()))) return;
-        payload.release();
+    StartOperationTask([recordId, elevate]() {
+        return elevate ? RunElevatedRequest(L"adblock-unblock", {recordId}) : AdBlockManager().Unblock(recordId);
     });
+}
+
+void AdBlockWindow::StartUnblockAll() {
+    if (busy_ || activeTab_ != 1 || blocked_.empty()) return;
+    if (ThemedWindowUi::ShowMessageBox(hwnd_, instance_, theme_,
+            L"确定解除全部广告拦截记录？", L"全部解除", MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) != IDYES) return;
+    const bool elevate = !RunningAsAdmin();
+    busy_ = true;
+    ThemedUi::SetText(statusText_, L"正在解除全部拦截…");
+    UpdateButtons();
+    StartOperationTask([elevate]() {
+        return elevate ? RunElevatedRequest(L"adblock-unblock-all", std::vector<std::wstring>{})
+            : AdBlockManager().UnblockAll();
+    });
+}
+
+void AdBlockWindow::StartCleanStale() {
+    if (busy_ || activeTab_ != 1 || blocked_.empty()) return;
+    busy_ = true;
+    ThemedUi::SetText(statusText_, L"正在清理失效记录…");
+    UpdateButtons();
+    StartOperationTask([]() { return AdBlockManager().CleanStaleRecords(); });
+}
+
+void AdBlockWindow::StartRepairSelected() {
+    if (busy_ || activeTab_ != 1) return;
+    const int row = ThemedUi::TableSelectedIndex(blockedTable_);
+    if (row < 0 || static_cast<std::size_t>(row) >= blocked_.size()) return;
+    const DisabledRecord& record = blocked_[static_cast<std::size_t>(row)];
+    const AdBlockRecordStatus status = AdBlockManager().CheckRecordStatus(record);
+    if (!status.canRepair) return;
+    if (ThemedWindowUi::ShowMessageBox(hwnd_, instance_, theme_,
+            L"确定修复“" + record.name + L"”的拦截状态？\n" + status.message,
+            L"修复拦截", MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) != IDYES) return;
+    const std::wstring recordId = record.recordId;
+    const bool elevate = !RunningAsAdmin();
+    busy_ = true;
+    ThemedUi::SetText(statusText_, L"正在修复拦截…");
+    UpdateButtons();
+    StartOperationTask([recordId, elevate]() {
+        return elevate ? RunElevatedRequest(L"adblock-repair", {recordId}) : AdBlockManager().RepairRecord(recordId);
+    });
+}
+
+void AdBlockWindow::ShowSelectedDetails() {
+    if (busy_) return;
+    if (activeTab_ == 0) {
+        const int row = ThemedUi::TableSelectedIndex(scanTable_);
+        if (row < 0 || static_cast<std::size_t>(row) >= scanItems_.size()) return;
+        const StartupItem& item = scanItems_[static_cast<std::size_t>(row)];
+        const std::wstring path = MapField(item.original, L"targetPath");
+        const std::wstring mode = SelectedMode();
+        const AdBlockPlan plan = AdBlockManager().BuildBlockPlan({path.empty() ? item.location : path}, mode);
+        std::wstring message = L"名称：" + item.name +
+            L"\n路径：" + (path.empty() ? item.location : path) +
+            L"\n状态：" + ScanStatusText(item) +
+            L"\n影响范围：" + ScanImpactText(item, mode);
+        if (!plan.items.empty()) {
+            const AdBlockPlanItem& planned = plan.items.front();
+            if (!planned.reason.empty()) message += L"\n提示：" + planned.reason;
+            if (planned.hasExistingIfeoDebugger) message += L"\nIFEO：已有 Debugger，将备份后再写入。";
+            if (planned.willModifyIfeo) message += L"\n机制：IFEO Debugger。";
+            if (planned.willModifyStartupApproved) message += L"\n机制：StartupApproved 系统开关。";
+        }
+        ThemedWindowUi::ShowMessageBox(hwnd_, instance_, theme_, message, L"候选详情", MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+
+    const int row = ThemedUi::TableSelectedIndex(blockedTable_);
+    if (row < 0 || static_cast<std::size_t>(row) >= blocked_.size()) return;
+    const DisabledRecord& record = blocked_[static_cast<std::size_t>(row)];
+    const AdBlockRecordStatus status = AdBlockManager().CheckRecordStatus(record);
+    const std::wstring blockMode = MapField(record.original, L"blockMode");
+    const std::wstring mode = blockMode == L"name" ? L"同名程序"
+        : blockMode == L"startup" ? L"禁止自启" : L"精确路径";
+    std::wstring message = L"名称：" + record.name +
+        L"\n模式：" + mode +
+        L"\n状态：" + AdBlockRecordStateText(status.state) +
+        L"\n说明：" + status.message +
+        L"\n路径：" + MapField(record.original, L"targetPath") +
+        L"\n记录 ID：" + record.recordId;
+    const std::wstring mechanism = MapField(record.original, L"mechanism");
+    if (mechanism == L"ifeo") {
+        message += L"\n机制：IFEO Debugger";
+        message += L"\n映像名：" + MapField(record.original, L"ifeoImageName");
+        message += L"\n注册表视图：" + MapField(record.original, L"ifeoView");
+    } else if (mechanism == L"startup-approved") {
+        message += L"\n机制：StartupApproved 系统开关";
+    }
+    ThemedWindowUi::ShowMessageBox(hwnd_, instance_, theme_, message, L"拦截详情", MB_OK | MB_ICONINFORMATION);
 }
 
 void AdBlockWindow::CompleteScan(AdBlockScanResult scan) {
@@ -768,7 +957,16 @@ void AdBlockWindow::CompleteBlocked(std::vector<DisabledRecord> blocked, std::ws
         AppendAppLaunchLockerLog(storeError);
         ThemedUi::SetText(statusText_, storeError);
     } else {
-        ThemedUi::SetText(statusText_, L"已拦截 " + std::to_wstring(blocked_.size()) + L" 个程序。");
+        int attention = 0;
+        AdBlockManager manager;
+        for (const DisabledRecord& record : blocked_) {
+            const AdBlockRecordStatus status = manager.CheckRecordStatus(record);
+            if (status.state != AdBlockRecordState::Active) ++attention;
+        }
+        std::wstring text = L"已拦截 " + std::to_wstring(blocked_.size()) + L" 个程序";
+        if (attention > 0) text += L"，" + std::to_wstring(attention) + L" 条需要处理";
+        text += L"。";
+        ThemedUi::SetText(statusText_, text);
     }
     UpdateButtons();
 }
@@ -789,14 +987,22 @@ void AdBlockWindow::CompleteOperation(OperationResult result) {
 }
 
 void AdBlockWindow::LoadBlockedAsync() {
-    JoinWorker();
+    if (blockedTask_) {
+        blockedTask_->RequestStop();
+        blockedTask_.reset();
+    }
     const HWND target = hwnd_;
-    worker_ = std::thread([target]() {
-        auto payload = std::make_unique<BlockedPayload>();
-        AdBlockManager().ListBlocked(payload->blocked, payload->storeError);
-        if (!PostMessageW(target, WM_APP_BLOCKED_COMPLETE, 0, reinterpret_cast<LPARAM>(payload.get()))) return;
-        payload.release();
-    });
+    TaskOptions options{};
+    options.mode = TaskExecutionMode::BackgroundSingle;
+    options.maxWorkers = 1;
+    options.completionCallback = [target]() { PostMessageW(target, WM_APP_BLOCKED_COMPLETE, 0, 0); };
+    blockedTask_ = TaskExecutionService::StartTyped<BlockedPayload>(
+        std::move(options),
+        [](TaskContext&) {
+            BlockedPayload payload;
+            AdBlockManager().ListBlocked(payload.blocked, payload.storeError);
+            return payload;
+        });
 }
 
 void AdBlockWindow::SelectTab(int index) {
@@ -808,42 +1014,77 @@ void AdBlockWindow::SelectTab(int index) {
 }
 
 void AdBlockWindow::RebuildScanRows() {
+    const int previousIndex = ThemedUi::TableSelectedIndex(scanTable_);
+    const std::intptr_t previousKey = previousIndex >= 0 ? ThemedUi::TableRowKey(scanTable_, previousIndex) : 0;
+    const std::intptr_t previousTopKey = ThemedUi::TableTopVisibleRowKey(scanTable_);
     std::vector<ThemedTableRow> rows;
     rows.reserve(scanItems_.size());
+    const std::wstring mode = SelectedMode();
     for (std::size_t index = 0; index < scanItems_.size(); ++index) {
         const StartupItem& item = scanItems_[index];
         const std::wstring path = MapField(item.original, L"targetPath");
-        rows.push_back({static_cast<std::intptr_t>(index + 1),
-            {{item.name}, {path.empty() ? item.location : path}, {ScanStatusText(item)}},
+        rows.push_back({RowKeyForIdentity(L"scan:" + item.id),
+            {{item.name}, {path.empty() ? item.location : path}, {ScanImpactText(item, mode)}, {ScanStatusText(item)}},
             false, item.canDisable});
     }
     ThemedUi::SetTableRows(scanTable_, rows);
+    if (previousKey != 0) {
+        const int restored = ThemedUi::FindTableRowByKey(scanTable_, previousKey);
+        if (restored >= 0) ThemedUi::SetTableSelectedIndex(scanTable_, restored);
+    }
+    ThemedUi::RestoreTableTopVisibleRowByKey(scanTable_, previousTopKey);
 }
 
 void AdBlockWindow::RebuildBlockedRows() {
+    const int previousIndex = ThemedUi::TableSelectedIndex(blockedTable_);
+    const std::intptr_t previousKey = previousIndex >= 0 ? ThemedUi::TableRowKey(blockedTable_, previousIndex) : 0;
+    const std::intptr_t previousTopKey = ThemedUi::TableTopVisibleRowKey(blockedTable_);
     std::vector<ThemedTableRow> rows;
     rows.reserve(blocked_.size());
+    AdBlockManager manager;
     for (std::size_t index = 0; index < blocked_.size(); ++index) {
         const DisabledRecord& record = blocked_[index];
         const std::wstring blockMode = MapField(record.original, L"blockMode");
         const std::wstring mode = blockMode == L"name" ? L"同名程序"
             : blockMode == L"startup" ? L"禁止自启" : L"精确路径";
+        const AdBlockRecordStatus status = manager.CheckRecordStatus(record);
         std::wstring when = record.disabledAt;
         if (when.size() >= 10) when = when.substr(0, 10);
-        rows.push_back({static_cast<std::intptr_t>(index + 1),
-            {{record.name}, {MapField(record.original, L"targetPath")}, {mode}, {when}},
+        rows.push_back({RowKeyForIdentity(L"blocked:" + record.recordId),
+            {{record.name}, {mode}, {AdBlockRecordStateText(status.state)}, {MapField(record.original, L"targetPath")}, {when}},
             false, true});
     }
     ThemedUi::SetTableRows(blockedTable_, rows);
+    if (previousKey != 0) {
+        const int restored = ThemedUi::FindTableRowByKey(blockedTable_, previousKey);
+        if (restored >= 0) ThemedUi::SetTableSelectedIndex(blockedTable_, restored);
+    }
+    ThemedUi::RestoreTableTopVisibleRowByKey(blockedTable_, previousTopKey);
+}
+
+std::intptr_t AdBlockWindow::RowKeyForIdentity(const std::wstring& identity) {
+    const auto found = stableRowKeys_.find(identity);
+    if (found != stableRowKeys_.end()) return found->second;
+    const std::intptr_t key = nextStableRowKey_++;
+    stableRowKeys_.emplace(identity, key);
+    return key;
 }
 
 void AdBlockWindow::UpdateButtons() {
     if (!windowUi_) return;
     const ThemedUi ui = windowUi_->ui();
     const bool blockTab = activeTab_ == 0;
+    ThemedUi::SetVisible(detailsButton_, true);
+    ThemedUi::SetVisible(repairButton_, !blockTab);
     ThemedUi::SetVisible(blockButton_, blockTab);
+    ThemedUi::SetVisible(refreshBlockedButton_, !blockTab);
+    ThemedUi::SetVisible(cleanStaleButton_, !blockTab);
+    ThemedUi::SetVisible(unblockAllButton_, !blockTab);
     ThemedUi::SetVisible(unblockButton_, !blockTab);
     ui.SetEnabled(blockButton_, blockTab && !busy_);
+    ui.SetEnabled(refreshBlockedButton_, !blockTab && !busy_);
+    ui.SetEnabled(cleanStaleButton_, !blockTab && !busy_ && storeAvailable_ && !blocked_.empty());
+    ui.SetEnabled(unblockAllButton_, !blockTab && !busy_ && storeAvailable_ && !blocked_.empty());
     ui.SetEnabled(clearButton_, blockTab && !busy_ && (!scanItems_.empty() || !Trim(GetText(pathEdit_)).empty()));
     ui.SetEnabled(pickPathSplit_.primary, blockTab && !busy_);
     ui.SetEnabled(pickPathSplit_.menu, blockTab && !busy_);
@@ -851,7 +1092,16 @@ void AdBlockWindow::UpdateButtons() {
     ui.SetEnabled(checkButton_, blockTab && (!busy_ || scanRunning_));
     ThemedUi::SetText(checkButton_, scanRunning_ ? L"查看进度" : L"检查");
     ThemedUi::SetTabEnabled(tabControl_, 1, !scanRunning_);
+    const int selectedScan = ThemedUi::TableSelectedIndex(scanTable_);
     const int selected = ThemedUi::TableSelectedIndex(blockedTable_);
+    bool canRepair = false;
+    if (!blockTab && selected >= 0 && static_cast<std::size_t>(selected) < blocked_.size()) {
+        canRepair = AdBlockManager().CheckRecordStatus(blocked_[static_cast<std::size_t>(selected)]).canRepair;
+    }
+    ui.SetEnabled(detailsButton_, !busy_ && ((blockTab && selectedScan >= 0 &&
+        static_cast<std::size_t>(selectedScan) < scanItems_.size()) ||
+        (!blockTab && selected >= 0 && static_cast<std::size_t>(selected) < blocked_.size())));
+    ui.SetEnabled(repairButton_, !blockTab && !busy_ && storeAvailable_ && canRepair);
     ui.SetEnabled(unblockButton_, !blockTab && !busy_ && storeAvailable_ &&
         selected >= 0 && static_cast<std::size_t>(selected) < blocked_.size());
 }

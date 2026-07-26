@@ -1,12 +1,12 @@
 #include "resource.h"
-#include "VersionResource.h"
+#include "AppLaunchLockerVersionResource.h"
 
 IDI_QUATTRO_APP_ICON ICON "app.ico"
 IDR_QUATTRO_DEFAULT_THEME RCDATA "../theme/default.xml"
 
 1 VERSIONINFO
- FILEVERSION QUATTRO_VERSION_MAJOR,QUATTRO_VERSION_MINOR,QUATTRO_VERSION_PATCH,0
- PRODUCTVERSION QUATTRO_VERSION_MAJOR,QUATTRO_VERSION_MINOR,QUATTRO_VERSION_PATCH,0
+ FILEVERSION APP_LAUNCH_LOCKER_VERSION_MAJOR,APP_LAUNCH_LOCKER_VERSION_MINOR,APP_LAUNCH_LOCKER_VERSION_PATCH,0
+ PRODUCTVERSION APP_LAUNCH_LOCKER_VERSION_MAJOR,APP_LAUNCH_LOCKER_VERSION_MINOR,APP_LAUNCH_LOCKER_VERSION_PATCH,0
  FILEFLAGSMASK 0x3fL
 #ifdef _DEBUG
  FILEFLAGS 0x1L
@@ -23,11 +23,11 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "codingriver"
             VALUE "FileDescription", "AppLaunchLocker startup manager"
-            VALUE "FileVersion", QUATTRO_VERSION_STRING
+            VALUE "FileVersion", APP_LAUNCH_LOCKER_VERSION_STRING
             VALUE "InternalName", "AppLaunchLocker"
             VALUE "OriginalFilename", "AppLaunchLocker.exe"
             VALUE "ProductName", "AppLaunchLocker"
-            VALUE "ProductVersion", QUATTRO_VERSION_STRING
+            VALUE "ProductVersion", APP_LAUNCH_LOCKER_VERSION_STRING
         END
     END
     BLOCK "VarFileInfo"

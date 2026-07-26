@@ -1,7 +1,17 @@
 cmake_minimum_required(VERSION 3.20)
 
 set(QUATTRO_VERSION "0.1.0" CACHE STRING "Quattro package version")
+set(APP_LAUNCH_LOCKER_VERSION "${QUATTRO_VERSION}" CACHE STRING "AppLaunchLocker product version")
 project(Quattro VERSION ${QUATTRO_VERSION} LANGUAGES C CXX)
+
+string(REPLACE "." ";" APP_LAUNCH_LOCKER_VERSION_PARTS "${APP_LAUNCH_LOCKER_VERSION}")
+list(LENGTH APP_LAUNCH_LOCKER_VERSION_PARTS APP_LAUNCH_LOCKER_VERSION_PART_COUNT)
+if(NOT APP_LAUNCH_LOCKER_VERSION_PART_COUNT EQUAL 3)
+    message(FATAL_ERROR "APP_LAUNCH_LOCKER_VERSION must use major.minor.patch format")
+endif()
+list(GET APP_LAUNCH_LOCKER_VERSION_PARTS 0 APP_LAUNCH_LOCKER_VERSION_MAJOR)
+list(GET APP_LAUNCH_LOCKER_VERSION_PARTS 1 APP_LAUNCH_LOCKER_VERSION_MINOR)
+list(GET APP_LAUNCH_LOCKER_VERSION_PARTS 2 APP_LAUNCH_LOCKER_VERSION_PATCH)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -83,6 +93,8 @@ set(EMBEDDED_ASSET_PACK "${CMAKE_CURRENT_BINARY_DIR}/generated/EmbeddedAssets.${
 set(EMBEDDED_ASSET_RESOURCE "${CMAKE_CURRENT_BINARY_DIR}/generated/EmbeddedAssets.${EMBEDDED_ASSET_MODE}.rc")
 configure_file("${CMAKE_CURRENT_SOURCE_DIR}/src/Version.h.in" "${CMAKE_CURRENT_BINARY_DIR}/generated/Version.h" @ONLY)
 configure_file("${CMAKE_CURRENT_SOURCE_DIR}/resources/VersionResource.h.in" "${CMAKE_CURRENT_BINARY_DIR}/generated/VersionResource.h" @ONLY)
+configure_file("${CMAKE_CURRENT_SOURCE_DIR}/src/AppLaunchLockerVersion.h.in" "${CMAKE_CURRENT_BINARY_DIR}/generated/AppLaunchLockerVersion.h" @ONLY)
+configure_file("${CMAKE_CURRENT_SOURCE_DIR}/resources/AppLaunchLockerVersionResource.h.in" "${CMAKE_CURRENT_BINARY_DIR}/generated/AppLaunchLockerVersionResource.h" @ONLY)
 
 function(quattro_register_embedded_executable)
     cmake_parse_arguments(COMPONENT "" "TARGET;SYMBOL;ID;FILE_NAME" "" ${ARGN})
@@ -567,6 +579,7 @@ add_executable(Quattro WIN32
     src/domain/Config.cpp
     src/domain/TrackedContextMenuProviders.cpp
     src/services/ConfigPackageService.cpp
+    src/services/AppLaunchLockerLocator.cpp
     src/services/ContextMenuProviderIconService.cpp
     src/services/ExplorerCopyPathContextMenuService.cpp
     src/services/ExplorerWebDavUploadContextMenuService.cpp
@@ -1427,6 +1440,8 @@ target_link_libraries(Quattro PRIVATE
     shlwapi
     uuid
     wininet
+    wintrust
+    crypt32
     windowscodecs
     user32
     gdi32
@@ -1492,6 +1507,10 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/theme")
     add_custom_command(TARGET AppLaunchLocker POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E rm -rf "$<TARGET_FILE_DIR:AppLaunchLocker>/theme"
         COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/theme" "$<TARGET_FILE_DIR:AppLaunchLocker>/theme"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:AppLaunchLocker>/icons/menu/tabler"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${QUATTRO_TABLER_FONT_SOURCE}"
+            "$<TARGET_FILE_DIR:AppLaunchLocker>/icons/menu/tabler/tabler-icons.ttf"
     )
 endif()
 

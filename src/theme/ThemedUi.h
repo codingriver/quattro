@@ -598,6 +598,14 @@ struct ThemedEditOptions {
     std::wstring placeholder;
 };
 
+struct ThemedReadOnlyTextOptions {
+    ThemedEditMode mode = ThemedEditMode::MultiLine;
+    bool enabled = true;
+    bool selectAllOnFocus = false;
+    bool acceptsReturn = true;
+    std::wstring placeholder;
+};
+
 class ThemedEditFrameRegistry {
 public:
     virtual ~ThemedEditFrameRegistry() = default;
@@ -915,6 +923,7 @@ public:
     void MoveListBox(HWND listBox, int x, int y, int width, int height) const;
     HWND Table(int id, RECT frame, const std::vector<ThemedTableColumn>& columns, ThemedTableOptions options = {}) const;
     void MoveTable(HWND table, RECT frame) const;
+    static void SetTableColumns(HWND table, const std::vector<ThemedTableColumn>& columns);
     static void SetTableRows(HWND table, const std::vector<ThemedTableRow>& rows);
     static int AppendTableRow(HWND table, const ThemedTableRow& row);
     static bool UpdateTableRow(HWND table, int index, const ThemedTableRow& row);
@@ -930,6 +939,8 @@ public:
     static int TableSelectedIndex(HWND table);
     static void SetTableSelectedIndex(HWND table, int index);
     static std::intptr_t TableRowKey(HWND table, int index);
+    static std::intptr_t TableTopVisibleRowKey(HWND table);
+    static bool RestoreTableTopVisibleRowByKey(HWND table, std::intptr_t key);
     static int TableHitTest(HWND table, POINT point, bool fullRow = false, bool* stateIcon = nullptr);
     static int TableScreenHitTest(HWND table, POINT screenPoint, bool fullRow = false, bool* stateIcon = nullptr);
     static bool TableCellScreenRect(HWND table, int row, int column, RECT& screenRect);
@@ -956,6 +967,7 @@ public:
     void ShowToast(const std::wstring& text, ThemedToastOptions options = {}) const;
     void HideToast() const;
     HWND Edit(int id, RECT frame, const std::wstring& value, ThemedEditOptions options = {}) const;
+    HWND ReadOnlyText(int id, RECT frame, const std::wstring& value, ThemedReadOnlyTextOptions options = {}) const;
     HWND FramedStatic(const std::wstring& value, RECT frame, ThemedFramedTextOptions options = {}) const;
     HWND ProgressBar(int id, int x, int y, int width, ThemedProgressBarOptions options = {}) const;
     static void SetProgress(HWND hwnd, double value, bool indeterminate = false);
