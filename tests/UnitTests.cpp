@@ -4121,6 +4121,18 @@ int wmain() {
                                              (L"quattro_app_log_tests_" + std::to_wstring(GetCurrentProcessId()));
     std::filesystem::remove_all(appLogRoot, ec);
     InitializeAppLog(appLogRoot);
+    Check(IsAppLogInitialized(), "App log reports initialized state");
+    IconRequest loggedStockRequest;
+    loggedStockRequest.kind = IconSourceKind::Stock;
+    loggedStockRequest.cacheMode = IconCacheMode::Disabled;
+    const ResolvedIcon loggedStockIcon = IconResolverService(appLogRoot).Resolve(loggedStockRequest);
+    Check(IconResolverService::HasPixels(loggedStockIcon), "Icon resolver logging success fixture resolves");
+    IconRequest loggedFailureRequest;
+    loggedFailureRequest.kind = IconSourceKind::PidlBlob;
+    loggedFailureRequest.allowFallback = false;
+    loggedFailureRequest.cacheMode = IconCacheMode::Disabled;
+    const ResolvedIcon loggedFailureIcon = IconResolverService(appLogRoot).Resolve(loggedFailureRequest);
+    Check(!IconResolverService::HasPixels(loggedFailureIcon), "Icon resolver logging failure fixture fails");
     CommonFileDialogOptions unsupportedDialogOptions{};
     unsupportedDialogOptions.mode = CommonFileDialogMode::FileOrFolder;
     unsupportedDialogOptions.context = L"unit-test-no-native-dialog";
@@ -4168,6 +4180,12 @@ int wmain() {
               "App log disabled state rejects new content");
         Check(contents.find("async-after-enable") != std::string::npos,
               "App log resumes after re-enabling");
+        Check(contents.find("route=stock") != std::string::npos &&
+                  contents.find("kind=stock") != std::string::npos,
+              "Icon resolver logs successful source route");
+        Check(contents.find("route=failed") != std::string::npos &&
+                  contents.find("kind=pidl") != std::string::npos,
+              "Icon resolver logs failed source route");
         for (int threadIndex = 0; threadIndex < appLogThreadCount; ++threadIndex) {
             for (int lineIndex = 0; lineIndex < appLogLinesPerThread; ++lineIndex) {
                 const std::string marker =
@@ -4179,6 +4197,7 @@ int wmain() {
         }
     }
     ShutdownAppLog();
+    Check(!IsAppLogInitialized(), "App log reports shutdown state");
     InitializeAppLog(appLogRoot);
     WriteAppLog(L"append-after-reinitialize");
     ShutdownAppLog();

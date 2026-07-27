@@ -5,6 +5,7 @@
 
 void InitializeAppLog(const std::filesystem::path& appDirectory, bool enabled = true);
 void SetAppLogEnabled(bool enabled);
+bool IsAppLogInitialized();
 bool IsAppLogEnabled();
 void WriteAppLog(const std::wstring& message);
 void FlushAppLog();

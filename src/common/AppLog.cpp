@@ -343,6 +343,11 @@ void SetAppLogEnabled(bool enabled) {
     AppLogger().SetEnabled(enabled);
 }
 
+bool IsAppLogInitialized() {
+    std::lock_guard lock(g_startupTimingMutex);
+    return g_appLogInitialized;
+}
+
 bool IsAppLogEnabled() {
     return AppLogger().IsEnabled();
 }

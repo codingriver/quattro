@@ -1,5 +1,6 @@
 #include "IconResolverService.h"
 
+#include "AppLog.h"
 #include "MenuCatalog.h"
 #include "ShellItemService.h"
 #include "SystemFunctions.h"
@@ -798,6 +799,101 @@ std::wstring IconRequestCacheIdentity(
     return stream.str();
 }
 
+std::wstring LogText(std::wstring value, std::size_t maxLength = 180) {
+    value = Trim(value);
+    for (wchar_t& ch : value) {
+        if (ch == L'\r' || ch == L'\n' || ch == L'\t') {
+            ch = L' ';
+        }
+    }
+    if (value.size() <= maxLength) {
+        return value;
+    }
+    return value.substr(0, maxLength - 1) + L"…";
+}
+
+std::wstring CacheModeKey(IconCacheMode mode) {
+    switch (mode) {
+    case IconCacheMode::PreferCache: return L"prefer-cache";
+    case IconCacheMode::Refresh: return L"refresh";
+    case IconCacheMode::Bypass: return L"bypass";
+    case IconCacheMode::Disabled: return L"disabled";
+    default: return L"unknown";
+    }
+}
+
+std::wstring IconRouteFromSource(const std::wstring& source) {
+    if (source.rfind(L"disk-cache:", 0) == 0) return L"disk-cache";
+    if (source == L"url-icon-file") return L"url-icon-file";
+    if (source.rfind(L"shell-item-image", 0) == 0) return L"shell-item-image";
+    if (source.rfind(L"appx-unplated", 0) != std::wstring::npos) return L"appx-unplated";
+    if (source.rfind(L"fallback-", 0) == 0) return L"semantic-fallback";
+    if (source == L"icon-location") return L"icon-location";
+    if (source == L"file" || source == L"file-attributes") return L"file";
+    if (source == L"directory" || source == L"directory-attributes") return L"directory";
+    if (source == L"pidl") return L"pidl";
+    if (source == L"shell-parse-name") return L"shell-parse-name";
+    if (source == L"stock" || source == L"default-application") return L"stock";
+    if (source == L"tabler-system") return L"tabler-system";
+    if (source == L"context-menu-provider") return L"context-menu-provider";
+    if (source == L"terminal-executable") return L"terminal-executable";
+    return source.empty() ? L"unknown" : source;
+}
+
+std::wstring IconRequestLogTarget(const IconRequest& request) {
+    switch (request.kind) {
+    case IconSourceKind::Link:
+        return L"name=\"" + LogText(request.link.name, 80) + L"\", path=\"" +
+            LogText(request.link.path) + L"\", icon=\"" + LogText(request.link.icon, 100) + L"\"";
+    case IconSourceKind::FilePath:
+    case IconSourceKind::DirectoryPath:
+    case IconSourceKind::IconLocation:
+    case IconSourceKind::CommandLine:
+    case IconSourceKind::ShellParseName:
+    case IconSourceKind::Url:
+        return L"value=\"" + LogText(request.value) + L"\"";
+    case IconSourceKind::ContextMenuProvider:
+        return L"provider=\"" + LogText(request.providerId, 100) + L"\"";
+    case IconSourceKind::PidlBlob:
+        return L"pidlHash=" + HashBytesHex(request.pidl).substr(0, 16);
+    case IconSourceKind::Stock:
+    case IconSourceKind::DefaultCategory:
+    default:
+        return {};
+    }
+}
+
+void LogIconResolve(
+    const IconRequest& request,
+    int size,
+    const std::wstring& route,
+    const std::wstring& source,
+    const std::filesystem::path& cachePath,
+    bool cacheWritten,
+    bool success) {
+    if (!IsAppLogInitialized() || !IsAppLogEnabled()) {
+        return;
+    }
+    std::wstring line = success ? L"图标加载成功" : L"图标加载失败";
+    line += L": route=" + (route.empty() ? L"unknown" : route);
+    line += L", source=" + (source.empty() ? L"(none)" : LogText(source, 120));
+    line += L", kind=" + KindKey(request.kind);
+    line += L", size=" + std::to_wstring(size);
+    line += L", cacheMode=" + CacheModeKey(request.cacheMode);
+    line += L", fallback=" + IconFallbackKindKey(request.fallbackKind);
+    if (!cachePath.empty()) {
+        line += L", cacheFile=" + cachePath.filename().wstring();
+    }
+    if (cacheWritten) {
+        line += L", cacheWrite=1";
+    }
+    const std::wstring target = IconRequestLogTarget(request);
+    if (!target.empty()) {
+        line += L", " + target;
+    }
+    WriteAppLog(line);
+}
+
 }
 
 IconResolverService::IconResolverService(
@@ -960,6 +1056,7 @@ ResolvedIcon IconResolverService::Resolve(const IconRequest& request, std::stop_
     if (request.cacheMode == IconCacheMode::PreferCache && !cachePath.empty()) {
         ResolvedIcon cached = LoadPngIconFile(cachePath, L"disk-cache:" + cachePath.filename().wstring());
         if (HasPixels(cached)) {
+            LogIconResolve(request, size, L"disk-cache", cached.source, cachePath, false, true);
             return cached;
         }
     }
@@ -968,18 +1065,29 @@ ResolvedIcon IconResolverService::Resolve(const IconRequest& request, std::stop_
         if (!urlIcon.empty()) {
             ResolvedIcon urlResult = LoadPngIconFile(urlIcon, L"url-icon-file");
             if (HasPixels(urlResult)) {
+                bool cacheWritten = false;
                 if (cacheEnabled && !cachePath.empty()) {
-                    SavePngIcon(urlResult, cachePath);
+                    cacheWritten = SavePngIcon(urlResult, cachePath);
                 }
+                LogIconResolve(request, size, L"url-icon-file", urlResult.source, cachePath, cacheWritten, true);
                 return urlResult;
             }
         }
     }
     ResolvedIcon result = ResolveShellItemImage(request, size);
     if (HasPixels(result)) {
+        bool cacheWritten = false;
         if (cacheEnabled && !cachePath.empty()) {
-            SavePngIcon(result, cachePath);
+            cacheWritten = SavePngIcon(result, cachePath);
         }
+        LogIconResolve(
+            request,
+            size,
+            IconRouteFromSource(result.source),
+            result.source,
+            cachePath,
+            cacheWritten,
+            true);
         return result;
     }
     std::wstring source;
@@ -992,7 +1100,26 @@ ResolvedIcon IconResolverService::Resolve(const IconRequest& request, std::stop_
         DestroyIcon(icon);
     }
     if (HasPixels(result) && cacheEnabled && !cachePath.empty()) {
-        SavePngIcon(result, cachePath);
+        const bool cacheWritten = SavePngIcon(result, cachePath);
+        LogIconResolve(
+            request,
+            size,
+            IconRouteFromSource(result.source),
+            result.source,
+            cachePath,
+            cacheWritten,
+            true);
+    } else if (HasPixels(result)) {
+        LogIconResolve(
+            request,
+            size,
+            IconRouteFromSource(result.source),
+            result.source,
+            cachePath,
+            false,
+            true);
+    } else {
+        LogIconResolve(request, size, L"failed", result.source, cachePath, false, false);
     }
     return result;
 }
