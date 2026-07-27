@@ -104,8 +104,10 @@ LinkResourceRefreshResult LinkResourceRefreshService::Refresh(
             thread_local WorkerComApartment apartment;
             ResolvedIcon icon;
             if (apartment.ready()) {
+                IconRequest iconRequest = IconResolverService::ForLink(link, 64);
+                iconRequest.cacheMode = IconCacheMode::Refresh;
                 icon = IconResolverService(request.appDirectory).Resolve(
-                    IconResolverService::ForLink(link, 64),
+                    iconRequest,
                     workerContext.StopToken());
             }
             if (IconResolverService::HasPixels(icon)) {

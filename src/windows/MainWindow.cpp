@@ -5547,7 +5547,7 @@ void MainWindow::ClearIconCache() {
         ShowToast(L"图标缓存已清理。", ThemedToastRole::Success);
     } else {
         WriteAppLog(L"图标缓存清理失败。");
-        MessageBoxW(hwnd_, L"图标缓存清理失败，请确认 icons/cache 目录可写。", L"图标缓存", MB_OK | MB_ICONWARNING);
+        MessageBoxW(hwnd_, L"图标缓存清理失败，请确认 cache/icons 目录可写。", L"图标缓存", MB_OK | MB_ICONWARNING);
     }
 }
 

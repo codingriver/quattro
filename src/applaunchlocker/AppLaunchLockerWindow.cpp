@@ -2029,7 +2029,7 @@ void AppLaunchLockerWindow::StartIconLoadTask() {
             context.Report(std::move(progress));
 
             const HRESULT comResult = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
-            IconResolverService resolver;
+            IconResolverService resolver({}, AppLaunchLockerDataDirectory() / L"icon-cache" / L"resolver-v1");
             std::uint64_t completed = 0;
             for (const AppLaunchLockerIconLoadItem& item : iconItems) {
                 if (context.StopRequested()) break;

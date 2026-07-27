@@ -82,6 +82,13 @@ private:
     static void StripIcons(std::vector<ShellContextMenuItem>& items);
     void Load();
     bool Save() const;
+    std::filesystem::path IconPath(const std::wstring& key) const;
+    bool SaveIconFile(const std::wstring& key, const ShellContextMenuCachedIcon& icon) const;
+    std::optional<ShellContextMenuCachedIcon> LoadIconFile(
+        const std::wstring& key,
+        int width,
+        int height,
+        int quality) const;
 
     // 新增: 增量更新的辅助方法
     void MergeMenuItems(
@@ -93,6 +100,7 @@ private:
         std::size_t& count);
 
     std::filesystem::path cachePath_;
+    std::filesystem::path iconCacheDirectory_;
     std::unordered_map<int, Entry> entries_;
     std::unordered_map<std::wstring, ShellContextMenuCachedIcon> iconPool_;
 };

@@ -9,7 +9,6 @@
 #include "FileDialog.h"
 #include "HotKeyEditor.h"
 #include "IconResolverService.h"
-#include "JsonValue.h"
 #include "LocalHttpServerService.h"
 #include "MainHotKey.h"
 #include "ShellContextMenuCacheService.h"
@@ -21,6 +20,7 @@
 #include "ThemedTaskProgressDialog.h"
 #include "ThemedUi.h"
 #include "ThemedWindowUi.h"
+#include "TodoJsonBackupService.h"
 #include "TodoSchedule.h"
 #include "TrackedContextMenuProviders.h"
 #include "Utilities.h"
@@ -45,7 +45,6 @@
 #include <cstdint>
 #include <cstring>
 #include <cwchar>
-#include <fstream>
 #include <memory>
 #include <map>
 #include <mutex>
@@ -100,10 +99,11 @@ constexpr UINT WM_WEBDAV_FILE_SHOW_TEST_DELETE_PROGRESS = WM_APP + 0xCE;
 constexpr int ID_CONFIG_EXPORT = 415;
 constexpr int ID_CONFIG_IMPORT = 416;
 constexpr int ID_TODO_EXPORT = 417;
-constexpr int ID_TODO_IMPORT = 418;
-constexpr int ID_TODO_INCLUDE_COMPLETED = 419;
-constexpr int ID_TODO_INCLUDE_DISABLED = 420;
-constexpr int ID_TODO_ONLY_FUTURE = 421;
+constexpr int ID_TODO_IMPORT_MERGE = 418;
+constexpr int ID_TODO_IMPORT_REPLACE = 452;
+constexpr int ID_TODO_INCLUDE_COMPLETED = 453;
+constexpr int ID_TODO_INCLUDE_DISABLED = 454;
+constexpr int ID_TODO_ONLY_FUTURE = 455;
 constexpr int ID_HTTP_START = 422;
 constexpr int ID_HTTP_STOP = 423;
 constexpr int ID_HTTP_RESTART = 424;
@@ -456,6 +456,29 @@ std::wstring FormatConfigPackageReportText(const ConfigPackageReport& report) {
     return text;
 }
 
+std::wstring FormatTodoJsonImportReportText(const TodoJsonImportReport& report) {
+    std::wstring text = report.message.empty() ? (report.ok ? L"操作完成。" : L"操作失败。") : report.message;
+    text += L"\n\n待办总数: " + std::to_wstring(report.todosParsed);
+    text += L"\n新增待办: " + std::to_wstring(report.todosAdded);
+    text += L"\n远端更新待办: " + std::to_wstring(report.todosUpdatedFromRemote);
+    text += L"\n保留本地待办: " + std::to_wstring(report.todosKeptLocal);
+    text += L"\n恢复已删除待办: " + std::to_wstring(report.todosRestored);
+    text += L"\n保持删除: " + std::to_wstring(report.todosKeptDeleted);
+    text += L"\n内容相同跳过: " + std::to_wstring(report.todosSkippedIdentical);
+    text += L"\n待办冲突: " + std::to_wstring(report.todosConflicted);
+    text += L"\n全量替换删除: " + std::to_wstring(report.todosDeletedForReplace);
+    text += L"\n新增分组: " + std::to_wstring(report.groupsCreated);
+    text += L"\n新增待办标签: " + std::to_wstring(report.tagsCreated);
+    text += L"\n失败条目: " + std::to_wstring(report.todosFailed);
+    if (!report.warnings.empty()) {
+        text += L"\n\n警告:";
+        for (const auto& warning : report.warnings) {
+            text += L"\n- " + warning;
+        }
+    }
+    return text;
+}
+
 std::wstring FormatFileSize(std::uint64_t bytes) {
     if (bytes >= 1024ull * 1024ull) {
         return std::to_wstring((bytes + 1024ull * 1024ull - 1) / (1024ull * 1024ull)) + L" MB";
@@ -466,167 +489,11 @@ std::wstring FormatFileSize(std::uint64_t bytes) {
     return std::to_wstring(bytes) + L" B";
 }
 
-std::string WideToUtf8(const std::wstring& text) {
-    if (text.empty()) {
-        return {};
-    }
-    const int size = WideCharToMultiByte(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), nullptr, 0, nullptr, nullptr);
-    if (size <= 0) {
-        return {};
-    }
-    std::string bytes(static_cast<std::size_t>(size), '\0');
-    WideCharToMultiByte(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), bytes.data(), size, nullptr, nullptr);
-    return bytes;
-}
-
-bool SaveUtf8File(const std::filesystem::path& path, const std::wstring& text) {
-    std::ofstream file(path, std::ios::binary | std::ios::trunc);
-    if (!file) {
-        return false;
-    }
-    const std::string bytes = WideToUtf8(text);
-    file.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
-    return file.good();
-}
-
-std::wstring JsonEscape(const std::wstring& value) {
-    std::wstring escaped;
-    escaped.reserve(value.size() + 8);
-    for (wchar_t ch : value) {
-        switch (ch) {
-        case L'\\': escaped += L"\\\\"; break;
-        case L'"': escaped += L"\\\""; break;
-        case L'\b': escaped += L"\\b"; break;
-        case L'\f': escaped += L"\\f"; break;
-        case L'\n': escaped += L"\\n"; break;
-        case L'\r': escaped += L"\\r"; break;
-        case L'\t': escaped += L"\\t"; break;
-        default:
-            if (ch < 0x20) {
-                wchar_t buffer[7]{};
-                swprintf_s(buffer, L"\\u%04X", static_cast<unsigned int>(ch));
-                escaped += buffer;
-            } else {
-                escaped.push_back(ch);
-            }
-            break;
-        }
-    }
-    return escaped;
-}
-
-std::wstring BoolJson(bool value) {
-    return value ? L"true" : L"false";
-}
-
-std::wstring LocalIsoOffsetText() {
-    TIME_ZONE_INFORMATION info{};
-    const DWORD state = GetTimeZoneInformation(&info);
-    LONG bias = info.Bias;
-    if (state == TIME_ZONE_ID_DAYLIGHT) {
-        bias += info.DaylightBias;
-    } else if (state == TIME_ZONE_ID_STANDARD) {
-        bias += info.StandardBias;
-    }
-    const int offsetMinutes = static_cast<int>(-bias);
-    const wchar_t sign = offsetMinutes >= 0 ? L'+' : L'-';
-    const int absolute = std::abs(offsetMinutes);
-    wchar_t buffer[8]{};
-    swprintf_s(buffer, L"%c%02d:%02d", sign, absolute / 60, absolute % 60);
-    return buffer;
-}
-
-std::wstring TodoTimestampToIso8601(const std::wstring& value) {
-    SYSTEMTIME time{};
-    if (!TryParseTodoTimestamp(value, time)) {
-        return {};
-    }
-    wchar_t buffer[32]{};
-    swprintf_s(
-        buffer,
-        L"%04u-%02u-%02uT%02u:%02u:%02u",
-        time.wYear,
-        time.wMonth,
-        time.wDay,
-        time.wHour,
-        time.wMinute,
-        time.wSecond);
-    return std::wstring(buffer) + LocalIsoOffsetText();
-}
-
-std::wstring ImportableTodoTimestamp(const std::wstring& value) {
-    std::wstring normalized = NormalizeTodoTimestamp(value);
-    if (!normalized.empty()) {
-        return normalized;
-    }
-
-    std::wstring text = ReplaceAll(Trim(value), L"T", L" ");
-    if (text.size() >= 19) {
-        normalized = NormalizeTodoTimestamp(text.substr(0, 19));
-        if (!normalized.empty()) {
-            return normalized;
-        }
-    }
-    if (text.size() >= 16) {
-        return NormalizeTodoTimestamp(text.substr(0, 16));
-    }
-    return {};
-}
-
-std::wstring CurrentIso8601Timestamp() {
-    return TodoTimestampToIso8601(CurrentTodoTimestamp());
-}
-
-const JsonValue* ObjectField(const JsonValue& object, const std::wstring& key) {
-    const JsonValue* value = object.get(key);
-    return value && value->isObject() ? value : nullptr;
-}
-
-std::wstring JsonStringField(const JsonValue& object, const std::wstring& key, const std::wstring& fallback = L"") {
-    const JsonValue* value = object.get(key);
-    return value ? value->stringOr(fallback) : fallback;
-}
-
-bool JsonBoolField(const JsonValue& object, const std::wstring& key, bool fallback = false) {
-    const JsonValue* value = object.get(key);
-    return value ? value->boolOr(fallback) : fallback;
-}
-
-int JsonIntField(const JsonValue& object, const std::wstring& key, int fallback = 0) {
-    const JsonValue* value = object.get(key);
-    return value ? value->intOr(fallback) : fallback;
-}
-
-std::wstring JsonStringField(const JsonValue* object, const std::wstring& key, const std::wstring& fallback = L"") {
-    return object ? JsonStringField(*object, key, fallback) : fallback;
-}
-
-int JsonIntField(const JsonValue* object, const std::wstring& key, int fallback = 0) {
-    return object ? JsonIntField(*object, key, fallback) : fallback;
-}
-
-bool JsonBoolField(const JsonValue* object, const std::wstring& key, bool fallback = false) {
-    return object ? JsonBoolField(*object, key, fallback) : fallback;
-}
-
 std::wstring ConfigPackageFileName() {
     SYSTEMTIME local{};
     GetLocalTime(&local);
     wchar_t buffer[64]{};
     swprintf_s(buffer, L"quattro-%04u%02u%02u-%02u%02u.q4cfg",
-        static_cast<unsigned>(local.wYear),
-        static_cast<unsigned>(local.wMonth),
-        static_cast<unsigned>(local.wDay),
-        static_cast<unsigned>(local.wHour),
-        static_cast<unsigned>(local.wMinute));
-    return buffer;
-}
-
-std::wstring TodoJsonFileName() {
-    SYSTEMTIME local{};
-    GetLocalTime(&local);
-    wchar_t buffer[64]{};
-    swprintf_s(buffer, L"quattro-todos-%04u%02u%02u-%02u%02u.json",
         static_cast<unsigned>(local.wYear),
         static_cast<unsigned>(local.wMonth),
         static_cast<unsigned>(local.wDay),
@@ -675,302 +542,6 @@ bool SelectOpenPath(
     }
     selectedPath = result.path;
     return true;
-}
-
-bool HasSiblingGroupName(const std::vector<Group>& groups, int parentGroup, const std::wstring& name) {
-    const std::wstring normalized = ToLower(Trim(name));
-    for (const auto& group : groups) {
-        if (group.parentGroup == parentGroup && ToLower(Trim(group.name)) == normalized) {
-            return true;
-        }
-    }
-    return false;
-}
-
-std::wstring UniqueSiblingGroupName(const std::vector<Group>& groups, int parentGroup, const std::wstring& baseName) {
-    if (!HasSiblingGroupName(groups, parentGroup, baseName)) {
-        return baseName;
-    }
-    for (int index = 2; index < 10000; ++index) {
-        const std::wstring candidate = baseName + L" " + std::to_wstring(index);
-        if (!HasSiblingGroupName(groups, parentGroup, candidate)) {
-            return candidate;
-        }
-    }
-    return baseName + L" " + std::to_wstring(static_cast<int>(groups.size()) + 1);
-}
-
-bool IsTodoItemsTag(const Group& tag) {
-    return tag.type == 4 || ToLower(tag.content) == L"todoitems";
-}
-
-const Group* FindGroupById(const std::vector<Group>& groups, int id) {
-    for (const auto& group : groups) {
-        if (group.id == id) {
-            return &group;
-        }
-    }
-    return nullptr;
-}
-
-const Group* FindRootGroupByName(const std::vector<Group>& groups, const std::wstring& groupName) {
-    const std::wstring normalized = ToLower(Trim(groupName));
-    for (const auto& group : groups) {
-        if (group.parentGroup == 0 && ToLower(Trim(group.name)) == normalized) {
-            return &group;
-        }
-    }
-    return nullptr;
-}
-
-const Group* FindTodoTagByName(const std::vector<Group>& groups, int parentGroupId, const std::wstring& tagName) {
-    const std::wstring normalized = ToLower(Trim(tagName));
-    for (const auto& group : groups) {
-        if (group.parentGroup == parentGroupId && IsTodoItemsTag(group) && ToLower(Trim(group.name)) == normalized) {
-            return &group;
-        }
-    }
-    return nullptr;
-}
-
-struct TodoExportOptions {
-    bool includeCompleted = true;
-    bool includeDisabled = true;
-    bool onlyFuture = false;
-};
-
-bool ShouldExportTodo(const TodoItem& todo, const TodoExportOptions& options) {
-    if (!options.includeCompleted && !todo.completedAt.empty()) {
-        return false;
-    }
-    if (!options.includeDisabled && !todo.enabled) {
-        return false;
-    }
-    if (!options.onlyFuture) {
-        return true;
-    }
-
-    const std::wstring dueAt = todo.nextDueAt.empty() ? todo.anchorAt : todo.nextDueAt;
-    SYSTEMTIME due{};
-    SYSTEMTIME now{};
-    if (!TryParseTodoTimestamp(dueAt, due)) {
-        return true;
-    }
-    if (!TryParseTodoTimestamp(CurrentTodoTimestamp(), now)) {
-        return true;
-    }
-    FILETIME dueFile{};
-    FILETIME nowFile{};
-    if (!SystemTimeToFileTime(&due, &dueFile) || !SystemTimeToFileTime(&now, &nowFile)) {
-        return true;
-    }
-    return CompareFileTime(&dueFile, &nowFile) >= 0;
-}
-
-std::wstring BuildTodoExportJson(const AppModel& model, const TodoExportOptions& options) {
-    std::wstringstream out;
-    out << L"{\n";
-    out << L"  \"app\": \"Quattro\",\n";
-    out << L"  \"exportType\": \"todo-backup\",\n";
-    out << L"  \"formatVersion\": 2,\n";
-    out << L"  \"exportedAt\": \"" << JsonEscape(CurrentIso8601Timestamp()) << L"\",\n";
-    out << L"  \"exportOptions\": {\n";
-    out << L"    \"includeCompleted\": " << BoolJson(options.includeCompleted) << L",\n";
-    out << L"    \"includeDisabled\": " << BoolJson(options.includeDisabled) << L",\n";
-    out << L"    \"onlyFuture\": " << BoolJson(options.onlyFuture) << L"\n";
-    out << L"  },\n";
-    out << L"  \"todos\": [\n";
-    bool first = true;
-    for (const auto& todo : model.todos) {
-        if (!ShouldExportTodo(todo, options)) {
-            continue;
-        }
-        const Group* tag = FindGroupById(model.groups, todo.tagId);
-        const Group* parent = tag ? FindGroupById(model.groups, tag->parentGroup) : nullptr;
-        const std::wstring dueAt = todo.nextDueAt.empty() ? todo.anchorAt : todo.nextDueAt;
-        if (!first) {
-            out << L",\n";
-        }
-        first = false;
-        out << L"    {\n";
-        out << L"      \"id\": " << todo.id << L",\n";
-        out << L"      \"title\": \"" << JsonEscape(todo.title) << L"\",\n";
-        out << L"      \"notes\": \"" << JsonEscape(todo.content) << L"\",\n";
-        out << L"      \"enabled\": " << BoolJson(todo.enabled) << L",\n";
-        out << L"      \"completed\": " << BoolJson(!todo.completedAt.empty()) << L",\n";
-        out << L"      \"dueAt\": \"" << JsonEscape(TodoTimestampToIso8601(dueAt)) << L"\",\n";
-        out << L"      \"groupName\": \"" << JsonEscape(parent ? parent->name : L"默认分组") << L"\",\n";
-        out << L"      \"tagName\": \"" << JsonEscape(tag ? tag->name : L"待办事项") << L"\",\n";
-        out << L"      \"source\": \"Quattro\",\n";
-        out << L"      \"quattro\": {\n";
-        out << L"        \"originalId\": " << todo.id << L",\n";
-        out << L"        \"content\": \"" << JsonEscape(todo.content) << L"\",\n";
-        out << L"        \"scheduleKind\": " << static_cast<int>(todo.scheduleKind) << L",\n";
-        out << L"        \"repeatMode\": " << static_cast<int>(todo.repeatMode) << L",\n";
-        out << L"        \"repeatInterval\": " << todo.repeatInterval << L",\n";
-        out << L"        \"repeatLimit\": " << todo.repeatLimit << L",\n";
-        out << L"        \"repeatFinished\": " << todo.repeatFinished << L",\n";
-        out << L"        \"cronExpression\": \"" << JsonEscape(todo.cronExpression) << L"\",\n";
-        out << L"        \"anchorAt\": \"" << JsonEscape(todo.anchorAt) << L"\",\n";
-        out << L"        \"nextDueAt\": \"" << JsonEscape(todo.nextDueAt) << L"\",\n";
-        out << L"        \"completedAt\": \"" << JsonEscape(todo.completedAt) << L"\",\n";
-        out << L"        \"lastNotifiedDueAt\": \"" << JsonEscape(todo.lastNotifiedDueAt) << L"\",\n";
-        out << L"        \"lastNotifiedAt\": \"" << JsonEscape(todo.lastNotifiedAt) << L"\",\n";
-        out << L"        \"lastViewedDueAt\": \"" << JsonEscape(todo.lastViewedDueAt) << L"\",\n";
-        out << L"        \"lastViewedAt\": \"" << JsonEscape(todo.lastViewedAt) << L"\",\n";
-        out << L"        \"ignoredDueAt\": \"" << JsonEscape(todo.ignoredDueAt) << L"\",\n";
-        out << L"        \"snoozedUntil\": \"" << JsonEscape(todo.snoozedUntil) << L"\",\n";
-        out << L"        \"createdAt\": \"" << JsonEscape(todo.createdAt) << L"\",\n";
-        out << L"        \"updatedAt\": \"" << JsonEscape(todo.updatedAt) << L"\"\n";
-        out << L"      },\n";
-        out << L"      \"apple\": {\n";
-        out << L"        \"list\": \"提醒事项\",\n";
-        out << L"        \"priority\": \"normal\",\n";
-        out << L"        \"skipIfCompleted\": true\n";
-        out << L"      }\n";
-        out << L"    }";
-    }
-    out << L"\n  ]\n";
-    out << L"}\n";
-    return out.str();
-}
-
-struct TodoJsonImportReport {
-    bool ok = false;
-    int importedCount = 0;
-    int createdGroups = 0;
-    int createdTags = 0;
-    std::wstring message;
-};
-
-TodoJsonImportReport ImportTodoJsonFile(const std::filesystem::path& appDirectory, const std::filesystem::path& jsonPath) {
-    TodoJsonImportReport report;
-    const std::wstring text = LoadUtf8File(jsonPath);
-    if (text.empty()) {
-        report.message = L"读取待办 JSON 失败，或文件内容为空。";
-        return report;
-    }
-
-    JsonValue root;
-    std::wstring error;
-    if (!ParseJson(text, root, error)) {
-        report.message = L"待办 JSON 解析失败: " + error;
-        return report;
-    }
-    const JsonValue* todos = root.get(L"todos");
-    if (!todos || !todos->isArray()) {
-        report.message = L"待办 JSON 缺少 todos 数组。";
-        return report;
-    }
-
-    StorageService storage(appDirectory);
-    AppModel model = storage.Load();
-    std::map<std::wstring, int> groupIdCache;
-    std::map<std::wstring, int> tagIdCache;
-
-    for (const auto& entry : todos->arrayValue) {
-        if (!entry.isObject()) {
-            continue;
-        }
-        const JsonValue* quattro = ObjectField(entry, L"quattro");
-        const std::wstring groupName = Trim(JsonStringField(entry, L"groupName", L"默认分组"));
-        const std::wstring tagName = Trim(JsonStringField(entry, L"tagName", L"待办事项"));
-        const std::wstring groupKey = ToLower(groupName);
-        const std::wstring tagKey = groupKey + L"\n" + ToLower(tagName);
-
-        int parentGroupId = 0;
-        auto groupIt = groupIdCache.find(groupKey);
-        if (groupIt != groupIdCache.end()) {
-            parentGroupId = groupIt->second;
-        } else {
-            const Group* existing = FindRootGroupByName(model.groups, groupName);
-            if (existing) {
-                parentGroupId = existing->id;
-            } else {
-                Group group;
-                group.name = UniqueSiblingGroupName(model.groups, 0, groupName.empty() ? L"默认分组" : groupName);
-                if (!storage.InsertGroup(group)) {
-                    report.message = L"创建分组失败: " + storage.lastError();
-                    return report;
-                }
-                model.groups.push_back(group);
-                parentGroupId = group.id;
-                ++report.createdGroups;
-            }
-            groupIdCache[groupKey] = parentGroupId;
-        }
-
-        int tagId = 0;
-        auto tagIt = tagIdCache.find(tagKey);
-        if (tagIt != tagIdCache.end()) {
-            tagId = tagIt->second;
-        } else {
-            const Group* existingTag = FindTodoTagByName(model.groups, parentGroupId, tagName);
-            if (existingTag) {
-                tagId = existingTag->id;
-            } else {
-                Group tag;
-                tag.parentGroup = parentGroupId;
-                tag.name = UniqueSiblingGroupName(model.groups, parentGroupId, tagName.empty() ? L"待办事项" : tagName);
-                tag.type = 4;
-                tag.content = L"todoItems";
-                if (!storage.InsertGroup(tag)) {
-                    report.message = L"创建待办标签失败: " + storage.lastError();
-                    return report;
-                }
-                model.groups.push_back(tag);
-                tagId = tag.id;
-                ++report.createdTags;
-            }
-            tagIdCache[tagKey] = tagId;
-        }
-
-        TodoItem item;
-        item.tagId = tagId;
-        item.title = JsonStringField(entry, L"title");
-        item.content = JsonStringField(quattro, L"content", JsonStringField(entry, L"notes", JsonStringField(entry, L"content")));
-        item.enabled = JsonBoolField(entry, L"enabled", true);
-        item.scheduleKind = static_cast<TodoScheduleKind>(JsonIntField(quattro, L"scheduleKind", JsonIntField(entry, L"scheduleKind", 0)));
-        item.repeatMode = static_cast<TodoRepeatMode>(JsonIntField(quattro, L"repeatMode", JsonIntField(entry, L"repeatMode", 0)));
-        item.repeatInterval = std::max(1, JsonIntField(quattro, L"repeatInterval", JsonIntField(entry, L"repeatInterval", 1)));
-        item.repeatLimit = std::max(0, JsonIntField(quattro, L"repeatLimit", JsonIntField(entry, L"repeatLimit", 0)));
-        item.repeatFinished = std::max(0, JsonIntField(quattro, L"repeatFinished", JsonIntField(entry, L"repeatFinished", 0)));
-        item.cronExpression = JsonStringField(quattro, L"cronExpression", JsonStringField(entry, L"cronExpression"));
-        item.anchorAt = JsonStringField(quattro, L"anchorAt", JsonStringField(entry, L"anchorAt"));
-        item.nextDueAt = JsonStringField(quattro, L"nextDueAt", JsonStringField(entry, L"nextDueAt"));
-        item.completedAt = JsonStringField(quattro, L"completedAt", JsonStringField(entry, L"completedAt"));
-        item.lastNotifiedDueAt = JsonStringField(quattro, L"lastNotifiedDueAt");
-        item.lastNotifiedAt = JsonStringField(quattro, L"lastNotifiedAt");
-        item.lastViewedDueAt = JsonStringField(quattro, L"lastViewedDueAt");
-        item.lastViewedAt = JsonStringField(quattro, L"lastViewedAt");
-        item.ignoredDueAt = JsonStringField(quattro, L"ignoredDueAt");
-        item.snoozedUntil = JsonStringField(quattro, L"snoozedUntil");
-        item.createdAt = JsonStringField(quattro, L"createdAt", JsonStringField(entry, L"createdAt"));
-        item.updatedAt = JsonStringField(quattro, L"updatedAt", JsonStringField(entry, L"updatedAt"));
-        if (!quattro && item.scheduleKind == TodoScheduleKind::None && !JsonStringField(entry, L"dueAt").empty()) {
-            const std::wstring dueAt = ImportableTodoTimestamp(JsonStringField(entry, L"dueAt"));
-            if (!dueAt.empty()) {
-                item.scheduleKind = TodoScheduleKind::Once;
-                item.anchorAt = dueAt;
-                item.nextDueAt = item.anchorAt;
-            }
-        }
-        if (!quattro && item.completedAt.empty() && JsonBoolField(entry, L"completed", false)) {
-            item.completedAt = CurrentTodoTimestamp();
-        }
-        if (!storage.InsertTodoItem(item)) {
-            report.message = L"导入待办失败: " + storage.lastError();
-            return report;
-        }
-        model.todos.push_back(item);
-        ++report.importedCount;
-    }
-
-    report.ok = true;
-    report.message = L"待办 JSON 导入完成。\n\n新增待办: " + std::to_wstring(report.importedCount) +
-        L"\n新增分组: " + std::to_wstring(report.createdGroups) +
-        L"\n新增待办标签: " + std::to_wstring(report.createdTags);
-    return report;
 }
 
 int EnglishMonthIndex(const std::wstring& month) {
@@ -3128,8 +2699,8 @@ private:
         return windowUi_->ui();
     }
 
-    HWND Button(int tab, int id, const wchar_t* text, int x, int y, int width) {
-        HWND hwnd = MakeUi().Button(id, text, x, ContentY(y), ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Fixed, width);
+    HWND Button(int tab, int id, const wchar_t* text, int x, int y, int width, ThemedButtonRole role = ThemedButtonRole::Normal) {
+        HWND hwnd = MakeUi().Button(id, text, x, ContentY(y), role, ThemedButtonSize::Compact, ThemedButtonWidthMode::Fixed, width);
         AddTabChild(hwnd, tab);
         return hwnd;
     }
@@ -4396,28 +3967,28 @@ private:
     }
 
     void ExportTodosJson() {
-        StorageService storage(appDirectory_);
-        const AppModel model = storage.Load();
-        TodoExportOptions options;
+        TodoJsonExportOptions options;
         options.includeCompleted = !todoIncludeCompleted_ || ThemedUi::IsChecked(todoIncludeCompleted_);
         options.includeDisabled = !todoIncludeDisabled_ || ThemedUi::IsChecked(todoIncludeDisabled_);
         options.onlyFuture = todoOnlyFuture_ && ThemedUi::IsChecked(todoOnlyFuture_);
         std::wstring targetPath;
         if (!SelectSavePath(hwnd_,
-                (appDirectory_ / TodoJsonFileName()).wstring(),
+                (appDirectory_ / TodoJsonBackupService::DefaultFileName()).wstring(),
                 L"JSON 文件 (*.json)\0*.json\0所有文件\0*.*\0",
                 L"json",
                 targetPath)) {
             return;
         }
-        if (!SaveUtf8File(targetPath, BuildTodoExportJson(model, options))) {
-            ShowThemedMessageBox(hwnd_, instance_, theme_, L"写入待办 JSON 文件失败。", L"导出待办 JSON", MB_OK | MB_ICONWARNING);
+        TodoJsonBackupService service(appDirectory_);
+        std::wstring error;
+        if (!service.ExportJson(targetPath, options, error)) {
+            ShowThemedMessageBox(hwnd_, instance_, theme_, error.empty() ? L"写入待办 JSON 文件失败。" : error, L"导出待办 JSON", MB_OK | MB_ICONWARNING);
             return;
         }
         ShowToast(L"待办 JSON 导出完成。", ThemedToastRole::Success);
     }
 
-    void ImportTodosJson() {
+    void ImportTodosJson(TodoJsonImportMode mode) {
         std::wstring jsonPath;
         if (!SelectOpenPath(hwnd_,
                 L"待办JSON导入",
@@ -4427,23 +3998,53 @@ private:
                 jsonPath)) {
             return;
         }
+        TodoJsonBackupService service(appDirectory_);
+        TodoJsonImportOptions options;
+        options.mode = mode;
+        options.restoreDeletedPolicy = TodoJsonRestoreDeletedPolicy::KeepDeleted;
+
+        std::wstring confirmText;
+        std::wstring confirmTitle;
+        UINT confirmIcon = MB_ICONINFORMATION;
+        if (mode == TodoJsonImportMode::ReplaceAll) {
+            const TodoJsonImportReport preview = service.PreviewImport(jsonPath, options);
+            if (!preview.ok) {
+                ShowThemedMessageBox(hwnd_, instance_, theme_, FormatTodoJsonImportReportText(preview), L"全量导入待办 JSON", MB_OK | MB_ICONWARNING);
+                return;
+            }
+            confirmTitle = L"全量导入待办 JSON";
+            confirmIcon = MB_ICONWARNING;
+            confirmText = L"将用 JSON 中的 " + std::to_wstring(preview.todosParsed) +
+                L" 项待办替换当前 " + std::to_wstring(preview.todosDeletedForReplace) +
+                L" 项待办。\n\n分组、标签、启动项和便签不会被删除；导入前会自动备份当前数据库。";
+        } else {
+            confirmTitle = L"合并导入待办 JSON";
+            confirmText =
+                L"将把 JSON 中的待办事项合并到当前数据；同一待办按同步标识和更新时间保留较新版本。\n\n"
+                L"缺失的分组或待办标签会自动创建，本地已删除的同一待办默认保持删除。导入前会自动备份。";
+        }
+
         const int confirm = ShowThemedMessageBox(
             hwnd_,
             instance_,
             theme_,
-            L"将把 JSON 中的待办事项导入到当前数据；缺失的分组或待办标签会自动创建。",
-            L"导入待办 JSON",
-            MB_OKCANCEL | MB_ICONINFORMATION);
+            confirmText,
+            confirmTitle,
+            MB_OKCANCEL | confirmIcon);
         if (confirm != IDOK) {
             return;
         }
-        const TodoJsonImportReport report = ImportTodoJsonFile(appDirectory_, jsonPath);
+        const TodoJsonImportReport report = service.ImportJson(jsonPath, options);
         if (report.ok) {
             importedData_ = true;
-            ShowToast(report.message.empty() ? L"导入完成。" : report.message, ThemedToastRole::Success);
+            if (report.todosConflicted > 0 || report.todosFailed > 0 || !report.warnings.empty()) {
+                ShowThemedMessageBox(hwnd_, instance_, theme_, FormatTodoJsonImportReportText(report), confirmTitle, MB_OK | MB_ICONINFORMATION);
+            } else {
+                ShowToast(report.message.empty() ? L"导入完成。" : report.message, ThemedToastRole::Success);
+            }
         } else {
-            ShowThemedMessageBox(hwnd_, instance_, theme_, report.message.empty() ? L"导入失败。" : report.message,
-                L"导入待办 JSON", MB_OK | MB_ICONWARNING);
+            ShowThemedMessageBox(hwnd_, instance_, theme_, FormatTodoJsonImportReportText(report),
+                confirmTitle.empty() ? L"导入待办 JSON" : confirmTitle, MB_OK | MB_ICONWARNING);
         }
     }
 
@@ -5280,7 +4881,8 @@ private:
             ThemedUi::BindGroupChildren(configBackupGroup, {configExportButton, configImportButton});
 
             const int todoExportWidth = settingsUi.buttonWidth(L"导出", ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Text);
-            const int todoImportWidth = settingsUi.buttonWidth(L"导入", ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Text);
+            const int todoMergeImportWidth = settingsUi.buttonWidth(L"合并导入", ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Text);
+            const int todoReplaceImportWidth = settingsUi.buttonWidth(L"全量导入", ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Text);
             const int todoButtonsX = behaviorLeft;
             const ThemedSectionGeometry todoBackupSection = behaviorForm.section(
                 behaviorFrameLeft, configBackupSection.frame.bottom + behaviorFrameGap, behaviorFrameWidth,
@@ -5290,7 +4892,15 @@ private:
             HWND todoBackupGroup = AddSectionFrame(TabBackup, L"待办事项", todoBackupSection.frame);
             const int todoButtonsY = behaviorForm.sectionItemY(todoBackupSection, 0, settingsUi.compactButtonHeight());
             HWND todoExportButton = Button(TabBackup, ID_TODO_EXPORT, L"导出", todoButtonsX, todoButtonsY, todoExportWidth);
-            HWND todoImportButton = Button(TabBackup, ID_TODO_IMPORT, L"导入", todoButtonsX + todoExportWidth + behaviorLayout.controlGapX, todoButtonsY, todoImportWidth);
+            HWND todoMergeImportButton = Button(TabBackup, ID_TODO_IMPORT_MERGE, L"合并导入", todoButtonsX + todoExportWidth + behaviorLayout.controlGapX, todoButtonsY, todoMergeImportWidth);
+            HWND todoReplaceImportButton = Button(
+                TabBackup,
+                ID_TODO_IMPORT_REPLACE,
+                L"全量导入",
+                todoButtonsX + todoExportWidth + behaviorLayout.controlGapX + todoMergeImportWidth + behaviorLayout.controlGapX,
+                todoButtonsY,
+                todoReplaceImportWidth,
+                ThemedButtonRole::Normal);
             const int backupCheckWidth = behaviorContentWidth / 3;
             const int backupCheckY = behaviorForm.sectionItemY(todoBackupSection, 1, behaviorCheckHeight);
             todoIncludeCompleted_ = CheckBox(TabBackup, ID_TODO_INCLUDE_COMPLETED, L"含已完成", behaviorLeft, backupCheckY, true, backupCheckWidth);
@@ -5303,7 +4913,7 @@ private:
                 behaviorForm.sectionItemY(todoBackupSection, 2, settingsUi.labelHeight()),
                 behaviorContentWidth);
             ThemedUi::BindGroupChildren(todoBackupGroup, {
-                todoExportButton, todoImportButton, todoIncludeCompleted_, todoIncludeDisabled_, todoOnlyFuture_, todoBackupNote});
+                todoExportButton, todoMergeImportButton, todoReplaceImportButton, todoIncludeCompleted_, todoIncludeDisabled_, todoOnlyFuture_, todoBackupNote});
 
             const ThemedUi footerUi = MakeUi();
             okButton_ = footerUi.FooterButton(IDOK, L"确定", 0, 3, true, true);
@@ -5440,8 +5050,12 @@ private:
                 ExportTodosJson();
                 return 0;
             }
-            if (LOWORD(wParam) == ID_TODO_IMPORT) {
-                ImportTodosJson();
+            if (LOWORD(wParam) == ID_TODO_IMPORT_MERGE) {
+                ImportTodosJson(TodoJsonImportMode::Merge);
+                return 0;
+            }
+            if (LOWORD(wParam) == ID_TODO_IMPORT_REPLACE) {
+                ImportTodosJson(TodoJsonImportMode::ReplaceAll);
                 return 0;
             }
             if (LOWORD(wParam) == ID_HTTP_BROWSE_ROOT) {

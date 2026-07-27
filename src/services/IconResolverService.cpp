@@ -8,6 +8,7 @@
 #include "Utilities.h"
 
 #include <appmodel.h>
+#include <bcrypt.h>
 #include <commctrl.h>
 #include <shellapi.h>
 #include <shlwapi.h>
@@ -19,6 +20,10 @@
 #include <cmath>
 #include <cstring>
 #include <cwctype>
+#include <fstream>
+#include <iomanip>
+#include <limits>
+#include <sstream>
 #include <system_error>
 
 #include <pugixml.hpp>
@@ -32,6 +37,20 @@ void SafeRelease(T*& value) {
         value = nullptr;
     }
 }
+
+class ScopedComInitialization final {
+public:
+    ScopedComInitialization() : result_(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED)) {}
+    ~ScopedComInitialization() {
+        if (SUCCEEDED(result_)) {
+            CoUninitialize();
+        }
+    }
+    bool usable() const { return SUCCEEDED(result_) || result_ == RPC_E_CHANGED_MODE; }
+
+private:
+    HRESULT result_ = E_FAIL;
+};
 
 bool ContainsStraightAlphaPixels(const std::vector<std::uint32_t>& pixels) {
     return std::any_of(pixels.begin(), pixels.end(), [](std::uint32_t pixel) {
@@ -62,6 +81,65 @@ void PremultiplyTranslucentPixels(std::vector<std::uint32_t>& pixels) {
     }
 }
 
+constexpr wchar_t kResolverCacheNamespace[] = L"resolver-v5";
+
+std::wstring HashBytesHex(const void* data, std::size_t byteCount) {
+    BCRYPT_ALG_HANDLE algorithm = nullptr;
+    BCRYPT_HASH_HANDLE hash = nullptr;
+    std::array<unsigned char, 32> digest{};
+    if (BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM, nullptr, 0) != 0) {
+        return {};
+    }
+    if (BCryptCreateHash(algorithm, &hash, nullptr, 0, nullptr, 0, 0) != 0) {
+        BCryptCloseAlgorithmProvider(algorithm, 0);
+        return {};
+    }
+    const bool hashed = byteCount == 0 ||
+        BCryptHashData(
+            hash,
+            reinterpret_cast<PUCHAR>(const_cast<void*>(data)),
+            static_cast<ULONG>(std::min<std::size_t>(byteCount, std::numeric_limits<ULONG>::max())),
+            0) == 0;
+    const bool finished = hashed &&
+        BCryptFinishHash(hash, digest.data(), static_cast<ULONG>(digest.size()), 0) == 0;
+    BCryptDestroyHash(hash);
+    BCryptCloseAlgorithmProvider(algorithm, 0);
+    if (!finished) {
+        return {};
+    }
+    std::wstringstream stream;
+    stream << std::hex << std::setfill(L'0');
+    for (const unsigned char byte : digest) {
+        stream << std::setw(2) << static_cast<unsigned int>(byte);
+    }
+    return stream.str();
+}
+
+std::wstring HashWideHex(const std::wstring& value) {
+    return HashBytesHex(value.data(), value.size() * sizeof(wchar_t));
+}
+
+std::wstring HashBytesHex(const std::vector<std::uint8_t>& value) {
+    return HashBytesHex(value.data(), value.size());
+}
+
+std::wstring KindKey(IconSourceKind kind) {
+    switch (kind) {
+    case IconSourceKind::Link: return L"link";
+    case IconSourceKind::FilePath: return L"file";
+    case IconSourceKind::DirectoryPath: return L"directory";
+    case IconSourceKind::Url: return L"url";
+    case IconSourceKind::ShellParseName: return L"shell-parse-name";
+    case IconSourceKind::PidlBlob: return L"pidl";
+    case IconSourceKind::IconLocation: return L"icon-location";
+    case IconSourceKind::CommandLine: return L"command";
+    case IconSourceKind::ContextMenuProvider: return L"context-menu-provider";
+    case IconSourceKind::Stock: return L"stock";
+    case IconSourceKind::DefaultCategory: return L"default-category";
+    default: return L"unknown";
+    }
+}
+
 bool LooksLikeUrl(const Link& link) {
     const std::wstring lower = ToLower(Trim(link.path));
     return link.type == 2 ||
@@ -69,6 +147,63 @@ bool LooksLikeUrl(const Link& link) {
            lower.rfind(L"https://", 0) == 0 ||
            lower.rfind(L"ftp://", 0) == 0 ||
            lower.rfind(L"www.", 0) == 0;
+}
+
+std::wstring UrlHost(const std::wstring& value) {
+    std::wstring text = NormalizeUrl(value);
+    const std::size_t scheme = text.find(L"://");
+    if (scheme != std::wstring::npos) {
+        text.erase(0, scheme + 3);
+    }
+    const std::size_t end = text.find_first_of(L"/?#");
+    if (end != std::wstring::npos) {
+        text.resize(end);
+    }
+    const std::size_t at = text.rfind(L'@');
+    if (at != std::wstring::npos) {
+        text.erase(0, at + 1);
+    }
+    if (!text.empty() && text.front() == L'[') {
+        const std::size_t close = text.find(L']');
+        if (close != std::wstring::npos) {
+            return ToLower(text.substr(0, close + 1));
+        }
+    }
+    const std::size_t port = text.rfind(L':');
+    if (port != std::wstring::npos) {
+        text.resize(port);
+    }
+    return ToLower(Trim(text));
+}
+
+std::filesystem::path UrlIconFile(
+    const std::filesystem::path& appDirectory,
+    const Link& link,
+    bool preferPng) {
+    const std::wstring host = UrlHost(link.path);
+    if (appDirectory.empty() || host.empty()) {
+        return {};
+    }
+    const std::filesystem::path iconDir = appDirectory / L"icons" / L"url";
+    const std::array<std::filesystem::path, 4> candidates = preferPng
+        ? std::array<std::filesystem::path, 4>{
+            iconDir / (host + L".png"),
+            iconDir / (ToLower(host) + L".png"),
+            iconDir / (host + L".ico"),
+            iconDir / (ToLower(host) + L".ico"),
+        }
+        : std::array<std::filesystem::path, 4>{
+            iconDir / (host + L".ico"),
+            iconDir / (ToLower(host) + L".ico"),
+            iconDir / (host + L".png"),
+            iconDir / (ToLower(host) + L".png"),
+        };
+    for (const auto& candidate : candidates) {
+        if (FileExists(candidate)) {
+            return candidate;
+        }
+    }
+    return {};
 }
 
 std::wstring Utf8ToWide(const char* text) {
@@ -236,6 +371,10 @@ std::vector<std::filesystem::path> AppxLogoCandidates(
 }
 
 ResolvedIcon LoadPngIcon(const std::filesystem::path& path, const std::wstring& source) {
+    ScopedComInitialization com;
+    if (!com.usable()) {
+        return {};
+    }
     IWICImagingFactory* factory = nullptr;
     IWICBitmapDecoder* decoder = nullptr;
     IWICBitmapFrameDecode* frame = nullptr;
@@ -532,10 +671,140 @@ bool IsScriptLikeTarget(const std::wstring& executable) {
         extension == L".vbs" || extension == L".js" || extension == L".wsf";
 }
 
+std::wstring FileFingerprint(std::wstring value, bool directory) {
+    value = directory ? ExpandEnvironmentStringsSafe(Trim(value)) : ResolveExecutablePath(value);
+    if (Trim(value).empty()) {
+        return L"missing:";
+    }
+    std::error_code ec;
+    std::filesystem::path path(value);
+    const auto canonical = std::filesystem::weakly_canonical(path, ec);
+    if (!ec && !canonical.empty()) {
+        path = canonical;
+    }
+    const std::wstring normalized = ToLower(path.wstring());
+    ec.clear();
+    const bool exists = directory
+        ? std::filesystem::is_directory(path, ec)
+        : std::filesystem::is_regular_file(path, ec);
+    std::wstringstream stream;
+    stream << normalized << L"|exists=" << (exists ? 1 : 0);
+    if (exists) {
+        ec.clear();
+        const auto writeTime = std::filesystem::last_write_time(path, ec);
+        if (!ec) {
+            stream << L"|mtime=" << writeTime.time_since_epoch().count();
+        }
+        if (!directory) {
+            ec.clear();
+            const auto size = std::filesystem::file_size(path, ec);
+            if (!ec) {
+                stream << L"|size=" << size;
+            }
+        }
+    }
+    return stream.str();
 }
 
-IconResolverService::IconResolverService(std::filesystem::path appDirectory)
-    : appDirectory_(std::move(appDirectory)) {}
+void AppendFileFingerprint(
+    std::wstringstream& stream,
+    const wchar_t* label,
+    const std::wstring& value,
+    bool directory) {
+    if (Trim(value).empty()) {
+        return;
+    }
+    stream << L"|" << label << L"=" << FileFingerprint(value, directory);
+}
+
+std::wstring IconRequestCacheIdentity(
+    const IconRequest& request,
+    int size,
+    const std::filesystem::path& appDirectory) {
+    std::wstringstream stream;
+    stream << L"version=" << kResolverCacheNamespace
+           << L"|kind=" << KindKey(request.kind)
+           << L"|size=" << size
+           << L"|fallback=" << IconFallbackKindKey(request.fallbackKind)
+           << L"|stock=" << static_cast<int>(request.stockIcon)
+           << L"|allowFallback=" << (request.allowFallback ? 1 : 0)
+           << L"|genericFallback=" << (request.preferFallbackForGenericHost ? 1 : 0);
+
+    switch (request.kind) {
+    case IconSourceKind::Link: {
+        stream << L"|linkType=" << request.link.type
+               << L"|linkPath=" << ToLower(ExpandEnvironmentStringsSafe(Trim(request.link.path)))
+               << L"|linkIcon=" << ToLower(ExpandEnvironmentStringsSafe(Trim(request.link.icon)))
+               << L"|linkPidl=" << HashBytesHex(request.link.pidl);
+        if (LooksLikeUrl(request.link)) {
+            const std::filesystem::path urlIcon = UrlIconFile(appDirectory, request.link, true);
+            stream << L"|urlHost=" << UrlHost(request.link.path)
+                   << L"|urlIcon=" << ToLower(urlIcon.wstring());
+            AppendFileFingerprint(stream, L"urlIconFile", urlIcon.wstring(), false);
+        }
+        AppendFileFingerprint(stream, L"linkPathFile", request.link.path, request.link.type == 1);
+        if (!Trim(request.link.icon).empty() && request.link.icon != L"#url" &&
+            request.link.icon != L"默认系统缓存图标") {
+            std::wstring iconPath;
+            int iconIndex = 0;
+            if (ParseIconLocation(request.link.icon, iconPath, iconIndex)) {
+                stream << L"|linkIconIndex=" << iconIndex;
+                AppendFileFingerprint(stream, L"linkIconFile", iconPath, false);
+            } else {
+                AppendFileFingerprint(stream, L"linkIconFile", request.link.icon, false);
+            }
+        }
+        break;
+    }
+    case IconSourceKind::FilePath:
+        stream << L"|value=" << ToLower(ExpandEnvironmentStringsSafe(Trim(request.value)));
+        AppendFileFingerprint(stream, L"file", request.value, false);
+        break;
+    case IconSourceKind::DirectoryPath:
+        stream << L"|value=" << ToLower(ExpandEnvironmentStringsSafe(Trim(request.value)));
+        AppendFileFingerprint(stream, L"directory", request.value, true);
+        break;
+    case IconSourceKind::IconLocation: {
+        std::wstring iconPath;
+        int iconIndex = 0;
+        ParseIconLocation(request.value, iconPath, iconIndex);
+        stream << L"|value=" << ToLower(ExpandEnvironmentStringsSafe(Trim(request.value)))
+               << L"|iconIndex=" << iconIndex;
+        AppendFileFingerprint(stream, L"iconFile", iconPath, false);
+        break;
+    }
+    case IconSourceKind::CommandLine: {
+        const std::wstring executable = ExecutableFromCommand(request.value);
+        stream << L"|command=" << ToLower(ExpandEnvironmentStringsSafe(Trim(request.value)))
+               << L"|executable=" << ToLower(executable);
+        AppendFileFingerprint(stream, L"commandFile", executable, false);
+        break;
+    }
+    case IconSourceKind::PidlBlob:
+        stream << L"|pidl=" << HashBytesHex(request.pidl);
+        break;
+    case IconSourceKind::ContextMenuProvider:
+        stream << L"|provider=" << ToLower(Trim(request.providerId));
+        break;
+    case IconSourceKind::ShellParseName:
+    case IconSourceKind::Url:
+        stream << L"|value=" << ToLower(ExpandEnvironmentStringsSafe(Trim(request.value)));
+        break;
+    case IconSourceKind::Stock:
+    case IconSourceKind::DefaultCategory:
+    default:
+        break;
+    }
+    return stream.str();
+}
+
+}
+
+IconResolverService::IconResolverService(
+    std::filesystem::path appDirectory,
+    std::filesystem::path cacheDirectory)
+    : appDirectory_(std::move(appDirectory)),
+      cacheDirectory_(std::move(cacheDirectory)) {}
 
 IconRequest IconResolverService::ForLink(const Link& link, int size) {
     IconRequest request;
@@ -566,13 +835,151 @@ bool IconResolverService::HasPixels(const ResolvedIcon& icon) {
         icon.pixels.size() == static_cast<std::size_t>(icon.width * icon.height);
 }
 
+std::filesystem::path IconResolverService::DefaultCacheDirectory(const std::filesystem::path& appDirectory) {
+    const std::filesystem::path root = appDirectory.empty() ? QuattroUserConfigDirectory() : appDirectory;
+    return root / L"cache" / L"icons" / kResolverCacheNamespace;
+}
+
+ResolvedIcon IconResolverService::LoadPngIconFile(
+    const std::filesystem::path& path,
+    const std::wstring& source) {
+    return LoadPngIcon(path, source);
+}
+
+bool IconResolverService::SavePngIcon(const ResolvedIcon& icon, const std::filesystem::path& path) {
+    if (!HasPixels(icon) || path.empty()) {
+        return false;
+    }
+    ScopedComInitialization com;
+    if (!com.usable()) {
+        return false;
+    }
+    IWICImagingFactory* factory = nullptr;
+    IWICBitmap* bitmap = nullptr;
+    IWICStream* stream = nullptr;
+    IWICBitmapEncoder* encoder = nullptr;
+    IWICBitmapFrameEncode* frame = nullptr;
+    bool ok = false;
+    const UINT width = static_cast<UINT>(icon.width);
+    const UINT height = static_cast<UINT>(icon.height);
+    const UINT stride = static_cast<UINT>(icon.width * sizeof(std::uint32_t));
+    const UINT bytes = static_cast<UINT>(icon.pixels.size() * sizeof(std::uint32_t));
+
+    std::error_code ec;
+    std::filesystem::create_directories(path.parent_path(), ec);
+    if (ec) {
+        return false;
+    }
+    std::filesystem::path tempPath = path;
+    tempPath += L".tmp";
+    std::filesystem::remove(tempPath, ec);
+
+    if (SUCCEEDED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory))) &&
+        SUCCEEDED(factory->CreateBitmapFromMemory(
+            width,
+            height,
+            GUID_WICPixelFormat32bppBGRA,
+            stride,
+            bytes,
+            reinterpret_cast<BYTE*>(const_cast<std::uint32_t*>(icon.pixels.data())),
+            &bitmap)) &&
+        SUCCEEDED(factory->CreateStream(&stream)) &&
+        SUCCEEDED(stream->InitializeFromFilename(tempPath.c_str(), GENERIC_WRITE)) &&
+        SUCCEEDED(factory->CreateEncoder(GUID_ContainerFormatPng, nullptr, &encoder)) &&
+        SUCCEEDED(encoder->Initialize(stream, WICBitmapEncoderNoCache)) &&
+        SUCCEEDED(encoder->CreateNewFrame(&frame, nullptr))) {
+        WICPixelFormatGUID format = GUID_WICPixelFormat32bppBGRA;
+        ok = SUCCEEDED(frame->Initialize(nullptr)) &&
+            SUCCEEDED(frame->SetSize(width, height)) &&
+            SUCCEEDED(frame->SetPixelFormat(&format)) &&
+            SUCCEEDED(frame->WriteSource(bitmap, nullptr)) &&
+            SUCCEEDED(frame->Commit()) &&
+            SUCCEEDED(encoder->Commit());
+    }
+
+    SafeRelease(frame);
+    SafeRelease(encoder);
+    SafeRelease(stream);
+    SafeRelease(bitmap);
+    SafeRelease(factory);
+    if (!ok) {
+        std::filesystem::remove(tempPath, ec);
+        return false;
+    }
+    if (MoveFileExW(
+            tempPath.c_str(),
+            path.c_str(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        return true;
+    }
+    ec.clear();
+    std::filesystem::copy_file(tempPath, path, std::filesystem::copy_options::overwrite_existing, ec);
+    std::filesystem::remove(tempPath, ec);
+    return !ec;
+}
+
+bool IconResolverService::ClearDiskCache(
+    const std::filesystem::path& appDirectory,
+    const std::filesystem::path& cacheDirectory) {
+    const std::filesystem::path cacheRoot = cacheDirectory.empty()
+        ? DefaultCacheDirectory(appDirectory)
+        : cacheDirectory;
+    std::error_code ec;
+    if (std::filesystem::exists(cacheRoot, ec)) {
+        std::filesystem::remove_all(cacheRoot, ec);
+        if (ec) {
+            return false;
+        }
+    }
+    std::filesystem::create_directories(cacheRoot, ec);
+    return !ec;
+}
+
+std::filesystem::path IconResolverService::CacheRoot() const {
+    return cacheDirectory_.empty() ? DefaultCacheDirectory(appDirectory_) : cacheDirectory_;
+}
+
+std::filesystem::path IconResolverService::CachePathForRequest(const IconRequest& request, int size) const {
+    const std::wstring hash = HashWideHex(IconRequestCacheIdentity(request, size, appDirectory_));
+    if (hash.size() < 2) {
+        return {};
+    }
+    return CacheRoot() / hash.substr(0, 2) / (hash + L".png");
+}
+
 ResolvedIcon IconResolverService::Resolve(const IconRequest& request, std::stop_token stopToken) const {
     if (stopToken.stop_requested()) {
         return {};
     }
     const int size = std::clamp(request.size, 1, 256);
+    const bool cacheEnabled = request.cacheMode == IconCacheMode::PreferCache ||
+        request.cacheMode == IconCacheMode::Refresh;
+    const std::filesystem::path cachePath = cacheEnabled
+        ? CachePathForRequest(request, size)
+        : std::filesystem::path{};
+    if (request.cacheMode == IconCacheMode::PreferCache && !cachePath.empty()) {
+        ResolvedIcon cached = LoadPngIconFile(cachePath, L"disk-cache:" + cachePath.filename().wstring());
+        if (HasPixels(cached)) {
+            return cached;
+        }
+    }
+    if (request.kind == IconSourceKind::Link && LooksLikeUrl(request.link)) {
+        const std::filesystem::path urlIcon = UrlIconFile(appDirectory_, request.link, true);
+        if (!urlIcon.empty()) {
+            ResolvedIcon urlResult = LoadPngIconFile(urlIcon, L"url-icon-file");
+            if (HasPixels(urlResult)) {
+                if (cacheEnabled && !cachePath.empty()) {
+                    SavePngIcon(urlResult, cachePath);
+                }
+                return urlResult;
+            }
+        }
+    }
     ResolvedIcon result = ResolveShellItemImage(request, size);
     if (HasPixels(result)) {
+        if (cacheEnabled && !cachePath.empty()) {
+            SavePngIcon(result, cachePath);
+        }
         return result;
     }
     std::wstring source;
@@ -583,6 +990,9 @@ ResolvedIcon IconResolverService::Resolve(const IconRequest& request, std::stop_
     result = CaptureIcon(icon, size, 1, source);
     if (icon) {
         DestroyIcon(icon);
+    }
+    if (HasPixels(result) && cacheEnabled && !cachePath.empty()) {
+        SavePngIcon(result, cachePath);
     }
     return result;
 }

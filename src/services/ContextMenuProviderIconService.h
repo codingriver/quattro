@@ -43,9 +43,17 @@ public:
 
 private:
     bool SaveCached(const std::vector<ContextMenuProviderIconInfo>& icons) const;
+    std::filesystem::path IconPath(const std::wstring& providerId) const;
+    bool SaveIconFile(const ContextMenuProviderIconInfo& info) const;
+    std::optional<ShellContextMenuCachedIcon> LoadIconFile(
+        const std::wstring& providerId,
+        int width,
+        int height,
+        int quality) const;
 
     std::filesystem::path storageDirectory_;
     std::filesystem::path providerCachePath_;
+    std::filesystem::path iconCacheDirectory_;
     bool persistentCacheEnabled_ = false;
     ResolveFunction resolver_;
 };

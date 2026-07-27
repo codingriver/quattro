@@ -1,5 +1,6 @@
 #include "ShellContextMenuCacheService.h"
 
+#include "IconResolverService.h"
 #include "Utilities.h"
 
 #include <algorithm>
@@ -9,7 +10,7 @@
 #include <limits>
 
 namespace {
-constexpr std::array<char, 8> kMagic{{'Q', 'S', 'C', 'M', 'E', 'N', 'U', '6'}};
+constexpr std::array<char, 8> kMagic{{'Q', 'S', 'C', 'M', 'E', 'N', 'U', '7'}};
 constexpr std::uint32_t kMaxEntries = 10000;
 constexpr std::uint32_t kMaxItems = 1000;
 constexpr std::uint32_t kMaxIcons = 10000;
@@ -100,38 +101,28 @@ void WriteItem(std::ostream& stream, const ShellContextMenuItem& item, std::uint
     }
 }
 
-bool ReadIcon(std::istream& stream, ShellContextMenuCachedIcon& icon) {
-    std::int32_t width = 0;
-    std::int32_t height = 0;
-    std::int32_t quality = 0;
-    std::uint32_t pixelCount = 0;
-    if (!ReadValue(stream, width) || !ReadValue(stream, height) ||
-        !ReadValue(stream, quality) || !ReadValue(stream, pixelCount) ||
-        width <= 0 || height <= 0 || width > 64 || height > 64 ||
-        pixelCount != static_cast<std::uint32_t>(width * height)) {
+bool ReadIconMetadata(std::istream& stream, int& width, int& height, int& quality) {
+    std::int32_t storedWidth = 0;
+    std::int32_t storedHeight = 0;
+    std::int32_t storedQuality = 0;
+    if (!ReadValue(stream, storedWidth) || !ReadValue(stream, storedHeight) ||
+        !ReadValue(stream, storedQuality) ||
+        storedWidth <= 0 || storedHeight <= 0 || storedWidth > 64 || storedHeight > 64) {
         return false;
     }
-    icon.width = width;
-    icon.height = height;
-    icon.quality = quality;
-    icon.pixels.resize(pixelCount);
-    return static_cast<bool>(stream.read(
-        reinterpret_cast<char*>(icon.pixels.data()),
-        static_cast<std::streamsize>(pixelCount * sizeof(std::uint32_t))));
+    width = storedWidth;
+    height = storedHeight;
+    quality = storedQuality;
+    return true;
 }
 
-void WriteIcon(std::ostream& stream, const ShellContextMenuCachedIcon& icon) {
+void WriteIconMetadata(std::ostream& stream, const ShellContextMenuCachedIcon& icon) {
     const std::int32_t width = icon.width;
     const std::int32_t height = icon.height;
     const std::int32_t quality = icon.quality;
-    const std::uint32_t pixelCount = static_cast<std::uint32_t>(icon.pixels.size());
     WriteValue(stream, width);
     WriteValue(stream, height);
     WriteValue(stream, quality);
-    WriteValue(stream, pixelCount);
-    stream.write(
-        reinterpret_cast<const char*>(icon.pixels.data()),
-        static_cast<std::streamsize>(pixelCount * sizeof(std::uint32_t)));
 }
 
 bool MatchesProvider(const ShellContextMenuItem& item, const std::wstring& providerId) {
@@ -144,7 +135,8 @@ ShellContextMenuCacheService::ShellContextMenuCacheService()
 }
 
 ShellContextMenuCacheService::ShellContextMenuCacheService(std::filesystem::path storageDirectory)
-    : cachePath_(std::move(storageDirectory) / L"cache" / L"shell-context-menu.bin") {
+    : cachePath_(storageDirectory / L"cache" / L"shell-context-menu.bin"),
+      iconCacheDirectory_(std::move(storageDirectory) / L"cache" / L"icons" / L"shell-context-menu-v1") {
     Load();
 }
 
@@ -366,6 +358,8 @@ void ShellContextMenuCacheService::ApplyUpdate(
 bool ShellContextMenuCacheService::Reset() {
     entries_.clear();
     iconPool_.clear();
+    std::error_code ec;
+    std::filesystem::remove_all(iconCacheDirectory_, ec);
     return Save();
 }
 
@@ -403,6 +397,8 @@ void ShellContextMenuCacheService::RemoveProvider(const std::wstring& providerId
     const std::wstring iconPrefix = ToLower(providerId) + L"|";
     for (auto icon = iconPool_.begin(); icon != iconPool_.end();) {
         if (icon->first.rfind(iconPrefix, 0) == 0) {
+            std::error_code ec;
+            std::filesystem::remove(IconPath(icon->first), ec);
             icon = iconPool_.erase(icon);
             changed = true;
         } else {
@@ -449,11 +445,15 @@ void ShellContextMenuCacheService::Load() {
     std::unordered_map<std::wstring, ShellContextMenuCachedIcon> loadedIcons;
     for (std::uint32_t iconIndex = 0; iconIndex < iconCount; ++iconIndex) {
         std::wstring key;
-        ShellContextMenuCachedIcon icon;
-        if (!ReadString(stream, key) || key.empty() || !ReadIcon(stream, icon)) {
+        int width = 0;
+        int height = 0;
+        int quality = 0;
+        if (!ReadString(stream, key) || key.empty() || !ReadIconMetadata(stream, width, height, quality)) {
             return;
         }
-        loadedIcons.emplace(std::move(key), std::move(icon));
+        if (auto icon = LoadIconFile(key, width, height, quality)) {
+            loadedIcons.emplace(std::move(key), std::move(*icon));
+        }
     }
     entries_ = std::move(loaded);
     iconPool_ = std::move(loadedIcons);
@@ -500,7 +500,8 @@ bool ShellContextMenuCacheService::Save() const {
                 break;
             }
             WriteString(stream, key);
-            WriteIcon(stream, icon);
+            SaveIconFile(key, icon);
+            WriteIconMetadata(stream, icon);
         }
         stream.flush();
         if (!stream.good()) {
@@ -523,6 +524,50 @@ bool ShellContextMenuCacheService::Save() const {
         }
     }
     return true;
+}
+
+std::filesystem::path ShellContextMenuCacheService::IconPath(const std::wstring& key) const {
+    const std::wstring hash = Hex8(StablePathHash(key));
+    const std::wstring shard = hash.size() >= 2 ? hash.substr(0, 2) : L"00";
+    return iconCacheDirectory_ / shard / (hash + L".png");
+}
+
+bool ShellContextMenuCacheService::SaveIconFile(
+    const std::wstring& key,
+    const ShellContextMenuCachedIcon& icon) const {
+    if (key.empty() || icon.width <= 0 || icon.height <= 0 || icon.width > 64 || icon.height > 64 ||
+        icon.pixels.size() != static_cast<std::size_t>(icon.width * icon.height)) {
+        return false;
+    }
+    ResolvedIcon resolved;
+    resolved.ok = true;
+    resolved.width = icon.width;
+    resolved.height = icon.height;
+    resolved.quality = icon.quality;
+    resolved.pixels = icon.pixels;
+    resolved.source = L"shell-context-menu-cache";
+    return IconResolverService::SavePngIcon(resolved, IconPath(key));
+}
+
+std::optional<ShellContextMenuCachedIcon> ShellContextMenuCacheService::LoadIconFile(
+    const std::wstring& key,
+    int width,
+    int height,
+    int quality) const {
+    const ResolvedIcon resolved = IconResolverService::LoadPngIconFile(
+        IconPath(key),
+        L"shell-context-menu-icon-cache");
+    if (!IconResolverService::HasPixels(resolved) ||
+        resolved.width != width || resolved.height != height ||
+        resolved.width > 64 || resolved.height > 64) {
+        return std::nullopt;
+    }
+    ShellContextMenuCachedIcon icon;
+    icon.width = resolved.width;
+    icon.height = resolved.height;
+    icon.quality = quality;
+    icon.pixels = resolved.pixels;
+    return icon;
 }
 
 // 新增实现: 获取缓存统计信息
@@ -674,6 +719,8 @@ void ShellContextMenuCacheService::RemoveProviderSelective(const std::wstring& p
     const std::wstring iconPrefix = ToLower(providerId) + L"|";
     for (auto icon = iconPool_.begin(); icon != iconPool_.end();) {
         if (icon->first.rfind(iconPrefix, 0) == 0) {
+            std::error_code ec;
+            std::filesystem::remove(IconPath(icon->first), ec);
             icon = iconPool_.erase(icon);
             changed = true;
         } else {

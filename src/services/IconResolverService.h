@@ -46,6 +46,13 @@ enum class IconFallbackKind {
     System,
 };
 
+enum class IconCacheMode {
+    PreferCache,
+    Refresh,
+    Bypass,
+    Disabled,
+};
+
 struct IconRequest {
     IconSourceKind kind = IconSourceKind::Stock;
     int size = 32;
@@ -57,6 +64,7 @@ struct IconRequest {
     IconFallbackKind fallbackKind = IconFallbackKind::Application;
     bool allowFallback = true;
     bool preferFallbackForGenericHost = false;
+    IconCacheMode cacheMode = IconCacheMode::PreferCache;
 };
 
 struct ResolvedIcon {
@@ -70,7 +78,9 @@ struct ResolvedIcon {
 
 class IconResolverService {
 public:
-    explicit IconResolverService(std::filesystem::path appDirectory = {});
+    explicit IconResolverService(
+        std::filesystem::path appDirectory = {},
+        std::filesystem::path cacheDirectory = {});
 
     ResolvedIcon Resolve(const IconRequest& request, std::stop_token stopToken = {}) const;
     ResolvedIcon ResolveContextMenuProvider(
@@ -85,6 +95,14 @@ public:
     static IconRequest ForPidl(std::vector<std::uint8_t> pidl, int size = 32);
     static IconRequest ForContextMenuProvider(std::wstring providerId, int size = 32);
     static bool HasPixels(const ResolvedIcon& icon);
+    static std::filesystem::path DefaultCacheDirectory(const std::filesystem::path& appDirectory = {});
+    static bool SavePngIcon(const ResolvedIcon& icon, const std::filesystem::path& path);
+    static ResolvedIcon LoadPngIconFile(
+        const std::filesystem::path& path,
+        const std::wstring& source = L"disk-cache");
+    static bool ClearDiskCache(
+        const std::filesystem::path& appDirectory = {},
+        const std::filesystem::path& cacheDirectory = {});
     static HBITMAP CreateBitmapFromPixels(
         const ResolvedIcon& icon,
         int targetSize,
@@ -116,6 +134,9 @@ private:
     HICON ResolveStockIcon(SHSTOCKICONID iconId, std::wstring& source) const;
     HICON ResolveFallbackIcon(IconFallbackKind kind, SHSTOCKICONID stockIcon, std::wstring& source) const;
     ResolvedIcon CaptureIcon(HICON icon, int size, int quality, const std::wstring& source) const;
+    std::filesystem::path CacheRoot() const;
+    std::filesystem::path CachePathForRequest(const IconRequest& request, int size) const;
 
     std::filesystem::path appDirectory_;
+    std::filesystem::path cacheDirectory_;
 };

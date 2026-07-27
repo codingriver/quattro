@@ -61,6 +61,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <numeric>
 #include <thread>
 #include <unordered_set>
@@ -1984,6 +1985,121 @@ int wmain() {
         Check(
             IconResolverService::HasPixels(linkIcon),
             "Public icon resolver returns link icon pixels");
+    }
+    {
+        const std::filesystem::path cacheTestRoot = std::filesystem::temp_directory_path() /
+            (L"quattro_icon_resolver_cache_" + std::to_wstring(GetCurrentProcessId()));
+        std::filesystem::remove_all(cacheTestRoot, ec);
+        const std::filesystem::path appRoot = cacheTestRoot / L"app";
+        const std::filesystem::path cacheRoot = cacheTestRoot / L"cache" / L"icons";
+        IconResolverService resolver(appRoot, cacheRoot);
+        const auto pngFiles = [](const std::filesystem::path& root) {
+            std::vector<std::filesystem::path> files;
+            std::error_code error;
+            if (!std::filesystem::exists(root, error)) {
+                return files;
+            }
+            for (const auto& entry : std::filesystem::recursive_directory_iterator(root, error)) {
+                if (entry.is_regular_file(error) && ToLower(entry.path().extension().wstring()) == L".png") {
+                    files.push_back(entry.path());
+                }
+            }
+            return files;
+        };
+
+        IconRequest cachedStock;
+        cachedStock.kind = IconSourceKind::Stock;
+        cachedStock.size = 24;
+        const ResolvedIcon firstStock = resolver.Resolve(cachedStock);
+        const auto firstFiles = pngFiles(cacheRoot);
+        const ResolvedIcon secondStock = resolver.Resolve(cachedStock);
+        Check(
+            IconResolverService::HasPixels(firstStock) &&
+                IconResolverService::HasPixels(secondStock) &&
+                secondStock.source.rfind(L"disk-cache:", 0) == 0 &&
+                firstFiles.size() == 1,
+            "Public icon resolver stores and reuses one PNG cache file");
+
+        IconRequest cachedStockLarge = cachedStock;
+        cachedStockLarge.size = 32;
+        const ResolvedIcon largeStock = resolver.Resolve(cachedStockLarge);
+        Check(
+            IconResolverService::HasPixels(largeStock) &&
+                pngFiles(cacheRoot).size() == 2,
+            "Public icon resolver keeps different icon sizes in separate PNG files");
+
+        {
+            std::ofstream corrupt(firstFiles.front(), std::ios::binary | std::ios::trunc);
+            corrupt << "not a png";
+        }
+        IconRequest refreshedStock = cachedStock;
+        refreshedStock.cacheMode = IconCacheMode::Refresh;
+        const ResolvedIcon refreshed = resolver.Resolve(refreshedStock);
+        const ResolvedIcon afterRefresh = resolver.Resolve(cachedStock);
+        Check(
+            IconResolverService::HasPixels(refreshed) &&
+                IconResolverService::HasPixels(afterRefresh) &&
+                afterRefresh.source.rfind(L"disk-cache:", 0) == 0,
+            "Public icon resolver refresh bypasses and rewrites a damaged PNG cache file");
+
+        ResolvedIcon tinyIcon;
+        tinyIcon.ok = true;
+        tinyIcon.width = 2;
+        tinyIcon.height = 2;
+        tinyIcon.quality = 9;
+        tinyIcon.pixels = {0xFFFF0000u, 0xFF00FF00u, 0xFF0000FFu, 0xFFFFFFFFu};
+        const std::filesystem::path sourcePng = cacheTestRoot / L"source.png";
+        Check(IconResolverService::SavePngIcon(tinyIcon, sourcePng), "Icon resolver writes a PNG source fixture");
+        std::ifstream pngInput(sourcePng, std::ios::binary);
+        std::vector<char> pngBytes((std::istreambuf_iterator<char>(pngInput)), std::istreambuf_iterator<char>());
+        const std::filesystem::path icoPath = appRoot / L"icons" / L"url" / L"example.test.ico";
+        std::filesystem::create_directories(icoPath.parent_path(), ec);
+        {
+            std::ofstream ico(icoPath, std::ios::binary | std::ios::trunc);
+            const auto write16 = [&](std::uint16_t value) {
+                const char bytes[2] = {
+                    static_cast<char>(value & 0xFFu),
+                    static_cast<char>((value >> 8) & 0xFFu)};
+                ico.write(bytes, 2);
+            };
+            const auto write32 = [&](std::uint32_t value) {
+                const char bytes[4] = {
+                    static_cast<char>(value & 0xFFu),
+                    static_cast<char>((value >> 8) & 0xFFu),
+                    static_cast<char>((value >> 16) & 0xFFu),
+                    static_cast<char>((value >> 24) & 0xFFu)};
+                ico.write(bytes, 4);
+            };
+            write16(0);
+            write16(1);
+            write16(1);
+            ico.put(static_cast<char>(2));
+            ico.put(static_cast<char>(2));
+            ico.put(static_cast<char>(0));
+            ico.put(static_cast<char>(0));
+            write16(1);
+            write16(32);
+            write32(static_cast<std::uint32_t>(pngBytes.size()));
+            write32(22);
+            ico.write(pngBytes.data(), static_cast<std::streamsize>(pngBytes.size()));
+        }
+        Link urlLink;
+        urlLink.name = L"example";
+        urlLink.path = L"https://example.test/path";
+        urlLink.type = 2;
+        const std::size_t beforeUrlCache = pngFiles(cacheRoot).size();
+        const ResolvedIcon urlIcon = resolver.Resolve(IconResolverService::ForLink(urlLink, 16));
+        const auto afterUrlFiles = pngFiles(cacheRoot);
+        const bool cacheContainsIco = std::any_of(
+            afterUrlFiles.begin(),
+            afterUrlFiles.end(),
+            [](const auto& path) { return ToLower(path.extension().wstring()) == L".ico"; });
+        Check(
+            IconResolverService::HasPixels(urlIcon) &&
+                afterUrlFiles.size() == beforeUrlCache + 1 &&
+                !cacheContainsIco,
+            "Public icon resolver accepts ICO input and caches the resolved icon as PNG");
+        std::filesystem::remove_all(cacheTestRoot, ec);
     }
     {
         const std::filesystem::path importRoot = std::filesystem::temp_directory_path() /

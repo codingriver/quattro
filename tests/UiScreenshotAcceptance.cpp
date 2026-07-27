@@ -6135,7 +6135,7 @@ int wmain() {
         {L"链接", {L"目录命令", L"公共链接", L"打开目录命令", L"帮助链接", L"更新链接", L"FAQ 链接"}},
         {L"WebDAV", {L"WebDAV 备份", L"启用 WebDAV 备份", L"服务器地址", L"用户名", L"备份目录", L"保留数量", L"文件目录", L"/Quattro/backups/", L"/Quattro/files/", L"打开文件管理", L"注册“上传到 WebDAV”右键菜单", L"测试连接", L"上传到云端"}},
         {L"HTTP", {L"服务配置", L"运行控制", L"高级配置", L"配置目录"}},
-        {L"备份", {L"配置包", L"导出配置包", L"待办事项", L"含已完成"}},
+        {L"备份", {L"配置包", L"导出配置包", L"待办事项", L"合并导入", L"全量导入", L"含已完成"}},
     };
     for (const auto& [page, expected] : settingsPages) {
         Scenario settingsScenario{

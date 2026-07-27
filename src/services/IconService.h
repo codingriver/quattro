@@ -24,14 +24,8 @@ public:
     bool ApplyPreparedRefresh(const Link& link, ResolvedIcon icon);
 
 private:
-    ID2D1Bitmap* LoadBitmapFile(ID2D1RenderTarget* renderTarget, const std::filesystem::path& path) const;
-    bool SaveIconPng(HICON icon, const std::filesystem::path& path) const;
-    bool SaveResolvedIconPng(const ResolvedIcon& icon, const std::filesystem::path& path) const;
     bool CreateBitmapFromResolvedIcon(ID2D1RenderTarget* renderTarget, const ResolvedIcon& icon, ID2D1Bitmap** bitmap) const;
-    std::filesystem::path FindUrlIconFile(const Link& link) const;
-    bool CreateBitmapFromIcon(ID2D1RenderTarget* renderTarget, HICON icon, ID2D1Bitmap** bitmap) const;
     std::wstring CacheKey(const Link& link) const;
-    std::filesystem::path CachePath(const Link& link) const;
 
     std::filesystem::path appDirectory_;
     IWICImagingFactory* wicFactory_ = nullptr;

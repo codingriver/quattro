@@ -535,6 +535,7 @@ target_compile_options(AppLaunchLocker PRIVATE
 target_link_libraries(AppLaunchLocker PRIVATE
     AppLaunchLockerCore
     QuattroThemedUi
+    bcrypt
     windowscodecs
 )
 
@@ -611,6 +612,7 @@ add_executable(Quattro WIN32
     src/services/StartupService.cpp
     src/services/Storage.cpp
     src/services/SystemFunctions.cpp
+    src/services/TodoJsonBackupService.cpp
     src/windows/TodoEditDialog.cpp
     src/domain/TodoSchedule.cpp
     src/services/UpdateCheckService.cpp
@@ -698,6 +700,7 @@ add_executable(QuattroTests
     src/services/UrlIconDownloadService.cpp
     src/services/Storage.cpp
     src/services/SystemFunctions.cpp
+    src/services/TodoJsonBackupService.cpp
     src/domain/TodoSchedule.cpp
     src/services/UpdateCheckService.cpp
     src/services/WebDavBackupService.cpp
@@ -797,6 +800,7 @@ add_executable(QuattroUiScreenshotAcceptance
     src/windows/SimpleDialogs.cpp
     src/services/Storage.cpp
     src/services/SystemFunctions.cpp
+    src/services/TodoJsonBackupService.cpp
     src/windows/TodoEditDialog.cpp
     src/domain/TodoSchedule.cpp
     src/windows/UpdateCheckDialog.cpp
@@ -1190,6 +1194,10 @@ add_executable(QuattroTodoBackupJsonCompatibility
     tests/TodoBackupJsonCompatibility.cpp
     src/common/JsonValue.cpp
     src/common/Utilities.cpp
+    src/common/AppLog.cpp
+    src/services/Storage.cpp
+    src/services/TodoJsonBackupService.cpp
+    src/domain/TodoSchedule.cpp
 )
 
 target_compile_definitions(QuattroTodoBackupJsonCompatibility PRIVATE
@@ -1206,6 +1214,12 @@ target_compile_options(QuattroTodoBackupJsonCompatibility PRIVATE
 
 target_include_directories(QuattroTodoBackupJsonCompatibility PRIVATE
     src
+)
+
+target_link_libraries(QuattroTodoBackupJsonCompatibility PRIVATE
+    sqlite3
+    ccronexpr
+    ole32
 )
 endif()
 
@@ -1340,6 +1354,7 @@ add_executable(QuattroSettingsHttpButtonsAcceptance
     src/windows/SimpleDialogs.cpp
     src/services/Storage.cpp
     src/services/SystemFunctions.cpp
+    src/services/TodoJsonBackupService.cpp
     src/windows/TodoEditDialog.cpp
     src/domain/TodoSchedule.cpp
     src/windows/UpdateCheckDialog.cpp
