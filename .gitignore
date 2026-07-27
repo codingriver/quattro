@@ -19,13 +19,7 @@
 !/icons/menu/tabler/
 !/icons/menu/tabler/**
 /docs/*
-!/docs/Quattro/
 /docs/Quattro/*
-!/docs/Quattro/00-文档索引.md
-!/docs/Quattro/公共层D2D-DWrite渲染架构.md
-!/docs/Quattro/AppLaunchLocker自启动治理开发方案.md
-!/docs/Quattro/AppLaunchLocker新版自启动管理与独立应用完整方案.md
-!/docs/Quattro/后台测试验收实施说明.md
 
 /screenshots/*
 !/screenshots/list-view-demo.png
@@ -81,11 +75,6 @@
 *.tmp
 *.temp
 
-
-/tools/run-tests.ps1
-/tools/run-*-tests.ps1
-/tools/run-ui-smoke.ps1
-/tools/run-note-todo-acceptance.ps1
 
 # Local tool caches
 /.claude/settings.local.json
