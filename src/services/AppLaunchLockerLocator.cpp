@@ -5,6 +5,9 @@
 #include <wintrust.h>
 
 #include <array>
+#include <cstdint>
+#include <cstring>
+#include <fstream>
 #include <memory>
 
 namespace {
@@ -70,6 +73,146 @@ bool VerifyAuthenticode(const std::filesystem::path& path) {
     WinVerifyTrust(static_cast<HWND>(INVALID_HANDLE_VALUE), &action, &data);
     return status == ERROR_SUCCESS;
 }
+
+bool SameFileContent(const std::filesystem::path& first, const std::filesystem::path& second) {
+    std::error_code fileError;
+    if (!std::filesystem::is_regular_file(first, fileError) || fileError ||
+        !std::filesystem::is_regular_file(second, fileError) || fileError) {
+        return false;
+    }
+
+    const std::uintmax_t firstSize = std::filesystem::file_size(first, fileError);
+    if (fileError) {
+        return false;
+    }
+    const std::uintmax_t secondSize = std::filesystem::file_size(second, fileError);
+    if (fileError || firstSize != secondSize) {
+        return false;
+    }
+
+    std::ifstream firstStream(first, std::ios::binary);
+    std::ifstream secondStream(second, std::ios::binary);
+    if (!firstStream || !secondStream) {
+        return false;
+    }
+
+    std::array<char, 64 * 1024> firstBuffer{};
+    std::array<char, 64 * 1024> secondBuffer{};
+    do {
+        firstStream.read(firstBuffer.data(), static_cast<std::streamsize>(firstBuffer.size()));
+        secondStream.read(secondBuffer.data(), static_cast<std::streamsize>(secondBuffer.size()));
+        const std::streamsize firstRead = firstStream.gcount();
+        const std::streamsize secondRead = secondStream.gcount();
+        if (firstRead != secondRead) {
+            return false;
+        }
+        if (firstRead > 0 &&
+            std::memcmp(firstBuffer.data(), secondBuffer.data(), static_cast<std::size_t>(firstRead)) != 0) {
+            return false;
+        }
+    } while (firstStream || secondStream);
+
+    return firstStream.eof() && secondStream.eof();
+}
+
+bool DeployRuntimeFileIfChanged(
+    const std::filesystem::path& source,
+    const std::filesystem::path& target,
+    const std::wstring& missingMessage,
+    const std::wstring& deployFailureMessage,
+    std::wstring& error) {
+    std::error_code fileError;
+    if (!std::filesystem::is_regular_file(source, fileError) || fileError) {
+        error = missingMessage;
+        return false;
+    }
+    if (SameFileContent(source, target)) {
+        return true;
+    }
+
+    std::filesystem::create_directories(target.parent_path(), fileError);
+    if (fileError) {
+        error = L"无法创建自启动管理资源目录。";
+        return false;
+    }
+
+    const std::filesystem::path temporary = target.parent_path() /
+        (target.filename().wstring() +
+         L".quattro-" + std::to_wstring(GetCurrentProcessId()) +
+         L"-" + std::to_wstring(GetTickCount64()) + L".tmp");
+    std::filesystem::remove(temporary, fileError);
+    fileError.clear();
+    std::filesystem::copy_file(source, temporary, std::filesystem::copy_options::overwrite_existing, fileError);
+    if (fileError) {
+        std::filesystem::remove(temporary, fileError);
+        error = deployFailureMessage;
+        return false;
+    }
+    if (!MoveFileExW(temporary.c_str(), target.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        std::filesystem::remove(temporary, fileError);
+        error = deployFailureMessage;
+        return false;
+    }
+    return true;
+}
+
+bool DeployRuntimeDirectoryFilesIfChanged(
+    const std::filesystem::path& sourceDirectory,
+    const std::filesystem::path& targetDirectory,
+    const std::wstring& failureMessage,
+    std::wstring& error) {
+    std::error_code fileError;
+    if (!std::filesystem::is_directory(sourceDirectory, fileError) || fileError) {
+        return true;
+    }
+
+    std::filesystem::create_directories(targetDirectory, fileError);
+    if (fileError) {
+        error = L"无法创建自启动管理资源目录。";
+        return false;
+    }
+
+    std::filesystem::recursive_directory_iterator iterator(sourceDirectory, fileError);
+    if (fileError) {
+        error = failureMessage;
+        return false;
+    }
+    const std::filesystem::recursive_directory_iterator end;
+    for (; iterator != end; iterator.increment(fileError)) {
+        if (fileError) {
+            error = failureMessage;
+            return false;
+        }
+        std::error_code entryError;
+        if (!iterator->is_regular_file(entryError)) {
+            if (entryError) {
+                error = failureMessage;
+                return false;
+            }
+            continue;
+        }
+        const std::filesystem::path relative = iterator->path().lexically_relative(sourceDirectory);
+        if (relative.empty()) {
+            error = failureMessage;
+            return false;
+        }
+        bool unsafeRelativePath = false;
+        for (const auto& part : relative) {
+            if (part == L"..") {
+                unsafeRelativePath = true;
+                break;
+            }
+        }
+        if (unsafeRelativePath) {
+            error = failureMessage;
+            return false;
+        }
+        if (!DeployRuntimeFileIfChanged(iterator->path(), targetDirectory / relative, failureMessage, failureMessage, error)) {
+            return false;
+        }
+    }
+    return true;
+}
 }
 
 AppLaunchLockerLocationResult FindInstalledAppLaunchLocker(int requiredProtocolVersion) {
@@ -104,35 +247,17 @@ bool PrepareAppLaunchLockerRuntimeResources(
     const std::filesystem::path targetRoot = executablePath.parent_path();
     const std::filesystem::path sourceFont = sourceRoot / L"icons/menu/tabler/tabler-icons.ttf";
     const std::filesystem::path targetFont = targetRoot / L"icons/menu/tabler/tabler-icons.ttf";
-    std::error_code fileError;
-    if (!std::filesystem::is_regular_file(sourceFont, fileError)) {
-        error = L"自启动管理组件缺少 Tabler 图标字体。";
-        return false;
-    }
-    std::filesystem::create_directories(targetFont.parent_path(), fileError);
-    if (fileError) {
-        error = L"无法创建自启动管理字体目录。";
-        return false;
-    }
-    std::filesystem::copy_file(sourceFont, targetFont,
-        std::filesystem::copy_options::overwrite_existing, fileError);
-    if (fileError) {
-        error = L"无法部署自启动管理图标字体。";
+    if (!DeployRuntimeFileIfChanged(
+            sourceFont,
+            targetFont,
+            L"自启动管理组件缺少 Tabler 图标字体。",
+            L"无法部署自启动管理图标字体。",
+            error)) {
         return false;
     }
     const std::filesystem::path sourceTheme = sourceRoot / L"theme";
-    if (std::filesystem::is_directory(sourceTheme, fileError)) {
-        fileError.clear();
-        std::filesystem::create_directories(targetRoot / L"theme", fileError);
-        if (!fileError) {
-            std::filesystem::copy(sourceTheme, targetRoot / L"theme",
-                std::filesystem::copy_options::recursive | std::filesystem::copy_options::overwrite_existing,
-                fileError);
-        }
-        if (fileError) {
-            error = L"无法部署自启动管理主题资源。";
-            return false;
-        }
+    if (!DeployRuntimeDirectoryFilesIfChanged(sourceTheme, targetRoot / L"theme", L"无法部署自启动管理主题资源。", error)) {
+        return false;
     }
     return true;
 }

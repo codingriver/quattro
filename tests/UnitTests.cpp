@@ -16,6 +16,7 @@
 #include "../src/services/IconResolverService.h"
 #include "../src/services/Launcher.h"
 #include "../src/services/LinkResourceRefreshService.h"
+#include "../src/services/AppLaunchLockerLocator.h"
 #include "../src/services/QuickImportService.h"
 #include "../src/services/ScanExecutionService.h"
 #include "../src/services/TaskExecutionService.h"
@@ -928,6 +929,71 @@ int wmain() {
         invalid.id = L"..";
         Check(!PrepareEmbeddedExecutable(invalid, {embeddedRoot}).success,
             "Embedded executable rejects unsafe path components");
+    }
+    {
+        const std::filesystem::path runtimeRoot = unitUserConfigRoot / L"app-launch-locker-runtime-test";
+        const std::filesystem::path sourceRoot = runtimeRoot / L"source";
+        const std::filesystem::path targetV1 = runtimeRoot / L"target" / L"app-launch-locker" / L"1.0.0";
+        const std::filesystem::path targetV2 = runtimeRoot / L"target" / L"app-launch-locker" / L"2.0.0";
+        const std::filesystem::path sourceFont = sourceRoot / L"icons" / L"menu" / L"tabler" / L"tabler-icons.ttf";
+        const std::filesystem::path sourceTheme = sourceRoot / L"theme" / L"default.xml";
+        const std::filesystem::path targetFontV1 = targetV1 / L"icons" / L"menu" / L"tabler" / L"tabler-icons.ttf";
+        const std::filesystem::path targetThemeV1 = targetV1 / L"theme" / L"default.xml";
+        const std::filesystem::path targetFontV2 = targetV2 / L"icons" / L"menu" / L"tabler" / L"tabler-icons.ttf";
+        std::filesystem::remove_all(runtimeRoot, ec);
+        std::filesystem::create_directories(sourceFont.parent_path(), ec);
+        std::filesystem::create_directories(sourceTheme.parent_path(), ec);
+        {
+            std::ofstream font(sourceFont, std::ios::binary | std::ios::trunc);
+            font << "font-v1";
+        }
+        {
+            std::ofstream theme(sourceTheme, std::ios::binary | std::ios::trunc);
+            theme << "theme-v1";
+        }
+        std::wstring runtimeError;
+        Check(PrepareAppLaunchLockerRuntimeResources(targetV1 / L"AppLaunchLocker.exe", sourceRoot, runtimeError),
+            "AppLaunchLocker runtime resources deploy from released app directory");
+        Check(LoadUtf8File(targetFontV1) == L"font-v1", "AppLaunchLocker runtime deploys Tabler font");
+        Check(LoadUtf8File(targetThemeV1) == L"theme-v1", "AppLaunchLocker runtime deploys theme resources");
+        HANDLE lockedFont = CreateFileW(
+            targetFontV1.c_str(),
+            GENERIC_READ,
+            FILE_SHARE_READ,
+            nullptr,
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+            nullptr);
+        Check(lockedFont != INVALID_HANDLE_VALUE, "AppLaunchLocker runtime test locks deployed font");
+        runtimeError.clear();
+        Check(PrepareAppLaunchLockerRuntimeResources(targetV1 / L"AppLaunchLocker.exe", sourceRoot, runtimeError),
+            "AppLaunchLocker runtime resources skip already matching locked files");
+        if (lockedFont != INVALID_HANDLE_VALUE) {
+            CloseHandle(lockedFont);
+        }
+        {
+            std::ofstream font(sourceFont, std::ios::binary | std::ios::trunc);
+            font << "font-v2";
+        }
+        {
+            std::ofstream theme(sourceTheme, std::ios::binary | std::ios::trunc);
+            theme << "theme-v2";
+        }
+        runtimeError.clear();
+        Check(PrepareAppLaunchLockerRuntimeResources(targetV1 / L"AppLaunchLocker.exe", sourceRoot, runtimeError),
+            "AppLaunchLocker runtime resources update changed files in same version directory");
+        Check(LoadUtf8File(targetFontV1) == L"font-v2", "AppLaunchLocker runtime updates Tabler font content");
+        Check(LoadUtf8File(targetThemeV1) == L"theme-v2", "AppLaunchLocker runtime updates theme content");
+        runtimeError.clear();
+        Check(PrepareAppLaunchLockerRuntimeResources(targetV2 / L"AppLaunchLocker.exe", sourceRoot, runtimeError),
+            "AppLaunchLocker runtime resources deploy into new version directory");
+        Check(LoadUtf8File(targetFontV2) == L"font-v2", "AppLaunchLocker runtime carries latest font to new version");
+        std::filesystem::remove(sourceFont, ec);
+        runtimeError.clear();
+        Check(!PrepareAppLaunchLockerRuntimeResources(targetV2 / L"AppLaunchLocker.exe", sourceRoot, runtimeError) &&
+                  runtimeError == L"自启动管理组件缺少 Tabler 图标字体。",
+            "AppLaunchLocker runtime reports missing Tabler font from released resources");
+        std::filesystem::remove_all(runtimeRoot, ec);
     }
     {
         ThemedMenuFontCache menuFont;

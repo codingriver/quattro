@@ -676,6 +676,7 @@ add_executable(QuattroTests
     src/domain/Config.cpp
     src/domain/TrackedContextMenuProviders.cpp
     src/services/ConfigPackageService.cpp
+    src/services/AppLaunchLockerLocator.cpp
     src/services/ContextMenuProviderIconService.cpp
     src/services/ExplorerCopyPathContextMenuService.cpp
     src/services/ExplorerWebDavUploadContextMenuService.cpp
@@ -1043,6 +1044,8 @@ target_link_libraries(QuattroTests PRIVATE
     uuid
     user32
     wininet
+    wintrust
+    crypt32
     windowscodecs
 )
 

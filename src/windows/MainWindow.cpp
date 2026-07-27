@@ -5406,7 +5406,7 @@ void MainWindow::OpenBuiltinTool(std::size_t index) {
 }
 
 void MainWindow::OpenBuiltinToolEngine(const std::wstring& engine, bool locateProcessOnOpen) {
-    const auto prepareAppLaunchLocker = []() {
+    const auto prepareAppLaunchLocker = [this]() {
         const AppLaunchLockerLocationResult installed = FindInstalledAppLaunchLocker(1);
         if (installed.found) {
             WriteAppLog(installed.message + L" path=\"" + installed.path.wstring() + L"\"");
@@ -5417,7 +5417,7 @@ void MainWindow::OpenBuiltinToolEngine(const std::wstring& engine, bool locatePr
             PrepareEmbeddedExecutable(L"app-launch-locker", {QuattroEmbeddedExecutableRootDirectory()});
         if (prepared.success) {
             std::wstring resourceError;
-            if (!PrepareAppLaunchLockerRuntimeResources(prepared.path, GetModuleDirectory(), resourceError)) {
+            if (!PrepareAppLaunchLockerRuntimeResources(prepared.path, appDirectory_, resourceError)) {
                 prepared.success = false;
                 prepared.message = resourceError;
             }
