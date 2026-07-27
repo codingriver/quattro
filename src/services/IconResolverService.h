@@ -25,6 +25,25 @@ enum class IconSourceKind {
     CommandLine,
     ContextMenuProvider,
     Stock,
+    DefaultCategory,
+};
+
+enum class IconFallbackKind {
+    Application,
+    File,
+    Directory,
+    Url,
+    Registry,
+    StartupFolder,
+    ScheduledTask,
+    Service,
+    Driver,
+    ActiveSetup,
+    Wmi,
+    Login,
+    Dll,
+    ShellExtension,
+    System,
 };
 
 struct IconRequest {
@@ -35,7 +54,9 @@ struct IconRequest {
     std::vector<std::uint8_t> pidl;
     std::wstring providerId;
     SHSTOCKICONID stockIcon = SIID_APPLICATION;
+    IconFallbackKind fallbackKind = IconFallbackKind::Application;
     bool allowFallback = true;
+    bool preferFallbackForGenericHost = false;
 };
 
 struct ResolvedIcon {
@@ -88,11 +109,12 @@ private:
     HICON ResolveProviderIcon(const std::wstring& providerId, std::wstring& source) const;
     HICON ResolveProviderIcon(const TrackedContextMenuProviderBinding& binding, std::wstring& source) const;
     HICON ResolveIconLocation(const std::wstring& value, std::wstring& source) const;
-    HICON ResolveCommandIcon(const std::wstring& command, std::wstring& source) const;
+    HICON ResolveCommandIcon(const IconRequest& request, std::wstring& source) const;
     HICON ResolveFileIcon(const std::wstring& value, bool directory, std::wstring& source) const;
     HICON ResolvePidlIcon(const std::vector<std::uint8_t>& pidl, std::wstring& source) const;
     HICON ResolveShellParseNameIcon(const std::wstring& value, std::wstring& source) const;
     HICON ResolveStockIcon(SHSTOCKICONID iconId, std::wstring& source) const;
+    HICON ResolveFallbackIcon(IconFallbackKind kind, SHSTOCKICONID stockIcon, std::wstring& source) const;
     ResolvedIcon CaptureIcon(HICON icon, int size, int quality, const std::wstring& source) const;
 
     std::filesystem::path appDirectory_;

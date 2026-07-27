@@ -1929,6 +1929,53 @@ int wmain() {
             IconResolverService::HasPixels(commandIcon),
             "Public icon resolver returns command-line icon pixels");
 
+        const std::filesystem::path spacedRoot = std::filesystem::temp_directory_path() /
+            (L"quattro icon resolver " + std::to_wstring(GetCurrentProcessId()));
+        std::filesystem::remove_all(spacedRoot, ec);
+        std::filesystem::create_directories(spacedRoot, ec);
+        const std::filesystem::path spacedExecutable = spacedRoot / L"tool with spaces.exe";
+        {
+            std::ofstream executable(spacedExecutable, std::ios::binary | std::ios::trunc);
+            executable << "MZ";
+        }
+        IconRequest spacedCommandRequest;
+        spacedCommandRequest.kind = IconSourceKind::CommandLine;
+        spacedCommandRequest.size = 16;
+        spacedCommandRequest.value = spacedExecutable.wstring() + L" /background";
+        spacedCommandRequest.fallbackKind = IconFallbackKind::ScheduledTask;
+        const ResolvedIcon spacedCommandIcon = resolver.Resolve(spacedCommandRequest);
+        Check(
+            IconResolverService::HasPixels(spacedCommandIcon),
+            "Public icon resolver handles unquoted command paths containing spaces and arguments");
+        spacedCommandRequest.value = spacedExecutable.wstring();
+        const ResolvedIcon spacedPathOnlyIcon = resolver.Resolve(spacedCommandRequest);
+        Check(
+            IconResolverService::HasPixels(spacedPathOnlyIcon),
+            "Public icon resolver handles unquoted command paths containing spaces without arguments");
+        std::filesystem::remove_all(spacedRoot, ec);
+
+        IconRequest serviceHostRequest;
+        serviceHostRequest.kind = IconSourceKind::CommandLine;
+        serviceHostRequest.size = 16;
+        serviceHostRequest.value = L"%SystemRoot%\\System32\\svchost.exe -k netsvcs";
+        serviceHostRequest.fallbackKind = IconFallbackKind::Service;
+        serviceHostRequest.preferFallbackForGenericHost = true;
+        const ResolvedIcon serviceHostIcon = resolver.Resolve(serviceHostRequest);
+        Check(
+            IconResolverService::HasPixels(serviceHostIcon) &&
+                serviceHostIcon.source.find(L"service") != std::wstring::npos,
+            "Public icon resolver uses semantic service fallback for generic host commands");
+
+        IconRequest defaultTaskRequest;
+        defaultTaskRequest.kind = IconSourceKind::DefaultCategory;
+        defaultTaskRequest.size = 16;
+        defaultTaskRequest.fallbackKind = IconFallbackKind::ScheduledTask;
+        const ResolvedIcon defaultTaskIcon = resolver.Resolve(defaultTaskRequest);
+        Check(
+            IconResolverService::HasPixels(defaultTaskIcon) &&
+                defaultTaskIcon.source.find(L"scheduled-task") != std::wstring::npos,
+            "Public icon resolver returns a semantic default icon for scheduled tasks");
+
         Link fileLink;
         fileLink.name = L"cmd";
         fileLink.path = L"C:\\Windows\\System32\\cmd.exe";

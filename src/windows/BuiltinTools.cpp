@@ -947,7 +947,7 @@ private:
         const int row2 = row1 + rowStep;
         const int row3 = row2 + rowStep;
 
-        MakeUi().Label(L"坐标（x，y）", left, row0 + labelOffsetY, layout.labelWidth);
+        MakeUi().Label(L"坐标(X,Y)", left, row0 + labelOffsetY, layout.labelWidth);
         coord_ = CreateEdit(ID_CLICK_COORD, fieldX, row0, 100, savedX + L", " + savedY);
         MakeUi().Button(ID_CLICK_PICK, L"拾取(&P)", fieldX + 100 + layout.controlGapX, row0 + 1, ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, layout.footerButtonWidth);
 

@@ -271,6 +271,53 @@ void AppendDetailLine(std::wostringstream& text, const wchar_t* label, const std
     text << label << L"：" << EmptyAsNone(value) << L"\n";
 }
 
+IconFallbackKind IconFallbackKindForSource(StartupSourceType source) {
+    switch (source) {
+    case StartupSourceType::Registry: return IconFallbackKind::Registry;
+    case StartupSourceType::StartupFolder: return IconFallbackKind::StartupFolder;
+    case StartupSourceType::ScheduledTask: return IconFallbackKind::ScheduledTask;
+    case StartupSourceType::Service: return IconFallbackKind::Service;
+    case StartupSourceType::ActiveSetup: return IconFallbackKind::ActiveSetup;
+    case StartupSourceType::Driver: return IconFallbackKind::Driver;
+    case StartupSourceType::WmiSubscription: return IconFallbackKind::Wmi;
+    case StartupSourceType::Winlogon:
+    case StartupSourceType::WinlogonNotify: return IconFallbackKind::Login;
+    case StartupSourceType::AppInitDll:
+    case StartupSourceType::AppCertDll:
+    case StartupSourceType::KnownDll: return IconFallbackKind::Dll;
+    case StartupSourceType::ShellExtension: return IconFallbackKind::ShellExtension;
+    case StartupSourceType::BootExecute:
+    case StartupSourceType::Ifeo: return IconFallbackKind::System;
+    default: return IconFallbackKind::Application;
+    }
+}
+
+SHSTOCKICONID StockIconForSource(StartupSourceType source) {
+    if (source == StartupSourceType::Driver) return SIID_SHIELD;
+    if (source == StartupSourceType::StartupFolder) return SIID_FOLDER;
+    return SIID_APPLICATION;
+}
+
+bool PreferSemanticFallbackForSource(StartupSourceType source) {
+    switch (source) {
+    case StartupSourceType::ScheduledTask:
+    case StartupSourceType::Service:
+    case StartupSourceType::ActiveSetup:
+    case StartupSourceType::WmiSubscription:
+    case StartupSourceType::Winlogon:
+    case StartupSourceType::WinlogonNotify:
+    case StartupSourceType::AppInitDll:
+    case StartupSourceType::AppCertDll:
+    case StartupSourceType::BootExecute:
+    case StartupSourceType::KnownDll:
+    case StartupSourceType::ShellExtension:
+    case StartupSourceType::Ifeo:
+        return true;
+    default:
+        return false;
+    }
+}
+
 IconRequest IconRequestFromFields(
     const StartupSourceType source,
     const std::wstring& command,
@@ -279,7 +326,9 @@ IconRequest IconRequestFromFields(
     IconRequest request;
     request.size = size;
     request.allowFallback = true;
-    request.stockIcon = source == StartupSourceType::Driver ? SIID_SHIELD : SIID_APPLICATION;
+    request.stockIcon = StockIconForSource(source);
+    request.fallbackKind = IconFallbackKindForSource(source);
+    request.preferFallbackForGenericHost = PreferSemanticFallbackForSource(source);
 
     const std::wstring originalPath = MapField(original, L"originalPath");
     if (!originalPath.empty()) {
@@ -302,13 +351,27 @@ IconRequest IconRequestFromFields(
         return request;
     }
 
+    const std::wstring binaryPath = MapField(original, L"binaryPath");
+    if (!binaryPath.empty()) {
+        request.kind = IconSourceKind::CommandLine;
+        request.value = binaryPath;
+        return request;
+    }
+
+    const std::wstring actions = MapField(original, L"actions");
+    if (!actions.empty()) {
+        request.kind = IconSourceKind::CommandLine;
+        request.value = actions;
+        return request;
+    }
+
     if (!command.empty()) {
         request.kind = IconSourceKind::CommandLine;
         request.value = command;
         return request;
     }
 
-    request.kind = IconSourceKind::Stock;
+    request.kind = IconSourceKind::DefaultCategory;
     return request;
 }
 
@@ -464,13 +527,21 @@ bool ApplicationNeedsAdminForRestore(const StartupApplication& application) {
 }
 
 IconRequest IconRequestFromApplication(const StartupApplication& application, int size) {
+    StartupSourceType primarySource = StartupSourceType::Registry;
+    for (const StartupApplicationEntry& entry : application.entries) {
+        if (!EntryBelongsToApplicationPage(entry)) continue;
+        primarySource = entry.source;
+        break;
+    }
     if (!application.targetPath.empty()) {
         IconRequest request;
         request.kind = IconSourceKind::FilePath;
         request.value = application.targetPath;
         request.size = size;
         request.allowFallback = true;
-        request.stockIcon = SIID_APPLICATION;
+        request.stockIcon = StockIconForSource(primarySource);
+        request.fallbackKind = IconFallbackKindForSource(primarySource);
+        request.preferFallbackForGenericHost = PreferSemanticFallbackForSource(primarySource);
         return request;
     }
     for (const StartupApplicationEntry& entry : application.entries) {
@@ -480,7 +551,9 @@ IconRequest IconRequestFromApplication(const StartupApplication& application, in
     IconRequest request;
     request.size = size;
     request.allowFallback = true;
-    request.stockIcon = SIID_APPLICATION;
+    request.stockIcon = StockIconForSource(primarySource);
+    request.fallbackKind = IconFallbackKindForSource(primarySource);
+    request.kind = IconSourceKind::DefaultCategory;
     return request;
 }
 
@@ -662,6 +735,15 @@ std::wstring EntryStateText(const StartupItem& item) {
     return L"已启用";
 }
 
+int ActionColumnWidth(const ThemedUi& ui, std::initializer_list<std::wstring_view> candidateTexts) {
+    int width = ui.tableColumnWidth(candidateTexts);
+    for (const std::wstring_view text : candidateTexts) {
+        width = std::max(width, ui.buttonWidth(std::wstring(text),
+            ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Text));
+    }
+    return width + ui.scale(4);
+}
+
 std::vector<ThemedTableColumn> MainTableColumns(const ThemedUi& ui, AppLaunchLockerWindow::MainTab tab) {
     switch (tab) {
     case AppLaunchLockerWindow::MainTab::Services:
@@ -669,37 +751,37 @@ std::vector<ThemedTableColumn> MainTableColumns(const ThemedUi& ui, AppLaunchLoc
             {L"start", L"启动类型", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, ui.tableColumnWidth(L"延迟自动")},
             {L"running", L"运行状态", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, ui.tableColumnWidth(L"正在运行")},
             {L"state", L"状态", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, ui.tableColumnWidth(L"已禁用")},
-            {L"details", L"详情", ThemedTableColumnAlign::Center, ThemedTableColumnWidth::Fixed, ui.tableColumnWidth(L"详情")},
-            {L"operation", L"操作", ThemedTableColumnAlign::Center, ThemedTableColumnWidth::Fixed, ui.tableColumnWidth(L"改手动")}};
+            {L"details", L"详情", ThemedTableColumnAlign::Center, ThemedTableColumnWidth::Fixed, ActionColumnWidth(ui, {L"详情"})},
+            {L"operation", L"操作", ThemedTableColumnAlign::Center, ThemedTableColumnWidth::Fixed, ActionColumnWidth(ui, {L"改手动", L"禁用", L"恢复"})}};
     case AppLaunchLockerWindow::MainTab::ScheduledTasks:
         return {{L"task", L"任务", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Remaining},
             {L"trigger", L"触发器", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, ui.tableColumnWidth(L"会话变化（共 2 个触发器）")},
             {L"source", L"来源", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, ui.tableColumnWidth(L"计划任务")},
             {L"state", L"状态", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, ui.tableColumnWidth(L"已禁用")},
-            {L"details", L"详情", ThemedTableColumnAlign::Center, ThemedTableColumnWidth::Fixed, ui.tableColumnWidth(L"详情")},
-            {L"operation", L"操作", ThemedTableColumnAlign::Center, ThemedTableColumnWidth::Fixed, ui.tableColumnWidth(L"禁用")}};
+            {L"details", L"详情", ThemedTableColumnAlign::Center, ThemedTableColumnWidth::Fixed, ActionColumnWidth(ui, {L"详情"})},
+            {L"operation", L"操作", ThemedTableColumnAlign::Center, ThemedTableColumnWidth::Fixed, ActionColumnWidth(ui, {L"禁用", L"恢复"})}};
     case AppLaunchLockerWindow::MainTab::Drivers:
         return {{L"driver", L"驱动", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Remaining},
             {L"load", L"加载类型", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, ui.tableColumnWidth(L"System（系统加载）")},
             {L"running", L"运行状态", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, ui.tableColumnWidth(L"正在运行")},
             {L"state", L"状态", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, ui.tableColumnWidth(L"仅查看")},
-            {L"details", L"详情", ThemedTableColumnAlign::Center, ThemedTableColumnWidth::Fixed, ui.tableColumnWidth(L"详情")},
+            {L"details", L"详情", ThemedTableColumnAlign::Center, ThemedTableColumnWidth::Fixed, ActionColumnWidth(ui, {L"详情"})},
             {L"operation", L"操作", ThemedTableColumnAlign::Center, ThemedTableColumnWidth::Fixed, ui.tableColumnWidth(L"—")}};
     case AppLaunchLockerWindow::MainTab::Advanced:
         return {{L"name", L"名称", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Remaining},
             {L"source", L"来源", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, ui.tableColumnWidth(L"Shell 扩展")},
             {L"risk", L"风险摘要", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, ui.tableColumnWidth(L"系统高级启动来源")},
             {L"state", L"状态", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, ui.tableColumnWidth(L"仅查看")},
-            {L"details", L"详情", ThemedTableColumnAlign::Center, ThemedTableColumnWidth::Fixed, ui.tableColumnWidth(L"详情")},
+            {L"details", L"详情", ThemedTableColumnAlign::Center, ThemedTableColumnWidth::Fixed, ActionColumnWidth(ui, {L"详情"})},
             {L"operation", L"操作", ThemedTableColumnAlign::Center, ThemedTableColumnWidth::Fixed, ui.tableColumnWidth(L"—")}};
     case AppLaunchLockerWindow::MainTab::StartupItems:
     default:
         return {{L"name", L"应用", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Remaining},
             {L"source", L"入口来源", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, ui.tableColumnWidth(L"注册表 / 计划任务")},
-            {L"entry", L"入口", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, ui.tableColumnWidth(L"12 个")},
+            {L"entry", L"入口", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, ActionColumnWidth(ui, {L"12 个", L"166 个"})},
             {L"state", L"状态", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, ui.tableColumnWidth(L"部分禁用")},
-            {L"details", L"详情", ThemedTableColumnAlign::Center, ThemedTableColumnWidth::Fixed, ui.tableColumnWidth(L"详情")},
-            {L"operation", L"操作", ThemedTableColumnAlign::Center, ThemedTableColumnWidth::Fixed, ui.tableColumnWidth(L"改手动")}};
+            {L"details", L"详情", ThemedTableColumnAlign::Center, ThemedTableColumnWidth::Fixed, ActionColumnWidth(ui, {L"详情"})},
+            {L"operation", L"操作", ThemedTableColumnAlign::Center, ThemedTableColumnWidth::Fixed, ActionColumnWidth(ui, {L"改手动", L"禁用", L"恢复", L"管理"})}};
     }
 }
 

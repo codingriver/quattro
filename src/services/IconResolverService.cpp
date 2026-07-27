@@ -18,6 +18,7 @@
 #include <array>
 #include <cmath>
 #include <cstring>
+#include <cwctype>
 #include <system_error>
 
 #include <pugixml.hpp>
@@ -315,21 +316,59 @@ std::wstring RegistryString(HKEY root, const std::wstring& subkey, const wchar_t
     return ExpandEnvironmentStringsSafe(Trim(value));
 }
 
+std::wstring ResolveExecutablePath(std::wstring path);
+std::wstring ExistingExecutableCandidate(const std::wstring& value);
+
 std::wstring ExecutableFromCommand(const std::wstring& command) {
-    if (Trim(command).empty()) {
+    std::wstring trimmed = ExpandEnvironmentStringsSafe(Trim(command));
+    if (trimmed.empty()) {
         return {};
     }
+
     int count = 0;
-    LPWSTR* arguments = CommandLineToArgvW(command.c_str(), &count);
-    if (!arguments || count <= 0) {
-        if (arguments) {
-            LocalFree(arguments);
-        }
-        return {};
+    LPWSTR* arguments = CommandLineToArgvW(trimmed.c_str(), &count);
+    std::wstring firstArgument;
+    if (arguments && count > 0) {
+        firstArgument = arguments[0];
     }
-    std::wstring executable = arguments[0];
-    LocalFree(arguments);
-    return ExpandEnvironmentStringsSafe(Trim(executable));
+    if (arguments) {
+        LocalFree(arguments);
+    }
+
+    if (!firstArgument.empty()) {
+        if (const std::wstring resolved = ExistingExecutableCandidate(firstArgument); !resolved.empty()) {
+            return resolved;
+        }
+    }
+
+    if (trimmed.front() == L'"') {
+        const std::size_t end = trimmed.find(L'"', 1);
+        if (end != std::wstring::npos) {
+            const std::wstring quoted = trimmed.substr(1, end - 1);
+            if (const std::wstring resolved = ExistingExecutableCandidate(quoted); !resolved.empty()) {
+                return resolved;
+            }
+            return ExpandEnvironmentStringsSafe(Trim(quoted));
+        }
+    }
+
+    std::vector<std::wstring> candidates;
+    for (std::size_t index = 0; index < trimmed.size(); ++index) {
+        if (!std::iswspace(trimmed[index])) continue;
+        std::wstring candidate = Trim(trimmed.substr(0, index));
+        if (!candidate.empty()) candidates.push_back(std::move(candidate));
+    }
+    if (candidates.empty()) {
+        candidates.push_back(trimmed);
+    } else if (std::find(candidates.begin(), candidates.end(), trimmed) == candidates.end()) {
+        candidates.push_back(trimmed);
+    }
+    for (const std::wstring& candidate : candidates) {
+        if (const std::wstring resolved = ExistingExecutableCandidate(candidate); !resolved.empty()) {
+            return resolved;
+        }
+    }
+    return ExpandEnvironmentStringsSafe(Trim(firstArgument.empty() ? candidates.front() : firstArgument));
 }
 
 bool ParseIconLocation(std::wstring value, std::wstring& path, int& index) {
@@ -360,6 +399,19 @@ std::wstring ResolveExecutablePath(std::wstring path) {
     path = ExpandEnvironmentStringsSafe(Trim(path));
     if (path.empty()) {
         return {};
+    }
+    const std::wstring lowerPath = ToLower(path);
+    if (lowerPath.rfind(L"\\systemroot\\", 0) == 0 || lowerPath.rfind(L"systemroot\\", 0) == 0) {
+        wchar_t windows[MAX_PATH]{};
+        if (GetWindowsDirectoryW(windows, static_cast<UINT>(std::size(windows)))) {
+            const std::wstring suffix = path.substr(path.front() == L'\\' ? 12 : 11);
+            path = (std::filesystem::path(windows) / suffix).wstring();
+        }
+    } else if (lowerPath.rfind(L"system32\\", 0) == 0 || lowerPath.rfind(L"syswow64\\", 0) == 0) {
+        wchar_t windows[MAX_PATH]{};
+        if (GetWindowsDirectoryW(windows, static_cast<UINT>(std::size(windows)))) {
+            path = (std::filesystem::path(windows) / path).wstring();
+        }
     }
     std::error_code ec;
     if (std::filesystem::is_regular_file(path, ec)) {
@@ -401,6 +453,83 @@ std::optional<TrackedContextMenuProviderBinding> FindProvider(const std::wstring
 
 HICON DuplicateIconHandle(HICON icon) {
     return icon ? CopyIcon(icon) : nullptr;
+}
+
+std::wstring ExistingExecutableCandidate(const std::wstring& value) {
+    const std::wstring resolved = ResolveExecutablePath(value);
+    std::error_code ec;
+    return std::filesystem::is_regular_file(resolved, ec) ? resolved : std::wstring{};
+}
+
+std::wstring IconFallbackKindKey(IconFallbackKind kind) {
+    switch (kind) {
+    case IconFallbackKind::Application: return L"application";
+    case IconFallbackKind::File: return L"file";
+    case IconFallbackKind::Directory: return L"directory";
+    case IconFallbackKind::Url: return L"url";
+    case IconFallbackKind::Registry: return L"registry";
+    case IconFallbackKind::StartupFolder: return L"startup-folder";
+    case IconFallbackKind::ScheduledTask: return L"scheduled-task";
+    case IconFallbackKind::Service: return L"service";
+    case IconFallbackKind::Driver: return L"driver";
+    case IconFallbackKind::ActiveSetup: return L"active-setup";
+    case IconFallbackKind::Wmi: return L"wmi";
+    case IconFallbackKind::Login: return L"login";
+    case IconFallbackKind::Dll: return L"dll";
+    case IconFallbackKind::ShellExtension: return L"shell-extension";
+    case IconFallbackKind::System: return L"system";
+    default: return L"application";
+    }
+}
+
+TablerIconId FallbackTablerIcon(IconFallbackKind kind) {
+    switch (kind) {
+    case IconFallbackKind::File: return TablerIconId::File;
+    case IconFallbackKind::Directory:
+    case IconFallbackKind::StartupFolder: return TablerIconId::Folder;
+    case IconFallbackKind::Url: return TablerIconId::Url;
+    case IconFallbackKind::Registry: return TablerIconId::Windows;
+    case IconFallbackKind::ScheduledTask: return TablerIconId::Clock;
+    case IconFallbackKind::Service: return TablerIconId::Settings;
+    case IconFallbackKind::Driver: return TablerIconId::Shield;
+    case IconFallbackKind::ActiveSetup: return TablerIconId::Run;
+    case IconFallbackKind::Wmi:
+    case IconFallbackKind::System: return TablerIconId::System;
+    case IconFallbackKind::Login: return TablerIconId::User;
+    case IconFallbackKind::Dll: return TablerIconId::File;
+    case IconFallbackKind::ShellExtension: return TablerIconId::Tools;
+    case IconFallbackKind::Application:
+    default: return TablerIconId::Run;
+    }
+}
+
+COLORREF FallbackIconColor(IconFallbackKind kind) {
+    switch (kind) {
+    case IconFallbackKind::Driver: return RGB(37, 99, 235);
+    case IconFallbackKind::Service: return RGB(59, 130, 246);
+    case IconFallbackKind::ScheduledTask: return RGB(14, 165, 233);
+    case IconFallbackKind::Registry: return RGB(2, 132, 199);
+    case IconFallbackKind::StartupFolder: return RGB(217, 119, 6);
+    case IconFallbackKind::ActiveSetup: return RGB(22, 163, 74);
+    case IconFallbackKind::Wmi:
+    case IconFallbackKind::ShellExtension:
+    case IconFallbackKind::System: return RGB(75, 85, 99);
+    default: return RGB(31, 41, 55);
+    }
+}
+
+bool IsGenericHostExecutable(const std::wstring& executable) {
+    const std::wstring file = ToLower(std::filesystem::path(executable).filename().wstring());
+    return file == L"svchost.exe" || file == L"rundll32.exe" || file == L"regsvr32.exe" ||
+        file == L"cmd.exe" || file == L"powershell.exe" || file == L"pwsh.exe" ||
+        file == L"wscript.exe" || file == L"cscript.exe" || file == L"msiexec.exe" ||
+        file == L"sc.exe";
+}
+
+bool IsScriptLikeTarget(const std::wstring& executable) {
+    const std::wstring extension = ToLower(std::filesystem::path(executable).extension().wstring());
+    return extension == L".bat" || extension == L".cmd" || extension == L".ps1" ||
+        extension == L".vbs" || extension == L".js" || extension == L".wsf";
 }
 
 }
@@ -449,7 +578,7 @@ ResolvedIcon IconResolverService::Resolve(const IconRequest& request, std::stop_
     std::wstring source;
     HICON icon = ResolveIconHandle(request, source);
     if (!icon && request.allowFallback) {
-        icon = ResolveStockIcon(request.stockIcon, source);
+        icon = ResolveFallbackIcon(request.fallbackKind, request.stockIcon, source);
     }
     result = CaptureIcon(icon, size, 1, source);
     if (icon) {
@@ -699,11 +828,13 @@ HICON IconResolverService::ResolveIconHandle(const IconRequest& request, std::ws
     case IconSourceKind::IconLocation:
         return ResolveIconLocation(request.value, source);
     case IconSourceKind::CommandLine:
-        return ResolveCommandIcon(request.value, source);
+        return ResolveCommandIcon(request, source);
     case IconSourceKind::ContextMenuProvider:
         return ResolveProviderIcon(request.providerId, source);
     case IconSourceKind::Stock:
         return ResolveStockIcon(request.stockIcon, source);
+    case IconSourceKind::DefaultCategory:
+        return ResolveFallbackIcon(request.fallbackKind, request.stockIcon, source);
     default:
         return nullptr;
     }
@@ -819,8 +950,13 @@ HICON IconResolverService::ResolveIconLocation(const std::wstring& value, std::w
     return ResolveFileIcon(iconPath, false, source);
 }
 
-HICON IconResolverService::ResolveCommandIcon(const std::wstring& command, std::wstring& source) const {
-    return ResolveFileIcon(ExecutableFromCommand(command), false, source);
+HICON IconResolverService::ResolveCommandIcon(const IconRequest& request, std::wstring& source) const {
+    const std::wstring executable = ExecutableFromCommand(request.value);
+    if (request.preferFallbackForGenericHost &&
+        (IsGenericHostExecutable(executable) || IsScriptLikeTarget(executable))) {
+        return nullptr;
+    }
+    return ResolveFileIcon(executable, false, source);
 }
 
 HICON IconResolverService::ResolveFileIcon(const std::wstring& value, bool directory, std::wstring& source) const {
@@ -893,6 +1029,19 @@ HICON IconResolverService::ResolveStockIcon(SHSTOCKICONID iconId, std::wstring& 
     }
     source = L"default-application";
     return DuplicateIconHandle(LoadIconW(nullptr, IDI_APPLICATION));
+}
+
+HICON IconResolverService::ResolveFallbackIcon(
+    IconFallbackKind kind,
+    SHSTOCKICONID stockIcon,
+    std::wstring& source) const {
+    if (HICON icon = CreateTablerIconHandle(appDirectory_, FallbackTablerIcon(kind), 52, FallbackIconColor(kind))) {
+        source = L"fallback-" + IconFallbackKindKey(kind);
+        return icon;
+    }
+    HICON icon = ResolveStockIcon(stockIcon, source);
+    source = L"fallback-stock-" + IconFallbackKindKey(kind);
+    return icon;
 }
 
 ResolvedIcon IconResolverService::CaptureIcon(HICON icon, int size, int quality, const std::wstring& source) const {
