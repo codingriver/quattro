@@ -2365,8 +2365,18 @@ bool StartupSourceFromKey(const std::wstring& key, StartupSourceType& source) {
 }
 
 std::wstring StartupApplicationTargetPath(const StartupItem& item) {
-    if (item.source == StartupSourceType::Service || item.source == StartupSourceType::Driver) {
+    if (item.source == StartupSourceType::Driver) {
         return {};
+    }
+    if (item.source == StartupSourceType::Service) {
+        if (MapValue(item.original, L"driver") == L"1" || MapValue(item.original, L"protected") == L"1") {
+            return {};
+        }
+        const std::wstring executable = ExecutableFromCommand(item.command);
+        if (executable.empty() || IsWindowsPath(item.command)) {
+            return {};
+        }
+        return executable;
     }
     if (item.source == StartupSourceType::ScheduledTask && MapValue(item.original, L"autoStartTrigger") == L"0") {
         return {};
@@ -2403,6 +2413,90 @@ std::wstring StartupApplicationDisplayName(const StartupItem& item, const std::w
     return item.name.empty() ? StartupSourceText(item.source) : item.name;
 }
 
+std::wstring FileStemLower(const std::wstring& path) {
+    return Lower(std::filesystem::path(path).stem().wstring());
+}
+
+std::wstring ParentPathLower(const std::wstring& path) {
+    return Lower(std::filesystem::path(path).parent_path().wstring());
+}
+
+bool EndsWithText(const std::wstring& value, const std::wstring& suffix) {
+    return value.size() >= suffix.size() &&
+        value.compare(value.size() - suffix.size(), suffix.size(), suffix) == 0;
+}
+
+std::wstring StripServiceSuffix(std::wstring value) {
+    for (const std::wstring& suffix : {L"service", L"svc"}) {
+        if (EndsWithText(value, suffix) && value.size() > suffix.size()) {
+            value.resize(value.size() - suffix.size());
+            while (!value.empty() && (value.back() == L'-' || value.back() == L'_' || value.back() == L'.' || value.back() == L' ')) {
+                value.pop_back();
+            }
+            return value;
+        }
+    }
+    return value;
+}
+
+bool ServiceNameMatchesApplication(const StartupItem& service, const StartupApplication& application) {
+    std::vector<std::wstring> serviceNames;
+    serviceNames.push_back(FileStemLower(StartupApplicationTargetPath(service)));
+    serviceNames.push_back(Lower(service.name));
+    serviceNames.push_back(Lower(MapValue(service.original, L"serviceName")));
+    serviceNames.push_back(Lower(MapValue(service.original, L"displayName")));
+
+    std::vector<std::wstring> applicationNames;
+    if (!application.targetPath.empty()) applicationNames.push_back(FileStemLower(application.targetPath));
+    applicationNames.push_back(Lower(application.displayName));
+    for (const StartupApplicationEntry& entry : application.entries) {
+        applicationNames.push_back(Lower(entry.name));
+        const std::wstring entryTarget = MapValue(entry.original, L"targetPath");
+        if (!entryTarget.empty()) applicationNames.push_back(FileStemLower(entryTarget));
+    }
+
+    for (std::wstring serviceName : serviceNames) {
+        serviceName.erase(std::remove_if(serviceName.begin(), serviceName.end(), ::iswspace), serviceName.end());
+        if (serviceName.empty()) continue;
+        const std::wstring strippedServiceName = StripServiceSuffix(serviceName);
+        for (std::wstring applicationName : applicationNames) {
+            applicationName.erase(std::remove_if(applicationName.begin(), applicationName.end(), ::iswspace), applicationName.end());
+            if (applicationName.empty()) continue;
+            if (serviceName == applicationName || strippedServiceName == applicationName) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+std::wstring StartupApplicationIdentityForService(
+    const StartupItem& item,
+    const std::wstring& targetPath,
+    const std::map<std::wstring, StartupApplication>& applications) {
+    if (targetPath.empty()) {
+        return StartupApplicationIdentityForItem(item);
+    }
+    const std::wstring targetLower = Lower(targetPath);
+    for (const auto& [identity, application] : applications) {
+        if (!application.targetPath.empty() && Lower(application.targetPath) == targetLower) {
+            return identity;
+        }
+    }
+
+    const std::wstring parent = ParentPathLower(targetPath);
+    if (!parent.empty()) {
+        for (const auto& [identity, application] : applications) {
+            if (application.targetPath.empty()) continue;
+            if (ParentPathLower(application.targetPath) != parent) continue;
+            if (ServiceNameMatchesApplication(item, application)) {
+                return identity;
+            }
+        }
+    }
+    return StartupApplicationIdentityForItem(item);
+}
+
 std::vector<StartupApplication> BuildStartupApplications(
     const ScanResult& scan,
     const std::vector<DisabledRecord>& disabled) {
@@ -2418,9 +2512,11 @@ std::vector<StartupApplication> BuildStartupApplications(
         return application;
     };
 
-    for (const StartupItem& item : scan.items) {
+    std::vector<const StartupItem*> serviceItems;
+    serviceItems.reserve(scan.items.size());
+    const auto addStartupItem = [&](const StartupItem& item, const std::wstring& identityOverride = L"") {
         const std::wstring targetPath = StartupApplicationTargetPath(item);
-        const std::wstring identity = StartupApplicationIdentityForItem(item);
+        const std::wstring identity = identityOverride.empty() ? StartupApplicationIdentityForItem(item) : identityOverride;
         StartupApplication& application = ensureApplication(identity, StartupApplicationDisplayName(item, targetPath), targetPath);
         StartupApplicationEntry entry;
         entry.entryId = item.id;
@@ -2434,13 +2530,31 @@ std::vector<StartupApplication> BuildStartupApplications(
         entry.readOnly = item.readOnly;
         entry.original = item.original;
         application.entries.push_back(std::move(entry));
+    };
+
+    for (const StartupItem& item : scan.items) {
+        if (item.source == StartupSourceType::Service) {
+            serviceItems.push_back(&item);
+            continue;
+        }
+        addStartupItem(item);
     }
 
-    for (const DisabledRecord& record : disabled) {
-        StartupItem probe{record.itemId, record.name, record.source, L"", MapValue(record.original, L"valueData"),
+    for (const StartupItem* item : serviceItems) {
+        const std::wstring targetPath = StartupApplicationTargetPath(*item);
+        addStartupItem(*item, StartupApplicationIdentityForService(*item, targetPath, byIdentity));
+    }
+
+    std::vector<DisabledRecord> serviceRecords;
+    serviceRecords.reserve(disabled.size());
+    const auto addDisabledRecord = [&](const DisabledRecord& record, const std::wstring& identityOverride = L"") {
+        std::wstring command = MapValue(record.original, L"valueData");
+        if (command.empty()) command = MapValue(record.original, L"binaryPath");
+        if (command.empty()) command = MapValue(record.original, L"actions");
+        StartupItem probe{record.itemId, record.name, record.source, L"", command,
             record.requiresAdmin, false, true, record.original};
         const std::wstring targetPath = StartupApplicationTargetPath(probe);
-        const std::wstring identity = StartupApplicationIdentityForItem(probe);
+        const std::wstring identity = identityOverride.empty() ? StartupApplicationIdentityForItem(probe) : identityOverride;
         StartupApplication& application = ensureApplication(identity, StartupApplicationDisplayName(probe, targetPath), targetPath);
         StartupApplicationEntry entry;
         entry.entryId = record.recordId;
@@ -2450,7 +2564,7 @@ std::vector<StartupApplication> BuildStartupApplications(
         if (entry.location.empty()) entry.location = MapValue(record.original, L"key");
         if (entry.location.empty()) entry.location = MapValue(record.original, L"taskPath");
         if (entry.location.empty()) entry.location = MapValue(record.original, L"serviceName");
-        entry.command = MapValue(record.original, L"valueData");
+        entry.command = command;
         if (entry.command.empty()) entry.command = targetPath;
         entry.state = StartupEntryState::DisabledByTool;
         entry.requiresAdmin = record.requiresAdmin;
@@ -2458,6 +2572,23 @@ std::vector<StartupApplication> BuildStartupApplications(
         entry.readOnly = false;
         entry.original = record.original;
         application.entries.push_back(std::move(entry));
+    };
+
+    for (const DisabledRecord& record : disabled) {
+        if (record.source == StartupSourceType::Service) {
+            serviceRecords.push_back(record);
+            continue;
+        }
+        addDisabledRecord(record);
+    }
+
+    for (const DisabledRecord& record : serviceRecords) {
+        std::wstring command = MapValue(record.original, L"valueData");
+        if (command.empty()) command = MapValue(record.original, L"binaryPath");
+        StartupItem probe{record.itemId, record.name, record.source, L"", command,
+            record.requiresAdmin, false, true, record.original};
+        const std::wstring targetPath = StartupApplicationTargetPath(probe);
+        addDisabledRecord(record, StartupApplicationIdentityForService(probe, targetPath, byIdentity));
     }
 
     std::vector<StartupApplication> applications;

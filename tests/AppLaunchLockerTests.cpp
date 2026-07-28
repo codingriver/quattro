@@ -273,6 +273,125 @@ int wmain() {
         ok &= Check(applications.size() == 2,
             L"non-autostart scheduled task should not merge into the startup application");
     }
+    {
+        ScanResult appScan;
+        StartupItem registryItem;
+        registryItem.id = L"entry-everything-reg";
+        registryItem.source = StartupSourceType::Registry;
+        registryItem.name = L"Everything";
+        registryItem.location = L"HKLM\\Run";
+        registryItem.command = L"\"C:\\Soft\\Everything.exe\" -startup";
+        registryItem.canDisable = true;
+        registryItem.readOnly = false;
+        registryItem.original = {{L"targetPath", L"C:\\Soft\\Everything.exe"}};
+        appScan.items.push_back(registryItem);
+
+        StartupItem serviceItem;
+        serviceItem.id = L"entry-everything-service";
+        serviceItem.source = StartupSourceType::Service;
+        serviceItem.name = L"Everything";
+        serviceItem.location = L"Everything";
+        serviceItem.command = L"\"C:\\Soft\\Everything.exe\" -svc";
+        serviceItem.requiresAdmin = true;
+        serviceItem.canDisable = true;
+        serviceItem.readOnly = false;
+        serviceItem.original = {
+            {L"serviceName", L"Everything"},
+            {L"displayName", L"Everything"},
+            {L"binaryPath", serviceItem.command},
+            {L"startType", L"2"},
+            {L"protected", L"0"},
+            {L"driver", L"0"},
+        };
+        appScan.items.push_back(serviceItem);
+
+        const std::vector<StartupApplication> applications = BuildStartupApplications(appScan, {});
+        ok &= Check(applications.size() == 1,
+            L"application builder should merge a service that launches the same executable");
+        if (applications.size() == 1) {
+            ok &= Check(applications[0].entries.size() == 2,
+                L"same executable service merge should keep both entries in details");
+            ok &= Check(applications[0].targetPath == L"C:\\Soft\\Everything.exe",
+                L"same executable service merge should keep the application executable path");
+        }
+    }
+    {
+        ScanResult appScan;
+        StartupItem registryItem;
+        registryItem.id = L"entry-gameviewer-reg";
+        registryItem.source = StartupSourceType::Registry;
+        registryItem.name = L"GameViewer";
+        registryItem.location = L"HKCU\\Run";
+        registryItem.command = L"\"G:\\Program Files\\Netease\\GameViewer\\GameViewer.exe\" --auto-run";
+        registryItem.canDisable = true;
+        registryItem.readOnly = false;
+        registryItem.original = {{L"targetPath", L"G:\\Program Files\\Netease\\GameViewer\\GameViewer.exe"}};
+        appScan.items.push_back(registryItem);
+
+        StartupItem serviceItem;
+        serviceItem.id = L"entry-gameviewer-service";
+        serviceItem.source = StartupSourceType::Service;
+        serviceItem.name = L"GameViewerService";
+        serviceItem.location = L"GameViewerService";
+        serviceItem.command = L"\"G:\\Program Files\\Netease\\GameViewer\\GameViewerService.exe\" --service";
+        serviceItem.requiresAdmin = true;
+        serviceItem.canDisable = true;
+        serviceItem.readOnly = false;
+        serviceItem.original = {
+            {L"serviceName", L"GameViewerService"},
+            {L"displayName", L"GameViewerService"},
+            {L"binaryPath", serviceItem.command},
+            {L"startType", L"2"},
+            {L"protected", L"0"},
+            {L"driver", L"0"},
+        };
+        appScan.items.push_back(serviceItem);
+
+        const std::vector<StartupApplication> applications = BuildStartupApplications(appScan, {});
+        ok &= Check(applications.size() == 1,
+            L"application builder should merge a same-folder service with a derived service name");
+        if (applications.size() == 1) {
+            ok &= Check(applications[0].entries.size() == 2,
+                L"same-folder service merge should keep both entries in details");
+            ok &= Check(applications[0].targetPath == L"G:\\Program Files\\Netease\\GameViewer\\GameViewer.exe",
+                L"same-folder service merge should keep the user-facing application path");
+        }
+    }
+    {
+        ScanResult appScan;
+        StartupItem registryItem;
+        registryItem.id = L"entry-system-reg";
+        registryItem.source = StartupSourceType::Registry;
+        registryItem.name = L"SystemApp";
+        registryItem.location = L"HKCU\\Run";
+        registryItem.command = L"\"C:\\Tools\\SystemApp.exe\"";
+        registryItem.canDisable = true;
+        registryItem.readOnly = false;
+        registryItem.original = {{L"targetPath", L"C:\\Tools\\SystemApp.exe"}};
+        appScan.items.push_back(registryItem);
+
+        StartupItem protectedService = registryItem;
+        protectedService.id = L"entry-system-service";
+        protectedService.source = StartupSourceType::Service;
+        protectedService.name = L"SystemAppService";
+        protectedService.location = L"SystemAppService";
+        protectedService.command = L"\"C:\\Tools\\SystemAppService.exe\"";
+        protectedService.requiresAdmin = true;
+        protectedService.canDisable = false;
+        protectedService.readOnly = true;
+        protectedService.original = {
+            {L"serviceName", L"SystemAppService"},
+            {L"displayName", L"SystemAppService"},
+            {L"binaryPath", protectedService.command},
+            {L"protected", L"1"},
+            {L"driver", L"0"},
+        };
+        appScan.items.push_back(protectedService);
+
+        const std::vector<StartupApplication> applications = BuildStartupApplications(appScan, {});
+        ok &= Check(applications.size() == 2,
+            L"application builder should not merge protected services into app rows");
+    }
     const ScanResult scan = StartupManager(DisabledItemStore(directory / L"unused.json")).ScanAll();
     for (const auto& item : scan.items) {
         if (item.source == StartupSourceType::Driver || item.source == StartupSourceType::WmiSubscription ||
