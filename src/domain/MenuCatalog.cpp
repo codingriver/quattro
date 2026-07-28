@@ -132,6 +132,7 @@ int MenuIconFor(UINT_PTR id, const std::wstring& text) {
     case ID_MENU_EXIT: return MenuIconExit;
     case ID_MENU_RUN_LINK: return MenuIconRun;
     case ID_MENU_TOGGLE_TOPMOST: return MenuIconPin;
+    case ID_MENU_TOGGLE_AUTORUN: return MenuIconNone;
     case ID_MENU_SETTINGS: return MenuIconSettings;
     case ID_MENU_HELP:
     case ID_MENU_FAQ: return MenuIconHelp;

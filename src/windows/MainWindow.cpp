@@ -3027,6 +3027,9 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             ToggleConfigVisibility(&AppConfig::topMost);
             ShowToast(config_.topMost ? L"已置顶主窗口。" : L"已取消置顶。", ThemedToastRole::Info);
             return 0;
+        case ID_MENU_TOGGLE_AUTORUN:
+            ToggleAutoRun();
+            return 0;
         case ID_MENU_SETTINGS:
             OpenSettings();
             return 0;
@@ -5317,6 +5320,10 @@ void MainWindow::CommitSettingsConfig(const AppConfig& next, bool importedData) 
             ShowToast(L"WebDAV 上传右键菜单更新失败，设置已回退。", ThemedToastRole::Warning);
         }
     }
+    if (!SyncAutoRun(previous)) {
+        config_.autoRun = previous.autoRun;
+    }
+    NotifyOpenSettingsDialogAutoRunChanged(hwnd_, config_.autoRun);
     configService_.Save(config_);
     for (const auto& provider : TrackedContextMenuProviders()) {
         if (previous.*(provider.configMember) && !(config_.*(provider.configMember))) {
@@ -5332,7 +5339,6 @@ void MainWindow::CommitSettingsConfig(const AppConfig& next, bool importedData) 
     if (!webDavRecoveryError.empty()) {
         WriteAppLog(webDavRecoveryError);
     }
-    SyncAutoRun(previous);
     ApplyConfigRuntimeChanges(previous);
     if (importedData) {
         model_ = storageService_.Load();
@@ -5342,6 +5348,12 @@ void MainWindow::CommitSettingsConfig(const AppConfig& next, bool importedData) 
         ClearUiBitmaps();
     }
     InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void MainWindow::ToggleAutoRun() {
+    AppConfig next = config_;
+    next.autoRun = !config_.autoRun;
+    CommitSettingsConfig(next, false);
 }
 
 bool MainWindow::CreateLinkNameTextFormats() {
@@ -6843,19 +6855,20 @@ void MainWindow::ApplyConfigRuntimeChanges(const AppConfig& previous) {
     SyncHttpServerRuntime(previous);
 }
 
-void MainWindow::SyncAutoRun(const AppConfig& previous) {
+bool MainWindow::SyncAutoRun(const AppConfig& previous) {
     if (previous.autoRun == config_.autoRun && (!config_.autoRun || StartupShortcutExists(appDirectory_))) {
-        return;
+        return true;
     }
 
     std::wstring error;
     if (!SyncStartupShortcut(appDirectory_, config_.autoRun, error)) {
         WriteAppLog(L"开机自启动同步失败: " + error);
         MessageBoxW(hwnd_, error.empty() ? L"开机自启动同步失败。" : error.c_str(), L"开机自启动", MB_OK | MB_ICONWARNING);
-        return;
+        return false;
     }
     WriteAppLog(config_.autoRun ? L"开机自启动已启用。" : L"开机自启动已关闭。");
     ShowToast(config_.autoRun ? L"开机自启动已启用。" : L"已关闭开机自启动。", ThemedToastRole::Success);
+    return true;
 }
 
 void MainWindow::CopySelectedPathsFromForeground(HWND foregroundWindow) {
@@ -7045,6 +7058,7 @@ void MainWindow::ShowTrayMenu(POINT screenPoint) {
     HMENU menu = CreatePopupMenu();
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_SHOW, IsWindowVisible(hwnd_) ? L"隐藏主窗口" : L"显示主窗口");
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_RESTART_PRIVILEGE, runningAsAdmin_ ? L"以普通用户重启" : L"以管理员身份重启", false, -1, -1, MenuIconShield);
+    AppendThemedMenuItem(menu, MF_STRING | (config_.autoRun ? MF_CHECKED : 0), ID_MENU_TOGGLE_AUTORUN, L"开机启动");
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_RESET_LAYOUT, L"重置布局");
     AppendThemedSeparator(menu);
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_ABOUT, L"关于");
@@ -9116,6 +9130,7 @@ void MainWindow::InsertThemedMenuItem(HMENU menu, UINT position, UINT flags, UIN
     item->systemImageIndex = systemImageIndex;
     item->stockIcon = stockIcon;
     item->disabled = (flags & (MF_DISABLED | MF_GRAYED)) != 0;
+    item->checked = (flags & MF_CHECKED) != 0;
     item->submenu = submenu || ((flags & MF_POPUP) != 0);
     MenuItemData* raw = item.get();
     activeMenuItems_.push_back(std::move(item));
@@ -9132,6 +9147,7 @@ void MainWindow::AppendThemedStateMenuItem(HMENU menu, UINT flags, UINT_PTR id, 
     item->text = MenuTextFromRaw(text);
     item->icon = menuIcon != MenuIconNone ? menuIcon : MenuIconFor(id, item->text);
     item->disabled = (flags & (MF_DISABLED | MF_GRAYED)) != 0;
+    item->checked = (flags & MF_CHECKED) != 0;
     item->submenu = submenu || ((flags & MF_POPUP) != 0);
     item->iconTone = active ? MenuIconTone::Active : MenuIconTone::Muted;
     MenuItemData* raw = item.get();
@@ -9268,7 +9284,26 @@ bool MainWindow::DrawThemedMenuItem(const DRAWITEMSTRUCT* draw) {
              item->icon == MenuIconExit || item->icon == MenuIconPower)) {
             iconState = ThemedPaintState::Danger;
         }
-        if (item->nativeIconBitmap && paint.DrawBitmap(item->nativeIconBitmap, iconRect, item->disabled)) {
+        if (item->checked) {
+            const int checkInset = std::max(2, iconSize / 5);
+            const RECT checkRect{
+                iconRect.left + checkInset,
+                iconRect.top + checkInset,
+                iconRect.right - checkInset,
+                iconRect.bottom - checkInset};
+            const int checkWidth = checkRect.right - checkRect.left;
+            const int checkHeight = checkRect.bottom - checkRect.top;
+            POINT points[] = {
+                {checkRect.left, checkRect.top + (checkHeight * 3) / 5},
+                {checkRect.left + checkWidth / 3, checkRect.bottom},
+                {checkRect.right, checkRect.top},
+            };
+            paint.DrawPolyline(
+                points,
+                static_cast<int>(std::size(points)),
+                ThemedPaintComponent::MenuItem,
+                item->disabled ? ThemedPaintState::Disabled : ThemedPaintState::Accent);
+        } else if (item->nativeIconBitmap && paint.DrawBitmap(item->nativeIconBitmap, iconRect, item->disabled)) {
             // Tracked Windows shell commands keep the icon supplied by their provider.
         } else if (item->icon != MenuIconNone) {
             // Quattro-owned commands always use the shared semantic Tabler facade.

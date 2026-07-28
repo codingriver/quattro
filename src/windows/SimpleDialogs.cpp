@@ -129,6 +129,8 @@ constexpr UINT WM_SETTINGS_WEBDAV_DONE = WM_APP + 0x81;
 constexpr UINT WM_CONTEXT_MENU_REFRESH_DONE = WM_APP + 0x82;
 constexpr UINT WM_CONTEXT_MENU_ICON_LOAD_REQUEST = WM_APP + 0x83;
 constexpr UINT WM_CONTEXT_MENU_ICON_LOAD_DONE = WM_APP + 0x84;
+constexpr UINT WM_SETTINGS_AUTORUN_CHANGED = WM_APP + 0x85;
+constexpr const wchar_t* kSettingsDialogHwndProp = L"QuattroSettingsDialogHwnd";
 
 enum class SettingsWebDavOperation {
     Test,
@@ -2455,6 +2457,9 @@ public:
             WriteAppLog(L"设置窗口创建失败: " + error);
             return false;
         }
+        if (owner_) {
+            SetPropW(owner_, kSettingsDialogHwndProp, hwnd_);
+        }
         windowUi_->ShowModal();
         UpdateWindow(hwnd_);
         MSG message{};
@@ -2473,6 +2478,9 @@ public:
             contextMenuRefreshTask_.reset();
         }
         if (contextMenuRefreshProgressDialog_) contextMenuRefreshProgressDialog_->Close();
+        if (owner_ && reinterpret_cast<HWND>(GetPropW(owner_, kSettingsDialogHwndProp)) == hwnd_) {
+            RemovePropW(owner_, kSettingsDialogHwndProp);
+        }
         return accepted_;
     }
 
@@ -3290,6 +3298,14 @@ private:
         const std::wstring text = FormatWebDavLastSyncText(draft_.webDavLastSyncAt);
         SetWindowTextW(webDavLastSyncLabel_, text.c_str());
         ShowWindow(webDavLastSyncLabel_, text.empty() ? SW_HIDE : SW_SHOW);
+    }
+
+    void ApplyExternalAutoRun(bool enabled) {
+        config_.autoRun = enabled;
+        draft_.autoRun = enabled;
+        if (autoRun_) {
+            ThemedUi::SetChecked(autoRun_, enabled);
+        }
     }
 
     void MarkWebDavSyncedNow(bool importedData) {
@@ -4800,6 +4816,9 @@ private:
         case WM_SETTINGS_WEBDAV_DONE:
             HandleWebDavResult(std::unique_ptr<SettingsWebDavResult>(reinterpret_cast<SettingsWebDavResult*>(lParam)));
             return 0;
+        case WM_SETTINGS_AUTORUN_CHANGED:
+            ApplyExternalAutoRun(wParam != 0);
+            return 0;
         case WM_CONTEXT_MENU_ICON_LOAD_REQUEST:
             if (currentTab_ == TabContextMenu && contextMenuIconAutoRequested_) {
                 StartContextMenuIconLoad(false);
@@ -5002,6 +5021,9 @@ private:
             DestroyWindow(hwnd_);
             return 0;
         case WM_DESTROY:
+            if (owner_ && reinterpret_cast<HWND>(GetPropW(owner_, kSettingsDialogHwndProp)) == hwnd_) {
+                RemovePropW(owner_, kSettingsDialogHwndProp);
+            }
             done_ = true;
             return 0;
         default:
@@ -5255,4 +5277,15 @@ bool ShowSettingsDialog(
         *importedData = dialog.webDavDataImported();
     }
     return accepted;
+}
+
+void NotifyOpenSettingsDialogAutoRunChanged(HWND owner, bool enabled) {
+    if (!owner) {
+        return;
+    }
+    HWND settingsHwnd = reinterpret_cast<HWND>(GetPropW(owner, kSettingsDialogHwndProp));
+    if (!settingsHwnd || !IsWindow(settingsHwnd)) {
+        return;
+    }
+    SendMessageW(settingsHwnd, WM_SETTINGS_AUTORUN_CHANGED, enabled ? 1 : 0, 0);
 }

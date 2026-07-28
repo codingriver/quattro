@@ -66,3 +66,4 @@ bool ShowSettingsDialog(
     SettingsContextMenuProviderIconRunner contextMenuProviderIconRunner = {},
     SettingsCopyPathContextMenuCallback copyPathContextMenuCallback = {},
     SettingsWebDavUploadContextMenuCallback webDavUploadContextMenuCallback = {});
+void NotifyOpenSettingsDialogAutoRunChanged(HWND owner, bool enabled);

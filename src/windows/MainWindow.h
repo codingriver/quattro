@@ -167,6 +167,7 @@ private:
         int stockIcon = -1;
         HBITMAP nativeIconBitmap = nullptr;
         bool disabled = false;
+        bool checked = false;
         bool submenu = false;
         bool separator = false;
         MenuIconTone iconTone = MenuIconTone::Default;
@@ -253,6 +254,7 @@ private:
     bool EnsureNotificationIcon();
     void OpenSettings();
     void CommitSettingsConfig(const AppConfig& next, bool importedData);
+    void ToggleAutoRun();
     bool CreateLinkNameTextFormats();
     void OpenBuiltinTool(std::size_t index);
     void OpenBuiltinToolEngine(const std::wstring& engine, bool locateProcessOnOpen = false);
@@ -312,7 +314,7 @@ private:
     bool RestartHttpServer(bool showMessage);
     void SyncHttpServerRuntime(const AppConfig& previous);
     void ApplyConfigRuntimeChanges(const AppConfig& previous);
-    void SyncAutoRun(const AppConfig& previous);
+    bool SyncAutoRun(const AppConfig& previous);
     void RegisterConfiguredHotKeys();
     void ShowHotKeyConflictWarning(const std::wstring& failures);
     void UnregisterConfiguredHotKeys();
