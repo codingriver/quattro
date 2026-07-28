@@ -2,7 +2,7 @@
 
 #include "Theme.h"
 #include "ThemedUi.h"
-#include "TaskExecutionService.h"
+#include "domain/TaskProgress.h"
 
 #include <windows.h>
 

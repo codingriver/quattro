@@ -609,6 +609,7 @@ add_executable(Quattro WIN32
     src/services/SelectedPathCopyService.cpp
     src/services/TerminalContextMenuService.cpp
     src/windows/SimpleDialogs.cpp
+    src/windows/WebDavFileDetailsDialog.cpp
     src/services/StartupService.cpp
     src/services/Storage.cpp
     src/services/SystemFunctions.cpp
@@ -798,6 +799,7 @@ add_executable(QuattroUiScreenshotAcceptance
     src/services/TerminalContextMenuService.cpp
     src/domain/TrackedContextMenuProviders.cpp
     src/windows/SimpleDialogs.cpp
+    src/windows/WebDavFileDetailsDialog.cpp
     src/services/Storage.cpp
     src/services/SystemFunctions.cpp
     src/services/TodoJsonBackupService.cpp
@@ -1352,6 +1354,7 @@ add_executable(QuattroSettingsHttpButtonsAcceptance
     src/services/TerminalContextMenuService.cpp
     src/domain/TrackedContextMenuProviders.cpp
     src/windows/SimpleDialogs.cpp
+    src/windows/WebDavFileDetailsDialog.cpp
     src/services/Storage.cpp
     src/services/SystemFunctions.cpp
     src/services/TodoJsonBackupService.cpp
