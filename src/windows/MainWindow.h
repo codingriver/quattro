@@ -132,6 +132,12 @@ private:
         Muted,
     };
 
+    enum class MenuStateGlyph {
+        None,
+        SquareCheck,
+        SquareX,
+    };
+
     enum class LinkDragMode {
         None,
         Insert,
@@ -167,10 +173,10 @@ private:
         int stockIcon = -1;
         HBITMAP nativeIconBitmap = nullptr;
         bool disabled = false;
-        bool checked = false;
         bool submenu = false;
         bool separator = false;
         MenuIconTone iconTone = MenuIconTone::Default;
+        MenuStateGlyph stateGlyph = MenuStateGlyph::None;
     };
 
     static LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
@@ -410,6 +416,7 @@ private:
     void AppendThemedMenuItem(HMENU menu, UINT flags, UINT_PTR id, const std::wstring& text, bool submenu = false, int systemImageIndex = -1, int stockIcon = -1, int menuIcon = 0);
     void InsertThemedMenuItem(HMENU menu, UINT position, UINT flags, UINT_PTR id, const std::wstring& text, bool submenu = false, int systemImageIndex = -1, int stockIcon = -1, int menuIcon = 0);
     void AppendThemedStateMenuItem(HMENU menu, UINT flags, UINT_PTR id, const std::wstring& text, bool active, int menuIcon = 0, bool submenu = false);
+    void AppendThemedCheckStateMenuItem(HMENU menu, UINT flags, UINT_PTR id, const std::wstring& text, bool active);
     void AppendThemedTrackedMenuItem(HMENU menu, UINT flags, UINT_PTR id, const ShellContextMenuItem& source, bool submenu);
     void AppendThemedSeparator(HMENU menu);
     const MenuItemData* ThemedMenuItemFromData(ULONG_PTR itemData) const;

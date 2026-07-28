@@ -64,6 +64,8 @@
   "extraGlyphs": {
     "chevron-down": { "codepoint": "U+EA5F", "fallback": true },
     "chevron-right": { "codepoint": "U+EA61", "fallback": true },
-    "chevron-up": { "codepoint": "U+EA62", "fallback": true }
+    "chevron-up": { "codepoint": "U+EA62", "fallback": true },
+    "square-check": { "codepoint": "U+EB28", "fallback": true },
+    "square-x": { "codepoint": "U+EB2B", "fallback": true }
   }
 }

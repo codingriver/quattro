@@ -7058,7 +7058,7 @@ void MainWindow::ShowTrayMenu(POINT screenPoint) {
     HMENU menu = CreatePopupMenu();
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_SHOW, IsWindowVisible(hwnd_) ? L"隐藏主窗口" : L"显示主窗口");
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_RESTART_PRIVILEGE, runningAsAdmin_ ? L"以普通用户重启" : L"以管理员身份重启", false, -1, -1, MenuIconShield);
-    AppendThemedMenuItem(menu, MF_STRING | (config_.autoRun ? MF_CHECKED : 0), ID_MENU_TOGGLE_AUTORUN, L"开机启动");
+    AppendThemedCheckStateMenuItem(menu, MF_STRING, ID_MENU_TOGGLE_AUTORUN, L"开机启动", config_.autoRun);
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_RESET_LAYOUT, L"重置布局");
     AppendThemedSeparator(menu);
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_ABOUT, L"关于");
@@ -9130,7 +9130,6 @@ void MainWindow::InsertThemedMenuItem(HMENU menu, UINT position, UINT flags, UIN
     item->systemImageIndex = systemImageIndex;
     item->stockIcon = stockIcon;
     item->disabled = (flags & (MF_DISABLED | MF_GRAYED)) != 0;
-    item->checked = (flags & MF_CHECKED) != 0;
     item->submenu = submenu || ((flags & MF_POPUP) != 0);
     MenuItemData* raw = item.get();
     activeMenuItems_.push_back(std::move(item));
@@ -9147,9 +9146,21 @@ void MainWindow::AppendThemedStateMenuItem(HMENU menu, UINT flags, UINT_PTR id, 
     item->text = MenuTextFromRaw(text);
     item->icon = menuIcon != MenuIconNone ? menuIcon : MenuIconFor(id, item->text);
     item->disabled = (flags & (MF_DISABLED | MF_GRAYED)) != 0;
-    item->checked = (flags & MF_CHECKED) != 0;
     item->submenu = submenu || ((flags & MF_POPUP) != 0);
     item->iconTone = active ? MenuIconTone::Active : MenuIconTone::Muted;
+    MenuItemData* raw = item.get();
+    activeMenuItems_.push_back(std::move(item));
+    AppendMenuW(menu, (flags | MF_OWNERDRAW) & ~(MF_STRING | MF_CHECKED), id, reinterpret_cast<LPCWSTR>(raw));
+}
+
+void MainWindow::AppendThemedCheckStateMenuItem(HMENU menu, UINT flags, UINT_PTR id, const std::wstring& text, bool active) {
+    auto item = std::make_unique<MenuItemData>();
+    item->text = MenuTextFromRaw(text);
+    item->icon = MenuIconNone;
+    item->disabled = (flags & (MF_DISABLED | MF_GRAYED)) != 0;
+    item->submenu = (flags & MF_POPUP) != 0;
+    item->iconTone = active ? MenuIconTone::Active : MenuIconTone::Muted;
+    item->stateGlyph = active ? MenuStateGlyph::SquareCheck : MenuStateGlyph::SquareX;
     MenuItemData* raw = item.get();
     activeMenuItems_.push_back(std::move(item));
     AppendMenuW(menu, (flags | MF_OWNERDRAW) & ~(MF_STRING | MF_CHECKED), id, reinterpret_cast<LPCWSTR>(raw));
@@ -9284,25 +9295,16 @@ bool MainWindow::DrawThemedMenuItem(const DRAWITEMSTRUCT* draw) {
              item->icon == MenuIconExit || item->icon == MenuIconPower)) {
             iconState = ThemedPaintState::Danger;
         }
-        if (item->checked) {
-            const int checkInset = std::max(2, iconSize / 5);
-            const RECT checkRect{
-                iconRect.left + checkInset,
-                iconRect.top + checkInset,
-                iconRect.right - checkInset,
-                iconRect.bottom - checkInset};
-            const int checkWidth = checkRect.right - checkRect.left;
-            const int checkHeight = checkRect.bottom - checkRect.top;
-            POINT points[] = {
-                {checkRect.left, checkRect.top + (checkHeight * 3) / 5},
-                {checkRect.left + checkWidth / 3, checkRect.bottom},
-                {checkRect.right, checkRect.top},
-            };
-            paint.DrawPolyline(
-                points,
-                static_cast<int>(std::size(points)),
+        if (item->stateGlyph == MenuStateGlyph::SquareCheck || item->stateGlyph == MenuStateGlyph::SquareX) {
+            const TablerIconId stateIcon = item->stateGlyph == MenuStateGlyph::SquareCheck
+                ? TablerIconId::SquareCheck
+                : TablerIconId::SquareX;
+            paint.DrawTablerIcon(
+                appDirectory_,
+                stateIcon,
+                iconRect,
                 ThemedPaintComponent::MenuItem,
-                item->disabled ? ThemedPaintState::Disabled : ThemedPaintState::Accent);
+                iconState);
         } else if (item->nativeIconBitmap && paint.DrawBitmap(item->nativeIconBitmap, iconRect, item->disabled)) {
             // Tracked Windows shell commands keep the icon supplied by their provider.
         } else if (item->icon != MenuIconNone) {
