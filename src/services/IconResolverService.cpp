@@ -82,7 +82,7 @@ void PremultiplyTranslucentPixels(std::vector<std::uint32_t>& pixels) {
     }
 }
 
-constexpr wchar_t kResolverCacheNamespace[] = L"resolver-v6";
+constexpr wchar_t kResolverCacheNamespace[] = L"resolver-v7";
 
 std::wstring HashBytesHex(const void* data, std::size_t byteCount) {
     BCRYPT_ALG_HANDLE algorithm = nullptr;
@@ -601,6 +601,47 @@ std::wstring ExistingExecutableCandidate(const std::wstring& value) {
     return std::filesystem::is_regular_file(resolved, ec) ? resolved : std::wstring{};
 }
 
+bool ExtensionIs(const std::wstring& path, const wchar_t* extension) {
+    return ToLower(std::filesystem::path(path).extension().wstring()) == extension;
+}
+
+std::wstring ResolveShortcutTargetPath(const std::wstring& shortcutPath) {
+    if (!ExtensionIs(shortcutPath, L".lnk")) {
+        return {};
+    }
+
+    ScopedComInitialization com;
+    if (!com.usable()) {
+        return {};
+    }
+
+    IShellLinkW* shellLink = nullptr;
+    if (FAILED(CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&shellLink))) ||
+        !shellLink) {
+        return {};
+    }
+
+    IPersistFile* persistFile = nullptr;
+    std::wstring target;
+    if (SUCCEEDED(shellLink->QueryInterface(IID_PPV_ARGS(&persistFile))) && persistFile) {
+        if (SUCCEEDED(persistFile->Load(shortcutPath.c_str(), STGM_READ))) {
+            std::wstring buffer(MAX_PATH * 4, L'\0');
+            WIN32_FIND_DATAW findData{};
+            if (SUCCEEDED(shellLink->GetPath(
+                    buffer.data(),
+                    static_cast<int>(buffer.size()),
+                    &findData,
+                    SLGP_UNCPRIORITY))) {
+                buffer.resize(wcsnlen_s(buffer.c_str(), buffer.size()));
+                target = Trim(buffer);
+            }
+        }
+        persistFile->Release();
+    }
+    shellLink->Release();
+    return target;
+}
+
 std::wstring ExistingFileSystemIconPath(const Link& link) {
     if (LooksLikeUrl(link) || ShellItemService::IsShellParseName(link.path)) {
         return {};
@@ -618,6 +659,32 @@ std::wstring ExistingFileSystemIconPath(const Link& link) {
         return std::filesystem::is_directory(path, ec) ? path : std::wstring{};
     }
     return std::filesystem::is_regular_file(path, ec) ? path : std::wstring{};
+}
+
+HICON ExtractResourceIcon(const std::wstring& path, std::wstring& source, const std::wstring& sourceName) {
+    if (!(ExtensionIs(path, L".exe") || ExtensionIs(path, L".ico") ||
+          ExtensionIs(path, L".dll") || ExtensionIs(path, L".icl"))) {
+        return nullptr;
+    }
+
+    HICON largeIcon = nullptr;
+    HICON smallIcon = nullptr;
+    const UINT count = ExtractIconExW(path.c_str(), 0, &largeIcon, &smallIcon, 1);
+    if (count == 0) {
+        return nullptr;
+    }
+    source = sourceName;
+    if (largeIcon && smallIcon) {
+        DestroyIcon(smallIcon);
+        return largeIcon;
+    }
+    if (largeIcon) {
+        return largeIcon;
+    }
+    if (smallIcon) {
+        return smallIcon;
+    }
+    return nullptr;
 }
 
 std::wstring IconFallbackKindKey(IconFallbackKind kind) {
@@ -848,6 +915,8 @@ std::wstring IconRouteFromSource(const std::wstring& source) {
     if (source.rfind(L"appx-unplated", 0) != std::wstring::npos) return L"appx-unplated";
     if (source.rfind(L"fallback-", 0) == 0) return L"semantic-fallback";
     if (source == L"icon-location") return L"icon-location";
+    if (source == L"file-resource" || source == L"shortcut-target-resource" ||
+        source == L"shortcut-target-file") return L"file";
     if (source == L"file" || source == L"file-attributes") return L"file";
     if (source == L"directory" || source == L"directory-attributes") return L"directory";
     if (source == L"pidl") return L"pidl";
@@ -1527,6 +1596,31 @@ HICON IconResolverService::ResolveFileIcon(const std::wstring& value, bool direc
     const std::wstring path = ResolveExecutablePath(value);
     if (Trim(path).empty()) {
         return nullptr;
+    }
+    if (!directory) {
+        const std::wstring shortcutTarget = ResolveShortcutTargetPath(path);
+        if (!shortcutTarget.empty()) {
+            const std::wstring resolvedTarget = ResolveExecutablePath(shortcutTarget);
+            std::error_code ec;
+            if (std::filesystem::is_regular_file(resolvedTarget, ec)) {
+                if (HICON icon = ExtractResourceIcon(resolvedTarget, source, L"shortcut-target-resource")) {
+                    return icon;
+                }
+                SHFILEINFOW targetInfo{};
+                if (SHGetFileInfoW(
+                        resolvedTarget.c_str(),
+                        0,
+                        &targetInfo,
+                        sizeof(targetInfo),
+                        SHGFI_ICON | SHGFI_LARGEICON)) {
+                    source = L"shortcut-target-file";
+                    return targetInfo.hIcon;
+                }
+            }
+        }
+        if (HICON icon = ExtractResourceIcon(path, source, L"file-resource")) {
+            return icon;
+        }
     }
     SHFILEINFOW info{};
     const DWORD attrs = directory ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_NORMAL;

@@ -2001,8 +2001,46 @@ int wmain() {
         const ResolvedIcon linkIconWithPidl = resolver.Resolve(fileLinkWithPidlRequest);
         Check(
             IconResolverService::HasPixels(linkIconWithPidl) &&
-                linkIconWithPidl.source == L"file",
+                (linkIconWithPidl.source == L"file-resource" || linkIconWithPidl.source == L"file"),
             "Public icon resolver prefers existing file path icons over PIDL shell images");
+
+        const std::filesystem::path shortcutRoot = std::filesystem::temp_directory_path() /
+            (L"quattro_icon_resolver_shortcut_" + std::to_wstring(GetCurrentProcessId()));
+        std::filesystem::remove_all(shortcutRoot, ec);
+        std::filesystem::create_directories(shortcutRoot, ec);
+        const std::filesystem::path shortcutPath = shortcutRoot / L"cmd shortcut.lnk";
+        HRESULT shortcutCom = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+        IShellLinkW* shellLink = nullptr;
+        IPersistFile* persistFile = nullptr;
+        bool shortcutCreated = false;
+        if ((SUCCEEDED(shortcutCom) || shortcutCom == RPC_E_CHANGED_MODE) &&
+            SUCCEEDED(CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&shellLink))) &&
+            shellLink) {
+            shellLink->SetPath(fileLink.path.c_str());
+            if (SUCCEEDED(shellLink->QueryInterface(IID_PPV_ARGS(&persistFile))) && persistFile) {
+                shortcutCreated = SUCCEEDED(persistFile->Save(shortcutPath.c_str(), TRUE));
+            }
+        }
+        if (persistFile) persistFile->Release();
+        if (shellLink) shellLink->Release();
+        if (SUCCEEDED(shortcutCom)) CoUninitialize();
+        if (shortcutCreated) {
+            Link shortcutLink;
+            shortcutLink.name = L"cmd shortcut";
+            shortcutLink.path = shortcutPath.wstring();
+            shortcutLink.type = 0;
+            IconRequest shortcutRequest = IconResolverService::ForLink(shortcutLink, 32);
+            shortcutRequest.cacheMode = IconCacheMode::Disabled;
+            const ResolvedIcon shortcutIcon = resolver.Resolve(shortcutRequest);
+            Check(
+                IconResolverService::HasPixels(shortcutIcon) &&
+                    (shortcutIcon.source == L"shortcut-target-resource" ||
+                     shortcutIcon.source == L"shortcut-target-file"),
+                "Public icon resolver uses shortcut target icons for .lnk files");
+        } else {
+            Check(true, "Public icon resolver shortcut target test skipped when shortcut creation is unavailable");
+        }
+        std::filesystem::remove_all(shortcutRoot, ec);
     }
     {
         const std::filesystem::path cacheTestRoot = std::filesystem::temp_directory_path() /

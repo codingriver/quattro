@@ -14,7 +14,7 @@
 #include <cstdint>
 
 namespace {
-constexpr wchar_t kResolverCacheVersion[] = L"resolver-v6";
+constexpr wchar_t kResolverCacheVersion[] = L"resolver-v7";
 
 template <typename T>
 void SafeRelease(T*& value) {
