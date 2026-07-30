@@ -1985,6 +1985,24 @@ int wmain() {
         Check(
             IconResolverService::HasPixels(linkIcon),
             "Public icon resolver returns link icon pixels");
+
+        PIDLIST_ABSOLUTE cmdPidl = nullptr;
+        if (SUCCEEDED(SHParseDisplayName(fileLink.path.c_str(), nullptr, &cmdPidl, 0, nullptr)) &&
+            cmdPidl) {
+            const UINT pidlBytes = ILGetSize(cmdPidl);
+            if (pidlBytes > 0) {
+                fileLink.pidl.resize(pidlBytes);
+                std::memcpy(fileLink.pidl.data(), cmdPidl, pidlBytes);
+            }
+            CoTaskMemFree(cmdPidl);
+        }
+        IconRequest fileLinkWithPidlRequest = IconResolverService::ForLink(fileLink, 32);
+        fileLinkWithPidlRequest.cacheMode = IconCacheMode::Disabled;
+        const ResolvedIcon linkIconWithPidl = resolver.Resolve(fileLinkWithPidlRequest);
+        Check(
+            IconResolverService::HasPixels(linkIconWithPidl) &&
+                linkIconWithPidl.source == L"file",
+            "Public icon resolver prefers existing file path icons over PIDL shell images");
     }
     {
         const std::filesystem::path cacheTestRoot = std::filesystem::temp_directory_path() /

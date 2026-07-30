@@ -82,7 +82,7 @@ void PremultiplyTranslucentPixels(std::vector<std::uint32_t>& pixels) {
     }
 }
 
-constexpr wchar_t kResolverCacheNamespace[] = L"resolver-v5";
+constexpr wchar_t kResolverCacheNamespace[] = L"resolver-v6";
 
 std::wstring HashBytesHex(const void* data, std::size_t byteCount) {
     BCRYPT_ALG_HANDLE algorithm = nullptr;
@@ -599,6 +599,25 @@ std::wstring ExistingExecutableCandidate(const std::wstring& value) {
     const std::wstring resolved = ResolveExecutablePath(value);
     std::error_code ec;
     return std::filesystem::is_regular_file(resolved, ec) ? resolved : std::wstring{};
+}
+
+std::wstring ExistingFileSystemIconPath(const Link& link) {
+    if (LooksLikeUrl(link) || ShellItemService::IsShellParseName(link.path)) {
+        return {};
+    }
+
+    const std::wstring path = link.type == 1
+        ? ExpandEnvironmentStringsSafe(Trim(link.path))
+        : ResolveExecutablePath(link.path);
+    if (Trim(path).empty()) {
+        return {};
+    }
+
+    std::error_code ec;
+    if (link.type == 1) {
+        return std::filesystem::is_directory(path, ec) ? path : std::wstring{};
+    }
+    return std::filesystem::is_regular_file(path, ec) ? path : std::wstring{};
 }
 
 std::wstring IconFallbackKindKey(IconFallbackKind kind) {
@@ -1191,6 +1210,9 @@ ResolvedIcon IconResolverService::ResolveLinkShellItemImage(const Link& link, in
     if (HasPixels(result)) {
         return result;
     }
+    if (!ExistingFileSystemIconPath(link).empty()) {
+        return {};
+    }
     result = ResolvePidlImage(link.pidl, size, L"shell-item-image-link-pidl");
     if (HasPixels(result)) {
         return result;
@@ -1401,6 +1423,11 @@ HICON IconResolverService::ResolveLinkIcon(const Link& link, std::wstring& sourc
     }
     if (LooksLikeUrl(link)) {
         return ResolveStockIcon(SIID_WORLD, source);
+    }
+    if (const std::wstring fileSystemPath = ExistingFileSystemIconPath(link); !fileSystemPath.empty()) {
+        if (HICON icon = ResolveFileIcon(fileSystemPath, link.type == 1, source)) {
+            return icon;
+        }
     }
     if (HICON icon = ResolvePidlIcon(link.pidl, source)) {
         return icon;
