@@ -82,7 +82,7 @@ void PremultiplyTranslucentPixels(std::vector<std::uint32_t>& pixels) {
     }
 }
 
-constexpr wchar_t kResolverCacheNamespace[] = L"resolver-v7";
+constexpr wchar_t kResolverCacheNamespace[] = L"resolver-v8";
 
 std::wstring HashBytesHex(const void* data, std::size_t byteCount) {
     BCRYPT_ALG_HANDLE algorithm = nullptr;
@@ -661,10 +661,213 @@ std::wstring ExistingFileSystemIconPath(const Link& link) {
     return std::filesystem::is_regular_file(path, ec) ? path : std::wstring{};
 }
 
+struct ResourceIconGroupInfo {
+    bool valid = false;
+    int bestBitDepth = 0;
+    int bestDimension = 0;
+    DWORD largestResourceBytes = 0;
+};
+
+WORD ReadResourceWord(const BYTE* data) {
+    WORD value = 0;
+    std::memcpy(&value, data, sizeof(value));
+    return value;
+}
+
+DWORD ReadResourceDword(const BYTE* data) {
+    DWORD value = 0;
+    std::memcpy(&value, data, sizeof(value));
+    return value;
+}
+
+ResourceIconGroupInfo ReadIconGroupInfo(const BYTE* data, DWORD size) {
+    ResourceIconGroupInfo info;
+    if (!data || size < 6) {
+        return info;
+    }
+    const WORD reserved = ReadResourceWord(data);
+    const WORD type = ReadResourceWord(data + 2);
+    const WORD count = ReadResourceWord(data + 4);
+    if (reserved != 0 || type != 1 || count == 0 ||
+        size < static_cast<DWORD>(6 + static_cast<DWORD>(count) * 14)) {
+        return info;
+    }
+    for (WORD index = 0; index < count; ++index) {
+        const BYTE* entry = data + 6 + static_cast<DWORD>(index) * 14;
+        const int width = entry[0] == 0 ? 256 : entry[0];
+        const int height = entry[1] == 0 ? 256 : entry[1];
+        const int colorCount = entry[2];
+        int bitDepth = ReadResourceWord(entry + 6);
+        if (bitDepth == 0) {
+            bitDepth = colorCount == 0 ? 32 : 8;
+        }
+        info.bestDimension = std::max(info.bestDimension, std::max(width, height));
+        info.bestBitDepth = std::max(info.bestBitDepth, bitDepth);
+        info.largestResourceBytes = std::max(info.largestResourceBytes, ReadResourceDword(entry + 8));
+    }
+    info.valid = true;
+    return info;
+}
+
+bool TryReadIconGroupResource(
+    HMODULE module,
+    LPCWSTR groupName,
+    ResourceIconGroupInfo& info,
+    const BYTE*& groupData) {
+    groupData = nullptr;
+    HRSRC groupResource = FindResourceW(module, groupName, RT_GROUP_ICON);
+    if (!groupResource) {
+        return false;
+    }
+    const DWORD groupSize = SizeofResource(module, groupResource);
+    HGLOBAL groupHandle = LoadResource(module, groupResource);
+    const auto* data = static_cast<const BYTE*>(LockResource(groupHandle));
+    if (!data || groupSize == 0) {
+        return false;
+    }
+    info = ReadIconGroupInfo(data, groupSize);
+    if (!info.valid) {
+        return false;
+    }
+    groupData = data;
+    return true;
+}
+
+HICON CreateIconFromGroup(
+    HMODULE module,
+    LPCWSTR groupName,
+    int desiredSize,
+    ResourceIconGroupInfo& info) {
+    const BYTE* groupData = nullptr;
+    if (!TryReadIconGroupResource(module, groupName, info, groupData)) {
+        return nullptr;
+    }
+    const int resourceId = LookupIconIdFromDirectoryEx(
+        const_cast<PBYTE>(groupData),
+        TRUE,
+        desiredSize,
+        desiredSize,
+        LR_DEFAULTCOLOR);
+    if (resourceId <= 0) {
+        return nullptr;
+    }
+    HRSRC iconResource = FindResourceW(module, MAKEINTRESOURCEW(resourceId), RT_ICON);
+    if (!iconResource) {
+        return nullptr;
+    }
+    const DWORD iconSize = SizeofResource(module, iconResource);
+    HGLOBAL iconHandle = LoadResource(module, iconResource);
+    auto* iconData = static_cast<PBYTE>(LockResource(iconHandle));
+    if (!iconData || iconSize == 0) {
+        return nullptr;
+    }
+    return CreateIconFromResourceEx(
+        iconData,
+        iconSize,
+        TRUE,
+        0x00030000,
+        desiredSize,
+        desiredSize,
+        LR_DEFAULTCOLOR);
+}
+
+struct ResourceIconSelection {
+    HMODULE module = nullptr;
+    int desiredSize = 32;
+    bool hasFirstIcon = false;
+    HICON firstIcon = nullptr;
+    HICON richIcon = nullptr;
+    ResourceIconGroupInfo firstInfo;
+};
+
+bool ShouldPreferRicherResourceIcon(
+    const ResourceIconGroupInfo& first,
+    const ResourceIconGroupInfo& candidate) {
+    if (!first.valid || !candidate.valid) {
+        return false;
+    }
+    if (first.bestBitDepth >= 8) {
+        return false;
+    }
+    return candidate.bestBitDepth >= 24 &&
+           candidate.bestDimension >= std::min(32, std::max(1, first.bestDimension)) &&
+           candidate.largestResourceBytes > first.largestResourceBytes;
+}
+
+BOOL CALLBACK SelectResourceIconGroup(
+    HMODULE module,
+    LPCWSTR,
+    LPWSTR groupName,
+    LONG_PTR context) {
+    auto* selection = reinterpret_cast<ResourceIconSelection*>(context);
+    if (!selection || module != selection->module) {
+        return FALSE;
+    }
+    ResourceIconGroupInfo info;
+    HICON icon = CreateIconFromGroup(module, groupName, selection->desiredSize, info);
+    if (!icon) {
+        return TRUE;
+    }
+    if (!selection->hasFirstIcon) {
+        selection->hasFirstIcon = true;
+        selection->firstIcon = icon;
+        selection->firstInfo = info;
+        if (selection->firstInfo.bestBitDepth >= 8) {
+            return FALSE;
+        }
+    } else if (!selection->richIcon && ShouldPreferRicherResourceIcon(selection->firstInfo, info)) {
+        selection->richIcon = icon;
+        return FALSE;
+    } else {
+        DestroyIcon(icon);
+    }
+    return TRUE;
+}
+
+HICON ExtractBestResourceIcon(
+    const std::wstring& path,
+    std::wstring& source,
+    const std::wstring& sourceName) {
+    if (!(ExtensionIs(path, L".exe") || ExtensionIs(path, L".dll") || ExtensionIs(path, L".icl"))) {
+        return nullptr;
+    }
+    HMODULE module = LoadLibraryExW(
+        path.c_str(),
+        nullptr,
+        LOAD_LIBRARY_AS_DATAFILE | LOAD_LIBRARY_AS_IMAGE_RESOURCE);
+    if (!module) {
+        return nullptr;
+    }
+    ResourceIconSelection selection;
+    selection.module = module;
+    selection.desiredSize = std::max(32, GetSystemMetrics(SM_CXICON));
+    EnumResourceNamesW(
+        module,
+        RT_GROUP_ICON,
+        SelectResourceIconGroup,
+        reinterpret_cast<LONG_PTR>(&selection));
+    FreeLibrary(module);
+    if (selection.richIcon) {
+        if (selection.firstIcon) {
+            DestroyIcon(selection.firstIcon);
+        }
+        source = sourceName + L"-rich";
+        return selection.richIcon;
+    }
+    if (selection.firstIcon) {
+        source = sourceName;
+        return selection.firstIcon;
+    }
+    return nullptr;
+}
+
 HICON ExtractResourceIcon(const std::wstring& path, std::wstring& source, const std::wstring& sourceName) {
     if (!(ExtensionIs(path, L".exe") || ExtensionIs(path, L".ico") ||
           ExtensionIs(path, L".dll") || ExtensionIs(path, L".icl"))) {
         return nullptr;
+    }
+    if (HICON icon = ExtractBestResourceIcon(path, source, sourceName)) {
+        return icon;
     }
 
     HICON largeIcon = nullptr;
@@ -915,7 +1118,8 @@ std::wstring IconRouteFromSource(const std::wstring& source) {
     if (source.rfind(L"appx-unplated", 0) != std::wstring::npos) return L"appx-unplated";
     if (source.rfind(L"fallback-", 0) == 0) return L"semantic-fallback";
     if (source == L"icon-location") return L"icon-location";
-    if (source == L"file-resource" || source == L"shortcut-target-resource" ||
+    if (source == L"file-resource" || source == L"file-resource-rich" ||
+        source == L"shortcut-target-resource" || source == L"shortcut-target-resource-rich" ||
         source == L"shortcut-target-file") return L"file";
     if (source == L"file" || source == L"file-attributes") return L"file";
     if (source == L"directory" || source == L"directory-attributes") return L"directory";

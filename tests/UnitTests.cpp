@@ -2001,7 +2001,9 @@ int wmain() {
         const ResolvedIcon linkIconWithPidl = resolver.Resolve(fileLinkWithPidlRequest);
         Check(
             IconResolverService::HasPixels(linkIconWithPidl) &&
-                (linkIconWithPidl.source == L"file-resource" || linkIconWithPidl.source == L"file"),
+                (linkIconWithPidl.source == L"file-resource" ||
+                 linkIconWithPidl.source == L"file-resource-rich" ||
+                 linkIconWithPidl.source == L"file"),
             "Public icon resolver prefers existing file path icons over PIDL shell images");
 
         const std::filesystem::path shortcutRoot = std::filesystem::temp_directory_path() /
@@ -2035,6 +2037,7 @@ int wmain() {
             Check(
                 IconResolverService::HasPixels(shortcutIcon) &&
                     (shortcutIcon.source == L"shortcut-target-resource" ||
+                     shortcutIcon.source == L"shortcut-target-resource-rich" ||
                      shortcutIcon.source == L"shortcut-target-file"),
                 "Public icon resolver uses shortcut target icons for .lnk files");
         } else {
