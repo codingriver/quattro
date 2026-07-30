@@ -167,6 +167,66 @@ bool ExecSql(sqlite3* db, const char* sql) {
     return true;
 }
 
+void PushLe16(std::vector<std::uint8_t>& bytes, std::uint16_t value) {
+    bytes.push_back(static_cast<std::uint8_t>(value & 0xFFu));
+    bytes.push_back(static_cast<std::uint8_t>((value >> 8) & 0xFFu));
+}
+
+void PushLe32(std::vector<std::uint8_t>& bytes, std::uint32_t value) {
+    bytes.push_back(static_cast<std::uint8_t>(value & 0xFFu));
+    bytes.push_back(static_cast<std::uint8_t>((value >> 8) & 0xFFu));
+    bytes.push_back(static_cast<std::uint8_t>((value >> 16) & 0xFFu));
+    bytes.push_back(static_cast<std::uint8_t>((value >> 24) & 0xFFu));
+}
+
+bool WriteLegacyOpaqueRedIco(const std::filesystem::path& path) {
+    constexpr std::uint8_t width = 32;
+    constexpr std::uint8_t height = 32;
+    constexpr std::uint32_t xorStride = 16;
+    constexpr std::uint32_t maskStride = 4;
+    constexpr std::uint32_t xorBytes = xorStride * height;
+    constexpr std::uint32_t maskBytes = maskStride * height;
+    constexpr std::uint32_t colorTableBytes = 16 * 4;
+    constexpr std::uint32_t dibBytes = 40 + colorTableBytes + xorBytes + maskBytes;
+    std::vector<std::uint8_t> bytes;
+    bytes.reserve(22 + dibBytes);
+    PushLe16(bytes, 0);
+    PushLe16(bytes, 1);
+    PushLe16(bytes, 1);
+    bytes.push_back(width);
+    bytes.push_back(height);
+    bytes.push_back(16);
+    bytes.push_back(0);
+    PushLe16(bytes, 1);
+    PushLe16(bytes, 4);
+    PushLe32(bytes, dibBytes);
+    PushLe32(bytes, 22);
+    PushLe32(bytes, 40);
+    PushLe32(bytes, width);
+    PushLe32(bytes, height * 2);
+    PushLe16(bytes, 1);
+    PushLe16(bytes, 4);
+    PushLe32(bytes, 0);
+    PushLe32(bytes, xorBytes + maskBytes);
+    PushLe32(bytes, 0);
+    PushLe32(bytes, 0);
+    PushLe32(bytes, 0);
+    PushLe32(bytes, 0);
+    for (int index = 0; index < 16; ++index) {
+        bytes.push_back(0);
+        bytes.push_back(0);
+        bytes.push_back(index == 1 ? 255 : 0);
+        bytes.push_back(0);
+    }
+    bytes.insert(bytes.end(), xorBytes, 0x11);
+    bytes.insert(bytes.end(), maskBytes, 0);
+    std::error_code ec;
+    std::filesystem::create_directories(path.parent_path(), ec);
+    std::ofstream output(path, std::ios::binary | std::ios::trunc);
+    output.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    return output.good();
+}
+
 class TestTooltipRegistry final : public ThemedTooltipRegistry {
 public:
     void ShowTooltip(
@@ -1921,6 +1981,31 @@ int wmain() {
             IconResolverService::HasPixels(fileIcon) && fileIcon.width == 32 && fileIcon.height == 32,
             "Public icon resolver returns executable icon pixels");
 
+        const std::filesystem::path legacyIconRoot = std::filesystem::temp_directory_path() /
+            (L"quattro_legacy_icon_alpha_" + std::to_wstring(GetCurrentProcessId()));
+        const std::filesystem::path legacyIconPath = legacyIconRoot / L"legacy-red.ico";
+        Check(WriteLegacyOpaqueRedIco(legacyIconPath), "Public icon resolver legacy alpha fixture writes");
+        IconRequest legacyIconRequest;
+        legacyIconRequest.kind = IconSourceKind::FilePath;
+        legacyIconRequest.size = 32;
+        legacyIconRequest.value = legacyIconPath.wstring();
+        legacyIconRequest.cacheMode = IconCacheMode::Disabled;
+        const ResolvedIcon legacyIcon = resolver.Resolve(legacyIconRequest);
+        const bool legacyHasOpaqueRed = std::any_of(
+            legacyIcon.pixels.begin(),
+            legacyIcon.pixels.end(),
+            [](std::uint32_t pixel) {
+                const std::uint32_t alpha = pixel >> 24;
+                const std::uint32_t red = (pixel >> 16) & 0xFFu;
+                const std::uint32_t green = (pixel >> 8) & 0xFFu;
+                const std::uint32_t blue = pixel & 0xFFu;
+                return alpha != 0 && red > 160 && green < 80 && blue < 80;
+            });
+        Check(
+            IconResolverService::HasPixels(legacyIcon) && legacyHasOpaqueRed,
+            "Public icon resolver preserves opaque color for legacy icons without alpha");
+        std::filesystem::remove_all(legacyIconRoot, ec);
+
         IconRequest commandRequest;
         commandRequest.kind = IconSourceKind::CommandLine;
         commandRequest.size = 32;
@@ -2001,9 +2086,7 @@ int wmain() {
         const ResolvedIcon linkIconWithPidl = resolver.Resolve(fileLinkWithPidlRequest);
         Check(
             IconResolverService::HasPixels(linkIconWithPidl) &&
-                (linkIconWithPidl.source == L"file-resource" ||
-                 linkIconWithPidl.source == L"file-resource-rich" ||
-                 linkIconWithPidl.source == L"file"),
+                (linkIconWithPidl.source == L"file-resource" || linkIconWithPidl.source == L"file"),
             "Public icon resolver prefers existing file path icons over PIDL shell images");
 
         const std::filesystem::path shortcutRoot = std::filesystem::temp_directory_path() /
@@ -2037,7 +2120,6 @@ int wmain() {
             Check(
                 IconResolverService::HasPixels(shortcutIcon) &&
                     (shortcutIcon.source == L"shortcut-target-resource" ||
-                     shortcutIcon.source == L"shortcut-target-resource-rich" ||
                      shortcutIcon.source == L"shortcut-target-file"),
                 "Public icon resolver uses shortcut target icons for .lnk files");
         } else {
