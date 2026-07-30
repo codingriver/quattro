@@ -433,7 +433,13 @@ struct TableCellRuntime {
 };
 void RegisterTable(HWND table, const Theme& theme, UINT dpi = 0);
 void ConfigureTableRowPresentation(HWND table, bool twoLines);
-void ConfigureTableColumns(HWND table, const std::vector<int>& widthModes);
+void ConfigureTableColumns(
+    HWND table,
+    const std::vector<int>& widthModes,
+    const std::vector<std::wstring>& keys = {},
+    const std::vector<bool>& sortable = {});
+bool IsTableColumnSortable(HWND table, int column);
+void SetTableSortState(HWND table, const std::wstring& columnKey, int direction);
 void MoveTable(HWND table, int x, int y, int width, int height);
 void ConfigureTableGridLines(HWND table, bool rowGridLines, bool columnGridLines);
 void SetTableColumnResizeEnabled(HWND table, bool enabled);

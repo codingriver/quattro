@@ -2832,11 +2832,17 @@ HWND ThemedUi::Table(int id, RECT frame, const std::vector<ThemedTableColumn>& c
     int fixedWidth = 0;
     int remainingCount = 0;
     std::vector<int> widthModes;
+    std::vector<std::wstring> columnKeys;
+    std::vector<bool> sortableColumns;
     widthModes.reserve(columns.size());
+    columnKeys.reserve(columns.size());
+    sortableColumns.reserve(columns.size());
     for (const auto& column : columns) {
         if (column.widthMode == ThemedTableColumnWidth::Remaining) ++remainingCount;
         else fixedWidth += std::max(0, column.fixedWidth);
         widthModes.push_back(static_cast<int>(column.widthMode));
+        columnKeys.push_back(column.key);
+        sortableColumns.push_back(column.sortable);
     }
     const int scrollBarGutter = options.reserveScrollBarGutter
         ? GetSystemMetricsForDpi(SM_CXVSCROLL, dpi_)
@@ -2863,7 +2869,7 @@ HWND ThemedUi::Table(int id, RECT frame, const std::vector<ThemedTableColumn>& c
             : (source.align == ThemedTableColumnAlign::End ? LVCFMT_RIGHT : LVCFMT_LEFT);
         ListView_InsertColumn(table, static_cast<int>(i), &column);
     }
-    ThemedControls::ConfigureTableColumns(table, widthModes);
+    ThemedControls::ConfigureTableColumns(table, widthModes, columnKeys, sortableColumns);
     ThemedControls::SetTableHorizontalScrollEnabled(table, options.allowHorizontalScroll);
     // The native header can be created lazily when columns are inserted, so
     // apply the resize policy again after column creation.
@@ -2884,11 +2890,17 @@ void ThemedUi::SetTableColumns(HWND table, const std::vector<ThemedTableColumn>&
     int fixedWidth = 0;
     int remainingCount = 0;
     std::vector<int> widthModes;
+    std::vector<std::wstring> columnKeys;
+    std::vector<bool> sortableColumns;
     widthModes.reserve(columns.size());
+    columnKeys.reserve(columns.size());
+    sortableColumns.reserve(columns.size());
     for (const auto& column : columns) {
         if (column.widthMode == ThemedTableColumnWidth::Remaining) ++remainingCount;
         else fixedWidth += std::max(0, column.fixedWidth);
         widthModes.push_back(static_cast<int>(column.widthMode));
+        columnKeys.push_back(column.key);
+        sortableColumns.push_back(column.sortable);
     }
     const int available = std::max(40, static_cast<int>(client.right - client.left) - fixedWidth);
     int assignedRemainingWidth = 0;
@@ -2912,7 +2924,7 @@ void ThemedUi::SetTableColumns(HWND table, const std::vector<ThemedTableColumn>&
             : (source.align == ThemedTableColumnAlign::End ? LVCFMT_RIGHT : LVCFMT_LEFT);
         ListView_InsertColumn(table, static_cast<int>(i), &column);
     }
-    ThemedControls::ConfigureTableColumns(table, widthModes);
+    ThemedControls::ConfigureTableColumns(table, widthModes, columnKeys, sortableColumns);
     InvalidateRect(table, nullptr, TRUE);
     if (HWND header = ListView_GetHeader(table)) {
         InvalidateRect(header, nullptr, TRUE);
@@ -3051,12 +3063,25 @@ bool ThemedUi::UpdateTableRow(HWND table, int index, const ThemedTableRow& row) 
     return true;
 }
 
+bool ThemedUi::UpdateTableRowByKey(HWND table, std::intptr_t key, const ThemedTableRow& row) {
+    const int index = FindTableRowByKey(table, key);
+    if (index < 0) return false;
+    ThemedTableRow keyedRow = row;
+    keyedRow.key = key;
+    return UpdateTableRow(table, index, keyedRow);
+}
+
 bool ThemedUi::RemoveTableRow(HWND table, int index) {
     if (!table || index < 0 || index >= ListView_GetItemCount(table)) return false;
     const ScopedTableRowsUpdate update(table);
     if (!ListView_DeleteItem(table, index)) return false;
     ThemedControls::RemoveTableRowState(table, index);
     return true;
+}
+
+bool ThemedUi::RemoveTableRowByKey(HWND table, std::intptr_t key) {
+    const int index = FindTableRowByKey(table, key);
+    return index >= 0 && RemoveTableRow(table, index);
 }
 
 int ThemedUi::FindTableRowByKey(HWND table, std::intptr_t key) {
@@ -3066,6 +3091,10 @@ int ThemedUi::FindTableRowByKey(HWND table, std::intptr_t key) {
         if (TableRowKey(table, index) == key) return index;
     }
     return -1;
+}
+
+void ThemedUi::SetTableSortState(HWND table, const std::wstring& columnKey, int direction) {
+    ThemedControls::SetTableSortState(table, columnKey, direction);
 }
 
 void ThemedUi::SetTableView(HWND table, ThemedTableView view) {
@@ -3110,6 +3139,12 @@ void ThemedUi::SetTableSelectedIndex(HWND table, int index) {
     if (index >= 0 && index < count) {
         ListView_EnsureVisible(table, index, FALSE);
     }
+}
+bool ThemedUi::SetTableSelectedKey(HWND table, std::intptr_t key) {
+    const int index = FindTableRowByKey(table, key);
+    if (index < 0) return false;
+    SetTableSelectedIndex(table, index);
+    return true;
 }
 std::intptr_t ThemedUi::TableRowKey(HWND table, int index) {
     if (!table || index < 0) return 0;
@@ -3213,6 +3248,7 @@ bool ThemedUi::DecodeTableEvent(HWND table, LPARAM lParam, ThemedTableEvent& eve
     }
     if (header->code == LVN_COLUMNCLICK) {
         auto* view = reinterpret_cast<NMLISTVIEW*>(lParam);
+        if (!ThemedControls::IsTableColumnSortable(table, view->iSubItem)) return false;
         event.kind = ThemedTableEventKind::SortRequested;
         event.column = view->iSubItem;
         return true;

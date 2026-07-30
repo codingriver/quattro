@@ -110,6 +110,10 @@ struct ControlState {
     bool tableTwoLineRows = false;
     int tableRowsUpdateDepth = 0;
     std::vector<int> tableColumnWidthModes;
+    std::vector<std::wstring> tableColumnKeys;
+    std::vector<bool> tableColumnSortable;
+    std::wstring tableSortColumnKey;
+    int tableSortDirection = 0;
     std::vector<bool> tableRowEnabled;
     std::vector<bool> tableRowActive;
     std::vector<std::vector<ThemedControls::TableCellRuntime>> tableCells;
@@ -363,6 +367,18 @@ void DrawThemedLine(
         return;
     }
     ThemedGdiFallback::DrawLine(dc, x1, y1, x2, y2, color, strokeWidth);
+}
+
+void FillThemedTriangle(HDC dc, const POINT* points, COLORREF color) {
+    HBRUSH brush = CreateSolidBrush(color);
+    HPEN pen = CreatePen(PS_SOLID, 1, color);
+    HGDIOBJ oldBrush = brush ? SelectObject(dc, brush) : nullptr;
+    HGDIOBJ oldPen = pen ? SelectObject(dc, pen) : nullptr;
+    Polygon(dc, points, 3);
+    if (oldBrush) SelectObject(dc, oldBrush);
+    if (oldPen) SelectObject(dc, oldPen);
+    if (brush) DeleteObject(brush);
+    if (pen) DeleteObject(pen);
 }
 
 void DrawButtonFrame(
@@ -2164,6 +2180,18 @@ bool TableShowsDefaultHeaderGridLine(HWND table) {
     return state && state->kind == ControlKind::Table;
 }
 
+int TableHeaderSortDirection(HWND table, int column) {
+    auto state = FindState(table);
+    if (!state || state->kind != ControlKind::Table || column < 0 ||
+        static_cast<std::size_t>(column) >= state->tableColumnKeys.size()) {
+        return 0;
+    }
+    return !state->tableColumnKeys[static_cast<std::size_t>(column)].empty() &&
+            state->tableColumnKeys[static_cast<std::size_t>(column)] == state->tableSortColumnKey
+        ? state->tableSortDirection
+        : 0;
+}
+
 void DrawTableGridLines(const Theme& theme, HDC dc, RECT rect, bool rowLine, bool columnLine) {
     if (!rowLine && !columnLine) {
         return;
@@ -2248,6 +2276,27 @@ void DrawHeaderItem(const Theme& theme, HWND header, const NMCUSTOMDRAW* draw) {
     RECT textRect = rect;
     textRect.left += paddingX;
     textRect.right -= paddingX;
+    const int sortDirection = table ? TableHeaderSortDirection(tableHwnd, index) : 0;
+    if (sortDirection != 0) {
+        const int arrowSize = table
+            ? TableScaledMetric(tableHwnd, theme, L"global", L"denseGap", 4.0f) * 2
+            : ScaledMetric(header, theme, L"global", L"denseGap", 4.0f) * 2;
+        const int arrowX = std::max(static_cast<int>(textRect.left), static_cast<int>(textRect.right) - arrowSize);
+        const int arrowY = static_cast<int>(rect.top) +
+            std::max(0, (static_cast<int>(rect.bottom - rect.top) - arrowSize) / 2);
+        POINT points[3]{};
+        if (sortDirection > 0) {
+            points[0] = POINT{arrowX, arrowY + arrowSize};
+            points[1] = POINT{arrowX + arrowSize / 2, arrowY};
+            points[2] = POINT{arrowX + arrowSize, arrowY + arrowSize};
+        } else {
+            points[0] = POINT{arrowX, arrowY};
+            points[1] = POINT{arrowX + arrowSize, arrowY};
+            points[2] = POINT{arrowX + arrowSize / 2, arrowY + arrowSize};
+        }
+        FillThemedTriangle(draw->hdc, points, ToColorRef(theme.color(component, L"normal", L"text")));
+        textRect.right = static_cast<LONG>(std::max(static_cast<int>(textRect.left), arrowX - paddingX));
+    }
     UINT format = DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS;
     if ((item.fmt & HDF_CENTER) == HDF_CENTER) {
         format = (format & ~DT_LEFT) | DT_CENTER;
@@ -3946,9 +3995,36 @@ void ConfigureTableRowPresentation(HWND table, bool twoLines) {
     InvalidateRect(table, nullptr, TRUE);
 }
 
-void ConfigureTableColumns(HWND table, const std::vector<int>& widthModes) {
+void ConfigureTableColumns(
+    HWND table,
+    const std::vector<int>& widthModes,
+    const std::vector<std::wstring>& keys,
+    const std::vector<bool>& sortable) {
     if (!table) return;
-    StateFor(table).tableColumnWidthModes = widthModes;
+    auto& state = StateFor(table);
+    state.tableColumnWidthModes = widthModes;
+    state.tableColumnKeys = keys;
+    state.tableColumnSortable = sortable;
+    state.tableColumnKeys.resize(widthModes.size());
+    state.tableColumnSortable.resize(widthModes.size(), false);
+}
+
+bool IsTableColumnSortable(HWND table, int column) {
+    if (!table || column < 0) return false;
+    const auto state = FindState(table);
+    if (!state || state->kind != ControlKind::Table) return false;
+    const std::size_t index = static_cast<std::size_t>(column);
+    return index < state->tableColumnSortable.size() && state->tableColumnSortable[index];
+}
+
+void SetTableSortState(HWND table, const std::wstring& columnKey, int direction) {
+    if (!table) return;
+    auto& state = StateFor(table);
+    state.tableSortColumnKey = columnKey;
+    state.tableSortDirection = direction < 0 ? -1 : (direction > 0 ? 1 : 0);
+    if (HWND header = ListView_GetHeader(table)) {
+        InvalidateRect(header, nullptr, TRUE);
+    }
 }
 
 void MoveTable(HWND table, int x, int y, int width, int height) {

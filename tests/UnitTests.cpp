@@ -2895,17 +2895,36 @@ int wmain() {
                 ThemedUi::FindTableRowByKey(runtimeTable, 44) == 2 &&
                 ThemedUi::TableSelectedIndex(runtimeTable) == 0,
             "Themed table appends a stable-key row without replacing selection");
+        wchar_t appendedTail[64]{};
+        ListView_GetItemText(runtimeTable, appendedRow, 1, appendedTail, static_cast<int>(std::size(appendedTail)));
+        Check(std::wstring(appendedTail) == L"tail",
+            "Themed table incremental append writes non-first-column text");
         Check(ThemedUi::UpdateTableRow(
                 runtimeTable, 2, ThemedTableRow{44, {{L"updated"}, {L"in place"}}, true, true, true}) &&
                 ThemedUi::IsTableChecked(runtimeTable, 2) && ThemedUi::TableRowKey(runtimeTable, 2) == 44,
             "Themed table updates one row in place");
+        wchar_t updatedTail[64]{};
+        ListView_GetItemText(runtimeTable, 2, 1, updatedTail, static_cast<int>(std::size(updatedTail)));
+        Check(std::wstring(updatedTail) == L"in place",
+            "Themed table incremental update refreshes non-first-column text");
         Check(ThemedUi::IsTableRowActive(runtimeTable, 2),
             "Themed table incremental update applies the active-row frame state");
-        Check(ThemedUi::RemoveTableRow(runtimeTable, 1) &&
+        Check(ThemedUi::UpdateTableRowByKey(
+                runtimeTable, 44, ThemedTableRow{0, {{L"keyed"}, {L"by key"}}, false, true, true}) &&
+                ThemedUi::TableRowKey(runtimeTable, 2) == 44,
+            "Themed table updates one row by stable key without changing identity");
+        wchar_t keyedTail[64]{};
+        ListView_GetItemText(runtimeTable, 2, 1, keyedTail, static_cast<int>(std::size(keyedTail)));
+        Check(std::wstring(keyedTail) == L"by key",
+            "Themed table key-based update refreshes subitem text");
+        Check(ThemedUi::SetTableSelectedKey(runtimeTable, 44) &&
+                ThemedUi::TableSelectedIndex(runtimeTable) == 2,
+            "Themed table selects a row by stable key");
+        Check(ThemedUi::RemoveTableRowByKey(runtimeTable, 43) &&
                 ThemedUi::TableRowCount(runtimeTable) == 2 &&
                 ThemedUi::TableRowKey(runtimeTable, 0) == 42 &&
                 ThemedUi::TableRowKey(runtimeTable, 1) == 44,
-            "Themed table removes one row while preserving remaining order");
+            "Themed table removes one row by stable key while preserving remaining order");
 
         ThemedTableOptions twoLineOptions{};
         twoLineOptions.showHeader = false;
@@ -3004,6 +3023,26 @@ int wmain() {
         HWND resizeHeader = ListView_GetHeader(resizeTable);
         Check(resizeHeader && ((GetWindowLongPtrW(resizeHeader, GWL_STYLE) & HDS_NOSIZING) == 0),
             "Themed table preserves explicit header resize opt-in");
+        HWND sortableTable = controlUi.Table(
+            7112, RECT{0, 365, 360, 455},
+            {ThemedTableColumn{L"name", L"Name", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, 120},
+             ThemedTableColumn{L"value", L"Value", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Remaining, 0, true}},
+            ThemedTableOptions{});
+        NMLISTVIEW nonSortableClick{};
+        nonSortableClick.hdr.hwndFrom = sortableTable;
+        nonSortableClick.hdr.code = LVN_COLUMNCLICK;
+        nonSortableClick.iSubItem = 0;
+        ThemedTableEvent sortEvent{};
+        Check(!ThemedUi::DecodeTableEvent(sortableTable, reinterpret_cast<LPARAM>(&nonSortableClick), sortEvent),
+            "Themed table ignores column clicks for non-sortable headers");
+        NMLISTVIEW sortableClick{};
+        sortableClick.hdr.hwndFrom = sortableTable;
+        sortableClick.hdr.code = LVN_COLUMNCLICK;
+        sortableClick.iSubItem = 1;
+        Check(ThemedUi::DecodeTableEvent(sortableTable, reinterpret_cast<LPARAM>(&sortableClick), sortEvent) &&
+                sortEvent.kind == ThemedTableEventKind::SortRequested && sortEvent.column == 1,
+            "Themed table emits sort events only for sortable headers");
+        ThemedUi::SetTableSortState(sortableTable, L"value", 1);
         HWND groupChild = CreateWindowExW(0, L"STATIC", L"child", WS_CHILD | WS_VISIBLE, 0, 0, 40, 20, controlParent, nullptr, GetModuleHandleW(nullptr), nullptr);
         HWND runtimeGroup = controlUi.GroupBox(512, L"Group", RECT{380, 0, 620, 120});
         const RECT runtimeGroupContent = ThemedUi::GroupContentRect(runtimeGroup);

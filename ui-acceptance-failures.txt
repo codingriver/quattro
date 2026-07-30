@@ -1,8 +1,6 @@
-link-popup-menu: popup screenshot is invalid
 table-checkable-states: first-column checkbox is not painted at the public column origin
-table-column-resize: header divider count is not column count - 1 after column width change
-table-grid-lines-default: header column grid line is not visible by default
-table-grid-lines-default: header bottom grid line is not visible by default
+table-grid-lines-enabled: column grid line is not visible
+table-grid-lines-enabled: row grid line is not visible
 app-launch-locker: startup scan progress did not report workers
 app-launch-locker: startup scan progress screenshot failed
 app-launch-locker: startup scan progress did not report workers
@@ -13,6 +11,9 @@ ad-block: progress dialog did not report parallel workers
 ad-block: progress dialog did not distinguish registered auto-start entries
 ad-block: running check action did not switch to view-progress state
 ad-block running progress: screenshot bitmap was not created
+ad-block: AppLaunchLocker did not create the isolated app.log
+ad-block: AppLaunchLocker GUI startup log is missing
+ad-block: AppLaunchLocker did not initialize the GUI thread as an OLE/STA apartment
 builtin-clock-100-seconds: expected text not found: ????
 builtin-clock-100-milliseconds: expected text not found: ????
 builtin-clock-125-seconds: expected text not found: ????

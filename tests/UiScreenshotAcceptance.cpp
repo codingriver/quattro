@@ -2757,7 +2757,19 @@ void RunWebDavFileColumnsScenario(const std::filesystem::path& outputDir, TestSt
         (actionCell.top + actionCell.bottom) / 2};
     state.Check(ThemedUi::TableScreenHitTest(host.table_, actionCellCenter) == 0,
         scenario + L": public screen-coordinate hit test did not resolve the action row");
+    RedrawWindow(host.table_, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW | RDW_ALLCHILDREN);
+    if (HWND tableHeader = ListView_GetHeader(host.table_)) {
+        RedrawWindow(tableHeader, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW);
+    }
     BitmapCapture capture = CaptureWindowBitmap(hwnd);
+    if (capture.bitmap && !BitmapHasVisualContent(capture.bitmap, capture.width, capture.height)) {
+        DeleteObject(capture.bitmap);
+        capture = CaptureClientBitmapWithChildren(hwnd);
+    }
+    if (capture.bitmap && !BitmapHasVisualContent(capture.bitmap, capture.width, capture.height)) {
+        DeleteObject(capture.bitmap);
+        capture = CaptureControlBitmap(host.table_);
+    }
     state.Check(capture.bitmap != nullptr, scenario + L": capture failed");
     if (capture.bitmap) {
         state.Check(BitmapHasVisualContent(capture.bitmap, capture.width, capture.height),
@@ -5928,7 +5940,6 @@ int wmain() {
                     L"DWrite 多行消息测量与公共 D2D 背景绘制验收。",
                     L"D2D 消息框", MB_OKCANCEL | MB_ICONINFORMATION);
             });
-
             Scenario restoreDeletedScenario{
                 L"webdav-restore-deleted-" + suffix,
                 L"QuattroThemedMessageDialog",
@@ -6008,6 +6019,7 @@ int wmain() {
             RunDialogScenario(todoScenario, outputDir, state, [&]() {
                 TodoEditDialog::Show(owner, instance, theme, todo, true);
             });
+
         }
         DestroyWindow(owner);
         OleUninitialize();

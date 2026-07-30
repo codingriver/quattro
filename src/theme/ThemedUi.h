@@ -927,8 +927,11 @@ public:
     static void SetTableRows(HWND table, const std::vector<ThemedTableRow>& rows);
     static int AppendTableRow(HWND table, const ThemedTableRow& row);
     static bool UpdateTableRow(HWND table, int index, const ThemedTableRow& row);
+    static bool UpdateTableRowByKey(HWND table, std::intptr_t key, const ThemedTableRow& row);
     static bool RemoveTableRow(HWND table, int index);
+    static bool RemoveTableRowByKey(HWND table, std::intptr_t key);
     static int FindTableRowByKey(HWND table, std::intptr_t key);
+    static void SetTableSortState(HWND table, const std::wstring& columnKey, int direction);
     static void SetTableView(HWND table, ThemedTableView view);
     static void SetTableChecked(HWND table, int index, bool checked);
     static void SetTableCheckedAll(HWND table, bool checked);
@@ -938,6 +941,7 @@ public:
     static int TableRowCount(HWND table);
     static int TableSelectedIndex(HWND table);
     static void SetTableSelectedIndex(HWND table, int index);
+    static bool SetTableSelectedKey(HWND table, std::intptr_t key);
     static std::intptr_t TableRowKey(HWND table, int index);
     static std::intptr_t TableTopVisibleRowKey(HWND table);
     static bool RestoreTableTopVisibleRowByKey(HWND table, std::intptr_t key);

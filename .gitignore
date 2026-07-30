@@ -19,6 +19,7 @@
 !/icons/menu/tabler/
 !/icons/menu/tabler/**
 /docs/*
+!/docs/UPDATE_DESIGN.md
 /docs/Quattro/*
 
 /screenshots/*
@@ -106,3 +107,4 @@ toast-info.png
 /*.gif
 /*.bmp
 /artifacts
+.workbuddy

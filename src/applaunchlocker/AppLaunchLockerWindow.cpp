@@ -1897,13 +1897,6 @@ void AppLaunchLockerWindow::RebuildRows() {
             ThemedUi::SetComboBoxSelectedIndex(advancedSourceFilter_, advancedSourceFilterIndex_, false);
         }
     }
-    ThemedUi::SetTableColumns(itemTable_, MainTableColumns(windowUi_->ui(), tab.tab));
-
-    DestroyItemImages();
-    itemIconSize_ = std::max(16, GetSystemMetrics(SM_CXSMICON));
-    itemSmallImages_ = ImageList_Create(itemIconSize_, itemIconSize_, ILC_COLOR32 | ILC_MASK,
-        std::max(1, static_cast<int>(applications_.size() + items_.size() + disabled_.size())), 8);
-
     if (tab.tab == MainTab::StartupItems) {
         for (std::size_t index = 0; index < applications_.size(); ++index) {
             const StartupApplication& application = applications_[index];
@@ -1940,18 +1933,19 @@ void AppLaunchLockerWindow::RebuildRows() {
         }
     }
 
-    ThemedUi::SetTableImageLists(itemTable_, itemSmallImages_, nullptr);
-    ThemedUi::SetTableRows(itemTable_, rows);
-    if (previousSelectedKey != 0) {
-        const int restoredIndex = ThemedUi::FindTableRowByKey(itemTable_, previousSelectedKey);
-        if (restoredIndex >= 0) ThemedUi::SetTableSelectedIndex(itemTable_, restoredIndex);
-    }
-    ThemedUi::RestoreTableTopVisibleRowByKey(itemTable_, previousTopKey);
-    const std::wstring status = L"当前页：" + tab.title + L"，共 " + std::to_wstring(rows.size()) + L" 项";
+    pendingRows_ = std::move(rows);
+    pendingSelectedKey_ = previousSelectedKey;
+    pendingTopKey_ = previousTopKey;
+    pendingRowsTab_ = tab.tab;
+    rowDisplayPending_ = true;
+    itemIconSize_ = std::max(16, GetSystemMetrics(SM_CXSMICON));
+    const std::wstring status = L"当前页：" + tab.title + L"，共 " + std::to_wstring(pendingRows_.size()) + L" 项";
     ThemedUi::SetText(statusText_, status);
     windowUi_->ui().SetStatusTextRole(statusText_, ThemedStatusRole::Normal);
     UpdateButtons();
-    StartIconLoadTask();
+    if (!StartIconLoadTask()) {
+        ShowPendingRows(nullptr, {});
+    }
 }
 
 void AppLaunchLockerWindow::DestroyItemImages() {
@@ -1974,8 +1968,8 @@ void AppLaunchLockerWindow::StopIconLoadTask() {
     }
 }
 
-void AppLaunchLockerWindow::StartIconLoadTask() {
-    if (!hwnd_ || !itemTable_ || !itemSmallImages_) return;
+bool AppLaunchLockerWindow::StartIconLoadTask() {
+    if (!hwnd_ || !itemTable_) return false;
 
     std::vector<AppLaunchLockerIconLoadItem> iconItems;
     iconItems.reserve(visibleApplicationIndexes_.size() + visibleItemIndexes_.size() + visibleDisabledIndexes_.size());
@@ -2000,7 +1994,7 @@ void AppLaunchLockerWindow::StartIconLoadTask() {
         iconItems.push_back({visibleDisabledRowKeys_[row],
             IconRequestFromFields(record.source, std::wstring{}, record.original, itemIconSize_)});
     }
-    if (iconItems.empty()) return;
+    if (iconItems.empty()) return false;
 
     const std::uint64_t generation = iconGeneration_;
     const HWND target = hwnd_;
@@ -2052,76 +2046,77 @@ void AppLaunchLockerWindow::StartIconLoadTask() {
             }
             return result;
         });
+    return iconTask_ != nullptr;
 }
 
 void AppLaunchLockerWindow::ApplyIconLoadResult(std::uint64_t generation) {
     if (!iconTask_ || generation != iconGeneration_ || !iconTask_->IsFinished()) return;
     if (iconTask_->Status() != TaskStatus::Completed) {
         iconTask_.reset();
+        if (rowDisplayPending_) {
+            ShowPendingRows(nullptr, {});
+        }
         return;
     }
 
     AppLaunchLockerIconLoadResult result = iconTask_->ResultCopy<AppLaunchLockerIconLoadResult>();
     iconTask_.reset();
-    if (result.generation != iconGeneration_ || !itemTable_ || !itemSmallImages_) return;
+    if (result.generation != iconGeneration_ || !itemTable_) return;
 
-    const MainTab currentTab = activeTab_ >= 0 && activeTab_ < static_cast<int>(tabs_.size())
-        ? tabs_[static_cast<std::size_t>(activeTab_)].tab
-        : MainTab::StartupItems;
+    HIMAGELIST newImages = ImageList_Create(itemIconSize_, itemIconSize_, ILC_COLOR32 | ILC_MASK,
+        std::max(1, static_cast<int>(result.icons.size())), 8);
+    std::map<std::intptr_t, int> imageIndexes;
 
-    bool updated = false;
     for (const AppLaunchLockerIconResult& icon : result.icons) {
+        if (!newImages) break;
         HBITMAP bitmap = IconResolverService::CreateBitmapFromPixels(
             icon.icon,
             itemIconSize_,
             ThemedUi::ListSurfaceColor(theme_),
             true);
         if (!bitmap) continue;
-        const int imageIndex = ImageList_Add(itemSmallImages_, bitmap, nullptr);
+        const int imageIndex = ImageList_Add(newImages, bitmap, nullptr);
         DeleteObject(bitmap);
         if (imageIndex < 0) continue;
-
-        const int rowIndex = ThemedUi::FindTableRowByKey(itemTable_, icon.rowKey);
-        if (rowIndex < 0) continue;
-
-        const auto applicationKey = std::find(visibleApplicationRowKeys_.begin(), visibleApplicationRowKeys_.end(), icon.rowKey);
-        const auto itemKey = std::find(visibleItemRowKeys_.begin(), visibleItemRowKeys_.end(), icon.rowKey);
-        const auto disabledKey = std::find(visibleDisabledRowKeys_.begin(), visibleDisabledRowKeys_.end(), icon.rowKey);
-        if (applicationKey != visibleApplicationRowKeys_.end()) {
-            const std::size_t visibleIndex = static_cast<std::size_t>(std::distance(visibleApplicationRowKeys_.begin(), applicationKey));
-            if (visibleIndex >= visibleApplicationIndexes_.size()) continue;
-            const std::size_t applicationIndex = visibleApplicationIndexes_[visibleIndex];
-            if (applicationIndex >= applications_.size()) continue;
-            const StartupApplication& application = applications_[applicationIndex];
-            ThemedUi::UpdateTableRow(itemTable_, rowIndex, {icon.rowKey,
-                ApplicationRowCells(application, imageIndex),
-                false, true});
-            updated = true;
-        } else if (itemKey != visibleItemRowKeys_.end()) {
-            const std::size_t visibleIndex = static_cast<std::size_t>(std::distance(visibleItemRowKeys_.begin(), itemKey));
-            if (visibleIndex >= visibleItemIndexes_.size()) continue;
-            const std::size_t itemIndex = visibleItemIndexes_[visibleIndex];
-            if (itemIndex >= items_.size()) continue;
-            const StartupItem& item = items_[itemIndex];
-            ThemedUi::UpdateTableRow(itemTable_, rowIndex, {icon.rowKey,
-                StartupItemRowCells(item, imageIndex, currentTab),
-                false, true});
-            updated = true;
-        } else if (disabledKey != visibleDisabledRowKeys_.end()) {
-            const std::size_t visibleIndex = static_cast<std::size_t>(std::distance(visibleDisabledRowKeys_.begin(), disabledKey));
-            if (visibleIndex >= visibleDisabledIndexes_.size()) continue;
-            const std::size_t recordIndex = visibleDisabledIndexes_[visibleIndex];
-            if (recordIndex >= disabled_.size()) continue;
-            const DisabledRecord& record = disabled_[recordIndex];
-            ThemedUi::UpdateTableRow(itemTable_, rowIndex, {icon.rowKey,
-                DisabledRecordRowCells(record, imageIndex, currentTab),
-                false, true});
-            updated = true;
-        }
+        imageIndexes[icon.rowKey] = imageIndex;
     }
-    if (updated) {
-        InvalidateRect(itemTable_, nullptr, FALSE);
+    ShowPendingRows(newImages, imageIndexes);
+}
+
+void AppLaunchLockerWindow::ShowPendingRows(HIMAGELIST newImages, const std::map<std::intptr_t, int>& imageIndexes) {
+    if (!itemTable_) {
+        if (newImages) ImageList_Destroy(newImages);
+        return;
     }
+
+    std::vector<ThemedTableRow> rows = pendingRows_;
+    for (ThemedTableRow& row : rows) {
+        if (row.cells.empty()) continue;
+        const auto found = imageIndexes.find(row.key);
+        row.cells.front().image = found == imageIndexes.end() ? -1 : found->second;
+    }
+
+    const ThemedUi ui = windowUi_->ui();
+    ThemedUi::SetTableColumns(itemTable_, MainTableColumns(ui, pendingRowsTab_));
+
+    HIMAGELIST oldImages = itemSmallImages_;
+    itemSmallImages_ = newImages;
+    ThemedUi::SetTableImageLists(itemTable_, itemSmallImages_, nullptr);
+    ThemedUi::SetTableRows(itemTable_, rows);
+    if (oldImages && oldImages != itemSmallImages_) {
+        ImageList_Destroy(oldImages);
+    }
+
+    if (pendingSelectedKey_ != 0) {
+        const int restoredIndex = ThemedUi::FindTableRowByKey(itemTable_, pendingSelectedKey_);
+        if (restoredIndex >= 0) ThemedUi::SetTableSelectedIndex(itemTable_, restoredIndex);
+    }
+    ThemedUi::RestoreTableTopVisibleRowByKey(itemTable_, pendingTopKey_);
+    pendingRows_.clear();
+    pendingSelectedKey_ = 0;
+    pendingTopKey_ = 0;
+    rowDisplayPending_ = false;
+    UpdateButtons();
 }
 
 std::intptr_t AppLaunchLockerWindow::RowKeyForIdentity(const std::wstring& identity) {
@@ -2140,6 +2135,7 @@ void AppLaunchLockerWindow::SelectTab(int index) {
 }
 
 const StartupApplication* AppLaunchLockerWindow::SelectedApplication() const {
+    if (rowDisplayPending_) return nullptr;
     if (activeTab_ < 0 || activeTab_ >= static_cast<int>(tabs_.size()) ||
         tabs_[static_cast<std::size_t>(activeTab_)].tab != MainTab::StartupItems) {
         return nullptr;
@@ -2151,6 +2147,7 @@ const StartupApplication* AppLaunchLockerWindow::SelectedApplication() const {
 }
 
 const StartupItem* AppLaunchLockerWindow::SelectedStartupItem() const {
+    if (rowDisplayPending_) return nullptr;
     if (activeTab_ >= 0 && activeTab_ < static_cast<int>(tabs_.size()) &&
         tabs_[static_cast<std::size_t>(activeTab_)].tab == MainTab::StartupItems) {
         return nullptr;
@@ -2162,6 +2159,7 @@ const StartupItem* AppLaunchLockerWindow::SelectedStartupItem() const {
 }
 
 const DisabledRecord* AppLaunchLockerWindow::SelectedDisabledRecord() const {
+    if (rowDisplayPending_) return nullptr;
     if (activeTab_ >= 0 && activeTab_ < static_cast<int>(tabs_.size()) &&
         tabs_[static_cast<std::size_t>(activeTab_)].tab == MainTab::StartupItems) {
         return nullptr;

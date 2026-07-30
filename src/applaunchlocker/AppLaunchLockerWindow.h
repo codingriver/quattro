@@ -2,6 +2,7 @@
 
 #include "AppLaunchLockerCore.h"
 #include "Theme.h"
+#include "ThemedUi.h"
 
 #include <windows.h>
 #include <commctrl.h>
@@ -53,7 +54,8 @@ private:
     void RebuildRows();
     void DestroyItemImages();
     void StopIconLoadTask();
-    void StartIconLoadTask();
+    bool StartIconLoadTask();
+    void ShowPendingRows(HIMAGELIST newImages, const std::map<std::intptr_t, int>& imageIndexes);
     void ApplyIconLoadResult(std::uint64_t generation);
     void UpdateButtons();
     void ShowSelectedDetails();
@@ -94,6 +96,10 @@ private:
     std::vector<std::intptr_t> visibleDisabledRowKeys_;
     std::map<std::wstring, std::intptr_t> stableRowKeys_;
     std::intptr_t nextStableRowKey_ = 1;
+    std::vector<ThemedTableRow> pendingRows_;
+    std::intptr_t pendingSelectedKey_ = 0;
+    std::intptr_t pendingTopKey_ = 0;
+    MainTab pendingRowsTab_ = MainTab::StartupItems;
     std::vector<DisabledRecord> disabled_;
     std::shared_ptr<ScanTaskHandle> scanTask_;
     std::shared_ptr<TaskHandle> iconTask_;
@@ -103,6 +109,7 @@ private:
     std::atomic<bool> closing_{false};
     bool busy_ = false;
     bool storeAvailable_ = true;
+    bool rowDisplayPending_ = false;
     int activeTab_{};
     int advancedSourceFilterIndex_ = 0;
 };
