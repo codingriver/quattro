@@ -183,7 +183,7 @@ if ($LASTEXITCODE -gt 1) {
 }
 
 if ($Package) {
-    & (Join-Path $PSScriptRoot "build.ps1") -Configuration $Configuration -SkipTests
+    & (Join-Path $root "build.ps1") -Configuration $Configuration -SkipTests
     $compatLines.Add("package=created")
 }
 

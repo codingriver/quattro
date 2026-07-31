@@ -38,7 +38,7 @@ function Assert-Plan {
     if ($platformIndex -ge 0 -and $platformIndex + 1 -lt $Arguments.Count) {
         $parameters.Platform = $Arguments[$platformIndex + 1]
     }
-    $lines = @(& (Join-Path $PSScriptRoot "build.ps1") @parameters)
+    $lines = @(& (Join-Path $root "build.ps1") @parameters)
     if ($lines -notcontains "official_build=$ExpectedOfficial" -or
         $lines -notcontains "build_marker=$ExpectedMarker" -or
         $lines -notcontains "embedded_assets=$ExpectedEmbeddedAssets" -or
@@ -84,7 +84,7 @@ function Assert-GeneratedIdentity {
 }
 
 function Assert-ReleasePlan {
-    $buildScript = Join-Path $PSScriptRoot "build.ps1"
+    $buildScript = Join-Path $root "build.ps1"
     $lines = @(& $buildScript -Release -PlanOnly)
     $expected = @(
         "release=ON",

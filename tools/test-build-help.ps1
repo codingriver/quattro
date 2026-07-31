@@ -1,6 +1,7 @@
 ﻿$ErrorActionPreference = "Stop"
 
-$buildScript = Join-Path $PSScriptRoot "build.ps1"
+$root = Split-Path -Parent $PSScriptRoot
+$buildScript = Join-Path $root "build.ps1"
 $buildScriptBytes = [System.IO.File]::ReadAllBytes($buildScript)
 if ($buildScriptBytes.Length -lt 3 -or
     $buildScriptBytes[0] -ne 0xEF -or

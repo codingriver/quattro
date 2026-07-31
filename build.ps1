@@ -37,7 +37,7 @@ if ($Upx -and $NoUpx) {
 }
 
 # PowerShell 脚本参数原生使用单短横线。保留项目文档既有的 GNU 风格入口，
-# 使 .\tools\build.ps1 --all / --help 与 -All / -Help 行为一致。
+# 使 .\build.ps1 --all / --help 与 -All / -Help 行为一致。
 if ($Platform -eq "--all") {
     $All = $true
     $Platform = "x64"
@@ -91,7 +91,7 @@ if ($Upx -and !$PlanOnly) {
     }
 }
 
-$root = Split-Path -Parent $PSScriptRoot
+$root = $PSScriptRoot
 Set-Location $root
 $effectiveVersion = if ([string]::IsNullOrWhiteSpace($Version)) { "0.1.0" } else { $Version }
 $formalBuildDefaults = $OfficialBuild -or $env:GITHUB_ACTIONS -eq "true"
@@ -122,7 +122,7 @@ function Show-PackageHelp {
 Quattro 中文构建与打包工具
 
 用法：
-  powershell -ExecutionPolicy Bypass -File .\tools\$scriptName [options]
+  powershell -ExecutionPolicy Bypass -File .\$scriptName [options]
 
 默认行为：
   构建本地开发版 x64 完整包，使用 vcpkg 后端和 Release 配置。
@@ -222,49 +222,49 @@ Quattro 中文构建与打包工具
 
 常用示例：
   # 本地 x64 开发版完整包（包含 AppLaunchLocker、QuattroUpdater）
-  powershell -ExecutionPolicy Bypass -File .\tools\$scriptName
+  powershell -ExecutionPolicy Bypass -File .\$scriptName
 
   # 本地 x64 开发版精简包（仅 Quattro）
-  powershell -ExecutionPolicy Bypass -File .\tools\$scriptName -Minimal
+  powershell -ExecutionPolicy Bypass -File .\$scriptName -Minimal
 
   # 本地完整包，包含 AppLaunchLocker、QuattroUpdater，构建 x86 和 x64
-  powershell -ExecutionPolicy Bypass -File .\tools\$scriptName --all
+  powershell -ExecutionPolicy Bypass -File .\$scriptName --all
 
   # 本地 x64 完整包，包含 AppLaunchLocker、QuattroUpdater
-  powershell -ExecutionPolicy Bypass -File .\tools\$scriptName -Complete
+  powershell -ExecutionPolicy Bypass -File .\$scriptName -Complete
 
   # 本地 x86 完整包，包含 AppLaunchLocker、QuattroUpdater
-  powershell -ExecutionPolicy Bypass -File .\tools\$scriptName -Platform x86 -Complete
+  powershell -ExecutionPolicy Bypass -File .\$scriptName -Platform x86 -Complete
 
   # 测试 AppLaunchLocker、QuattroUpdater 相关内容
-  powershell -ExecutionPolicy Bypass -File .\tools\$scriptName -All -Test
+  powershell -ExecutionPolicy Bypass -File .\$scriptName -All -Test
 
   # 只运行 Quattro 精简构建范围的相关测试
-  powershell -ExecutionPolicy Bypass -File .\tools\$scriptName -Minimal -Test
+  powershell -ExecutionPolicy Bypass -File .\$scriptName -Minimal -Test
 
   # 快速构建但不生成 ZIP
-  powershell -ExecutionPolicy Bypass -File .\tools\$scriptName -NoZip
+  powershell -ExecutionPolicy Bypass -File .\$scriptName -NoZip
 
   # 查看将使用的构建目录和组件范围
-  powershell -ExecutionPolicy Bypass -File .\tools\$scriptName -All -PlanOnly
+  powershell -ExecutionPolicy Bypass -File .\$scriptName -All -PlanOnly
 
   # 本地构建并检查、剥离、复检和嵌入 Tabler 字体子集
-  powershell -ExecutionPolicy Bypass -File .\tools\$scriptName -Platform x64 -Complete -SubsetTablerFont
+  powershell -ExecutionPolicy Bypass -File .\$scriptName -Platform x64 -Complete -SubsetTablerFont
 
   # 构建指定版本的 GitHub 正式完整包
-  powershell -ExecutionPolicy Bypass -File .\tools\$scriptName -Release -Version 1.2.3
+  powershell -ExecutionPolicy Bypass -File .\$scriptName -Release -Version 1.2.3
 
   # 构建与 GitHub Actions 单平台选项一致的 x64 正式精简包
-  powershell -ExecutionPolicy Bypass -File .\tools\$scriptName -Release -Platform x64 -Version 1.2.3
+  powershell -ExecutionPolicy Bypass -File .\$scriptName -Release -Platform x64 -Version 1.2.3
 
   # 构建不使用 UPX 的正式包
-  powershell -ExecutionPolicy Bypass -File .\tools\$scriptName -Release -NoUpx -Version 1.2.3
+  powershell -ExecutionPolicy Bypass -File .\$scriptName -Release -NoUpx -Version 1.2.3
 
   # 显式压缩内置主题和图标资源
-  powershell -ExecutionPolicy Bypass -File .\tools\$scriptName -Release -CompressEmbeddedAssets -Version 1.2.3
+  powershell -ExecutionPolicy Bypass -File .\$scriptName -Release -CompressEmbeddedAssets -Version 1.2.3
 
   # 仅构建 x86 精简包
-  powershell -ExecutionPolicy Bypass -File .\tools\$scriptName -Platform x86 -Minimal
+  powershell -ExecutionPolicy Bypass -File .\$scriptName -Platform x86 -Minimal
 "@
 }
 

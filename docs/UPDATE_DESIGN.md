@@ -27,7 +27,7 @@
 
 | 层级 | 现有文件 | 职责 |
 | --- | --- | --- |
-| 发布产物元数据 | `tools/build.ps1` | 生成 `latest.json` 和 `SHA256SUMS.txt` |
+| 发布产物元数据 | `build.ps1` | 生成 `latest.json` 和 `SHA256SUMS.txt` |
 | 检查/下载服务 | `src/services/UpdateCheckService.*` | 版本比较、清单解析、镜像候选、下载、SHA256 校验 |
 | 主程序 UI 编排 | `src/windows/MainWindow.cpp`、`src/windows/UpdateCheckDialog.*`、`src/windows/UpdateDownloadDialog.*` | 检查更新菜单、确认弹窗、下载进度、用户决策 |
 | 安装替换进程 | `src/services/UpdateInstaller.*`、`src/updater/UpdaterMain.cpp` | 准备并启动独立更新器，等待旧进程退出，备份、替换、重启 |

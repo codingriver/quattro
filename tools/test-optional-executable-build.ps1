@@ -114,7 +114,7 @@ function Build-And-Assert {
 }
 
 New-Item -ItemType Directory -Force -Path $resolvedBuildRoot | Out-Null
-$buildScript = Join-Path $PSScriptRoot "build.ps1"
+$buildScript = Join-Path $root "build.ps1"
 $defaultPlan = @(& $buildScript -PlanOnly)
 $minimalPlan = @(& $buildScript -Minimal -PlanOnly)
 $x64CompletePlan = @(& $buildScript -Complete -PlanOnly)
