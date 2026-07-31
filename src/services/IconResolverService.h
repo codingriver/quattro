@@ -122,13 +122,13 @@ private:
         int size,
         const std::wstring& source) const;
     ResolvedIcon CaptureBitmap(HBITMAP bitmap, int quality, const std::wstring& source) const;
-    HICON ResolveIconHandle(const IconRequest& request, std::wstring& source) const;
-    HICON ResolveLinkIcon(const Link& link, std::wstring& source) const;
-    HICON ResolveProviderIcon(const std::wstring& providerId, std::wstring& source) const;
+    HICON ResolveIconHandle(const IconRequest& request, int size, std::wstring& source) const;
+    HICON ResolveLinkIcon(const Link& link, int size, std::wstring& source) const;
+    HICON ResolveProviderIcon(const std::wstring& providerId, int size, std::wstring& source) const;
     HICON ResolveProviderIcon(const TrackedContextMenuProviderBinding& binding, std::wstring& source) const;
-    HICON ResolveIconLocation(const std::wstring& value, std::wstring& source) const;
-    HICON ResolveCommandIcon(const IconRequest& request, std::wstring& source) const;
-    HICON ResolveFileIcon(const std::wstring& value, bool directory, std::wstring& source) const;
+    HICON ResolveIconLocation(const std::wstring& value, int size, std::wstring& source) const;
+    HICON ResolveCommandIcon(const IconRequest& request, int size, std::wstring& source) const;
+    HICON ResolveFileIcon(const std::wstring& value, bool directory, int size, std::wstring& source) const;
     HICON ResolvePidlIcon(const std::vector<std::uint8_t>& pidl, std::wstring& source) const;
     HICON ResolveShellParseNameIcon(const std::wstring& value, std::wstring& source) const;
     HICON ResolveStockIcon(SHSTOCKICONID iconId, std::wstring& source) const;

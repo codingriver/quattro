@@ -82,7 +82,7 @@ void PremultiplyTranslucentPixels(std::vector<std::uint32_t>& pixels) {
     }
 }
 
-constexpr wchar_t kResolverCacheNamespace[] = L"resolver-v10";
+constexpr wchar_t kResolverCacheNamespace[] = L"resolver-v11";
 
 std::wstring HashBytesHex(const void* data, std::size_t byteCount) {
     BCRYPT_ALG_HANDLE algorithm = nullptr;
@@ -605,6 +605,228 @@ bool ExtensionIs(const std::wstring& path, const wchar_t* extension) {
     return ToLower(std::filesystem::path(path).extension().wstring()) == extension;
 }
 
+std::uint16_t ReadResourceWord(const BYTE* data, DWORD size, std::size_t offset) {
+    if (!data || offset + sizeof(std::uint16_t) > size) {
+        return 0;
+    }
+    std::uint16_t value = 0;
+    std::memcpy(&value, data + offset, sizeof(value));
+    return value;
+}
+
+std::uint32_t ReadResourceDword(const BYTE* data, DWORD size, std::size_t offset) {
+    if (!data || offset + sizeof(std::uint32_t) > size) {
+        return 0;
+    }
+    std::uint32_t value = 0;
+    std::memcpy(&value, data + offset, sizeof(value));
+    return value;
+}
+
+int IconDimension(BYTE value) {
+    return value == 0 ? 256 : static_cast<int>(value);
+}
+
+int EffectiveIconBitDepth(BYTE colorCount, std::uint16_t bitCount) {
+    if (bitCount > 0) {
+        return static_cast<int>(std::min<std::uint16_t>(bitCount, 32));
+    }
+    if (colorCount == 0) {
+        return 32;
+    }
+    if (colorCount <= 2) {
+        return 1;
+    }
+    if (colorCount <= 16) {
+        return 4;
+    }
+    return 8;
+}
+
+int ScoreIconResourceEntry(
+    int width,
+    int height,
+    int bitDepth,
+    std::uint32_t bytesInResource,
+    int targetSize,
+    int groupOrder) {
+    const int dimension = std::max(width, height);
+    if (dimension <= 0) {
+        return std::numeric_limits<int>::min();
+    }
+    targetSize = std::clamp(targetSize, 1, 256);
+    const int sizeScore = std::min(dimension, targetSize) * 3000 -
+        std::abs(dimension - targetSize) * 500;
+    const int bitDepthScore = std::clamp(bitDepth, 1, 32) * 1000;
+    const int areaScore = std::min((width * height) / 4, 2048);
+    const int byteScore = std::min<int>(bytesInResource / 32, 512);
+    const int squareBonus = width == height ? 500 : 0;
+    return sizeScore + bitDepthScore + areaScore + byteScore + squareBonus - groupOrder * 100;
+}
+
+struct IconResourceName {
+    bool integer = true;
+    WORD id = 0;
+    std::wstring text;
+
+    LPCWSTR value() const {
+        return integer ? MAKEINTRESOURCEW(id) : text.c_str();
+    }
+};
+
+struct BestIconGroupState {
+    HMODULE module = nullptr;
+    int targetSize = 32;
+    int order = 0;
+    int bestScore = std::numeric_limits<int>::min();
+    int bestOrder = 0;
+    bool found = false;
+    IconResourceName bestName;
+};
+
+int ScoreIconGroupResource(HMODULE module, LPCWSTR name, int targetSize, int groupOrder) {
+    HRSRC resource = FindResourceW(module, name, RT_GROUP_ICON);
+    if (!resource) {
+        return std::numeric_limits<int>::min();
+    }
+    HGLOBAL loaded = LoadResource(module, resource);
+    const DWORD size = SizeofResource(module, resource);
+    const BYTE* data = static_cast<const BYTE*>(LockResource(loaded));
+    if (!data || size < 6) {
+        return std::numeric_limits<int>::min();
+    }
+    const std::uint16_t type = ReadResourceWord(data, size, 2);
+    const std::uint16_t count = ReadResourceWord(data, size, 4);
+    if (type != 1 || count == 0) {
+        return std::numeric_limits<int>::min();
+    }
+
+    int bestScore = std::numeric_limits<int>::min();
+    for (std::uint16_t index = 0; index < count; ++index) {
+        const std::size_t offset = 6u + static_cast<std::size_t>(index) * 14u;
+        if (offset + 14u > size) {
+            break;
+        }
+        const int width = IconDimension(data[offset]);
+        const int height = IconDimension(data[offset + 1]);
+        const BYTE colorCount = data[offset + 2];
+        const std::uint16_t bitCount = ReadResourceWord(data, size, offset + 6u);
+        const std::uint32_t bytesInResource = ReadResourceDword(data, size, offset + 8u);
+        bestScore = std::max(
+            bestScore,
+            ScoreIconResourceEntry(
+                width,
+                height,
+                EffectiveIconBitDepth(colorCount, bitCount),
+                bytesInResource,
+                targetSize,
+                groupOrder));
+    }
+    return bestScore;
+}
+
+BOOL CALLBACK EnumBestIconGroupProc(HMODULE module, LPCWSTR, LPWSTR name, LONG_PTR context) {
+    auto* state = reinterpret_cast<BestIconGroupState*>(context);
+    if (!state) {
+        return FALSE;
+    }
+    const int order = state->order++;
+    const int score = ScoreIconGroupResource(module, name, state->targetSize, order);
+    if (score > state->bestScore) {
+        state->bestScore = score;
+        state->bestOrder = order;
+        state->found = true;
+        state->bestName.integer = IS_INTRESOURCE(name) != FALSE;
+        if (state->bestName.integer) {
+            state->bestName.id = LOWORD(reinterpret_cast<ULONG_PTR>(name));
+            state->bestName.text.clear();
+        } else {
+            state->bestName.id = 0;
+            state->bestName.text = name;
+        }
+    }
+    return TRUE;
+}
+
+HICON ExtractResourceIconAtIndex(
+    const std::wstring& path,
+    int iconIndex,
+    int targetSize,
+    std::wstring& source,
+    const std::wstring& sourceName) {
+    targetSize = std::clamp(targetSize, 1, 256);
+    HICON icon = nullptr;
+    UINT iconId = 0;
+    const UINT extracted = PrivateExtractIconsW(
+        path.c_str(),
+        iconIndex,
+        targetSize,
+        targetSize,
+        &icon,
+        &iconId,
+        1,
+        0);
+    if (extracted != UINT_MAX && icon) {
+        source = sourceName;
+        return icon;
+    }
+
+    HICON largeIcon = nullptr;
+    HICON smallIcon = nullptr;
+    if (ExtractIconExW(path.c_str(), iconIndex, &largeIcon, &smallIcon, 1) == 0) {
+        return nullptr;
+    }
+    source = sourceName;
+    if (largeIcon && smallIcon) {
+        DestroyIcon(smallIcon);
+        return largeIcon;
+    }
+    if (largeIcon) {
+        return largeIcon;
+    }
+    return smallIcon;
+}
+
+HICON ExtractBestGroupedResourceIcon(
+    const std::wstring& path,
+    int targetSize,
+    std::wstring& source,
+    const std::wstring& sourceName) {
+    HMODULE module = LoadLibraryExW(
+        path.c_str(),
+        nullptr,
+        LOAD_LIBRARY_AS_DATAFILE | LOAD_LIBRARY_AS_IMAGE_RESOURCE);
+    if (!module) {
+        return nullptr;
+    }
+
+    BestIconGroupState state;
+    state.module = module;
+    state.targetSize = std::clamp(targetSize, 1, 256);
+    EnumResourceNamesW(module, RT_GROUP_ICON, EnumBestIconGroupProc, reinterpret_cast<LONG_PTR>(&state));
+
+    HICON icon = nullptr;
+    if (state.found) {
+        icon = reinterpret_cast<HICON>(LoadImageW(
+            module,
+            state.bestName.value(),
+            IMAGE_ICON,
+            state.targetSize,
+            state.targetSize,
+            LR_DEFAULTCOLOR));
+    }
+    FreeLibrary(module);
+
+    if (icon) {
+        source = sourceName + L"-best-resource";
+        return icon;
+    }
+    if (state.found) {
+        return ExtractResourceIconAtIndex(path, state.bestOrder, targetSize, source, sourceName + L"-best-resource");
+    }
+    return nullptr;
+}
+
 std::wstring ResolveShortcutTargetPath(const std::wstring& shortcutPath) {
     if (!ExtensionIs(shortcutPath, L".lnk")) {
         return {};
@@ -661,30 +883,84 @@ std::wstring ExistingFileSystemIconPath(const Link& link) {
     return std::filesystem::is_regular_file(path, ec) ? path : std::wstring{};
 }
 
-HICON ExtractResourceIcon(const std::wstring& path, std::wstring& source, const std::wstring& sourceName) {
-    if (!(ExtensionIs(path, L".exe") || ExtensionIs(path, L".ico") ||
-          ExtensionIs(path, L".dll") || ExtensionIs(path, L".icl"))) {
+HICON ExtractResourceIcon(
+    const std::wstring& path,
+    int targetSize,
+    std::wstring& source,
+    const std::wstring& sourceName) {
+    targetSize = std::clamp(targetSize, 1, 256);
+    if (ExtensionIs(path, L".ico")) {
+        HICON icon = reinterpret_cast<HICON>(LoadImageW(
+            nullptr,
+            path.c_str(),
+            IMAGE_ICON,
+            targetSize,
+            targetSize,
+            LR_LOADFROMFILE | LR_DEFAULTCOLOR));
+        if (icon) {
+            source = sourceName;
+            return icon;
+        }
+        return ExtractResourceIconAtIndex(path, 0, targetSize, source, sourceName);
+    }
+
+    if (!(ExtensionIs(path, L".exe") || ExtensionIs(path, L".dll") || ExtensionIs(path, L".icl"))) {
         return nullptr;
     }
 
-    HICON largeIcon = nullptr;
-    HICON smallIcon = nullptr;
-    const UINT count = ExtractIconExW(path.c_str(), 0, &largeIcon, &smallIcon, 1);
-    if (count == 0) {
-        return nullptr;
+    if (HICON icon = ExtractBestGroupedResourceIcon(path, targetSize, source, sourceName)) {
+        return icon;
     }
-    source = sourceName;
-    if (largeIcon && smallIcon) {
-        DestroyIcon(smallIcon);
-        return largeIcon;
+    return ExtractResourceIconAtIndex(path, 0, targetSize, source, sourceName);
+}
+
+bool ResolvedIconHasSaturatedColor(const ResolvedIcon& icon) {
+    if (!icon.ok || icon.pixels.empty()) {
+        return false;
     }
-    if (largeIcon) {
-        return largeIcon;
+    int saturatedPixels = 0;
+    for (const std::uint32_t pixel : icon.pixels) {
+        const std::uint32_t alpha = pixel >> 24;
+        if (alpha < 32) {
+            continue;
+        }
+        const int blue = static_cast<int>(pixel & 0xFFu);
+        const int green = static_cast<int>((pixel >> 8) & 0xFFu);
+        const int red = static_cast<int>((pixel >> 16) & 0xFFu);
+        const int maxChannel = std::max({red, green, blue});
+        const int minChannel = std::min({red, green, blue});
+        if (maxChannel > 96 && maxChannel - minChannel > 48) {
+            ++saturatedPixels;
+            if (saturatedPixels >= 8) {
+                return true;
+            }
+        }
     }
-    if (smallIcon) {
-        return smallIcon;
+    return false;
+}
+
+bool ShouldDeferGenericShellItemIcon(const IconRequest& request, const ResolvedIcon& icon) {
+    if (request.kind != IconSourceKind::Link ||
+        icon.source.rfind(L"shell-item-image", 0) != 0 ||
+        ResolvedIconHasSaturatedColor(icon)) {
+        return false;
     }
-    return nullptr;
+
+    const Link& link = request.link;
+    if (LooksLikeUrl(link) || link.type == 1 ||
+        MenuIconIsRenderable(SystemFunctionMenuIconForLink(link))) {
+        return false;
+    }
+
+    const std::wstring fileSystemPath = ExistingFileSystemIconPath(link);
+    if (fileSystemPath.empty()) {
+        return false;
+    }
+    return ExtensionIs(fileSystemPath, L".exe") ||
+        ExtensionIs(fileSystemPath, L".lnk") ||
+        ExtensionIs(fileSystemPath, L".dll") ||
+        ExtensionIs(fileSystemPath, L".ico") ||
+        ExtensionIs(fileSystemPath, L".icl");
 }
 
 std::wstring IconFallbackKindKey(IconFallbackKind kind) {
@@ -914,8 +1190,10 @@ std::wstring IconRouteFromSource(const std::wstring& source) {
     if (source.rfind(L"shell-item-image", 0) == 0) return L"shell-item-image";
     if (source.rfind(L"appx-unplated", 0) != std::wstring::npos) return L"appx-unplated";
     if (source.rfind(L"fallback-", 0) == 0) return L"semantic-fallback";
-    if (source == L"icon-location") return L"icon-location";
+    if (source == L"icon-location" || source == L"icon-location-best-resource") return L"icon-location";
     if (source == L"file-resource" || source == L"shortcut-target-resource" ||
+        source == L"file-resource-best-resource" ||
+        source == L"shortcut-target-resource-best-resource" ||
         source == L"shortcut-target-file") return L"file";
     if (source == L"file" || source == L"file-attributes") return L"file";
     if (source == L"directory" || source == L"directory-attributes") return L"directory";
@@ -1163,7 +1441,7 @@ ResolvedIcon IconResolverService::Resolve(const IconRequest& request, std::stop_
         }
     }
     ResolvedIcon result = ResolveShellItemImage(request, size);
-    if (HasPixels(result)) {
+    if (HasPixels(result) && !ShouldDeferGenericShellItemIcon(request, result)) {
         bool cacheWritten = false;
         if (cacheEnabled && !cachePath.empty()) {
             cacheWritten = SavePngIcon(result, cachePath);
@@ -1179,7 +1457,7 @@ ResolvedIcon IconResolverService::Resolve(const IconRequest& request, std::stop_
         return result;
     }
     std::wstring source;
-    HICON icon = ResolveIconHandle(request, source);
+    HICON icon = ResolveIconHandle(request, size, source);
     if (!icon && request.allowFallback) {
         icon = ResolveFallbackIcon(request.fallbackKind, request.stockIcon, source);
     }
@@ -1279,12 +1557,15 @@ ResolvedIcon IconResolverService::ResolveLinkShellItemImage(const Link& link, in
     if (HasPixels(result)) {
         return result;
     }
-    if (!ExistingFileSystemIconPath(link).empty()) {
-        return {};
-    }
     result = ResolvePidlImage(link.pidl, size, L"shell-item-image-link-pidl");
     if (HasPixels(result)) {
         return result;
+    }
+    if (const std::wstring fileSystemPath = ExistingFileSystemIconPath(link); !fileSystemPath.empty()) {
+        if (ExtensionIs(fileSystemPath, L".lnk")) {
+            return {};
+        }
+        return ResolveShellParseNameImage(fileSystemPath, size, L"shell-item-image-link-parse-name");
     }
     return ResolveShellParseNameImage(link.path, size, L"shell-item-image-link-parse-name");
 }
@@ -1294,6 +1575,10 @@ ResolvedIcon IconResolverService::ResolvePidlImage(
     int size,
     const std::wstring& source) const {
     if (!ShellItemService::IsPidlBlobPlausible(pidl)) {
+        return {};
+    }
+    ScopedComInitialization com;
+    if (!com.usable()) {
         return {};
     }
     IShellItemImageFactory* factory = nullptr;
@@ -1322,13 +1607,25 @@ ResolvedIcon IconResolverService::ResolveShellParseNameImage(
     int size,
     const std::wstring& source) const {
     const std::wstring target = ExpandEnvironmentStringsSafe(Trim(value));
-    if (target.empty() || !ShellItemService::IsShellParseName(target)) {
+    if (target.empty()) {
         return {};
     }
-    ResolvedIcon appxIcon = ResolveAppxUnplatedIcon(target, size);
-    if (HasPixels(appxIcon)) {
-        appxIcon.source = source + L"-appx-unplated";
-        return appxIcon;
+    if (!ShellItemService::IsShellParseName(target)) {
+        std::error_code ec;
+        if (!std::filesystem::exists(target, ec)) {
+            return {};
+        }
+    }
+    if (ShellItemService::IsShellParseName(target)) {
+        ResolvedIcon appxIcon = ResolveAppxUnplatedIcon(target, size);
+        if (HasPixels(appxIcon)) {
+            appxIcon.source = source + L"-appx-unplated";
+            return appxIcon;
+        }
+    }
+    ScopedComInitialization com;
+    if (!com.usable()) {
+        return {};
     }
     PIDLIST_ABSOLUTE pidl = nullptr;
     if (FAILED(SHParseDisplayName(target.c_str(), nullptr, &pidl, 0, nullptr)) || !pidl) {
@@ -1439,14 +1736,14 @@ ResolvedIcon IconResolverService::ResolveContextMenuProvider(
     return result;
 }
 
-HICON IconResolverService::ResolveIconHandle(const IconRequest& request, std::wstring& source) const {
+HICON IconResolverService::ResolveIconHandle(const IconRequest& request, int size, std::wstring& source) const {
     switch (request.kind) {
     case IconSourceKind::Link:
-        return ResolveLinkIcon(request.link, source);
+        return ResolveLinkIcon(request.link, size, source);
     case IconSourceKind::FilePath:
-        return ResolveFileIcon(request.value, false, source);
+        return ResolveFileIcon(request.value, false, size, source);
     case IconSourceKind::DirectoryPath:
-        return ResolveFileIcon(request.value, true, source);
+        return ResolveFileIcon(request.value, true, size, source);
     case IconSourceKind::Url:
         return ResolveStockIcon(SIID_WORLD, source);
     case IconSourceKind::ShellParseName:
@@ -1454,11 +1751,11 @@ HICON IconResolverService::ResolveIconHandle(const IconRequest& request, std::ws
     case IconSourceKind::PidlBlob:
         return ResolvePidlIcon(request.pidl, source);
     case IconSourceKind::IconLocation:
-        return ResolveIconLocation(request.value, source);
+        return ResolveIconLocation(request.value, size, source);
     case IconSourceKind::CommandLine:
-        return ResolveCommandIcon(request, source);
+        return ResolveCommandIcon(request, size, source);
     case IconSourceKind::ContextMenuProvider:
-        return ResolveProviderIcon(request.providerId, source);
+        return ResolveProviderIcon(request.providerId, size, source);
     case IconSourceKind::Stock:
         return ResolveStockIcon(request.stockIcon, source);
     case IconSourceKind::DefaultCategory:
@@ -1468,7 +1765,7 @@ HICON IconResolverService::ResolveIconHandle(const IconRequest& request, std::ws
     }
 }
 
-HICON IconResolverService::ResolveLinkIcon(const Link& link, std::wstring& source) const {
+HICON IconResolverService::ResolveLinkIcon(const Link& link, int size, std::wstring& source) const {
     const MenuIcon menuIcon = SystemFunctionMenuIconForLink(link);
     if (MenuIconIsRenderable(menuIcon)) {
         if (HICON icon = CreateTablerIconHandle(
@@ -1483,10 +1780,10 @@ HICON IconResolverService::ResolveLinkIcon(const Link& link, std::wstring& sourc
 
     const std::wstring iconPath = Trim(link.icon);
     if (!iconPath.empty() && iconPath != L"#url" && iconPath != L"默认系统缓存图标") {
-        if (HICON icon = ResolveIconLocation(iconPath, source)) {
+        if (HICON icon = ResolveIconLocation(iconPath, size, source)) {
             return icon;
         }
-        if (HICON icon = ResolveFileIcon(iconPath, false, source)) {
+        if (HICON icon = ResolveFileIcon(iconPath, false, size, source)) {
             return icon;
         }
     }
@@ -1494,7 +1791,7 @@ HICON IconResolverService::ResolveLinkIcon(const Link& link, std::wstring& sourc
         return ResolveStockIcon(SIID_WORLD, source);
     }
     if (const std::wstring fileSystemPath = ExistingFileSystemIconPath(link); !fileSystemPath.empty()) {
-        if (HICON icon = ResolveFileIcon(fileSystemPath, link.type == 1, source)) {
+        if (HICON icon = ResolveFileIcon(fileSystemPath, link.type == 1, size, source)) {
             return icon;
         }
     }
@@ -1504,14 +1801,14 @@ HICON IconResolverService::ResolveLinkIcon(const Link& link, std::wstring& sourc
     if (HICON icon = ResolveShellParseNameIcon(link.path, source)) {
         return icon;
     }
-    return ResolveFileIcon(link.path, link.type == 1, source);
+    return ResolveFileIcon(link.path, link.type == 1, size, source);
 }
 
-HICON IconResolverService::ResolveProviderIcon(const std::wstring& providerId, std::wstring& source) const {
+HICON IconResolverService::ResolveProviderIcon(const std::wstring& providerId, int size, std::wstring& source) const {
     if (providerId == ShellContextMenuProviderId::Terminal) {
         const TerminalContextMenuRefreshContext context = TerminalContextMenuService::DetectAvailablePrograms();
         for (const auto& program : context.programs) {
-            if (HICON icon = ResolveFileIcon(program.executable, false, source)) {
+            if (HICON icon = ResolveFileIcon(program.executable, false, size, source)) {
                 source = L"terminal-executable";
                 return icon;
             }
@@ -1558,41 +1855,33 @@ HICON IconResolverService::ResolveProviderIcon(
     return icon;
 }
 
-HICON IconResolverService::ResolveIconLocation(const std::wstring& value, std::wstring& source) const {
+HICON IconResolverService::ResolveIconLocation(const std::wstring& value, int size, std::wstring& source) const {
     std::wstring iconPath;
     int iconIndex = 0;
     if (!ParseIconLocation(value, iconPath, iconIndex)) {
         return nullptr;
     }
     iconPath = ResolveExecutablePath(iconPath);
-    HICON largeIcon = nullptr;
-    HICON smallIcon = nullptr;
-    if (ExtractIconExW(iconPath.c_str(), iconIndex, &largeIcon, &smallIcon, 1) != 0) {
-        source = L"icon-location";
-        if (largeIcon && smallIcon) {
-            DestroyIcon(smallIcon);
-            return largeIcon;
-        }
-        if (largeIcon) {
-            return largeIcon;
-        }
-        if (smallIcon) {
-            return smallIcon;
-        }
+    if (HICON icon = ExtractResourceIconAtIndex(iconPath, iconIndex, size, source, L"icon-location")) {
+        return icon;
     }
-    return ResolveFileIcon(iconPath, false, source);
+    return ResolveFileIcon(iconPath, false, size, source);
 }
 
-HICON IconResolverService::ResolveCommandIcon(const IconRequest& request, std::wstring& source) const {
+HICON IconResolverService::ResolveCommandIcon(const IconRequest& request, int size, std::wstring& source) const {
     const std::wstring executable = ExecutableFromCommand(request.value);
     if (request.preferFallbackForGenericHost &&
         (IsGenericHostExecutable(executable) || IsScriptLikeTarget(executable))) {
         return nullptr;
     }
-    return ResolveFileIcon(executable, false, source);
+    return ResolveFileIcon(executable, false, size, source);
 }
 
-HICON IconResolverService::ResolveFileIcon(const std::wstring& value, bool directory, std::wstring& source) const {
+HICON IconResolverService::ResolveFileIcon(
+    const std::wstring& value,
+    bool directory,
+    int size,
+    std::wstring& source) const {
     const std::wstring path = ResolveExecutablePath(value);
     if (Trim(path).empty()) {
         return nullptr;
@@ -1603,7 +1892,7 @@ HICON IconResolverService::ResolveFileIcon(const std::wstring& value, bool direc
             const std::wstring resolvedTarget = ResolveExecutablePath(shortcutTarget);
             std::error_code ec;
             if (std::filesystem::is_regular_file(resolvedTarget, ec)) {
-                if (HICON icon = ExtractResourceIcon(resolvedTarget, source, L"shortcut-target-resource")) {
+                if (HICON icon = ExtractResourceIcon(resolvedTarget, size, source, L"shortcut-target-resource")) {
                     return icon;
                 }
                 SHFILEINFOW targetInfo{};
@@ -1618,7 +1907,7 @@ HICON IconResolverService::ResolveFileIcon(const std::wstring& value, bool direc
                 }
             }
         }
-        if (HICON icon = ExtractResourceIcon(path, source, L"file-resource")) {
+        if (HICON icon = ExtractResourceIcon(path, size, source, L"file-resource")) {
             return icon;
         }
     }

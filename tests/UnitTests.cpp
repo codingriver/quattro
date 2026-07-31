@@ -2084,10 +2084,44 @@ int wmain() {
         IconRequest fileLinkWithPidlRequest = IconResolverService::ForLink(fileLink, 32);
         fileLinkWithPidlRequest.cacheMode = IconCacheMode::Disabled;
         const ResolvedIcon linkIconWithPidl = resolver.Resolve(fileLinkWithPidlRequest);
+        const bool shellItemIconUsed = linkIconWithPidl.source == L"shell-item-image-link-pidl";
+        const bool fileIconFallbackUsed = linkIconWithPidl.source == L"file-resource-best-resource" ||
+            linkIconWithPidl.source == L"file-resource" ||
+            linkIconWithPidl.source == L"file";
         Check(
             IconResolverService::HasPixels(linkIconWithPidl) &&
-                (linkIconWithPidl.source == L"file-resource" || linkIconWithPidl.source == L"file"),
-            "Public icon resolver prefers existing file path icons over PIDL shell images");
+                (shellItemIconUsed || fileIconFallbackUsed),
+            "Public icon resolver uses shell images when useful and file resources when shell returns a generic icon");
+
+        const std::wstring qdirPath = L"C:\\Soft\\Q-Dir.exe";
+        if (std::filesystem::is_regular_file(qdirPath, ec)) {
+            Link qdirLink;
+            qdirLink.name = L"Q-Dir";
+            qdirLink.path = qdirPath;
+            qdirLink.type = 0;
+            IconRequest qdirRequest = IconResolverService::ForLink(qdirLink, 64);
+            qdirRequest.cacheMode = IconCacheMode::Disabled;
+            const ResolvedIcon qdirIcon = resolver.Resolve(qdirRequest);
+            const bool qdirHasSaturatedColor = std::any_of(
+                qdirIcon.pixels.begin(),
+                qdirIcon.pixels.end(),
+                [](std::uint32_t pixel) {
+                    const std::uint32_t alpha = pixel >> 24;
+                    const int blue = static_cast<int>(pixel & 0xFFu);
+                    const int green = static_cast<int>((pixel >> 8) & 0xFFu);
+                    const int red = static_cast<int>((pixel >> 16) & 0xFFu);
+                    const int maxChannel = std::max({red, green, blue});
+                    const int minChannel = std::min({red, green, blue});
+                    return alpha >= 32 && maxChannel > 96 && maxChannel - minChannel > 48;
+                });
+            Check(
+                IconResolverService::HasPixels(qdirIcon) &&
+                    qdirIcon.source == L"file-resource-best-resource" &&
+                    qdirHasSaturatedColor,
+                "Public icon resolver falls back from Q-Dir generic shell icon to best embedded resource");
+        } else {
+            Check(true, "Public icon resolver Q-Dir best-resource test skipped when fixture app is unavailable");
+        }
 
         const std::filesystem::path shortcutRoot = std::filesystem::temp_directory_path() /
             (L"quattro_icon_resolver_shortcut_" + std::to_wstring(GetCurrentProcessId()));
@@ -2120,6 +2154,7 @@ int wmain() {
             Check(
                 IconResolverService::HasPixels(shortcutIcon) &&
                     (shortcutIcon.source == L"shortcut-target-resource" ||
+                     shortcutIcon.source == L"shortcut-target-resource-best-resource" ||
                      shortcutIcon.source == L"shortcut-target-file"),
                 "Public icon resolver uses shortcut target icons for .lnk files");
         } else {
