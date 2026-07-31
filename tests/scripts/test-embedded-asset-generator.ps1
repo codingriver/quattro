@@ -3,8 +3,8 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$root = Split-Path -Parent $PSScriptRoot
-$generator = Join-Path $PSScriptRoot "generate-embedded-asset-pack.ps1"
+$root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+$generator = Join-Path $root "tools\generate-embedded-asset-pack.ps1"
 $resourceHeader = Join-Path $root "resources\resource.h"
 $temporaryRoot = if ([string]::IsNullOrWhiteSpace($BuildRoot)) {
     Join-Path $root "build-embedded-asset-generator-acceptance"

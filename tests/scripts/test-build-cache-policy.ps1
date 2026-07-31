@@ -7,7 +7,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$root = Split-Path -Parent $PSScriptRoot
+$root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $buildScript = Join-Path $root "build.ps1"
 $plan = @(& $buildScript -Backend $Backend -PlanOnly)
 $directoryLine = $plan | Where-Object { $_ -like "build_directories=*" } | Select-Object -First 1

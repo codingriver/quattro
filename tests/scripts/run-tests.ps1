@@ -4,7 +4,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$root = Split-Path -Parent $PSScriptRoot
+$root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 Set-Location $root
 Add-Type -AssemblyName System.Windows.Forms
 $logDir = Join-Path (Join-Path $root "build\$Configuration") "logs"
@@ -161,7 +161,7 @@ $sensitiveTerms = @(
     ("open" + $externalIndexTerm),
     ("bOpen" + $externalIndexTerm)
 )
-$scanTargets = @("src", "CMakeLists.txt", "README.md", $docsPath, "resources", "tools")
+$scanTargets = @("src", "CMakeLists.txt", "README.md", $docsPath, "resources", "tools", "tests")
 foreach ($term in $sensitiveTerms) {
     $sensitiveHits = rg -n -F -- $term @scanTargets 2>$null
     if ($LASTEXITCODE -eq 0) {
@@ -173,7 +173,7 @@ foreach ($term in $sensitiveTerms) {
     }
 }
 
-$everythingHits = rg -n -F -- $externalIndexTerm "src" "CMakeLists.txt" "resources" "tools" 2>$null
+$everythingHits = rg -n -F -- $externalIndexTerm "src" "CMakeLists.txt" "resources" "tools" "tests" 2>$null
 if ($LASTEXITCODE -eq 0) {
     $everythingHits
     throw "Deferred external index term found outside docs."

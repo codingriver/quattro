@@ -1,5 +1,5 @@
 $ErrorActionPreference = "Stop"
-$root = Split-Path -Parent $PSScriptRoot
+$root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 
 $backgroundScripts = @(
     "run-ui-smoke.ps1",
@@ -111,7 +111,7 @@ foreach ($required in @(
     "PrintWindow",
     "#32768",
     "CopyFromScreen",
-    "独立测试运行根目录"
+    "QUATTRO_USER_CONFIG_DIR"
 )) {
     if ($agentRules -notmatch [regex]::Escape($required)) {
         throw "AGENTS.md is missing a required background acceptance rule: $required"

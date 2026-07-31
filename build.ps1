@@ -485,6 +485,7 @@ function Ensure-Configured {
     }
     $configureArgs += "-DQUATTRO_BUILD_TESTS=$(if ($BuildTests) { 'ON' } else { 'OFF' })"
     $configureArgs += "-DQUATTRO_VERSION=$effectiveVersion"
+    $configureArgs += "-DAPP_LAUNCH_LOCKER_VERSION=$effectiveVersion"
     $configureArgs += "-DQUATTRO_DEFAULT_LOGGING_ENABLED=$defaultLoggingEnabled"
     $configureArgs += "-DQUATTRO_DEFAULT_TOP_MOST_ENABLED=$defaultTopMostEnabled"
     $configureArgs += "-DQUATTRO_BUNDLE_OPTIONAL_EXECUTABLES=$bundleOptionalExecutables"

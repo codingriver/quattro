@@ -165,7 +165,7 @@ jobs:
             build-vcpkg-x64-official-complete
             build-vcpkg-x86-official-minimal
             build-vcpkg-x64-official-minimal
-          key: build-${{ runner.os }}-${{ steps.options.outputs.configuration }}-${{ steps.options.outputs.platform }}-assets-${{ steps.options.outputs.compress_embedded_assets }}-${{ hashFiles('CMakeLists.txt', 'CMakePresets.json', 'vcpkg.json', 'src/**', 'resources/**', 'theme/**', 'icons/**', 'docs/**', 'plugins/**', 'tools/**') }}
+          key: build-${{ runner.os }}-${{ steps.options.outputs.configuration }}-${{ steps.options.outputs.platform }}-assets-${{ steps.options.outputs.compress_embedded_assets }}-${{ hashFiles('build.ps1', 'CMakeLists.txt', 'CMakePresets.json', 'vcpkg.json', 'src/**', 'resources/**', 'theme/**', 'icons/**', 'docs/**', 'plugins/**', 'tools/**', 'tests/**') }}
           restore-keys: |
             build-${{ runner.os }}-${{ steps.options.outputs.configuration }}-${{ steps.options.outputs.platform }}-assets-${{ steps.options.outputs.compress_embedded_assets }}-
 
@@ -174,7 +174,7 @@ jobs:
           python -m pip install --user --disable-pip-version-check "fonttools==4.57.0"
           $args = @(
             "-ExecutionPolicy", "Bypass",
-            "-File", ".\tools\build.ps1",
+            "-File", ".\build.ps1",
             "-Release",
             "-Configuration", "${{ steps.options.outputs.configuration }}",
             "-Version", "${{ steps.options.outputs.version }}",

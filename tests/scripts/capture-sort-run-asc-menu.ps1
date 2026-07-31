@@ -8,7 +8,7 @@ $ErrorActionPreference = 'Stop'
 if (!$InteractiveVisual) {
   throw 'This legacy cursor-driven capture must run in an isolated interactive Windows session. Use run-menu-visual-tests.ps1 for background-safe menu screenshots.'
 }
-. (Join-Path $Repo 'tools\QuattroTestHarness.ps1')
+. (Join-Path $Repo 'tests\scripts\QuattroTestHarness.ps1')
 New-Item -ItemType Directory -Force $AppDir | Out-Null
 New-Item -ItemType Directory -Force $OutDir | Out-Null
 Copy-Item "$Repo\build-vcpkg-preset\Release\Quattro.exe" "$AppDir\Quattro.exe" -Force

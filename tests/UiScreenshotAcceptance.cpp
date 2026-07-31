@@ -496,8 +496,12 @@ BitmapCapture CaptureClientBitmapWithChildren(HWND hwnd) {
         } else if (childDc && childBitmap && childOld) {
             childDrawn = PrintWindow(child, childDc, 0x00000002);
         }
-        if (childDrawn) {
-            BitBlt(dc, childRect.left, childRect.top, childWidth, childHeight, childDc, 0, 0, SRCCOPY);
+        if (childDrawn && childDc && childBitmap && childOld) {
+            SelectObject(childDc, childOld);
+            childOld = nullptr;
+            Gdiplus::Bitmap childImage(childBitmap, nullptr);
+            Gdiplus::Graphics graphics(dc);
+            graphics.DrawImage(&childImage, childRect.left, childRect.top, childWidth, childHeight);
         }
         if (childDc && childOld) SelectObject(childDc, childOld);
         if (childBitmap) DeleteObject(childBitmap);

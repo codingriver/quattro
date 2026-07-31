@@ -3,7 +3,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$root = Split-Path -Parent $PSScriptRoot
+$root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $resolvedRoot = [System.IO.Path]::GetFullPath($root).TrimEnd('\')
 $resolvedBuildRoot = [System.IO.Path]::GetFullPath((Join-Path $root $BuildRoot))
 if (!$resolvedBuildRoot.StartsWith($resolvedRoot + '\', [System.StringComparison]::OrdinalIgnoreCase)) {
