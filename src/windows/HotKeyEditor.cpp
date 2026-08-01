@@ -329,7 +329,11 @@ private:
             const ThemedUi ui = windowUi_->ui();
             const DialogLayoutMetrics& layout = ui.layout();
             const int instructionY = layout.contentInsetY;
-            ui.ReadOnlyText(
+            ThemedSelectableTextOptions instructionOptions{};
+            instructionOptions.role = ThemedSelectableTextRole::LabelLike;
+            instructionOptions.mode = ThemedEditMode::MultiLine;
+            instructionOptions.wrap = true;
+            ui.SelectableText(
                 IdInstructionText,
                 RECT{
                     layout.contentInsetX,
@@ -338,7 +342,8 @@ private:
                     instructionY + ui.labelHeight() * 2},
                 options_.allowDoubleAlt
                     ? L"输入快捷键，或按一个键录入为 Ctrl+Alt+该键；也可快速按两次 Alt。"
-                    : L"输入快捷键，或按一个键录入为 Ctrl+Alt+该键。Backspace 清除，Esc 取消。");
+                    : L"输入快捷键，或按一个键录入为 Ctrl+Alt+该键。Backspace 清除，Esc 取消。",
+                instructionOptions);
 
             const int editWidth = ui.scale(220);
             const int buttonWidth = layout.footerButtonWidth;

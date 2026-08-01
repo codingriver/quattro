@@ -2594,6 +2594,7 @@ int wmain() {
     editOptions.placeholder = L"unit placeholder";
     Check(editOptions.mode == ThemedEditMode::MultiLine, "Themed edit mode composes with other options");
     Check(editOptions.acceptsReturn, "Multiline themed edits accept return by default");
+    Check(!editOptions.showVerticalScrollBar, "Plain multiline themed edits do not show a vertical scrollbar by default");
     Check(editOptions.content == ThemedEditContent::Password, "Themed edit content composes with mode");
     Check(editOptions.readOnly && !editOptions.enabled && editOptions.error, "Themed edit state options compose");
     Check(editOptions.selectAllOnFocus && editOptions.maxLength == 128 && !editOptions.placeholder.empty(), "Themed edit behavior options compose");
@@ -2611,6 +2612,38 @@ int wmain() {
     statusOptions.role = ThemedStatusRole::Warning;
     statusOptions.align = ThemedTextAlign::Start;
     Check(statusOptions.role == ThemedStatusRole::Warning && statusOptions.align == ThemedTextAlign::Start, "Themed status options compose");
+    ThemedSelectableTextOptions selectableLabelOptions{};
+    Check(selectableLabelOptions.role == ThemedSelectableTextRole::LabelLike && selectableLabelOptions.transparentBackground && !selectableLabelOptions.showFrame,
+        "Selectable label-like text defaults to transparent frameless presentation");
+    selectableLabelOptions.align = ThemedTextAlign::End;
+    Check(selectableLabelOptions.align == ThemedTextAlign::End && !selectableLabelOptions.tabStop,
+        "Selectable label-like text keeps label alignment without entering tab order");
+    ThemedSelectableTextOptions selectableStatusOptions{};
+    selectableStatusOptions.role = ThemedSelectableTextRole::StatusLike;
+    selectableStatusOptions.statusRole = ThemedStatusRole::Warning;
+    selectableStatusOptions.align = ThemedTextAlign::Start;
+    Check(selectableStatusOptions.role == ThemedSelectableTextRole::StatusLike && selectableStatusOptions.transparentBackground && !selectableStatusOptions.showFrame,
+        "Selectable status text defaults to transparent frameless presentation");
+    Check(selectableStatusOptions.statusRole == ThemedStatusRole::Warning && selectableStatusOptions.align == ThemedTextAlign::Start,
+        "Selectable status text carries status color and alignment semantics");
+    ThemedSelectableTextOptions selectableFieldOptions{};
+    selectableFieldOptions.role = ThemedSelectableTextRole::FieldLike;
+    selectableFieldOptions.showFrame = true;
+    selectableFieldOptions.transparentBackground = false;
+    selectableFieldOptions.tabStop = true;
+    Check(selectableFieldOptions.role == ThemedSelectableTextRole::FieldLike && selectableFieldOptions.showFrame && !selectableFieldOptions.transparentBackground && selectableFieldOptions.tabStop,
+        "Selectable field-like text composes as a framed read-only value");
+    ThemedReadOnlyTextOptions readOnlyTextOptions{};
+    Check(readOnlyTextOptions.showVerticalScrollBar && readOnlyTextOptions.selectableRole == ThemedSelectableTextRole::DetailText,
+        "Read-only detail text defaults to a scrollable detail field");
+    ThemedSelectableTextOptions detailTextOptions{};
+    detailTextOptions.role = ThemedSelectableTextRole::DetailText;
+    detailTextOptions.mode = ThemedEditMode::MultiLine;
+    detailTextOptions.wrap = true;
+    Check(detailTextOptions.role == ThemedSelectableTextRole::DetailText && detailTextOptions.mode == ThemedEditMode::MultiLine && detailTextOptions.wrap,
+        "Selectable detail text composes as wrapped multiline text");
+    detailTextOptions.showVerticalScrollBar = true;
+    Check(detailTextOptions.showVerticalScrollBar, "Selectable detail text can request a visible vertical scrollbar");
     ThemedComboBoxOptions comboOptions{};
     comboOptions.enabled = false;
     Check(!comboOptions.enabled, "Themed combo state is semantic");

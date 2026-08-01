@@ -108,7 +108,19 @@ private:
                 ui.contentTop(),
                 ui.contentLeft() + ui.contentWidth(),
                 ui.footerButtonY(footerHeight) - ui.layout().footerGap};
-            ui.ReadOnlyText(ID_CONFIRM_MESSAGE_TEXT, frame, message_);
+            const bool useDetailText = message_.find(L'\n') != std::wstring::npos || message_.size() > 120;
+            if (useDetailText) {
+                ui.DetailText(ID_CONFIRM_MESSAGE_TEXT, frame, message_);
+            } else {
+                ThemedSelectableTextOptions textOptions{};
+                textOptions.role = ThemedSelectableTextRole::LabelLike;
+                textOptions.mode = ThemedEditMode::MultiLine;
+                textOptions.surface = ThemedControlSurface::Dialog;
+                textOptions.showFrame = false;
+                textOptions.transparentBackground = true;
+                textOptions.wrap = true;
+                ui.SelectableText(ID_CONFIRM_MESSAGE_TEXT, frame, message_, textOptions);
+            }
 
             ui.FooterButton(IDOK, primaryText_, 0, 2, true, true);
             ui.FooterButton(ID_SECONDARY, secondaryText_, 1, 2);

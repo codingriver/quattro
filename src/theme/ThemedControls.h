@@ -306,6 +306,12 @@ int EditFontSizePx(const Theme& theme);
 RECT SingleLineEditRect(const Theme& theme, RECT frame, UINT dpi = USER_DEFAULT_SCREEN_DPI);
 RECT SingleLineEditRectForFrame(const Theme& theme, RECT frame, UINT dpi = USER_DEFAULT_SCREEN_DPI);
 RECT MultiLineEditRect(const Theme& theme, RECT frame, UINT dpi = USER_DEFAULT_SCREEN_DPI);
+void ConfigureEditTextInsets(
+    HWND hwnd,
+    const Theme& theme,
+    bool multiline,
+    bool showFrame,
+    UINT dpi = USER_DEFAULT_SCREEN_DPI);
 void ConfigureEditBehavior(HWND hwnd, bool selectAllOnFocus);
 
 HWND CreateSingleLineEdit(
@@ -316,7 +322,10 @@ HWND CreateSingleLineEdit(
     RECT frame,
     const std::wstring& value,
     HFONT font,
-    DWORD extraStyle = ES_AUTOHSCROLL);
+    DWORD extraStyle = ES_AUTOHSCROLL,
+    bool exactFrame = false,
+    bool tabStop = true,
+    bool transparentSelectable = false);
 
 HWND CreateMultiLineEdit(
     HINSTANCE instance,
@@ -326,7 +335,10 @@ HWND CreateMultiLineEdit(
     RECT frame,
     const std::wstring& value,
     HFONT font,
-    DWORD extraStyle = ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL);
+    DWORD extraStyle = ES_MULTILINE | ES_AUTOVSCROLL,
+    bool exactFrame = false,
+    bool tabStop = true,
+    bool transparentSelectable = false);
 
 HWND CreateFramedStatic(
     HINSTANCE instance,

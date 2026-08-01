@@ -1,6 +1,5 @@
 #include "UpdateCheckDialog.h"
 
-#include "ThemedFormLayout.h"
 #include "ThemedUi.h"
 #include "ThemedWindowUi.h"
 #include "Utilities.h"
@@ -108,15 +107,6 @@ private:
         DestroyWindow(hwnd_);
     }
 
-    void CreateLabelValueRow(const ThemedUi& ui, const ThemedFormLayout& form, int& y, int labelWidth, const std::wstring& label, const std::wstring& value) {
-        const int valueWidth = ui.contentWidth() - labelWidth - ui.layout().labelGap;
-        auto group = form.labelText(labelWidth, valueWidth);
-        auto rows = form.rowGroups(y, ThemedRowAlign::Left, {group});
-        ui.Label(label, rows[0][0].left, rows[0][0].top, rows[0][0].right - rows[0][0].left);
-        ui.Label(value, rows[0][1].left, rows[0][1].top, rows[0][1].right - rows[0][1].left);
-        y = form.nextRowY(y, {group});
-    }
-
     std::wstring DetailsText() const {
         std::wostringstream text;
         text << L"发现新版本。\r\n\r\n";
@@ -150,7 +140,7 @@ private:
                 ui.contentTop(),
                 ui.contentLeft() + ui.contentWidth(),
                 ui.footerButtonY(footerHeight) - ui.layout().footerGap};
-            ui.ReadOnlyText(ID_UPDATE_DETAILS_TEXT, frame, DetailsText());
+            ui.DetailText(ID_UPDATE_DETAILS_TEXT, frame, DetailsText());
 
             ui.FooterButton(IDOK, L"下载更新", 0, 3, true, true);
             ui.FooterButton(ID_OPEN_RELEASE, L"发布页", 1, 3);

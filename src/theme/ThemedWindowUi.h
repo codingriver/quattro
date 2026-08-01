@@ -120,7 +120,8 @@ public:
     void RegisterTableFrame(HWND child, RECT frame) override;
     void UnregisterTableFrame(HWND child) override;
     void UnregisterEditFrame(HWND child);
-    void MoveEditFrame(HWND child, RECT frame);
+    bool MoveEditFrame(HWND child, RECT frame, const Theme& theme, UINT dpi) override;
+    bool MoveEditFrame(HWND child, RECT frame);
     void SetEditFrameState(HWND child, bool readOnly, bool error);
     void SetEditReadOnly(HWND child, bool readOnly);
     void SetEditError(HWND child, bool error);
@@ -149,11 +150,16 @@ private:
     HBRUSH BackgroundBrush();
     HBRUSH BrushForColor(COLORREF color);
     HBRUSH ApplyEditColors(HDC dc, HWND child);
+    bool PaintTransparentEditBackground(HWND child, HDC dc) const;
+    COLORREF TransparentEditTextColor(const EditFrame& editFrame) const;
+    void PaintTransparentEdit(HWND child, HDC dc) const;
     EditFrame* FindEditFrame(HWND child);
     const EditFrame* FindEditFrame(HWND child) const;
     EditFrame* FindEditFrameWindow(HWND frameWindow);
     const EditFrame* FindEditFrameWindow(HWND frameWindow) const;
     const wchar_t* EditState(const EditFrame& editFrame) const;
+    RECT EditChildRect(const EditFrame& editFrame) const;
+    void LayoutEditFrameChild(EditFrame& editFrame);
     bool EnsureEditFrameClass();
     void SyncEditFrameWindow(EditFrame& editFrame);
     void PaintEditFrameWindow(HWND frameWindow, HDC dc) const;

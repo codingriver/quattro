@@ -43,6 +43,32 @@ const wchar_t* ToastState(ThemedToastRole role) {
     }
 }
 
+const wchar_t* StatusState(ThemedStatusRole role) {
+    switch (role) {
+    case ThemedStatusRole::Info: return L"info";
+    case ThemedStatusRole::Success: return L"success";
+    case ThemedStatusRole::Warning: return L"warning";
+    case ThemedStatusRole::Danger: return L"danger";
+    case ThemedStatusRole::Normal:
+    default: return L"normal";
+    }
+}
+
+bool UsesFieldFrame(ThemedSelectableTextRole role) {
+    return role == ThemedSelectableTextRole::FieldLike || role == ThemedSelectableTextRole::DetailText;
+}
+
+std::wstring ControlText(HWND hwnd) {
+    const int length = GetWindowTextLengthW(hwnd);
+    if (length <= 0) {
+        return {};
+    }
+    std::wstring text(static_cast<std::size_t>(length) + 1, L'\0');
+    GetWindowTextW(hwnd, text.data(), length + 1);
+    text.resize(static_cast<std::size_t>(length));
+    return text;
+}
+
 bool SameTooltipOptions(const ThemedTooltipOptions& left, const ThemedTooltipOptions& right) {
     return left.placement == right.placement &&
            left.role == right.role &&
@@ -539,6 +565,7 @@ void ThemedWindowUi::ApplyDpiChange(UINT newDpi, const RECT* suggestedWindowRect
         frame.frame = RECT{
             MulDiv(frame.frame.left, newDpi, oldDpi), MulDiv(frame.frame.top, newDpi, oldDpi),
             MulDiv(frame.frame.right, newDpi, oldDpi), MulDiv(frame.frame.bottom, newDpi, oldDpi)};
+        LayoutEditFrameChild(frame);
         SyncEditFrameWindow(frame);
     }
     for (auto& frame : tableFrames_) {
@@ -586,6 +613,7 @@ void ThemedWindowUi::RegisterEditFrame(HWND child, RECT frame, const ThemedEditO
     if (EditFrame* editFrame = FindEditFrame(child)) {
         editFrame->frame = frame;
         editFrame->options = options;
+        LayoutEditFrameChild(*editFrame);
         SyncEditFrameWindow(*editFrame);
     } else {
         editFrames_.push_back(EditFrame{child, nullptr, frame, options});
@@ -606,6 +634,7 @@ void ThemedWindowUi::RegisterEditFrame(HWND child, RECT frame, const ThemedEditO
                 this);
         }
         SetWindowSubclass(child, EditChildProc, kEditChildSubclassId, reinterpret_cast<DWORD_PTR>(this));
+        LayoutEditFrameChild(newFrame);
         SyncEditFrameWindow(newFrame);
     }
 }
@@ -671,27 +700,22 @@ void ThemedWindowUi::UnregisterEditFrame(HWND child) {
         editFrames_.end());
 }
 
-void ThemedWindowUi::MoveEditFrame(HWND child, RECT frame) {
+bool ThemedWindowUi::MoveEditFrame(HWND child, RECT frame, const Theme&, UINT) {
+    return MoveEditFrame(child, frame);
+}
+
+bool ThemedWindowUi::MoveEditFrame(HWND child, RECT frame) {
     EditFrame* editFrame = FindEditFrame(child);
     if (!editFrame) {
-        return;
+        return false;
     }
     const RECT oldFrame = editFrame->frame;
     editFrame->frame = frame;
-    const RECT childRect = editFrame->options.mode == ThemedEditMode::MultiLine
-        ? ThemedControls::MultiLineEditRect(theme_, frame, dpi_)
-        : ThemedControls::SingleLineEditRectForFrame(theme_, frame, dpi_);
-    SetWindowPos(
-        child,
-        nullptr,
-        childRect.left,
-        childRect.top,
-        childRect.right - childRect.left,
-        childRect.bottom - childRect.top,
-        SWP_NOACTIVATE | SWP_NOZORDER);
+    LayoutEditFrameChild(*editFrame);
     SyncEditFrameWindow(*editFrame);
-    InvalidateRect(hwnd_, &oldFrame, TRUE);
+    RedrawWindow(hwnd_, &oldFrame, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW);
     InvalidateRect(hwnd_, &frame, TRUE);
+    return true;
 }
 
 void ThemedWindowUi::SetEditFrameState(HWND child, bool readOnly, bool error) {
@@ -754,8 +778,16 @@ void ThemedWindowUi::DrawRegisteredEditFrames(HDC dc) const {
         if (editFrame.frameWindow && IsWindow(editFrame.frameWindow)) {
             InvalidateRect(editFrame.frameWindow, nullptr, FALSE);
         } else if (IsWindow(editFrame.child) && IsWindowVisible(editFrame.child)) {
-            ThemedControls::DrawEditFrame(
-                theme_, dc, editFrame.frame, editFrame.child, editFrame.options.readOnly, editFrame.options.error);
+            if (!editFrame.options.showFrame) {
+                continue;
+            }
+            if (UsesFieldFrame(editFrame.options.selectableRole)) {
+                ThemedControls::DrawFieldFrame(
+                    theme_, dc, editFrame.frame, editFrame.child, editFrame.options.readOnly, editFrame.options.error);
+            } else {
+                ThemedControls::DrawEditFrame(
+                    theme_, dc, editFrame.frame, editFrame.child, editFrame.options.readOnly, editFrame.options.error);
+            }
         }
     }
 }
@@ -1292,6 +1324,88 @@ void ThemedWindowUi::FillBackground(HDC dc) const {
     }
 }
 
+bool ThemedWindowUi::PaintTransparentEditBackground(HWND child, HDC dc) const {
+    if (!child || !dc) {
+        return false;
+    }
+    const EditFrame* editFrame = FindEditFrame(child);
+    if (!editFrame || !editFrame->options.transparentBackground) {
+        return false;
+    }
+    RECT rect{};
+    if (!GetClientRect(child, &rect)) {
+        return false;
+    }
+    const wchar_t* backgroundComponent = ThemedControls::ControlBackgroundComponent(child);
+    const COLORREF background = ToColorRef(theme_.color(backgroundComponent, L"normal", L"bg"));
+    ThemedGdiFallback::FillSolidRect(dc, rect, background);
+    return true;
+}
+
+COLORREF ThemedWindowUi::TransparentEditTextColor(const EditFrame& editFrame) const {
+    switch (editFrame.options.selectableRole) {
+    case ThemedSelectableTextRole::LabelLike:
+        return ToColorRef(theme_.color(L"label", IsWindowEnabled(editFrame.child) ? L"normal" : L"disabled", L"text"));
+    case ThemedSelectableTextRole::StatusLike:
+        if (IsWindowEnabled(editFrame.child)) {
+            return ToColorRef(theme_.color(L"global", StatusState(editFrame.options.statusRole), L"text"));
+        }
+        return ToColorRef(theme_.color(L"text", L"disabled", L"text"));
+    case ThemedSelectableTextRole::FieldLike:
+    case ThemedSelectableTextRole::DetailText:
+    default:
+        return ToColorRef(theme_.color(L"edit", IsWindowEnabled(editFrame.child) ? L"normal" : L"disabled", L"text"));
+    }
+}
+
+void ThemedWindowUi::PaintTransparentEdit(HWND child, HDC dc) const {
+    if (!child || !dc) {
+        return;
+    }
+    const EditFrame* editFrame = FindEditFrame(child);
+    if (!editFrame || !editFrame->options.transparentBackground) {
+        return;
+    }
+    RECT rect{};
+    if (!GetClientRect(child, &rect)) {
+        return;
+    }
+    PaintTransparentEditBackground(child, dc);
+
+    const std::wstring text = ControlText(child);
+    if (text.empty()) {
+        return;
+    }
+
+    const int saved = SaveDC(dc);
+    IntersectClipRect(dc, rect.left, rect.top, rect.right, rect.bottom);
+    SetBkMode(dc, TRANSPARENT);
+    const COLORREF textColor = TransparentEditTextColor(*editFrame);
+    SetTextColor(dc, textColor);
+    HFONT editFont = reinterpret_cast<HFONT>(SendMessageW(child, WM_GETFONT, 0, 0));
+    HGDIOBJ oldFont = editFont ? SelectObject(dc, editFont) : nullptr;
+
+    UINT format = DT_NOPREFIX;
+    if (editFrame->options.mode == ThemedEditMode::MultiLine) {
+        format |= DT_WORDBREAK;
+    } else {
+        format |= DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS;
+    }
+    if (editFrame->options.align == ThemedTextAlign::Center) {
+        format |= DT_CENTER;
+    } else if (editFrame->options.align == ThemedTextAlign::End) {
+        format |= DT_RIGHT;
+    } else {
+        format |= DT_LEFT;
+    }
+    DrawTextW(dc, text.c_str(), static_cast<int>(text.size()), &rect, format);
+
+    if (oldFont) {
+        SelectObject(dc, oldFont);
+    }
+    RestoreDC(dc, saved);
+}
+
 ThemedWindowUi::EditFrame* ThemedWindowUi::FindEditFrame(HWND child) {
     auto it = std::find_if(editFrames_.begin(), editFrames_.end(), [child](const EditFrame& editFrame) {
         return editFrame.child == child;
@@ -1393,15 +1507,24 @@ void ThemedWindowUi::PaintEditFrameWindow(HWND frameWindow, HDC dc) const {
     }
     RECT rect{};
     GetClientRect(frameWindow, &rect);
-    const COLORREF background = ToColorRef(theme_.color(L"dialog", L"normal", L"bg"));
+    const wchar_t* backgroundComponent = ThemedControls::ControlBackgroundComponent(editFrame->child);
+    const COLORREF background = ToColorRef(theme_.color(backgroundComponent, L"normal", L"bg"));
     {
         ThemedD2D::ScopedHdcPaint d2dPaint(frameWindow, dc);
         if (!ThemedD2D::FillRect(dc, rect, background)) {
             ThemedGdiFallback::FillSolidRect(dc, rect, background);
         }
     }
-    ThemedControls::DrawEditFrame(
-        theme_, dc, rect, editFrame->child, editFrame->options.readOnly, editFrame->options.error);
+    if (!editFrame->options.showFrame) {
+        return;
+    }
+    if (UsesFieldFrame(editFrame->options.selectableRole)) {
+        ThemedControls::DrawFieldFrame(
+            theme_, dc, rect, editFrame->child, editFrame->options.readOnly, editFrame->options.error);
+    } else {
+        ThemedControls::DrawEditFrame(
+            theme_, dc, rect, editFrame->child, editFrame->options.readOnly, editFrame->options.error);
+    }
 }
 
 void ThemedWindowUi::SyncTableFrameWindow(TableFrame& tableFrame) {
@@ -1522,6 +1645,29 @@ LRESULT CALLBACK ThemedWindowUi::EditChildProc(
         }
         return result;
     }
+    if (ui) {
+        if (EditFrame* editFrame = ui->FindEditFrame(hwnd);
+            editFrame && editFrame->options.transparentBackground) {
+            if (message == WM_ERASEBKGND) {
+                return ui->PaintTransparentEditBackground(hwnd, reinterpret_cast<HDC>(wParam)) ? 1 : 0;
+            }
+            if (message == WM_PAINT) {
+                PAINTSTRUCT ps{};
+                HDC dc = BeginPaint(hwnd, &ps);
+                ui->PaintTransparentEdit(hwnd, dc);
+                EndPaint(hwnd, &ps);
+                return 0;
+            }
+            if (message == WM_PRINTCLIENT) {
+                ui->PaintTransparentEdit(hwnd, reinterpret_cast<HDC>(wParam));
+                return 0;
+            }
+            if (message == WM_PRINT) {
+                ui->PaintTransparentEdit(hwnd, reinterpret_cast<HDC>(wParam));
+                return 0;
+            }
+        }
+    }
     const LRESULT result = DefSubclassProc(hwnd, message, wParam, lParam);
     if (ui) {
         if (EditFrame* editFrame = ui->FindEditFrame(hwnd)) {
@@ -1619,6 +1765,36 @@ const wchar_t* ThemedWindowUi::EditState(const EditFrame& editFrame) const {
     return editFrame.options.readOnly ? L"readonly" : L"normal";
 }
 
+RECT ThemedWindowUi::EditChildRect(const EditFrame& editFrame) const {
+    if (!editFrame.options.showFrame) {
+        return editFrame.frame;
+    }
+    return editFrame.options.mode == ThemedEditMode::MultiLine
+        ? ThemedControls::MultiLineEditRect(theme_, editFrame.frame, dpi_)
+        : ThemedControls::SingleLineEditRectForFrame(theme_, editFrame.frame, dpi_);
+}
+
+void ThemedWindowUi::LayoutEditFrameChild(EditFrame& editFrame) {
+    if (!IsWindow(editFrame.child)) {
+        return;
+    }
+    const RECT childRect = EditChildRect(editFrame);
+    SetWindowPos(
+        editFrame.child,
+        nullptr,
+        childRect.left,
+        childRect.top,
+        childRect.right - childRect.left,
+        childRect.bottom - childRect.top,
+        SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOCOPYBITS);
+    ThemedControls::ConfigureEditTextInsets(
+        editFrame.child,
+        theme_,
+        editFrame.options.mode == ThemedEditMode::MultiLine,
+        editFrame.options.showFrame,
+        dpi_);
+}
+
 void ThemedWindowUi::InvalidateEditFrame(HWND child) const {
     if (!child) {
         return;
@@ -1666,9 +1842,47 @@ HBRUSH ThemedWindowUi::BrushForColor(COLORREF color) {
 HBRUSH ThemedWindowUi::ApplyEditColors(HDC dc, HWND child) {
     const EditFrame* editFrame = FindEditFrame(child);
     const wchar_t* state = editFrame ? EditState(*editFrame) : L"normal";
-    const COLORREF text = ToColorRef(theme_.color(L"edit", state, L"text"));
-    const COLORREF background = ToColorRef(theme_.color(L"edit", state, L"bg"));
-    SetBkMode(dc, OPAQUE);
+    const wchar_t* textComponent = L"edit";
+    const wchar_t* textState = state;
+    if (editFrame) {
+        switch (editFrame->options.selectableRole) {
+        case ThemedSelectableTextRole::LabelLike:
+            textComponent = L"label";
+            textState = IsWindowEnabled(child) ? L"normal" : L"disabled";
+            break;
+        case ThemedSelectableTextRole::StatusLike:
+            if (IsWindowEnabled(child)) {
+                textComponent = L"global";
+                textState = StatusState(editFrame->options.statusRole);
+            } else {
+                textComponent = L"text";
+                textState = L"disabled";
+            }
+            break;
+        case ThemedSelectableTextRole::FieldLike:
+        case ThemedSelectableTextRole::DetailText:
+            if (editFrame->options.readOnly) {
+                textComponent = L"field";
+                textState = IsWindowEnabled(child) ? L"readonly" : L"disabled";
+            }
+            break;
+        default:
+            break;
+        }
+    }
+    const COLORREF text = ToColorRef(theme_.color(textComponent, textState, L"text"));
+    const bool fieldLike = editFrame &&
+        editFrame->options.readOnly &&
+        UsesFieldFrame(editFrame->options.selectableRole);
+    const wchar_t* backgroundComponent = editFrame && editFrame->options.transparentBackground
+        ? ThemedControls::ControlBackgroundComponent(child)
+        : (fieldLike ? L"field" : L"edit");
+    const wchar_t* backgroundState = editFrame && editFrame->options.transparentBackground ? L"normal" : state;
+    if (editFrame && UsesFieldFrame(editFrame->options.selectableRole) && !editFrame->options.transparentBackground) {
+        backgroundState = IsWindowEnabled(child) ? L"readonly" : L"disabled";
+    }
+    const COLORREF background = ToColorRef(theme_.color(backgroundComponent, backgroundState, L"bg"));
+    SetBkMode(dc, editFrame && editFrame->options.transparentBackground ? TRANSPARENT : OPAQUE);
     SetTextColor(dc, text);
     SetBkColor(dc, background);
     return BrushForColor(background);

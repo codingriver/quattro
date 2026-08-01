@@ -39,7 +39,8 @@ std::filesystem::path GuiLogDirectory() {
 
 bool GuiLoggingEnabled() {
     const std::filesystem::path configPath = AppLaunchLockerDataDirectory() / L"settings.ini";
-    return GetPrivateProfileIntW(L"main", L"loggingEnabled", 0, configPath.c_str()) != 0;
+    return QuattroTestMode() ||
+        GetPrivateProfileIntW(L"main", L"loggingEnabled", 0, configPath.c_str()) != 0;
 }
 
 template <typename RunWindow>
@@ -65,6 +66,7 @@ int RunGui(const wchar_t* mode, RunWindow&& runWindow) {
             output << std::hex << static_cast<unsigned long>(ole);
             return output.str();
         }());
+    FlushAppLog();
     if (FAILED(ole)) {
         WriteAppLog(L"AppLaunchLocker GUI 启动失败: OLE/STA 初始化不可用");
         return 1;

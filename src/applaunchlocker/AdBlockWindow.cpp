@@ -44,6 +44,7 @@ constexpr int ID_CLEAN_STALE = 1224;
 constexpr int ID_UNBLOCK_ALL = 1225;
 constexpr int ID_DETAILS = 1226;
 constexpr int ID_REPAIR = 1227;
+constexpr int ID_STATUS_TEXT = 1228;
 
 constexpr UINT WM_APP_SCAN_COMPLETE = WM_APP + 0x160;
 constexpr UINT WM_APP_BLOCKED_COMPLETE = WM_APP + 0x161;
@@ -484,7 +485,12 @@ LRESULT AdBlockWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam) {
         }
         return 0;
     case WM_APP_TEST_OPERATION_COMPLETE:
-        if (QuattroTestMode()) CompleteOperation({true, L"测试操作完成。"});
+        if (QuattroTestMode()) {
+            if (activeTab_ == 0 && !lastScanStatus_.empty()) {
+                ThemedUi::SetText(statusText_, lastScanStatus_);
+            }
+            UpdateButtons();
+        }
         return 0;
     case WM_CLOSE:
         DestroyWindow(hwnd_);
@@ -543,8 +549,12 @@ void AdBlockWindow::CreateControls() {
     const int editHeight = ui.editHeight();
     const int pathY = bodyTop;
     const int editWidth = pageContent.right - pageContent.left - clearWidth - pickWidth - checkWidth - gapX * 3;
-    pathEdit_ = ui.Edit(ID_PATH_EDIT, ui.editFrame(pageContent.left, pathY, editWidth), L"",
-        ThemedEditOptions{ThemedEditMode::SingleLine, ThemedEditContent::Text, false, true, false, false, true, 0, L"输入或选择要检查的文件或文件夹"});
+    ThemedEditOptions pathOptions{};
+    pathOptions.mode = ThemedEditMode::SingleLine;
+    pathOptions.content = ThemedEditContent::Text;
+    pathOptions.acceptsReturn = true;
+    pathOptions.placeholder = L"输入或选择要检查的文件或文件夹";
+    pathEdit_ = ui.Edit(ID_PATH_EDIT, ui.editFrame(pageContent.left, pathY, editWidth), L"", pathOptions);
     clearButton_ = ui.Button(ID_CLEAR_RESULTS, L"清空", pageContent.left + editWidth + gapX, pathY,
         ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
     pickPathSplit_ = ui.SplitButton(ID_PICK_PATH, ID_PICK_PATH_MENU, L"文件",
@@ -556,7 +566,7 @@ void AdBlockWindow::CreateControls() {
     const int listTop = ui.nextRowY(pathY, std::max(editHeight, labelHeight));
     const int modeY = footerY + (ui.footerButtonHeight() - ui.checkBoxHeight()) / 2;
     const int modeLabelWidth = ui.textWidth(L"拦截模式：") + ui.layout().rowGap;
-    HWND modeLabel = ui.Label(L"拦截模式：", content.left,
+    HWND modeLabel = ui.SelectableLabel(L"拦截模式：", content.left,
         modeY + (ui.checkBoxHeight() - labelHeight) / 2, modeLabelWidth);
     const int radioLeft = content.left + modeLabelWidth + gapX;
     const int exactRadioWidth = ui.textWidth(L"精确路径") + ui.scale(28);
@@ -596,8 +606,15 @@ void AdBlockWindow::CreateControls() {
          {L"time", L"拦截时间", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, ui.tableColumnWidth(L"2026-07-15")}},
         blockedOptions);
 
-    statusText_ = ui.StatusText(L"输入或选择文件、文件夹后点击“检查”。", content.left, statusY,
-        content.right - content.left, {ThemedStatusRole::Info, ThemedTextAlign::Start});
+    ThemedSelectableTextOptions statusOptions{};
+    statusOptions.role = ThemedSelectableTextRole::StatusLike;
+    statusOptions.align = ThemedTextAlign::Start;
+    statusOptions.statusRole = ThemedStatusRole::Info;
+    statusOptions.showFrame = false;
+    statusOptions.transparentBackground = true;
+    statusOptions.tabStop = false;
+    statusText_ = ui.SelectableText(ID_STATUS_TEXT, ui.rect(content.left, statusY, content.right - content.left, ui.labelHeight()),
+        L"输入或选择文件、文件夹后点击“检查”。", statusOptions);
 
     detailsButton_ = ui.FooterButton(ID_DETAILS, L"详情", 0, 6);
     repairButton_ = ui.FooterButton(ID_REPAIR, L"修复", 1, 6);
@@ -712,6 +729,7 @@ void AdBlockWindow::StartScan() {
     busy_ = true;
     scanRunning_ = true;
     scanItems_.clear();
+    lastScanStatus_.clear();
     ThemedUi::ClearTable(scanTable_);
     ThemedUi::SetText(statusText_, L"正在后台递归检查目录…");
     AdBlockScanOptions scanOptions{};
@@ -735,6 +753,8 @@ void AdBlockWindow::StartScan() {
         std::to_wstring(GetCurrentProcessId()) + L"_" + std::to_wstring(GetTickCount64());
     progressOptions.title = L"广告拦截检查进度";
     progressOptions.clientWidth = 520;
+    progressOptions.initialStatus = L"正在递归检查可启动程序";
+    progressOptions.initialDetail = L"最多使用 8 个工作线程，并对比已注册开机/登录自启动。";
     progressOptions.readSnapshot = [task = scanTask_]() {
         return ToThemedTaskProgressSnapshot(task->Snapshot());
     };
@@ -747,6 +767,7 @@ void AdBlockWindow::StartScan() {
 void AdBlockWindow::ClearScanResults() {
     if (busy_ || activeTab_ != 0) return;
     scanItems_.clear();
+    lastScanStatus_.clear();
     ThemedUi::ClearTable(scanTable_);
     ThemedUi::SetText(pathEdit_, L"");
     ThemedUi::SetText(statusText_, L"输入或选择文件、文件夹后点击“检查”。");
@@ -941,6 +962,7 @@ void AdBlockWindow::CompleteScan(AdBlockScanResult scan) {
         for (const auto& warning : scan.scan.warnings) AppendAppLaunchLockerLog(L"广告拦截扫描警告：" + warning);
         status += L" 部分项目未能读取。";
     }
+    lastScanStatus_ = status;
     ThemedUi::SetText(statusText_, status);
     UpdateButtons();
     if (QuattroTestMode() && !testConfirmationShown_) {
@@ -955,18 +977,13 @@ void AdBlockWindow::CompleteBlocked(std::vector<DisabledRecord> blocked, std::ws
     RebuildBlockedRows();
     if (!storeError.empty()) {
         AppendAppLaunchLockerLog(storeError);
-        ThemedUi::SetText(statusText_, storeError);
-    } else {
-        int attention = 0;
-        AdBlockManager manager;
-        for (const DisabledRecord& record : blocked_) {
-            const AdBlockRecordStatus status = manager.CheckRecordStatus(record);
-            if (status.state != AdBlockRecordState::Active) ++attention;
+        if (activeTab_ == 1) {
+            ThemedUi::SetText(statusText_, storeError);
         }
-        std::wstring text = L"已拦截 " + std::to_wstring(blocked_.size()) + L" 个程序";
-        if (attention > 0) text += L"，" + std::to_wstring(attention) + L" 条需要处理";
-        text += L"。";
-        ThemedUi::SetText(statusText_, text);
+    } else {
+        if (activeTab_ == 1) {
+            ThemedUi::SetText(statusText_, BlockedSummaryText());
+        }
     }
     UpdateButtons();
 }
@@ -981,6 +998,9 @@ void AdBlockWindow::CompleteOperation(OperationResult result) {
         toast.role = OperationToastRole(result.success, result.partial);
         if (result.partial) toast.durationMs = 5000;
         windowUi_->ui().ShowToast(result.message.empty() ? L"操作完成。" : result.message, toast);
+        if (activeTab_ == 0 && !lastScanStatus_.empty()) {
+            ThemedUi::SetText(statusText_, lastScanStatus_);
+        }
     }
     // 操作完成后只刷新“已拦截”数据。目录检查只能由用户点击“检查”或在路径框按 Enter 触发。
     LoadBlockedAsync();
@@ -1009,7 +1029,18 @@ void AdBlockWindow::SelectTab(int index) {
     if (index < 0 || index > 1) return;
     activeTab_ = index;
     ThemedUi::SetActiveTab(tabControl_, index, false);
-    if (index == 1) LoadBlockedAsync();
+    if (index == 1) {
+        ThemedUi::SetText(statusText_, blockedTask_ ? L"正在加载已拦截记录…" : BlockedSummaryText());
+        LoadBlockedAsync();
+    } else if (!scanRunning_) {
+        ThemedUi::SetText(
+            statusText_,
+            !lastScanStatus_.empty()
+                ? lastScanStatus_
+                : scanItems_.empty()
+                ? std::wstring(L"输入或选择文件、文件夹后点击“检查”。")
+                : L"检查完成：当前列表 " + std::to_wstring(scanItems_.size()) + L" 个可启动程序。");
+    }
     UpdateButtons();
 }
 
@@ -1060,6 +1091,19 @@ void AdBlockWindow::RebuildBlockedRows() {
         if (restored >= 0) ThemedUi::SetTableSelectedIndex(blockedTable_, restored);
     }
     ThemedUi::RestoreTableTopVisibleRowByKey(blockedTable_, previousTopKey);
+}
+
+std::wstring AdBlockWindow::BlockedSummaryText() const {
+    int attention = 0;
+    AdBlockManager manager;
+    for (const DisabledRecord& record : blocked_) {
+        const AdBlockRecordStatus status = manager.CheckRecordStatus(record);
+        if (status.state != AdBlockRecordState::Active) ++attention;
+    }
+    std::wstring text = L"已拦截 " + std::to_wstring(blocked_.size()) + L" 个程序";
+    if (attention > 0) text += L"，" + std::to_wstring(attention) + L" 条需要处理";
+    text += L"。";
+    return text;
 }
 
 std::intptr_t AdBlockWindow::RowKeyForIdentity(const std::wstring& identity) {

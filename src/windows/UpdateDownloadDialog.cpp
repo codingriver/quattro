@@ -224,37 +224,42 @@ private:
             const int contentWidth = ui.contentWidth();
             int y = ui.contentTop();
             auto titleRow = form.row(y, ThemedRowAlign::Left, {form.text(contentWidth)});
-            titleLabel_ = ui.Label(L"正在下载更新", titleRow[0].left, titleRow[0].top, titleRow[0].right - titleRow[0].left);
+            titleLabel_ = ui.SelectableLabel(L"正在下载更新", titleRow[0].left, titleRow[0].top, titleRow[0].right - titleRow[0].left);
             y = form.nextRowY(y, {form.text(contentWidth)});
             const int labelWidth = form.labelWidthForTexts({L"版本：", L"文件：", L"大小：", L"已下载："});
             const int valueWidth = contentWidth - labelWidth - ui.layout().labelGap;
-            ThemedReadOnlyTextOptions readOnlyLine{};
-            readOnlyLine.mode = ThemedEditMode::SingleLine;
+            ThemedSelectableTextOptions fieldText{};
+            fieldText.mode = ThemedEditMode::SingleLine;
             auto versionGroup = form.labelText(labelWidth, valueWidth);
             auto versionRows = form.rowGroups(y, ThemedRowAlign::Left, {versionGroup});
-            ui.Label(L"版本：", versionRows[0][0].left, versionRows[0][0].top, versionRows[0][0].right - versionRows[0][0].left);
-            versionLabel_ = ui.ReadOnlyText(ID_VERSION_TEXT, versionRows[0][1], FormatVersionForDisplay(info_.latestVersion), readOnlyLine);
+            ui.SelectableLabel(L"版本：", versionRows[0][0].left, versionRows[0][0].top, versionRows[0][0].right - versionRows[0][0].left);
+            versionLabel_ = ui.SelectableFieldText(ID_VERSION_TEXT, versionRows[0][1], FormatVersionForDisplay(info_.latestVersion), fieldText);
             y = form.nextRowY(y, {versionGroup});
             auto fileGroup = form.labelText(labelWidth, valueWidth);
             auto fileRows = form.rowGroups(y, ThemedRowAlign::Left, {fileGroup});
-            ui.Label(L"文件：", fileRows[0][0].left, fileRows[0][0].top, fileRows[0][0].right - fileRows[0][0].left);
-            fileLabel_ = ui.ReadOnlyText(ID_FILE_TEXT, fileRows[0][1], info_.assetName, readOnlyLine);
+            ui.SelectableLabel(L"文件：", fileRows[0][0].left, fileRows[0][0].top, fileRows[0][0].right - fileRows[0][0].left);
+            fileLabel_ = ui.SelectableFieldText(ID_FILE_TEXT, fileRows[0][1], info_.assetName, fieldText);
             y = form.nextRowY(y, {fileGroup});
             auto sizeGroup = form.labelText(labelWidth, valueWidth);
             auto sizeRows = form.rowGroups(y, ThemedRowAlign::Left, {sizeGroup});
-            ui.Label(L"大小：", sizeRows[0][0].left, sizeRows[0][0].top, sizeRows[0][0].right - sizeRows[0][0].left);
-            sizeLabel_ = ui.ReadOnlyText(ID_SIZE_TEXT, sizeRows[0][1], L"未知", readOnlyLine);
+            ui.SelectableLabel(L"大小：", sizeRows[0][0].left, sizeRows[0][0].top, sizeRows[0][0].right - sizeRows[0][0].left);
+            sizeLabel_ = ui.SelectableFieldText(ID_SIZE_TEXT, sizeRows[0][1], L"未知", fieldText);
             y = form.nextRowY(y, {sizeGroup});
             auto downloadedGroup = form.labelText(labelWidth, valueWidth);
             auto downloadedRows = form.rowGroups(y, ThemedRowAlign::Left, {downloadedGroup});
-            ui.Label(L"已下载：", downloadedRows[0][0].left, downloadedRows[0][0].top, downloadedRows[0][0].right - downloadedRows[0][0].left);
-            downloadedLabel_ = ui.ReadOnlyText(ID_DOWNLOADED_TEXT, downloadedRows[0][1], L"0 B", readOnlyLine);
+            ui.SelectableLabel(L"已下载：", downloadedRows[0][0].left, downloadedRows[0][0].top, downloadedRows[0][0].right - downloadedRows[0][0].left);
+            downloadedLabel_ = ui.SelectableFieldText(ID_DOWNLOADED_TEXT, downloadedRows[0][1], L"0 B", fieldText);
             y = form.nextRowY(y, {downloadedGroup});
             auto progressRow = form.row(y, ThemedRowAlign::Left, {form.progress(contentWidth)});
             progressBar_ = ui.ProgressBar(ID_PROGRESS, progressRow[0].left, progressRow[0].top, progressRow[0].right - progressRow[0].left);
             y = form.nextRowY(y, {form.progress(contentWidth)});
             auto statusRow = form.row(y, ThemedRowAlign::Left, {form.text(contentWidth)});
-            statusLabel_ = ui.ReadOnlyText(ID_STATUS_TEXT, statusRow[0], L"正在连接下载服务器...", readOnlyLine);
+            statusLabel_ = ui.SelectableStatusText(
+                L"正在连接下载服务器...",
+                statusRow[0].left,
+                statusRow[0].top,
+                statusRow[0].right - statusRow[0].left,
+                ThemedStatusTextOptions{ThemedStatusRole::Info, ThemedTextAlign::Start});
             cancelButton_ = ui.FooterButton(ID_CANCEL, L"取消", 0, 1);
             totalBytes_.store(info_.assetSizeBytes);
             RefreshUi();

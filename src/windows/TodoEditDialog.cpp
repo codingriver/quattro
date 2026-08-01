@@ -494,16 +494,16 @@ private:
     }
 
     HWND Label(const wchar_t* text, int x, int y, int width = 180) {
-        return windowUi_->ui().Label(text, x, y - scrollY_, width);
+        return windowUi_->ui().SelectableLabel(text, x, y - scrollY_, width);
     }
 
     HWND Text(const wchar_t* text, int x, int y, int width, int height = 20) {
         (void)height;
-        return windowUi_->ui().Label(text, x, y - scrollY_, width);
+        return windowUi_->ui().SelectableLabel(text, x, y - scrollY_, width);
     }
 
     HWND ErrorText(const wchar_t* text, int x, int y, int width) {
-        return windowUi_->ui().StatusText(
+        return windowUi_->ui().SelectableStatusText(
             text,
             x,
             y - scrollY_,
@@ -540,7 +540,7 @@ private:
 
     void MoveStatic(HWND hwnd, int x, int y, int width, int height) {
         if (hwnd) {
-            windowUi_->ui().MoveControl(hwnd, x, y - scrollY_, width);
+            windowUi_->ui().MoveControl(hwnd, RECT{x, y - scrollY_, x + width, y - scrollY_ + height});
             ShowWindow(hwnd, IntersectsContentViewport(y, height) ? SW_SHOW : SW_HIDE);
         }
     }

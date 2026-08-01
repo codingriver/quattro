@@ -394,6 +394,9 @@ void Theme::SetDefaults() {
     PutState(L"field", L"readonly", L"bg", palette_[L"surfaceRaised"]);
     PutState(L"field", L"readonly", L"text", palette_[L"mutedText"]);
     PutState(L"field", L"readonly", L"border", palette_[L"line"]);
+    PutState(L"field", L"disabled", L"bg", palette_[L"background"]);
+    PutState(L"field", L"disabled", L"text", palette_[L"disabledText"]);
+    PutState(L"field", L"disabled", L"border", palette_[L"line"]);
     PutState(L"linkItem", L"normal", L"bg", Color{1, 1, 1, 0.80f});
     PutState(L"linkItem", L"normal", L"text", palette_[L"text"]);
     PutState(L"linkItem", L"normal", L"subtext", palette_[L"mutedText"]);

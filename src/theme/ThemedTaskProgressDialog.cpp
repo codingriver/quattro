@@ -17,8 +17,7 @@ ThemedTaskProgressSnapshot ToThemedTaskProgressSnapshot(const TaskProgressSnapsh
     output.title = snapshot.title;
     output.status = snapshot.status;
     output.detail = snapshot.detail;
-    if ((snapshot.taskStatus == TaskStatus::Pending || snapshot.taskStatus == TaskStatus::Running) &&
-        snapshot.workerCount > 0) {
+    if (snapshot.workerCount > 0) {
         std::wstring workerDetail = L"使用 " + std::to_wstring(snapshot.workerCount) + L" 个工作线程";
         if (!output.detail.empty()) workerDetail += L"，" + output.detail;
         output.detail = std::move(workerDetail);
@@ -181,11 +180,14 @@ void ThemedTaskProgressDialog::CreateControls() {
     const DialogLayoutMetrics& layout = ui.layout();
     const int left = ui.contentLeft();
     int y = layout.contentInsetY;
-    ThemedReadOnlyTextOptions lineOptions{};
-    lineOptions.mode = ThemedEditMode::SingleLine;
-    status_ = ui.ReadOnlyText(kStatusTextId, ui.rect(left, y, ui.contentWidth(), ui.editHeight()), options_.initialStatus, lineOptions);
-    y = ui.nextRowY(y, ui.editHeight());
-    detail_ = ui.ReadOnlyText(kDetailTextId, ui.rect(left, y, ui.contentWidth(), ui.editHeight()), options_.initialDetail, lineOptions);
+    ThemedStatusTextOptions statusOptions{};
+    statusOptions.align = ThemedTextAlign::Start;
+    status_ = ui.SelectableStatusText(options_.initialStatus, left, y, ui.contentWidth(), statusOptions);
+    y = ui.nextRowY(y, ui.labelHeight());
+    detail_ = ui.SelectableFieldText(
+        kDetailTextId,
+        ui.rect(left, y, ui.contentWidth(), ui.editHeight()),
+        options_.initialDetail);
     y += ui.editHeight() + layout.sectionGap;
     ThemedProgressBarOptions progressOptions{};
     progressOptions.value = 0.0;

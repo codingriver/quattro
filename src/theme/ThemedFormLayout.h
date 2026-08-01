@@ -44,6 +44,7 @@ enum class ThemedSectionItemKind {
     Edit,
     CheckBox,
     Toggle,
+    Button,
     CompactButton,
 };
 

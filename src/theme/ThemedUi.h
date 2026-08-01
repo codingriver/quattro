@@ -196,6 +196,13 @@ struct ThemedStatusTextOptions {
     ThemedTextAlign align = ThemedTextAlign::Center;
 };
 
+enum class ThemedSelectableTextRole {
+    LabelLike,
+    StatusLike,
+    FieldLike,
+    DetailText,
+};
+
 struct ThemedComboBoxOptions {
     bool enabled = true;
 };
@@ -589,27 +596,90 @@ enum class ThemedEditContent {
 struct ThemedEditOptions {
     ThemedEditMode mode = ThemedEditMode::SingleLine;
     ThemedEditContent content = ThemedEditContent::Text;
+    ThemedTextAlign align = ThemedTextAlign::Start;
     bool readOnly = false;
     bool enabled = true;
     bool error = false;
     bool selectAllOnFocus = false;
     bool acceptsReturn = true;
+    bool wrap = false;
+    bool showVerticalScrollBar = false;
     UINT maxLength = 0;
     std::wstring placeholder;
+    bool showFrame = true;
+    bool transparentBackground = false;
+    bool tabStop = true;
+    ThemedSelectableTextRole selectableRole = ThemedSelectableTextRole::FieldLike;
+    ThemedStatusRole statusRole = ThemedStatusRole::Normal;
 };
 
 struct ThemedReadOnlyTextOptions {
     ThemedEditMode mode = ThemedEditMode::MultiLine;
+    ThemedTextAlign align = ThemedTextAlign::Start;
     bool enabled = true;
     bool selectAllOnFocus = false;
     bool acceptsReturn = true;
+    bool wrap = true;
+    bool showVerticalScrollBar = true;
     std::wstring placeholder;
+    bool showFrame = true;
+    bool transparentBackground = false;
+    bool tabStop = true;
+    ThemedSelectableTextRole selectableRole = ThemedSelectableTextRole::DetailText;
+    ThemedStatusRole statusRole = ThemedStatusRole::Normal;
+};
+
+struct ThemedSelectableTextOptions {
+    ThemedEditMode mode = ThemedEditMode::SingleLine;
+    ThemedSelectableTextRole role = ThemedSelectableTextRole::LabelLike;
+    ThemedControlSurface surface = ThemedControlSurface::Dialog;
+    ThemedTextAlign align = ThemedTextAlign::Start;
+    bool tabStop = false;
+    bool selectAllOnFocus = false;
+    bool showFrame = false;
+    bool transparentBackground = true;
+    bool wrap = false;
+    bool showVerticalScrollBar = false;
+    ThemedStatusRole statusRole = ThemedStatusRole::Normal;
+    std::wstring placeholder;
+};
+
+struct ThemedManagementSummaryItem {
+    std::wstring label;
+    std::wstring value;
+    ThemedStatusRole role = ThemedStatusRole::Normal;
+};
+
+struct ThemedManagementSummaryBar {
+    std::vector<HWND> badges;
+    HWND statusText = nullptr;
+};
+
+struct ThemedManagementDetailPaneLayout {
+    RECT title{};
+    RECT detail{};
+    RECT actions{};
+};
+
+struct ThemedEmptyStateOptions {
+    std::wstring title;
+    std::wstring detail;
+    int actionId = 0;
+    std::wstring actionText;
+    ThemedStatusRole role = ThemedStatusRole::Info;
+};
+
+struct ThemedEmptyState {
+    HWND title = nullptr;
+    HWND detail = nullptr;
+    HWND action = nullptr;
 };
 
 class ThemedEditFrameRegistry {
 public:
     virtual ~ThemedEditFrameRegistry() = default;
     virtual void RegisterEditFrame(HWND child, RECT frame, const ThemedEditOptions& options) = 0;
+    virtual bool MoveEditFrame(HWND child, RECT frame, const Theme& theme, UINT dpi) = 0;
 };
 
 class ThemedTableFrameRegistry {
@@ -636,6 +706,7 @@ public:
 class ThemedEditFrameCollection final : public ThemedEditFrameRegistry {
 public:
     void RegisterEditFrame(HWND child, RECT frame, const ThemedEditOptions& options) override;
+    bool MoveEditFrame(HWND child, RECT frame, const Theme& theme, UINT dpi) override;
     void Remove(HWND child);
     void SetFrame(HWND child, RECT frame);
     void SetReadOnly(HWND child, bool readOnly);
@@ -809,15 +880,22 @@ public:
     // only semantic values, text, and geometry; visual styling stays in Theme.
     HWND Label(const std::wstring& text, int x, int y, int width, ThemedLabelOptions options = {}) const;
     HWND StatusText(const std::wstring& text, int x, int y, int width, ThemedStatusTextOptions options = {}) const;
+    HWND SelectableText(int id, RECT frame, const std::wstring& text, ThemedSelectableTextOptions options = {}) const;
+    HWND SelectableLabel(const std::wstring& text, int x, int y, int width, ThemedLabelOptions options = {}) const;
+    HWND SelectableStatusText(const std::wstring& text, int x, int y, int width, ThemedStatusTextOptions options = {}) const;
+    HWND SelectableFieldText(int id, RECT frame, const std::wstring& text, ThemedSelectableTextOptions options = {}) const;
+    HWND DetailText(int id, RECT frame, const std::wstring& text, ThemedSelectableTextOptions options = {}) const;
     void SetStatusTextRole(HWND hwnd, ThemedStatusRole role) const;
     HWND StatusBadge(const std::wstring& text, int x, int y, int width, ThemedStatusRole role = ThemedStatusRole::Normal) const;
     HWND TimeDisplay(const std::wstring& text, int x, int y, int width) const;
     void SetStatusBadgeRole(HWND hwnd, ThemedStatusRole role) const;
     static void SetText(HWND hwnd, const std::wstring& text);
+    static bool CopyTextToClipboard(HWND owner, const std::wstring& text);
     static void SetVisible(HWND hwnd, bool visible);
     void SetEnabled(HWND hwnd, bool enabled) const;
     static void SetControlSurface(HWND hwnd, ThemedControlSurface surface);
     void MoveControl(HWND hwnd, int x, int y, int width) const;
+    void MoveControl(HWND hwnd, RECT frame) const;
     void MoveComboBox(HWND hwnd, int x, int y, int width) const;
     HWND GroupBox(int id, const std::wstring& title, RECT frame, ThemedGroupBoxOptions options = {}) const;
     static RECT GroupContentRect(HWND groupBox);
@@ -974,6 +1052,12 @@ public:
     HWND ReadOnlyText(int id, RECT frame, const std::wstring& value, ThemedReadOnlyTextOptions options = {}) const;
     HWND FramedStatic(const std::wstring& value, RECT frame, ThemedFramedTextOptions options = {}) const;
     HWND ProgressBar(int id, int x, int y, int width, ThemedProgressBarOptions options = {}) const;
+    ThemedManagementSummaryBar ManagementSummaryBar(
+        RECT frame,
+        const std::vector<ThemedManagementSummaryItem>& items,
+        const std::wstring& statusText = L"") const;
+    ThemedManagementDetailPaneLayout ManagementDetailPane(RECT frame, int actionButtonRows = 1) const;
+    ThemedEmptyState EmptyState(RECT frame, const ThemedEmptyStateOptions& options) const;
     static void SetProgress(HWND hwnd, double value, bool indeterminate = false);
     static void SetProgress(HWND hwnd, ThemedProgressBarOptions options);
     HWND Slider(int id, int x, int y, int width, ThemedSliderOptions options = {}) const;

@@ -12,6 +12,7 @@
 
 namespace {
 constexpr int kDetailsTextId = 501;
+constexpr int kCopyDetailsId = 502;
 
 std::wstring FormatDetailsFileSize(std::uint64_t bytes) {
     if (bytes >= 1024ull * 1024ull) {
@@ -142,8 +143,9 @@ LRESULT WebDavFileDetailsDialog::Handle(UINT message, WPARAM wParam, LPARAM lPar
             ui.contentTop(),
             ui.contentLeft() + ui.contentWidth(),
             ui.footerButtonY(footerHeight) - layout.footerGap};
-        ui.ReadOnlyText(kDetailsTextId, frame, DetailsText());
-        ui.FooterButton(IDOK, L"确定", 0, 1, true, true);
+        ui.DetailText(kDetailsTextId, frame, DetailsText());
+        ui.FooterButton(kCopyDetailsId, L"复制全部", 0, 2);
+        ui.FooterButton(IDOK, L"确定", 1, 2, true, true);
         return 0;
     }
     case WM_PAINT: {
@@ -154,6 +156,12 @@ LRESULT WebDavFileDetailsDialog::Handle(UINT message, WPARAM wParam, LPARAM lPar
         return 0;
     }
     case WM_COMMAND:
+        if (LOWORD(wParam) == kCopyDetailsId) {
+            if (ThemedUi::CopyTextToClipboard(hwnd_, DetailsText()) && windowUi_) {
+                windowUi_->ui().ShowToast(L"详情已复制。");
+            }
+            return 0;
+        }
         if (LOWORD(wParam) == IDOK || LOWORD(wParam) == IDCANCEL) {
             done_ = true;
             DestroyWindow(hwnd_);

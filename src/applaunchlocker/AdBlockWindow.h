@@ -46,6 +46,7 @@ private:
     void RebuildScanRows();
     void RebuildBlockedRows();
     void UpdateButtons();
+    std::wstring BlockedSummaryText() const;
     std::wstring SelectedMode() const;
     std::intptr_t RowKeyForIdentity(const std::wstring& identity);
     void StartOperationTask(std::function<OperationResult()> operation);
@@ -77,6 +78,7 @@ private:
 
     std::vector<StartupItem> scanItems_;
     std::vector<DisabledRecord> blocked_;
+    std::wstring lastScanStatus_;
     std::map<std::wstring, std::intptr_t> stableRowKeys_;
     std::intptr_t nextStableRowKey_ = 1;
     std::shared_ptr<ScanTaskHandle> scanTask_;

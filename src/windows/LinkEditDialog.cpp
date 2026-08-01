@@ -251,7 +251,7 @@ private:
     }
 
     HWND Label(const wchar_t* text, int x, int y, int width) {
-        return windowUi_->ui().Label(text, x, y + 7, width);
+        return windowUi_->ui().SelectableLabel(text, x, y + 7, width);
     }
 
     HWND Edit(int id, int x, int y, int width, const std::wstring& value) {

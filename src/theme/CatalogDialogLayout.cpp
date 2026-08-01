@@ -113,6 +113,12 @@ void CatalogDialogLayout::Layout(HWND parent, const RECT& client, const CatalogD
         *controls.searchFrame = RECT{searchLeft, searchTop, searchRight, searchTop + searchHeight};
         const RECT editRect = ThemedControls::SingleLineEditRect(*controls.theme, *controls.searchFrame);
         MoveWindow(controls.searchEdit, editRect.left, editRect.top, editRect.right - editRect.left, editRect.bottom - editRect.top, TRUE);
+        ThemedControls::ConfigureEditTextInsets(
+            controls.searchEdit,
+            *controls.theme,
+            false,
+            true,
+            GetDpiForWindow(parent));
     }
 
     const int listInset = std::max(0, controls.listFrameInset);

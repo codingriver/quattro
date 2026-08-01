@@ -1736,6 +1736,32 @@ bool VerifyAuthenticode(const std::wstring& filePath) {
     return status == ERROR_SUCCESS;
 }
 
+bool HasPortableExecutableSignature(const std::wstring& filePath) {
+    HANDLE file = CreateFileW(filePath.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) return false;
+    LARGE_INTEGER size{};
+    const bool hasSize = GetFileSizeEx(file, &size) != FALSE;
+    IMAGE_DOS_HEADER dos{};
+    DWORD read = 0;
+    bool valid = false;
+    if (hasSize && size.QuadPart >= static_cast<LONGLONG>(sizeof(dos)) &&
+        ReadFile(file, &dos, sizeof(dos), &read, nullptr) && read == sizeof(dos) &&
+        dos.e_magic == IMAGE_DOS_SIGNATURE &&
+        dos.e_lfanew > 0 &&
+        dos.e_lfanew <= size.QuadPart - static_cast<LONGLONG>(sizeof(DWORD) + sizeof(IMAGE_FILE_HEADER)) &&
+        SetFilePointer(file, dos.e_lfanew, nullptr, FILE_BEGIN) != INVALID_SET_FILE_POINTER) {
+        DWORD signature = 0;
+        if (ReadFile(file, &signature, sizeof(signature), &read, nullptr) &&
+            read == sizeof(signature) &&
+            signature == IMAGE_NT_SIGNATURE) {
+            valid = true;
+        }
+    }
+    CloseHandle(file);
+    return valid;
+}
+
 // 取签名者证书主体 CN/显示名。
 bool ExtractSignerSubject(const std::wstring& filePath, std::wstring& subject) {
     HCERTSTORE store = nullptr;
@@ -1793,6 +1819,9 @@ struct GuardVerdict {
 GuardVerdict EvaluateGuard(const std::wstring& targetPath, const std::wstring& imageName) {
     if (IsSystemPath(targetPath)) return {false, false, L"系统目录程序，禁止拦截"};
     if (IsCriticalProcessName(imageName)) return {false, false, L"系统关键进程名，禁止拦截"};
+    if (!HasPortableExecutableSignature(targetPath)) {
+        return {true, true, L"无法验证该程序签名，请确认这不是你需要的安全软件"};
+    }
     if (VerifyAuthenticode(targetPath)) {
         std::wstring subject;
         if (ExtractSignerSubject(targetPath, subject) && IsTrustedSubject(subject)) {
@@ -2620,6 +2649,12 @@ std::filesystem::path AppLaunchLockerDataDirectory() {
         L"APP_LAUNCH_LOCKER_DATA_DIR", overridePath.data(), static_cast<DWORD>(overridePath.size()));
     if (overrideLength > 0 && overrideLength < overridePath.size()) {
         overridePath.resize(overrideLength);
+        return overridePath;
+    }
+    const DWORD sharedOverrideLength = GetEnvironmentVariableW(
+        L"QUATTRO_USER_CONFIG_DIR", overridePath.data(), static_cast<DWORD>(overridePath.size()));
+    if (sharedOverrideLength > 0 && sharedOverrideLength < overridePath.size()) {
+        overridePath.resize(sharedOverrideLength);
         return overridePath;
     }
     PWSTR rawPath = nullptr;

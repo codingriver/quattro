@@ -337,7 +337,7 @@ private:
 
         const int statusX = contentLeft + viewWidth + layout_.controlGapX;
         const int statusY = statusRowY + std::max(0, (statusRowHeight - labelHeight) / 2);
-        status_ = ui.StatusText(
+        status_ = ui.SelectableStatusText(
             L"尚未扫描",
             statusX,
             statusY,

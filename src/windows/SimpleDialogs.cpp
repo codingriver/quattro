@@ -1117,7 +1117,7 @@ private:
             const int contentWidth = clientWidth - layout.contentInsetX * 2;
             const int labelY = layout.contentInsetY;
             const ThemedUi ui = windowUi_->ui();
-            ui.Label(label_, layout.contentInsetX, labelY, contentWidth);
+            ui.SelectableLabel(label_, layout.contentInsetX, labelY, contentWidth);
             const int fieldHeight = ThemedControls::EditFrameHeight(theme_);
             const int editY = labelY + ThemedControls::LabelHeight(theme_) + layout.rowGap;
             editFrame_ = RECT{layout.contentInsetX, editY, layout.contentInsetX + contentWidth, editY + fieldHeight};
@@ -1272,7 +1272,7 @@ private:
             int y = ui.contentTop();
 
             const auto messageRow = form.row(y, ThemedRowAlign::Left, {form.item(ui.contentWidth(), ui.labelHeight() * 3)});
-            ui.ReadOnlyText(ID_MESSAGE_TEXT, messageRow[0], message_);
+            ui.DetailText(ID_MESSAGE_TEXT, messageRow[0], message_);
 
             y = form.nextRowY(y, {form.item(ui.contentWidth(), ui.labelHeight() * 3)});
             ThemedToggleOptions toggleOptions{};
@@ -1424,7 +1424,7 @@ private:
             const ThemedUi& ui = windowUi_->ui();
             const auto& layout = ui.layout();
             const int labelY = ui.contentTop();
-            ui.Label(L"云端备份记录", ui.contentLeft(), labelY, ui.contentWidth());
+            ui.SelectableLabel(L"云端备份记录", ui.contentLeft(), labelY, ui.contentWidth());
             const int tableTop = labelY + ui.labelHeight() + layout.sectionGap;
             const int footerTop = layout.FooterButtonY(ui.clientHeight(), ui.footerButtonHeight());
             const RECT tableFrame{
@@ -1631,41 +1631,47 @@ private:
         const ThemedUi ui(instance_, hwnd_, theme_, windowUi_->font(), DialogLayoutKind::Compact,
             client.right, client.bottom, windowUi_.get(), windowUi_.get(), windowUi_.get(), windowUi_.get());
         const auto& layout = ui.layout();
-        const int compactHeight = ui.compactButtonHeight();
+        const int buttonHeight = ui.buttonHeight();
         const int refreshWidth = ui.buttonWidth(
-            L"刷新", ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Text);
+            L"刷新", ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
         const int queueWidth = ui.buttonWidth(
-            L"队列", ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Text);
+            L"队列", ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
         const int topGroupWidth = refreshWidth + layout.controlGapX + queueWidth;
         const int topGroupX = ui.contentLeft() + ui.contentWidth() - topGroupWidth;
-        MoveWindow(directoryLabel_, ui.contentLeft(), ui.contentTop(),
-            std::max(1, topGroupX - ui.contentLeft() - layout.controlGapX), ui.labelHeight(), TRUE);
-        MoveWindow(refreshButton_, topGroupX, ui.contentTop(), refreshWidth, compactHeight, TRUE);
+        ui.MoveControl(directoryLabel_, RECT{
+            ui.contentLeft(),
+            ui.contentTop(),
+            ui.contentLeft() + std::max(1, topGroupX - ui.contentLeft() - layout.controlGapX),
+            ui.contentTop() + ui.labelHeight()});
+        MoveWindow(refreshButton_, topGroupX, ui.contentTop(), refreshWidth, buttonHeight, TRUE);
         MoveWindow(transferQueueButton_, topGroupX + refreshWidth + layout.controlGapX,
-            ui.contentTop(), queueWidth, compactHeight, TRUE);
+            ui.contentTop(), queueWidth, buttonHeight, TRUE);
 
-        const int actionY = ui.nextRowY(ui.contentTop(), compactHeight);
+        const int actionY = ui.nextRowY(ui.contentTop(), buttonHeight);
         const int selectAllWidth = ui.buttonWidth(
-            L"全选", ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Text);
+            L"全选", ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
         const int clearWidth = ui.buttonWidth(
-            L"清除选择", ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Text);
+            L"清除选择", ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
         const int downloadWidth = ui.buttonWidth(
-            L"下载所选", ThemedButtonRole::Primary, ThemedButtonSize::Compact, ThemedButtonWidthMode::Text);
+            L"下载所选", ThemedButtonRole::Primary, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
         const int deleteWidth = ui.buttonWidth(
-            L"删除所选", ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Text);
-        MoveWindow(selectAllButton_, ui.contentLeft(), actionY, selectAllWidth, compactHeight, TRUE);
+            L"删除所选", ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
+        MoveWindow(selectAllButton_, ui.contentLeft(), actionY, selectAllWidth, buttonHeight, TRUE);
         MoveWindow(clearSelectionButton_, ui.contentLeft() + selectAllWidth + layout.controlGapX,
-            actionY, clearWidth, compactHeight, TRUE);
+            actionY, clearWidth, buttonHeight, TRUE);
         const int selectionX = ui.contentLeft() + selectAllWidth + layout.controlGapX + clearWidth + layout.controlGapX;
         const int rightActionsWidth = downloadWidth + layout.controlGapX + deleteWidth;
         const int rightActionsX = ui.contentLeft() + ui.contentWidth() - rightActionsWidth;
-        MoveWindow(selectionStatus_, selectionX, actionY,
-            std::max(1, rightActionsX - selectionX - layout.controlGapX), ui.labelHeight(), TRUE);
-        MoveWindow(downloadSelectedButton_, rightActionsX, actionY, downloadWidth, compactHeight, TRUE);
+        ui.MoveControl(selectionStatus_, RECT{
+            selectionX,
+            actionY,
+            selectionX + std::max(1, rightActionsX - selectionX - layout.controlGapX),
+            actionY + ui.labelHeight()});
+        MoveWindow(downloadSelectedButton_, rightActionsX, actionY, downloadWidth, buttonHeight, TRUE);
         MoveWindow(deleteSelectedButton_, rightActionsX + downloadWidth + layout.controlGapX,
-            actionY, deleteWidth, compactHeight, TRUE);
+            actionY, deleteWidth, buttonHeight, TRUE);
 
-        const int tableTop = ui.nextRowY(actionY, compactHeight);
+        const int tableTop = ui.nextRowY(actionY, buttonHeight);
         ui.MoveTable(table_, RECT{ui.contentLeft(), tableTop,
             ui.contentLeft() + ui.contentWidth(), ui.clientHeight() - layout.contentInsetY});
         InvalidateRect(hwnd_, nullptr, FALSE);
@@ -2241,46 +2247,46 @@ private:
             RECT client{}; GetClientRect(hwnd_, &client); windowUi_ = std::make_unique<ThemedWindowUi>(instance_, owner_, hwnd_, theme_, DialogLayoutKind::Compact, client.right, client.bottom);
             windowUi_->SetDpiChangedCallback([this](UINT) { LayoutControls(); });
             const auto& ui = windowUi_->ui(); const auto& layout = ui.layout();
-            const int compactHeight = ui.compactButtonHeight();
-            const int refreshWidth = ui.buttonWidth(L"刷新", ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Text);
-            const int queueWidth = ui.buttonWidth(L"队列", ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Text);
+            const int buttonHeight = ui.buttonHeight();
+            const int refreshWidth = ui.buttonWidth(L"刷新", ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
+            const int queueWidth = ui.buttonWidth(L"队列", ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
             const int topGroupWidth = refreshWidth + layout.controlGapX + queueWidth;
             const int topGroupX = ui.contentLeft() + ui.contentWidth() - topGroupWidth;
-            directoryLabel_ = ui.Label(L"远端目录：" + WebDavFileService::FilesDirectory(config_), ui.contentLeft(), ui.contentTop(), topGroupX - ui.contentLeft() - layout.controlGapX);
+            directoryLabel_ = ui.SelectableLabel(L"远端目录：" + WebDavFileService::FilesDirectory(config_), ui.contentLeft(), ui.contentTop(), topGroupX - ui.contentLeft() - layout.controlGapX);
             refreshButton_ = ui.Button(ID_WEBDAV_FILE_REFRESH, L"刷新", topGroupX, ui.contentTop(), ThemedButtonRole::Normal,
-                ThemedButtonSize::Compact, ThemedButtonWidthMode::Fixed, refreshWidth);
+                ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, refreshWidth);
             transferQueueButton_ = ui.Button(ID_WEBDAV_FILE_TRANSFER_QUEUE, L"队列", topGroupX + refreshWidth + layout.controlGapX,
-                ui.contentTop(), ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Fixed, queueWidth);
+                ui.contentTop(), ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, queueWidth);
             ui.SetTooltip(transferQueueButton_, L"打开 WebDAV 传输队列");
 
-            const int actionY = ui.nextRowY(ui.contentTop(), compactHeight);
-            const int selectAllWidth = ui.buttonWidth(L"全选", ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Text);
-            const int clearWidth = ui.buttonWidth(L"清除选择", ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Text);
-            const int downloadWidth = ui.buttonWidth(L"下载所选", ThemedButtonRole::Primary, ThemedButtonSize::Compact, ThemedButtonWidthMode::Text);
-            const int deleteWidth = ui.buttonWidth(L"删除所选", ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Text);
+            const int actionY = ui.nextRowY(ui.contentTop(), buttonHeight);
+            const int selectAllWidth = ui.buttonWidth(L"全选", ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
+            const int clearWidth = ui.buttonWidth(L"清除选择", ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
+            const int downloadWidth = ui.buttonWidth(L"下载所选", ThemedButtonRole::Primary, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
+            const int deleteWidth = ui.buttonWidth(L"删除所选", ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
             selectAllButton_ = ui.Button(ID_WEBDAV_FILE_SELECT_ALL, L"全选", ui.contentLeft(), actionY,
-                ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Fixed, selectAllWidth);
+                ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, selectAllWidth);
             clearSelectionButton_ = ui.Button(ID_WEBDAV_FILE_CLEAR_SELECTION, L"清除选择",
                 ui.contentLeft() + selectAllWidth + layout.controlGapX, actionY,
-                ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Fixed, clearWidth);
+                ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, clearWidth);
             const int selectionX = ui.contentLeft() + selectAllWidth + layout.controlGapX + clearWidth + layout.controlGapX;
             const int rightActionsWidth = downloadWidth + layout.controlGapX + deleteWidth;
             const int rightActionsX = ui.contentLeft() + ui.contentWidth() - rightActionsWidth;
-            selectionStatus_ = ui.StatusText(L"已选择 0 项", selectionX, actionY, std::max(1, rightActionsX - selectionX - layout.controlGapX),
+            selectionStatus_ = ui.SelectableStatusText(L"已选择 0 项", selectionX, actionY, std::max(1, rightActionsX - selectionX - layout.controlGapX),
                 ThemedStatusTextOptions{ThemedStatusRole::Normal, ThemedTextAlign::Start});
             downloadSelectedButton_ = ui.Button(ID_WEBDAV_FILE_DOWNLOAD_SELECTED, L"下载所选", rightActionsX, actionY,
-                ThemedButtonRole::Primary, ThemedButtonSize::Compact, ThemedButtonWidthMode::Fixed, downloadWidth);
+                ThemedButtonRole::Primary, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, downloadWidth);
             deleteSelectedButton_ = ui.Button(ID_WEBDAV_FILE_DELETE_SELECTED, L"删除所选",
                 rightActionsX + downloadWidth + layout.controlGapX, actionY,
-                ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Fixed, deleteWidth);
+                ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, deleteWidth);
 
-            const int top = ui.nextRowY(actionY, compactHeight);
+            const int top = ui.nextRowY(actionY, buttonHeight);
             RECT frame{ui.contentLeft(), top, ui.contentLeft()+ui.contentWidth(), ui.clientHeight()-layout.contentInsetY};
             const int fileSizeWidth = ui.tableColumnWidth({L"大小", L"999.99 GB"});
             const int uploadTimeWidth = ui.tableColumnWidth({L"上传时间", L"2000-00-00 00:00:00"});
             const int statusWidth = ui.tableColumnWidth({L"本地状态", L"本地不存在", L"本地较新"});
             const int actionWidth = ui.buttonWidth(
-                L"…", ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Text) + ui.denseGap();
+                L"…", ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text) + ui.denseGap();
             ThemedTableOptions tableOptions{}; tableOptions.checkable = true; tableOptions.allowColumnResize = true;
             tableOptions.reserveScrollBarGutter = true;
             table_ = ui.Table(430, frame, {
@@ -2335,7 +2341,7 @@ private:
             }
             return 0; }
         case WM_SIZE: if (windowUi_) LayoutControls(); return 0;
-        case WM_PAINT: { PAINTSTRUCT ps{}; HDC dc=BeginPaint(hwnd_,&ps); windowUi_->FillBackground(dc); windowUi_->DrawRegisteredTableFrames(dc); EndPaint(hwnd_,&ps); return 0; }
+        case WM_PAINT: { PAINTSTRUCT ps{}; HDC dc=BeginPaint(hwnd_,&ps); windowUi_->FillBackground(dc); windowUi_->DrawRegisteredEditFrames(dc); windowUi_->DrawRegisteredTableFrames(dc); EndPaint(hwnd_,&ps); return 0; }
         case WM_WEBDAV_FILE_REFRESH_REQUEST: StartRefresh(); return 0;
         case WM_WEBDAV_FILE_BATCH: ApplyBatch(std::unique_ptr<BatchResult>(reinterpret_cast<BatchResult*>(lParam))); return 0;
         case WM_WEBDAV_FILE_LIST_DONE: FinishRefresh(std::unique_ptr<ListResult>(reinterpret_cast<ListResult*>(lParam))); return 0;
@@ -2532,7 +2538,7 @@ private:
     }
 
     HWND Label(int tab, const wchar_t* text, int x, int y, int width = 110, ThemedLabelOptions options = {}) {
-        HWND hwnd = MakeUi().Label(text, x, ContentY(y), width, options);
+        HWND hwnd = MakeUi().SelectableLabel(text, x, ContentY(y), width, options);
         AddTabChild(hwnd, tab);
         return hwnd;
     }
@@ -2547,7 +2553,7 @@ private:
         ThemedStatusTextOptions options{};
         options.role = role;
         options.align = ThemedTextAlign::Start;
-        HWND hwnd = MakeUi().StatusText(text, x, ContentY(y), width, options);
+        HWND hwnd = MakeUi().SelectableStatusText(text, x, ContentY(y), width, options);
         AddTabChild(hwnd, tab);
         return hwnd;
     }
@@ -2573,7 +2579,17 @@ private:
     }
 
     HWND Button(int tab, int id, const wchar_t* text, int x, int y, int width, ThemedButtonRole role = ThemedButtonRole::Normal) {
-        HWND hwnd = MakeUi().Button(id, text, x, ContentY(y), role, ThemedButtonSize::Compact, ThemedButtonWidthMode::Fixed, width);
+        const ThemedUi ui = MakeUi();
+        const int normalWidth = ui.buttonWidth(text, role, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
+        HWND hwnd = ui.Button(
+            id,
+            text,
+            x,
+            ContentY(y),
+            role,
+            ThemedButtonSize::Normal,
+            ThemedButtonWidthMode::Fixed,
+            std::max(width, normalWidth));
         AddTabChild(hwnd, tab);
         return hwnd;
     }
@@ -4410,18 +4426,18 @@ private:
             const int resetContextMenuWidth = settingsUi.buttonWidth(
                 L"重置右键菜单",
                 ThemedButtonRole::Normal,
-                ThemedButtonSize::Compact,
+                ThemedButtonSize::Normal,
                 ThemedButtonWidthMode::Text);
             const int refreshContextMenuWidth = settingsUi.buttonWidth(
                 L"从Windows菜单刷新",
                 ThemedButtonRole::Normal,
-                ThemedButtonSize::Compact,
+                ThemedButtonSize::Normal,
                 ThemedButtonWidthMode::Text);
             const ThemedSectionGeometry contextMenuMaintenanceSection = behaviorForm.section(
                 behaviorFrameLeft, contextMenuTrackingSection.frame.bottom + behaviorFrameGap, behaviorFrameWidth,
-                {behaviorForm.sectionRow({ThemedSectionItemKind::CompactButton, ThemedSectionItemKind::CompactButton})});
+                {behaviorForm.sectionRow({ThemedSectionItemKind::Button, ThemedSectionItemKind::Button})});
             HWND contextMenuMaintenanceGroup = AddSectionFrame(TabContextMenu, L"缓存维护", contextMenuMaintenanceSection.frame);
-            const int contextMenuMaintenanceY = behaviorForm.sectionItemY(contextMenuMaintenanceSection, 0, settingsUi.compactButtonHeight());
+            const int contextMenuMaintenanceY = behaviorForm.sectionItemY(contextMenuMaintenanceSection, 0, settingsUi.buttonHeight());
             resetContextMenuButton_ = Button(
                 TabContextMenu,
                 ID_RESET_CONTEXT_MENU,
@@ -4501,7 +4517,7 @@ private:
             const int resetDefaultHotKeysWidth = settingsUi.buttonWidth(
                 L"重置默认热键",
                 ThemedButtonRole::Normal,
-                ThemedButtonSize::Compact,
+                ThemedButtonSize::Normal,
                 ThemedButtonWidthMode::Text);
             globalHotKeysEnabled_ = Toggle(
                 TabHotKeys, ID_GLOBAL_HOTKEYS_ENABLED, L"启用全局快捷键", behaviorLeft,
@@ -4512,7 +4528,7 @@ private:
                 ID_RESET_DEFAULT_HOTKEYS,
                 L"重置默认热键",
                 behaviorLeft + behaviorContentWidth - resetDefaultHotKeysWidth,
-                hotKeyToggleY + (settingsUi.toggleHeight() - settingsUi.compactButtonHeight()) / 2,
+                hotKeyToggleY + (settingsUi.toggleHeight() - settingsUi.buttonHeight()) / 2,
                 resetDefaultHotKeysWidth);
             ThemedTooltipOptions resetDefaultHotKeysTooltipOptions{};
             resetDefaultHotKeysTooltipOptions.placement = ThemedTooltipPlacement::Cursor;
@@ -4552,7 +4568,7 @@ private:
                         settingsUi.buttonWidth(
                             L"录入",
                             ThemedButtonRole::Normal,
-                            ThemedButtonSize::Compact,
+                            ThemedButtonSize::Normal,
                             ThemedButtonWidthMode::Text) + behaviorLayout.controlGapX},
                 });
             AddTabChild(hotKeyTable_, TabHotKeys);
@@ -4596,10 +4612,10 @@ private:
             ThemedUi::BindGroupChildren(publicLinksGroup, {
                 helpUrlLabel, helpUrlEdit_, updateUrlLabel, updateUrlEdit_, faqUrlLabel, rewardUrlLabel, faqUrlEdit_, rewardUrlEdit_});
 
-            const int uploadWidth = settingsUi.buttonWidth(L"上传到云端", ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Text);
-            const int downloadWidth = settingsUi.buttonWidth(L"从云端下载", ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Text);
-            const int testWidth = settingsUi.buttonWidth(L"测试连接", ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Text);
-            const int clearWidth = settingsUi.buttonWidth(L"清除密码", ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Text);
+            const int uploadWidth = settingsUi.buttonWidth(L"上传到云端", ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
+            const int downloadWidth = settingsUi.buttonWidth(L"从云端下载", ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
+            const int testWidth = settingsUi.buttonWidth(L"测试连接", ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
+            const int clearWidth = settingsUi.buttonWidth(L"清除密码", ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
             const ThemedSectionGeometry webDavSection = behaviorForm.section(
                 behaviorFrameLeft, pageTop, behaviorFrameWidth,
                 {behaviorForm.sectionRow({ThemedSectionItemKind::CheckBox}),
@@ -4610,8 +4626,8 @@ private:
                  behaviorForm.sectionRow({ThemedSectionItemKind::Edit}),
                  behaviorForm.sectionRow({ThemedSectionItemKind::Label}),
                  behaviorForm.sectionRow({ThemedSectionItemKind::Edit}),
-                 behaviorForm.sectionRow({ThemedSectionItemKind::CompactButton}),
-                 behaviorForm.sectionRow({ThemedSectionItemKind::CompactButton})});
+                 behaviorForm.sectionRow({ThemedSectionItemKind::Button}),
+                 behaviorForm.sectionRow({ThemedSectionItemKind::Button})});
             HWND webDavGroup = AddSectionFrame(TabWebDav, L"WebDAV 备份", webDavSection.frame);
             webDavEnabled_ = CheckBox(TabWebDav, 208, L"启用 WebDAV 备份", behaviorLeft, behaviorForm.sectionItemY(webDavSection, 0, behaviorCheckHeight), draft_.webDavEnabled, behaviorCheckWidth);
             webDavUploadContextMenu_ = CheckBox(TabWebDav, ID_WEBDAV_UPLOAD_CONTEXT_MENU, L"注册“上传到 WebDAV”右键菜单", behaviorRight, behaviorForm.sectionItemY(webDavSection, 0, behaviorCheckHeight), draft_.registerWebDavUploadContextMenu, behaviorCheckWidth);
@@ -4637,13 +4653,13 @@ private:
             const int webDavButtonsX = settingsUi.centeredGroupX(webDavButtonsWidth);
             HWND webDavFilesLabel = Label(TabWebDav, L"文件目录", behaviorLeft, behaviorForm.sectionItemY(webDavSection, 6, settingsUi.labelHeight()), behaviorContentWidth);
             webDavFilesPathEdit_ = FramedEdit(TabWebDav, 219, behaviorLeft, behaviorForm.sectionItemY(webDavSection, 7, settingsUi.editHeight()), behaviorContentWidth, draft_.webDavFilesPath);
-            const int webDavButtonsY = behaviorForm.sectionItemY(webDavSection, 8, settingsUi.compactButtonHeight());
+            const int webDavButtonsY = behaviorForm.sectionItemY(webDavSection, 8, settingsUi.buttonHeight());
             webDavTestButton_ = Button(TabWebDav, ID_WEBDAV_TEST, L"测试连接", webDavButtonsX, webDavButtonsY, testWidth);
             webDavClearPasswordButton_ = Button(TabWebDav, ID_WEBDAV_CLEAR_PASSWORD, L"清除密码", webDavButtonsX + testWidth + behaviorLayout.controlGapX, webDavButtonsY, clearWidth);
             webDavUploadButton_ = Button(TabWebDav, ID_WEBDAV_UPLOAD, L"上传到云端", webDavButtonsX + testWidth + behaviorLayout.controlGapX + clearWidth + behaviorLayout.controlGapX, webDavButtonsY, uploadWidth);
             webDavDownloadButton_ = Button(TabWebDav, ID_WEBDAV_DOWNLOAD, L"从云端下载", webDavButtonsX + testWidth + behaviorLayout.controlGapX + clearWidth + behaviorLayout.controlGapX + uploadWidth + behaviorLayout.controlGapX, webDavButtonsY, downloadWidth);
-            const int fileManagerWidth = settingsUi.buttonWidth(L"打开文件管理", ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Text);
-            webDavFileManagerButton_ = Button(TabWebDav, ID_WEBDAV_FILE_MANAGER, L"打开文件管理", settingsUi.centeredGroupX(fileManagerWidth), behaviorForm.sectionItemY(webDavSection, 9, settingsUi.compactButtonHeight()), fileManagerWidth);
+            const int fileManagerWidth = settingsUi.buttonWidth(L"打开文件管理", ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
+            webDavFileManagerButton_ = Button(TabWebDav, ID_WEBDAV_FILE_MANAGER, L"打开文件管理", settingsUi.centeredGroupX(fileManagerWidth), behaviorForm.sectionItemY(webDavSection, 9, settingsUi.buttonHeight()), fileManagerWidth);
             ThemedUi::BindGroupChildren(webDavGroup, {
                 webDavEnabled_, webDavUploadContextMenu_, webDavLastSyncLabel_, webDavUrlLabel, webDavUrlEdit_, webDavUserLabel,
                 webDavPasswordLabel, webDavUserNameEdit_, webDavPasswordEdit_, webDavTestButton_,
@@ -4663,17 +4679,17 @@ private:
             const int httpCheckHeight = settingsUi.checkBoxHeight();
             const int httpEditHeight = settingsUi.editHeight();
             const int httpLabelHeight = settingsUi.labelHeight();
-            const int httpButtonHeight = settingsUi.compactButtonHeight();
+            const int httpButtonHeight = settingsUi.buttonHeight();
 
             const int httpConfigFrameTop = tabStripRect_.bottom + httpLayout.sectionGap;
             const ThemedSectionGeometry httpServiceSection = behaviorForm.section(
                 httpFrameLeft, httpConfigFrameTop, httpFrameWidth,
                 {behaviorForm.sectionRow({ThemedSectionItemKind::CheckBox}),
                  behaviorForm.sectionRow({ThemedSectionItemKind::Label, ThemedSectionItemKind::Edit}),
-                 behaviorForm.sectionRow({ThemedSectionItemKind::Label, ThemedSectionItemKind::Edit, ThemedSectionItemKind::CompactButton})});
+                 behaviorForm.sectionRow({ThemedSectionItemKind::Label, ThemedSectionItemKind::Edit, ThemedSectionItemKind::Button})});
             HWND httpServiceGroup = AddSectionFrame(TabHttp, L"服务配置", httpServiceSection.frame);
-            const int httpBrowseWidth = settingsUi.buttonWidth(L"选择", ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Text);
-            const int httpOpenRootWidth = settingsUi.buttonWidth(L"打开目录", ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Text);
+            const int httpBrowseWidth = settingsUi.buttonWidth(L"选择", ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
+            const int httpOpenRootWidth = settingsUi.buttonWidth(L"打开目录", ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
             const int httpFieldWidth = httpContentRight - httpFieldX - httpLayout.controlGapX * 2 - httpBrowseWidth - httpOpenRootWidth;
             const int httpAutoStartY = behaviorForm.sectionItemY(httpServiceSection, 0, httpCheckHeight);
             httpServerAutoStart_ = CheckBox(TabHttp, 215, L"随应用启动", httpContentLeft, httpAutoStartY, draft_.httpServerAutoStart, httpContentRight - httpContentLeft);
@@ -4709,7 +4725,7 @@ private:
             const ThemedSectionGeometry httpControlSection = behaviorForm.section(
                 httpFrameLeft, httpControlFrameTop, httpFrameWidth,
                 {behaviorForm.sectionRow({ThemedSectionItemKind::Label, ThemedSectionItemKind::StatusBadge, ThemedSectionItemKind::Text}),
-                 behaviorForm.sectionRow({ThemedSectionItemKind::CompactButton})});
+                 behaviorForm.sectionRow({ThemedSectionItemKind::Button})});
             HWND httpControlGroup = AddSectionFrame(TabHttp, L"运行控制", httpControlSection.frame);
             const int httpStatusY = behaviorForm.sectionItemY(httpControlSection, 0, httpLabelHeight);
             const int httpButtonY = behaviorForm.sectionItemY(httpControlSection, 1, httpButtonHeight);
@@ -4719,11 +4735,11 @@ private:
                 TabHttp, L"", httpContentLeft + httpStatusLabelWidth + httpLayout.controlGapX, httpStatusY, settingsUi.textWidth(L"未运行") + httpLayout.controlGapX * 2, ThemedStatusRole::Danger);
             const int httpStatusDetailX = httpContentLeft + httpStatusLabelWidth + httpLayout.controlGapX * 2 + settingsUi.textWidth(L"未运行") + httpLayout.controlGapX * 2;
             httpServerStatusDetail_ = Label(TabHttp, L"", httpStatusDetailX, httpStatusY, httpContentRight - httpStatusDetailX);
-            const int httpStartWidth = settingsUi.buttonWidth(L"启动", ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Text);
-            const int httpStopWidth = settingsUi.buttonWidth(L"停止", ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Text);
-            const int httpRestartWidth = settingsUi.buttonWidth(L"重启", ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Text);
-            const int httpHomeWidth = settingsUi.buttonWidth(L"打开网站", ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Text);
-            const int httpCopyWidth = settingsUi.buttonWidth(L"复制地址", ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Text);
+            const int httpStartWidth = settingsUi.buttonWidth(L"启动", ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
+            const int httpStopWidth = settingsUi.buttonWidth(L"停止", ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
+            const int httpRestartWidth = settingsUi.buttonWidth(L"重启", ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
+            const int httpHomeWidth = settingsUi.buttonWidth(L"打开网站", ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
+            const int httpCopyWidth = settingsUi.buttonWidth(L"复制地址", ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
             int httpButtonX = httpContentLeft;
             httpStartButton_ = Button(TabHttp, ID_HTTP_START, L"启动", httpButtonX, httpButtonY, httpStartWidth);
             httpButtonX += httpStartWidth + httpLayout.controlGapX;
@@ -4740,38 +4756,38 @@ private:
 
             const ThemedSectionGeometry httpAdvancedSection = behaviorForm.section(
                 httpFrameLeft, httpControlSection.frame.bottom + httpFrameGap, httpFrameWidth,
-                {behaviorForm.sectionRow({ThemedSectionItemKind::CompactButton, ThemedSectionItemKind::Text})});
+                {behaviorForm.sectionRow({ThemedSectionItemKind::Button, ThemedSectionItemKind::Text})});
             HWND httpAdvancedGroup = AddSectionFrame(TabHttp, L"高级配置", httpAdvancedSection.frame);
             const int httpConfigY = behaviorForm.sectionItemY(httpAdvancedSection, 0, httpButtonHeight);
-            const int httpConfigWidth = settingsUi.buttonWidth(L"配置目录", ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Text);
+            const int httpConfigWidth = settingsUi.buttonWidth(L"配置目录", ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
             HWND httpConfigButton = Button(TabHttp, ID_HTTP_OPEN_CONFIG_DIR, L"配置目录", httpContentLeft, httpConfigY, httpConfigWidth);
             HWND httpConfigNote = Label(TabHttp, L"权限、账号、MIME 与下载策略在配置目录修改，重启后生效。", httpContentLeft + httpConfigWidth + httpLayout.controlGapX, httpConfigY, httpContentRight - httpContentLeft - httpConfigWidth - httpLayout.controlGapX);
             ThemedUi::BindGroupChildren(httpAdvancedGroup, {httpConfigButton, httpConfigNote});
             UpdateHttpStatusLabel();
 
-            const int configExportWidth = settingsUi.buttonWidth(L"导出配置包", ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Text);
-            const int configImportWidth = settingsUi.buttonWidth(L"导入配置包", ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Text);
+            const int configExportWidth = settingsUi.buttonWidth(L"导出配置包", ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
+            const int configImportWidth = settingsUi.buttonWidth(L"导入配置包", ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
             const int configButtonsX = behaviorLeft;
             const ThemedSectionGeometry configBackupSection = behaviorForm.section(
                 behaviorFrameLeft, pageTop, behaviorFrameWidth,
-                {behaviorForm.sectionRow({ThemedSectionItemKind::CompactButton})});
+                {behaviorForm.sectionRow({ThemedSectionItemKind::Button})});
             HWND configBackupGroup = AddSectionFrame(TabBackup, L"配置包", configBackupSection.frame);
-            const int configButtonsY = behaviorForm.sectionItemY(configBackupSection, 0, settingsUi.compactButtonHeight());
+            const int configButtonsY = behaviorForm.sectionItemY(configBackupSection, 0, settingsUi.buttonHeight());
             HWND configExportButton = Button(TabBackup, ID_CONFIG_EXPORT, L"导出配置包", configButtonsX, configButtonsY, configExportWidth);
             HWND configImportButton = Button(TabBackup, ID_CONFIG_IMPORT, L"导入配置包", configButtonsX + configExportWidth + behaviorLayout.controlGapX, configButtonsY, configImportWidth);
             ThemedUi::BindGroupChildren(configBackupGroup, {configExportButton, configImportButton});
 
-            const int todoExportWidth = settingsUi.buttonWidth(L"导出", ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Text);
-            const int todoMergeImportWidth = settingsUi.buttonWidth(L"合并导入", ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Text);
-            const int todoReplaceImportWidth = settingsUi.buttonWidth(L"全量导入", ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Text);
+            const int todoExportWidth = settingsUi.buttonWidth(L"导出", ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
+            const int todoMergeImportWidth = settingsUi.buttonWidth(L"合并导入", ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
+            const int todoReplaceImportWidth = settingsUi.buttonWidth(L"全量导入", ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
             const int todoButtonsX = behaviorLeft;
             const ThemedSectionGeometry todoBackupSection = behaviorForm.section(
                 behaviorFrameLeft, configBackupSection.frame.bottom + behaviorFrameGap, behaviorFrameWidth,
-                {behaviorForm.sectionRow({ThemedSectionItemKind::CompactButton}),
+                {behaviorForm.sectionRow({ThemedSectionItemKind::Button}),
                  behaviorForm.sectionRow({ThemedSectionItemKind::CheckBox}),
                  behaviorForm.sectionRow({ThemedSectionItemKind::Label})});
             HWND todoBackupGroup = AddSectionFrame(TabBackup, L"待办事项", todoBackupSection.frame);
-            const int todoButtonsY = behaviorForm.sectionItemY(todoBackupSection, 0, settingsUi.compactButtonHeight());
+            const int todoButtonsY = behaviorForm.sectionItemY(todoBackupSection, 0, settingsUi.buttonHeight());
             HWND todoExportButton = Button(TabBackup, ID_TODO_EXPORT, L"导出", todoButtonsX, todoButtonsY, todoExportWidth);
             HWND todoMergeImportButton = Button(TabBackup, ID_TODO_IMPORT_MERGE, L"合并导入", todoButtonsX + todoExportWidth + behaviorLayout.controlGapX, todoButtonsY, todoMergeImportWidth);
             HWND todoReplaceImportButton = Button(

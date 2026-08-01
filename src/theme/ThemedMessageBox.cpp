@@ -97,7 +97,19 @@ private:
                 content.top,
                 content.right,
                 ui.footerButtonY(footerHeight) - ui.layout().footerGap};
-            ui.ReadOnlyText(kMessageTextId, frame, message_);
+            const bool useDetailText = message_.find(L'\n') != std::wstring::npos || message_.size() > 120;
+            if (useDetailText) {
+                ui.DetailText(kMessageTextId, frame, message_);
+            } else {
+                ThemedSelectableTextOptions textOptions{};
+                textOptions.role = ThemedSelectableTextRole::LabelLike;
+                textOptions.mode = ThemedEditMode::MultiLine;
+                textOptions.surface = ThemedControlSurface::Dialog;
+                textOptions.showFrame = false;
+                textOptions.transparentBackground = true;
+                textOptions.wrap = true;
+                ui.SelectableText(kMessageTextId, frame, message_, textOptions);
+            }
             if (IsYesNoCancel()) {
                 const int defaultIndex = DefaultButtonIndex(3);
                 ui.FooterButton(IDYES, L"是", 0, 3, defaultIndex == 0, defaultIndex == 0);

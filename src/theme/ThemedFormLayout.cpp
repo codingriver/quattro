@@ -341,6 +341,9 @@ int ThemedFormLayout::sectionRowHeight(const ThemedSectionRow& row) const {
         case ThemedSectionItemKind::Toggle:
             height = std::max(height, ui_.toggleHeight());
             break;
+        case ThemedSectionItemKind::Button:
+            height = std::max(height, ui_.buttonHeight(ThemedButtonRole::Normal, ThemedButtonSize::Normal));
+            break;
         case ThemedSectionItemKind::CompactButton:
             height = std::max(height, ui_.compactButtonHeight());
             break;

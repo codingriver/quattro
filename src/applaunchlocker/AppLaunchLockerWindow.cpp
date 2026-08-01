@@ -21,6 +21,7 @@
 #include <sstream>
 #include <optional>
 #include <string>
+#include <thread>
 #include <utility>
 
 namespace {
@@ -629,27 +630,6 @@ std::wstring ApplicationDetailsText(const StartupApplication& application) {
     }
     return text.str();
 }
-
-bool CopyTextToClipboard(HWND owner, const std::wstring& text) {
-    if (!OpenClipboard(owner)) return false;
-    EmptyClipboard();
-    const SIZE_T bytes = (text.size() + 1) * sizeof(wchar_t);
-    HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, bytes);
-    if (!memory) {
-        CloseClipboard();
-        return false;
-    }
-    if (void* data = GlobalLock(memory)) {
-        memcpy(data, text.c_str(), bytes);
-        GlobalUnlock(memory);
-        SetClipboardData(CF_UNICODETEXT, memory);
-        memory = nullptr;
-    }
-    if (memory) GlobalFree(memory);
-    CloseClipboard();
-    return true;
-}
-
 std::wstring FirstExistingPathCandidate(const std::vector<std::wstring>& candidates) {
     for (const std::wstring& candidate : candidates) {
         if (candidate.empty()) continue;
@@ -1080,20 +1060,24 @@ private:
             const ThemedUi ui = windowUi_->ui();
             const RECT content = ui.contentRect();
             const int labelHeight = ui.labelHeight();
+            const int pathHeight = ui.editHeight();
             const int headerY = content.top;
             const int pathY = ui.nextRowY(headerY, labelHeight);
-            const int summaryY = ui.nextRowY(pathY, labelHeight);
+            const int summaryY = ui.nextRowY(pathY, pathHeight);
             const int tableTop = ui.nextRowY(summaryY, labelHeight) + ui.layout().rowGap;
             const int footerHeight = ui.footerButtonHeight();
             const int detailsBottom = ui.footerButtonY(footerHeight) - ui.layout().footerGap;
             const int detailTop = detailsBottom - ui.scale(138);
             const int tableBottom = detailTop - ui.layout().rowGap;
 
-            ui.Label(application_.displayName + L"    状态：" + StartupApplicationStateText(application_),
+            ui.SelectableLabel(application_.displayName + L"    状态：" + StartupApplicationStateText(application_),
                 content.left, headerY, content.right - content.left);
-            ui.Label(L"路径：" + (application_.targetPath.empty() ? std::wstring(L"(无法确定)") : application_.targetPath),
-                content.left, pathY, content.right - content.left);
-            ui.Label(L"共发现 " + VisibleEntryCountText() + L"：入口来源 " + VisibleSourcesText(),
+            ui.SelectableFieldText(0, ui.editFrame(
+                    content.left,
+                    pathY,
+                    content.right - content.left),
+                L"路径：" + (application_.targetPath.empty() ? std::wstring(L"(无法确定)") : application_.targetPath));
+            ui.SelectableLabel(L"共发现 " + VisibleEntryCountText() + L"：入口来源 " + VisibleSourcesText(),
                 content.left, summaryY, content.right - content.left);
 
             ThemedTableOptions tableOptions{};
@@ -1108,7 +1092,7 @@ private:
                  {L"operation", L"操作", ThemedTableColumnAlign::Center, ThemedTableColumnWidth::Fixed, ui.tableColumnWidth(L"改手动")}},
                 tableOptions);
 
-            detailText_ = ui.ReadOnlyText(ID_DETAIL_TEXT, RECT{content.left, detailTop, content.right, detailsBottom}, L"当前入口详细信息");
+            detailText_ = ui.DetailText(ID_DETAIL_TEXT, RECT{content.left, detailTop, content.right, detailsBottom}, L"当前入口详细信息");
             ui.FooterButton(ID_COPY_DETAILS, L"复制详情", 0, 2);
             ui.FooterButton(IDOK, L"关闭", 1, 2, true, true);
             PopulateEntries();
@@ -1131,7 +1115,7 @@ private:
         }
         case WM_COMMAND:
             if (LOWORD(wParam) == ID_COPY_DETAILS) {
-                if (CopyTextToClipboard(hwnd_, DialogDetailsText()) && windowUi_) {
+                if (ThemedUi::CopyTextToClipboard(hwnd_, DialogDetailsText()) && windowUi_) {
                     ThemedToastOptions toast{};
                     toast.role = ThemedToastRole::Success;
                     windowUi_->ui().ShowToast(L"详情已复制。", toast);
@@ -1374,11 +1358,13 @@ LRESULT AppLaunchLockerWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam
             scan = scanTask_->ResultCopy<ScanResult>();
         }
         scanTask_.reset();
-        if (scanProgressDialog_) scanProgressDialog_->Close();
-            std::vector<DisabledRecord> disabled;
-            std::wstring storeError;
-            StartupManager().LoadDisabled(disabled, storeError);
-            CompleteScan(std::move(scan), std::move(disabled), std::move(storeError));
+        if (scanProgressDialog_ && !QuattroTestMode()) {
+            scanProgressDialog_->Close();
+        }
+        std::vector<DisabledRecord> disabled;
+        std::wstring storeError;
+        StartupManager().LoadDisabled(disabled, storeError);
+        CompleteScan(std::move(scan), std::move(disabled), std::move(storeError));
         return 0;
     }
     case WM_APP_ICONS_COMPLETE:
@@ -1420,7 +1406,7 @@ void AppLaunchLockerWindow::CreateControls() {
     const int statusY = footerY - ui.layout().sectionGap - ui.labelHeight();
     const int tableBottom = statusY - ui.layout().rowGap;
 
-    ui.Label(L"AppLaunchLocker 自启动管理", content.left, headerY,
+    ui.SelectableLabel(L"AppLaunchLocker 自启动管理", content.left, headerY,
         content.right - content.left - scanWidth - filterWidth - ui.layout().controlGapX * 2);
     advancedSourceFilter_ = ui.ComboBox(ID_ADVANCED_SOURCE_FILTER,
         content.right - scanWidth - filterWidth - ui.layout().controlGapX,
@@ -1449,7 +1435,7 @@ void AppLaunchLockerWindow::CreateControls() {
     itemTable_ = ui.Table(ID_CURRENT_TABLE, RECT{content.left, listTop, content.right, tableBottom},
         MainTableColumns(ui, MainTab::StartupItems),
         gridTableOptions);
-    statusText_ = ui.StatusText(L"正在扫描…", content.left, statusY,
+    statusText_ = ui.SelectableStatusText(L"正在扫描…", content.left, statusY,
         content.right - content.left,
         {ThemedStatusRole::Info, ThemedTextAlign::Start});
     detailsButton_ = ui.FooterButton(ID_CURRENT_DETAILS, L"详情", 0, 2);
@@ -1496,6 +1482,16 @@ void AppLaunchLockerWindow::StartScan() {
     progressOptions.className = L"AppLaunchLockerScanProgress_" +
         std::to_wstring(GetCurrentProcessId()) + L"_" + std::to_wstring(GetTickCount64());
     progressOptions.title = L"启动项扫描进度";
+    const std::size_t startupSourceWorkers = std::max<std::size_t>(
+        1,
+        std::min<std::size_t>({
+            std::size_t{9},
+            std::max<std::size_t>(1, std::thread::hardware_concurrency()),
+            std::size_t{8}}));
+    progressOptions.initialStatus = L"正在扫描 Windows 启动来源";
+    progressOptions.initialDetail = L"准备使用 " + std::to_wstring(startupSourceWorkers) +
+        L" 个工作线程读取注册表、启动目录、服务和计划任务。";
+    progressOptions.closeOnCompleted = !QuattroTestMode();
     progressOptions.readSnapshot = [task = scanTask_]() {
         return ToThemedTaskProgressSnapshot(task->Snapshot());
     };
@@ -1698,7 +1694,7 @@ void AppLaunchLockerWindow::CopySelectedStartupInfo() {
         text += L"禁用时间：" + EmptyAsNone(record->disabledAt) + L"\n";
     }
     if (text.empty()) return;
-    if (CopyTextToClipboard(hwnd_, text) && windowUi_) {
+    if (ThemedUi::CopyTextToClipboard(hwnd_, text) && windowUi_) {
         ThemedToastOptions toast{};
         toast.role = ThemedToastRole::Success;
         windowUi_->ui().ShowToast(L"启动信息已复制。", toast);
@@ -1708,7 +1704,7 @@ void AppLaunchLockerWindow::CopySelectedStartupInfo() {
 void AppLaunchLockerWindow::CopySelectedPath() {
     const std::wstring path = SelectedTargetPath(SelectedApplication(), SelectedStartupItem(), SelectedDisabledRecord());
     if (path.empty()) return;
-    if (CopyTextToClipboard(hwnd_, path) && windowUi_) {
+    if (ThemedUi::CopyTextToClipboard(hwnd_, path) && windowUi_) {
         ThemedToastOptions toast{};
         toast.role = ThemedToastRole::Success;
         windowUi_->ui().ShowToast(L"路径已复制。", toast);
@@ -1720,7 +1716,7 @@ void AppLaunchLockerWindow::CopySelectedName() {
     const DisabledRecord* record = SelectedDisabledRecord();
     const std::wstring name = item ? item->name : (record ? record->name : std::wstring{});
     if (name.empty()) return;
-    if (CopyTextToClipboard(hwnd_, name) && windowUi_) {
+    if (ThemedUi::CopyTextToClipboard(hwnd_, name) && windowUi_) {
         ThemedToastOptions toast{};
         toast.role = ThemedToastRole::Success;
         windowUi_->ui().ShowToast(L"名称已复制。", toast);
@@ -1736,7 +1732,7 @@ void AppLaunchLockerWindow::CopySelectedCommand() {
     if (command.empty() && record) command = MapField(record->original, L"binaryPath");
     if (command.empty() && record) command = MapField(record->original, L"targetPath");
     if (command.empty()) return;
-    if (CopyTextToClipboard(hwnd_, command) && windowUi_) {
+    if (ThemedUi::CopyTextToClipboard(hwnd_, command) && windowUi_) {
         ThemedToastOptions toast{};
         toast.role = ThemedToastRole::Success;
         windowUi_->ui().ShowToast(L"命令已复制。", toast);
@@ -1748,7 +1744,7 @@ void AppLaunchLockerWindow::CopySelectedSourceField(const wchar_t* key, const st
     const DisabledRecord* record = SelectedDisabledRecord();
     const std::wstring value = item ? MapField(item->original, key) : (record ? MapField(record->original, key) : std::wstring{});
     if (value.empty()) return;
-    if (CopyTextToClipboard(hwnd_, value) && windowUi_) {
+    if (ThemedUi::CopyTextToClipboard(hwnd_, value) && windowUi_) {
         ThemedToastOptions toast{};
         toast.role = ThemedToastRole::Success;
         windowUi_->ui().ShowToast(successMessage, toast);

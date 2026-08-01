@@ -237,31 +237,6 @@ std::wstring HotKeyName(int key) {
     }
 }
 
-bool CopyTextToClipboard(HWND owner, const std::wstring& text) {
-    if (!OpenClipboard(owner)) {
-        return false;
-    }
-    EmptyClipboard();
-    const SIZE_T bytes = (text.size() + 1) * sizeof(wchar_t);
-    HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, bytes);
-    bool copied = false;
-    if (memory) {
-        void* data = GlobalLock(memory);
-        if (data) {
-            memcpy(data, text.c_str(), bytes);
-            GlobalUnlock(memory);
-            SetClipboardData(CF_UNICODETEXT, memory);
-            memory = nullptr;
-            copied = true;
-        }
-    }
-    if (memory) {
-        GlobalFree(memory);
-    }
-    CloseClipboard();
-    return copied;
-}
-
 std::wstring Utf8ToWide(const std::string& text) {
     if (text.empty()) {
         return {};
@@ -947,31 +922,31 @@ private:
         const int row2 = row1 + rowStep;
         const int row3 = row2 + rowStep;
 
-        MakeUi().Label(L"坐标(X,Y)", left, row0 + labelOffsetY, layout.labelWidth);
+        MakeUi().SelectableLabel(L"坐标(X,Y)", left, row0 + labelOffsetY, layout.labelWidth);
         coord_ = CreateEdit(ID_CLICK_COORD, fieldX, row0, 100, savedX + L", " + savedY);
         MakeUi().Button(ID_CLICK_PICK, L"拾取(&P)", fieldX + 100 + layout.controlGapX, row0 + 1, ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, layout.footerButtonWidth);
 
-        MakeUi().Label(L"点击次数", left, row1 + labelOffsetY, layout.labelWidth);
+        MakeUi().SelectableLabel(L"点击次数", left, row1 + labelOffsetY, layout.labelWidth);
         count_ = CreateEdit(ID_CLICK_COUNT, fieldX, row1, fieldW, registry_.GetSetting(pluginId, L"count", L"10"), ES_NUMBER);
-        MakeUi().Label(L"间隔(ms)", rightLabelX, row1 + labelOffsetY, layout.labelWidth);
+        MakeUi().SelectableLabel(L"间隔(ms)", rightLabelX, row1 + labelOffsetY, layout.labelWidth);
         interval_ = CreateEdit(ID_CLICK_INTERVAL, rightFieldX, row1, fieldW, registry_.GetSetting(pluginId, L"interval", L"1000"), ES_NUMBER);
 
-        MakeUi().Label(L"鼠标按键", left, row2 + labelOffsetY, layout.labelWidth);
+        MakeUi().SelectableLabel(L"鼠标按键", left, row2 + labelOffsetY, layout.labelWidth);
         button_ = MakeUi().ComboBox(ID_CLICK_BUTTON, fieldX, row2 + 2, layout.footerButtonWidth);
         SendMessageW(button_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"左键"));
         SendMessageW(button_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"右键"));
         SendMessageW(button_, CB_SETCURSEL, registry_.GetSetting(pluginId, L"button", L"left") == L"right" ? 1 : 0, 0);
 
-        MakeUi().Label(L"倒计时(s)", rightLabelX, row2 + labelOffsetY, layout.labelWidth);
+        MakeUi().SelectableLabel(L"倒计时(s)", rightLabelX, row2 + labelOffsetY, layout.labelWidth);
         countdownEdit_ = CreateEdit(ID_CLICK_COUNTDOWN, rightFieldX, row2, fieldW, registry_.GetSetting(pluginId, L"countdown", L"3"), ES_NUMBER);
 
         const wchar_t* hotKeys[] = {L"F6", L"F7", L"F8", L"F9", L"F10", L"F11", L"F12"};
 
-        MakeUi().Label(L"启动停止热键", left, row3 + labelOffsetY, layout.labelWidth + layout.labelGap);
+        MakeUi().SelectableLabel(L"启动停止热键", left, row3 + labelOffsetY, layout.labelWidth + layout.labelGap);
         toggleHotKey_ = MakeUi().ComboBox(ID_CLICK_HOTKEY, fieldX, row3 + 2, fieldW);
         FillHotKeyCombo(toggleHotKey_, registry_.GetSetting(pluginId, L"toggleHotKey", registry_.GetSetting(pluginId, L"stopHotKey", L"F8")), hotKeys, 7);
 
-        MakeUi().Label(L"拾取热键", rightLabelX, row3 + labelOffsetY, layout.labelWidth);
+        MakeUi().SelectableLabel(L"拾取热键", rightLabelX, row3 + labelOffsetY, layout.labelWidth);
         pickHotKey_ = MakeUi().ComboBox(ID_CLICK_PICK_HOTKEY_CONTROL, rightFieldX, row3 + 2, fieldW);
         FillHotKeyCombo(pickHotKey_, registry_.GetSetting(pluginId, L"pickHotKey", L"F9"), hotKeys, 7);
 
@@ -989,10 +964,10 @@ private:
         const int statusY = toggleY + bh + layout.rowGap;
         ThemedStatusTextOptions startAligned{};
         startAligned.align = ThemedTextAlign::Start;
-        status_ = MakeUi().StatusText(L"就绪。", left, statusY, width_ - left * 2 - 120, startAligned);
+        status_ = MakeUi().SelectableStatusText(L"就绪。", left, statusY, width_ - left * 2 - 120, startAligned);
         ThemedStatusTextOptions endAligned{};
         endAligned.align = ThemedTextAlign::End;
-        progress_ = MakeUi().StatusText(L"当前点击：0 / 0", width_ - left - 120, statusY, 120, endAligned);
+        progress_ = MakeUi().SelectableStatusText(L"当前点击：0 / 0", width_ - left - 120, statusY, 120, endAligned);
         RegisterToolHotKeys();
     }
 
@@ -1373,7 +1348,7 @@ private:
         const int scanW = layout.footerButtonWidth;
         const int fieldW = width_ - fieldX - scanW - layout.controlGapX - left;
 
-        MakeUi().Label(L"端口号", left, row0 + labelOffsetY, layout.labelWidth);
+        MakeUi().SelectableLabel(L"端口号", left, row0 + labelOffsetY, layout.labelWidth);
         port_ = CreateEdit(ID_PORT_VALUE, fieldX, row0, fieldW, registry_.GetSetting(L"quattro.builtin.port-inspector", L"port", L""), ES_NUMBER);
         MakeUi().Button(ID_PORT_SCAN, L"扫描(&S)", fieldX + fieldW + layout.controlGapX, row0 + 1, ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, scanW, true);
 
@@ -1382,7 +1357,7 @@ private:
         resultsFrame_ = RECT{left, frameTop, width_ - left, statusY - layout.rowGap};
         ThemedStatusTextOptions statusOptions{};
         statusOptions.align = ThemedTextAlign::Start;
-        status_ = MakeUi().StatusText(L"输入端口号后点击扫描。", left, statusY, width_ - left * 2, statusOptions);
+        status_ = MakeUi().SelectableStatusText(L"输入端口号后点击扫描。", left, statusY, width_ - left * 2, statusOptions);
         RebuildRowButtons(ID_PORT_KILL_BASE);
     }
 
@@ -1452,7 +1427,7 @@ private:
         const int queryW = layout.footerButtonWidth;
         const int fieldW = width_ - fieldX - queryW - layout.controlGapX - left;
 
-        MakeUi().Label(L"进程ID", left, row0 + labelOffsetY, layout.labelWidth);
+        MakeUi().SelectableLabel(L"进程ID", left, row0 + labelOffsetY, layout.labelWidth);
         pid_ = CreateEdit(ID_PROCESS_VALUE, fieldX, row0, fieldW, registry_.GetSetting(L"quattro.builtin.process-inspector", L"pid", L""), ES_NUMBER);
         MakeUi().Button(ID_PROCESS_QUERY, L"查询(&Q)", fieldX + fieldW + layout.controlGapX, row0 + 1, ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, queryW, true);
 
@@ -1461,7 +1436,7 @@ private:
         resultsFrame_ = RECT{left, frameTop, width_ - left, statusY - layout.rowGap};
         ThemedStatusTextOptions statusOptions{};
         statusOptions.align = ThemedTextAlign::Start;
-        status_ = MakeUi().StatusText(L"输入进程ID后点击查询。", left, statusY, width_ - left * 2, statusOptions);
+        status_ = MakeUi().SelectableStatusText(L"输入进程ID后点击查询。", left, statusY, width_ - left * 2, statusOptions);
         RebuildRowButtons(ID_PROCESS_KILL_BASE);
     }
 
@@ -1613,7 +1588,7 @@ private:
         const int actionsW = pickW + scanW + layout.controlGapX * 2;
         const int fieldW = width_ - fieldX - actionsW - left;
 
-        ui.Label(L"路径", left, row0 + labelOffsetY, layout.labelWidth);
+        ui.SelectableLabel(L"路径", left, row0 + labelOffsetY, layout.labelWidth);
         pathFrame_ = ui.editFrame(fieldX, row0, fieldW);
         path_ = ui.Edit(ID_FILE_LOCK_PATH, pathFrame_, registry_.GetSetting(L"quattro.builtin.file-lock-inspector", L"path", L""));
         pickSplit_ = ui.SplitButton(
@@ -1643,7 +1618,7 @@ private:
                 {L"action", L"操作", ThemedTableColumnAlign::Center, ThemedTableColumnWidth::Fixed, 76},
             },
             tableOptions);
-        status_ = ui.StatusText(
+        status_ = ui.SelectableStatusText(
             L"输入文件或目录路径后点击检查。",
             left,
             statusY,
@@ -1963,7 +1938,7 @@ private:
 
         ThemedLabelOptions dateOptions{};
         dateOptions.align = ThemedTextAlign::Start;
-        date_ = ui.Label(
+        date_ = ui.SelectableLabel(
             L"",
             left,
             y,
@@ -2076,11 +2051,11 @@ private:
         const int row0 = layout.contentInsetY;
         const int row1 = timerUi.nextRowY(row0, editHeight);
         const int row2 = timerUi.nextRowY(row1, timerUi.checkBoxHeight());
-        timerUi.Label(L"时", unitGroupX, row0 + labelOffsetY, unitLabelW);
+        timerUi.SelectableLabel(L"时", unitGroupX, row0 + labelOffsetY, unitLabelW);
         hours_ = CreateEdit(ID_TIMER_HOURS, unitGroupX + unitLabelW + layout.controlGapX / 2, row0, unitFieldW, hours, ES_NUMBER);
-        timerUi.Label(L"分", unitGroupX + unitStep, row0 + labelOffsetY, unitLabelW);
+        timerUi.SelectableLabel(L"分", unitGroupX + unitStep, row0 + labelOffsetY, unitLabelW);
         minutes_ = CreateEdit(ID_TIMER_MINUTES, unitGroupX + unitStep + unitLabelW + layout.controlGapX / 2, row0, unitFieldW, minutes, ES_NUMBER);
-        timerUi.Label(L"秒", unitGroupX + unitStep * 2, row0 + labelOffsetY, unitLabelW);
+        timerUi.SelectableLabel(L"秒", unitGroupX + unitStep * 2, row0 + labelOffsetY, unitLabelW);
         seconds_ = CreateEdit(ID_TIMER_SECONDS, unitGroupX + unitStep * 2 + unitLabelW + layout.controlGapX / 2, row0, unitFieldW, seconds, ES_NUMBER);
         const int checkBoxW = std::max(
             timerUi.textWidth(L"声音提醒"), timerUi.textWidth(L"置顶提醒")) +
@@ -2107,7 +2082,7 @@ private:
         start_ = timerUi.Button(ID_TIMER_START, L"开始(&S)", buttonsX, buttonY, ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, buttonWidth, true);
         pause_ = timerUi.Button(ID_TIMER_PAUSE, L"暂停(&P)", buttonsX, buttonY, ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, buttonWidth);
         reset_ = timerUi.Button(ID_TIMER_RESET, L"重置(&R)", buttonsX + buttonWidth + layout.footerButtonGap, buttonY, ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, buttonWidth);
-        status_ = timerUi.StatusText(L"", layout.contentInsetX, buttonY + bh + layout.rowGap, clientWidth - layout.contentInsetX * 2);
+        status_ = timerUi.SelectableStatusText(L"", layout.contentInsetX, buttonY + bh + layout.rowGap, clientWidth - layout.contentInsetX * 2);
         UpdateDisplay(ReadDurationMs());
         UpdateButtons();
     }
@@ -2429,7 +2404,7 @@ private:
             return true;
         }
         if (id == ID_SW_COPY) {
-            if (CopyTextToClipboard(hwnd_, ExportText())) {
+            if (ThemedUi::CopyTextToClipboard(hwnd_, ExportText())) {
                 ShowToast(L"秒表记录已复制到剪贴板。", ThemedToastRole::Success);
             } else {
                 ShowToast(L"复制失败，剪贴板被其他程序占用。", ThemedToastRole::Danger);
@@ -2465,7 +2440,7 @@ private:
             AddLap();
             return true;
         case 'C':
-            if (CopyTextToClipboard(hwnd_, ExportText())) {
+            if (ThemedUi::CopyTextToClipboard(hwnd_, ExportText())) {
                 ShowToast(L"秒表记录已复制到剪贴板。", ThemedToastRole::Success);
             } else {
                 ShowToast(L"复制失败，剪贴板被其他程序占用。", ThemedToastRole::Danger);
@@ -2757,7 +2732,7 @@ private:
         const int row1 = ui.nextRowY(row0, rowHeight);
         const int row2 = ui.nextRowY(row1, rowHeight) + layout.sectionGap;
 
-        ui.Label(L"进程 ID", left, row0 + labelOffsetY, layout.labelWidth);
+        ui.SelectableLabel(L"进程 ID", left, row0 + labelOffsetY, layout.labelWidth);
         pidFrame_ = ui.rect(fieldX, row0 + fieldOffsetY, fieldWidth, fieldHeight);
         ThemedEditOptions readOnlyOptions{};
         readOnlyOptions.readOnly = true;
@@ -2766,7 +2741,7 @@ private:
             ID_LOCATOR_KILL, L"结束进程", fieldX + fieldWidth + layout.controlGapX, row0 + buttonOffsetY,
             ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, actionWidth);
 
-        ui.Label(L"绝对路径", left, row1 + labelOffsetY, layout.labelWidth);
+        ui.SelectableLabel(L"绝对路径", left, row1 + labelOffsetY, layout.labelWidth);
         pathFrame_ = ui.rect(fieldX, row1 + fieldOffsetY, fieldWidth, fieldHeight);
         pathValue_ = ui.Edit(ID_LOCATOR_PATH_VALUE, pathFrame_, L"等待获取", readOnlyOptions);
         openButton_ = ui.Button(
@@ -2778,7 +2753,7 @@ private:
             L"立即获取", ThemedButtonRole::Primary, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
         const int groupWidth = layout.labelWidth + layout.labelGap + hotKeyWidth + layout.controlGapX + pickWidth;
         const int groupX = ui.centeredGroupX(groupWidth);
-        ui.Label(L"全局快捷键", groupX, row2 + labelOffsetY, layout.labelWidth);
+        ui.SelectableLabel(L"全局快捷键", groupX, row2 + labelOffsetY, layout.labelWidth);
         hotKeyFrame_ = ui.rect(
             groupX + layout.labelWidth + layout.labelGap,
             row2 + fieldOffsetY,
@@ -2791,7 +2766,7 @@ private:
             row2 + buttonOffsetY,
             ThemedButtonRole::Primary, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, pickWidth, true);
 
-        status_ = ui.StatusText(
+        status_ = ui.SelectableStatusText(
             LocatorStatusText(),
             left,
             ui.footerButtonY(labelHeight),
@@ -3140,7 +3115,7 @@ private:
     }
 
     HWND AddLabel(Page page, const std::wstring& text, int x, int y, int width, ThemedLabelOptions options = {}) {
-        HWND control = Ui().Label(text, x, y, width, options);
+        HWND control = Ui().SelectableLabel(text, x, y, width, options);
         AddPageControl(page, control);
         return control;
     }
@@ -3148,7 +3123,7 @@ private:
     HWND AddStatus(Page page, const std::wstring& text, int x, int y, int width) {
         ThemedStatusTextOptions options{};
         options.align = ThemedTextAlign::Start;
-        HWND control = Ui().StatusText(text, x, y, width, options);
+        HWND control = Ui().SelectableStatusText(text, x, y, width, options);
         AddPageControl(page, control);
         return control;
     }

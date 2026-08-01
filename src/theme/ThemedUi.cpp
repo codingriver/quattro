@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <memory>
 #include <unordered_map>
@@ -26,6 +27,18 @@ DWORD StaticStyle(ThemedTextAlign align) {
     }
 }
 
+DWORD EditAlignStyle(ThemedTextAlign align) {
+    switch (align) {
+    case ThemedTextAlign::Center:
+        return ES_CENTER;
+    case ThemedTextAlign::End:
+        return ES_RIGHT;
+    case ThemedTextAlign::Start:
+    default:
+        return ES_LEFT;
+    }
+}
+
 const wchar_t* StatusState(ThemedStatusRole role) {
     switch (role) {
     case ThemedStatusRole::Info:
@@ -40,6 +53,368 @@ const wchar_t* StatusState(ThemedStatusRole role) {
     default:
         return L"normal";
     }
+}
+
+bool UsesFieldFrame(ThemedSelectableTextRole role) {
+    return role == ThemedSelectableTextRole::FieldLike || role == ThemedSelectableTextRole::DetailText;
+}
+constexpr const wchar_t* kSelectableTextClassName = L"QuattroSelectableText";
+
+struct SelectableTextRuntime {
+    const Theme* theme = nullptr;
+    HFONT font = nullptr;
+    ThemedSelectableTextRole role = ThemedSelectableTextRole::LabelLike;
+    ThemedStatusRole statusRole = ThemedStatusRole::Normal;
+    ThemedControlSurface surface = ThemedControlSurface::Dialog;
+    ThemedTextAlign align = ThemedTextAlign::Start;
+    bool wrap = false;
+    bool selecting = false;
+    std::size_t anchor = 0;
+    std::size_t caret = 0;
+};
+
+std::unordered_map<HWND, SelectableTextRuntime>& SelectableTextStates() {
+    static std::unordered_map<HWND, SelectableTextRuntime> states;
+    return states;
+}
+
+const wchar_t* SurfaceComponent(ThemedControlSurface surface) {
+    switch (surface) {
+    case ThemedControlSurface::Panel: return L"panel";
+    case ThemedControlSurface::GroupBox: return L"groupBox";
+    case ThemedControlSurface::Dialog:
+    default: return L"dialog";
+    }
+}
+
+std::wstring HwndText(HWND hwnd) {
+    const int length = GetWindowTextLengthW(hwnd);
+    if (length <= 0) return {};
+    std::wstring text(static_cast<std::size_t>(length) + 1, L'\0');
+    GetWindowTextW(hwnd, text.data(), length + 1);
+    text.resize(static_cast<std::size_t>(length));
+    return text;
+}
+
+COLORREF ThemeColorRef(const Color& color) {
+    const auto channel = [](float value) -> BYTE {
+        return static_cast<BYTE>(std::clamp(value, 0.0f, 1.0f) * 255.0f + 0.5f);
+    };
+    return RGB(channel(color.r), channel(color.g), channel(color.b));
+}
+
+COLORREF SelectableTextColor(HWND hwnd, const SelectableTextRuntime& runtime) {
+    if (!runtime.theme) return GetSysColor(COLOR_WINDOWTEXT);
+    if (runtime.role == ThemedSelectableTextRole::StatusLike) {
+        if (IsWindowEnabled(hwnd)) {
+            return ThemeColorRef(runtime.theme->color(L"global", StatusState(runtime.statusRole), L"text"));
+        }
+        return ThemeColorRef(runtime.theme->color(L"text", L"disabled", L"text"));
+    }
+    return ThemeColorRef(runtime.theme->color(L"label", IsWindowEnabled(hwnd) ? L"normal" : L"disabled", L"text"));
+}
+
+int SelectableTextWidth(HDC dc, HFONT font, const std::wstring& text, std::size_t count) {
+    if (!dc || text.empty() || count == 0) return 0;
+    HGDIOBJ oldFont = font ? SelectObject(dc, font) : nullptr;
+    SIZE size{};
+    GetTextExtentPoint32W(dc, text.c_str(), static_cast<int>(std::min(count, text.size())), &size);
+    if (oldFont) SelectObject(dc, oldFont);
+    return std::max(0, static_cast<int>(size.cx));
+}
+
+int SelectableTextStartX(HDC dc, HFONT font, RECT rect, const std::wstring& text, ThemedTextAlign align) {
+    const int totalWidth = SelectableTextWidth(dc, font, text, text.size());
+    if (align == ThemedTextAlign::Center) {
+        return rect.left + std::max(0, (static_cast<int>(rect.right - rect.left) - totalWidth) / 2);
+    }
+    if (align == ThemedTextAlign::End) {
+        return rect.right - totalWidth;
+    }
+    return rect.left;
+}
+
+std::size_t SelectableTextHitIndex(HWND hwnd, const SelectableTextRuntime& runtime, int clientX) {
+    const std::wstring text = HwndText(hwnd);
+    if (text.empty()) return 0;
+    HDC dc = GetDC(hwnd);
+    if (!dc) return text.size();
+    RECT rect{};
+    GetClientRect(hwnd, &rect);
+    HFONT font = runtime.font ? runtime.font : reinterpret_cast<HFONT>(SendMessageW(hwnd, WM_GETFONT, 0, 0));
+    const int startX = SelectableTextStartX(dc, font, rect, text, runtime.align);
+    for (std::size_t i = 0; i < text.size(); ++i) {
+        const int left = SelectableTextWidth(dc, font, text, i);
+        const int right = SelectableTextWidth(dc, font, text, i + 1);
+        if (clientX < startX + (left + right) / 2) {
+            ReleaseDC(hwnd, dc);
+            return i;
+        }
+    }
+    ReleaseDC(hwnd, dc);
+    return text.size();
+}
+
+std::wstring SelectableTextSelection(HWND hwnd, const SelectableTextRuntime& runtime) {
+    const std::wstring text = HwndText(hwnd);
+    const std::size_t begin = std::min(runtime.anchor, runtime.caret);
+    const std::size_t end = std::min(text.size(), std::max(runtime.anchor, runtime.caret));
+    if (begin >= end) return text;
+    return text.substr(begin, end - begin);
+}
+
+void SelectableTextSelectAll(HWND hwnd) {
+    auto it = SelectableTextStates().find(hwnd);
+    if (it == SelectableTextStates().end()) return;
+    const std::wstring text = HwndText(hwnd);
+    it->second.anchor = 0;
+    it->second.caret = text.size();
+    InvalidateRect(hwnd, nullptr, FALSE);
+}
+
+void PaintSelectableText(HWND hwnd, HDC dc) {
+    auto it = SelectableTextStates().find(hwnd);
+    if (it == SelectableTextStates().end() || !it->second.theme) return;
+    const SelectableTextRuntime& runtime = it->second;
+    RECT rect{};
+    GetClientRect(hwnd, &rect);
+    const COLORREF background = ThemeColorRef(runtime.theme->color(SurfaceComponent(runtime.surface), L"normal", L"bg"));
+    HBRUSH brush = CreateSolidBrush(background);
+    FillRect(dc, &rect, brush);
+    DeleteObject(brush);
+
+    const std::wstring text = HwndText(hwnd);
+    if (text.empty()) return;
+    HFONT font = runtime.font ? runtime.font : reinterpret_cast<HFONT>(SendMessageW(hwnd, WM_GETFONT, 0, 0));
+    HGDIOBJ oldFont = font ? SelectObject(dc, font) : nullptr;
+    SetBkMode(dc, TRANSPARENT);
+    SetTextColor(dc, SelectableTextColor(hwnd, runtime));
+
+    if (runtime.wrap) {
+        UINT format = DT_WORDBREAK | DT_NOPREFIX;
+        if (runtime.align == ThemedTextAlign::Center) format |= DT_CENTER;
+        else if (runtime.align == ThemedTextAlign::End) format |= DT_RIGHT;
+        else format |= DT_LEFT;
+        DrawTextW(dc, text.c_str(), static_cast<int>(text.size()), &rect, format);
+        if (oldFont) SelectObject(dc, oldFont);
+        return;
+    }
+
+    const std::size_t begin = std::min(runtime.anchor, runtime.caret);
+    const std::size_t end = std::min(text.size(), std::max(runtime.anchor, runtime.caret));
+    const int startX = SelectableTextStartX(dc, font, rect, text, runtime.align);
+    TEXTMETRICW tm{};
+    GetTextMetricsW(dc, &tm);
+    const int textY = rect.top + std::max(0, (static_cast<int>(rect.bottom - rect.top) - static_cast<int>(tm.tmHeight)) / 2);
+    if (begin < end) {
+        const int prefixWidth = SelectableTextWidth(dc, font, text, begin);
+        const std::wstring selectedText = text.substr(begin, end - begin);
+        const int selectedWidth = SelectableTextWidth(dc, font, selectedText, selectedText.size());
+        RECT selectedRect{startX + prefixWidth, rect.top, startX + prefixWidth + selectedWidth, rect.bottom};
+        HBRUSH selectionBrush = CreateSolidBrush(GetSysColor(COLOR_HIGHLIGHT));
+        FillRect(dc, &selectedRect, selectionBrush);
+        DeleteObject(selectionBrush);
+        SetTextColor(dc, SelectableTextColor(hwnd, runtime));
+        if (begin > 0) TextOutW(dc, startX, textY, text.c_str(), static_cast<int>(begin));
+        SetTextColor(dc, GetSysColor(COLOR_HIGHLIGHTTEXT));
+        TextOutW(dc, selectedRect.left, textY, text.c_str() + begin, static_cast<int>(end - begin));
+        SetTextColor(dc, SelectableTextColor(hwnd, runtime));
+        if (end < text.size()) {
+            TextOutW(dc, selectedRect.right, textY, text.c_str() + end, static_cast<int>(text.size() - end));
+        }
+    } else {
+        UINT format = DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX;
+        if (runtime.align == ThemedTextAlign::Center) format |= DT_CENTER;
+        else if (runtime.align == ThemedTextAlign::End) format |= DT_RIGHT;
+        else format |= DT_LEFT;
+        DrawTextW(dc, text.c_str(), static_cast<int>(text.size()), &rect, format);
+    }
+    if (GetFocus() == hwnd) {
+        DrawFocusRect(dc, &rect);
+    }
+    if (oldFont) SelectObject(dc, oldFont);
+}
+
+LRESULT CALLBACK SelectableTextProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
+    switch (message) {
+    case WM_SETFONT: {
+        auto it = SelectableTextStates().find(hwnd);
+        if (it != SelectableTextStates().end()) {
+            it->second.font = reinterpret_cast<HFONT>(wParam);
+        }
+        InvalidateRect(hwnd, nullptr, FALSE);
+        break;
+    }
+    case WM_GETFONT: {
+        auto it = SelectableTextStates().find(hwnd);
+        return it != SelectableTextStates().end()
+            ? reinterpret_cast<LRESULT>(it->second.font)
+            : 0;
+    }
+    case WM_PAINT: {
+        PAINTSTRUCT ps{};
+        HDC dc = BeginPaint(hwnd, &ps);
+        PaintSelectableText(hwnd, dc);
+        EndPaint(hwnd, &ps);
+        return 0;
+    }
+    case WM_PRINT:
+    case WM_PRINTCLIENT:
+        PaintSelectableText(hwnd, reinterpret_cast<HDC>(wParam));
+        return 0;
+    case WM_ERASEBKGND:
+        return 1;
+    case WM_LBUTTONDOWN: {
+        auto it = SelectableTextStates().find(hwnd);
+        if (it == SelectableTextStates().end()) break;
+        SetFocus(hwnd);
+        SetCapture(hwnd);
+        it->second.selecting = true;
+        const std::size_t index = SelectableTextHitIndex(hwnd, it->second, GET_X_LPARAM(lParam));
+        it->second.anchor = index;
+        it->second.caret = index;
+        InvalidateRect(hwnd, nullptr, FALSE);
+        return 0;
+    }
+    case WM_MOUSEMOVE: {
+        auto it = SelectableTextStates().find(hwnd);
+        if (it != SelectableTextStates().end() && it->second.selecting && (wParam & MK_LBUTTON)) {
+            it->second.caret = SelectableTextHitIndex(hwnd, it->second, GET_X_LPARAM(lParam));
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
+        }
+        break;
+    }
+    case WM_LBUTTONUP: {
+        auto it = SelectableTextStates().find(hwnd);
+        if (it != SelectableTextStates().end()) it->second.selecting = false;
+        if (GetCapture() == hwnd) ReleaseCapture();
+        return 0;
+    }
+    case WM_LBUTTONDBLCLK:
+        SelectableTextSelectAll(hwnd);
+        return 0;
+    case WM_KEYDOWN:
+        if ((GetKeyState(VK_CONTROL) & 0x8000) != 0 && (GetKeyState(VK_MENU) & 0x8000) == 0) {
+            if (wParam == L'A' || wParam == L'a') {
+                SelectableTextSelectAll(hwnd);
+                return 0;
+            }
+            if (wParam == L'C' || wParam == L'c') {
+                auto it = SelectableTextStates().find(hwnd);
+                if (it != SelectableTextStates().end()) {
+                    ThemedUi::CopyTextToClipboard(hwnd, SelectableTextSelection(hwnd, it->second));
+                }
+                return 0;
+            }
+        }
+        break;
+    case WM_CONTEXTMENU: {
+        HMENU menu = CreatePopupMenu();
+        if (!menu) return 0;
+        AppendMenuW(menu, MF_STRING, 1, L"复制");
+        AppendMenuW(menu, MF_STRING, 2, L"全选");
+        POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+        if (point.x == -1 && point.y == -1) {
+            RECT rect{};
+            GetWindowRect(hwnd, &rect);
+            point = POINT{rect.left, rect.bottom};
+        }
+        const UINT command = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY, point.x, point.y, 0, hwnd, nullptr);
+        DestroyMenu(menu);
+        auto it = SelectableTextStates().find(hwnd);
+        if (it != SelectableTextStates().end()) {
+            if (command == 1) ThemedUi::CopyTextToClipboard(hwnd, SelectableTextSelection(hwnd, it->second));
+            else if (command == 2) SelectableTextSelectAll(hwnd);
+        }
+        return 0;
+    }
+    case WM_SETFOCUS:
+    case WM_KILLFOCUS:
+        InvalidateRect(hwnd, nullptr, FALSE);
+        return 0;
+    case WM_NCDESTROY:
+        SelectableTextStates().erase(hwnd);
+        break;
+    default:
+        break;
+    }
+    return DefWindowProcW(hwnd, message, wParam, lParam);
+}
+
+bool EnsureSelectableTextClass(HINSTANCE instance) {
+    WNDCLASSEXW wc{};
+    wc.cbSize = sizeof(wc);
+    wc.lpfnWndProc = SelectableTextProc;
+    wc.hInstance = instance;
+    wc.hCursor = LoadCursorW(nullptr, IDC_IBEAM);
+    wc.lpszClassName = kSelectableTextClassName;
+    return RegisterClassExW(&wc) != 0 || GetLastError() == ERROR_CLASS_ALREADY_EXISTS;
+}
+
+HWND CreateSelectableTextWindow(
+    HINSTANCE instance,
+    HWND parent,
+    int id,
+    RECT frame,
+    const std::wstring& text,
+    HFONT font,
+    const Theme& theme,
+    const ThemedSelectableTextOptions& options) {
+    if (!EnsureSelectableTextClass(instance)) return nullptr;
+    const DWORD tabStyle = options.tabStop ? WS_TABSTOP : 0;
+    HWND hwnd = CreateWindowExW(
+        0,
+        kSelectableTextClassName,
+        text.c_str(),
+        WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | tabStyle,
+        frame.left,
+        frame.top,
+        frame.right - frame.left,
+        frame.bottom - frame.top,
+        parent,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),
+        instance,
+        nullptr);
+    if (!hwnd) return nullptr;
+    SendMessageW(hwnd, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+    SelectableTextRuntime runtime{};
+    runtime.theme = &theme;
+    runtime.font = font;
+    runtime.role = options.role;
+    runtime.statusRole = options.statusRole;
+    runtime.surface = options.surface;
+    runtime.align = options.align;
+    runtime.wrap = options.wrap || options.mode == ThemedEditMode::MultiLine;
+    SelectableTextStates()[hwnd] = runtime;
+    return hwnd;
+}
+
+bool IsSelectableTextWindow(HWND hwnd) {
+    return SelectableTextStates().find(hwnd) != SelectableTextStates().end();
+}
+
+void SetSelectableTextSurface(HWND hwnd, ThemedControlSurface surface) {
+    auto it = SelectableTextStates().find(hwnd);
+    if (it == SelectableTextStates().end()) return;
+    it->second.surface = surface;
+    InvalidateRect(hwnd, nullptr, FALSE);
+}
+
+bool SetSelectableTextStatusRole(HWND hwnd, ThemedStatusRole role) {
+    auto it = SelectableTextStates().find(hwnd);
+    if (it == SelectableTextStates().end()) return false;
+    it->second.statusRole = role;
+    InvalidateRect(hwnd, nullptr, FALSE);
+    return true;
+}
+
+void ResetSelectableTextSelection(HWND hwnd) {
+    auto it = SelectableTextStates().find(hwnd);
+    if (it == SelectableTextStates().end()) return;
+    const std::wstring text = HwndText(hwnd);
+    it->second.anchor = std::min(it->second.anchor, text.size());
+    it->second.caret = std::min(it->second.caret, text.size());
 }
 
 const wchar_t* LinkState(ThemedLinkRole role) {
@@ -579,6 +954,40 @@ void ThemedEditFrameCollection::RegisterEditFrame(HWND child, RECT frame, const 
     }
 }
 
+bool ThemedEditFrameCollection::MoveEditFrame(HWND child, RECT frame, const Theme& theme, UINT dpi) {
+    Entry* entry = Find(child);
+    if (!entry || !IsWindow(child)) {
+        return false;
+    }
+    const RECT oldFrame = entry->frame;
+    entry->frame = frame;
+    const RECT childRect = !entry->options.showFrame
+        ? frame
+        : (entry->options.mode == ThemedEditMode::MultiLine
+            ? ThemedControls::MultiLineEditRect(theme, frame, dpi)
+            : ThemedControls::SingleLineEditRectForFrame(theme, frame, dpi));
+    SetWindowPos(
+        child,
+        nullptr,
+        childRect.left,
+        childRect.top,
+        childRect.right - childRect.left,
+        childRect.bottom - childRect.top,
+        SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOCOPYBITS);
+    ThemedControls::ConfigureEditTextInsets(
+        child,
+        theme,
+        entry->options.mode == ThemedEditMode::MultiLine,
+        entry->options.showFrame,
+        dpi);
+    HWND parent = GetParent(child);
+    if (parent) {
+        RedrawWindow(parent, &oldFrame, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW);
+        InvalidateRect(parent, &frame, TRUE);
+    }
+    return true;
+}
+
 void ThemedEditFrameCollection::Remove(HWND child) {
     entries_.erase(std::remove_if(entries_.begin(), entries_.end(), [child](const Entry& entry) {
         return entry.child == child;
@@ -603,7 +1012,16 @@ void ThemedEditFrameCollection::SetError(HWND child, bool error) {
 void ThemedEditFrameCollection::Draw(const Theme& theme, HDC dc) const {
     for (const Entry& entry : entries_) {
         if (IsWindow(entry.child) && IsWindowVisible(entry.child)) {
-            ThemedControls::DrawEditFrame(theme, dc, entry.frame, entry.child, entry.options.readOnly, entry.options.error);
+            if (!entry.options.showFrame) {
+                continue;
+            }
+            if (UsesFieldFrame(entry.options.selectableRole)) {
+                ThemedControls::DrawFieldFrame(
+                    theme, dc, entry.frame, entry.child, entry.options.readOnly, entry.options.error);
+            } else {
+                ThemedControls::DrawEditFrame(
+                    theme, dc, entry.frame, entry.child, entry.options.readOnly, entry.options.error);
+            }
         }
     }
 }
@@ -1747,6 +2165,9 @@ HWND ThemedUi::StatusText(const std::wstring& text, int x, int y, int width, The
 }
 
 void ThemedUi::SetStatusTextRole(HWND hwnd, ThemedStatusRole role) const {
+    if (SetSelectableTextStatusRole(hwnd, role)) {
+        return;
+    }
     ThemedControls::SetStatusTextState(hwnd, StatusState(role));
 }
 
@@ -1769,11 +2190,40 @@ void ThemedUi::SetText(HWND hwnd, const std::wstring& text) {
         return;
     }
     SetWindowTextW(hwnd, text.c_str());
+    ResetSelectableTextSelection(hwnd);
     RedrawWindow(
         hwnd,
         nullptr,
         nullptr,
         RDW_INVALIDATE | RDW_UPDATENOW);
+}
+
+bool ThemedUi::CopyTextToClipboard(HWND owner, const std::wstring& text) {
+    if (!OpenClipboard(owner)) {
+        return false;
+    }
+    EmptyClipboard();
+    const SIZE_T bytes = (text.size() + 1) * sizeof(wchar_t);
+    HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, bytes);
+    if (!memory) {
+        CloseClipboard();
+        return false;
+    }
+    void* data = GlobalLock(memory);
+    if (!data) {
+        GlobalFree(memory);
+        CloseClipboard();
+        return false;
+    }
+    std::memcpy(data, text.c_str(), bytes);
+    GlobalUnlock(memory);
+    if (!SetClipboardData(CF_UNICODETEXT, memory)) {
+        GlobalFree(memory);
+        CloseClipboard();
+        return false;
+    }
+    CloseClipboard();
+    return true;
 }
 
 void ThemedUi::SetVisible(HWND hwnd, bool visible) {
@@ -1792,6 +2242,7 @@ void ThemedUi::SetEnabled(HWND hwnd, bool enabled) const {
 }
 
 void ThemedUi::SetControlSurface(HWND hwnd, ThemedControlSurface surface) {
+    SetSelectableTextSurface(hwnd, surface);
     const wchar_t* component = L"dialog";
     switch (surface) {
     case ThemedControlSurface::Panel:
@@ -1813,8 +2264,20 @@ void ThemedUi::MoveControl(HWND hwnd, int x, int y, int width) const {
     }
     RECT rect{};
     GetWindowRect(hwnd, &rect);
+    const int height = rect.bottom - rect.top;
+    MoveControl(hwnd, RECT{x, y, x + width, y + height});
+}
+
+void ThemedUi::MoveControl(HWND hwnd, RECT frame) const {
+    if (!hwnd) {
+        return;
+    }
+    if (editFrameRegistry_ &&
+        editFrameRegistry_->MoveEditFrame(hwnd, frame, theme_, dpi_)) {
+        return;
+    }
     SetWindowPos(
-        hwnd, nullptr, x, y, width, rect.bottom - rect.top,
+        hwnd, nullptr, frame.left, frame.top, frame.right - frame.left, frame.bottom - frame.top,
         SWP_NOACTIVATE | SWP_NOZORDER);
 }
 
@@ -3371,11 +3834,20 @@ void ThemedUi::HideToast() const {
 HWND ThemedUi::Edit(int id, RECT frame, const std::wstring& value, ThemedEditOptions options) const {
     const bool multiline = options.mode == ThemedEditMode::MultiLine;
     DWORD style = multiline
-        ? ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL | WS_CLIPSIBLINGS | ES_NOHIDESEL
+        ? ES_MULTILINE | ES_AUTOVSCROLL | WS_CLIPSIBLINGS | ES_NOHIDESEL
         : ES_AUTOHSCROLL | ES_NOHIDESEL;
+    if (multiline) {
+        if (options.showVerticalScrollBar && options.showFrame) {
+            style |= WS_VSCROLL;
+        }
+        if (!options.wrap) {
+            style |= ES_AUTOHSCROLL;
+        }
+    }
     if (multiline && options.acceptsReturn) {
         style |= ES_WANTRETURN;
     }
+    style |= EditAlignStyle(options.align);
     switch (options.content) {
     case ThemedEditContent::Integer:
         style |= ES_NUMBER;
@@ -3391,9 +3863,15 @@ HWND ThemedUi::Edit(int id, RECT frame, const std::wstring& value, ThemedEditOpt
         style |= ES_READONLY;
     }
 
+    const bool transparentSelectable = options.transparentBackground && options.readOnly && !options.showFrame &&
+        !UsesFieldFrame(options.selectableRole);
     HWND hwnd = multiline
-        ? ThemedControls::CreateMultiLineEdit(instance_, parent_, id, theme_, frame, value, font_, style)
-        : ThemedControls::CreateSingleLineEdit(instance_, parent_, id, theme_, frame, value, font_, style);
+        ? ThemedControls::CreateMultiLineEdit(
+            instance_, parent_, id, theme_, frame, value, font_, style,
+            !options.showFrame, options.tabStop, transparentSelectable)
+        : ThemedControls::CreateSingleLineEdit(
+            instance_, parent_, id, theme_, frame, value, font_, style,
+            !options.showFrame, options.tabStop, transparentSelectable);
     if (hwnd) {
         EnableWindow(hwnd, options.enabled ? TRUE : FALSE);
         ThemedControls::ConfigureEditBehavior(hwnd, options.selectAllOnFocus);
@@ -3413,12 +3891,213 @@ HWND ThemedUi::Edit(int id, RECT frame, const std::wstring& value, ThemedEditOpt
 HWND ThemedUi::ReadOnlyText(int id, RECT frame, const std::wstring& value, ThemedReadOnlyTextOptions options) const {
     ThemedEditOptions editOptions{};
     editOptions.mode = options.mode;
+    editOptions.align = options.align;
     editOptions.readOnly = true;
     editOptions.enabled = options.enabled;
     editOptions.selectAllOnFocus = options.selectAllOnFocus;
     editOptions.acceptsReturn = options.acceptsReturn;
+    editOptions.wrap = options.wrap;
+    editOptions.showVerticalScrollBar = options.showVerticalScrollBar;
     editOptions.placeholder = options.placeholder;
+    editOptions.showFrame = options.showFrame;
+    editOptions.transparentBackground = options.transparentBackground;
+    editOptions.tabStop = options.tabStop;
+    editOptions.selectableRole = options.selectableRole;
+    editOptions.statusRole = options.statusRole;
     return Edit(id, frame, value, editOptions);
+}
+
+HWND ThemedUi::SelectableText(int id, RECT frame, const std::wstring& text, ThemedSelectableTextOptions options) const {
+    if (options.transparentBackground && !options.showFrame && !UsesFieldFrame(options.role)) {
+        HWND hwnd = CreateSelectableTextWindow(instance_, parent_, id, frame, text, font_, theme_, options);
+        if (hwnd) return hwnd;
+    }
+    ThemedReadOnlyTextOptions readOnly{};
+    readOnly.mode = options.mode;
+    readOnly.enabled = true;
+    readOnly.align = options.align;
+    readOnly.selectAllOnFocus = options.selectAllOnFocus;
+    readOnly.acceptsReturn = options.mode == ThemedEditMode::MultiLine;
+    readOnly.placeholder = options.placeholder;
+    readOnly.wrap = options.wrap;
+    readOnly.showVerticalScrollBar =
+        options.showVerticalScrollBar || options.role == ThemedSelectableTextRole::DetailText;
+    readOnly.showFrame = options.showFrame;
+    readOnly.transparentBackground = options.transparentBackground;
+    readOnly.tabStop = options.tabStop;
+    readOnly.selectableRole = options.role;
+    readOnly.statusRole = options.statusRole;
+    HWND hwnd = ReadOnlyText(id, frame, text, readOnly);
+    SetControlSurface(hwnd, options.surface);
+    return hwnd;
+}
+
+HWND ThemedUi::SelectableLabel(const std::wstring& text, int x, int y, int width, ThemedLabelOptions options) const {
+    int lineCount = 1;
+    if (options.lines == ThemedLabelLines::Two) lineCount = 2;
+    else if (options.lines == ThemedLabelLines::Three) lineCount = 3;
+    ThemedSelectableTextOptions selectable{};
+    selectable.role = ThemedSelectableTextRole::LabelLike;
+    selectable.mode = lineCount > 1 ? ThemedEditMode::MultiLine : ThemedEditMode::SingleLine;
+    selectable.align = options.align;
+    selectable.tabStop = false;
+    selectable.showFrame = false;
+    selectable.transparentBackground = true;
+    selectable.wrap = lineCount > 1;
+    return SelectableText(0, rect(x, y, width, labelHeight() * lineCount), text, selectable);
+}
+
+HWND ThemedUi::SelectableStatusText(const std::wstring& text, int x, int y, int width, ThemedStatusTextOptions options) const {
+    ThemedSelectableTextOptions selectable{};
+    selectable.role = ThemedSelectableTextRole::StatusLike;
+    selectable.mode = ThemedEditMode::SingleLine;
+    selectable.align = options.align;
+    selectable.tabStop = false;
+    selectable.showFrame = false;
+    selectable.transparentBackground = true;
+    selectable.statusRole = options.role;
+    return SelectableText(0, rect(x, y, width, labelHeight()), text, selectable);
+}
+
+HWND ThemedUi::SelectableFieldText(int id, RECT frame, const std::wstring& text, ThemedSelectableTextOptions options) const {
+    options.role = ThemedSelectableTextRole::FieldLike;
+    options.showFrame = true;
+    options.transparentBackground = false;
+    options.tabStop = true;
+    return SelectableText(id, frame, text, options);
+}
+
+HWND ThemedUi::DetailText(int id, RECT frame, const std::wstring& text, ThemedSelectableTextOptions options) const {
+    options.role = ThemedSelectableTextRole::DetailText;
+    options.mode = ThemedEditMode::MultiLine;
+    options.showFrame = true;
+    options.transparentBackground = false;
+    options.tabStop = true;
+    options.wrap = true;
+    options.showVerticalScrollBar = true;
+    return SelectableText(id, frame, text, options);
+}
+
+ThemedManagementSummaryBar ThemedUi::ManagementSummaryBar(
+    RECT frame,
+    const std::vector<ThemedManagementSummaryItem>& items,
+    const std::wstring& statusText) const {
+    ThemedManagementSummaryBar result{};
+    const int frameTop = static_cast<int>(frame.top);
+    const int frameRight = static_cast<int>(frame.right);
+    const int frameBottom = static_cast<int>(frame.bottom);
+    int x = static_cast<int>(frame.left);
+    const int y = frameTop + std::max(0, ((frameBottom - frameTop) - labelHeight()) / 2);
+    const int gap = denseGap();
+    for (const auto& item : items) {
+        if (x >= frameRight) {
+            break;
+        }
+        std::wstring text = item.label;
+        if (!item.value.empty()) {
+            text += L" " + item.value;
+        }
+        const int width = std::min(
+            std::max(buttonHeight(ThemedButtonRole::Normal, ThemedButtonSize::Normal), textWidth(text) + scale(18)),
+            std::max(1, frameRight - x));
+        if (width <= 0) {
+            break;
+        }
+        if (HWND badge = StatusBadge(text, x, y, width, item.role)) {
+            result.badges.push_back(badge);
+        }
+        x += width + gap;
+    }
+    if (!statusText.empty() && x < frameRight) {
+        ThemedSelectableTextOptions options{};
+        options.role = ThemedSelectableTextRole::StatusLike;
+        options.statusRole = ThemedStatusRole::Normal;
+        options.surface = ThemedControlSurface::Panel;
+        options.showFrame = false;
+        options.transparentBackground = true;
+        result.statusText = SelectableText(0, rect(x, y, frameRight - x, labelHeight()), statusText, options);
+    }
+    return result;
+}
+
+ThemedManagementDetailPaneLayout ThemedUi::ManagementDetailPane(RECT frame, int actionButtonRows) const {
+    ThemedManagementDetailPaneLayout layout{};
+    const int frameLeft = static_cast<int>(frame.left);
+    const int frameTop = static_cast<int>(frame.top);
+    const int frameRight = static_cast<int>(frame.right);
+    const int frameBottom = static_cast<int>(frame.bottom);
+    actionButtonRows = std::max(0, actionButtonRows);
+    const int titleHeight = labelHeight();
+    const int actionsHeight = actionButtonRows > 0
+        ? actionButtonRows * buttonHeight(ThemedButtonRole::Normal, ThemedButtonSize::Normal)
+            + std::max(0, actionButtonRows - 1) * layout_.rowGap
+        : 0;
+    layout.title = RECT{frameLeft, frameTop, frameRight, std::min(frameBottom, frameTop + titleHeight)};
+    layout.actions = RECT{
+        frameLeft,
+        std::max(static_cast<int>(layout.title.bottom), frameBottom - actionsHeight),
+        frameRight,
+        frameBottom};
+    layout.detail = RECT{
+        frameLeft,
+        std::min(frameBottom, static_cast<int>(layout.title.bottom) + layout_.rowGap),
+        frameRight,
+        std::max(
+            static_cast<int>(layout.title.bottom) + layout_.rowGap,
+            static_cast<int>(layout.actions.top) - layout_.rowGap)};
+    return layout;
+}
+
+ThemedEmptyState ThemedUi::EmptyState(RECT frame, const ThemedEmptyStateOptions& options) const {
+    ThemedEmptyState result{};
+    const int frameLeft = static_cast<int>(frame.left);
+    const int frameTop = static_cast<int>(frame.top);
+    const int frameRight = static_cast<int>(frame.right);
+    const int frameBottom = static_cast<int>(frame.bottom);
+    const int gap = layout_.rowGap;
+    const int buttonHeightPx = options.actionId && !options.actionText.empty()
+        ? buttonHeight(ThemedButtonRole::Normal, ThemedButtonSize::Normal)
+        : 0;
+    const int totalHeight = labelHeight() + (options.detail.empty() ? 0 : gap + labelHeight() * 2)
+        + (buttonHeightPx > 0 ? gap + buttonHeightPx : 0);
+    int y = frameTop + std::max(0, ((frameBottom - frameTop) - totalHeight) / 2);
+    const int width = std::max(1, frameRight - frameLeft);
+    ThemedLabelOptions titleOptions{};
+    titleOptions.align = ThemedTextAlign::Center;
+    result.title = SelectableLabel(options.title, frameLeft, y, width, titleOptions);
+    SetControlSurface(result.title, ThemedControlSurface::Panel);
+    y += labelHeight();
+    if (!options.detail.empty()) {
+        y += gap;
+        ThemedSelectableTextOptions detailOptions{};
+        detailOptions.role = ThemedSelectableTextRole::StatusLike;
+        detailOptions.mode = ThemedEditMode::MultiLine;
+        detailOptions.surface = ThemedControlSurface::Panel;
+        detailOptions.statusRole = options.role;
+        detailOptions.showFrame = false;
+        detailOptions.transparentBackground = true;
+        detailOptions.wrap = true;
+        result.detail = SelectableText(0, rect(frameLeft, y, width, labelHeight() * 2), options.detail, detailOptions);
+        y += labelHeight() * 2;
+    }
+    if (buttonHeightPx > 0) {
+        y += gap;
+        const int buttonWidthPx = buttonWidth(
+            options.actionText,
+            ThemedButtonRole::Normal,
+            ThemedButtonSize::Normal,
+            ThemedButtonWidthMode::Text);
+        result.action = Button(
+            options.actionId,
+            options.actionText,
+            frameLeft + std::max(0, (width - buttonWidthPx) / 2),
+            y,
+            ThemedButtonRole::Normal,
+            ThemedButtonSize::Normal,
+            ThemedButtonWidthMode::Fixed,
+            buttonWidthPx);
+    }
+    return result;
 }
 
 // 在字段框内部创建主题静态文本控件。

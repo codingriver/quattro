@@ -4,6 +4,7 @@
 #include "ThemedUi.h"
 
 #include <commctrl.h>
+#include <richedit.h>
 #include <windowsx.h>
 
 #include <algorithm>
@@ -81,6 +82,8 @@ struct ControlState {
     int tabContainerStyle = kTabContainerStyleAppearanceDefault;
     bool multiline = false;
     bool selectAllOnFocus = false;
+    bool richEdit = false;
+    bool transparentBackground = false;
     UINT dpi = 0;
     HFONT ownedFont = nullptr;
     std::optional<TablerIconManifest::Id> buttonTablerIcon;
@@ -200,6 +203,26 @@ COLORREF ToColorRef(Color color) {
         return static_cast<BYTE>(ClampFloat(value, 0.0f, 1.0f) * 255.0f + 0.5f);
     };
     return RGB(byte(color.r), byte(color.g), byte(color.b));
+}
+
+HMODULE RichEditLibrary() {
+    static HMODULE module = LoadLibraryW(L"Msftedit.dll");
+    return module;
+}
+
+void ApplyRichEditBackground(HWND hwnd) {
+    const auto state = FindState(hwnd);
+    if (!state || !state->richEdit || !state->transparentBackground || !state->theme) {
+        return;
+    }
+    const std::wstring component = state->backgroundComponent.empty()
+        ? std::wstring(L"dialog")
+        : state->backgroundComponent;
+    const COLORREF background = ToColorRef(state->theme->color(component, L"normal", L"bg"));
+    SendMessageW(hwnd, EM_SETBKGNDCOLOR, FALSE, static_cast<LPARAM>(background));
+#ifdef SES_EXTENDBACKCOLOR
+    SendMessageW(hwnd, EM_SETEDITSTYLE, SES_EXTENDBACKCOLOR, SES_EXTENDBACKCOLOR);
+#endif
 }
 
 int ScaledMetric(HWND hwnd, const Theme& theme, const wchar_t* component, const wchar_t* name, float fallback) {
@@ -3499,6 +3522,7 @@ void SetControlBackgroundComponent(HWND hwnd, const wchar_t* component) {
         return;
     }
     StateFor(hwnd).backgroundComponent = component ? component : L"";
+    ApplyRichEditBackground(hwnd);
     InvalidateRect(hwnd, nullptr, TRUE);
 }
 
@@ -3651,46 +3675,61 @@ int EditFontSizePx(const Theme& theme) {
     return static_cast<int>(theme.metric(L"edit", L"singleLineFontSizePx", 14.0f));
 }
 
-RECT SingleLineEditRect(const Theme& theme, RECT frame, UINT dpi) {
-    const int paddingX = ThemedD2D::ScaleDip(EditPaddingX(theme), dpi);
-    const int controlHeight = ThemedD2D::ScaleDip(
-        static_cast<int>(theme.metric(L"edit", L"singleLineControlHeight", static_cast<float>(EditTextHeight(theme)))), dpi);
-    const int offsetY = ThemedD2D::ScaleDip(
-        static_cast<int>(theme.metric(L"edit", L"singleLineOffsetY", theme.metric(L"edit", L"textOffsetY", 0.0f))), dpi);
-    RECT rect{};
-    rect.left = frame.left + paddingX;
-    rect.right = frame.right - paddingX;
-    rect.top = frame.top + ((frame.bottom - frame.top) - controlHeight) / 2 + offsetY;
-    rect.bottom = rect.top + controlHeight;
+int EditBorderWidth(const Theme& theme) {
+    return std::max(1, static_cast<int>(theme.metric(L"edit", L"borderWidth", 1.0f)));
+}
+
+RECT EditChildRect(const Theme& theme, RECT frame, UINT dpi) {
+    const int borderWidth = ThemedD2D::ScaleDip(EditBorderWidth(theme), dpi);
+    RECT rect = frame;
+    InflateRect(&rect, -borderWidth, -borderWidth);
+    if (rect.right <= rect.left) rect.right = rect.left + 1;
+    if (rect.bottom <= rect.top) rect.bottom = rect.top + 1;
     return rect;
+}
+
+RECT SingleLineEditRect(const Theme& theme, RECT frame, UINT dpi) {
+    return EditChildRect(theme, frame, dpi);
 }
 
 RECT SingleLineEditRectForFrame(const Theme& theme, RECT frame, UINT dpi) {
-    const int paddingX = ThemedD2D::ScaleDip(EditPaddingX(theme), dpi);
-    const int preferredHeight = ThemedD2D::ScaleDip(
-        static_cast<int>(theme.metric(L"edit", L"singleLineControlHeight", static_cast<float>(EditTextHeight(theme)))), dpi);
-    const int frameHeight = std::max(1, static_cast<int>(frame.bottom - frame.top));
-    const int controlHeight = std::max(1, std::min(preferredHeight, frameHeight - 2));
-    const int offsetY = ThemedD2D::ScaleDip(
-        static_cast<int>(theme.metric(L"edit", L"singleLineOffsetY", theme.metric(L"edit", L"textOffsetY", 0.0f))), dpi);
-    RECT rect{};
-    rect.left = frame.left + paddingX;
-    rect.right = frame.right - paddingX;
-    rect.top = frame.top + ((frame.bottom - frame.top) - controlHeight) / 2 + offsetY;
-    rect.bottom = rect.top + controlHeight;
-    return rect;
+    return EditChildRect(theme, frame, dpi);
 }
 
 RECT MultiLineEditRect(const Theme& theme, RECT frame, UINT dpi) {
-    const int paddingX = ThemedD2D::ScaleDip(EditPaddingX(theme), dpi);
-    const int paddingTop = ThemedD2D::ScaleDip(static_cast<int>(theme.metric(L"edit", L"multiLinePaddingTop", 7.0f)), dpi);
-    const int paddingBottom = ThemedD2D::ScaleDip(static_cast<int>(theme.metric(L"edit", L"multiLinePaddingBottom", 7.0f)), dpi);
-    RECT rect{};
-    rect.left = frame.left + paddingX;
-    rect.right = frame.right - paddingX;
-    rect.top = frame.top + paddingTop;
-    rect.bottom = frame.bottom - paddingBottom;
-    return rect;
+    return EditChildRect(theme, frame, dpi);
+}
+
+void ConfigureEditTextInsets(HWND hwnd, const Theme& theme, bool multiline, bool showFrame, UINT dpi) {
+    if (!hwnd) {
+        return;
+    }
+    const UINT effectiveDpi = dpi ? dpi : USER_DEFAULT_SCREEN_DPI;
+    const int paddingX = showFrame ? ThemedD2D::ScaleDip(EditPaddingX(theme), effectiveDpi) : 0;
+    SendMessageW(
+        hwnd,
+        EM_SETMARGINS,
+        EC_LEFTMARGIN | EC_RIGHTMARGIN,
+        MAKELPARAM(std::max(0, paddingX), std::max(0, paddingX)));
+    if (!multiline) {
+        return;
+    }
+
+    RECT textRect{};
+    GetClientRect(hwnd, &textRect);
+    if (showFrame) {
+        const int paddingTop = ThemedD2D::ScaleDip(
+            static_cast<int>(theme.metric(L"edit", L"multiLinePaddingTop", 7.0f)), effectiveDpi);
+        const int paddingBottom = ThemedD2D::ScaleDip(
+            static_cast<int>(theme.metric(L"edit", L"multiLinePaddingBottom", 7.0f)), effectiveDpi);
+        textRect.left += paddingX;
+        textRect.right -= paddingX;
+        textRect.top += paddingTop;
+        textRect.bottom -= paddingBottom;
+        if (textRect.right <= textRect.left) textRect.right = textRect.left + 1;
+        if (textRect.bottom <= textRect.top) textRect.bottom = textRect.top + 1;
+    }
+    SendMessageW(hwnd, EM_SETRECTNP, 0, reinterpret_cast<LPARAM>(&textRect));
 }
 
 void ConfigureEditBehavior(HWND hwnd, bool selectAllOnFocus) {
@@ -3700,13 +3739,29 @@ void ConfigureEditBehavior(HWND hwnd, bool selectAllOnFocus) {
     StateFor(hwnd).selectAllOnFocus = selectAllOnFocus;
 }
 
-HWND CreateSingleLineEdit(HINSTANCE instance, HWND parent, int id, const Theme& theme, RECT frame, const std::wstring& value, HFONT font, DWORD extraStyle) {
-    const RECT editRect = SingleLineEditRect(theme, frame, GetDpiForWindow(parent));
+HWND CreateSingleLineEdit(
+    HINSTANCE instance,
+    HWND parent,
+    int id,
+    const Theme& theme,
+    RECT frame,
+    const std::wstring& value,
+    HFONT font,
+    DWORD extraStyle,
+    bool exactFrame,
+    bool tabStop,
+    bool transparentSelectable) {
+    const UINT dpi = GetDpiForWindow(parent);
+    const bool showFrame = !exactFrame;
+    const RECT editRect = exactFrame ? frame : SingleLineEditRect(theme, frame, dpi);
+    const DWORD tabStyle = tabStop ? WS_TABSTOP : 0;
+    const bool useRichEdit = transparentSelectable && RichEditLibrary();
+    const wchar_t* className = useRichEdit ? MSFTEDIT_CLASS : L"EDIT";
     HWND hwnd = CreateWindowExW(
-        0,
-        L"EDIT",
+        useRichEdit ? WS_EX_TRANSPARENT : 0,
+        className,
         value.c_str(),
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_CLIPSIBLINGS | extraStyle,
+        WS_CHILD | WS_VISIBLE | tabStyle | WS_CLIPSIBLINGS | extraStyle,
         editRect.left,
         editRect.top,
         editRect.right - editRect.left,
@@ -3717,22 +3772,41 @@ HWND CreateSingleLineEdit(HINSTANCE instance, HWND parent, int id, const Theme& 
         nullptr);
     if (hwnd) {
         SendMessageW(hwnd, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
-        SendMessageW(hwnd, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, MAKELPARAM(0, 0));
+        ConfigureEditTextInsets(hwnd, theme, false, showFrame, dpi);
         auto& state = StateFor(hwnd);
         state.kind = ControlKind::Edit;
         state.theme = &theme;
+        state.richEdit = useRichEdit;
+        state.transparentBackground = useRichEdit && transparentSelectable;
+        ApplyRichEditBackground(hwnd);
         AttachThemedBehavior(hwnd);
     }
     return hwnd;
 }
 
-HWND CreateMultiLineEdit(HINSTANCE instance, HWND parent, int id, const Theme& theme, RECT frame, const std::wstring& value, HFONT font, DWORD extraStyle) {
-    const RECT editRect = MultiLineEditRect(theme, frame, GetDpiForWindow(parent));
+HWND CreateMultiLineEdit(
+    HINSTANCE instance,
+    HWND parent,
+    int id,
+    const Theme& theme,
+    RECT frame,
+    const std::wstring& value,
+    HFONT font,
+    DWORD extraStyle,
+    bool exactFrame,
+    bool tabStop,
+    bool transparentSelectable) {
+    const UINT dpi = GetDpiForWindow(parent);
+    const bool showFrame = !exactFrame;
+    const RECT editRect = exactFrame ? frame : MultiLineEditRect(theme, frame, dpi);
+    const DWORD tabStyle = tabStop ? WS_TABSTOP : 0;
+    const bool useRichEdit = transparentSelectable && RichEditLibrary();
+    const wchar_t* className = useRichEdit ? MSFTEDIT_CLASS : L"EDIT";
     HWND hwnd = CreateWindowExW(
-        0,
-        L"EDIT",
+        useRichEdit ? WS_EX_TRANSPARENT : 0,
+        className,
         value.c_str(),
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_CLIPSIBLINGS | extraStyle,
+        WS_CHILD | WS_VISIBLE | tabStyle | WS_CLIPSIBLINGS | extraStyle,
         editRect.left,
         editRect.top,
         editRect.right - editRect.left,
@@ -3743,11 +3817,14 @@ HWND CreateMultiLineEdit(HINSTANCE instance, HWND parent, int id, const Theme& t
         nullptr);
     if (hwnd) {
         SendMessageW(hwnd, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
-        SendMessageW(hwnd, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, MAKELPARAM(0, 0));
+        ConfigureEditTextInsets(hwnd, theme, true, showFrame, dpi);
         auto& state = StateFor(hwnd);
         state.kind = ControlKind::Edit;
         state.theme = &theme;
         state.multiline = true;
+        state.richEdit = useRichEdit;
+        state.transparentBackground = useRichEdit && transparentSelectable;
+        ApplyRichEditBackground(hwnd);
         AttachThemedBehavior(hwnd);
     }
     return hwnd;

@@ -162,7 +162,7 @@ LRESULT ThemedFileTransferQueueDialog::Handle(UINT message, WPARAM wParam, LPARA
         Hide(); return 0;
     case WM_PAINT:
         { PAINTSTRUCT ps{}; HDC dc = BeginPaint(hwnd_, &ps); windowUi_->FillBackground(dc);
-        windowUi_->DrawRegisteredTableFrames(dc); EndPaint(hwnd_, &ps); return 0; }
+        windowUi_->DrawRegisteredEditFrames(dc); windowUi_->DrawRegisteredTableFrames(dc); EndPaint(hwnd_, &ps); return 0; }
     case WM_NCDESTROY:
         hwnd_ = nullptr; windowUi_.reset(); return 0;
     }
@@ -171,9 +171,9 @@ LRESULT ThemedFileTransferQueueDialog::Handle(UINT message, WPARAM wParam, LPARA
 
 void ThemedFileTransferQueueDialog::CreateControls() {
     const ThemedUi ui = windowUi_->ui();
-    status_ = ui.StatusText(L"等待传输", ui.contentLeft(), ui.contentTop(), ui.contentWidth(),
+    status_ = ui.SelectableStatusText(L"等待传输", ui.contentLeft(), ui.contentTop(), ui.contentWidth(),
         ThemedStatusTextOptions{ThemedStatusRole::Info, ThemedTextAlign::Start});
-    detail_ = ui.Label(L"尚未添加文件。", ui.contentLeft(), ui.contentTop(), ui.contentWidth());
+    detail_ = ui.SelectableLabel(L"尚未添加文件。", ui.contentLeft(), ui.contentTop(), ui.contentWidth());
     ThemedProgressBarOptions progressOptions{};
     progressOptions.value = 0.0;
     progressOptions.indeterminate = false;
@@ -206,11 +206,11 @@ void ThemedFileTransferQueueDialog::LayoutControls() {
         client.right, client.bottom, windowUi_.get(), windowUi_.get(), windowUi_.get(), windowUi_.get());
     const auto& layout = ui.layout();
     int y = ui.contentTop();
-    MoveWindow(status_, ui.contentLeft(), y, ui.contentWidth(), ui.labelHeight(), TRUE);
+    ui.MoveControl(status_, RECT{ui.contentLeft(), y, ui.contentLeft() + ui.contentWidth(), y + ui.labelHeight()});
     y = ui.nextRowY(y, ui.labelHeight());
     MoveWindow(progress_, ui.contentLeft(), y, ui.contentWidth(), ui.progressBarHeight(), TRUE);
     y += ui.progressBarHeight() + layout.rowGap;
-    MoveWindow(detail_, ui.contentLeft(), y, ui.contentWidth(), ui.labelHeight(), TRUE);
+    ui.MoveControl(detail_, RECT{ui.contentLeft(), y, ui.contentLeft() + ui.contentWidth(), y + ui.labelHeight()});
     y = ui.nextRowY(y, ui.labelHeight());
     if (currentProgressVisible_) {
         MoveWindow(currentProgress_, ui.contentLeft(), y, ui.contentWidth(), ui.progressBarHeight(), TRUE);

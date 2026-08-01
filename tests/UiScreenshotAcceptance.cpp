@@ -74,6 +74,7 @@ struct Scenario {
     UINT forcedDpi = USER_DEFAULT_SCREEN_DPI;
     bool validateProcessToolsTableDpi = false;
     bool validateQuickImportIconLayout = false;
+    std::vector<std::wstring> transparentLabelTexts;
     bool waitForContextMenuIconLoad = true;
     bool validateContextMenuIconTransparency = false;
     std::wstring expectedContextMenuProvider;
@@ -182,12 +183,28 @@ std::vector<ContextMenuProviderIconInfo> AcceptanceSystemContextMenuProviderIcon
 }
 
 std::wstring WindowText(HWND hwnd) {
-    const int length = GetWindowTextLengthW(hwnd);
-    std::wstring text(static_cast<std::size_t>(length) + 1, L'\0');
-    if (length > 0) {
-        GetWindowTextW(hwnd, text.data(), length + 1);
+    if (!hwnd) {
+        return {};
     }
-    text.resize(static_cast<std::size_t>(length));
+    DWORD_PTR lengthResult = 0;
+    int length = 0;
+    if (SendMessageTimeoutW(hwnd, WM_GETTEXTLENGTH, 0, 0, SMTO_ABORTIFHUNG, 1000, &lengthResult)) {
+        length = static_cast<int>(lengthResult);
+    } else {
+        length = GetWindowTextLengthW(hwnd);
+    }
+    if (length <= 0) {
+        return {};
+    }
+    std::wstring text(static_cast<std::size_t>(length) + 1, L'\0');
+    DWORD_PTR copyResult = 0;
+    if (SendMessageTimeoutW(hwnd, WM_GETTEXT, static_cast<WPARAM>(text.size()),
+            reinterpret_cast<LPARAM>(text.data()), SMTO_ABORTIFHUNG, 1000, &copyResult)) {
+        text.resize(static_cast<std::size_t>(copyResult));
+    } else {
+        GetWindowTextW(hwnd, text.data(), length + 1);
+        text.resize(static_cast<std::size_t>(length));
+    }
     return text;
 }
 
@@ -197,6 +214,13 @@ std::wstring ClassName(HWND hwnd) {
     return buffer;
 }
 
+bool IsEditLikeClass(const std::wstring& className) {
+    return className == L"Edit" || _wcsnicmp(className.c_str(), L"RichEdit", 8) == 0;
+}
+
+bool IsSelectableTextLikeClass(const std::wstring& className) {
+    return IsEditLikeClass(className) || className == L"QuattroSelectableText";
+}
 bool Contains(const std::wstring& text, const std::wstring& needle) {
     return text.find(needle) != std::wstring::npos;
 }
@@ -305,6 +329,18 @@ HWND WaitForTopWindow(const FindWindowRequest& request, DWORD timeoutMs = 5000) 
         Sleep(50);
     }
     return nullptr;
+}
+
+void PumpMessagesFor(DWORD durationMs) {
+    const auto begin = GetTickCount64();
+    do {
+        MSG message{};
+        while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+            TranslateMessage(&message);
+            DispatchMessageW(&message);
+        }
+        Sleep(10);
+    } while (GetTickCount64() - begin < durationMs);
 }
 
 struct CloseWindowData {
@@ -684,6 +720,45 @@ COLORREF BitmapPixel(HBITMAP bitmap, int x, int y) {
     return color;
 }
 
+COLORREF AverageBitmapAreaColor(HBITMAP bitmap, int width, int height, RECT area, int sampleStep = 2) {
+    if (!bitmap || width <= 0 || height <= 0) {
+        return CLR_INVALID;
+    }
+    area.left = std::clamp<LONG>(area.left, 0, width);
+    area.top = std::clamp<LONG>(area.top, 0, height);
+    area.right = std::clamp<LONG>(area.right, area.left, width);
+    area.bottom = std::clamp<LONG>(area.bottom, area.top, height);
+    if (area.right <= area.left || area.bottom <= area.top) {
+        return CLR_INVALID;
+    }
+
+    HDC dc = CreateCompatibleDC(nullptr);
+    HGDIOBJ old = SelectObject(dc, bitmap);
+    int r = 0;
+    int g = 0;
+    int b = 0;
+    int samples = 0;
+    const int step = std::max(1, sampleStep);
+    for (int y = area.top; y < area.bottom; y += step) {
+        for (int x = area.left; x < area.right; x += step) {
+            const COLORREF color = GetPixel(dc, x, y);
+            if (color == CLR_INVALID) {
+                continue;
+            }
+            r += GetRValue(color);
+            g += GetGValue(color);
+            b += GetBValue(color);
+            ++samples;
+        }
+    }
+    SelectObject(dc, old);
+    DeleteDC(dc);
+    if (samples == 0) {
+        return CLR_INVALID;
+    }
+    return RGB(r / samples, g / samples, b / samples);
+}
+
 COLORREF AverageBitmapRowColor(HBITMAP bitmap, int width, RECT row) {
     const int rowLeft = static_cast<int>(row.left);
     const int rowTop = static_cast<int>(row.top);
@@ -882,7 +957,8 @@ bool WindowContainsText(HWND hwnd, const std::wstring& expected) {
         return true;
     }
     for (const ChildInfo& child : Children(hwnd)) {
-        if (IsWindowVisible(child.hwnd) && Contains(WindowText(child.hwnd), expected)) {
+        if (IsWindowVisible(child.hwnd) &&
+            (Contains(child.text, expected) || Contains(WindowText(child.hwnd), expected))) {
             return true;
         }
     }
@@ -960,7 +1036,7 @@ void ValidateChildBounds(HWND parent, const std::vector<ChildInfo>& children, Te
             continue;
         }
         if (child.className != L"Button" &&
-            child.className != L"Edit" &&
+            !IsSelectableTextLikeClass(child.className) &&
             child.className != L"ListBox" &&
             child.className != L"Static" &&
             child.className != L"SysListView32") {
@@ -1199,7 +1275,7 @@ void ValidateAndCapture(HWND hwnd, const Scenario& scenario, const std::filesyst
     int buttonCount = 0;
     std::vector<HWND> edits;
     for (const auto& child : children) {
-        if (child.className == L"Edit") {
+        if (IsEditLikeClass(child.className)) {
             ++editCount;
             edits.push_back(child.hwnd);
         } else if (child.className == L"Button") {
@@ -1412,18 +1488,68 @@ void ValidateAndCapture(HWND hwnd, const Scenario& scenario, const std::filesyst
         state.Check(WindowText(edits.front()) == probe, scenario.name + L": edit set/get probe failed");
     }
 
+    if (!scenario.transparentLabelTexts.empty()) {
+        BitmapCapture labelCapture = CaptureClientBitmapWithChildren(hwnd);
+        state.Check(labelCapture.bitmap != nullptr, scenario.name + L": transparent label capture failed");
+        if (labelCapture.bitmap) {
+            for (const auto& labelText : scenario.transparentLabelTexts) {
+                auto label = std::find_if(children.begin(), children.end(), [&](const ChildInfo& child) {
+                    return IsWindowVisible(child.hwnd) &&
+                        IsSelectableTextLikeClass(child.className) &&
+                        WindowText(child.hwnd) == labelText;
+                });
+                state.Check(label != children.end(), scenario.name + L": transparent selectable label not found: " + labelText);
+                if (label == children.end()) {
+                    continue;
+                }
+                RECT labelRect{};
+                GetWindowRect(label->hwnd, &labelRect);
+                MapWindowPoints(HWND_DESKTOP, hwnd, reinterpret_cast<POINT*>(&labelRect), 2);
+                labelRect.left = std::max<LONG>(0, labelRect.left);
+                labelRect.top = std::max<LONG>(0, labelRect.top);
+                labelRect.right = std::min<LONG>(labelCapture.width, labelRect.right);
+                labelRect.bottom = std::min<LONG>(labelCapture.height, labelRect.bottom);
+                const LONG width = std::max<LONG>(0, labelRect.right - labelRect.left);
+                const LONG height = std::max<LONG>(0, labelRect.bottom - labelRect.top);
+                const std::size_t total = static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
+                state.Check(total > 0, scenario.name + L": transparent selectable label has empty bounds: " + labelText);
+                state.Check(
+                    labelRect.left > 0 && labelRect.top > 0,
+                    scenario.name + L": transparent selectable label was not moved by layout, class=" + label->className + L": " + labelText);
+                if (total == 0) {
+                    continue;
+                }
+                const std::size_t whitePixels = CountPixelsNearColor(
+                    labelCapture.bitmap,
+                    labelCapture.width,
+                    labelCapture.height,
+                    labelRect,
+                    RGB(255, 255, 255),
+                    4);
+                const double whiteRatio = static_cast<double>(whitePixels) / static_cast<double>(total);
+                state.Check(
+                    whiteRatio < 0.35,
+                    scenario.name + L": selectable label still paints an independent white background, class=" + label->className + L", whitePixels=" + std::to_wstring(whitePixels) + L"/" + std::to_wstring(total) + L": " + labelText);
+            }
+            DeleteObject(labelCapture.bitmap);
+        }
+    }
+
     if (scenario.requireThemedEditFrames) {
         std::vector<HWND> visibleEdits;
         std::vector<HWND> visibleFrames;
         for (const auto& child : children) {
             if (!IsWindowVisible(child.hwnd)) continue;
-            if (child.className == L"Edit") visibleEdits.push_back(child.hwnd);
+            if (IsEditLikeClass(child.className)) visibleEdits.push_back(child.hwnd);
             else if (child.className == L"QuattroThemedEditFrame") visibleFrames.push_back(child.hwnd);
         }
         state.Check(!visibleEdits.empty(), scenario.name + L": expected at least one visible Edit");
         state.Check(
             visibleFrames.size() == visibleEdits.size(),
             scenario.name + L": visible themed Edit frame count does not match visible Edit count");
+
+        BitmapCapture editComposite = CaptureClientBitmapWithChildren(hwnd);
+        state.Check(editComposite.bitmap != nullptr, scenario.name + L": input interior composite capture failed");
 
         std::vector<HWND> zOrder;
         for (HWND current = GetTopWindow(hwnd); current; current = GetWindow(current, GW_HWNDNEXT)) {
@@ -1446,6 +1572,61 @@ void ValidateAndCapture(HWND hwnd, const Scenario& scenario, const std::filesyst
             }
             state.Check(matchingFrame != nullptr, scenario.name + L": visible Edit is not enclosed by a themed frame");
             if (!matchingFrame) continue;
+            const UINT editDpi = GetDpiForWindow(edit);
+            const LONG maxInset = std::max<LONG>(
+                2,
+                MulDiv(2, static_cast<int>(editDpi ? editDpi : USER_DEFAULT_SCREEN_DPI), USER_DEFAULT_SCREEN_DPI));
+            const LONG leftInset = editRect.left - matchingFrameRect.left;
+            const LONG topInset = editRect.top - matchingFrameRect.top;
+            const LONG rightInset = matchingFrameRect.right - editRect.right;
+            const LONG bottomInset = matchingFrameRect.bottom - editRect.bottom;
+            state.Check(
+                leftInset <= maxInset && topInset <= maxInset && rightInset <= maxInset && bottomInset <= maxInset,
+                scenario.name + L": Edit child inset exposes themed frame padding and can create two input backgrounds");
+            if (editComposite.bitmap && WindowText(edit).empty()) {
+                RECT frameClient = matchingFrameRect;
+                MapWindowPoints(HWND_DESKTOP, hwnd, reinterpret_cast<POINT*>(&frameClient), 2);
+                const int sampleInset = std::max(
+                    static_cast<int>(maxInset) + 1,
+                    MulDiv(3, static_cast<int>(editDpi ? editDpi : USER_DEFAULT_SCREEN_DPI), USER_DEFAULT_SCREEN_DPI));
+                RECT interior = frameClient;
+                InflateRect(&interior, -sampleInset, -sampleInset);
+                const int interiorWidth = static_cast<int>(interior.right - interior.left);
+                const int interiorHeight = static_cast<int>(interior.bottom - interior.top);
+                if (interiorWidth >= 24 && interiorHeight >= 8) {
+                    const int band = std::clamp(
+                        MulDiv(4, static_cast<int>(editDpi ? editDpi : USER_DEFAULT_SCREEN_DPI), USER_DEFAULT_SCREEN_DPI),
+                        2,
+                        std::max(2, interiorWidth / 5));
+                    const int verticalInset = std::min(std::max(1, interiorHeight / 4), std::max(1, interiorHeight / 2 - 1));
+                    RECT leftBand{
+                        interior.left,
+                        interior.top + verticalInset,
+                        interior.left + band,
+                        interior.bottom - verticalInset};
+                    RECT rightBand{
+                        interior.right - band,
+                        interior.top + verticalInset,
+                        interior.right,
+                        interior.bottom - verticalInset};
+                    RECT centerBand{
+                        interior.left + interiorWidth / 2 - band / 2,
+                        interior.top,
+                        interior.left + interiorWidth / 2 + band / 2,
+                        interior.top + std::min(interiorHeight, band)};
+                    const COLORREF leftColor = AverageBitmapAreaColor(
+                        editComposite.bitmap, editComposite.width, editComposite.height, leftBand);
+                    const COLORREF rightColor = AverageBitmapAreaColor(
+                        editComposite.bitmap, editComposite.width, editComposite.height, rightBand);
+                    const COLORREF centerColor = AverageBitmapAreaColor(
+                        editComposite.bitmap, editComposite.width, editComposite.height, centerBand);
+                    constexpr int kInputBackgroundTolerance = 24;
+                    state.Check(
+                        ColorDistance(leftColor, centerColor) <= kInputBackgroundTolerance &&
+                            ColorDistance(rightColor, centerColor) <= kInputBackgroundTolerance,
+                        scenario.name + L": Edit interior edge and center colors differ, indicating a two-tone input background");
+                }
+            }
 
             const auto editZ = std::find(zOrder.begin(), zOrder.end(), edit);
             const auto frameZ = std::find(zOrder.begin(), zOrder.end(), matchingFrame);
@@ -1473,6 +1654,9 @@ void ValidateAndCapture(HWND hwnd, const Scenario& scenario, const std::filesyst
                     scenario.name + L": themed Edit frame did not paint a distinct border and background");
                 DeleteObject(frameCapture.bitmap);
             }
+        }
+        if (editComposite.bitmap) {
+            DeleteObject(editComposite.bitmap);
         }
     }
 
@@ -2312,6 +2496,131 @@ struct TableHostWindow {
     }
 };
 
+struct InputBackgroundHostWindow {
+    HINSTANCE instance_ = nullptr;
+    HWND hwnd_ = nullptr;
+    HWND singleLine_ = nullptr;
+    HWND multiLine_ = nullptr;
+    Theme theme_;
+    std::unique_ptr<ThemedWindowUi> windowUi_;
+
+    static LRESULT CALLBACK Proc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
+        InputBackgroundHostWindow* self = nullptr;
+        if (message == WM_NCCREATE) {
+            auto* create = reinterpret_cast<CREATESTRUCTW*>(lParam);
+            self = reinterpret_cast<InputBackgroundHostWindow*>(create->lpCreateParams);
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self));
+            self->hwnd_ = hwnd;
+        } else {
+            self = reinterpret_cast<InputBackgroundHostWindow*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+        }
+        return self ? self->Handle(message, wParam, lParam) : DefWindowProcW(hwnd, message, wParam, lParam);
+    }
+
+    LRESULT Handle(UINT message, WPARAM wParam, LPARAM lParam) {
+        LRESULT result = 0;
+        if (ThemedWindowUi::HandleCommonMessage(windowUi_, message, wParam, lParam, result)) {
+            return result;
+        }
+        if (message == WM_CREATE) {
+            windowUi_ = std::make_unique<ThemedWindowUi>(
+                instance_, nullptr, hwnd_, theme_, DialogLayoutKind::Compact, 380, 190);
+            const ThemedUi ui = windowUi_->ui();
+            const int left = ui.scale(24);
+            const int right = ui.scale(356);
+            const int singleTop = ui.scale(24);
+            ThemedEditOptions singleOptions{};
+            singleOptions.placeholder = L"";
+            singleLine_ = ui.Edit(
+                701,
+                RECT{left, singleTop, right, singleTop + ui.editHeight()},
+                L"",
+                singleOptions);
+
+            ThemedEditOptions multiOptions{};
+            multiOptions.mode = ThemedEditMode::MultiLine;
+            multiOptions.placeholder = L"";
+            multiOptions.wrap = true;
+            multiLine_ = ui.Edit(
+                702,
+                RECT{left, ui.scale(72), right, ui.scale(154)},
+                L"",
+                multiOptions);
+            return 0;
+        }
+        if (message == WM_PAINT) {
+            PAINTSTRUCT ps{};
+            HDC dc = BeginPaint(hwnd_, &ps);
+            windowUi_->FillBackground(dc);
+            windowUi_->DrawRegisteredEditFrames(dc);
+            EndPaint(hwnd_, &ps);
+            return 0;
+        }
+        return DefWindowProcW(hwnd_, message, wParam, lParam);
+    }
+};
+
+void RunInputBackgroundScenario(const std::filesystem::path& outputDir, TestState& state, UINT dpi) {
+    const std::wstring suffix = DpiPercentSuffix(dpi);
+    const std::wstring scenarioName = L"input-background-" + suffix;
+    AcceptanceLog(L"begin " + scenarioName);
+    HINSTANCE instance = GetModuleHandleW(nullptr);
+    InputBackgroundHostWindow host;
+    host.instance_ = instance;
+    host.theme_ = Theme::Load(std::filesystem::current_path() / L"theme", L"default");
+
+    const std::wstring className = L"QuattroInputBackgroundHost" + std::to_wstring(dpi);
+    WNDCLASSEXW wc{};
+    wc.cbSize = sizeof(wc);
+    wc.lpfnWndProc = InputBackgroundHostWindow::Proc;
+    wc.hInstance = instance;
+    wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    wc.lpszClassName = className.c_str();
+    RegisterClassExW(&wc);
+
+    HWND hwnd = CreateWindowExW(
+        WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+        wc.lpszClassName,
+        scenarioName.c_str(),
+        WS_OVERLAPPEDWINDOW,
+        180,
+        180,
+        ThemedWindowUi::ScaleForDpi(420, dpi),
+        ThemedWindowUi::ScaleForDpi(240, dpi),
+        nullptr,
+        nullptr,
+        instance,
+        &host);
+    if (!hwnd || !host.singleLine_ || !host.multiLine_) {
+        state.Check(false, scenarioName + L": host or edit controls creation failed");
+        if (hwnd) DestroyWindow(hwnd);
+        return;
+    }
+    ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+    SetWindowPos(
+        hwnd, HWND_BOTTOM, 0, 0, 0, 0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+    UpdateWindow(hwnd);
+
+    Scenario scenario{
+        scenarioName,
+        className,
+        scenarioName,
+        scenarioName + L".png",
+        {},
+        {},
+        2,
+        0,
+        false,
+        false,
+        false};
+    scenario.forcedDpi = dpi;
+    scenario.requireThemedEditFrames = true;
+    ValidateAndCapture(hwnd, scenario, outputDir, state);
+    DestroyWindow(hwnd);
+    AcceptanceLog(L"end " + scenarioName);
+}
+
 constexpr UINT kShowSplitButtonMenuAcceptance = WM_APP + 0x5B;
 
 struct SplitButtonMenuHostWindow {
@@ -2558,7 +2867,7 @@ void RunTableGridLinesScenario(
         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
     RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW | RDW_ALLCHILDREN);
     RedrawWindow(host.table_, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW | RDW_ALLCHILDREN);
-    Sleep(200);
+    PumpMessagesFor(200);
 
     BitmapCapture capture = CaptureWindowBitmap(hwnd);
     state.Check(capture.bitmap != nullptr, scenarioName + L": capture failed");
@@ -2664,7 +2973,7 @@ void RunTableAlternatingRowsScenario(const std::filesystem::path& outputDir, Tes
     SetWindowPos(hwnd, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
     RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW | RDW_ALLCHILDREN);
     RedrawWindow(host.table_, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW | RDW_ALLCHILDREN);
-    Sleep(200);
+    PumpMessagesFor(200);
 
     // Row layout under TableRowState: row%2==0 -> "alternate", else "normal".
     // Row 0 is selected. Rows 1 (normal) and 2 (alternate) are unselected and
@@ -2739,7 +3048,7 @@ void RunWebDavFileColumnsScenario(const std::filesystem::path& outputDir, TestSt
     SetWindowPos(hwnd, HWND_BOTTOM, 0, 0, 0, 0,
         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
     RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW | RDW_ALLCHILDREN);
-    Sleep(200);
+    PumpMessagesFor(200);
 
     HWND header = ListView_GetHeader(host.table_);
     state.Check(header && Header_GetItemCount(header) == 5, scenario + L": expected five columns");
@@ -3022,7 +3331,7 @@ void RunTableColumnResizeScenario(const std::filesystem::path& outputDir, TestSt
     UpdateWindow(hwnd);
     SetWindowPos(hwnd, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
     RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW | RDW_ALLCHILDREN);
-    Sleep(200);
+    PumpMessagesFor(200);
 
     HWND header = ListView_GetHeader(host.table_);
     state.Check(header != nullptr, L"table-column-resize: header not found");
@@ -3489,13 +3798,7 @@ void RunAdBlockScenario(const std::filesystem::path& outputDir, TestState& state
         validateActionRow(L"ad-block 100% DPI");
         capture(hwnd, L"ad-block-block-page.png", L"ad-block block page");
 
-        HWND statusText = nullptr;
-        for (const auto& child : Children(hwnd)) {
-            if (child.text == L"输入或选择文件、文件夹后点击“检查”。") {
-                statusText = child.hwnd;
-                break;
-            }
-        }
+        HWND statusText = ChildById(hwnd, 1228);
         state.Check(statusText != nullptr, L"ad-block: scan status text is missing");
         if (pathEdit && statusText && clearResults && checkPath) {
             for (const wchar_t character : progressRoot.wstring()) {
@@ -3803,10 +4106,11 @@ void ValidateTimeDisplayScale(HWND hwnd, TestState& state, const std::wstring& n
                 display = child.hwnd;
             }
         }
-        if (child.className == L"Static" && child.text.find(L'年') != std::wstring::npos) {
+        if ((child.className == L"Static" || child.className == L"QuattroSelectableText") &&
+            child.text.find(L'年') != std::wstring::npos) {
             date = child.hwnd;
         }
-        if (!baseText && (child.className == L"Button" || child.className == L"Edit")) {
+        if (!baseText && (child.className == L"Button" || IsEditLikeClass(child.className))) {
             baseText = child.hwnd;
         }
     }
@@ -3870,7 +4174,7 @@ void RunClockScenarios(
                 L"QuattroClockTool",
                 L"时钟",
                 L"builtin-clock-" + suffix + L".png",
-                {L"时钟", L"显示毫秒"},
+                {L"时钟", L"毫秒"},
                 {},
                 0,
                 1,
@@ -5894,6 +6198,28 @@ int wmain() {
         return 0;
     }
 
+    wchar_t inputBackgroundOnly[8]{};
+    if (GetEnvironmentVariableW(
+            L"QUATTRO_UI_ACCEPTANCE_INPUT_BACKGROUND_ONLY",
+            inputBackgroundOnly,
+            static_cast<DWORD>(std::size(inputBackgroundOnly))) > 0) {
+        for (const UINT dpi : {96u, 120u, 144u}) {
+            RunInputBackgroundScenario(outputDir, state, dpi);
+        }
+        DestroyWindow(owner);
+        OleUninitialize();
+        Gdiplus::GdiplusShutdown(gdiplusToken);
+        if (!state.ok) {
+            for (const auto& failure : state.failures) {
+                AcceptanceLog(L"input background target failure " + failure);
+                std::wcerr << failure << L"\n";
+            }
+            return 1;
+        }
+        std::wcout << L"ui_input_background_acceptance=passed screenshots=" << outputDir.wstring() << L"\n";
+        return 0;
+    }
+
     wchar_t tableOnly[8]{};
     if (GetEnvironmentVariableW(
             L"QUATTRO_UI_ACCEPTANCE_TABLE_ONLY",
@@ -6020,8 +6346,28 @@ int wmain() {
                 {todo.title, todo.content}, 2, 2, false};
             todoScenario.forcedDpi = dpi;
             todoScenario.rejectDarkSurface = true;
+            todoScenario.transparentLabelTexts = {L"待办标题 *", L"备注说明"};
             RunDialogScenario(todoScenario, outputDir, state, [&]() {
                 TodoEditDialog::Show(owner, instance, theme, todo, true);
+            });
+
+            TodoItem blankTodo;
+            Scenario blankTodoScenario{
+                L"d2d-todo-empty-" + suffix,
+                L"QuattroTodoEditDialog",
+                L"新建待办",
+                L"d2d-todo-empty-" + suffix + L".png",
+                {L"新建待办", L"待办标题 *", L"备注说明", L"保存待办", L"取消"},
+                {},
+                2,
+                2,
+                false};
+            blankTodoScenario.forcedDpi = dpi;
+            blankTodoScenario.rejectDarkSurface = true;
+            blankTodoScenario.cancelOnly = true;
+            blankTodoScenario.transparentLabelTexts = {L"待办标题 *", L"备注说明"};
+            RunDialogScenario(blankTodoScenario, outputDir, state, [&]() {
+                TodoEditDialog::Show(owner, instance, theme, blankTodo, true);
             });
 
         }
@@ -6041,6 +6387,9 @@ int wmain() {
 
     for (const UINT dpi : {96u, 120u, 144u}) {
         RunMainWindowScenario(outputDir, theme, state, dpi);
+    }
+    for (const UINT dpi : {96u, 120u, 144u}) {
+        RunInputBackgroundScenario(outputDir, state, dpi);
     }
     RunTableAlternatingRowsScenario(outputDir, state);
     RunCheckableTableScenario(outputDir, state, 96);
@@ -6168,7 +6517,7 @@ int wmain() {
             false,
             expected,
             page};
-        settingsScenario.requireThemedEditFrames = page == L"HTTP";
+        settingsScenario.requireThemedEditFrames = page == L"WebDAV" || page == L"HTTP";
         if (page == L"行为") {
             settingsScenario.expectedEditTexts = {L"1000"};
         }
@@ -6222,6 +6571,26 @@ int wmain() {
         state,
         [&]() {
             TodoEditDialog::Show(owner, instance, theme, todo, true);
+        });
+    TodoItem blankTodo;
+    Scenario blankTodoScenario{
+        L"todo-edit-dialog-empty",
+        L"QuattroTodoEditDialog",
+        L"新建待办",
+        L"todo-edit-dialog-empty.png",
+        {L"新建待办", L"待办标题 *", L"备注说明", L"保存待办", L"取消"},
+        {},
+        2,
+        2,
+        false};
+    blankTodoScenario.cancelOnly = true;
+    blankTodoScenario.transparentLabelTexts = {L"待办标题 *", L"备注说明"};
+    RunDialogScenario(
+        blankTodoScenario,
+        outputDir,
+        state,
+        [&]() {
+            TodoEditDialog::Show(owner, instance, theme, blankTodo, true);
         });
 
     PluginRegistry registry(std::filesystem::current_path());
