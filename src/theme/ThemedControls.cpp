@@ -85,6 +85,7 @@ struct ControlState {
     bool selectAllOnFocus = false;
     bool richEdit = false;
     bool transparentBackground = false;
+    bool editInheritsSurface = false;
     UINT dpi = 0;
     HFONT ownedFont = nullptr;
     std::optional<TablerIconManifest::Id> buttonTablerIcon;
@@ -354,6 +355,55 @@ void FillThemedRect(HDC dc, RECT rect, COLORREF fill) {
         return;
     }
     ThemedGdiFallback::FillSolidRect(dc, rect, fill);
+}
+
+bool PaintInheritedEditSurface(HWND hwnd, HDC dc, bool includeText) {
+    const auto state = FindState(hwnd);
+    if (!hwnd || !dc || !state || !state->theme || !state->editInheritsSurface) {
+        return false;
+    }
+    RECT rect{};
+    if (!GetClientRect(hwnd, &rect)) {
+        return false;
+    }
+    const Theme& theme = *state->theme;
+    FillThemedRect(dc, rect, ToColorRef(theme.color(BackgroundComponent(hwnd), L"normal", L"bg")));
+    if (!includeText) {
+        return true;
+    }
+    const std::wstring text = ControlText(hwnd);
+    if (text.empty()) {
+        return true;
+    }
+    RECT textRect = rect;
+    const int paddingX = ScaledMetric(hwnd, theme, L"edit", L"paddingX", 9.0f);
+    textRect.left += paddingX;
+    textRect.right -= paddingX;
+    const DWORD style = static_cast<DWORD>(GetWindowLongPtrW(hwnd, GWL_STYLE));
+    UINT format = DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX;
+    if ((style & ES_CENTER) == ES_CENTER) {
+        format |= DT_CENTER;
+    } else if ((style & ES_RIGHT) == ES_RIGHT) {
+        format |= DT_RIGHT;
+    } else {
+        format |= DT_LEFT;
+    }
+    SetBkMode(dc, TRANSPARENT);
+    SetTextColor(dc, ToColorRef(theme.color(L"edit", IsWindowEnabled(hwnd) ? L"normal" : L"disabled", L"text")));
+    HFONT font = reinterpret_cast<HFONT>(SendMessageW(hwnd, WM_GETFONT, 0, 0));
+    HGDIOBJ oldFont = font ? SelectObject(dc, font) : nullptr;
+    DrawThemedText(
+        dc,
+        font,
+        text.c_str(),
+        static_cast<int>(text.size()),
+        textRect,
+        format,
+        GetTextColor(dc));
+    if (oldFont) {
+        SelectObject(dc, oldFont);
+    }
+    return true;
 }
 
 void FillThemedEllipse(HDC dc, RECT rect, COLORREF fill, COLORREF border, int borderWidth) {
@@ -1287,6 +1337,10 @@ LRESULT CALLBACK ThemedControlProc(HWND hwnd, UINT message, WPARAM wParam, LPARA
         }
         break;
     case WM_ERASEBKGND:
+        if (KindFor(hwnd) == ControlKind::Edit &&
+            PaintInheritedEditSurface(hwnd, reinterpret_cast<HDC>(wParam), false)) {
+            return 1;
+        }
         if (KindFor(hwnd) == ControlKind::Label || KindFor(hwnd) == ControlKind::StatusBadge ||
             KindFor(hwnd) == ControlKind::StatusText || KindFor(hwnd) == ControlKind::TimeDisplay) {
             return 1;
@@ -1347,6 +1401,10 @@ LRESULT CALLBACK ThemedControlProc(HWND hwnd, UINT message, WPARAM wParam, LPARA
         ControlKind kind = KindFor(hwnd);
         if (IsOwnerDrawButtonKind(kind)) {
             return DefSubclassProc(hwnd, message, wParam, lParam);
+        }
+        if (kind == ControlKind::Edit &&
+            PaintInheritedEditSurface(hwnd, reinterpret_cast<HDC>(wParam), true)) {
+            return 0;
         }
         if (kind == ControlKind::Label || kind == ControlKind::StatusBadge ||
             kind == ControlKind::StatusText || kind == ControlKind::TimeDisplay) {
@@ -1448,6 +1506,15 @@ LRESULT CALLBACK ThemedControlProc(HWND hwnd, UINT message, WPARAM wParam, LPARA
                 if (state && state->selectAllOnFocus) {
                     SendMessageW(hwnd, EM_SETSEL, 0, -1);
                 }
+            } else {
+                DWORD selectionStart = 0;
+                DWORD selectionEnd = 0;
+                SendMessageW(
+                    hwnd,
+                    EM_GETSEL,
+                    reinterpret_cast<WPARAM>(&selectionStart),
+                    reinterpret_cast<LPARAM>(&selectionEnd));
+                SendMessageW(hwnd, EM_SETSEL, selectionEnd, selectionEnd);
             }
             if (!HasDedicatedEditFrame(hwnd)) {
                 InvalidateParentAround(hwnd);
@@ -3538,7 +3605,22 @@ const wchar_t* ControlBackgroundComponent(HWND hwnd) {
     if (!state || state->backgroundComponent.empty()) {
         return L"dialog";
     }
-    return state->backgroundComponent.c_str();
+    thread_local std::wstring component;
+    component = state->backgroundComponent;
+    return component.c_str();
+}
+
+void SetEditInheritsSurface(HWND hwnd, bool inheritsSurface) {
+    if (!hwnd) {
+        return;
+    }
+    StateFor(hwnd).editInheritsSurface = inheritsSurface;
+    InvalidateRect(hwnd, nullptr, TRUE);
+}
+
+bool EditInheritsSurface(HWND hwnd) {
+    auto state = FindState(hwnd);
+    return state && state->editInheritsSurface;
 }
 
 void SetControlMultiline(HWND hwnd, bool multiline) {
@@ -3985,15 +4067,18 @@ void DrawFieldFrame(const Theme& theme, HDC dc, RECT rect, HWND child, bool read
     const bool focused = child && GetFocus() == child;
     const bool hover = child && IsHover(child);
     const wchar_t* component = readOnly ? L"field" : L"edit";
+    const bool inheritSurface = !readOnly && child && EditInheritsSurface(child);
     const wchar_t* borderState =
         disabled ? L"disabled" : (error ? L"error" : (focused ? L"focused" : (hover ? L"hover" : (readOnly ? L"readonly" : L"normal"))));
     const wchar_t* fillState =
-        disabled ? L"disabled" : (error ? L"error" : (readOnly ? L"readonly" : (focused ? L"focused" : (hover ? L"hover" : L"normal"))));
+        inheritSurface ? L"normal" :
+        (disabled ? L"disabled" : (error ? L"error" : (readOnly ? L"readonly" : (focused ? L"focused" : (hover ? L"hover" : L"normal")))));
+    const wchar_t* fillComponent = inheritSurface ? ControlBackgroundComponent(child) : component;
     FillRoundRect(
         dc,
         rect,
         RenderMetric(theme, component, L"radius", 7.0f),
-        ToColorRef(theme.color(component, fillState, L"bg")),
+        ToColorRef(theme.color(fillComponent, fillState, L"bg")),
         ToColorRef(theme.color(component, borderState, L"border")),
         RenderMetric(theme, component, L"borderWidth", 1.0f));
 }
@@ -4004,11 +4089,14 @@ void DrawEditFrame(const Theme& theme, HDC dc, RECT rect, HWND child, bool readO
     const bool focused = child && GetFocus() == child;
     const bool hover = child && IsHover(child);
     const wchar_t* state = disabled ? L"disabled" : (error ? L"error" : (focused ? L"focused" : (hover ? L"hover" : (readOnly ? L"readonly" : L"normal"))));
+    const bool inheritSurface = child && EditInheritsSurface(child);
+    const wchar_t* fillComponent = inheritSurface ? ControlBackgroundComponent(child) : L"edit";
+    const wchar_t* fillState = inheritSurface ? L"normal" : state;
     FillRoundRect(
         dc,
         rect,
         RenderMetric(theme, L"edit", L"radius", 7.0f),
-        ToColorRef(theme.color(L"edit", state, L"bg")),
+        ToColorRef(theme.color(fillComponent, fillState, L"bg")),
         ToColorRef(theme.color(L"edit", state, L"border")),
         RenderMetric(theme, L"edit", L"borderWidth", 1.0f));
 }

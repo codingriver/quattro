@@ -593,6 +593,13 @@ enum class ThemedEditContent {
     Password,
 };
 
+enum class ThemedEditBackgroundMode {
+    Auto,
+    InheritSurface,
+    EditSurface,
+    FieldSurface,
+};
+
 struct ThemedEditOptions {
     ThemedEditMode mode = ThemedEditMode::SingleLine;
     ThemedEditContent content = ThemedEditContent::Text;
@@ -611,6 +618,8 @@ struct ThemedEditOptions {
     bool tabStop = true;
     ThemedSelectableTextRole selectableRole = ThemedSelectableTextRole::FieldLike;
     ThemedStatusRole statusRole = ThemedStatusRole::Normal;
+    ThemedControlSurface surface = ThemedControlSurface::Dialog;
+    ThemedEditBackgroundMode backgroundMode = ThemedEditBackgroundMode::Auto;
 };
 
 struct ThemedReadOnlyTextOptions {

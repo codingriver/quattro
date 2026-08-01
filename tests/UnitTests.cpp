@@ -2592,12 +2592,16 @@ int wmain() {
     editOptions.selectAllOnFocus = true;
     editOptions.maxLength = 128;
     editOptions.placeholder = L"unit placeholder";
+    editOptions.surface = ThemedControlSurface::GroupBox;
+    editOptions.backgroundMode = ThemedEditBackgroundMode::Auto;
     Check(editOptions.mode == ThemedEditMode::MultiLine, "Themed edit mode composes with other options");
     Check(editOptions.acceptsReturn, "Multiline themed edits accept return by default");
     Check(!editOptions.showVerticalScrollBar, "Plain multiline themed edits do not show a vertical scrollbar by default");
     Check(editOptions.content == ThemedEditContent::Password, "Themed edit content composes with mode");
     Check(editOptions.readOnly && !editOptions.enabled && editOptions.error, "Themed edit state options compose");
     Check(editOptions.selectAllOnFocus && editOptions.maxLength == 128 && !editOptions.placeholder.empty(), "Themed edit behavior options compose");
+    Check(editOptions.surface == ThemedControlSurface::GroupBox && editOptions.backgroundMode == ThemedEditBackgroundMode::Auto,
+        "Themed edit background semantics compose with control surface");
     ThemedLabelOptions labelOptions{};
     labelOptions.align = ThemedTextAlign::End;
     Check(labelOptions.align == ThemedTextAlign::End, "Themed label alignment is semantic");
@@ -2765,6 +2769,37 @@ int wmain() {
             GetModuleHandleW(nullptr), controlParent, fallbackTheme,
             reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT)),
             DialogLayoutKind::Compact, 320, 200);
+        const auto checkSelectionClearsOnBlur = [&](HWND edit, const char* description) {
+            Check(edit != nullptr, description);
+            if (!edit) {
+                return;
+            }
+            Check((GetWindowLongPtrW(edit, GWL_STYLE) & ES_NOHIDESEL) == 0,
+                "Themed edit does not request persistent selection highlighting");
+            SendMessageW(edit, EM_SETSEL, 1, 4);
+            SendMessageW(edit, WM_KILLFOCUS, 0, 0);
+            DWORD selectionStart = 0;
+            DWORD selectionEnd = 0;
+            SendMessageW(
+                edit,
+                EM_GETSEL,
+                reinterpret_cast<WPARAM>(&selectionStart),
+                reinterpret_cast<LPARAM>(&selectionEnd));
+            Check(selectionStart == selectionEnd,
+                "Themed edit collapses its selection when focus is lost");
+        };
+        HWND selectionEdit = controlUi.Edit(
+            7096, RECT{100, 8, 220, 36}, L"editable text");
+        HWND selectionField = controlUi.SelectableFieldText(
+            7097, RECT{100, 40, 220, 68}, L"read-only field");
+        HWND selectionDetail = controlUi.DetailText(
+            7098, RECT{100, 72, 260, 132}, L"read-only detail text");
+        checkSelectionClearsOnBlur(selectionEdit,
+            "Themed editable text selection test control created");
+        checkSelectionClearsOnBlur(selectionField,
+            "SelectableFieldText selection test control created");
+        checkSelectionClearsOnBlur(selectionDetail,
+            "DetailText selection test control created");
         TestTooltipRegistry tooltipRegistry;
         ThemedUi tooltipUi(
             GetModuleHandleW(nullptr), controlParent, fallbackTheme,

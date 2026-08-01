@@ -421,7 +421,14 @@ BitmapCapture CaptureWindowBitmap(HWND hwnd) {
         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
     RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
     Sleep(120);
-    BOOL printed = PrintWindow(hwnd, dc, 0x00000002);
+    const std::wstring className = ClassName(hwnd);
+    BOOL printed = FALSE;
+    if (className == L"QuattroThemedEditFrame") {
+        SendMessageW(hwnd, WM_PRINTCLIENT, reinterpret_cast<WPARAM>(dc), PRF_CLIENT | PRF_ERASEBKGND);
+        printed = TRUE;
+    } else {
+        printed = PrintWindow(hwnd, dc, 0x00000002);
+    }
     if (!printed) {
         SelectObject(dc, old);
         DeleteDC(dc);
@@ -516,7 +523,16 @@ BitmapCapture CaptureClientBitmapWithChildren(HWND hwnd) {
         BOOL childDrawn = FALSE;
         wchar_t childClass[64]{};
         GetClassNameW(child, childClass, static_cast<int>(std::size(childClass)));
-        if (childDc && childBitmap && childOld && wcscmp(childClass, L"Button") == 0) {
+        const std::wstring childClassName = childClass;
+        if (childDc && childBitmap && childOld &&
+            IsEditLikeClass(childClassName) && ThemedControls::EditInheritsSurface(child)) {
+            SendMessageW(
+                child,
+                WM_PRINTCLIENT,
+                reinterpret_cast<WPARAM>(childDc),
+                PRF_CLIENT | PRF_ERASEBKGND);
+            childDrawn = TRUE;
+        } else if (childDc && childBitmap && childOld && wcscmp(childClass, L"Button") == 0) {
             DRAWITEMSTRUCT draw{};
             draw.CtlType = ODT_BUTTON;
             draw.CtlID = static_cast<UINT>(GetDlgCtrlID(child));
@@ -1573,6 +1589,68 @@ void ValidateAndCapture(HWND hwnd, const Scenario& scenario, const std::filesyst
                 state.Check(
                     whiteRatio < 0.35,
                     scenario.name + L": selectable label still paints an independent white background, class=" + label->className + L", whitePixels=" + std::to_wstring(whitePixels) + L"/" + std::to_wstring(total) + L": " + labelText);
+                if (label->className == L"QuattroSelectableText") {
+                    RECT labelClient{};
+                    GetClientRect(label->hwnd, &labelClient);
+                    const LPARAM clickPoint = MAKELPARAM(
+                        (labelClient.right - labelClient.left) / 2,
+                        (labelClient.bottom - labelClient.top) / 2);
+                    SendMessageW(label->hwnd, WM_LBUTTONDOWN, MK_LBUTTON, clickPoint);
+                    SendMessageW(label->hwnd, WM_LBUTTONUP, 0, clickPoint);
+                    BitmapCapture focusedCapture = CaptureClientBitmapWithChildren(hwnd);
+                    state.Check(focusedCapture.bitmap != nullptr, scenario.name + L": focused selectable label capture failed: " + labelText);
+                    if (focusedCapture.bitmap) {
+                        const RECT topEdge{labelRect.left, labelRect.top, labelRect.right, labelRect.top + 1};
+                        const RECT bottomEdge{labelRect.left, labelRect.bottom - 1, labelRect.right, labelRect.bottom};
+                        const RECT leftEdge{labelRect.left, labelRect.top, labelRect.left + 1, labelRect.bottom};
+                        const RECT rightEdge{labelRect.right - 1, labelRect.top, labelRect.right, labelRect.bottom};
+                        const std::size_t focusEdgePixels =
+                            CountPixelsNearColor(focusedCapture.bitmap, focusedCapture.width, focusedCapture.height, topEdge, RGB(0, 0, 0), 48) +
+                            CountPixelsNearColor(focusedCapture.bitmap, focusedCapture.width, focusedCapture.height, bottomEdge, RGB(0, 0, 0), 48) +
+                            CountPixelsNearColor(focusedCapture.bitmap, focusedCapture.width, focusedCapture.height, leftEdge, RGB(0, 0, 0), 48) +
+                            CountPixelsNearColor(focusedCapture.bitmap, focusedCapture.width, focusedCapture.height, rightEdge, RGB(0, 0, 0), 48);
+                        const std::size_t focusEdgeLimit = std::max<std::size_t>(6, static_cast<std::size_t>(width + height) / 12);
+                        state.Check(
+                            focusEdgePixels <= focusEdgeLimit,
+                            scenario.name + L": selectable label paints a dotted focus rectangle after click: " + labelText);
+                        DeleteObject(focusedCapture.bitmap);
+                    }
+
+                    SendMessageW(label->hwnd, WM_LBUTTONDBLCLK, MK_LBUTTON, clickPoint);
+                    BitmapCapture selectedCapture = CaptureClientBitmapWithChildren(hwnd);
+                    state.Check(selectedCapture.bitmap != nullptr, scenario.name + L": selected label capture failed: " + labelText);
+                    std::size_t selectedHighlightPixels = 0;
+                    if (selectedCapture.bitmap) {
+                        selectedHighlightPixels = CountPixelsNearColor(
+                            selectedCapture.bitmap,
+                            selectedCapture.width,
+                            selectedCapture.height,
+                            labelRect,
+                            GetSysColor(COLOR_HIGHLIGHT),
+                            4);
+                        state.Check(
+                            selectedHighlightPixels > 0,
+                            scenario.name + L": selectable label did not render selection highlight before blur: " + labelText);
+                        DeleteObject(selectedCapture.bitmap);
+                    }
+
+                    SendMessageW(label->hwnd, WM_KILLFOCUS, 0, 0);
+                    BitmapCapture blurredCapture = CaptureClientBitmapWithChildren(hwnd);
+                    state.Check(blurredCapture.bitmap != nullptr, scenario.name + L": blurred label capture failed: " + labelText);
+                    if (blurredCapture.bitmap) {
+                        const std::size_t blurredHighlightPixels = CountPixelsNearColor(
+                            blurredCapture.bitmap,
+                            blurredCapture.width,
+                            blurredCapture.height,
+                            labelRect,
+                            GetSysColor(COLOR_HIGHLIGHT),
+                            4);
+                        state.Check(
+                            blurredHighlightPixels < selectedHighlightPixels,
+                            scenario.name + L": selectable label retains selection highlight after blur: " + labelText);
+                        DeleteObject(blurredCapture.bitmap);
+                    }
+                }
             }
             DeleteObject(labelCapture.bitmap);
         }
@@ -2581,7 +2659,12 @@ struct InputBackgroundHostWindow {
     HINSTANCE instance_ = nullptr;
     HWND hwnd_ = nullptr;
     HWND singleLine_ = nullptr;
+    HWND emptySingleLine_ = nullptr;
+    HWND groupBox_ = nullptr;
+    HWND groupSingleLine_ = nullptr;
     HWND multiLine_ = nullptr;
+    RECT emptySingleFrame_{};
+    RECT groupSingleFrame_{};
     Theme theme_;
     std::unique_ptr<ThemedWindowUi> windowUi_;
 
@@ -2605,7 +2688,7 @@ struct InputBackgroundHostWindow {
         }
         if (message == WM_CREATE) {
             windowUi_ = std::make_unique<ThemedWindowUi>(
-                instance_, nullptr, hwnd_, theme_, DialogLayoutKind::Compact, 380, 190);
+                instance_, nullptr, hwnd_, theme_, DialogLayoutKind::Compact, 380, 260);
             const ThemedUi ui = windowUi_->ui();
             const int left = ui.scale(24);
             const int right = ui.scale(356);
@@ -2618,23 +2701,48 @@ struct InputBackgroundHostWindow {
                 L"Ag 输入框居中",
                 singleOptions);
 
+            emptySingleFrame_ = RECT{left, ui.scale(62), right, ui.scale(62) + ui.editHeight()};
+            emptySingleLine_ = ui.Edit(703, emptySingleFrame_, L"", singleOptions);
+
+            groupBox_ = ui.GroupBox(
+                704,
+                L"容器背景",
+                RECT{left, ui.scale(102), right, ui.scale(164)});
+            if (groupBox_) {
+                RECT content = ThemedUi::GroupContentRect(groupBox_);
+                RECT groupRect{};
+                GetWindowRect(groupBox_, &groupRect);
+                MapWindowPoints(HWND_DESKTOP, hwnd_, reinterpret_cast<POINT*>(&groupRect), 2);
+                OffsetRect(&content, groupRect.left, groupRect.top);
+                groupSingleFrame_ = RECT{content.left, content.top, content.right, content.top + ui.editHeight()};
+                groupSingleLine_ = ui.Edit(705, groupSingleFrame_, L"", singleOptions);
+                ui.BindGroupChildren(groupBox_, {groupSingleLine_});
+            }
+
             ThemedEditOptions multiOptions{};
             multiOptions.mode = ThemedEditMode::MultiLine;
             multiOptions.placeholder = L"";
             multiOptions.wrap = true;
             multiLine_ = ui.Edit(
                 702,
-                RECT{left, ui.scale(72), right, ui.scale(154)},
+                RECT{left, ui.scale(184), right, ui.scale(250)},
                 L"",
                 multiOptions);
             return 0;
         }
-        if (message == WM_PAINT) {
+        if (message == WM_PAINT || message == WM_PRINTCLIENT) {
+            HDC dc = nullptr;
             PAINTSTRUCT ps{};
-            HDC dc = BeginPaint(hwnd_, &ps);
+            if (message == WM_PAINT) {
+                dc = BeginPaint(hwnd_, &ps);
+            } else {
+                dc = reinterpret_cast<HDC>(wParam);
+            }
             windowUi_->FillBackground(dc);
             windowUi_->DrawRegisteredEditFrames(dc);
-            EndPaint(hwnd_, &ps);
+            if (message == WM_PAINT) {
+                EndPaint(hwnd_, &ps);
+            }
             return 0;
         }
         return DefWindowProcW(hwnd_, message, wParam, lParam);
@@ -2667,16 +2775,25 @@ void RunInputBackgroundScenario(const std::filesystem::path& outputDir, TestStat
         180,
         180,
         ThemedWindowUi::ScaleForDpi(420, dpi),
-        ThemedWindowUi::ScaleForDpi(240, dpi),
+        ThemedWindowUi::ScaleForDpi(320, dpi),
         nullptr,
         nullptr,
         instance,
         &host);
-    if (!hwnd || !host.singleLine_ || !host.multiLine_) {
+    if (!hwnd || !host.singleLine_ || !host.emptySingleLine_ || !host.groupSingleLine_ || !host.multiLine_) {
         state.Check(false, scenarioName + L": host or edit controls creation failed");
         if (hwnd) DestroyWindow(hwnd);
         return;
     }
+    state.Check(
+        ThemedControls::EditInheritsSurface(host.emptySingleLine_),
+        scenarioName + L": empty single-line Edit did not receive inherited-surface semantics");
+    state.Check(
+        ThemedControls::EditInheritsSurface(host.groupSingleLine_),
+        scenarioName + L": group single-line Edit did not receive inherited-surface semantics");
+    state.Check(
+        !ThemedControls::EditInheritsSurface(host.multiLine_),
+        scenarioName + L": multiline Edit should not inherit surface by default");
     ShowWindow(hwnd, SW_SHOWNOACTIVATE);
     SetWindowPos(
         hwnd, HWND_BOTTOM, 0, 0, 0, 0,
@@ -2690,7 +2807,7 @@ void RunInputBackgroundScenario(const std::filesystem::path& outputDir, TestStat
         scenarioName + L".png",
         {},
         {},
-        2,
+        4,
         0,
         false,
         false,
@@ -2698,6 +2815,77 @@ void RunInputBackgroundScenario(const std::filesystem::path& outputDir, TestStat
     scenario.forcedDpi = dpi;
     scenario.requireThemedEditFrames = true;
     ValidateAndCapture(hwnd, scenario, outputDir, state);
+
+    BitmapCapture composite = CaptureWindowBitmap(hwnd);
+    state.Check(composite.bitmap != nullptr, scenarioName + L": inherited input background capture failed");
+    if (composite.bitmap) {
+        RECT windowRect{};
+        GetWindowRect(hwnd, &windowRect);
+        const int effectiveDpi = static_cast<int>(dpi ? dpi : USER_DEFAULT_SCREEN_DPI);
+        const int samplePad = std::max(8, MulDiv(10, effectiveDpi, USER_DEFAULT_SCREEN_DPI));
+        const int sampleBand = std::max(4, MulDiv(6, effectiveDpi, USER_DEFAULT_SCREEN_DPI));
+        auto checkInherited = [&](HWND edit, const std::wstring& label) {
+            RECT frame{};
+            GetWindowRect(edit, &frame);
+            OffsetRect(&frame, -windowRect.left, -windowRect.top);
+            const LONG frameWidth = std::max<LONG>(1, frame.right - frame.left);
+            const LONG frameHeight = std::max<LONG>(1, frame.bottom - frame.top);
+            const LONG inputBandX = std::min<LONG>(sampleBand, std::max<LONG>(2, frameWidth / 6));
+            const LONG inputBandY = std::min<LONG>(sampleBand, std::max<LONG>(2, frameHeight / 3));
+            const LONG centerX = frame.left + frameWidth / 2;
+            const LONG centerY = frame.top + frameHeight / 2;
+            RECT inputSample{
+                centerX - inputBandX,
+                centerY - inputBandY,
+                centerX + inputBandX,
+                centerY + inputBandY};
+            const COLORREF inputColor = AverageBitmapAreaColor(
+                composite.bitmap, composite.width, composite.height, inputSample, 1);
+            int bestDistance = 1000000;
+            auto considerSurface = [&](RECT surfaceSample) {
+                if (surfaceSample.right <= surfaceSample.left ||
+                    surfaceSample.bottom <= surfaceSample.top ||
+                    surfaceSample.left < 0 ||
+                    surfaceSample.top < 0 ||
+                    surfaceSample.right > composite.width ||
+                    surfaceSample.bottom > composite.height) {
+                    return;
+                }
+                const COLORREF surfaceColor = AverageBitmapAreaColor(
+                    composite.bitmap, composite.width, composite.height, surfaceSample, 1);
+                if (inputColor != CLR_INVALID && surfaceColor != CLR_INVALID) {
+                    bestDistance = std::min(bestDistance, ColorDistance(inputColor, surfaceColor));
+                }
+            };
+            considerSurface(RECT{
+                frame.left + samplePad,
+                frame.bottom + 1,
+                frame.right - samplePad,
+                frame.bottom + 1 + sampleBand});
+            considerSurface(RECT{
+                frame.left + samplePad,
+                frame.top - 1 - sampleBand,
+                frame.right - samplePad,
+                frame.top - 1});
+            considerSurface(RECT{
+                frame.left - sampleBand,
+                frame.top + samplePad,
+                frame.left - 1,
+                frame.bottom - samplePad});
+            considerSurface(RECT{
+                frame.right + 1,
+                frame.top + samplePad,
+                frame.right + 1 + sampleBand,
+                frame.bottom - samplePad});
+            state.Check(
+                inputColor != CLR_INVALID && bestDistance <= 28,
+                scenarioName + L": single-line Edit background does not inherit its container surface: " + label);
+        };
+        checkInherited(host.emptySingleLine_, L"dialog");
+        checkInherited(host.groupSingleLine_, L"groupbox");
+        DeleteObject(composite.bitmap);
+    }
+
     DestroyWindow(hwnd);
     AcceptanceLog(L"end " + scenarioName);
 }

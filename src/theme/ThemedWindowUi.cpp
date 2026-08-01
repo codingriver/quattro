@@ -1334,7 +1334,8 @@ bool ThemedWindowUi::PaintTransparentEditBackground(HWND child, HDC dc) const {
         return false;
     }
     const EditFrame* editFrame = FindEditFrame(child);
-    if (!editFrame || !editFrame->options.transparentBackground) {
+    if (!editFrame ||
+        (!editFrame->options.transparentBackground && !ThemedControls::EditInheritsSurface(child))) {
         return false;
     }
     RECT rect{};
@@ -1368,7 +1369,8 @@ void ThemedWindowUi::PaintTransparentEdit(HWND child, HDC dc) const {
         return;
     }
     const EditFrame* editFrame = FindEditFrame(child);
-    if (!editFrame || !editFrame->options.transparentBackground) {
+    if (!editFrame ||
+        (!editFrame->options.transparentBackground && !ThemedControls::EditInheritsSurface(child))) {
         return;
     }
     RECT rect{};
@@ -1579,6 +1581,13 @@ LRESULT CALLBACK ThemedWindowUi::EditFrameProc(HWND hwnd, UINT message, WPARAM w
             return 0;
         }
         break;
+    case WM_PRINTCLIENT:
+    case WM_PRINT:
+        if (ui) {
+            ui->PaintEditFrameWindow(hwnd, reinterpret_cast<HDC>(wParam));
+            return 0;
+        }
+        break;
     case WM_LBUTTONDOWN:
         if (ui) {
             if (EditFrame* editFrame = ui->FindEditFrameWindow(hwnd)) {
@@ -1651,25 +1660,28 @@ LRESULT CALLBACK ThemedWindowUi::EditChildProc(
         return result;
     }
     if (ui) {
-        if (EditFrame* editFrame = ui->FindEditFrame(hwnd);
-            editFrame && editFrame->options.transparentBackground) {
-            if (message == WM_ERASEBKGND) {
-                return ui->PaintTransparentEditBackground(hwnd, reinterpret_cast<HDC>(wParam)) ? 1 : 0;
-            }
-            if (message == WM_PAINT) {
-                PAINTSTRUCT ps{};
-                HDC dc = BeginPaint(hwnd, &ps);
-                ui->PaintTransparentEdit(hwnd, dc);
-                EndPaint(hwnd, &ps);
-                return 0;
-            }
-            if (message == WM_PRINTCLIENT) {
-                ui->PaintTransparentEdit(hwnd, reinterpret_cast<HDC>(wParam));
-                return 0;
-            }
-            if (message == WM_PRINT) {
-                ui->PaintTransparentEdit(hwnd, reinterpret_cast<HDC>(wParam));
-                return 0;
+        if (EditFrame* editFrame = ui->FindEditFrame(hwnd)) {
+            const bool transparentBackground = editFrame->options.transparentBackground;
+            const bool inheritSurface = ThemedControls::EditInheritsSurface(hwnd);
+            if (transparentBackground || inheritSurface) {
+                if (message == WM_ERASEBKGND) {
+                    return ui->PaintTransparentEditBackground(hwnd, reinterpret_cast<HDC>(wParam)) ? 1 : 0;
+                }
+                if (transparentBackground && message == WM_PAINT) {
+                    PAINTSTRUCT ps{};
+                    HDC dc = BeginPaint(hwnd, &ps);
+                    ui->PaintTransparentEdit(hwnd, dc);
+                    EndPaint(hwnd, &ps);
+                    return 0;
+                }
+                if (message == WM_PRINTCLIENT) {
+                    ui->PaintTransparentEdit(hwnd, reinterpret_cast<HDC>(wParam));
+                    return 0;
+                }
+                if (message == WM_PRINT) {
+                    ui->PaintTransparentEdit(hwnd, reinterpret_cast<HDC>(wParam));
+                    return 0;
+                }
             }
         }
     }
@@ -1881,11 +1893,14 @@ HBRUSH ThemedWindowUi::ApplyEditColors(HDC dc, HWND child) {
     const bool fieldLike = editFrame &&
         editFrame->options.readOnly &&
         UsesFieldFrame(editFrame->options.selectableRole);
-    const wchar_t* backgroundComponent = editFrame && editFrame->options.transparentBackground
+    const bool inheritSurface = editFrame && ThemedControls::EditInheritsSurface(child);
+    const wchar_t* backgroundComponent = inheritSurface
         ? ThemedControls::ControlBackgroundComponent(child)
-        : (fieldLike ? L"field" : L"edit");
-    const wchar_t* backgroundState = editFrame && editFrame->options.transparentBackground ? L"normal" : state;
-    if (editFrame && UsesFieldFrame(editFrame->options.selectableRole) && !editFrame->options.transparentBackground) {
+        : (editFrame && editFrame->options.transparentBackground
+        ? ThemedControls::ControlBackgroundComponent(child)
+        : (fieldLike ? L"field" : L"edit"));
+    const wchar_t* backgroundState = (inheritSurface || (editFrame && editFrame->options.transparentBackground)) ? L"normal" : state;
+    if (fieldLike && !inheritSurface && editFrame && !editFrame->options.transparentBackground) {
         backgroundState = IsWindowEnabled(child) ? L"readonly" : L"disabled";
     }
     const COLORREF background = ToColorRef(theme_.color(backgroundComponent, backgroundState, L"bg"));

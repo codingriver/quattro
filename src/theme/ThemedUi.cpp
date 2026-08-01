@@ -68,6 +68,7 @@ struct SelectableTextRuntime {
     ThemedControlSurface surface = ThemedControlSurface::Dialog;
     ThemedTextAlign align = ThemedTextAlign::Start;
     bool wrap = false;
+    bool showFocusRect = false;
     bool selecting = false;
     std::size_t anchor = 0;
     std::size_t caret = 0;
@@ -85,6 +86,19 @@ const wchar_t* SurfaceComponent(ThemedControlSurface surface) {
     case ThemedControlSurface::Dialog:
     default: return L"dialog";
     }
+}
+
+ThemedEditBackgroundMode EffectiveEditBackgroundMode(const ThemedEditOptions& options) {
+    if (options.backgroundMode != ThemedEditBackgroundMode::Auto) {
+        return options.backgroundMode;
+    }
+    if (options.mode == ThemedEditMode::SingleLine && !options.readOnly) {
+        return ThemedEditBackgroundMode::InheritSurface;
+    }
+    if (options.readOnly) {
+        return ThemedEditBackgroundMode::FieldSurface;
+    }
+    return ThemedEditBackgroundMode::EditSurface;
 }
 
 std::wstring HwndText(HWND hwnd) {
@@ -172,6 +186,14 @@ void SelectableTextSelectAll(HWND hwnd) {
     InvalidateRect(hwnd, nullptr, FALSE);
 }
 
+void SelectableTextClearSelection(HWND hwnd) {
+    auto it = SelectableTextStates().find(hwnd);
+    if (it == SelectableTextStates().end()) return;
+    it->second.selecting = false;
+    it->second.anchor = it->second.caret;
+    InvalidateRect(hwnd, nullptr, FALSE);
+}
+
 void PaintSelectableText(HWND hwnd, HDC dc) {
     auto it = SelectableTextStates().find(hwnd);
     if (it == SelectableTextStates().end() || !it->second.theme) return;
@@ -229,7 +251,7 @@ void PaintSelectableText(HWND hwnd, HDC dc) {
         else format |= DT_LEFT;
         DrawTextW(dc, text.c_str(), static_cast<int>(text.size()), &rect, format);
     }
-    if (GetFocus() == hwnd) {
+    if (runtime.showFocusRect && GetFocus() == hwnd) {
         DrawFocusRect(dc, &rect);
     }
     if (oldFont) SelectObject(dc, oldFont);
@@ -330,8 +352,10 @@ LRESULT CALLBACK SelectableTextProc(HWND hwnd, UINT message, WPARAM wParam, LPAR
         return 0;
     }
     case WM_SETFOCUS:
-    case WM_KILLFOCUS:
         InvalidateRect(hwnd, nullptr, FALSE);
+        return 0;
+    case WM_KILLFOCUS:
+        SelectableTextClearSelection(hwnd);
         return 0;
     case WM_NCDESTROY:
         SelectableTextStates().erase(hwnd);
@@ -386,6 +410,9 @@ HWND CreateSelectableTextWindow(
     runtime.surface = options.surface;
     runtime.align = options.align;
     runtime.wrap = options.wrap || options.mode == ThemedEditMode::MultiLine;
+    runtime.showFocusRect = options.tabStop &&
+        options.role != ThemedSelectableTextRole::LabelLike &&
+        options.role != ThemedSelectableTextRole::StatusLike;
     SelectableTextStates()[hwnd] = runtime;
     return hwnd;
 }
@@ -3834,8 +3861,8 @@ void ThemedUi::HideToast() const {
 HWND ThemedUi::Edit(int id, RECT frame, const std::wstring& value, ThemedEditOptions options) const {
     const bool multiline = options.mode == ThemedEditMode::MultiLine;
     DWORD style = multiline
-        ? ES_MULTILINE | ES_AUTOVSCROLL | WS_CLIPSIBLINGS | ES_NOHIDESEL
-        : ES_AUTOHSCROLL | ES_NOHIDESEL;
+        ? ES_MULTILINE | ES_AUTOVSCROLL | WS_CLIPSIBLINGS
+        : ES_AUTOHSCROLL;
     if (multiline) {
         if (options.showVerticalScrollBar && options.showFrame) {
             style |= WS_VSCROLL;
@@ -3863,6 +3890,8 @@ HWND ThemedUi::Edit(int id, RECT frame, const std::wstring& value, ThemedEditOpt
         style |= ES_READONLY;
     }
 
+    const ThemedEditBackgroundMode backgroundMode = EffectiveEditBackgroundMode(options);
+    const bool inheritSurfaceBackground = backgroundMode == ThemedEditBackgroundMode::InheritSurface;
     const bool transparentSelectable = options.transparentBackground && options.readOnly && !options.showFrame &&
         !UsesFieldFrame(options.selectableRole);
     HWND hwnd = multiline
@@ -3873,6 +3902,8 @@ HWND ThemedUi::Edit(int id, RECT frame, const std::wstring& value, ThemedEditOpt
             instance_, parent_, id, theme_, frame, value, font_, style,
             !options.showFrame, options.tabStop, transparentSelectable);
     if (hwnd) {
+        SetControlSurface(hwnd, options.surface);
+        ThemedControls::SetEditInheritsSurface(hwnd, inheritSurfaceBackground);
         EnableWindow(hwnd, options.enabled ? TRUE : FALSE);
         ThemedControls::ConfigureEditBehavior(hwnd, options.selectAllOnFocus);
         if (options.maxLength > 0) {
@@ -3904,6 +3935,7 @@ HWND ThemedUi::ReadOnlyText(int id, RECT frame, const std::wstring& value, Theme
     editOptions.tabStop = options.tabStop;
     editOptions.selectableRole = options.selectableRole;
     editOptions.statusRole = options.statusRole;
+    editOptions.backgroundMode = ThemedEditBackgroundMode::FieldSurface;
     return Edit(id, frame, value, editOptions);
 }
 

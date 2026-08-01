@@ -797,6 +797,17 @@ private:
                 return 0;
             }
             break;
+        case WM_KILLFOCUS: {
+            DWORD selectionStart = 0;
+            DWORD selectionEnd = 0;
+            SendMessageW(
+                hwnd,
+                EM_GETSEL,
+                reinterpret_cast<WPARAM>(&selectionStart),
+                reinterpret_cast<LPARAM>(&selectionEnd));
+            SendMessageW(hwnd, EM_SETSEL, selectionEnd, selectionEnd);
+            break;
+        }
         case WM_NCDESTROY:
             RemoveWindowSubclass(hwnd, TextControlProc, subclassId);
             break;
@@ -815,7 +826,7 @@ private:
     }
 
     DWORD MessageTextStyle() const {
-        DWORD style = WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | ES_NOHIDESEL;
+        DWORD style = WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL;
         if (textNeedsScroll_) {
             style |= WS_VSCROLL;
         }
