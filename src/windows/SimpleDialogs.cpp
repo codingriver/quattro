@@ -4369,24 +4369,30 @@ private:
 
             const ThemedSectionGeometry contextMenuIntegrationSection = behaviorForm.section(
                 behaviorFrameLeft, pageTop, behaviorFrameWidth,
-                {behaviorForm.sectionRow({ThemedSectionItemKind::CheckBox}),
-                 behaviorForm.sectionRow({ThemedSectionItemKind::Text})});
+                {behaviorForm.sectionRow({ThemedSectionItemKind::CheckBox, ThemedSectionItemKind::Text})});
             HWND contextMenuIntegrationGroup = AddSectionFrame(
                 TabContextMenu, L"系统集成", contextMenuIntegrationSection.frame);
+            const std::wstring copyPathContextMenuText = L"注册“复制绝对路径”右键菜单";
+            const int copyPathContextMenuWidth = std::min(
+                behaviorContentWidth,
+                settingsUi.textWidth(copyPathContextMenuText) + settingsUi.checkBoxHeight()
+                    + behaviorLayout.controlGapX);
+            const int copyPathContextMenuStatusX =
+                behaviorLeft + copyPathContextMenuWidth + behaviorLayout.controlGapX;
             registerCopyPathContextMenu_ = CheckBox(
                 TabContextMenu,
                 ID_REGISTER_COPY_PATH_CONTEXT_MENU,
-                L"注册“复制绝对路径”右键菜单",
+                copyPathContextMenuText.c_str(),
                 behaviorLeft,
                 behaviorForm.sectionItemY(contextMenuIntegrationSection, 0, behaviorCheckHeight),
                 draft_.registerCopyPathContextMenu,
-                behaviorContentWidth);
+                copyPathContextMenuWidth);
             copyPathContextMenuStatus_ = StatusText(
                 TabContextMenu,
                 draft_.registerCopyPathContextMenu ? L"已注册；Quattro 未运行时也可使用。" : L"未注册。",
-                behaviorLeft,
-                behaviorForm.sectionItemY(contextMenuIntegrationSection, 1, settingsUi.labelHeight()),
-                behaviorContentWidth,
+                copyPathContextMenuStatusX,
+                behaviorForm.sectionItemY(contextMenuIntegrationSection, 0, settingsUi.labelHeight()),
+                std::max(0, behaviorFrameRight - groupInsets.right - copyPathContextMenuStatusX),
                 draft_.registerCopyPathContextMenu ? ThemedStatusRole::Success : ThemedStatusRole::Normal);
             ThemedUi::BindGroupChildren(
                 contextMenuIntegrationGroup, {registerCopyPathContextMenu_, copyPathContextMenuStatus_});
