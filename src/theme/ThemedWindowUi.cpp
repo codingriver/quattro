@@ -14,6 +14,7 @@
 namespace {
 constexpr const wchar_t* kEditFrameClassName = L"QuattroThemedEditFrame";
 constexpr const wchar_t* kTableFrameClassName = L"QuattroThemedTableFrame";
+constexpr const wchar_t* kDedicatedEditFrameProp = L"QuattroDedicatedThemedEditFrame";
 constexpr UINT_PTR kEditChildSubclassId = 0x51454652;
 constexpr UINT_PTR kTableChildSubclassId = 0x51544652;
 constexpr UINT_PTR kToastTimerId = 0x544f4153;
@@ -454,11 +455,6 @@ bool ThemedWindowUi::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam, L
         result = reinterpret_cast<LRESULT>(BrushForColor(background));
         return true;
     }
-    case WM_COMMAND:
-        if (HIWORD(wParam) == EN_SETFOCUS || HIWORD(wParam) == EN_KILLFOCUS || HIWORD(wParam) == EN_CHANGE) {
-            InvalidateEditFrame(reinterpret_cast<HWND>(lParam));
-        }
-        break;
     case WM_TIMER:
         if (wParam == kToastTimerId) {
             HideToast();
@@ -613,6 +609,11 @@ void ThemedWindowUi::RegisterEditFrame(HWND child, RECT frame, const ThemedEditO
     if (EditFrame* editFrame = FindEditFrame(child)) {
         editFrame->frame = frame;
         editFrame->options = options;
+        if (editFrame->frameWindow && IsWindow(editFrame->frameWindow)) {
+            SetPropW(child, kDedicatedEditFrameProp, reinterpret_cast<HANDLE>(static_cast<INT_PTR>(1)));
+        } else {
+            RemovePropW(child, kDedicatedEditFrameProp);
+        }
         LayoutEditFrameChild(*editFrame);
         SyncEditFrameWindow(*editFrame);
     } else {
@@ -632,6 +633,9 @@ void ThemedWindowUi::RegisterEditFrame(HWND child, RECT frame, const ThemedEditO
                 nullptr,
                 instance_,
                 this);
+        }
+        if (newFrame.frameWindow && IsWindow(newFrame.frameWindow)) {
+            SetPropW(child, kDedicatedEditFrameProp, reinterpret_cast<HANDLE>(static_cast<INT_PTR>(1)));
         }
         SetWindowSubclass(child, EditChildProc, kEditChildSubclassId, reinterpret_cast<DWORD_PTR>(this));
         LayoutEditFrameChild(newFrame);
@@ -688,6 +692,7 @@ void ThemedWindowUi::UnregisterTableFrame(HWND child) {
 void ThemedWindowUi::UnregisterEditFrame(HWND child) {
     EditFrame* editFrame = FindEditFrame(child);
     if (editFrame) {
+        RemovePropW(child, kDedicatedEditFrameProp);
         RemoveWindowSubclass(child, EditChildProc, kEditChildSubclassId);
         if (editFrame->frameWindow && IsWindow(editFrame->frameWindow)) {
             DestroyWindow(editFrame->frameWindow);
@@ -1696,9 +1701,11 @@ LRESULT CALLBACK ThemedWindowUi::EditChildProc(
                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE |
                             SWP_HIDEWINDOW | SWP_NOREDRAW);
                 }
-            } else if (message == WM_ENABLE || message == WM_SETFOCUS || message == WM_KILLFOCUS ||
-                       message == WM_MOUSEMOVE || message == WM_MOUSELEAVE) {
+            } else if (message == WM_ENABLE) {
                 ui->SyncEditFrameWindow(*editFrame);
+            } else if (message == WM_SETFOCUS || message == WM_KILLFOCUS ||
+                       message == WM_MOUSEMOVE || message == WM_MOUSELEAVE) {
+                ui->InvalidateEditFrame(hwnd);
             }
         }
     }

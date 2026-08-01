@@ -33,6 +33,7 @@ constexpr int kTabContainerStyleFramed = 1;
 constexpr int kTabContainerStyleBorderless = 2;
 constexpr UINT_PTR kProgressAnimationTimer = 1;
 constexpr UINT kProgressAnimationIntervalMs = 32;
+constexpr const wchar_t* kDedicatedEditFrameProp = L"QuattroDedicatedThemedEditFrame";
 HICON ButtonIcon(HWND hwnd) {
     return reinterpret_cast<HICON>(SendMessageW(hwnd, BM_GETIMAGE, IMAGE_ICON, 0));
 }
@@ -444,6 +445,10 @@ void InvalidateParentAround(HWND hwnd) {
     MapWindowPoints(HWND_DESKTOP, parent, reinterpret_cast<POINT*>(&rect), 2);
     InflateRect(&rect, 16, 16);
     InvalidateRect(parent, &rect, TRUE);
+}
+
+bool HasDedicatedEditFrame(HWND hwnd) {
+    return GetPropW(hwnd, kDedicatedEditFrameProp) != nullptr;
 }
 
 bool IsChecked(HWND hwnd) {
@@ -1390,7 +1395,7 @@ LRESULT CALLBACK ThemedControlProc(HWND hwnd, UINT message, WPARAM wParam, LPARA
             if (kind != ControlKind::Table) {
                 InvalidateRect(hwnd, nullptr, IsOwnerDrawButtonKind(kind) ? FALSE : TRUE);
             }
-            if (kind == ControlKind::Edit) {
+            if (kind == ControlKind::Edit && !HasDedicatedEditFrame(hwnd)) {
                 InvalidateParentAround(hwnd);
             }
         }
@@ -1426,7 +1431,7 @@ LRESULT CALLBACK ThemedControlProc(HWND hwnd, UINT message, WPARAM wParam, LPARA
             break;
         }
         InvalidateRect(hwnd, nullptr, IsOwnerDrawButtonKind(KindFor(hwnd)) ? FALSE : TRUE);
-        if (KindFor(hwnd) == ControlKind::Edit) {
+        if (KindFor(hwnd) == ControlKind::Edit && !HasDedicatedEditFrame(hwnd)) {
             InvalidateParentAround(hwnd);
         }
         break;
@@ -1444,7 +1449,9 @@ LRESULT CALLBACK ThemedControlProc(HWND hwnd, UINT message, WPARAM wParam, LPARA
                     SendMessageW(hwnd, EM_SETSEL, 0, -1);
                 }
             }
-            InvalidateParentAround(hwnd);
+            if (!HasDedicatedEditFrame(hwnd)) {
+                InvalidateParentAround(hwnd);
+            }
             break;
         }
         if (KindFor(hwnd) == ControlKind::ComboBox) {
