@@ -119,7 +119,6 @@ struct StartupSnapshotDiff {
 enum class AdBlockScanPhase {
     Validating,
     Enumerating,
-    IndexingStartup,
     Analyzing,
     Completed,
     Cancelled,
@@ -131,7 +130,6 @@ struct AdBlockScanProgress {
     std::size_t discoveredCandidates = 0;
     std::size_t checkedCandidates = 0;
     std::size_t totalCandidates = 0;
-    std::size_t autoStartMatches = 0;
     std::size_t inaccessibleDirectories = 0;
     std::size_t workerCount = 0;
 };
@@ -141,7 +139,6 @@ struct AdBlockScanResult {
     std::size_t enumeratedFiles = 0;
     std::size_t checkedCandidates = 0;
     std::size_t totalCandidates = 0;
-    std::size_t autoStartMatches = 0;
     std::size_t inaccessibleDirectories = 0;
     std::size_t workerCount = 0;
     bool directory = false;
@@ -209,7 +206,6 @@ struct AdBlockPlanItem {
     std::wstring riskLevel; // ok | warn | blocked
     std::wstring reason;
     bool willModifyIfeo = false;
-    bool willModifyStartupApproved = false;
     bool hasExistingIfeoDebugger = false;
 };
 
@@ -308,8 +304,8 @@ private:
     DisabledItemStore store_;
 };
 
-// 广告拦截（简化版）：对文件/文件夹内的可启动程序写 IFEO 禁止运行拦截。
-// 与「自启动管理」独立，使用单独的 blocked-items.json 存储。
+// 广告拦截：对文件/文件夹内的可启动程序写 IFEO 禁止运行拦截。
+// 使用单独的 blocked-items.json 存储，并保留旧记录的解除/修复能力。
 class AdBlockManager {
 public:
     AdBlockManager();
@@ -327,7 +323,7 @@ public:
         std::wstring fileOrDir,
         AdBlockScanOptions options = {},
         std::function<void()> completionCallback = {}) const;
-    // mode = L"exact"（精确路径）| L"name"（同名程序）| L"startup"（仅禁自启，系统开关）。
+    // mode = L"exact"（精确路径）| L"name"（同名程序）。
     AdBlockPlan BuildBlockPlan(const std::vector<std::wstring>& targetPaths, const std::wstring& mode) const;
     OperationResult Block(const std::wstring& targetPath, const std::wstring& mode) const;
     OperationResult Unblock(const std::wstring& recordId) const;
@@ -344,8 +340,5 @@ private:
         const AdBlockProgressCallback& reportProgress,
         AdBlockScanOptions options,
         ScanTaskContext& context) const;
-    // 启动拦截：禁用目标 exe 的所有开机自启动注册项（StartupApproved 系统开关）。
-    OperationResult BlockStartup(const std::wstring& targetExe) const;
-
     DisabledItemStore store_;
 };

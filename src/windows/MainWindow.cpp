@@ -5563,33 +5563,6 @@ void MainWindow::OpenBuiltinToolEngine(const std::wstring& engine, bool locatePr
         ShowWebDavFileManagerDialog(hwnd_, instance_, theme_, config_);
         return;
     }
-    if (engine == L"app-launch-locker") {
-        const EmbeddedExecutablePrepareResult prepared = prepareAppLaunchLocker();
-        if (!prepared.success) {
-            WriteAppLog(L"准备自启动管理工具失败: " + prepared.message);
-            ShowThemedMessageBox(hwnd_, instance_, theme_, prepared.message, L"自启动管理", MB_OK | MB_ICONWARNING);
-            return;
-        }
-        std::wstring commandLine = L"\"" + prepared.path.wstring() +
-            L"\" --launch-source quattro --protocol-version 1";
-        std::vector<wchar_t> commandBuffer(commandLine.begin(), commandLine.end());
-        commandBuffer.push_back(L'\0');
-        STARTUPINFOW startup{};
-        startup.cb = sizeof(startup);
-        PROCESS_INFORMATION process{};
-        if (!CreateProcessW(
-                prepared.path.c_str(), commandBuffer.data(), nullptr, nullptr, FALSE, 0, nullptr,
-                prepared.path.parent_path().c_str(), &startup, &process)) {
-            const std::wstring error = L"无法启动自启动管理工具：" + FormatLastError(GetLastError());
-            WriteAppLog(error);
-            ShowThemedMessageBox(hwnd_, instance_, theme_, error, L"自启动管理", MB_OK | MB_ICONWARNING);
-            return;
-        }
-        CloseHandle(process.hThread);
-        CloseHandle(process.hProcess);
-        RequestMainWindowHideAfterToolOpen();
-        return;
-    }
     if (engine == L"ad-block") {
         const EmbeddedExecutablePrepareResult prepared = prepareAppLaunchLocker();
         if (!prepared.success) {

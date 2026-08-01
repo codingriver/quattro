@@ -15,8 +15,8 @@
 class ThemedWindowUi;
 class ThemedTaskProgressDialog;
 class TaskHandle;
-// 广告拦截（简化版）窗口：选文件/文件夹 → 扫描可启动文件 → 勾选 → 一键拦截；
-// 「已拦截」页可解除。与「自启动管理」窗口独立，机制为 IFEO 禁止运行。
+// 广告拦截窗口：选文件/文件夹 → 扫描可启动文件 → 勾选 → 一键拦截；
+// 「已拦截」页可解除，机制为 IFEO 禁止运行。
 class AdBlockWindow {
 public:
     AdBlockWindow(HINSTANCE instance, Theme theme);
@@ -64,7 +64,6 @@ private:
     HWND checkButton_ = nullptr;
     HWND modeExactRadio_ = nullptr;
     HWND modeNameRadio_ = nullptr;
-    HWND modeStartupRadio_ = nullptr;
     HWND scanTable_ = nullptr;
     HWND blockedTable_ = nullptr;
     HWND statusText_ = nullptr;

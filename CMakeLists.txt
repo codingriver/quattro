@@ -503,7 +503,6 @@ target_link_libraries(AppLaunchLockerCore PUBLIC
 add_executable(AppLaunchLocker WIN32
     resources/AppLaunchLocker.rc
     src/applaunchlocker/AppLaunchLockerMain.cpp
-    src/applaunchlocker/AppLaunchLockerWindow.cpp
     src/applaunchlocker/AdBlockWindow.cpp
     src/common/AppLog.cpp
     src/common/FileDialog.cpp

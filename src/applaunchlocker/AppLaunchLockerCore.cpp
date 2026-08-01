@@ -206,7 +206,7 @@ std::wstring SerializeJsonValue(const JsonValue& value) {
 DisabledRecord::RestoreValueType DefaultRestoreValueType(const std::wstring& key) {
     static const std::set<std::wstring> booleanFields{
         L"delayed", L"protected", L"wasEnabled", L"autoStartTrigger", L"saHadOriginal",
-        L"ifeoHadOriginal", L"hasAutoStart", L"autoStartRequiresAdmin"};
+        L"ifeoHadOriginal"};
     static const std::set<std::wstring> numberFields{
         L"valueType", L"serviceType", L"startType", L"currentState", L"ifeoView", L"ifeoOriginalType"};
     if (booleanFields.contains(key)) return DisabledRecord::RestoreValueType::Boolean;
@@ -2698,14 +2698,13 @@ bool CreateElevatedOperationRequest(
     request = {};
     error.clear();
     static const std::set<std::wstring> allowedActions{
-        L"disable", L"disable-many", L"restore", L"restore-many",
         L"adblock-block", L"adblock-unblock", L"adblock-unblock-all", L"adblock-repair"};
     if (!allowedActions.contains(action) || targets.size() > 256 ||
         ((action != L"adblock-unblock-all") && targets.empty())) {
         error = L"管理员操作请求不受支持。";
         return false;
     }
-    if (action == L"adblock-block" && mode != L"exact" && mode != L"name" && mode != L"startup") {
+    if (action == L"adblock-block" && mode != L"exact" && mode != L"name") {
         error = L"管理员操作模式不受支持。";
         return false;
     }
@@ -2795,7 +2794,6 @@ bool LoadAndConsumeElevatedOperationRequest(
         return false;
     }
     static const std::set<std::wstring> allowedActions{
-        L"disable", L"disable-many", L"restore", L"restore-many",
         L"adblock-block", L"adblock-unblock", L"adblock-unblock-all", L"adblock-repair"};
     if (!allowedActions.contains(request.action) || targets->arrayValue.size() > 256) {
         error = L"管理员操作动作不在白名单中。";
@@ -2813,7 +2811,7 @@ bool LoadAndConsumeElevatedOperationRequest(
         return false;
     }
     if (request.action == L"adblock-block" && request.mode != L"exact" &&
-        request.mode != L"name" && request.mode != L"startup") {
+        request.mode != L"name") {
         error = L"管理员操作模式无效。";
         return false;
     }
@@ -3870,7 +3868,6 @@ AdBlockScanResult AdBlockManager::ScanPathDetailedCore(
                         candidates.size(),
                         0,
                         0,
-                        0,
                         result.inaccessibleDirectories,
                         0});
                 }
@@ -3888,38 +3885,9 @@ AdBlockScanResult AdBlockManager::ScanPathDetailedCore(
             result.totalCandidates,
             0,
             result.totalCandidates,
-            0,
             result.inaccessibleDirectories,
             0});
         return result;
-    }
-
-    report(AdBlockScanProgress{
-        AdBlockScanPhase::IndexingStartup,
-        result.enumeratedFiles,
-        result.totalCandidates,
-        0,
-        result.totalCandidates,
-        0,
-        result.inaccessibleDirectories,
-        0});
-
-    // 只建立一次系统自启动索引，供全部工作线程只读匹配。
-    std::map<std::wstring, bool> autoStartExeLower;
-    {
-        ScanResult startup;
-        ScanRegistry(startup);
-        ScanStartupFolder(startup, FOLDERID_Startup, false);
-        ScanStartupFolder(startup, FOLDERID_CommonStartup, true);
-        for (StartupItem& startupItem : startup.items) {
-            if (startupItem.source != StartupSourceType::Registry &&
-                startupItem.source != StartupSourceType::StartupFolder) continue;
-            if (!IsAutoStartEligible(startupItem)) continue;
-            const std::wstring exe = ExecutableFromCommand(startupItem.command);
-            if (exe.empty()) continue;
-            bool& requiresAdmin = autoStartExeLower[Lower(exe)];
-            requiresAdmin = requiresAdmin || startupItem.requiresAdmin;
-        }
     }
 
     if (cancelled()) {
@@ -3930,7 +3898,6 @@ AdBlockScanResult AdBlockManager::ScanPathDetailedCore(
             result.totalCandidates,
             0,
             result.totalCandidates,
-            0,
             result.inaccessibleDirectories,
             0});
         return result;
@@ -3947,11 +3914,10 @@ AdBlockScanResult AdBlockManager::ScanPathDetailedCore(
         result.totalCandidates,
         0,
         result.totalCandidates,
-        0,
         result.inaccessibleDirectories,
         result.workerCount});
 
-    auto analyzeCandidate = [&](const std::wstring& candidate, ScanResult& local, std::size_t& autoStartMatches) {
+    auto analyzeCandidate = [&](const std::wstring& candidate, ScanResult& local) {
         const std::wstring displayName = FileNameOf(candidate);
         const LaunchTarget target = ResolveLaunchTarget(candidate);
         if (!target.valid) {
@@ -3972,12 +3938,6 @@ AdBlockScanResult AdBlockManager::ScanPathDetailedCore(
             {L"adBlockStatus", guard.allow ? (guard.warn ? L"blockable-warn" : L"blockable") : L"protected"},
         };
         if (!guard.reason.empty()) original[L"guardReason"] = guard.reason;
-        const auto autoStartIt = autoStartExeLower.find(Lower(target.path));
-        if (autoStartIt != autoStartExeLower.end()) {
-            original[L"hasAutoStart"] = L"1";
-            if (autoStartIt->second) original[L"autoStartRequiresAdmin"] = L"1";
-            ++autoStartMatches;
-        }
         AddItem(local, StartupSourceType::Ifeo, displayName, candidate, target.path,
             true, guard.allow, std::move(original));
     };
@@ -3994,7 +3954,6 @@ AdBlockScanResult AdBlockManager::ScanPathDetailedCore(
         std::unique_ptr<ComApartment> apartment;
         ScanResult scan;
         std::size_t checked = 0;
-        std::size_t autoStartMatches = 0;
         bool comUnavailable = false;
     };
     bool comUnavailable = false;
@@ -4018,21 +3977,16 @@ AdBlockScanResult AdBlockManager::ScanPathDetailedCore(
                 return;
             }
             const std::size_t checkedBefore = local.checked;
-            const std::size_t matchesBefore = local.autoStartMatches;
             if (options.batchDelay.count() > 0) std::this_thread::sleep_for(options.batchDelay);
             for (std::size_t index = batch.begin; index < batch.end && !cancelled() && !workerContext.StopRequested(); ++index) {
-                analyzeCandidate(candidates[index], local.scan, local.autoStartMatches);
+                analyzeCandidate(candidates[index], local.scan);
                 ++local.checked;
             }
             const std::size_t checkedDelta = local.checked - checkedBefore;
-            const std::size_t matchesDelta = local.autoStartMatches - matchesBefore;
-            workerContext.UpdateProgress([checkedDelta, matchesDelta](ScanProgressUpdate& value) {
+            workerContext.UpdateProgress([checkedDelta](ScanProgressUpdate& value) {
                 value.completed += checkedDelta;
                 value.current = value.completed;
-                value.succeeded += matchesDelta;
-                value.detail = std::to_wstring(value.succeeded) +
-                    L" 个已注册开机/登录自启动，已检查 " +
-                    std::to_wstring(value.completed) + L" / " +
+                value.detail = L"已检查 " + std::to_wstring(value.completed) + L" / " +
                     std::to_wstring(value.total) + L" 个项目";
             });
             if (reportProgress) {
@@ -4043,7 +3997,6 @@ AdBlockScanResult AdBlockManager::ScanPathDetailedCore(
                     result.totalCandidates,
                     (std::min)(SaturatingSize(snapshot.completed), result.totalCandidates),
                     result.totalCandidates,
-                    SaturatingSize(snapshot.succeeded),
                     result.inaccessibleDirectories,
                     snapshot.workerCount};
                 workerContext.Publish([&]() { report(progress); });
@@ -4051,7 +4004,6 @@ AdBlockScanResult AdBlockManager::ScanPathDetailedCore(
         },
         [&](AnalyzeLocalResult&& local) {
             result.checkedCandidates += local.checked;
-            result.autoStartMatches += local.autoStartMatches;
             comUnavailable = comUnavailable || local.comUnavailable;
             result.scan.items.insert(result.scan.items.end(),
                 std::make_move_iterator(local.scan.items.begin()), std::make_move_iterator(local.scan.items.end()));
@@ -4081,17 +4033,15 @@ AdBlockScanResult AdBlockManager::ScanPathDetailedCore(
         result.totalCandidates,
         result.checkedCandidates,
         result.totalCandidates,
-        result.autoStartMatches,
         result.inaccessibleDirectories,
         result.workerCount});
     context.UpdateProgress([&result](ScanProgressUpdate& value) {
         value.status = result.cancelled ? L"检查已停止" : L"检查完成";
         value.detail = L"发现 " + std::to_wstring(result.scan.items.size()) +
-            L" 个可启动程序，其中 " + std::to_wstring(result.autoStartMatches) +
-            L" 个已注册开机/登录自启动";
+            L" 个可启动程序";
         value.current = result.cancelled ? result.checkedCandidates : result.totalCandidates;
         value.total = result.totalCandidates;
-        value.succeeded = result.autoStartMatches;
+        value.succeeded = result.scan.items.size();
         value.indeterminate = false;
     });
     return result;
@@ -4104,7 +4054,7 @@ AdBlockPlan AdBlockManager::BuildBlockPlan(const std::vector<std::wstring>& targ
     for (const std::wstring& path : targetPaths) {
         AdBlockPlanItem item;
         item.mode = mode;
-        if (mode != L"exact" && mode != L"name" && mode != L"startup") {
+        if (mode != L"exact" && mode != L"name") {
             item.targetPath = path;
             item.riskLevel = L"blocked";
             item.reason = L"未知拦截模式。";
@@ -4144,24 +4094,6 @@ AdBlockPlan AdBlockManager::BuildBlockPlan(const std::vector<std::wstring>& targ
             continue;
         }
 
-        if (mode == L"startup") {
-            const std::vector<StartupItem> entries = FindAutoStartEntries(target.path);
-            item.willModifyStartupApproved = !entries.empty();
-            item.impactText = entries.empty()
-                ? L"未发现可禁用自启动项"
-                : L"仅禁止开机自启动，不影响手动运行";
-            if (entries.empty()) {
-                item.riskLevel = L"blocked";
-                item.reason = L"该程序未注册开机自启动项。";
-                ++plan.blockedCount;
-            } else {
-                item.riskLevel = L"ok";
-                ++plan.blockableCount;
-            }
-            plan.items.push_back(std::move(item));
-            continue;
-        }
-
         item.willModifyIfeo = true;
         item.impactText = mode == L"exact" ? L"仅阻止此完整路径" : L"阻止所有同名可执行程序";
         const std::wstring subKey = mode == L"exact" ? (L"AppLaunchLocker_" + HashHex(Lower(target.path))) : std::wstring{};
@@ -4190,7 +4122,7 @@ AdBlockPlan AdBlockManager::BuildBlockPlan(const std::vector<std::wstring>& targ
 }
 
 OperationResult AdBlockManager::Block(const std::wstring& targetPath, const std::wstring& mode) const {
-    if (mode != L"exact" && mode != L"name" && mode != L"startup") return {false, L"未知拦截模式。"};
+    if (mode != L"exact" && mode != L"name") return {false, L"未知拦截模式。"};
     bool uninitialize = false;
     InitializeComForScan(uninitialize);
     const LaunchTarget target = ResolveLaunchTarget(targetPath);
@@ -4200,9 +4132,6 @@ OperationResult AdBlockManager::Block(const std::wstring& targetPath, const std:
 
     const GuardVerdict guard = EvaluateGuard(target.path, target.imageName);
     if (!guard.allow) return {false, L"该程序不允许拦截：" + guard.reason};
-
-    // 启动拦截：仅禁用该程序的开机自启动项（系统 StartupApproved 开关，与任务管理器同步，不阻止手动运行）。
-    if (mode == L"startup") return BlockStartup(target.path);
 
     std::vector<DisabledRecord> records;
     std::wstring error;
@@ -4259,64 +4188,6 @@ OperationResult AdBlockManager::Block(const std::wstring& targetPath, const std:
         return {false, L"操作已执行，但未能确认结果；拦截记录已保留。"};
     }
     return applied;
-}
-
-OperationResult AdBlockManager::BlockStartup(const std::wstring& targetExe) const {
-    std::vector<StartupItem> entries = FindAutoStartEntries(targetExe);
-    if (entries.empty()) return {false, L"该程序未注册开机自启动项，无需用「禁止自启」模式拦截。"};
-
-    std::vector<DisabledRecord> records;
-    std::wstring error;
-    if (!store_.Load(records, error)) return {false, error};
-
-    int done = 0;
-    int skipped = 0;
-    std::vector<std::size_t> addedIndices;
-    for (const StartupItem& entry : entries) {
-        // 去重：同一自启动注册（itemId）已由本工具禁用则跳过。
-        const bool exists = std::any_of(records.begin(), records.end(), [&](const DisabledRecord& r) {
-            return MapValue(r.original, L"mechanism") == L"startup-approved" && r.itemId == entry.id;
-        });
-        if (exists) { ++skipped; continue; }
-
-        DisabledRecord record;
-        record.itemId = entry.id;
-        record.source = entry.source;
-        record.name = FileNameOf(targetExe);
-        record.disabledAt = CurrentTimestamp();
-        record.recordId = StableId(entry.source, entry.id, record.disabledAt);
-        record.requiresAdmin = entry.requiresAdmin;
-        record.original = entry.original;  // Registry: hive/key/valueName；StartupFolder: originalPath
-        record.original[L"mechanism"] = L"startup-approved";
-        record.original[L"blockMode"] = L"startup";
-        record.original[L"targetPath"] = targetExe;
-
-        const StartupApprovedTarget saTarget = ResolveStartupApprovedTarget(record);
-        if (!saTarget.eligible) { ++skipped; continue; }
-
-        const OperationResult applied = DisableViaStartupApproved(record, saTarget);
-        if (!applied.success) {
-            // 回滚本次已禁用的项。
-            for (auto it = addedIndices.rbegin(); it != addedIndices.rend(); ++it) {
-                RestoreViaStartupApproved(records[*it]);
-            }
-            return applied;
-        }
-        records.push_back(record);
-        addedIndices.push_back(records.size() - 1);
-        ++done;
-    }
-
-    if (done == 0) {
-        return {false, skipped > 0 ? L"该程序的自启动项已全部被拦截。" : L"未找到可禁用的自启动项。"};
-    }
-    if (!store_.Save(records, error)) {
-        for (auto it = addedIndices.rbegin(); it != addedIndices.rend(); ++it) {
-            RestoreViaStartupApproved(records[*it]);
-        }
-        return {false, L"无法保存拦截记录，操作已撤销。"};
-    }
-    return {true, L"已禁止 " + std::to_wstring(done) + L" 个自启动项。"};
 }
 
 OperationResult AdBlockManager::Unblock(const std::wstring& recordId) const {

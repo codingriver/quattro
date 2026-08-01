@@ -32,7 +32,6 @@ constexpr int ID_PICK_PATH_MENU = 1218;
 constexpr int ID_PICK_FOLDER = 1219;
 constexpr int ID_MODE_EXACT = 1213;
 constexpr int ID_MODE_NAME = 1214;
-constexpr int ID_MODE_STARTUP = 1212;
 constexpr int ID_SCAN_TABLE = 1215;
 constexpr int ID_BLOCK_SELECTED = 1216;
 constexpr int ID_CLEAR_RESULTS = 1217;
@@ -205,9 +204,8 @@ std::wstring GetText(HWND hwnd) {
 // 扫描项的可读状态。
 std::wstring ScanStatusText(const StartupItem& item) {
     const std::wstring status = MapField(item.original, L"adBlockStatus");
-    const bool hasAutoStart = MapField(item.original, L"hasAutoStart") == L"1";
-    if (status == L"blockable") return hasAutoStart ? L"可拦截·含自启动项" : L"可拦截";
-    if (status == L"blockable-warn") return hasAutoStart ? L"可拦截·含自启动项（未签名）" : L"可拦截（未签名）";
+    if (status == L"blockable") return L"可拦截";
+    if (status == L"blockable-warn") return L"可拦截（未签名）";
     if (status == L"protected") return L"受保护";
     if (status == L"script") return L"脚本（仅提示）";
     if (status == L"unresolved") return L"无法解析";
@@ -222,11 +220,6 @@ std::wstring ScanImpactText(const StartupItem& item, const std::wstring& mode) {
         if (status == L"script") return L"脚本仅提示";
         if (status == L"unresolved") return L"无法解析目标";
         return L"不可拦截";
-    }
-    if (mode == L"startup") {
-        return MapField(item.original, L"hasAutoStart") == L"1"
-            ? L"仅禁止自启"
-            : L"无自启动项";
     }
     if (mode == L"name") return L"所有同名 EXE";
     return L"仅此路径";
@@ -256,26 +249,6 @@ std::wstring PlanConfirmationPrompt(const AdBlockPlan& plan) {
     }
     prompt << L"\n确认继续？";
     return prompt.str();
-}
-
-std::wstring BlockConfirmationPrompt(std::size_t targetCount, const std::wstring& mode, int skippedNoAutoStart) {
-    std::wstring modeText;
-    std::wstring detailText;
-    if (mode == L"startup") {
-        modeText = L"禁止自启（不影响手动运行）";
-        detailText = L"将关闭系统启动项；可随时在“已拦截”中解除。";
-    } else if (mode == L"name") {
-        modeText = L"同名程序（拦截所有同名 EXE）";
-        detailText = L"需要管理员权限；可随时在“已拦截”中解除。";
-    } else {
-        modeText = L"精确路径（仅拦截所选文件）";
-        detailText = L"需要管理员权限；可随时在“已拦截”中解除。";
-    }
-    std::wstring prompt = L"确定拦截所选 " + std::to_wstring(targetCount) + L" 个程序？";
-    if (skippedNoAutoStart > 0) {
-        prompt += L"（无自启动项跳过 " + std::to_wstring(skippedNoAutoStart) + L" 个）";
-    }
-    return prompt + L"\n模式：" + modeText + L"\n" + detailText;
 }
 
 }
@@ -416,7 +389,7 @@ LRESULT AdBlockWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam) {
             ShowSelectedDetails();
         } else if (id == ID_REPAIR) {
             StartRepairSelected();
-        } else if (id == ID_MODE_EXACT || id == ID_MODE_NAME || id == ID_MODE_STARTUP) {
+        } else if (id == ID_MODE_EXACT || id == ID_MODE_NAME) {
             RebuildScanRows();
             UpdateButtons();
         } else if (id == IDCANCEL) {
@@ -571,14 +544,10 @@ void AdBlockWindow::CreateControls() {
     const int radioLeft = content.left + modeLabelWidth + gapX;
     const int exactRadioWidth = ui.textWidth(L"精确路径") + ui.scale(28);
     const int nameRadioWidth = ui.textWidth(L"同名程序") + ui.scale(28);
-    const int startupRadioWidth = ui.textWidth(L"禁止自启") + ui.scale(28);
     modeExactRadio_ = ui.RadioButton(ID_MODE_EXACT, L"精确路径", radioLeft, modeY, exactRadioWidth,
         ThemedRadioButtonOptions{1, true, true});
     modeNameRadio_ = ui.RadioButton(ID_MODE_NAME, L"同名程序",
         radioLeft + exactRadioWidth + gapX, modeY, nameRadioWidth,
-        ThemedRadioButtonOptions{1, false, true});
-    modeStartupRadio_ = ui.RadioButton(ID_MODE_STARTUP, L"禁止自启",
-        radioLeft + exactRadioWidth + gapX + nameRadioWidth + gapX, modeY, startupRadioWidth,
         ThemedRadioButtonOptions{1, false, true});
 
     ThemedTableOptions tableOptions{};
@@ -633,7 +602,7 @@ void AdBlockWindow::CreateControls() {
 
     // 绑定标签页可见性
     ThemedUi::BindTabPage(tabControl_, 0,
-        {pathEdit_, clearButton_, pickPathSplit_.primary, pickPathSplit_.menu, checkButton_, modeLabel, modeExactRadio_, modeNameRadio_, modeStartupRadio_, scanTable_});
+        {pathEdit_, clearButton_, pickPathSplit_.primary, pickPathSplit_.menu, checkButton_, modeLabel, modeExactRadio_, modeNameRadio_, scanTable_});
     ThemedUi::BindTabPage(tabControl_, 1, {blockedTable_});
     ThemedUi::SetActiveTab(tabControl_, 0, false);
 
@@ -658,7 +627,6 @@ void AdBlockWindow::StartOperationTask(std::function<OperationResult()> operatio
 }
 
 std::wstring AdBlockWindow::SelectedMode() const {
-    if (ThemedUi::IsChecked(modeStartupRadio_)) return L"startup";
     return ThemedUi::IsChecked(modeNameRadio_) ? L"name" : L"exact";
 }
 
@@ -754,7 +722,7 @@ void AdBlockWindow::StartScan() {
     progressOptions.title = L"广告拦截检查进度";
     progressOptions.clientWidth = 520;
     progressOptions.initialStatus = L"正在递归检查可启动程序";
-    progressOptions.initialDetail = L"最多使用 8 个工作线程，并对比已注册开机/登录自启动。";
+    progressOptions.initialDetail = L"最多使用 8 个工作线程，并分析可启动程序。";
     progressOptions.readSnapshot = [task = scanTask_]() {
         return ToThemedTaskProgressSnapshot(task->Snapshot());
     };
@@ -778,12 +746,10 @@ void AdBlockWindow::StartBlockSelected() {
     if (busy_ || activeTab_ != 0) return;
     const std::wstring mode = SelectedMode();
     std::vector<std::wstring> targets;
-    bool anyRequiresAdmin = false;
     for (int index = 0; index < static_cast<int>(scanItems_.size()); ++index) {
         if (!ThemedUi::IsTableChecked(scanTable_, index)) continue;
         const StartupItem& item = scanItems_[static_cast<std::size_t>(index)];
         if (!item.canDisable) continue;
-        if (MapField(item.original, L"autoStartRequiresAdmin") == L"1") anyRequiresAdmin = true;
         targets.push_back(MapField(item.original, L"targetPath"));
     }
     if (targets.empty()) {
@@ -805,9 +771,7 @@ void AdBlockWindow::StartBlockSelected() {
     if (ThemedWindowUi::ShowMessageBox(hwnd_, instance_, theme_, prompt, L"确认拦截",
             MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) != IDYES) return;
 
-    // 启动拦截：仅 HKLM 项需提权，全 HKCU 时免 UAC；IFEO 始终需管理员。
-    const bool needAdmin = (mode == L"startup") ? anyRequiresAdmin : true;
-    const bool elevate = needAdmin && !RunningAsAdmin();
+    const bool elevate = !RunningAsAdmin();
     busy_ = true;
     ThemedUi::SetText(statusText_, L"正在拦截…");
     UpdateButtons();
@@ -906,7 +870,6 @@ void AdBlockWindow::ShowSelectedDetails() {
             if (!planned.reason.empty()) message += L"\n提示：" + planned.reason;
             if (planned.hasExistingIfeoDebugger) message += L"\nIFEO：已有 Debugger，将备份后再写入。";
             if (planned.willModifyIfeo) message += L"\n机制：IFEO Debugger。";
-            if (planned.willModifyStartupApproved) message += L"\n机制：StartupApproved 系统开关。";
         }
         ThemedWindowUi::ShowMessageBox(hwnd_, instance_, theme_, message, L"候选详情", MB_OK | MB_ICONINFORMATION);
         return;
@@ -918,7 +881,7 @@ void AdBlockWindow::ShowSelectedDetails() {
     const AdBlockRecordStatus status = AdBlockManager().CheckRecordStatus(record);
     const std::wstring blockMode = MapField(record.original, L"blockMode");
     const std::wstring mode = blockMode == L"name" ? L"同名程序"
-        : blockMode == L"startup" ? L"禁止自启" : L"精确路径";
+        : blockMode == L"startup" ? L"已移除的禁止自启" : L"精确路径";
     std::wstring message = L"名称：" + record.name +
         L"\n模式：" + mode +
         L"\n状态：" + AdBlockRecordStateText(status.state) +
@@ -931,7 +894,7 @@ void AdBlockWindow::ShowSelectedDetails() {
         message += L"\n映像名：" + MapField(record.original, L"ifeoImageName");
         message += L"\n注册表视图：" + MapField(record.original, L"ifeoView");
     } else if (mechanism == L"startup-approved") {
-        message += L"\n机制：StartupApproved 系统开关";
+        message += L"\n机制：StartupApproved 系统开关（历史记录）";
     }
     ThemedWindowUi::ShowMessageBox(hwnd_, instance_, theme_, message, L"拦截详情", MB_OK | MB_ICONINFORMATION);
 }
@@ -952,8 +915,7 @@ void AdBlockWindow::CompleteScan(AdBlockScanResult scan) {
             std::to_wstring(scanItems_.size()) + L" 个可启动文件，结果可能不完整。";
     } else {
         status = L"检查完成：枚举 " + std::to_wstring(scan.enumeratedFiles) + L" 个文件，发现 " +
-            std::to_wstring(scanItems_.size()) + L" 个可启动程序，其中 " +
-            std::to_wstring(scan.autoStartMatches) + L" 个已注册开机/登录自启动，" +
+            std::to_wstring(scanItems_.size()) + L" 个可启动程序，" +
             std::to_wstring(blockable) + L" 个可拦截";
         if (scan.workerCount > 0) status += L"，使用 " + std::to_wstring(scan.workerCount) + L" 个工作线程";
         status += L"。";
@@ -1077,7 +1039,7 @@ void AdBlockWindow::RebuildBlockedRows() {
         const DisabledRecord& record = blocked_[index];
         const std::wstring blockMode = MapField(record.original, L"blockMode");
         const std::wstring mode = blockMode == L"name" ? L"同名程序"
-            : blockMode == L"startup" ? L"禁止自启" : L"精确路径";
+            : blockMode == L"startup" ? L"已移除的禁止自启" : L"精确路径";
         const AdBlockRecordStatus status = manager.CheckRecordStatus(record);
         std::wstring when = record.disabledAt;
         if (when.size() >= 10) when = when.substr(0, 10);

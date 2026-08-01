@@ -132,7 +132,7 @@ bool DeployRuntimeFileIfChanged(
 
     std::filesystem::create_directories(target.parent_path(), fileError);
     if (fileError) {
-        error = L"无法创建自启动管理资源目录。";
+        error = L"无法创建广告拦截资源目录。";
         return false;
     }
 
@@ -168,7 +168,7 @@ bool DeployRuntimeDirectoryFilesIfChanged(
 
     std::filesystem::create_directories(targetDirectory, fileError);
     if (fileError) {
-        error = L"无法创建自启动管理资源目录。";
+        error = L"无法创建广告拦截资源目录。";
         return false;
     }
 
@@ -250,13 +250,13 @@ bool PrepareAppLaunchLockerRuntimeResources(
     if (!DeployRuntimeFileIfChanged(
             sourceFont,
             targetFont,
-            L"自启动管理组件缺少 Tabler 图标字体。",
-            L"无法部署自启动管理图标字体。",
+            L"广告拦截组件缺少 Tabler 图标字体。",
+            L"无法部署广告拦截图标字体。",
             error)) {
         return false;
     }
     const std::filesystem::path sourceTheme = sourceRoot / L"theme";
-    if (!DeployRuntimeDirectoryFilesIfChanged(sourceTheme, targetRoot / L"theme", L"无法部署自启动管理主题资源。", error)) {
+    if (!DeployRuntimeDirectoryFilesIfChanged(sourceTheme, targetRoot / L"theme", L"无法部署广告拦截主题资源。", error)) {
         return false;
     }
     return true;
