@@ -1007,6 +1007,7 @@ void Theme::SetDefaults() {
     PutMetric(L"edit", L"singleLineFontSizePx", 14.0f);
     PutMetric(L"edit", L"singleLineControlHeight", 20.0f);
     PutMetric(L"edit", L"singleLineOffsetY", 0.0f);
+    PutMetric(L"edit", L"childCornerInset", 2.0f);
     PutMetric(L"edit", L"multiLinePaddingTop", 7.0f);
     PutMetric(L"edit", L"multiLinePaddingBottom", 7.0f);
     PutMetric(L"comboBox", L"radius", 7.0f);

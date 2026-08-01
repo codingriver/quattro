@@ -3679,21 +3679,48 @@ int EditBorderWidth(const Theme& theme) {
     return std::max(1, static_cast<int>(theme.metric(L"edit", L"borderWidth", 1.0f)));
 }
 
+int EditChildInset(const Theme& theme, UINT dpi) {
+    const UINT effectiveDpi = dpi ? dpi : USER_DEFAULT_SCREEN_DPI;
+    const int borderWidth = ThemedD2D::ScaleDip(EditBorderWidth(theme), effectiveDpi);
+    const int cornerGuard = std::max(
+        1,
+        static_cast<int>(std::ceil(ThemedD2D::ScaleDip(
+            theme.metric(L"edit", L"childCornerInset", 2.0f),
+            effectiveDpi))));
+    return std::max(1, borderWidth + cornerGuard);
+}
+
 RECT EditChildRect(const Theme& theme, RECT frame, UINT dpi) {
-    const int borderWidth = ThemedD2D::ScaleDip(EditBorderWidth(theme), dpi);
+    const int inset = EditChildInset(theme, dpi);
     RECT rect = frame;
-    InflateRect(&rect, -borderWidth, -borderWidth);
+    InflateRect(&rect, -inset, -inset);
     if (rect.right <= rect.left) rect.right = rect.left + 1;
     if (rect.bottom <= rect.top) rect.bottom = rect.top + 1;
     return rect;
 }
 
 RECT SingleLineEditRect(const Theme& theme, RECT frame, UINT dpi) {
-    return EditChildRect(theme, frame, dpi);
+    const UINT effectiveDpi = dpi ? dpi : USER_DEFAULT_SCREEN_DPI;
+    RECT rect = EditChildRect(theme, frame, effectiveDpi);
+    const int frameHeight = std::max(1, static_cast<int>(frame.bottom - frame.top));
+    const int availableHeight = std::max(1, static_cast<int>(rect.bottom - rect.top));
+    const int requestedHeight = ThemedD2D::ScaleDip(
+        static_cast<int>(theme.metric(L"edit", L"singleLineControlHeight", 20.0f)),
+        effectiveDpi);
+    const int controlHeight = std::clamp(requestedHeight, 1, availableHeight);
+    const int offsetY = ThemedD2D::ScaleDip(
+        static_cast<int>(theme.metric(L"edit", L"singleLineOffsetY", 0.0f)),
+        effectiveDpi);
+    int top = frame.top + (frameHeight - controlHeight) / 2 + offsetY;
+    top = std::clamp(top, static_cast<int>(rect.top), static_cast<int>(rect.bottom) - controlHeight);
+    rect.top = top;
+    rect.bottom = top + controlHeight;
+    if (rect.bottom <= rect.top) rect.bottom = rect.top + 1;
+    return rect;
 }
 
 RECT SingleLineEditRectForFrame(const Theme& theme, RECT frame, UINT dpi) {
-    return EditChildRect(theme, frame, dpi);
+    return SingleLineEditRect(theme, frame, dpi);
 }
 
 RECT MultiLineEditRect(const Theme& theme, RECT frame, UINT dpi) {
@@ -3951,13 +3978,16 @@ void DrawFieldFrame(const Theme& theme, HDC dc, RECT rect, HWND child, bool read
     const bool focused = child && GetFocus() == child;
     const bool hover = child && IsHover(child);
     const wchar_t* component = readOnly ? L"field" : L"edit";
-    const wchar_t* state = disabled ? L"disabled" : (error ? L"error" : (focused ? L"focused" : (hover ? L"hover" : (readOnly ? L"readonly" : L"normal"))));
+    const wchar_t* borderState =
+        disabled ? L"disabled" : (error ? L"error" : (focused ? L"focused" : (hover ? L"hover" : (readOnly ? L"readonly" : L"normal"))));
+    const wchar_t* fillState =
+        disabled ? L"disabled" : (error ? L"error" : (readOnly ? L"readonly" : (focused ? L"focused" : (hover ? L"hover" : L"normal"))));
     FillRoundRect(
         dc,
         rect,
         RenderMetric(theme, component, L"radius", 7.0f),
-        ToColorRef(theme.color(component, state, L"bg")),
-        ToColorRef(theme.color(component, state, L"border")),
+        ToColorRef(theme.color(component, fillState, L"bg")),
+        ToColorRef(theme.color(component, borderState, L"border")),
         RenderMetric(theme, component, L"borderWidth", 1.0f));
 }
 

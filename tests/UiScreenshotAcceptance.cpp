@@ -848,6 +848,49 @@ std::size_t CountPixelsNearColor(
     return count;
 }
 
+bool FindDarkPixelBounds(
+    HBITMAP bitmap,
+    int width,
+    int height,
+    RECT area,
+    RECT& bounds,
+    std::size_t& pixels) {
+    if (!bitmap || width <= 0 || height <= 0) {
+        return false;
+    }
+    area.left = std::clamp<LONG>(area.left, 0, width);
+    area.top = std::clamp<LONG>(area.top, 0, height);
+    area.right = std::clamp<LONG>(area.right, area.left, width);
+    area.bottom = std::clamp<LONG>(area.bottom, area.top, height);
+    HDC dc = CreateCompatibleDC(nullptr);
+    HGDIOBJ old = SelectObject(dc, bitmap);
+    bounds = RECT{area.right, area.bottom, area.left, area.top};
+    pixels = 0;
+    for (int y = area.top; y < area.bottom; ++y) {
+        for (int x = area.left; x < area.right; ++x) {
+            const COLORREF color = GetPixel(dc, x, y);
+            if (color == CLR_INVALID) {
+                continue;
+            }
+            const int luma =
+                (static_cast<int>(GetRValue(color)) * 30 +
+                 static_cast<int>(GetGValue(color)) * 59 +
+                 static_cast<int>(GetBValue(color)) * 11) / 100;
+            if (luma >= 150) {
+                continue;
+            }
+            bounds.left = std::min<LONG>(bounds.left, x);
+            bounds.top = std::min<LONG>(bounds.top, y);
+            bounds.right = std::max<LONG>(bounds.right, x + 1);
+            bounds.bottom = std::max<LONG>(bounds.bottom, y + 1);
+            ++pixels;
+        }
+    }
+    SelectObject(dc, old);
+    DeleteDC(dc);
+    return pixels >= 8 && bounds.left < bounds.right && bounds.top < bounds.bottom;
+}
+
 void ValidateSplitButtonChevron(
     HWND button,
     const Theme& theme,
@@ -1573,29 +1616,38 @@ void ValidateAndCapture(HWND hwnd, const Scenario& scenario, const std::filesyst
             state.Check(matchingFrame != nullptr, scenario.name + L": visible Edit is not enclosed by a themed frame");
             if (!matchingFrame) continue;
             const UINT editDpi = GetDpiForWindow(edit);
+            const int effectiveDpi = static_cast<int>(editDpi ? editDpi : USER_DEFAULT_SCREEN_DPI);
+            const LONG minCornerInset = std::max<LONG>(
+                3,
+                MulDiv(3, effectiveDpi, USER_DEFAULT_SCREEN_DPI));
             const LONG maxInset = std::max<LONG>(
-                2,
-                MulDiv(2, static_cast<int>(editDpi ? editDpi : USER_DEFAULT_SCREEN_DPI), USER_DEFAULT_SCREEN_DPI));
+                6,
+                MulDiv(8, effectiveDpi, USER_DEFAULT_SCREEN_DPI));
             const LONG leftInset = editRect.left - matchingFrameRect.left;
             const LONG topInset = editRect.top - matchingFrameRect.top;
             const LONG rightInset = matchingFrameRect.right - editRect.right;
             const LONG bottomInset = matchingFrameRect.bottom - editRect.bottom;
             state.Check(
                 leftInset <= maxInset && topInset <= maxInset && rightInset <= maxInset && bottomInset <= maxInset,
-                scenario.name + L": Edit child inset exposes themed frame padding and can create two input backgrounds");
-            if (editComposite.bitmap && WindowText(edit).empty()) {
+                scenario.name + L": Edit child inset is too large and can read as extra input padding");
+            state.Check(
+                leftInset >= minCornerInset && topInset >= minCornerInset &&
+                    rightInset >= minCornerInset && bottomInset >= minCornerInset,
+                scenario.name + L": Edit child overlaps the rounded frame corner area");
+            if (editComposite.bitmap) {
+                const std::wstring editText = WindowText(edit);
                 RECT frameClient = matchingFrameRect;
                 MapWindowPoints(HWND_DESKTOP, hwnd, reinterpret_cast<POINT*>(&frameClient), 2);
                 const int sampleInset = std::max(
                     static_cast<int>(maxInset) + 1,
-                    MulDiv(3, static_cast<int>(editDpi ? editDpi : USER_DEFAULT_SCREEN_DPI), USER_DEFAULT_SCREEN_DPI));
+                    MulDiv(4, effectiveDpi, USER_DEFAULT_SCREEN_DPI));
                 RECT interior = frameClient;
                 InflateRect(&interior, -sampleInset, -sampleInset);
                 const int interiorWidth = static_cast<int>(interior.right - interior.left);
                 const int interiorHeight = static_cast<int>(interior.bottom - interior.top);
-                if (interiorWidth >= 24 && interiorHeight >= 8) {
+                if (editText.empty() && interiorWidth >= 24 && interiorHeight >= 8) {
                     const int band = std::clamp(
-                        MulDiv(4, static_cast<int>(editDpi ? editDpi : USER_DEFAULT_SCREEN_DPI), USER_DEFAULT_SCREEN_DPI),
+                        MulDiv(4, effectiveDpi, USER_DEFAULT_SCREEN_DPI),
                         2,
                         std::max(2, interiorWidth / 5));
                     const int verticalInset = std::min(std::max(1, interiorHeight / 4), std::max(1, interiorHeight / 2 - 1));
@@ -1625,6 +1677,35 @@ void ValidateAndCapture(HWND hwnd, const Scenario& scenario, const std::filesyst
                         ColorDistance(leftColor, centerColor) <= kInputBackgroundTolerance &&
                             ColorDistance(rightColor, centerColor) <= kInputBackgroundTolerance,
                         scenario.name + L": Edit interior edge and center colors differ, indicating a two-tone input background");
+                }
+
+                const bool multiline = (GetWindowLongPtrW(edit, GWL_STYLE) & ES_MULTILINE) != 0;
+                if (!multiline && !editText.empty()) {
+                    RECT editClient = editRect;
+                    MapWindowPoints(HWND_DESKTOP, hwnd, reinterpret_cast<POINT*>(&editClient), 2);
+                    RECT textProbe = editClient;
+                    textProbe.left += MulDiv(4, effectiveDpi, USER_DEFAULT_SCREEN_DPI);
+                    textProbe.right = std::min<LONG>(
+                        textProbe.right,
+                        textProbe.left + MulDiv(180, effectiveDpi, USER_DEFAULT_SCREEN_DPI));
+                    RECT textBounds{};
+                    std::size_t darkPixels = 0;
+                    if (FindDarkPixelBounds(
+                            editComposite.bitmap,
+                            editComposite.width,
+                            editComposite.height,
+                            textProbe,
+                            textBounds,
+                            darkPixels)) {
+                        const int textCenterY = (textBounds.top + textBounds.bottom) / 2;
+                        const int editCenterY = (editClient.top + editClient.bottom) / 2;
+                        const int centerTolerance = std::max(2, MulDiv(3, effectiveDpi, USER_DEFAULT_SCREEN_DPI));
+                        state.Check(
+                            std::abs(textCenterY - editCenterY) <= centerTolerance,
+                            scenario.name + L": single-line Edit text is not vertically centered");
+                    } else {
+                        state.Check(false, scenario.name + L": single-line Edit text pixels were not captured");
+                    }
                 }
             }
 
@@ -2534,7 +2615,7 @@ struct InputBackgroundHostWindow {
             singleLine_ = ui.Edit(
                 701,
                 RECT{left, singleTop, right, singleTop + ui.editHeight()},
-                L"",
+                L"Ag 输入框居中",
                 singleOptions);
 
             ThemedEditOptions multiOptions{};

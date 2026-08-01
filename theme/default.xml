@@ -427,6 +427,7 @@
         <Metric name="singleLineFontSizePx" value="14"/>
         <Metric name="singleLineControlHeight" value="20"/>
         <Metric name="singleLineOffsetY" value="0"/>
+        <Metric name="childCornerInset" value="2"/>
         <Metric name="multiLinePaddingTop" value="7"/>
         <Metric name="multiLinePaddingBottom" value="7"/>
         <State name="normal" bg="@surface" text="@text" border="@border"/>
