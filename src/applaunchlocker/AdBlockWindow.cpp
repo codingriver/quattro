@@ -452,7 +452,8 @@ LRESULT AdBlockWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam) {
                     static_cast<DWORD>(std::size(enabled))) > 0) {
                 testConfirmationShown_ = true;
                 ThemedWindowUi::ShowMessageBox(
-                    hwnd_, instance_, theme_, BlockConfirmationPrompt(1, L"exact", 0),
+                    hwnd_, instance_, theme_,
+                    L"将对 1 个程序启用广告拦截。\n\n模式：精确路径\n\n确认后会写入 IFEO 拦截规则，解除拦截前目标程序将无法启动。",
                     L"确认拦截", MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2);
             }
         }
