@@ -2304,6 +2304,9 @@ void RunMainWindowScenario(
         state.Check(
             noteEdit && noteFrame && IsWindow(noteFrame),
             L"main-window-note: note edit is missing its public themed frame");
+        state.Check(
+            noteEdit && (GetWindowLongPtrW(noteEdit, GWL_STYLE) & ES_AUTOHSCROLL) == 0,
+            L"main-window-note: note edit does not wrap long lines");
         if (noteEdit && noteFrame && IsWindow(noteFrame)) {
             RECT editRect{};
             RECT frameRect{};

@@ -10739,6 +10739,7 @@ void MainWindow::EnsureNoteEdit(const D2D1_RECT_F& rect, const Group& tag) {
     if (!noteEdit_) {
         ThemedEditOptions options{};
         options.mode = ThemedEditMode::MultiLine;
+        options.wrap = true;
         noteEdit_ = embeddedUi_->ui().Edit(ID_NOTE_EDIT, frame, content, options);
         if (noteEdit_) {
             ++noteEditGeneration_;
