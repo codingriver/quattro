@@ -2307,6 +2307,12 @@ void RunMainWindowScenario(
         state.Check(
             noteEdit && (GetWindowLongPtrW(noteEdit, GWL_STYLE) & ES_AUTOHSCROLL) == 0,
             L"main-window-note: note edit does not wrap long lines");
+        state.Check(
+            SendMessageW(hwnd, WM_QUATTRO_TEST_NOTE_DOCK_FOCUS, 0, 0) == TRUE,
+            L"main-window-note: focused note edit does not pause dock auto-hide");
+        state.Check(
+            SendMessageW(hwnd, WM_QUATTRO_TEST_NOTE_DOCK_FOCUS, 1, 0) == FALSE,
+            L"main-window-note: main-window focus incorrectly pauses dock auto-hide");
         if (noteEdit && noteFrame && IsWindow(noteFrame)) {
             RECT editRect{};
             RECT frameRect{};

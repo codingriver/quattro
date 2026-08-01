@@ -60,6 +60,7 @@ constexpr UINT WM_QUATTRO_TEST_SELECT_TAG = WM_APP + 0x7B;
 constexpr UINT WM_QUATTRO_TEST_SET_NOTE_TEXT = WM_APP + 0x7C;
 constexpr UINT WM_QUATTRO_TEST_REAPPLY_THEME = WM_APP + 0x7D;
 constexpr UINT WM_QUATTRO_TEST_NOTE_EDIT_GENERATION = WM_APP + 0x7E;
+constexpr UINT WM_QUATTRO_TEST_NOTE_DOCK_FOCUS = WM_APP + 0x80;
 
 class OleDropTarget;
 class TaskHandle;
@@ -293,6 +294,7 @@ private:
     void BeginDockAutoHidePause(bool restoreHidden);
     void EndDockAutoHidePause();
     bool DockAutoHidePaused() const;
+    bool ShouldPauseDockForFocusedWindow(HWND focusedWindow) const;
     void BeginMenuHoverLock(HitKind kind, int id);
     void EndMenuHoverLock();
     void RefreshHoverFromCursor();

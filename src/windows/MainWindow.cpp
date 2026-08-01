@@ -2207,6 +2207,11 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             return 0;
         }
         return static_cast<LRESULT>(wParam == 1 ? noteEditRefreshGeneration_ : noteEditGeneration_);
+    case WM_QUATTRO_TEST_NOTE_DOCK_FOCUS:
+        if (!QuattroTestMode()) {
+            return FALSE;
+        }
+        return ShouldPauseDockForFocusedWindow(wParam == 0 ? noteEdit_ : hwnd_) ? TRUE : FALSE;
     case WM_QUATTRO_NOTE_EDIT_DEFERRED_REDRAW:
         if (noteEdit_ && IsWindow(noteEdit_) &&
             static_cast<unsigned int>(wParam) == noteEditGeneration_) {
@@ -6163,6 +6168,13 @@ bool MainWindow::DockAutoHidePaused() const {
     return dockAutoHidePauseDepth_ > 0 || (hwnd_ && !IsWindowEnabled(hwnd_));
 }
 
+bool MainWindow::ShouldPauseDockForFocusedWindow(HWND focusedWindow) const {
+    if (!noteEdit_ || !IsWindow(noteEdit_) || !focusedWindow) {
+        return false;
+    }
+    return focusedWindow == noteEdit_ || IsChild(noteEdit_, focusedWindow);
+}
+
 void MainWindow::BeginMenuHoverLock(HitKind kind, int id) {
     menuHoverLocked_ = true;
     menuHoverLockArea_ = HitArea{kind, id, {}};
@@ -6270,7 +6282,7 @@ void MainWindow::UpdateDockState() {
         HideDockPeek();
         return;
     }
-    if (DockAutoHidePaused()) {
+    if (DockAutoHidePaused() || ShouldPauseDockForFocusedWindow(GetFocus())) {
         dockHideDueTick_ = 0;
         HideDockPeek();
         return;
