@@ -135,6 +135,8 @@ HWND CreateSeparator(
 
 void SetControlBackgroundComponent(HWND hwnd, const wchar_t* component);
 const wchar_t* ControlBackgroundComponent(HWND hwnd);
+HWND AssociatedEditFrame(HWND hwnd);
+void SetControlVisible(HWND hwnd, bool visible);
 void SetEditInheritsSurface(HWND hwnd, bool inheritsSurface);
 bool EditInheritsSurface(HWND hwnd);
 void SetControlMultiline(HWND hwnd, bool multiline);

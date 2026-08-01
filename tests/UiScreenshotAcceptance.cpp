@@ -2164,6 +2164,26 @@ void RunMainWindowScenario(
     visualLink.parentGroup = linkTag.id;
     visualLink.path = childEnvironment.root().wstring();
     state.Check(storage.InsertLink(visualLink), L"main-window-link-hover: seed link failed");
+    Group noteTag;
+    noteTag.name = L"便签验收";
+    noteTag.parentGroup = linkGroup.id;
+    noteTag.type = 3;
+    noteTag.content = L"note";
+    noteTag.pos = -1;
+    state.Check(storage.InsertGroup(noteTag), L"main-window-note: seed note tag failed");
+    const std::wstring noteText = L"便签切换后仍应显示这段文本";
+    state.Check(storage.SaveNotePage(noteTag.id, noteText), L"main-window-note: seed note content failed");
+    Group secondNoteTag;
+    secondNoteTag.name = L"第二个便签";
+    secondNoteTag.parentGroup = linkGroup.id;
+    secondNoteTag.type = 3;
+    secondNoteTag.content = L"note";
+    secondNoteTag.pos = -1;
+    state.Check(storage.InsertGroup(secondNoteTag), L"main-window-note: seed second note tag failed");
+    const std::wstring secondNoteText = L"第二个便签的独立内容";
+    state.Check(
+        storage.SaveNotePage(secondNoteTag.id, secondNoteText),
+        L"main-window-note: seed second note content failed");
     Group reminderGroup;
     reminderGroup.name = L"提醒验收分组";
     reminderGroup.pos = -1;
@@ -2235,6 +2255,138 @@ void RunMainWindowScenario(
         Scenario scenario{L"main-window-" + dpiSuffix, L"QuattroMainWindow", L"", screenshotName, {expectedTitle}, {}, 0, 0, false};
         scenario.forcedDpi = dpi;
         ValidateAndCapture(hwnd, scenario, outputDir, state);
+
+        state.Check(
+            SendMessageW(hwnd, WM_QUATTRO_TEST_SELECT_TAG, static_cast<WPARAM>(noteTag.id), 0) == TRUE,
+            L"main-window-note: failed to select note tag");
+        HWND noteEdit = nullptr;
+        for (const ChildInfo& child : Children(hwnd)) {
+            if (WindowText(child.hwnd) == noteText && IsEditLikeClass(child.className)) {
+                noteEdit = child.hwnd;
+                break;
+            }
+        }
+        state.Check(noteEdit != nullptr, L"main-window-note: note edit text is missing after opening note tag");
+        const LRESULT initialNoteGeneration =
+            SendMessageW(hwnd, WM_QUATTRO_TEST_NOTE_EDIT_GENERATION, 0, 0);
+        bool initialNoteRefreshed = false;
+        const ULONGLONG initialRefreshDeadline = GetTickCount64() + 2000;
+        while (GetTickCount64() < initialRefreshDeadline) {
+            if (SendMessageW(hwnd, WM_QUATTRO_TEST_NOTE_EDIT_GENERATION, 1, 0) >= initialNoteGeneration) {
+                initialNoteRefreshed = true;
+                break;
+            }
+            Sleep(10);
+        }
+        state.Check(
+            initialNoteRefreshed,
+            L"main-window-note: note editor was not redrawn after the parent D2D paint completed");
+        state.Check(
+            SendMessageW(hwnd, WM_QUATTRO_TEST_REAPPLY_THEME, 0, 0) == TRUE,
+            L"main-window-note: failed to reapply theme while note was open");
+        HWND themedNoteEdit = nullptr;
+        for (const ChildInfo& child : Children(hwnd)) {
+            if (WindowText(child.hwnd) == noteText && IsEditLikeClass(child.className)) {
+                themedNoteEdit = child.hwnd;
+                break;
+            }
+        }
+        state.Check(
+            themedNoteEdit && WindowText(themedNoteEdit) == noteText,
+            L"main-window-note: note text disappeared after theme reapply");
+        state.Check(
+            SendMessageW(hwnd, WM_QUATTRO_TEST_NOTE_EDIT_GENERATION, 0, 0) > initialNoteGeneration,
+            L"main-window-note: theme reapply reused the old note editor lifecycle");
+        noteEdit = themedNoteEdit;
+        HWND noteFrame = noteEdit
+            ? reinterpret_cast<HWND>(GetPropW(noteEdit, L"QuattroDedicatedThemedEditFrame"))
+            : nullptr;
+        state.Check(
+            noteEdit && (!noteFrame || !IsWindow(noteFrame)),
+            L"main-window-note: frameless note edit still created a covering frame window");
+        BitmapCapture noteCapture = CaptureClientBitmapWithChildren(hwnd);
+        state.Check(noteCapture.bitmap != nullptr, L"main-window-note: note screenshot capture failed");
+        if (noteCapture.bitmap) {
+            SavePng(noteCapture.bitmap, outputDir / (L"main-window-note-open-" + dpiSuffix + L".png"));
+            DeleteObject(noteCapture.bitmap);
+        }
+        state.Check(
+            noteEdit && SendMessageW(hwnd, WM_QUATTRO_TEST_SET_NOTE_TEXT, 0, 0) == TRUE,
+            L"main-window-note: failed to enter note content before switching");
+        state.Check(
+            noteEdit && Contains(WindowText(noteEdit), L"这是切换前新输入的内容"),
+            L"main-window-note: newly entered note content is not visible before switching");
+        const LRESULT editedNoteGeneration =
+            SendMessageW(hwnd, WM_QUATTRO_TEST_NOTE_EDIT_GENERATION, 0, 0);
+
+        state.Check(
+            SendMessageW(hwnd, WM_QUATTRO_TEST_SELECT_TAG, static_cast<WPARAM>(linkTag.id), 0) == TRUE,
+            L"main-window-note: failed to switch from note to normal tag");
+        state.Check(
+            noteEdit && !IsWindow(noteEdit),
+            L"main-window-note: note edit was hidden instead of destroyed after leaving the note tag");
+        state.Check(
+            SendMessageW(hwnd, WM_QUATTRO_TEST_SELECT_TAG, static_cast<WPARAM>(noteTag.id), 0) == TRUE,
+            L"main-window-note: failed to switch back to note tag");
+        HWND returnedNoteEdit = nullptr;
+        for (const ChildInfo& child : Children(hwnd)) {
+            if (Contains(WindowText(child.hwnd), L"这是切换前新输入的内容") &&
+                IsEditLikeClass(child.className)) {
+                returnedNoteEdit = child.hwnd;
+                break;
+            }
+        }
+        state.Check(
+            returnedNoteEdit && IsWindowVisible(returnedNoteEdit),
+            L"main-window-note: a fresh note editor was not created after returning");
+        state.Check(
+            returnedNoteEdit && Contains(WindowText(returnedNoteEdit), L"这是切换前新输入的内容"),
+            L"main-window-note: newly entered text was lost after switching away and back");
+        state.Check(
+            SendMessageW(hwnd, WM_QUATTRO_TEST_NOTE_EDIT_GENERATION, 0, 0) > editedNoteGeneration,
+            L"main-window-note: returning to the note did not create a new editor lifecycle");
+        BitmapCapture returnedNoteCapture = CaptureClientBitmapWithChildren(hwnd);
+        state.Check(returnedNoteCapture.bitmap != nullptr, L"main-window-note: returned note screenshot capture failed");
+        if (returnedNoteCapture.bitmap) {
+            SavePng(returnedNoteCapture.bitmap, outputDir / (L"main-window-note-returned-" + dpiSuffix + L".png"));
+            DeleteObject(returnedNoteCapture.bitmap);
+        }
+        const LRESULT returnedNoteGeneration =
+            SendMessageW(hwnd, WM_QUATTRO_TEST_NOTE_EDIT_GENERATION, 0, 0);
+        state.Check(
+            SendMessageW(hwnd, WM_QUATTRO_TEST_SELECT_TAG, static_cast<WPARAM>(secondNoteTag.id), 0) == TRUE,
+            L"main-window-note: failed to switch from the first note to the second note");
+        HWND secondNoteEdit = nullptr;
+        for (const ChildInfo& child : Children(hwnd)) {
+            if (WindowText(child.hwnd) == secondNoteText && IsEditLikeClass(child.className)) {
+                secondNoteEdit = child.hwnd;
+                break;
+            }
+        }
+        state.Check(secondNoteEdit != nullptr, L"main-window-note: second note content was not loaded");
+        state.Check(
+            SendMessageW(hwnd, WM_QUATTRO_TEST_NOTE_EDIT_GENERATION, 0, 0) > returnedNoteGeneration,
+            L"main-window-note: note-to-note switching reused the previous editor lifecycle");
+        state.Check(
+            SendMessageW(hwnd, WM_QUATTRO_TEST_SELECT_TAG, static_cast<WPARAM>(noteTag.id), 0) == TRUE,
+            L"main-window-note: failed to return from the second note to the first note");
+        HWND restoredFirstNoteEdit = nullptr;
+        for (const ChildInfo& child : Children(hwnd)) {
+            if (Contains(WindowText(child.hwnd), L"这是切换前新输入的内容") &&
+                IsEditLikeClass(child.className)) {
+                restoredFirstNoteEdit = child.hwnd;
+                break;
+            }
+        }
+        state.Check(
+            restoredFirstNoteEdit != nullptr,
+            L"main-window-note: first note content was lost after note-to-note switching");
+        state.Check(
+            SendMessageW(hwnd, WM_QUATTRO_TEST_SELECT_TAG, static_cast<WPARAM>(linkTag.id), 0) == TRUE,
+            L"main-window-note: failed to restore normal tag after note checks");
+        state.Check(
+            restoredFirstNoteEdit && !IsWindow(restoredFirstNoteEdit),
+            L"main-window-note: active note editor survived after restoring the normal tag");
 
         constexpr UINT kTestLinkVisualStateMessage = WM_APP + 0x75;
         state.Check(

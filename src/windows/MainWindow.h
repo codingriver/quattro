@@ -56,6 +56,10 @@ constexpr UINT WM_QUATTRO_TEST_TOOL_MENU = WM_APP + 0x77;
 constexpr UINT WM_QUATTRO_TEST_LINK_MENU = WM_APP + 0x78;
 constexpr UINT WM_QUATTRO_TEST_TAG_MENU = WM_APP + 0x79;
 constexpr UINT WM_QUATTRO_RESOURCE_REFRESH_DONE = WM_APP + 0x7A;
+constexpr UINT WM_QUATTRO_TEST_SELECT_TAG = WM_APP + 0x7B;
+constexpr UINT WM_QUATTRO_TEST_SET_NOTE_TEXT = WM_APP + 0x7C;
+constexpr UINT WM_QUATTRO_TEST_REAPPLY_THEME = WM_APP + 0x7D;
+constexpr UINT WM_QUATTRO_TEST_NOTE_EDIT_GENERATION = WM_APP + 0x7E;
 
 class OleDropTarget;
 class TaskHandle;
@@ -467,8 +471,10 @@ private:
     int CommandTodoId() const;
     NotePage* FindNotePage(int tagId);
     const NotePage* FindNotePage(int tagId) const;
-    void SaveCurrentNotePage();
-    void HideNoteEdit();
+    bool SaveCurrentNotePage();
+    bool PrepareForTagChange(int nextTagId);
+    bool CommitAndDestroyNoteEdit();
+    void DestroyNoteEdit();
     void EnsureNoteEdit(const D2D1_RECT_F& rect, const Group& tag);
     int LinkIdFromHotKeyId(int hotKeyId) const;
     bool IsUrlLink(const Link& link) const;
@@ -584,6 +590,8 @@ private:
     std::unique_ptr<ThemedWindowUi> embeddedUi_;
     bool noteDirty_ = false;
     UINT_PTR noteSaveTimerId_ = 0;
+    unsigned int noteEditGeneration_ = 0;
+    unsigned int noteEditRefreshGeneration_ = 0;
     UINT_PTR reminderScanTimerId_ = 0;
     std::unordered_map<std::wstring, ULONGLONG> reminderRetryAfter_;
     std::vector<int> pendingReminderTodoIds_;

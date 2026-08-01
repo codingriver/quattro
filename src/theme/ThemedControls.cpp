@@ -498,7 +498,7 @@ void InvalidateParentAround(HWND hwnd) {
 }
 
 bool HasDedicatedEditFrame(HWND hwnd) {
-    return GetPropW(hwnd, kDedicatedEditFrameProp) != nullptr;
+    return ThemedControls::AssociatedEditFrame(hwnd) != nullptr;
 }
 
 bool IsChecked(HWND hwnd) {
@@ -3608,6 +3608,33 @@ const wchar_t* ControlBackgroundComponent(HWND hwnd) {
     thread_local std::wstring component;
     component = state->backgroundComponent;
     return component.c_str();
+}
+
+HWND AssociatedEditFrame(HWND hwnd) {
+    if (!hwnd) {
+        return nullptr;
+    }
+    HWND frame = reinterpret_cast<HWND>(GetPropW(hwnd, kDedicatedEditFrameProp));
+    return frame && IsWindow(frame) ? frame : nullptr;
+}
+
+void SetControlVisible(HWND hwnd, bool visible) {
+    if (!hwnd) {
+        return;
+    }
+    HWND frame = AssociatedEditFrame(hwnd);
+    ShowWindow(hwnd, visible ? SW_SHOWNA : SW_HIDE);
+    if (frame) {
+        SetWindowPos(
+            frame,
+            hwnd,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE |
+                (visible ? SWP_SHOWWINDOW : SWP_HIDEWINDOW));
+    }
 }
 
 void SetEditInheritsSurface(HWND hwnd, bool inheritsSurface) {

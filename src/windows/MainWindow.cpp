@@ -78,6 +78,7 @@ constexpr UINT_PTR ID_TIMER_REMINDER_SCAN = 13;
 constexpr UINT_PTR ID_TIMER_TOOL_OPEN_HIDE = 14;
 constexpr UINT kTrayIconId = 1;
 constexpr UINT WM_QUATTRO_DOUBLE_ALT_HOTKEY = WM_APP + 0x6C;
+constexpr UINT WM_QUATTRO_NOTE_EDIT_DEFERRED_REDRAW = WM_APP + 0x7F;
 constexpr int kDockVisiblePixels = 3;
 constexpr int kDockPeekVisiblePixels = 6;
 constexpr int kDockRestoreGraceMs = 1500;
@@ -1901,10 +1902,7 @@ MainWindow::~MainWindow() {
         DestroyWindow(dockPeek_);
         dockPeek_ = nullptr;
     }
-    if (noteEdit_) {
-        DestroyWindow(noteEdit_);
-        noteEdit_ = nullptr;
-    }
+    DestroyNoteEdit();
     embeddedUi_.reset();
     DiscardDeviceResources();
     SafeRelease(titleFormat_);
@@ -2183,6 +2181,44 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             return TRUE;
         }
         return FALSE;
+    case WM_QUATTRO_TEST_SELECT_TAG:
+        if (QuattroTestMode()) {
+            SelectTag(static_cast<int>(wParam));
+            UpdateWindow(hwnd_);
+            return currentTagId_ == static_cast<int>(wParam) ? TRUE : FALSE;
+        }
+        return FALSE;
+    case WM_QUATTRO_TEST_SET_NOTE_TEXT:
+        if (QuattroTestMode() && noteEdit_) {
+            SetWindowTextW(noteEdit_, L"便签切换后仍应显示这段文本\r\n这是切换前新输入的内容");
+            UpdateWindow(noteEdit_);
+            return TRUE;
+        }
+        return FALSE;
+    case WM_QUATTRO_TEST_REAPPLY_THEME:
+        if (QuattroTestMode()) {
+            ApplyTheme(config_.theme);
+            UpdateWindow(hwnd_);
+            return TRUE;
+        }
+        return FALSE;
+    case WM_QUATTRO_TEST_NOTE_EDIT_GENERATION:
+        if (!QuattroTestMode()) {
+            return 0;
+        }
+        return static_cast<LRESULT>(wParam == 1 ? noteEditRefreshGeneration_ : noteEditGeneration_);
+    case WM_QUATTRO_NOTE_EDIT_DEFERRED_REDRAW:
+        if (noteEdit_ && IsWindow(noteEdit_) &&
+            static_cast<unsigned int>(wParam) == noteEditGeneration_) {
+            if (RedrawWindow(
+                    noteEdit_,
+                    nullptr,
+                    nullptr,
+                    RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_UPDATENOW)) {
+                noteEditRefreshGeneration_ = noteEditGeneration_;
+            }
+        }
+        return 0;
     case WM_QUATTRO_TEST_SYSTEM_REMINDER:
         if (QuattroTestMode()) {
             std::vector<TodoItem*> items;
@@ -3203,10 +3239,13 @@ void MainWindow::SelectGroup(int groupId) {
         return;
     }
 
-    SaveCurrentNotePage();
+    const auto tags = GroupsForParent(groupId);
+    const int nextTagId = tags.empty() ? 0 : tags.front()->id;
+    if (!PrepareForTagChange(nextTagId)) {
+        return;
+    }
     currentGroupId_ = groupId;
-    const auto tags = TagsForCurrentGroup();
-    currentTagId_ = tags.empty() ? 0 : tags.front().id;
+    currentTagId_ = nextTagId;
     selectedLinkId_ = 0;
     selectedTodoId_ = 0;
     selectionByKeyboard_ = false;
@@ -3227,7 +3266,9 @@ void MainWindow::SelectTag(int tagId) {
         return;
     }
 
-    SaveCurrentNotePage();
+    if (!PrepareForTagChange(tagId)) {
+        return;
+    }
     currentTagId_ = tagId;
     selectedLinkId_ = 0;
     selectedTodoId_ = 0;
@@ -3277,6 +3318,9 @@ void MainWindow::AddGroup() {
     if (!ShowTextInputDialog(hwnd_, instance_, theme_, L"新建分组", L"分组名称", name)) {
         return;
     }
+    if (!SaveCurrentNotePage()) {
+        return;
+    }
 
     Group group;
     group.name = name;
@@ -3294,13 +3338,17 @@ void MainWindow::AddGroup() {
     defaultTag.pos = -1;
     defaultTag.layout = 1;
     defaultTag.iconSize = 32;
+    int nextTagId = 0;
     if (storageService_.InsertGroup(defaultTag)) {
         model_.groups.push_back(defaultTag);
-        currentTagId_ = defaultTag.id;
+        nextTagId = defaultTag.id;
     } else {
-        currentTagId_ = 0;
         MessageBoxW(hwnd_, storageService_.lastError().c_str(), L"新增标签", MB_OK | MB_ICONWARNING);
     }
+    if (!PrepareForTagChange(nextTagId)) {
+        return;
+    }
+    currentTagId_ = nextTagId;
 
     currentGroupId_ = group.id;
     config_.currentGroupId = currentGroupId_;
@@ -3335,15 +3383,18 @@ void MainWindow::DeleteGroup(int groupId) {
     if (!group || group->parentGroup != 0) {
         return;
     }
-    SaveCurrentNotePage();
     std::wstring message = L"确定删除分组“" + group->name + L"”及其标签和启动项？";
     if (MessageBoxW(hwnd_, message.c_str(), L"删除分组", MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) != IDYES) {
+        return;
+    }
+    if (!SaveCurrentNotePage()) {
         return;
     }
     if (!storageService_.DeleteGroup(groupId)) {
         MessageBoxW(hwnd_, storageService_.lastError().c_str(), L"删除分组", MB_OK | MB_ICONWARNING);
         return;
     }
+    DestroyNoteEdit();
     const std::wstring deletedName = group->name;
     std::unordered_set<int> deletedTagIds;
     for (const Group& item : model_.groups) {
@@ -3394,6 +3445,9 @@ void MainWindow::AddTag() {
     if (!ShowTextInputDialog(hwnd_, instance_, theme_, L"新建标签", L"标签名称", name)) {
         return;
     }
+    if (!SaveCurrentNotePage()) {
+        return;
+    }
 
     Group tag;
     tag.name = name;
@@ -3406,6 +3460,9 @@ void MainWindow::AddTag() {
         return;
     }
     model_.groups.push_back(tag);
+    if (!PrepareForTagChange(tag.id)) {
+        return;
+    }
     currentGroupId_ = parentGroupId;
     currentTagId_ = tag.id;
     config_.currentGroupId = currentGroupId_;
@@ -3427,6 +3484,9 @@ void MainWindow::AddNoteTag() {
     if (!ShowTextInputDialog(hwnd_, instance_, theme_, L"新建便签", L"便签标题", name)) {
         return;
     }
+    if (!SaveCurrentNotePage()) {
+        return;
+    }
 
     Group tag;
     tag.name = name;
@@ -3441,6 +3501,9 @@ void MainWindow::AddNoteTag() {
         return;
     }
     model_.groups.push_back(tag);
+    if (!PrepareForTagChange(tag.id)) {
+        return;
+    }
     currentGroupId_ = parentGroupId;
     currentTagId_ = tag.id;
     config_.currentGroupId = currentGroupId_;
@@ -3465,11 +3528,17 @@ void MainWindow::AddTodoTag() {
     tag.iconSize = 32;
     tag.type = 4;
     tag.content = L"todoItems";
+    if (!SaveCurrentNotePage()) {
+        return;
+    }
     if (!storageService_.InsertGroup(tag)) {
         MessageBoxW(hwnd_, storageService_.lastError().c_str(), L"新增待办事项标签页", MB_OK | MB_ICONWARNING);
         return;
     }
     model_.groups.push_back(tag);
+    if (!PrepareForTagChange(tag.id)) {
+        return;
+    }
     currentGroupId_ = parentGroupId;
     currentTagId_ = tag.id;
     config_.currentGroupId = currentGroupId_;
@@ -3503,15 +3572,18 @@ void MainWindow::DeleteTag(int tagId) {
     if (!tag || tag->parentGroup == 0) {
         return;
     }
-    SaveCurrentNotePage();
     std::wstring message = L"确定删除标签“" + tag->name + L"”及其启动项？";
     if (MessageBoxW(hwnd_, message.c_str(), L"删除标签", MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) != IDYES) {
+        return;
+    }
+    if (!SaveCurrentNotePage()) {
         return;
     }
     if (!storageService_.DeleteGroup(tagId)) {
         MessageBoxW(hwnd_, storageService_.lastError().c_str(), L"删除标签", MB_OK | MB_ICONWARNING);
         return;
     }
+    DestroyNoteEdit();
     const std::wstring deletedName = tag->name;
     const int deletedContentCount = static_cast<int>(
         std::count_if(model_.links.begin(), model_.links.end(), [tagId](const Link& link) { return link.parentGroup == tagId; }) +
@@ -3726,6 +3798,9 @@ int MainWindow::EnsureCurrentTag() {
     if (tag && tag->parentGroup != 0 && !IsNoteTag(*tag) && !IsTodoItemsTag(*tag)) {
         return currentTagId_;
     }
+    if (!SaveCurrentNotePage()) {
+        return 0;
+    }
 
     Group* group = FindGroup(currentGroupId_);
     if (!group || group->parentGroup != 0) {
@@ -3752,6 +3827,9 @@ int MainWindow::EnsureCurrentTag() {
         return 0;
     }
     model_.groups.push_back(createdTag);
+    if (!PrepareForTagChange(createdTag.id)) {
+        return 0;
+    }
     currentTagId_ = createdTag.id;
     config_.currentGroupId = currentGroupId_;
     config_.currentTagId = currentTagId_;
@@ -3923,6 +4001,9 @@ void MainWindow::QuickImport() {
     if (targetTagId <= 0) {
         return;
     }
+    if (!SaveCurrentNotePage()) {
+        return;
+    }
 
     int imported = 0;
     std::wstring error;
@@ -3942,6 +4023,9 @@ void MainWindow::QuickImport() {
         RequestInitialUrlIconDownload(link);
     }
 
+    if (!PrepareForTagChange(targetTagId)) {
+        return;
+    }
     currentTagId_ = targetTagId;
     if (Group* tag = FindGroup(currentTagId_); tag && tag->parentGroup != 0) {
         currentGroupId_ = tag->parentGroup;
@@ -4101,6 +4185,9 @@ void MainWindow::PasteLinkInternal() {
         ShowToast(L"请先选择一个标签。", ThemedToastRole::Warning);
         return;
     }
+    if (!SaveCurrentNotePage()) {
+        return;
+    }
 
     if (clipboardCut_) {
         Link* source = FindLink(clipboardSourceId_);
@@ -4133,6 +4220,9 @@ void MainWindow::PasteLinkInternal() {
     }
     model_.links.push_back(copy);
     selectedLinkId_ = copy.id;
+    if (!PrepareForTagChange(targetTagId)) {
+        return;
+    }
     currentTagId_ = targetTagId;
     currentGroupId_ = tag->parentGroup;
     config_.currentGroupId = currentGroupId_;
@@ -4276,6 +4366,9 @@ void MainWindow::MoveGroupWithinParent(int groupId, int direction) {
     if (targetIndex < 0 || targetIndex >= static_cast<int>(siblings.size())) {
         return;
     }
+    if (group->parentGroup != 0 && !SaveCurrentNotePage()) {
+        return;
+    }
 
     std::swap(siblings[index], siblings[targetIndex]);
     std::vector<int> orderedIds;
@@ -4290,6 +4383,9 @@ void MainWindow::MoveGroupWithinParent(int groupId, int direction) {
         currentGroupId_ = groupId;
         EnsureGroupVisible(currentGroupId_);
     } else {
+        if (!PrepareForTagChange(groupId)) {
+            return;
+        }
         currentTagId_ = groupId;
         EnsureTagVisible(currentTagId_);
     }
@@ -4300,6 +4396,9 @@ void MainWindow::MoveTagToGroup(int tagId, int groupId) {
     Group* tag = FindGroup(tagId);
     Group* targetGroup = FindGroup(groupId);
     if (!tag || tag->parentGroup == 0 || !targetGroup || targetGroup->parentGroup != 0 || tag->parentGroup == groupId) {
+        return;
+    }
+    if (!SaveCurrentNotePage()) {
         return;
     }
 
@@ -4313,6 +4412,9 @@ void MainWindow::MoveTagToGroup(int tagId, int groupId) {
 
     *tag = edited;
     currentGroupId_ = groupId;
+    if (!PrepareForTagChange(tagId)) {
+        return;
+    }
     currentTagId_ = tagId;
     config_.currentGroupId = currentGroupId_;
     config_.currentTagId = currentTagId_;
@@ -4332,6 +4434,9 @@ void MainWindow::MoveLinkToTag(int linkId, int tagId) {
     if (!link || !tag || tag->parentGroup == 0 || link->parentGroup == tagId) {
         return;
     }
+    if (!SaveCurrentNotePage()) {
+        return;
+    }
 
     Link edited = *link;
     edited.parentGroup = tagId;
@@ -4343,6 +4448,9 @@ void MainWindow::MoveLinkToTag(int linkId, int tagId) {
     *link = edited;
     selectedLinkId_ = edited.id;
     currentGroupId_ = tag->parentGroup;
+    if (!PrepareForTagChange(tagId)) {
+        return;
+    }
     currentTagId_ = tag->id;
     config_.currentGroupId = currentGroupId_;
     config_.currentTagId = currentTagId_;
@@ -4360,6 +4468,9 @@ void MainWindow::CopyLinkToTag(int linkId, int tagId) {
     if (!link || !tag || tag->parentGroup == 0) {
         return;
     }
+    if (!SaveCurrentNotePage()) {
+        return;
+    }
 
     Link copy = *link;
     copy.id = 0;
@@ -4375,6 +4486,9 @@ void MainWindow::CopyLinkToTag(int linkId, int tagId) {
     RegisterConfiguredHotKeys();
     selectedLinkId_ = copy.id;
     currentGroupId_ = tag->parentGroup;
+    if (!PrepareForTagChange(tagId)) {
+        return;
+    }
     currentTagId_ = tag->id;
     config_.currentGroupId = currentGroupId_;
     config_.currentTagId = currentTagId_;
@@ -5208,6 +5322,9 @@ void MainWindow::CopyLinkPath(int linkId) {
 }
 
 void MainWindow::OpenSettings() {
+    if (!CommitAndDestroyNoteEdit()) {
+        return;
+    }
     AppConfig next = config_;
     bool importedData = false;
     auto applySettings = [this, &next](const AppConfig& applied, bool appliedImportedData) -> bool {
@@ -5288,6 +5405,7 @@ void MainWindow::OpenSettings() {
             ClearUiBitmaps();
             InvalidateRect(hwnd_, nullptr, FALSE);
         }
+        InvalidateRect(hwnd_, nullptr, FALSE);
         return;
     }
     CommitSettingsConfig(next, importedData);
@@ -6007,6 +6125,9 @@ void MainWindow::ShowThemeMenu(POINT screenPoint) {
 }
 
 void MainWindow::ApplyTheme(const std::wstring& themeName) {
+    if (!CommitAndDestroyNoteEdit()) {
+        return;
+    }
     config_.theme = themeName;
     theme_ = Theme::Load(appDirectory_ / L"theme", config_.theme);
     configService_.Save(config_);
@@ -6015,18 +6136,7 @@ void MainWindow::ApplyTheme(const std::wstring& themeName) {
         menuFont_->Reset();
     }
     embeddedUi_.reset();
-    if (noteEdit_) {
-        embeddedUi_ = std::make_unique<ThemedWindowUi>(
-            instance_, nullptr, hwnd_, theme_, DialogLayoutKind::Compact, 1, 1);
-        ThemedEditOptions options{};
-        options.mode = ThemedEditMode::MultiLine;
-        embeddedUi_->RegisterEditFrame(noteEdit_, noteEditFrame_, options);
-        SendMessageW(noteEdit_, WM_SETFONT, reinterpret_cast<WPARAM>(embeddedUi_->font()), TRUE);
-    }
     ApplyTooltipTheme();
-    if (noteEdit_) {
-        InvalidateRect(noteEdit_, nullptr, TRUE);
-    }
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
@@ -6541,8 +6651,6 @@ void MainWindow::ExportConfigPackage() {
 }
 
 void MainWindow::ImportConfigPackageMerge() {
-    SaveCurrentNotePage();
-
     CommonFileDialogOptions dialogOptions{};
     dialogOptions.owner = hwnd_;
     dialogOptions.mode = CommonFileDialogMode::FileOnly;
@@ -6562,6 +6670,9 @@ void MainWindow::ImportConfigPackageMerge() {
         L"合并导入配置包",
         MB_OKCANCEL | MB_ICONINFORMATION);
     if (confirm != IDOK) {
+        return;
+    }
+    if (!CommitAndDestroyNoteEdit()) {
         return;
     }
 
@@ -8522,11 +8633,9 @@ void MainWindow::DrawLinks(D2D1_RECT_F rect) {
             borderColor.a = 0.38f;
             DrawRect(D2D1::RectF(rect.left + 1.0f, rect.top + 1.0f, rect.right - 1.0f, rect.bottom - 1.0f), borderColor, 2.0f);
         }
-        HideNoteEdit();
         DrawTodoItems(rect, *currentTag);
         return;
     }
-    HideNoteEdit();
 
     // 启动项：灰底上托一张白色圆角卡片
     DrawContentCard(rect);
@@ -10020,6 +10129,10 @@ void MainWindow::CommitNavDrag() {
 
     const NavDragKind draggedKind = navDragKind_;
     const int draggedId = navDragId_;
+    if (draggedKind == NavDragKind::Tag && !SaveCurrentNotePage()) {
+        CancelNavDrag();
+        return;
+    }
     CancelNavDrag();
     if (!ApplyManualGroupOrder(parentGroup, orderedIds, draggedKind == NavDragKind::Group ? L"拖动分组" : L"拖动标签")) {
         return;
@@ -10030,6 +10143,9 @@ void MainWindow::CommitNavDrag() {
         config_.currentGroupId = currentGroupId_;
         EnsureGroupVisible(currentGroupId_);
     } else {
+        if (!PrepareForTagChange(draggedId)) {
+            return;
+        }
         currentTagId_ = draggedId;
         config_.currentTagId = currentTagId_;
         EnsureTagVisible(currentTagId_);
@@ -10532,15 +10648,15 @@ const NotePage* MainWindow::FindNotePage(int tagId) const {
     return nullptr;
 }
 
-void MainWindow::SaveCurrentNotePage() {
+bool MainWindow::SaveCurrentNotePage() {
     if (noteSaveTimerId_ != 0 && hwnd_) {
         KillTimer(hwnd_, ID_TIMER_NOTE_AUTOSAVE);
         noteSaveTimerId_ = 0;
     }
     const int tagId = noteEditTagId_ > 0 ? noteEditTagId_ : currentTagId_;
     const Group* tag = FindGroup(tagId);
-    if (!noteDirty_ || !noteEdit_ || tagId <= 0 || !tag || !IsNoteTag(*tag)) {
-        return;
+    if (!noteEdit_ || tagId <= 0 || !tag || !IsNoteTag(*tag)) {
+        return true;
     }
 
     const int textLength = GetWindowTextLengthW(noteEdit_);
@@ -10550,10 +10666,18 @@ void MainWindow::SaveCurrentNotePage() {
     }
     content.resize(static_cast<std::size_t>(std::max(0, textLength)));
 
+    const NotePage* existingNote = FindNotePage(tagId);
+    if (!noteDirty_ && existingNote && existingNote->content == content) {
+        return true;
+    }
+    if (!noteDirty_ && !existingNote && content.empty()) {
+        return true;
+    }
+
     if (!storageService_.SaveNotePage(tagId, content)) {
         WriteAppLog(L"Save note page failed: " + storageService_.lastError());
         ShowToast(L"便签保存失败，内容可能丢失，请复制备份便签内容。", ThemedToastRole::Danger, 8000);
-        return;
+        return false;
     }
 
     const std::wstring updatedAt = CurrentTodoTimestamp();
@@ -10568,13 +10692,39 @@ void MainWindow::SaveCurrentNotePage() {
         model_.notes.push_back(std::move(newNote));
     }
     noteDirty_ = false;
+    return true;
 }
 
-void MainWindow::HideNoteEdit() {
-    SaveCurrentNotePage();
-    if (noteEdit_) {
-        ShowWindow(noteEdit_, SW_HIDE);
+bool MainWindow::PrepareForTagChange(int nextTagId) {
+    if (!noteEdit_ || noteEditTagId_ == nextTagId) {
+        return true;
     }
+    return CommitAndDestroyNoteEdit();
+}
+
+bool MainWindow::CommitAndDestroyNoteEdit() {
+    if (!SaveCurrentNotePage()) {
+        return false;
+    }
+    DestroyNoteEdit();
+    return true;
+}
+
+void MainWindow::DestroyNoteEdit() {
+    if (noteSaveTimerId_ != 0 && hwnd_) {
+        KillTimer(hwnd_, ID_TIMER_NOTE_AUTOSAVE);
+        noteSaveTimerId_ = 0;
+    }
+    if (noteEdit_ && IsWindow(noteEdit_)) {
+        if (embeddedUi_) {
+            embeddedUi_->UnregisterEditFrame(noteEdit_);
+        }
+        DestroyWindow(noteEdit_);
+    }
+    noteEdit_ = nullptr;
+    noteEditTagId_ = 0;
+    noteEditFrame_ = RECT{};
+    noteDirty_ = false;
 }
 
 void MainWindow::EnsureNoteEdit(const D2D1_RECT_F& rect, const Group& tag) {
@@ -10591,31 +10741,46 @@ void MainWindow::EnsureNoteEdit(const D2D1_RECT_F& rect, const Group& tag) {
             instance_, nullptr, hwnd_, theme_, DialogLayoutKind::Compact, 1, 1);
     }
 
+    bool needsDeferredRedraw = false;
     if (!noteEdit_) {
         ThemedEditOptions options{};
         options.mode = ThemedEditMode::MultiLine;
+        options.showFrame = false;
         noteEdit_ = embeddedUi_->ui().Edit(ID_NOTE_EDIT, frame, content, options);
         if (noteEdit_) {
+            ++noteEditGeneration_;
             noteEditTagId_ = tag.id;
             noteEditFrame_ = frame;
             noteDirty_ = false;
+            needsDeferredRedraw = true;
         }
     }
 
     if (!noteEdit_) {
         return;
     }
+    // Tag transitions tear down the old editor before painting the new page.
+    // A mismatched live editor indicates a lifecycle bug; do not write data from paint.
     if (noteEditTagId_ != tag.id) {
-        SaveCurrentNotePage();
-        SetWindowTextW(noteEdit_, content.c_str());
-        noteEditTagId_ = tag.id;
-        noteDirty_ = false;
+        WriteAppLog(L"Note editor tag mismatch; recreation deferred to navigation lifecycle.");
+        return;
     }
     if (!EqualRect(&noteEditFrame_, &frame)) {
         embeddedUi_->MoveEditFrame(noteEdit_, frame);
         noteEditFrame_ = frame;
+        needsDeferredRedraw = true;
     }
-    ShowWindow(noteEdit_, SW_SHOWNA);
+    if ((GetWindowLongPtrW(noteEdit_, GWL_STYLE) & WS_VISIBLE) == 0) {
+        embeddedUi_->SetEditVisible(noteEdit_, true);
+        needsDeferredRedraw = true;
+    }
+    if (needsDeferredRedraw) {
+        PostMessageW(
+            hwnd_,
+            WM_QUATTRO_NOTE_EDIT_DEFERRED_REDRAW,
+            static_cast<WPARAM>(noteEditGeneration_),
+            0);
+    }
 }
 
 Link* MainWindow::FindLink(int id) {

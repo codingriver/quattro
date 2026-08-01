@@ -13,6 +13,7 @@
 #include <filesystem>
 #include <memory>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace {
 DWORD StaticStyle(ThemedTextAlign align) {
@@ -1303,11 +1304,24 @@ std::unordered_map<HWND, ToolBarRuntime>& ToolBarStates() {
 void SetTabChildrenVisibleAtomically(const std::vector<std::pair<HWND, bool>>& changes) {
     if (changes.empty()) return;
 
+    std::vector<std::pair<HWND, bool>> relatedChanges;
+    relatedChanges.reserve(changes.size() * 2);
+    std::unordered_set<HWND> included;
+    for (const auto& [child, visible] : changes) {
+        if (child && included.insert(child).second) {
+            relatedChanges.emplace_back(child, visible);
+        }
+        HWND frame = ThemedControls::AssociatedEditFrame(child);
+        if (frame && included.insert(frame).second) {
+            relatedChanges.emplace_back(frame, visible);
+        }
+    }
+
     const UINT commonFlags =
         SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_NOACTIVATE | SWP_NOREDRAW;
-    HDWP deferred = BeginDeferWindowPos(static_cast<int>(changes.size()));
+    HDWP deferred = BeginDeferWindowPos(static_cast<int>(relatedChanges.size()));
     if (deferred) {
-        for (const auto& [child, visible] : changes) {
+        for (const auto& [child, visible] : relatedChanges) {
             deferred = DeferWindowPos(
                 deferred,
                 child,
@@ -1327,7 +1341,7 @@ void SetTabChildrenVisibleAtomically(const std::vector<std::pair<HWND, bool>>& c
     // Preserve correct final visibility if the deferred batch could not be
     // allocated. SWP_NOREDRAW still prevents individual child repaints; the
     // caller submits one complete parent redraw after every child is updated.
-    for (const auto& [child, visible] : changes) {
+    for (const auto& [child, visible] : relatedChanges) {
         SetWindowPos(
             child,
             nullptr,
@@ -2257,7 +2271,7 @@ bool ThemedUi::CopyTextToClipboard(HWND owner, const std::wstring& text) {
 }
 
 void ThemedUi::SetVisible(HWND hwnd, bool visible) {
-    if (hwnd) ShowWindow(hwnd, visible ? SW_SHOWNA : SW_HIDE);
+    ThemedControls::SetControlVisible(hwnd, visible);
 }
 
 void ThemedUi::SetEnabled(HWND hwnd, bool enabled) const {
@@ -2399,7 +2413,7 @@ void ThemedUi::BindPanelChildren(HWND panel, const std::vector<HWND>& children) 
             it->second.maximumScroll,
             static_cast<int>(rect.bottom - (panelRect.top + content.top) - visibleHeight));
         EnableWindow(child, it->second.enabled ? TRUE : FALSE);
-        ShowWindow(child, it->second.visible ? SW_SHOWNA : SW_HIDE);
+        ThemedControls::SetControlVisible(child, it->second.visible);
     }
     ApplyPanelScroll(panel);
     SetWindowPos(panel, HWND_BOTTOM, 0, 0, 0, 0,
@@ -2425,7 +2439,9 @@ void ThemedUi::SetPanelVisible(HWND panel, bool visible) {
     if (it == PanelStates().end()) return;
     it->second.visible = visible;
     ShowWindow(panel, visible ? SW_SHOWNA : SW_HIDE);
-    for (const auto& child : it->second.children) if (child.hwnd) ShowWindow(child.hwnd, visible ? SW_SHOWNA : SW_HIDE);
+    for (const auto& child : it->second.children) {
+        ThemedControls::SetControlVisible(child.hwnd, visible);
+    }
 }
 
 bool ThemedUi::IsPanelVisible(HWND panel) {

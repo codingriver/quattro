@@ -2757,6 +2757,8 @@ int wmain() {
             HWND frameWindow = FindWindowExW(controlParent, nullptr, L"QuattroThemedEditFrame", nullptr);
             Check(framedEdit != nullptr && frameWindow != nullptr,
                 "Themed edit creates its shared frame window");
+            Check(ThemedControls::AssociatedEditFrame(framedEdit) == frameWindow,
+                "Themed edit exposes its associated frame to the public UI implementation");
             ShowWindow(controlParent, SW_SHOWNOACTIVATE);
             SetWindowPos(
                 controlParent, HWND_BOTTOM, 0, 0, 0, 0,
@@ -2767,6 +2769,52 @@ int wmain() {
             frameUi.SetEditVisible(framedEdit, true);
             Check(frameWindow && (GetWindowLongPtrW(frameWindow, GWL_STYLE) & WS_VISIBLE) != 0,
                 "Showing a themed edit also restores its shared frame window");
+            ThemedUi::SetVisible(framedEdit, false);
+            Check(
+                (GetWindowLongPtrW(framedEdit, GWL_STYLE) & WS_VISIBLE) == 0 &&
+                    (GetWindowLongPtrW(frameWindow, GWL_STYLE) & WS_VISIBLE) == 0,
+                "Public control visibility hides a themed edit and its frame together");
+            ThemedUi::SetVisible(framedEdit, true);
+            Check(
+                (GetWindowLongPtrW(framedEdit, GWL_STYLE) & WS_VISIBLE) != 0 &&
+                    (GetWindowLongPtrW(frameWindow, GWL_STYLE) & WS_VISIBLE) != 0,
+                "Public control visibility restores a themed edit and its frame together");
+
+            HWND tabPeer = CreateWindowExW(
+                0, L"STATIC", L"peer", WS_CHILD | WS_VISIBLE,
+                120, 8, 60, 28, controlParent, nullptr, GetModuleHandleW(nullptr), nullptr);
+            HWND visibilityTabs = frameUi.ui().TabControl(
+                7095,
+                RECT{8, 44, 190, 76},
+                {{7093, L"Edit", true}, {7094, L"Peer", true}},
+                ThemedTabControlOptions{});
+            ThemedUi::BindTabPage(visibilityTabs, 0, {framedEdit});
+            ThemedUi::BindTabPage(visibilityTabs, 1, {tabPeer});
+            ThemedUi::SetActiveTab(visibilityTabs, 1);
+            Check(
+                (GetWindowLongPtrW(framedEdit, GWL_STYLE) & WS_VISIBLE) == 0 &&
+                    (GetWindowLongPtrW(frameWindow, GWL_STYLE) & WS_VISIBLE) == 0,
+                "Tab page switching hides a themed edit and its frame atomically");
+            ThemedUi::SetActiveTab(visibilityTabs, 0);
+            Check(
+                (GetWindowLongPtrW(framedEdit, GWL_STYLE) & WS_VISIBLE) != 0 &&
+                    (GetWindowLongPtrW(frameWindow, GWL_STYLE) & WS_VISIBLE) != 0,
+                "Tab page switching restores a themed edit and its frame atomically");
+            ThemedEditOptions framelessOptions{};
+            framelessOptions.mode = ThemedEditMode::MultiLine;
+            framelessOptions.showFrame = false;
+            HWND framelessEdit = frameUi.ui().Edit(
+                7092, RECT{200, 8, 310, 80}, L"frameless note text", framelessOptions);
+            Check(framelessEdit && ThemedControls::AssociatedEditFrame(framelessEdit) == nullptr,
+                "Frameless themed edit does not create a covering frame window");
+            frameUi.SetEditVisible(framelessEdit, false);
+            frameUi.SetEditVisible(framelessEdit, true);
+            wchar_t framelessText[64]{};
+            if (framelessEdit) {
+                GetWindowTextW(framelessEdit, framelessText, static_cast<int>(std::size(framelessText)));
+            }
+            Check(framelessEdit && std::wstring(framelessText) == L"frameless note text",
+                "Frameless themed edit preserves visible text across hide and show");
             if (framedEdit && frameWindow) {
                 SendMessageW(framedEdit, WM_MOUSELEAVE, 0, 0);
                 ValidateRect(frameWindow, nullptr);
@@ -2786,6 +2834,7 @@ int wmain() {
                     "Unchanged themed edit layout does not repaint its frame");
             }
             ShowWindow(controlParent, SW_HIDE);
+            if (framelessEdit) DestroyWindow(framelessEdit);
             if (framedEdit) DestroyWindow(framedEdit);
         }
         ThemedUi controlUi(

@@ -609,8 +609,28 @@ void ThemedWindowUi::RegisterEditFrame(HWND child, RECT frame, const ThemedEditO
     if (EditFrame* editFrame = FindEditFrame(child)) {
         editFrame->frame = frame;
         editFrame->options = options;
+        if (!options.showFrame && editFrame->frameWindow && IsWindow(editFrame->frameWindow)) {
+            RemovePropW(child, kDedicatedEditFrameProp);
+            DestroyWindow(editFrame->frameWindow);
+            editFrame->frameWindow = nullptr;
+        } else if (options.showFrame && (!editFrame->frameWindow || !IsWindow(editFrame->frameWindow)) &&
+                   EnsureEditFrameClass()) {
+            editFrame->frameWindow = CreateWindowExW(
+                WS_EX_NOPARENTNOTIFY,
+                kEditFrameClassName,
+                L"",
+                WS_CHILD | WS_CLIPSIBLINGS,
+                frame.left,
+                frame.top,
+                frame.right - frame.left,
+                frame.bottom - frame.top,
+                hwnd_,
+                nullptr,
+                instance_,
+                this);
+        }
         if (editFrame->frameWindow && IsWindow(editFrame->frameWindow)) {
-            SetPropW(child, kDedicatedEditFrameProp, reinterpret_cast<HANDLE>(static_cast<INT_PTR>(1)));
+            SetPropW(child, kDedicatedEditFrameProp, editFrame->frameWindow);
         } else {
             RemovePropW(child, kDedicatedEditFrameProp);
         }
@@ -619,7 +639,7 @@ void ThemedWindowUi::RegisterEditFrame(HWND child, RECT frame, const ThemedEditO
     } else {
         editFrames_.push_back(EditFrame{child, nullptr, frame, options});
         EditFrame& newFrame = editFrames_.back();
-        if (EnsureEditFrameClass()) {
+        if (options.showFrame && EnsureEditFrameClass()) {
             newFrame.frameWindow = CreateWindowExW(
                 WS_EX_NOPARENTNOTIFY,
                 kEditFrameClassName,
@@ -635,7 +655,7 @@ void ThemedWindowUi::RegisterEditFrame(HWND child, RECT frame, const ThemedEditO
                 this);
         }
         if (newFrame.frameWindow && IsWindow(newFrame.frameWindow)) {
-            SetPropW(child, kDedicatedEditFrameProp, reinterpret_cast<HANDLE>(static_cast<INT_PTR>(1)));
+            SetPropW(child, kDedicatedEditFrameProp, newFrame.frameWindow);
         }
         SetWindowSubclass(child, EditChildProc, kEditChildSubclassId, reinterpret_cast<DWORD_PTR>(this));
         LayoutEditFrameChild(newFrame);
@@ -767,7 +787,7 @@ void ThemedWindowUi::SetEditEnabled(HWND child, bool enabled) {
 
 void ThemedWindowUi::SetEditVisible(HWND child, bool visible) {
     if (!child) return;
-    ShowWindow(child, visible ? SW_SHOWNA : SW_HIDE);
+    ThemedControls::SetControlVisible(child, visible);
     if (EditFrame* editFrame = FindEditFrame(child)) {
         SyncEditFrameWindow(*editFrame);
         InvalidateRect(hwnd_, &editFrame->frame, TRUE);
