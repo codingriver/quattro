@@ -1054,9 +1054,19 @@ private:
         contentEdit_ = MultiEdit(IdContent, 0, 0, 1, ui.editHeight() + StaticTextHeight() + RowGap(), draft_.content);
         SendMessageW(contentEdit_, EM_SETCUEBANNER, FALSE, reinterpret_cast<LPARAM>(L"补充描述、步骤、附件链接..."));
 
+        reminderLabel_ = Label(L"提醒时间", 0, 0, TextControlWidth(L"提醒时间"));
+        reminderSummaryText_ = ui.SelectableStatusText(
+            L"",
+            0,
+            0,
+            1,
+            ThemedStatusTextOptions{ThemedStatusRole::Info, ThemedTextAlign::Start});
+        reminderErrorText_ = ErrorText(L"", 0, 0, 1);
+
         timeLabel_ = Text(L"时间", 0, 0, TextControlWidth(L"时间"), StaticTextHeight());
         timeEdit_ = SingleEdit(IdTime, 260, 0, 78, L"00:00");
 
+        repeatLabel_ = Label(L"重复规则", 0, 0, TextControlWidth(L"重复规则"));
         repeatNone_ = ui.TabButton(IdRepeatNone, L"不重复", 0, 0, TabWidth(L"不重复"), false);
         repeatDaily_ = ui.TabButton(IdRepeatDaily, L"每天", 0, 0, TabWidth(L"每天"), false);
         repeatWorkday_ = ui.TabButton(IdRepeatWorkday, L"工作日", 0, 0, TabWidth(L"工作日"), false);
@@ -1135,10 +1145,15 @@ private:
         SetFrame(contentEdit_, RECT{fieldX, y, contentRight, y + multiEditHeight});
         y += multiEditHeight + itemGap;
 
-        const int reminderHeight = fieldHeight;
-        reminderRect_ = RECT{insetX, y, contentRight, y + reminderHeight};
-        y += reminderHeight;
-        if (!reminderError_.empty()) {
+        MoveStatic(reminderLabel_, insetX, y + labelOffsetY, TextControlWidth(L"提醒时间"), labelHeight);
+        SetWindowTextW(reminderSummaryText_, ReminderSummary().c_str());
+        MoveStatic(reminderSummaryText_, fieldX, y + labelOffsetY, contentWidth, labelHeight);
+        y += fieldHeight;
+        const bool hasReminderError = !reminderError_.empty();
+        SetVisible(reminderErrorText_, hasReminderError);
+        if (hasReminderError) {
+            SetWindowTextW(reminderErrorText_, reminderError_.c_str());
+            MoveStatic(reminderErrorText_, fieldX, y + rowGap, contentWidth, textHeight);
             y += textHeight + rowGap;
         }
         y += rowGap;
@@ -1150,7 +1165,7 @@ private:
         SetFieldVisible(timeEdit_, true);
         y += CalendarHeight() + rowGap;
 
-        repeatLabelY_ = y;
+        MoveStatic(repeatLabel_, insetX, y + std::max(0, (tabHeight - labelHeight) / 2), TextControlWidth(L"重复规则"), labelHeight);
         int x = fieldX;
         const std::array<std::pair<HWND, int>, 6> repeatButtons{{
             {repeatNone_, TabWidth(L"不重复")}, {repeatDaily_, TabWidth(L"每天")}, {repeatWorkday_, TabWidth(L"工作日")},
@@ -1658,19 +1673,7 @@ private:
         windowUi_->FillBackground(dc);
         windowUi_->DrawRegisteredEditFrames(dc);
 
-        RECT reminder = Offset(reminderRect_);
-        const int textHeight = StaticTextHeight();
-        const int labelOffsetY = std::max(0, (static_cast<int>(reminder.bottom - reminder.top) - windowUi_->ui().labelHeight()) / 2);
-        DrawTextIn(paint, L"提醒时间", RECT{ContentInsetX(), reminder.top + labelOffsetY, FieldX(), reminder.bottom}, ThemedPaintComponent::Label, ThemedPaintState::Normal);
-        const std::wstring summary = ReminderSummary();
-        DrawTextIn(paint, summary, RECT{FieldX(), reminder.top + labelOffsetY, reminder.right, reminder.bottom}, ThemedPaintComponent::Text, ThemedPaintState::Accent, ThemedPaintTextAlign::Start, true);
-        if (!reminderError_.empty()) {
-            DrawTextIn(paint, reminderError_, RECT{FieldX(), reminder.bottom + RowGap(), FieldRight(), reminder.bottom + RowGap() + textHeight}, ThemedPaintComponent::Text, ThemedPaintState::Danger);
-        }
-
         DrawCalendar(paint);
-        const int repeatLabelOffsetY = std::max(0, (windowUi_->ui().tabButtonHeight() - windowUi_->ui().labelHeight()) / 2);
-        DrawTextIn(paint, L"重复规则", RECT{ContentInsetX(), repeatLabelY_ - scrollY_ + repeatLabelOffsetY, FieldX(), repeatLabelY_ - scrollY_ + windowUi_->ui().tabButtonHeight()}, ThemedPaintComponent::Label, ThemedPaintState::Normal);
 
         RECT footer{0, ClientHeight() - FooterHeight(), client.right, ClientHeight()};
         paint.Fill(footer, ThemedPaintComponent::Panel);
@@ -1859,8 +1862,12 @@ private:
     HWND titleErrorText_ = nullptr;
     HWND contentLabel_ = nullptr;
     HWND contentEdit_ = nullptr;
+    HWND reminderLabel_ = nullptr;
+    HWND reminderSummaryText_ = nullptr;
+    HWND reminderErrorText_ = nullptr;
     HWND timeLabel_ = nullptr;
     HWND timeEdit_ = nullptr;
+    HWND repeatLabel_ = nullptr;
     HWND repeatNone_ = nullptr;
     HWND repeatDaily_ = nullptr;
     HWND repeatWorkday_ = nullptr;
@@ -1887,7 +1894,6 @@ private:
     const Theme& theme_;
     TodoItem& item_;
     TodoItem draft_;
-    RECT reminderRect_{};
     RECT calendarRect_{};
     SYSTEMTIME selectedDate_{};
     std::array<bool, 7> weekdaySelected_{};
@@ -1899,7 +1905,6 @@ private:
     std::wstring initialSnapshot_;
     int scrollY_ = 0;
     int contentHeight_ = 0;
-    int repeatLabelY_ = 0;
     int calendarYear_ = 1900;
     int calendarMonth_ = 1;
     int calendarYearPageStart_ = 2020;

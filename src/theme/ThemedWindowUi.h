@@ -144,6 +144,7 @@ private:
         HWND frameWindow = nullptr;
         RECT frame{};
         ThemedEditOptions options{};
+        bool hovered = false;
     };
 
     static COLORREF ToColorRef(Color color);

@@ -2745,7 +2745,7 @@ int wmain() {
         "Themed combo dropdown scales item rows at 150 percent DPI");
     Check(ThemedD2D::IsAvailable(), "Direct2D and DirectWrite factories are available");
     HWND controlParent = CreateWindowExW(
-        0, L"STATIC", L"", WS_POPUP,
+        WS_EX_NOACTIVATE, L"STATIC", L"", WS_POPUP,
         0, 0, 320, 200, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
     Check(controlParent != nullptr, "Themed control test parent created");
     if (controlParent) {
@@ -2757,12 +2757,35 @@ int wmain() {
             HWND frameWindow = FindWindowExW(controlParent, nullptr, L"QuattroThemedEditFrame", nullptr);
             Check(framedEdit != nullptr && frameWindow != nullptr,
                 "Themed edit creates its shared frame window");
+            ShowWindow(controlParent, SW_SHOWNOACTIVATE);
+            SetWindowPos(
+                controlParent, HWND_BOTTOM, 0, 0, 0, 0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
             frameUi.SetEditVisible(framedEdit, false);
             Check(frameWindow && (GetWindowLongPtrW(frameWindow, GWL_STYLE) & WS_VISIBLE) == 0,
                 "Hiding a themed edit also hides its shared frame window");
             frameUi.SetEditVisible(framedEdit, true);
             Check(frameWindow && (GetWindowLongPtrW(frameWindow, GWL_STYLE) & WS_VISIBLE) != 0,
                 "Showing a themed edit also restores its shared frame window");
+            if (framedEdit && frameWindow) {
+                SendMessageW(framedEdit, WM_MOUSELEAVE, 0, 0);
+                ValidateRect(frameWindow, nullptr);
+                SendMessageW(framedEdit, WM_MOUSEMOVE, 0, MAKELPARAM(4, 4));
+                RECT updateRect{};
+                Check(GetUpdateRect(frameWindow, &updateRect, FALSE) != FALSE,
+                    "Themed edit invalidates its frame when hover state first changes");
+                ValidateRect(frameWindow, nullptr);
+                SendMessageW(framedEdit, WM_MOUSEMOVE, 0, MAKELPARAM(6, 4));
+                Check(GetUpdateRect(frameWindow, &updateRect, FALSE) == FALSE,
+                    "Themed edit does not repaint its focused frame for every mouse move");
+                SendMessageW(framedEdit, WM_MOUSELEAVE, 0, 0);
+                ValidateRect(frameWindow, nullptr);
+                Check(frameUi.MoveEditFrame(framedEdit, RECT{8, 8, 96, 36}),
+                    "Themed edit accepts an unchanged public frame layout");
+                Check(GetUpdateRect(frameWindow, &updateRect, FALSE) == FALSE,
+                    "Unchanged themed edit layout does not repaint its frame");
+            }
+            ShowWindow(controlParent, SW_HIDE);
             if (framedEdit) DestroyWindow(framedEdit);
         }
         ThemedUi controlUi(

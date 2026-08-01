@@ -715,11 +715,16 @@ bool ThemedWindowUi::MoveEditFrame(HWND child, RECT frame) {
         return false;
     }
     const RECT oldFrame = editFrame->frame;
+    if (EqualRect(&oldFrame, &frame)) {
+        return true;
+    }
     editFrame->frame = frame;
     LayoutEditFrameChild(*editFrame);
     SyncEditFrameWindow(*editFrame);
-    RedrawWindow(hwnd_, &oldFrame, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW);
-    InvalidateRect(hwnd_, &frame, TRUE);
+    InvalidateRect(hwnd_, &oldFrame, FALSE);
+    if (!editFrame->frameWindow || !IsWindow(editFrame->frameWindow)) {
+        InvalidateRect(hwnd_, &frame, FALSE);
+    }
     return true;
 }
 
@@ -781,7 +786,7 @@ void ThemedWindowUi::SetEditPlaceholder(HWND child, const std::wstring& placehol
 void ThemedWindowUi::DrawRegisteredEditFrames(HDC dc) const {
     for (const auto& editFrame : editFrames_) {
         if (editFrame.frameWindow && IsWindow(editFrame.frameWindow)) {
-            InvalidateRect(editFrame.frameWindow, nullptr, FALSE);
+            continue;
         } else if (IsWindow(editFrame.child) && IsWindowVisible(editFrame.child)) {
             if (!editFrame.options.showFrame) {
                 continue;
@@ -1688,7 +1693,13 @@ LRESULT CALLBACK ThemedWindowUi::EditChildProc(
     const LRESULT result = DefSubclassProc(hwnd, message, wParam, lParam);
     if (ui) {
         if (EditFrame* editFrame = ui->FindEditFrame(hwnd)) {
-            if ((message == WM_SHOWWINDOW || message == WM_WINDOWPOSCHANGED) &&
+            bool hoverChanged = false;
+            if (message == WM_MOUSEMOVE || message == WM_MOUSELEAVE) {
+                const bool hovered = ThemedControls::IsControlHovered(hwnd);
+                hoverChanged = editFrame->hovered != hovered;
+                editFrame->hovered = hovered;
+            }
+            if (message == WM_SHOWWINDOW &&
                 editFrame->frameWindow && IsWindow(editFrame->frameWindow)) {
                 const bool visible = (GetWindowLongPtrW(editFrame->child, GWL_STYLE) & WS_VISIBLE) != 0;
                 if (visible) {
@@ -1716,7 +1727,7 @@ LRESULT CALLBACK ThemedWindowUi::EditChildProc(
             } else if (message == WM_ENABLE) {
                 ui->SyncEditFrameWindow(*editFrame);
             } else if (message == WM_SETFOCUS || message == WM_KILLFOCUS ||
-                       message == WM_MOUSEMOVE || message == WM_MOUSELEAVE) {
+                       ((message == WM_MOUSEMOVE || message == WM_MOUSELEAVE) && hoverChanged)) {
                 ui->InvalidateEditFrame(hwnd);
             }
         }

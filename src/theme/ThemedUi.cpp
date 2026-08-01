@@ -987,6 +987,9 @@ bool ThemedEditFrameCollection::MoveEditFrame(HWND child, RECT frame, const Them
         return false;
     }
     const RECT oldFrame = entry->frame;
+    if (EqualRect(&oldFrame, &frame)) {
+        return true;
+    }
     entry->frame = frame;
     const RECT childRect = !entry->options.showFrame
         ? frame
@@ -1009,8 +1012,8 @@ bool ThemedEditFrameCollection::MoveEditFrame(HWND child, RECT frame, const Them
         dpi);
     HWND parent = GetParent(child);
     if (parent) {
-        RedrawWindow(parent, &oldFrame, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW);
-        InvalidateRect(parent, &frame, TRUE);
+        InvalidateRect(parent, &oldFrame, FALSE);
+        InvalidateRect(parent, &frame, FALSE);
     }
     return true;
 }

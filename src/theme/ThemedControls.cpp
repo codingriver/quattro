@@ -494,7 +494,7 @@ void InvalidateParentAround(HWND hwnd) {
     GetWindowRect(hwnd, &rect);
     MapWindowPoints(HWND_DESKTOP, parent, reinterpret_cast<POINT*>(&rect), 2);
     InflateRect(&rect, 16, 16);
-    InvalidateRect(parent, &rect, TRUE);
+    InvalidateRect(parent, &rect, FALSE);
 }
 
 bool HasDedicatedEditFrame(HWND hwnd) {

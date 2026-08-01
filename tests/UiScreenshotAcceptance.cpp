@@ -6615,7 +6615,7 @@ int wmain() {
                 {todo.title, todo.content}, 2, 2, false};
             todoScenario.forcedDpi = dpi;
             todoScenario.rejectDarkSurface = true;
-            todoScenario.transparentLabelTexts = {L"待办标题 *", L"备注说明"};
+            todoScenario.transparentLabelTexts = {L"待办标题 *", L"备注说明", L"提醒时间", L"重复规则"};
             RunDialogScenario(todoScenario, outputDir, state, [&]() {
                 TodoEditDialog::Show(owner, instance, theme, todo, true);
             });
@@ -6626,7 +6626,7 @@ int wmain() {
                 L"QuattroTodoEditDialog",
                 L"新建待办",
                 L"d2d-todo-empty-" + suffix + L".png",
-                {L"新建待办", L"待办标题 *", L"备注说明", L"保存待办", L"取消"},
+                {L"新建待办", L"待办标题 *", L"备注说明", L"提醒时间", L"重复规则", L"保存待办", L"取消"},
                 {},
                 2,
                 2,
@@ -6634,7 +6634,7 @@ int wmain() {
             blankTodoScenario.forcedDpi = dpi;
             blankTodoScenario.rejectDarkSurface = true;
             blankTodoScenario.cancelOnly = true;
-            blankTodoScenario.transparentLabelTexts = {L"待办标题 *", L"备注说明"};
+            blankTodoScenario.transparentLabelTexts = {L"待办标题 *", L"备注说明", L"提醒时间", L"重复规则"};
             RunDialogScenario(blankTodoScenario, outputDir, state, [&]() {
                 TodoEditDialog::Show(owner, instance, theme, blankTodo, true);
             });
@@ -6847,13 +6847,13 @@ int wmain() {
         L"QuattroTodoEditDialog",
         L"新建待办",
         L"todo-edit-dialog-empty.png",
-        {L"新建待办", L"待办标题 *", L"备注说明", L"保存待办", L"取消"},
+        {L"新建待办", L"待办标题 *", L"备注说明", L"提醒时间", L"重复规则", L"保存待办", L"取消"},
         {},
         2,
         2,
         false};
     blankTodoScenario.cancelOnly = true;
-    blankTodoScenario.transparentLabelTexts = {L"待办标题 *", L"备注说明"};
+    blankTodoScenario.transparentLabelTexts = {L"待办标题 *", L"备注说明", L"提醒时间", L"重复规则"};
     RunDialogScenario(
         blankTodoScenario,
         outputDir,
