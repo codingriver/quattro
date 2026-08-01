@@ -2302,8 +2302,35 @@ void RunMainWindowScenario(
             ? reinterpret_cast<HWND>(GetPropW(noteEdit, L"QuattroDedicatedThemedEditFrame"))
             : nullptr;
         state.Check(
-            noteEdit && (!noteFrame || !IsWindow(noteFrame)),
-            L"main-window-note: frameless note edit still created a covering frame window");
+            noteEdit && noteFrame && IsWindow(noteFrame),
+            L"main-window-note: note edit is missing its public themed frame");
+        if (noteEdit && noteFrame && IsWindow(noteFrame)) {
+            RECT editRect{};
+            RECT frameRect{};
+            GetWindowRect(noteEdit, &editRect);
+            GetWindowRect(noteFrame, &frameRect);
+            const UINT noteDpi = GetDpiForWindow(noteEdit);
+            const int effectiveDpi = static_cast<int>(noteDpi ? noteDpi : USER_DEFAULT_SCREEN_DPI);
+            const int minimumCornerInset = std::max(3, MulDiv(3, effectiveDpi, USER_DEFAULT_SCREEN_DPI));
+            state.Check(
+                editRect.left - frameRect.left >= minimumCornerInset &&
+                    editRect.top - frameRect.top >= minimumCornerInset &&
+                    frameRect.right - editRect.right >= minimumCornerInset &&
+                    frameRect.bottom - editRect.bottom >= minimumCornerInset,
+                L"main-window-note: note edit overlaps the rounded frame corners");
+
+            const LRESULT margins = SendMessageW(noteEdit, EM_GETMARGINS, 0, 0);
+            const int expectedHorizontalPadding = MulDiv(9, effectiveDpi, USER_DEFAULT_SCREEN_DPI);
+            state.Check(
+                LOWORD(margins) == expectedHorizontalPadding && HIWORD(margins) == expectedHorizontalPadding,
+                L"main-window-note: note edit did not receive the public horizontal text padding");
+            RECT textRect{};
+            SendMessageW(noteEdit, EM_GETRECT, 0, reinterpret_cast<LPARAM>(&textRect));
+            const int expectedVerticalPadding = MulDiv(7, effectiveDpi, USER_DEFAULT_SCREEN_DPI);
+            state.Check(
+                textRect.top == expectedVerticalPadding,
+                L"main-window-note: note edit did not receive the public multiline top padding");
+        }
         BitmapCapture noteCapture = CaptureClientBitmapWithChildren(hwnd);
         state.Check(noteCapture.bitmap != nullptr, L"main-window-note: note screenshot capture failed");
         if (noteCapture.bitmap) {

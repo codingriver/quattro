@@ -2554,6 +2554,9 @@ int wmain() {
     Check(Near(fallbackTheme.metric(L"button", L"height", 0.0f), 28.0f), "Theme medium button height");
     Check(Near(fallbackTheme.metric(L"button", L"largeHeight", 0.0f), 32.0f), "Theme footer button height");
     Check(Near(fallbackTheme.metric(L"edit", L"height", 0.0f), 28.0f), "Theme edit height");
+    Check(Near(fallbackTheme.metric(L"edit", L"paddingX", 0.0f), 9.0f), "Theme edit horizontal text padding");
+    Check(Near(fallbackTheme.metric(L"edit", L"multiLinePaddingTop", 0.0f), 7.0f), "Theme multiline edit top text padding");
+    Check(Near(fallbackTheme.metric(L"edit", L"multiLinePaddingBottom", 0.0f), 7.0f), "Theme multiline edit bottom text padding");
     Check(Near(fallbackTheme.metric(L"edit", L"textHeight", 0.0f), 20.0f), "Theme edit body line height");
     Check(Near(fallbackTheme.metric(L"comboBox", L"itemHeight", 0.0f), 28.0f), "Theme combo item height");
     Check(Near(fallbackTheme.metric(L"tabButton", L"height", 0.0f), 28.0f), "Theme tab height");

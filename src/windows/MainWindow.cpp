@@ -8872,12 +8872,6 @@ void MainWindow::DrawNotePage(D2D1_RECT_F rect, const Group& tag) {
         rect.top + insetY,
         rect.right - insetX,
         rect.bottom - insetY);
-    FillRoundedRect(frame, theme_.color(L"edit", L"normal", L"bg"), Metric(theme_, L"edit", L"radius", 7.0f));
-    DrawRoundedRect(
-        frame,
-        theme_.color(L"edit", noteEdit_ == GetFocus() ? L"focused" : L"normal", L"border"),
-        Metric(theme_, L"edit", L"radius", 7.0f),
-        Metric(theme_, L"edit", L"borderWidth", 1.0f));
     EnsureNoteEdit(frame, tag);
 }
 
@@ -10745,7 +10739,6 @@ void MainWindow::EnsureNoteEdit(const D2D1_RECT_F& rect, const Group& tag) {
     if (!noteEdit_) {
         ThemedEditOptions options{};
         options.mode = ThemedEditMode::MultiLine;
-        options.showFrame = false;
         noteEdit_ = embeddedUi_->ui().Edit(ID_NOTE_EDIT, frame, content, options);
         if (noteEdit_) {
             ++noteEditGeneration_;
