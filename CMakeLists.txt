@@ -799,8 +799,11 @@ add_executable(QuattroUiScreenshotAcceptance
     src/services/TerminalContextMenuService.cpp
     src/domain/TrackedContextMenuProviders.cpp
     src/windows/SimpleDialogs.cpp
+    src/windows/WebDavFileBatchConfirmDialog.cpp
+    src/windows/WebDavFileDetailsDialog.cpp
     src/services/Storage.cpp
     src/services/SystemFunctions.cpp
+    src/services/TodoJsonBackupService.cpp
     src/windows/TodoEditDialog.cpp
     src/domain/TodoSchedule.cpp
     src/windows/UpdateCheckDialog.cpp
@@ -916,7 +919,6 @@ target_compile_definitions(QuattroUiScreenshotAcceptance PRIVATE
     WINVER=0x0A00
     _WIN32_WINNT=0x0A00
     NOMINMAX
-    QUATTRO_ACCEPTANCE_EMBED_WEBDAV_DIALOG_SUPPORT
 )
 
 target_compile_definitions(QuattroAboutTrayExitAcceptance PRIVATE
@@ -1353,8 +1355,11 @@ add_executable(QuattroSettingsHttpButtonsAcceptance
     src/services/TerminalContextMenuService.cpp
     src/domain/TrackedContextMenuProviders.cpp
     src/windows/SimpleDialogs.cpp
+    src/windows/WebDavFileBatchConfirmDialog.cpp
+    src/windows/WebDavFileDetailsDialog.cpp
     src/services/Storage.cpp
     src/services/SystemFunctions.cpp
+    src/services/TodoJsonBackupService.cpp
     src/windows/TodoEditDialog.cpp
     src/domain/TodoSchedule.cpp
     src/windows/UpdateCheckDialog.cpp
@@ -1375,7 +1380,6 @@ target_compile_definitions(QuattroSettingsHttpButtonsAcceptance PRIVATE
     WINVER=0x0A00
     _WIN32_WINNT=0x0A00
     NOMINMAX
-    QUATTRO_ACCEPTANCE_EMBED_WEBDAV_DIALOG_SUPPORT
 )
 
 if(QUATTRO_WITH_WEBDAV_LIBS)

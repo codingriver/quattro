@@ -5365,19 +5365,3 @@ void NotifyOpenSettingsDialogAutoRunChanged(HWND owner, bool enabled) {
     }
     SendMessageW(settingsHwnd, WM_SETTINGS_AUTORUN_CHANGED, enabled ? 1 : 0, 0);
 }
-
-#if defined(QUATTRO_ACCEPTANCE_EMBED_WEBDAV_DIALOG_SUPPORT)
-#define kDetailsTextId kQuattroAcceptanceWebDavFileDetailsTextId
-#define kCopyDetailsId kQuattroAcceptanceWebDavFileDetailsCopyId
-#include "WebDavFileDetailsDialog.cpp"
-#undef kDetailsTextId
-#undef kCopyDetailsId
-
-#define kDetailsTextId kQuattroAcceptanceWebDavBatchConfirmDetailsTextId
-#define kCopyDetailsId kQuattroAcceptanceWebDavBatchConfirmCopyId
-#include "WebDavFileBatchConfirmDialog.cpp"
-#undef kDetailsTextId
-#undef kCopyDetailsId
-
-#include "../services/TodoJsonBackupService.cpp"
-#endif
