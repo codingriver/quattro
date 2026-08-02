@@ -3167,10 +3167,7 @@ private:
             break;
         case TabLinks:
             value.openDirCommand = GetText(openDirEdit_);
-            value.helpUrl = GetText(helpUrlEdit_);
             value.updateUrl = GetText(updateUrlEdit_);
-            value.faqUrl = GetText(faqUrlEdit_);
-            value.rewardUrl = GetText(rewardUrlEdit_);
             break;
         case TabWebDav:
             value = ReadWebDavDraftFromControls();
@@ -4612,22 +4609,11 @@ private:
             const ThemedSectionGeometry publicLinksSection = behaviorForm.section(
                 behaviorFrameLeft, directoryCommandSection.frame.bottom + behaviorFrameGap, behaviorFrameWidth,
                 {behaviorForm.sectionRow({ThemedSectionItemKind::Label}),
-                 behaviorForm.sectionRow({ThemedSectionItemKind::Edit}),
-                 behaviorForm.sectionRow({ThemedSectionItemKind::Edit}),
-                 behaviorForm.sectionRow({ThemedSectionItemKind::Edit}),
-                 behaviorForm.sectionRow({ThemedSectionItemKind::Label}),
                  behaviorForm.sectionRow({ThemedSectionItemKind::Edit})});
             HWND publicLinksGroup = AddSectionFrame(TabLinks, L"公共链接", publicLinksSection.frame);
-            HWND helpUrlLabel = Label(TabLinks, L"帮助链接", behaviorLeft, behaviorForm.sectionItemY(publicLinksSection, 0, settingsUi.labelHeight()), behaviorContentWidth);
-            helpUrlEdit_ = FramedEdit(TabLinks, 203, behaviorLeft, behaviorForm.sectionItemY(publicLinksSection, 1, settingsUi.editHeight()), behaviorContentWidth, draft_.helpUrl);
-            HWND updateUrlLabel = Label(TabLinks, L"更新链接", behaviorLeft, behaviorForm.sectionItemY(publicLinksSection, 2, settingsUi.labelHeight()), behaviorContentWidth);
-            updateUrlEdit_ = FramedEdit(TabLinks, 204, behaviorLeft, behaviorForm.sectionItemY(publicLinksSection, 3, settingsUi.editHeight()), behaviorContentWidth, draft_.updateUrl);
-            HWND faqUrlLabel = Label(TabLinks, L"FAQ 链接", behaviorLeft, behaviorForm.sectionItemY(publicLinksSection, 4, settingsUi.labelHeight()), behaviorCheckWidth);
-            HWND rewardUrlLabel = Label(TabLinks, L"赞助链接", behaviorRight, behaviorForm.sectionItemY(publicLinksSection, 4, settingsUi.labelHeight()), behaviorCheckWidth);
-            faqUrlEdit_ = FramedEdit(TabLinks, 205, behaviorLeft, behaviorForm.sectionItemY(publicLinksSection, 5, settingsUi.editHeight()), behaviorCheckWidth, draft_.faqUrl);
-            rewardUrlEdit_ = FramedEdit(TabLinks, 206, behaviorRight, behaviorForm.sectionItemY(publicLinksSection, 5, settingsUi.editHeight()), behaviorCheckWidth, draft_.rewardUrl);
-            ThemedUi::BindGroupChildren(publicLinksGroup, {
-                helpUrlLabel, helpUrlEdit_, updateUrlLabel, updateUrlEdit_, faqUrlLabel, rewardUrlLabel, faqUrlEdit_, rewardUrlEdit_});
+            HWND updateUrlLabel = Label(TabLinks, L"更新链接", behaviorLeft, behaviorForm.sectionItemY(publicLinksSection, 0, settingsUi.labelHeight()), behaviorContentWidth);
+            updateUrlEdit_ = FramedEdit(TabLinks, 204, behaviorLeft, behaviorForm.sectionItemY(publicLinksSection, 1, settingsUi.editHeight()), behaviorContentWidth, draft_.updateUrl);
+            ThemedUi::BindGroupChildren(publicLinksGroup, {updateUrlLabel, updateUrlEdit_});
 
             const int uploadWidth = settingsUi.buttonWidth(L"上传到云端", ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
             const int downloadWidth = settingsUi.buttonWidth(L"从云端下载", ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
@@ -5171,10 +5157,7 @@ private:
     HWND hotKeyTable_ = nullptr;
     HWND mainHotKeyStatus_ = nullptr;
     HWND openDirEdit_ = nullptr;
-    HWND helpUrlEdit_ = nullptr;
     HWND updateUrlEdit_ = nullptr;
-    HWND faqUrlEdit_ = nullptr;
-    HWND rewardUrlEdit_ = nullptr;
     HWND webDavEnabled_ = nullptr;
     HWND webDavUrlEdit_ = nullptr;
     HWND webDavBackupPathEdit_ = nullptr;

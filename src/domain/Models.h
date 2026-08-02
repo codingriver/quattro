@@ -107,10 +107,7 @@ struct AppConfig {
     std::wstring tagAlign = L"center";
     std::wstring theme = L"default";
     std::wstring openDirCommand;
-    std::wstring helpUrl;
     std::wstring updateUrl;
-    std::wstring faqUrl;
-    std::wstring rewardUrl;
 
     bool webDavEnabled = false;
     std::wstring webDavUrl;

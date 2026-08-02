@@ -222,8 +222,6 @@ private:
     void RunLink(int linkId);
     void RunLinkAsAdmin(int linkId);
     void RunUrlPrivate(int linkId);
-    void CopyLinkInternal(int linkId, bool cut);
-    void PasteLinkInternal();
     void MoveMenuContext(int direction);
     void MoveLinkWithinTag(int linkId, int direction);
     bool ApplyManualLinkOrder(int tagId, const std::vector<int>& orderedLinkIds, const wchar_t* title);
@@ -283,9 +281,6 @@ private:
     void OnUrlIconDownloaded(int linkId, bool success);
     void ShowAbout();
     void CheckForUpdates();
-    void OpenHelp();
-    void OpenFaq();
-    void OpenReward();
     bool OpenConfiguredUrl(const std::wstring& url, const wchar_t* title);
     void RestartWithOppositePrivilege();
     bool TryRepairLinkTarget(Link& link);
@@ -318,8 +313,6 @@ private:
     bool ImportPath(const std::wstring& path, bool showError = true);
     void ShowImportFeedback(int succeeded, int failed);
     void ImportClipboard();
-    void ExportConfigPackage();
-    void ImportConfigPackageMerge();
     bool ImportDropData(IDataObject* dataObject);
     bool StartHttpServer(bool showMessage);
     void StopHttpServer(bool showMessage);
@@ -530,10 +523,6 @@ private:
     std::vector<bool> menuToolEnabled_;
     std::vector<ShellContextMenuLocator> menuTrackedShellCommands_;
     std::vector<std::pair<int, int>> registeredLinkHotKeys_;
-    Link clipboardLink_;
-    bool hasClipboardLink_ = false;
-    bool clipboardCut_ = false;
-    int clipboardSourceId_ = 0;
     std::wstring pendingResourceRefreshScope_;
     std::shared_ptr<TaskHandle> resourceRefreshTask_;
     std::unique_ptr<ThemedTaskProgressDialog> resourceRefreshProgressDialog_;

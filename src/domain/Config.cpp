@@ -138,10 +138,7 @@ AppConfig ConfigService::Load() const {
     }
     config.theme = ReadString(L"Theme", L"default");
     config.openDirCommand = ReadString(L"OpenDirCmd", L"");
-    config.helpUrl = ReadString(L"HelpUrl", L"");
     config.updateUrl = ReadString(L"UpdateUrl", L"");
-    config.faqUrl = ReadString(L"FaqUrl", L"");
-    config.rewardUrl = ReadString(L"RewardUrl", L"");
     const std::filesystem::path webDavPath = WebDavConfigPath();
     const bool hasWebDavConfig = FileExists(webDavPath);
     config.webDavEnabled = hasWebDavConfig
@@ -320,10 +317,7 @@ AppConfig ConfigService::LoadForSchemaUpgrade(int targetVersion, bool& compatibl
         config.theme = AppConfig{}.theme;
     }
     readString(L"OpenDirCmd", config.openDirCommand);
-    readString(L"HelpUrl", config.helpUrl);
     readString(L"UpdateUrl", config.updateUrl);
-    readString(L"FaqUrl", config.faqUrl);
-    readString(L"RewardUrl", config.rewardUrl);
 
     const std::filesystem::path webDavPath = WebDavConfigPath();
     const bool hasWebDavConfig = FileExists(webDavPath);
@@ -421,10 +415,10 @@ void ConfigService::SaveWindowState(const AppConfig& config) const {
     WriteString(L"TagAlign", config.tagAlign);
     WriteInt(L"nAlpha", config.alpha);
     WriteString(L"OpenDirCmd", config.openDirCommand);
-    WriteString(L"HelpUrl", config.helpUrl);
     WriteString(L"UpdateUrl", config.updateUrl);
-    WriteString(L"FaqUrl", config.faqUrl);
-    WriteString(L"RewardUrl", config.rewardUrl);
+    WriteString(L"HelpUrl", L"");
+    WriteString(L"FaqUrl", L"");
+    WriteString(L"RewardUrl", L"");
     SaveExternalNetworkSettings(config);
     DeleteLegacyNetworkSettings();
     WriteInt(L"nWidth", config.width);
@@ -476,10 +470,10 @@ void ConfigService::Save(const AppConfig& config) const {
     WriteString(L"TagAlign", config.tagAlign);
     WriteString(L"Theme", config.theme);
     WriteString(L"OpenDirCmd", config.openDirCommand);
-    WriteString(L"HelpUrl", config.helpUrl);
     WriteString(L"UpdateUrl", config.updateUrl);
-    WriteString(L"FaqUrl", config.faqUrl);
-    WriteString(L"RewardUrl", config.rewardUrl);
+    WriteString(L"HelpUrl", L"");
+    WriteString(L"FaqUrl", L"");
+    WriteString(L"RewardUrl", L"");
     SaveExternalNetworkSettings(config);
     DeleteLegacyNetworkSettings();
 }

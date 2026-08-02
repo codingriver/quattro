@@ -577,10 +577,7 @@ void WriteStartupReport(
     file << "active_tag_delay=" << config.activeTagDelay << "\n";
     file << "main_hot_key=" << config.mainHotKey << "\n";
     file << "open_dir_command=" << WideToUtf8(config.openDirCommand) << "\n";
-    file << "help_url=" << WideToUtf8(config.helpUrl) << "\n";
     file << "update_url=" << WideToUtf8(config.updateUrl) << "\n";
-    file << "faq_url=" << WideToUtf8(config.faqUrl) << "\n";
-    file << "reward_url=" << WideToUtf8(config.rewardUrl) << "\n";
     file << "external_file_index=deferred\n";
 }
 

@@ -1269,7 +1269,6 @@ int wmain() {
     config.width = 500;
     config.height = 700;
     config.theme = L"default";
-    config.helpUrl = L"https://help.local/";
     config.updateUrl = L"https://update.local/";
     config.webDavEnabled = true;
     config.webDavUrl = L"https://dav.local/remote.php/dav/files/unit/";
@@ -1298,7 +1297,6 @@ int wmain() {
     Check(loaded.width == 500, "Config width");
     Check(loaded.height == 700, "Config height");
     Check(loaded.theme == L"default", "Config theme");
-    Check(loaded.helpUrl == L"https://help.local/", "Config help url");
     Check(loaded.updateUrl == L"https://update.local/", "Config update url");
     Check(loaded.webDavEnabled, "Config webdav enabled");
     Check(loaded.webDavUrl == L"https://dav.local/remote.php/dav/files/unit/", "Config webdav url");
@@ -3797,8 +3795,6 @@ int wmain() {
     Check(MenuIconFor(ID_MENU_MOVE_TO_BASE + 12, L"目标标签") == MenuIconMove, "Move target dynamic icon");
     Check(MenuIconFor(ID_MENU_COPY_TO_BASE + 12, L"目标标签") == MenuIconCopy, "Copy target dynamic icon");
     Check(MenuIconFor(ID_MENU_MOVE_TAG_TO_BASE + 12, L"目标分组") == MenuIconMove, "Move tag target dynamic icon");
-    Check(MenuIconFor(ID_MENU_CUT_LINK, L"剪切") == MenuIconCut, "Cut command icon");
-    Check(MenuIconFor(ID_MENU_PASTE_LINK, L"粘贴") == MenuIconPaste, "Paste command icon");
     Check(MenuIconFor(ID_MENU_COPY_PATH, L"复制路径") == MenuIconCopy, "Copy path command icon");
     Check(MenuIconFor(ID_MENU_REFRESH_GROUP_LINKS, L"刷新") == MenuIconRefresh, "Group refresh command icon");
     Check(MenuIconFor(ID_MENU_ADD_NOTE_TAG, L"新建便签") == MenuIconNotebook, "Note tag command icon");

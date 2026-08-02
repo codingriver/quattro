@@ -8,7 +8,7 @@
 namespace {
 constexpr const wchar_t* kMenuIconLinkPrefix = L"#menu:";
 
-constexpr std::array<MenuVisualRequirement, 27> kTopRightMenuVisuals{{
+constexpr std::array<MenuVisualRequirement, 24> kTopRightMenuVisuals{{
     {ID_MENU_QUICK_IMPORT, L"快速导入", MenuIconPaste},
     {ID_MENU_TOGGLE_TITLE, L"隐藏标题栏", MenuIconEyeOff},
     {ID_MENU_TOGGLE_GROUP, L"隐藏分组", MenuIconEyeOff},
@@ -31,11 +31,8 @@ constexpr std::array<MenuVisualRequirement, 27> kTopRightMenuVisuals{{
     {0, L"统一图标大小", MenuIconSize},
     {0, L"统一查看方式", MenuIconView},
     {0, L"统一排序方式", MenuIconSort},
-    {ID_MENU_HELP, L"帮助说明", MenuIconHelp},
     {ID_MENU_CHECK_UPDATE, L"检查更新", MenuIconDownload},
     {ID_MENU_EXIT, L"关闭退出", MenuIconExit},
-    {ID_MENU_FAQ, L"常见问题", MenuIconHelp},
-    {ID_MENU_REWARD, L"赞赏支持", MenuIconReward},
 }};
 
 const wchar_t* MenuIconStorageName(MenuIcon icon) {
@@ -77,7 +74,6 @@ int MenuIconFor(UINT_PTR id, const std::wstring& text) {
     }
 
     switch (id) {
-    case ID_MENU_ADD_LINK: return MenuIconFile;
     case ID_MENU_ADD_FILE: return MenuIconFile;
     case ID_MENU_ADD_FOLDER: return MenuIconFolder;
     case ID_MENU_ADD_URL: return MenuIconUrl;
@@ -90,19 +86,12 @@ int MenuIconFor(UINT_PTR id, const std::wstring& text) {
     case ID_MENU_REFRESH_LINK_ICON:
     case ID_MENU_REFRESH_PAGE_ICONS:
     case ID_MENU_REFRESH_ALL_ICONS:
-    case ID_MENU_REFRESH_GROUP_LINKS:
-    case ID_MENU_REPAIR_LINK: return MenuIconRefresh;
+    case ID_MENU_REFRESH_GROUP_LINKS: return MenuIconRefresh;
     case ID_MENU_CLEAR_ICON_CACHE: return MenuIconClear;
     case ID_MENU_MOVE_UP:
     case ID_MENU_MOVE_DOWN: return MenuIconMove;
-    case ID_MENU_COPY_LINK:
-    case ID_MENU_COPY_PATH:
-    case ID_MENU_EXPORT_CONFIG: return MenuIconCopy;
-    case ID_MENU_CUT_LINK: return MenuIconCut;
-    case ID_MENU_PASTE_LINK:
-    case ID_MENU_IMPORT_CLIPBOARD:
-    case ID_MENU_QUICK_IMPORT:
-    case ID_MENU_IMPORT_CONFIG_MERGE: return MenuIconPaste;
+    case ID_MENU_COPY_PATH: return MenuIconCopy;
+    case ID_MENU_QUICK_IMPORT: return MenuIconPaste;
     case ID_MENU_EDIT_LINK:
     case ID_MENU_EDIT_GROUP:
     case ID_MENU_EDIT_TAG: return MenuIconEdit;
@@ -130,14 +119,10 @@ int MenuIconFor(UINT_PTR id, const std::wstring& text) {
     case ID_MENU_CLEAR_DONE_TODOS: return MenuIconClear;
     case ID_MENU_CLEAR_TAG_LINKS: return MenuIconClear;
     case ID_MENU_EXIT: return MenuIconExit;
-    case ID_MENU_RUN_LINK: return MenuIconRun;
     case ID_MENU_TOGGLE_TOPMOST: return MenuIconPin;
     case ID_MENU_TOGGLE_AUTORUN: return MenuIconNone;
     case ID_MENU_SETTINGS: return MenuIconSettings;
-    case ID_MENU_HELP:
-    case ID_MENU_FAQ: return MenuIconHelp;
     case ID_MENU_CHECK_UPDATE: return MenuIconDownload;
-    case ID_MENU_REWARD: return MenuIconReward;
     case ID_MENU_RESET_LAYOUT: return MenuIconView;
     case ID_MENU_LAYOUT_LIST:
     case ID_MENU_ALL_LAYOUT_LIST: return MenuIconList;

@@ -2844,9 +2844,6 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         case ID_MENU_QUICK_IMPORT:
             QuickImport();
             return 0;
-        case ID_MENU_ADD_LINK:
-            AddLink();
-            return 0;
         case ID_MENU_ADD_FILE:
             AddFile();
             return 0;
@@ -2858,9 +2855,6 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             return 0;
         case ID_MENU_CLEAR_TAG_LINKS:
             ClearCurrentTagLinks();
-            return 0;
-        case ID_MENU_RUN_LINK:
-            RunLink(CommandLinkId());
             return 0;
         case ID_MENU_RUN_ADMIN:
             RunLinkAsAdmin(CommandLinkId());
@@ -2912,28 +2906,6 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             return 0;
         case ID_MENU_REFRESH_GROUP_LINKS:
             RefreshGroupLinks(CommandGroupId());
-            return 0;
-        case ID_MENU_REPAIR_LINK:
-            if (Link* link = FindLink(CommandLinkId())) {
-                if (TryRepairLinkTarget(*link)) {
-                    if (!storageService_.UpdateLink(*link)) {
-                        MessageBoxW(hwnd_, storageService_.lastError().c_str(), L"修复启动项", MB_OK | MB_ICONWARNING);
-                    } else {
-                        RegisterConfiguredHotKeys();
-                        InvalidateRect(hwnd_, nullptr, FALSE);
-                        ShowToast(L"“" + link->name + L"”的目标已更新，可以重新启动。", ThemedToastRole::Success);
-                    }
-                }
-            }
-            return 0;
-        case ID_MENU_COPY_LINK:
-            CopyLinkInternal(CommandLinkId(), false);
-            return 0;
-        case ID_MENU_CUT_LINK:
-            CopyLinkInternal(CommandLinkId(), true);
-            return 0;
-        case ID_MENU_PASTE_LINK:
-            PasteLinkInternal();
             return 0;
         case ID_MENU_ADD_GROUP:
             AddGroup();
@@ -3077,15 +3049,6 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         case ID_MENU_RESET_LAYOUT:
             ResetLayoutToDefaults();
             return 0;
-        case ID_MENU_IMPORT_CLIPBOARD:
-            ImportClipboard();
-            return 0;
-        case ID_MENU_IMPORT_CONFIG_MERGE:
-            ImportConfigPackageMerge();
-            return 0;
-        case ID_MENU_EXPORT_CONFIG:
-            ExportConfigPackage();
-            return 0;
         case ID_MENU_CLEAR_ICON_CACHE:
             ClearIconCache();
             return 0;
@@ -3097,15 +3060,6 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             return 0;
         case ID_MENU_CHECK_UPDATE:
             CheckForUpdates();
-            return 0;
-        case ID_MENU_HELP:
-            OpenHelp();
-            return 0;
-        case ID_MENU_FAQ:
-            OpenFaq();
-            return 0;
-        case ID_MENU_REWARD:
-            OpenReward();
             return 0;
         case ID_MENU_RESTART_PRIVILEGE:
             RestartWithOppositePrivilege();
@@ -4156,89 +4110,6 @@ void MainWindow::DeleteLink(int linkId) {
     }
     InvalidateRect(hwnd_, nullptr, FALSE);
     ShowToast(L"已删除“" + deletedName + L"”。", ThemedToastRole::Info);
-}
-
-void MainWindow::CopyLinkInternal(int linkId, bool cut) {
-    Link* link = FindLink(linkId);
-    if (!link) {
-        return;
-    }
-    clipboardLink_ = *link;
-    clipboardSourceId_ = linkId;
-    clipboardCut_ = cut;
-    hasClipboardLink_ = true;
-    ShowToast(
-        cut ? (L"已剪切“" + link->name + L"”。") : (L"已复制“" + link->name + L"”，可粘贴到其他标签。"),
-        ThemedToastRole::Info);
-}
-
-void MainWindow::PasteLinkInternal() {
-    if (!hasClipboardLink_) {
-        return;
-    }
-    int targetTagId = currentTagId_;
-    if (menuContextKind_ == HitKind::Tag) {
-        targetTagId = menuContextId_;
-    } else if (menuContextKind_ == HitKind::Link) {
-        if (Link* contextLink = FindLink(menuContextId_)) {
-            targetTagId = contextLink->parentGroup;
-        }
-    }
-
-    Group* tag = FindGroup(targetTagId);
-    if (!tag || tag->parentGroup == 0) {
-        ShowToast(L"请先选择一个标签。", ThemedToastRole::Warning);
-        return;
-    }
-    if (!SaveCurrentNotePage()) {
-        return;
-    }
-
-    if (clipboardCut_) {
-        Link* source = FindLink(clipboardSourceId_);
-        if (!source) {
-            hasClipboardLink_ = false;
-            ShowToast(L"原启动项已不存在，无法粘贴。", ThemedToastRole::Warning);
-            return;
-        }
-        if (source->parentGroup != targetTagId) {
-            MoveLinkToTag(source->id, targetTagId);
-        } else {
-            selectedLinkId_ = source->id;
-            InvalidateRect(hwnd_, nullptr, FALSE);
-        }
-        hasClipboardLink_ = false;
-        clipboardCut_ = false;
-        clipboardSourceId_ = 0;
-        return;
-    }
-
-    Link copy = clipboardLink_;
-    copy.id = 0;
-    copy.parentGroup = targetTagId;
-    copy.pos = -1;
-    copy.hotKey = 0;
-    copy.runCount = 0;
-    if (!storageService_.InsertLink(copy)) {
-        MessageBoxW(hwnd_, storageService_.lastError().c_str(), L"粘贴启动项", MB_OK | MB_ICONWARNING);
-        return;
-    }
-    model_.links.push_back(copy);
-    selectedLinkId_ = copy.id;
-    if (!PrepareForTagChange(targetTagId)) {
-        return;
-    }
-    currentTagId_ = targetTagId;
-    currentGroupId_ = tag->parentGroup;
-    config_.currentGroupId = currentGroupId_;
-    config_.currentTagId = currentTagId_;
-    configService_.SaveWindowState(config_);
-    RegisterConfiguredHotKeys();
-    EnsureGroupVisible(currentGroupId_);
-    EnsureTagVisible(currentTagId_);
-    EnsureLinkVisible(selectedLinkId_);
-    InvalidateRect(hwnd_, nullptr, FALSE);
-    ShowToast(L"已粘贴“" + copy.name + L"”。", ThemedToastRole::Success);
 }
 
 void MainWindow::MoveMenuContext(int direction) {
@@ -5971,25 +5842,6 @@ void MainWindow::CheckForUpdates() {
     DestroyWindow(hwnd_);
 }
 
-void MainWindow::OpenHelp() {
-    if (OpenConfiguredUrl(config_.helpUrl, L"帮助")) {
-        return;
-    }
-    ShowToast(L"帮助链接尚未配置，可在设置窗口填写。", ThemedToastRole::Info);
-}
-
-void MainWindow::OpenFaq() {
-    if (!OpenConfiguredUrl(config_.faqUrl, L"常见问题")) {
-        ShowToast(L"常见问题链接尚未配置，可在设置窗口填写。", ThemedToastRole::Info);
-    }
-}
-
-void MainWindow::OpenReward() {
-    if (!OpenConfiguredUrl(config_.rewardUrl, L"赞助")) {
-        ShowToast(L"赞助链接尚未配置，可在设置窗口填写。", ThemedToastRole::Info);
-    }
-}
-
 void MainWindow::RestartWithOppositePrivilege() {
     config_.preferAdminRun = !runningAsAdmin_;
     configService_.Save(config_);
@@ -6600,84 +6452,6 @@ void MainWindow::ImportClipboard() {
         InvalidateRect(hwnd_, nullptr, FALSE);
     } else {
         ShowToast(L"剪贴板中没有可添加的文件、文件夹或网址。", ThemedToastRole::Info);
-    }
-}
-
-void MainWindow::ExportConfigPackage() {
-    SaveCurrentNotePage();
-    SaveWindowState();
-
-    std::wstring buffer = (appDirectory_ / ConfigPackageFileName()).wstring();
-    buffer.resize(32768, L'\0');
-    OPENFILENAMEW ofn{};
-    ofn.lStructSize = sizeof(ofn);
-    ofn.hwndOwner = hwnd_;
-    ofn.lpstrFile = buffer.data();
-    ofn.nMaxFile = static_cast<DWORD>(buffer.size());
-    ofn.lpstrFilter = L"Quattro快速启动器 配置包 (*.q4cfg)\0*.q4cfg\0所有文件\0*.*\0";
-    ofn.lpstrDefExt = L"q4cfg";
-    ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
-    if (!GetSaveFileNameW(&ofn)) {
-        return;
-    }
-
-    ConfigPackageOptions options;
-    options.includeConfig = true;
-    options.includeData = true;
-    options.includeUrlIcons = true;
-
-    ConfigPackageService service(appDirectory_);
-    const ConfigPackageReport report = service.ExportPackage(buffer.c_str(), options);
-    if (report.ok) {
-        ShowToast(L"配置包已导出。", ThemedToastRole::Success);
-    } else {
-        MessageBoxW(hwnd_, FormatConfigPackageReport(report).c_str(), L"导出配置包", MB_OK | MB_ICONWARNING);
-    }
-}
-
-void MainWindow::ImportConfigPackageMerge() {
-    CommonFileDialogOptions dialogOptions{};
-    dialogOptions.owner = hwnd_;
-    dialogOptions.mode = CommonFileDialogMode::FileOnly;
-    dialogOptions.context = L"配置包合并导入";
-    dialogOptions.defaultPath = appDirectory_.wstring();
-    dialogOptions.legacyFilter = L"Quattro快速启动器 配置包 (*.q4cfg)\0*.q4cfg\0所有文件\0*.*\0";
-    dialogOptions.defaultExtension = L"q4cfg";
-    CommonFileDialogResult result{};
-    if (!ShowCommonFileDialog(dialogOptions, result)) {
-        return;
-    }
-
-    const int confirm = MessageBoxW(
-        hwnd_,
-        L"将把配置包中的分组、标签、启动项、便签和待办合并到当前数据。\n\n"
-        L"同一待办按最后更新时间保留较新版本，本地已删除的待办默认保持删除。导入前会自动备份。",
-        L"合并导入配置包",
-        MB_OKCANCEL | MB_ICONINFORMATION);
-    if (confirm != IDOK) {
-        return;
-    }
-    if (!CommitAndDestroyNoteEdit()) {
-        return;
-    }
-
-    ConfigPackageOptions options;
-    options.includeConfig = false;
-    options.includeData = true;
-    options.includeUrlIcons = true;
-
-    ConfigPackageService service(appDirectory_);
-    const ConfigPackageReport report = service.ImportPackageMerge(result.path, options);
-    if (report.ok) {
-        model_ = storageService_.Load();
-        RestoreLegacyBuiltinSystemFunctionKeys();
-        SelectInitialItems();
-        RegisterConfiguredHotKeys();
-        ClearUiBitmaps();
-        InvalidateRect(hwnd_, nullptr, FALSE);
-        ShowToast(L"配置包已合并导入。", ThemedToastRole::Success);
-    } else {
-        MessageBoxW(hwnd_, FormatConfigPackageReport(report).c_str(), L"合并导入配置包", MB_OK | MB_ICONWARNING);
     }
 }
 
