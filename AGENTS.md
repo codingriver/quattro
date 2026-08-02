@@ -104,6 +104,18 @@
 - 业务扫描只负责候选枚举、单项处理、局部结果和确定性合并；线程数、停止、异常、进度和串行发布由公共任务上下文管理。`QuickImportService`、`FileLockQueryService`、`WebDavFileService`、`ShellContextMenuRefreshService`、AppLaunchLocker 启动来源扫描和广告扫描都属于强制使用方。
 - 修改扫描 facade 或扫描调用方后必须运行扫描规则检查和直接相关测试，禁止恢复 `hardware_concurrency`、worker vector、`*ScanThread` 或 `*ScanState` 实现。
 
+## Tool Usage Rules
+
+- `wait` 只能用于继续一个真实仍在运行的 `exec` 单元。只有当上一条 `exec` 明确返回 `Script running with cell ID ...` 时，才允许调用 `wait`。
+- 调用 `wait` 时，`cell_id` 必须逐字复制上一条 `exec` 返回的真实 ID；禁止使用 `dummy`、`bad`、`test`、`recover`、`placeholder` 等占位、猜测、过期或手写 ID。
+- 如果上一条 `exec` 已经 `Script completed`、`Script failed`、同步返回结果，或没有返回真实 `cell_id`，禁止调用 `wait`；应重新发起新的 `exec`。
+- 如果 `wait` 返回 `cell not found`，最多发生一次后必须停止继续 `wait`，改为用新的 `exec` 检查当前状态并继续实际任务。
+- 禁止把 `wait` 当作工具恢复、路由修复、sanity check 或节流手段。恢复工具状态时只能用新的 `exec` 执行只读检查，例如输出 `ok` 或读取目标文件片段。
+- 补丁工作流必须使用 `exec -> tools.apply_patch(...)`。如果补丁上下文不匹配，应先用 `exec -> tools.shell_command(...)` 读取精确上下文，再重新 `apply_patch`；不得调用 `wait`。
+- 构建/测试工作流必须使用 `exec -> tools.shell_command(...)` 并设置合理 `timeout_ms`。只有该 `exec` 明确异步返回真实 `cell_id` 时，才允许随后 `wait`。
+- 调用 `wait` 前必须确认：上一条 `exec` 返回了真实运行中的 `cell_id`；当前 `cell_id` 是从该输出逐字复制；本次调用是为了续接同一个运行中脚本，而不是从错误中恢复。任一条件不满足时，必须启动新的 `exec`。
+- 连续工具错误后，必须先停止重复同类调用，说明当前状态，并选择新的直接行动路径；禁止反复提交无效工具调用制造噪声。
+
 ## Acceptance Rules
 
 - 每次新增需求完成后，只验收与本次需求直接相关的功能和受影响范围，不要求运行完整冒烟测试。

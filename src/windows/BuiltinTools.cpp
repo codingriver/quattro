@@ -107,6 +107,7 @@ constexpr UINT WM_QUATTRO_FILE_LOCK_COMPLETE = WM_APP + 0x83;
 constexpr UINT WM_QUATTRO_CLOCK_ACTIVATE = WM_APP + 0x84;
 constexpr UINT WM_QUATTRO_TOOL_ACTIVATE = WM_APP + 0x85;
 constexpr UINT WM_QUATTRO_PORT_SCAN_COMPLETE = WM_APP + 0x86;
+constexpr UINT WM_QUATTRO_PROCESS_TOOLS_LOCATE_NOW = WM_APP + 0x87;
 constexpr wchar_t kProcessToolsWindowClass[] = L"QuattroProcessTools";
 constexpr wchar_t kClockWindowClass[] = L"QuattroClockTool";
 constexpr wchar_t kFileLockProgressWindowTitle[] = L"文件占用检查进度";
@@ -551,13 +552,8 @@ struct HoveredProcessResult {
     bool trayTarget = false;
 };
 
-HoveredProcessResult QueryHoveredProcess(HWND locatorWindow) {
+HoveredProcessResult QueryProcessAtPoint(HWND locatorWindow, POINT point) {
     HoveredProcessResult result{};
-    POINT point{};
-    if (!GetCursorPos(&point)) {
-        result.error = GetLastError();
-        return result;
-    }
     HWND target = WindowFromPoint(point);
     if (!target) {
         result.error = ERROR_NOT_FOUND;
@@ -589,6 +585,16 @@ HoveredProcessResult QueryHoveredProcess(HWND locatorWindow) {
         result.error = GetLastError();
     }
     return result;
+}
+
+HoveredProcessResult QueryHoveredProcess(HWND locatorWindow) {
+    POINT point{};
+    if (!GetCursorPos(&point)) {
+        HoveredProcessResult result{};
+        result.error = GetLastError();
+        return result;
+    }
+    return QueryProcessAtPoint(locatorWindow, point);
 }
 
 std::wstring DirectoryFromPath(const std::wstring& path) {
@@ -2247,10 +2253,53 @@ private:
             }
             ActivateWindow(hwnd_);
             if (lParam != 0) {
-                PostMessageW(hwnd_, WM_COMMAND, MAKEWPARAM(ID_LOCATOR_PICK, BN_CLICKED), 0);
+                PostMessageW(hwnd_, WM_QUATTRO_PROCESS_TOOLS_LOCATE_NOW, 0, 0);
             }
             return 0;
         }
+        case WM_QUATTRO_PROCESS_TOOLS_LOCATE_NOW:
+            EndLocatorPickMode(false);
+            LocateHoveredProcess();
+            return 0;
+        case WM_SETCURSOR:
+            if (locatorPickArmed_) {
+                SetCursor(LoadCursorW(nullptr, IDC_CROSS));
+                return TRUE;
+            }
+            break;
+        case WM_LBUTTONDOWN:
+            if (locatorPickArmed_) {
+                POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+                ClientToScreen(hwnd_, &point);
+                CompleteLocatorPickAtPoint(point);
+                return 0;
+            }
+            break;
+        case WM_RBUTTONDOWN:
+            if (locatorPickArmed_) {
+                CancelLocatorPickMode(L"已取消进程定位选择。");
+                return 0;
+            }
+            break;
+        case WM_KEYDOWN:
+        case WM_SYSKEYDOWN:
+            if (locatorPickArmed_ && wParam == VK_ESCAPE) {
+                CancelLocatorPickMode(L"已取消进程定位选择。");
+                return 0;
+            }
+            break;
+        case WM_CANCELMODE:
+            if (locatorPickArmed_) {
+                CancelLocatorPickMode(L"已取消进程定位选择。");
+                return 0;
+            }
+            break;
+        case WM_CAPTURECHANGED:
+            if (locatorPickArmed_) {
+                EndLocatorPickMode(false);
+                return 0;
+            }
+            break;
         case WM_PAINT: {
             PAINTSTRUCT ps{};
             HDC dc = BeginPaint(hwnd_, &ps);
@@ -2261,12 +2310,14 @@ private:
             return 0;
         }
         case WM_CLOSE:
+            EndLocatorPickMode(false);
             CancelFileLockQueryAndWait();
             DestroyWindow(hwnd_);
             return 0;
         default:
             return DefWindowProcW(hwnd_, message, wParam, lParam);
         }
+        return DefWindowProcW(hwnd_, message, wParam, lParam);
     }
 
     ThemedUi Ui() const {
@@ -2406,7 +2457,7 @@ private:
         }
         ShowPage(initialPage_);
         if (initialPage_ == Page::Locator && locateOnOpen_) {
-            PostMessageW(hwnd_, WM_COMMAND, MAKEWPARAM(ID_LOCATOR_PICK, BN_CLICKED), 0);
+            PostMessageW(hwnd_, WM_QUATTRO_PROCESS_TOOLS_LOCATE_NOW, 0, 0);
         }
     }
 
@@ -2457,7 +2508,7 @@ private:
             ui.rect(actionGroupX + layout.labelWidth + layout.labelGap, actionRowY + fieldOffsetY, hotKeyWidth, fieldHeight),
             LocatorHotKeyText(),
             readOnlyOptions);
-        AddButton(
+        locatorPick_ = AddButton(
             page,
             ID_LOCATOR_PICK,
             L"立即获取",
@@ -2687,7 +2738,11 @@ private:
         }
         switch (id) {
         case ID_LOCATOR_PICK:
-            LocateHoveredProcess();
+            if (locatorPickArmed_) {
+                CancelLocatorPickMode(L"已取消进程定位选择。");
+            } else {
+                BeginLocatorPickMode();
+            }
             break;
         case ID_LOCATOR_KILL:
             KillLocatedProcess();
@@ -2724,6 +2779,10 @@ private:
             KillAllFileLockProcesses();
             break;
         case IDCANCEL:
+            if (locatorPickArmed_) {
+                CancelLocatorPickMode(L"已取消进程定位选择。");
+                break;
+            }
             DestroyWindow(hwnd_);
             break;
         default:
@@ -2940,7 +2999,14 @@ private:
     }
 
     void LocateHoveredProcess() {
-        const HoveredProcessResult hovered = QueryHoveredProcess(hwnd_);
+        ApplyLocatedProcessResult(QueryHoveredProcess(hwnd_));
+    }
+
+    void LocateProcessAtPoint(POINT point) {
+        ApplyLocatedProcessResult(QueryProcessAtPoint(hwnd_, point));
+    }
+
+    void ApplyLocatedProcessResult(const HoveredProcessResult& hovered) {
         if (!hovered.pid) {
             locatedPid_ = 0;
             locatedPath_.clear();
@@ -2969,6 +3035,43 @@ private:
             locatedPath_.empty() ? ThemedStatusRole::Warning : ThemedStatusRole::Success);
     }
 
+    void BeginLocatorPickMode() {
+        locatorPickArmed_ = true;
+        SetCapture(hwnd_);
+        SetCursor(LoadCursorW(nullptr, IDC_CROSS));
+        UpdateLocatorPickButton();
+        SetStatus(locatorStatus_, L"选择模式：点击目标窗口或托盘图标；按 Esc 或右键取消。", ThemedStatusRole::Info);
+    }
+
+    void EndLocatorPickMode(bool restoreStatus) {
+        if (!locatorPickArmed_) {
+            return;
+        }
+        locatorPickArmed_ = false;
+        if (GetCapture() == hwnd_) {
+            ReleaseCapture();
+        }
+        UpdateLocatorPickButton();
+        if (restoreStatus) {
+            SetStatus(locatorStatus_, LocatorStatusText(), ThemedStatusRole::Normal);
+        }
+    }
+
+    void CancelLocatorPickMode(const std::wstring& text) {
+        EndLocatorPickMode(false);
+        SetStatus(locatorStatus_, text, ThemedStatusRole::Normal);
+    }
+
+    void CompleteLocatorPickAtPoint(POINT point) {
+        HWND target = WindowFromPoint(point);
+        if (target == hwnd_ || IsChild(hwnd_, target)) {
+            CancelLocatorPickMode(L"已取消进程定位选择。");
+            return;
+        }
+        EndLocatorPickMode(false);
+        LocateProcessAtPoint(point);
+    }
+
     void KillLocatedProcess() {
         if (!locatedPid_) {
             return;
@@ -2995,11 +3098,18 @@ private:
     }
 
     void UpdateLocatorButtons() {
+        UpdateLocatorPickButton();
         if (locatorKill_) {
             Ui().SetEnabled(locatorKill_, locatedPid_ != 0);
         }
         if (locatorOpen_) {
             Ui().SetEnabled(locatorOpen_, !locatedPath_.empty());
+        }
+    }
+
+    void UpdateLocatorPickButton() {
+        if (locatorPick_) {
+            SetText(locatorPick_, locatorPickArmed_ ? L"取消" : L"立即获取");
         }
     }
 
@@ -3303,11 +3413,13 @@ private:
     int nextGeneratedControlId_ = 7780;
 
     HWND locatorHotKey_ = nullptr;
+    HWND locatorPick_ = nullptr;
     HWND locatorPid_ = nullptr;
     HWND locatorPath_ = nullptr;
     HWND locatorKill_ = nullptr;
     HWND locatorOpen_ = nullptr;
     HWND locatorStatus_ = nullptr;
+    bool locatorPickArmed_ = false;
     DWORD locatedPid_ = 0;
     std::wstring locatedPath_;
 

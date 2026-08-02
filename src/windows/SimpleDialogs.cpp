@@ -26,6 +26,7 @@
 #include "Utilities.h"
 #include "WebDavBackupService.h"
 #include "WebDavCredentialService.h"
+#include "WebDavFileBatchConfirmDialog.h"
 #include "WebDavFileDetailsDialog.h"
 #include "WebDavFileService.h"
 #include "WebDavFileIndexCache.h"
@@ -89,6 +90,7 @@ constexpr int ID_WEBDAV_FILE_SELECT_ALL = 460;
 constexpr int ID_WEBDAV_FILE_CLEAR_SELECTION = 461;
 constexpr int ID_WEBDAV_FILE_DOWNLOAD_SELECTED = 462;
 constexpr int ID_WEBDAV_FILE_DELETE_SELECTED = 463;
+constexpr int ID_WEBDAV_FILE_UPLOAD_SELECTED = 464;
 constexpr UINT WM_WEBDAV_FILE_BATCH = WM_APP + 0xC7;
 constexpr UINT WM_WEBDAV_FILE_LIST_DONE = WM_APP + 0xC8;
 constexpr UINT WM_WEBDAV_FILE_REFRESH_REQUEST = WM_APP + 0xC9;
@@ -1665,21 +1667,25 @@ private:
             L"清除选择", ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
         const int downloadWidth = ui.buttonWidth(
             L"下载所选", ThemedButtonRole::Primary, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
+        const int uploadWidth = ui.buttonWidth(
+            L"上传所选", ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
         const int deleteWidth = ui.buttonWidth(
             L"删除所选", ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
         MoveWindow(selectAllButton_, ui.contentLeft(), actionY, selectAllWidth, buttonHeight, TRUE);
         MoveWindow(clearSelectionButton_, ui.contentLeft() + selectAllWidth + layout.controlGapX,
             actionY, clearWidth, buttonHeight, TRUE);
         const int selectionX = ui.contentLeft() + selectAllWidth + layout.controlGapX + clearWidth + layout.controlGapX;
-        const int rightActionsWidth = downloadWidth + layout.controlGapX + deleteWidth;
+        const int rightActionsWidth = uploadWidth + layout.controlGapX + downloadWidth + layout.controlGapX + deleteWidth;
         const int rightActionsX = ui.contentLeft() + ui.contentWidth() - rightActionsWidth;
         ui.MoveControl(selectionStatus_, RECT{
             selectionX,
             actionY,
             selectionX + std::max(1, rightActionsX - selectionX - layout.controlGapX),
             actionY + ui.labelHeight()});
-        MoveWindow(downloadSelectedButton_, rightActionsX, actionY, downloadWidth, buttonHeight, TRUE);
-        MoveWindow(deleteSelectedButton_, rightActionsX + downloadWidth + layout.controlGapX,
+        MoveWindow(uploadSelectedButton_, rightActionsX, actionY, uploadWidth, buttonHeight, TRUE);
+        MoveWindow(downloadSelectedButton_, rightActionsX + uploadWidth + layout.controlGapX,
+            actionY, downloadWidth, buttonHeight, TRUE);
+        MoveWindow(deleteSelectedButton_, rightActionsX + uploadWidth + layout.controlGapX + downloadWidth + layout.controlGapX,
             actionY, deleteWidth, buttonHeight, TRUE);
 
         const int tableTop = ui.nextRowY(actionY, buttonHeight);
@@ -1896,6 +1902,7 @@ private:
         ThemedUi::SetText(selectionStatus_, L"已选择 " + std::to_wstring(checkedIds_.size()) +
             L" 项 · 共 " + std::to_wstring(records_.size()) + L" 项");
         const bool hasSelection = !checkedIds_.empty();
+        ui.SetEnabled(uploadSelectedButton_, hasSelection);
         ui.SetEnabled(downloadSelectedButton_, hasSelection);
         ui.SetEnabled(deleteSelectedButton_, hasSelection && !deleteBusy_);
         ui.SetEnabled(clearSelectionButton_, hasSelection);
@@ -1925,11 +1932,58 @@ private:
         }
         return true;
     }
+    WebDavFileBatchConfirmItem ConfirmItem(const WebDavFileRecord& record, const std::wstring& status,
+        bool actionable, const std::filesystem::path& localPath = {}) const {
+        WebDavFileBatchConfirmItem item;
+        item.name = record.displayName.empty() ? record.id : record.displayName;
+        item.sizeText = IsHealthy(record) ? FormatFileSize(record.size) : L"—";
+        item.localPath = localPath.empty() ? record.absolutePath : localPath.wstring();
+        item.status = status;
+        item.actionable = actionable;
+        return item;
+    }
+    bool ConfirmBatch(const std::wstring& title, const std::wstring& intro, const std::wstring& confirmText,
+        const std::vector<WebDavFileBatchConfirmItem>& items, bool danger = false) {
+        return WebDavFileBatchConfirmDialog(hwnd_, instance_, theme_, title, intro, confirmText, items, danger).Run();
+    }
     bool CanUploadLocal(const WebDavFileRecord& record) const {
         if (!IsHealthy(record)) return false;
         std::filesystem::path target;
         std::wstring error;
         return LocalUploadTarget(record, target, error);
+    }
+    void UploadRecords(const std::vector<WebDavFileRecord>& selected) {
+        if (selected.empty()) return;
+        std::vector<std::filesystem::path> uploadPaths;
+        std::vector<WebDavFileBatchConfirmItem> items;
+        items.reserve(selected.size());
+        for (const auto& record : selected) {
+            std::filesystem::path target;
+            std::wstring error;
+            if (!IsHealthy(record)) {
+                items.push_back(ConfirmItem(record, L"异常记录无法定位本地文件，将跳过。", false));
+            } else if (LocalUploadTarget(record, target, error)) {
+                uploadPaths.push_back(target);
+                items.push_back(ConfirmItem(record, L"将重新上传本地文件并覆盖远端内容。", true, target));
+            } else {
+                items.push_back(ConfirmItem(record, error.empty() ? L"本地文件不存在，无法上传。" : error, false));
+            }
+        }
+        if (uploadPaths.empty()) {
+            ShowToast(L"选中的文件没有可上传的本地文件。", ThemedToastRole::Warning, 5000);
+            return;
+        }
+        if (!ConfirmBatch(L"确认上传 WebDAV 文件",
+                L"请确认要上传以下本地文件。上传会覆盖对应的远端记录和内容。",
+                L"确认上传", items)) {
+            return;
+        }
+        std::wstring error;
+        if (!WebDavTransferCoordinator::SubmitUploads(uploadPaths, error)) {
+            ShowThemedMessageBox(hwnd_, instance_, theme_, error, L"上传失败", MB_OK | MB_ICONWARNING);
+            return;
+        }
+        ShowToast(L"已加入 WebDAV 上传队列。", ThemedToastRole::Success);
     }
     void Upload(int index = -1) {
         if (index < 0) index = Selected();
@@ -1937,75 +1991,70 @@ private:
             ShowThemedMessageBox(hwnd_, instance_, theme_, L"请选择一个文件。", L"WebDAV 文件管理", MB_OK | MB_ICONWARNING);
             return;
         }
-        const auto& record = records_[static_cast<std::size_t>(index)];
-        std::filesystem::path target;
-        std::wstring error;
-        if (!LocalUploadTarget(record, target, error)) {
-            ShowToast(error.empty() ? L"本地文件不存在，无法上传。" : error, ThemedToastRole::Warning, 5000);
-            return;
-        }
-        if (!WebDavTransferCoordinator::SubmitUploads({target}, error)) {
-            ShowThemedMessageBox(hwnd_, instance_, theme_, error, L"上传失败", MB_OK | MB_ICONWARNING);
-            return;
-        }
-        ShowToast(L"已加入 WebDAV 上传队列。", ThemedToastRole::Success);
+        UploadRecords({records_[static_cast<std::size_t>(index)]});
     }
-    void Download(int index = -1) {
-        if (index < 0) index = Selected();
-        if (index < 0 || index >= static_cast<int>(records_.size())) { ShowThemedMessageBox(hwnd_, instance_, theme_, L"请选择一个文件。", L"WebDAV 文件管理", MB_OK | MB_ICONWARNING); return; }
-        const auto& record = records_[static_cast<std::size_t>(index)];
-        if (!IsHealthy(record) || !record.contentReady || ToLower(record.uploadState) != L"complete") {
-            ShowThemedMessageBox(hwnd_, instance_, theme_,
-                IsHealthy(record) ? L"该文件尚未上传完成，暂时无法下载。" : L"异常记录无法下载，但可以查看详情或删除。",
-                L"WebDAV 文件管理", MB_OK | MB_ICONWARNING);
-            return;
-        }
-        std::filesystem::path target;
-        std::wstring error;
-        if (!ValidateDownloadTarget(record, target, error)) {
-            ShowToast(error.empty() ? L"文件保存路径无效。" : error, ThemedToastRole::Warning, 5000);
-            return;
-        }
-        if (FileExists(target) && MessageBoxW(hwnd_, (L"本地文件已存在，将覆盖：\n" + target.wstring()).c_str(), L"确认覆盖", MB_OKCANCEL | MB_ICONWARNING) != IDOK) return;
-        if (!WebDavTransferCoordinator::SubmitDownloads({record}, error)) {
-            ShowThemedMessageBox(hwnd_, instance_, theme_, error, L"下载失败", MB_OK | MB_ICONWARNING);
-            return;
-        }
-        ShowToast(L"已加入 WebDAV 下载队列。", ThemedToastRole::Success);
+    void UploadSelected() {
+        UploadRecords(CheckedRecords());
     }
-    void DownloadSelected() {
-        const auto selected = CheckedRecords();
+    void DownloadRecords(const std::vector<WebDavFileRecord>& selected) {
         if (selected.empty()) return;
         std::vector<WebDavFileRecord> downloadable;
-        int skipped = 0, existing = 0, invalid = 0;
+        std::vector<WebDavFileRecord> overwriteRecords;
+        std::vector<WebDavFileBatchConfirmItem> items;
+        std::vector<WebDavFileBatchConfirmItem> overwriteItems;
+        items.reserve(selected.size());
         for (const auto& record : selected) {
-            if (!IsHealthy(record) || !record.contentReady || ToLower(record.uploadState) != L"complete") { ++skipped; continue; }
+            if (!IsHealthy(record)) {
+                items.push_back(ConfirmItem(record, L"异常记录无法下载，将跳过。", false));
+                continue;
+            }
+            if (!record.contentReady || ToLower(record.uploadState) != L"complete") {
+                items.push_back(ConfirmItem(record, L"远端文件尚未上传完成，将跳过。", false));
+                continue;
+            }
             std::filesystem::path target;
             std::wstring error;
-            if (!ValidateDownloadTarget(record, target, error)) { ++invalid; continue; }
-            if (FileExists(target)) ++existing;
+            if (!ValidateDownloadTarget(record, target, error)) {
+                items.push_back(ConfirmItem(record, error.empty() ? L"文件保存路径无效，将跳过。" : error, false));
+                continue;
+            }
+            const bool overwrite = FileExists(target);
             downloadable.push_back(record);
+            items.push_back(ConfirmItem(record, overwrite ? L"将下载并覆盖本地文件。" : L"将下载到本地路径。", true, target));
+            if (overwrite) {
+                overwriteRecords.push_back(record);
+                overwriteItems.push_back(ConfirmItem(record, L"本地文件已存在，确认后会被远端内容覆盖。", true, target));
+            }
         }
         if (downloadable.empty()) {
-            ShowToast(invalid > 0 ? L"选中的文件没有可下载到本地的有效路径。" : L"选中的文件均尚未上传完成，无法下载。",
-                ThemedToastRole::Warning, 5000);
+            ShowToast(L"选中的文件没有可下载的有效记录。", ThemedToastRole::Warning, 5000);
             return;
         }
-        std::wstring message = L"准备下载 " + std::to_wstring(downloadable.size()) + L" 个文件。";
-        if (existing > 0) message += L"\n其中 " + std::to_wstring(existing) + L" 个本地文件将被覆盖。";
-        if (skipped > 0) message += L"\n另有 " + std::to_wstring(skipped) + L" 个未完成记录将跳过。";
-        if (invalid > 0) message += L"\n另有 " + std::to_wstring(invalid) + L" 个路径无效，将跳过。";
-        if (MessageBoxW(hwnd_, message.c_str(), L"确认批量下载", MB_OKCANCEL | MB_ICONWARNING) != IDOK) return;
+        if (!ConfirmBatch(L"确认下载 WebDAV 文件",
+                L"请确认要下载以下远端文件。",
+                L"确认下载", items)) {
+            return;
+        }
+        if (!overwriteItems.empty() &&
+            !ConfirmBatch(L"确认覆盖本地文件",
+                L"以下本地文件已经存在。继续下载会使用远端内容覆盖这些文件。",
+                L"覆盖并下载", overwriteItems, true)) {
+            return;
+        }
         std::wstring error;
         if (!WebDavTransferCoordinator::SubmitDownloads(downloadable, error)) {
             ShowThemedMessageBox(hwnd_, instance_, theme_, error, L"批量下载失败", MB_OK | MB_ICONWARNING);
             return;
         }
-        if (invalid > 0) {
-            ShowToast(L"已跳过 " + std::to_wstring(invalid) + L" 个路径无效的文件。", ThemedToastRole::Warning, 5000);
-        } else {
-            ShowToast(L"已加入 WebDAV 下载队列。", ThemedToastRole::Success);
-        }
+        ShowToast(L"已加入 WebDAV 下载队列。", ThemedToastRole::Success);
+    }
+    void Download(int index = -1) {
+        if (index < 0) index = Selected();
+        if (index < 0 || index >= static_cast<int>(records_.size())) { ShowThemedMessageBox(hwnd_, instance_, theme_, L"请选择一个文件。", L"WebDAV 文件管理", MB_OK | MB_ICONWARNING); return; }
+        DownloadRecords({records_[static_cast<std::size_t>(index)]});
+    }
+    void DownloadSelected() {
+        DownloadRecords(CheckedRecords());
     }
     void DeleteSelected(int index = -1) {
         if (index < 0) index = Selected();
@@ -2077,8 +2126,16 @@ private:
     }
     void DeleteRecords(std::vector<WebDavFileRecord> records) {
         if (records.empty() || deleteBusy_) return;
-        const std::wstring prompt = L"确定删除选中的 " + std::to_wstring(records.size()) + L" 个远端文件？\n不会删除对应的本地文件。";
-        if (MessageBoxW(hwnd_, prompt.c_str(), L"批量删除 WebDAV 文件", MB_OKCANCEL | MB_ICONWARNING) != IDOK) return;
+        std::vector<WebDavFileBatchConfirmItem> items;
+        items.reserve(records.size());
+        for (const auto& record : records) {
+            items.push_back(ConfirmItem(record, L"将删除远端内容、Meta 和记录目录。", true));
+        }
+        if (!ConfirmBatch(L"确认删除 WebDAV 文件",
+                L"请确认要删除以下远端文件。此操作不会删除对应的本地文件。",
+                L"确认删除", items, true)) {
+            return;
+        }
         deleteBusy_ = true;
         for (const auto& record : records) { deletingIds_.insert(record.id); deletedTombstones_.insert(record.id); }
         for (const auto& record : records) {
@@ -2273,6 +2330,7 @@ private:
             const int actionY = ui.nextRowY(ui.contentTop(), buttonHeight);
             const int selectAllWidth = ui.buttonWidth(L"全选", ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
             const int clearWidth = ui.buttonWidth(L"清除选择", ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
+            const int uploadWidth = ui.buttonWidth(L"上传所选", ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
             const int downloadWidth = ui.buttonWidth(L"下载所选", ThemedButtonRole::Primary, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
             const int deleteWidth = ui.buttonWidth(L"删除所选", ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
             selectAllButton_ = ui.Button(ID_WEBDAV_FILE_SELECT_ALL, L"全选", ui.contentLeft(), actionY,
@@ -2281,14 +2339,16 @@ private:
                 ui.contentLeft() + selectAllWidth + layout.controlGapX, actionY,
                 ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, clearWidth);
             const int selectionX = ui.contentLeft() + selectAllWidth + layout.controlGapX + clearWidth + layout.controlGapX;
-            const int rightActionsWidth = downloadWidth + layout.controlGapX + deleteWidth;
+            const int rightActionsWidth = uploadWidth + layout.controlGapX + downloadWidth + layout.controlGapX + deleteWidth;
             const int rightActionsX = ui.contentLeft() + ui.contentWidth() - rightActionsWidth;
             selectionStatus_ = ui.SelectableStatusText(L"已选择 0 项", selectionX, actionY, std::max(1, rightActionsX - selectionX - layout.controlGapX),
                 ThemedStatusTextOptions{ThemedStatusRole::Normal, ThemedTextAlign::Start});
-            downloadSelectedButton_ = ui.Button(ID_WEBDAV_FILE_DOWNLOAD_SELECTED, L"下载所选", rightActionsX, actionY,
+            uploadSelectedButton_ = ui.Button(ID_WEBDAV_FILE_UPLOAD_SELECTED, L"上传所选", rightActionsX, actionY,
+                ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, uploadWidth);
+            downloadSelectedButton_ = ui.Button(ID_WEBDAV_FILE_DOWNLOAD_SELECTED, L"下载所选", rightActionsX + uploadWidth + layout.controlGapX, actionY,
                 ThemedButtonRole::Primary, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, downloadWidth);
             deleteSelectedButton_ = ui.Button(ID_WEBDAV_FILE_DELETE_SELECTED, L"删除所选",
-                rightActionsX + downloadWidth + layout.controlGapX, actionY,
+                rightActionsX + uploadWidth + layout.controlGapX + downloadWidth + layout.controlGapX, actionY,
                 ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, deleteWidth);
 
             const int top = ui.nextRowY(actionY, buttonHeight);
@@ -2394,7 +2454,7 @@ private:
             ShowFileActionMenu(row, anchor);
             return 0;
         }
-        case WM_COMMAND: if (LOWORD(wParam)==ID_WEBDAV_FILE_REFRESH) { StartRefresh(); return 0; } if (LOWORD(wParam)==ID_WEBDAV_FILE_TRANSFER_QUEUE) { ShowTransferQueue(); return 0; } if (LOWORD(wParam)==ID_WEBDAV_FILE_SELECT_ALL) { SelectAll(true); return 0; } if (LOWORD(wParam)==ID_WEBDAV_FILE_CLEAR_SELECTION) { SelectAll(false); return 0; } if (LOWORD(wParam)==ID_WEBDAV_FILE_DOWNLOAD_SELECTED) { DownloadSelected(); return 0; } if (LOWORD(wParam)==ID_WEBDAV_FILE_DELETE_SELECTED) { DeleteChecked(); return 0; } if (LOWORD(wParam)==ID_WEBDAV_FILE_DOWNLOAD) { Download(); return 0; } if (LOWORD(wParam)==ID_WEBDAV_FILE_DELETE) { DeleteSelected(); return 0; } return 0;
+        case WM_COMMAND: if (LOWORD(wParam)==ID_WEBDAV_FILE_REFRESH) { StartRefresh(); return 0; } if (LOWORD(wParam)==ID_WEBDAV_FILE_TRANSFER_QUEUE) { ShowTransferQueue(); return 0; } if (LOWORD(wParam)==ID_WEBDAV_FILE_SELECT_ALL) { SelectAll(true); return 0; } if (LOWORD(wParam)==ID_WEBDAV_FILE_CLEAR_SELECTION) { SelectAll(false); return 0; } if (LOWORD(wParam)==ID_WEBDAV_FILE_UPLOAD_SELECTED) { UploadSelected(); return 0; } if (LOWORD(wParam)==ID_WEBDAV_FILE_DOWNLOAD_SELECTED) { DownloadSelected(); return 0; } if (LOWORD(wParam)==ID_WEBDAV_FILE_DELETE_SELECTED) { DeleteChecked(); return 0; } if (LOWORD(wParam)==ID_WEBDAV_FILE_DOWNLOAD) { Download(); return 0; } if (LOWORD(wParam)==ID_WEBDAV_FILE_DELETE) { DeleteSelected(); return 0; } return 0;
         case WM_CLOSE: if (refreshTask_) refreshTask_->RequestStop(); done_=true; DestroyWindow(hwnd_); return 0;
         case WM_NCDESTROY: if (refreshTask_) refreshTask_->RequestStop(); alive_->store(false); RemovePropW(hwnd_, L"QuattroWebDavIncrementalApplied"); RemovePropW(hwnd_, L"QuattroWebDavFileActionMenuHasOpenLocation"); RemovePropW(hwnd_, L"QuattroWebDavFileActionMenuHasUpload"); done_=true; hwnd_=nullptr; return 0;
         default: return DefWindowProcW(hwnd_, message, wParam, lParam);
@@ -2402,7 +2462,7 @@ private:
     }
     HWND owner_{}; HINSTANCE instance_{}; HWND hwnd_{}; HWND table_{}; HWND directoryLabel_{};
     HWND refreshButton_{}; HWND transferQueueButton_{}; HWND selectAllButton_{}; HWND clearSelectionButton_{};
-    HWND selectionStatus_{}; HWND downloadSelectedButton_{}; HWND deleteSelectedButton_{};
+    HWND selectionStatus_{}; HWND uploadSelectedButton_{}; HWND downloadSelectedButton_{}; HWND deleteSelectedButton_{};
     const Theme& theme_; AppConfig config_; WebDavFileIndexCache cache_{config_}; std::wstring cacheRefreshedAt_;
     std::vector<WebDavFileRecord> records_; std::map<std::wstring, std::intptr_t> rowKeys_; std::intptr_t nextRowKey_ = 1;
     std::set<std::wstring> checkedIds_; std::set<std::wstring> deletingIds_;
@@ -5305,3 +5365,19 @@ void NotifyOpenSettingsDialogAutoRunChanged(HWND owner, bool enabled) {
     }
     SendMessageW(settingsHwnd, WM_SETTINGS_AUTORUN_CHANGED, enabled ? 1 : 0, 0);
 }
+
+#if defined(QUATTRO_ACCEPTANCE_EMBED_WEBDAV_DIALOG_SUPPORT)
+#define kDetailsTextId kQuattroAcceptanceWebDavFileDetailsTextId
+#define kCopyDetailsId kQuattroAcceptanceWebDavFileDetailsCopyId
+#include "WebDavFileDetailsDialog.cpp"
+#undef kDetailsTextId
+#undef kCopyDetailsId
+
+#define kDetailsTextId kQuattroAcceptanceWebDavBatchConfirmDetailsTextId
+#define kCopyDetailsId kQuattroAcceptanceWebDavBatchConfirmCopyId
+#include "WebDavFileBatchConfirmDialog.cpp"
+#undef kDetailsTextId
+#undef kCopyDetailsId
+
+#include "../services/TodoJsonBackupService.cpp"
+#endif
