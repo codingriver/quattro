@@ -4,6 +4,9 @@
 #include "Utilities.h"
 
 #include <algorithm>
+#include <chrono>
+#include <cwchar>
+#include <ctime>
 
 namespace {
 constexpr UINT WM_TRANSFER_QUEUE_CHANGED = WM_APP + 0x2D1;
@@ -12,6 +15,7 @@ constexpr int ID_CLOSE = 6102;
 constexpr int ID_PROGRESS = 6103;
 constexpr int ID_TABLE = 6104;
 constexpr int ID_CURRENT_PROGRESS = 6105;
+constexpr int ID_CLEAR_FINISHED = 6106;
 
 std::wstring StatusText(ThemedFileTransferStatus status) {
     switch (status) {
@@ -31,13 +35,40 @@ std::wstring StatusText(ThemedFileTransferStatus status) {
     return L"等待中";
 }
 
+bool TerminalStatus(ThemedFileTransferStatus status) {
+    return status == ThemedFileTransferStatus::UploadCompleted ||
+        status == ThemedFileTransferStatus::DownloadCompleted ||
+        status == ThemedFileTransferStatus::UploadFailed ||
+        status == ThemedFileTransferStatus::DownloadFailed ||
+        status == ThemedFileTransferStatus::Stopped;
+}
+
+std::wstring DirectionText(ThemedFileTransferDirection direction) {
+    return direction == ThemedFileTransferDirection::Upload ? L"上传" : L"下载";
+}
+
+std::wstring FormatTransferTime(std::chrono::system_clock::time_point value) {
+    if (value == std::chrono::system_clock::time_point{}) return L"--:--:--";
+    const std::time_t raw = std::chrono::system_clock::to_time_t(value);
+    std::tm local{};
+    if (localtime_s(&local, &raw) != 0) return L"--:--:--";
+    wchar_t buffer[16]{};
+    return std::wcsftime(buffer, sizeof(buffer) / sizeof(buffer[0]), L"%H:%M:%S", &local) > 0
+        ? std::wstring(buffer) : std::wstring(L"--:--:--");
+}
+
+std::wstring RowTimeText(const ThemedFileTransferRow& row) {
+    return TerminalStatus(row.status) ? FormatTransferTime(row.finishedAt) : L"--:--:--";
+}
+
 bool SameRow(const ThemedFileTransferRow& a, const ThemedFileTransferRow& b) {
     return a.id == b.id && a.fileName == b.fileName && a.absolutePath == b.absolutePath &&
         a.size == b.size && a.status == b.status && a.direction == b.direction &&
         a.phaseIndex == b.phaseIndex && a.phaseCount == b.phaseCount &&
         a.phaseTransferred == b.phaseTransferred && a.phaseTotal == b.phaseTotal &&
         a.contentTransferred == b.contentTransferred && a.contentTotal == b.contentTotal &&
-        a.error == b.error && a.active == b.active;
+        a.error == b.error && a.active == b.active &&
+        a.queuedAt == b.queuedAt && a.startedAt == b.startedAt && a.finishedAt == b.finishedAt;
 }
 
 int Percent(std::uint64_t value, std::uint64_t total) {
@@ -81,14 +112,51 @@ std::wstring RowProgressText(const ThemedFileTransferRow& row) {
 }
 
 std::wstring RowTooltipText(const ThemedFileTransferRow& row) {
-    return row.fileName + L"  ·  " + FormatByteSizeForDisplay(row.size) + L"\n" +
-        row.absolutePath + L"\n" + RowProgressText(row);
+    return row.fileName + L"  ·  " + DirectionText(row.direction) + L"  ·  " +
+        FormatByteSizeForDisplay(row.size) + L"\n" + row.absolutePath + L"\n" +
+        RowProgressText(row) + L"\n时间：" + RowTimeText(row);
+}
+
+bool HasFinishedRows(const ThemedFileTransferQueueSnapshot& snapshot) {
+    return std::any_of(snapshot.rows.begin(), snapshot.rows.end(), [](const auto& row) {
+        return TerminalStatus(row.status);
+    });
+}
+
+bool SameRowOrder(HWND table, const std::vector<ThemedFileTransferRow>& rows) {
+    if (!table || ThemedUi::TableRowCount(table) != static_cast<int>(rows.size())) return false;
+    for (int index = 0; index < static_cast<int>(rows.size()); ++index) {
+        if (ThemedUi::TableRowKey(table, index) !=
+            static_cast<std::intptr_t>(rows[static_cast<std::size_t>(index)].id)) return false;
+    }
+    return true;
+}
+
+bool TableKeysMatchSnapshotPrefix(HWND table, const std::vector<ThemedFileTransferRow>& rows) {
+    const int tableCount = ThemedUi::TableRowCount(table);
+    if (tableCount > static_cast<int>(rows.size())) return false;
+    for (int index = 0; index < tableCount; ++index) {
+        if (ThemedUi::TableRowKey(table, index) !=
+            static_cast<std::intptr_t>(rows[static_cast<std::size_t>(index)].id)) return false;
+    }
+    return true;
+}
+
+bool SnapshotKeysMatchTablePrefix(HWND table, const std::vector<ThemedFileTransferRow>& rows) {
+    const int tableCount = ThemedUi::TableRowCount(table);
+    if (static_cast<int>(rows.size()) > tableCount) return false;
+    for (int index = 0; index < static_cast<int>(rows.size()); ++index) {
+        if (ThemedUi::TableRowKey(table, index) !=
+            static_cast<std::intptr_t>(rows[static_cast<std::size_t>(index)].id)) return false;
+    }
+    return true;
 }
 
 ThemedTableRow TableRow(const ThemedFileTransferRow& row) {
     return ThemedTableRow{static_cast<std::intptr_t>(row.id), {
-        ThemedTableCell{row.fileName}, ThemedTableCell{row.absolutePath},
-        ThemedTableCell{FormatByteSizeForDisplay(row.size)}, ThemedTableCell{RowStatusText(row)}},
+        ThemedTableCell{row.fileName}, ThemedTableCell{DirectionText(row.direction)},
+        ThemedTableCell{row.absolutePath}, ThemedTableCell{FormatByteSizeForDisplay(row.size)},
+        ThemedTableCell{RowStatusText(row)}, ThemedTableCell{RowTimeText(row)}},
         false, true, row.active};
 }
 }
@@ -155,6 +223,10 @@ LRESULT ThemedFileTransferQueueDialog::Handle(UINT message, WPARAM wParam, LPARA
         changePosted_ = false;
         Refresh(); return 0;
     case WM_COMMAND:
+        if (LOWORD(wParam) == ID_CLEAR_FINISHED) {
+            if (options_.clearFinished) options_.clearFinished();
+            return 0;
+        }
         if (LOWORD(wParam) == ID_STOP_ALL) { if (options_.requestStopAll) options_.requestStopAll(); return 0; }
         if (LOWORD(wParam) == ID_CLOSE || LOWORD(wParam) == IDCANCEL) { Hide(); return 0; }
         break;
@@ -182,9 +254,11 @@ void ThemedFileTransferQueueDialog::CreateControls() {
     currentProgress_ = ui.ProgressBar(ID_CURRENT_PROGRESS, ui.contentLeft(), ui.contentTop(), ui.contentWidth(), progressOptions);
     table_ = ui.Table(ID_TABLE, RECT{0,0,1,1}, {
         {L"name", L"文件名", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, ui.scale(180)},
+        {L"direction", L"方向", ThemedTableColumnAlign::Center, ThemedTableColumnWidth::Fixed, ui.scale(56)},
         {L"path", L"绝对路径", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Remaining},
-        {L"size", L"大小", ThemedTableColumnAlign::End, ThemedTableColumnWidth::Fixed, ui.scale(100)},
+        {L"size", L"大小", ThemedTableColumnAlign::End, ThemedTableColumnWidth::Fixed, ui.scale(90)},
         {L"status", L"状态", ThemedTableColumnAlign::Center, ThemedTableColumnWidth::Fixed, ui.scale(100)},
+        {L"time", L"时间", ThemedTableColumnAlign::Center, ThemedTableColumnWidth::Fixed, ui.scale(80)},
     }, ThemedTableOptions{ThemedTableSelection::Single, ThemedTableView::Details, false, true, true, true, true, false, false, false, true});
     ThemedTooltipOptions rowTooltipOptions{};
     rowTooltipOptions.placement = ThemedTooltipPlacement::Cursor;
@@ -193,9 +267,11 @@ void ThemedFileTransferQueueDialog::CreateControls() {
             [rowKey](const auto& row) { return row.id == static_cast<std::uint64_t>(rowKey); });
         return found == lastSnapshot_.rows.end() ? std::wstring{} : RowTooltipText(*found);
     }, rowTooltipOptions);
-    stop_ = ui.FooterButton(ID_STOP_ALL, L"停止", 0, 2);
+    clearFinished_ = ui.FooterButton(ID_CLEAR_FINISHED, L"清空已结束", 0, 3);
+    ui.SetTooltip(clearFinished_, L"清空已完成、失败和停止的历史记录");
+    stop_ = ui.FooterButton(ID_STOP_ALL, L"停止", 1, 3);
     ui.SetTooltip(stop_, L"停止全部传输任务");
-    close_ = ui.FooterButton(ID_CLOSE, L"关闭", 1, 2, true, true);
+    close_ = ui.FooterButton(ID_CLOSE, L"关闭", 2, 3, true, true);
     LayoutControls();
 }
 
@@ -220,9 +296,11 @@ void ThemedFileTransferQueueDialog::LayoutControls() {
     }
     const int footerY = layout.FooterButtonY(ui.clientHeight(), ui.footerButtonHeight());
     ui.MoveTable(table_, RECT{ui.contentLeft(), y, ui.contentLeft() + ui.contentWidth(), footerY - layout.footerGap});
-    MoveWindow(stop_, layout.FooterButtonX(ui.clientWidth(), 0, 2), footerY,
+    MoveWindow(clearFinished_, layout.FooterButtonX(ui.clientWidth(), 0, 3), footerY,
         layout.footerButtonWidth, ui.footerButtonHeight(), TRUE);
-    MoveWindow(close_, layout.FooterButtonX(ui.clientWidth(), 1, 2), footerY,
+    MoveWindow(stop_, layout.FooterButtonX(ui.clientWidth(), 1, 3), footerY,
+        layout.footerButtonWidth, ui.footerButtonHeight(), TRUE);
+    MoveWindow(close_, layout.FooterButtonX(ui.clientWidth(), 2, 3), footerY,
         layout.footerButtonWidth, ui.footerButtonHeight(), TRUE);
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
@@ -239,17 +317,35 @@ void ThemedFileTransferQueueDialog::Refresh() {
     if (!hasSnapshot_ || snapshot.currentProgress != lastSnapshot_.currentProgress) {
         ThemedUi::SetProgress(currentProgress_, std::clamp(snapshot.currentProgress, 0.0, 1.0), false);
     }
-    if (!hasSnapshot_) {
+    const bool sameOrder = hasSnapshot_ && SameRowOrder(table_, snapshot.rows);
+    const bool appendOnly = hasSnapshot_ && !sameOrder &&
+        ThemedUi::TableRowCount(table_) < static_cast<int>(snapshot.rows.size()) &&
+        TableKeysMatchSnapshotPrefix(table_, snapshot.rows);
+    const bool removeTailOnly = hasSnapshot_ && !sameOrder &&
+        ThemedUi::TableRowCount(table_) > static_cast<int>(snapshot.rows.size()) &&
+        SnapshotKeysMatchTablePrefix(table_, snapshot.rows);
+    if (!hasSnapshot_ || (!sameOrder && !appendOnly && !removeTailOnly)) {
+        const int selectedIndex = hasSnapshot_ ? ThemedUi::TableSelectedIndex(table_) : -1;
+        const std::intptr_t selectedKey = selectedIndex >= 0
+            ? ThemedUi::TableRowKey(table_, selectedIndex) : 0;
+        const std::intptr_t topKey = hasSnapshot_ ? ThemedUi::TableTopVisibleRowKey(table_) : 0;
         std::vector<ThemedTableRow> rows;
         rows.reserve(snapshot.rows.size());
         for (const auto& row : snapshot.rows) rows.push_back(TableRow(row));
         ThemedUi::SetTableRows(table_, rows);
+        if (selectedKey != 0) ThemedUi::SetTableSelectedKey(table_, selectedKey);
+        if (topKey != 0) ThemedUi::RestoreTableTopVisibleRowByKey(table_, topKey);
     } else {
-        for (int index = ThemedUi::TableRowCount(table_) - 1; index >= 0; --index) {
-            const auto key = static_cast<std::uint64_t>(ThemedUi::TableRowKey(table_, index));
-            if (std::none_of(snapshot.rows.begin(), snapshot.rows.end(),
-                    [key](const auto& row) { return row.id == key; })) {
+        if (removeTailOnly) {
+            for (int index = ThemedUi::TableRowCount(table_) - 1;
+                 index >= static_cast<int>(snapshot.rows.size()); --index) {
                 ThemedUi::RemoveTableRow(table_, index);
+            }
+        }
+        if (appendOnly) {
+            for (std::size_t index = static_cast<std::size_t>(ThemedUi::TableRowCount(table_));
+                 index < snapshot.rows.size(); ++index) {
+                ThemedUi::AppendTableRow(table_, TableRow(snapshot.rows[index]));
             }
         }
         for (const auto& row : snapshot.rows) {
@@ -272,6 +368,11 @@ void ThemedFileTransferQueueDialog::Refresh() {
     }
     const bool enabled = snapshot.running && !snapshot.stopRequested;
     if (!hasSnapshot_ || enabled != stopEnabled_) { stopEnabled_ = enabled; ui.SetEnabled(stop_, enabled); }
+    const bool clearEnabled = HasFinishedRows(snapshot) && !snapshot.stopRequested;
+    if (!hasSnapshot_ || clearEnabled != clearFinishedEnabled_) {
+        clearFinishedEnabled_ = clearEnabled;
+        ui.SetEnabled(clearFinished_, clearEnabled);
+    }
     lastSnapshot_ = std::move(snapshot);
     hasSnapshot_ = true;
     ThemedUi::RefreshTableRowTooltip(table_);

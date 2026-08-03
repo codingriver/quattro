@@ -5,6 +5,7 @@
 #include "ThemedFileTransferQueueDialog.h"
 #include "WebDavFileService.h"
 
+#include <chrono>
 #include <condition_variable>
 #include <filesystem>
 #include <memory>
@@ -51,8 +52,12 @@ private:
         std::uint64_t contentTotal = 0;
         std::wstring error;
         bool stopRequested = false;
+        std::chrono::system_clock::time_point queuedAt{};
+        std::chrono::system_clock::time_point startedAt{};
+        std::chrono::system_clock::time_point finishedAt{};
     };
 
+    void ClearFinishedTasks();
     void WorkerLoop(std::stop_token stopToken);
     std::shared_ptr<Task> TakeWaitingTask();
     void RunTask(const std::shared_ptr<Task>& task);

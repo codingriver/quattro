@@ -110,6 +110,8 @@
 - 调用 `wait` 时，`cell_id` 必须逐字复制上一条 `exec` 返回的真实 ID；禁止使用 `dummy`、`bad`、`test`、`recover`、`placeholder` 等占位、猜测、过期或手写 ID。
 - 如果上一条 `exec` 已经 `Script completed`、`Script failed`、同步返回结果，或没有返回真实 `cell_id`，禁止调用 `wait`；应重新发起新的 `exec`。
 - 如果 `wait` 返回 `cell not found`，最多发生一次后必须停止继续 `wait`，改为用新的 `exec` 检查当前状态并继续实际任务。
+- 一旦某个 `cell_id` 出现 `cell not found`、`Script completed`、`Script failed`、`Script terminated`，或工具输出包含 `Do NOT call wait again on this cell_id`，该 `cell_id` 必须立即视为本轮已关闭并加入禁用列表；本轮内禁止再次调用 `wait` 续接该 `cell_id`，即使用户随后说“继续”也必须改用新的 `exec`。
+- 出现一次无效 `wait` 后，下一步必须使用新的 `exec -> tools.shell_command(...)` 或 `exec -> tools.apply_patch(...)` 继续实际任务；禁止连续提交同一 `cell_id` 的 `wait`，也禁止用 `wait` 检查工具路由是否恢复。
 - 禁止把 `wait` 当作工具恢复、路由修复、sanity check 或节流手段。恢复工具状态时只能用新的 `exec` 执行只读检查，例如输出 `ok` 或读取目标文件片段。
 - 补丁工作流必须使用 `exec -> tools.apply_patch(...)`。如果补丁上下文不匹配，应先用 `exec -> tools.shell_command(...)` 读取精确上下文，再重新 `apply_patch`；不得调用 `wait`。
 - 构建/测试工作流必须使用 `exec -> tools.shell_command(...)` 并设置合理 `timeout_ms`。只有该 `exec` 明确异步返回真实 `cell_id` 时，才允许随后 `wait`。

@@ -3,6 +3,7 @@
 #include "Theme.h"
 #include "ThemedUi.h"
 
+#include <chrono>
 #include <cstdint>
 #include <atomic>
 #include <functional>
@@ -48,6 +49,9 @@ struct ThemedFileTransferRow {
     std::uint64_t contentTotal = 0;
     std::wstring error;
     bool active = false;
+    std::chrono::system_clock::time_point queuedAt{};
+    std::chrono::system_clock::time_point startedAt{};
+    std::chrono::system_clock::time_point finishedAt{};
 };
 
 struct ThemedFileTransferQueueSnapshot {
@@ -72,6 +76,7 @@ struct ThemedFileTransferQueueDialogOptions {
     unsigned int maxConcurrentTransfers = 1;
     std::function<ThemedFileTransferQueueSnapshot()> readSnapshot;
     std::function<void()> requestStopAll;
+    std::function<void()> clearFinished;
 };
 
 class ThemedFileTransferQueueDialog final {
@@ -102,9 +107,11 @@ private:
     HWND progress_ = nullptr;
     HWND currentProgress_ = nullptr;
     HWND table_ = nullptr;
+    HWND clearFinished_ = nullptr;
     HWND stop_ = nullptr;
     HWND close_ = nullptr;
     bool hasSnapshot_ = false;
+    bool clearFinishedEnabled_ = false;
     bool stopEnabled_ = true;
     bool currentProgressVisible_ = false;
     ThemedFileTransferQueueSnapshot lastSnapshot_{};

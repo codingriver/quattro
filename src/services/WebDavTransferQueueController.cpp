@@ -6,6 +6,7 @@
 #include "../../resources/resource.h"
 
 #include <algorithm>
+#include <iterator>
 #include <unordered_set>
 
 namespace {
@@ -67,6 +68,7 @@ WebDavTransferQueueController::WebDavTransferQueueController(
     dialogOptions.maxConcurrentTransfers = maxConcurrentTransfers_;
     dialogOptions.readSnapshot = [this] { return Snapshot(); };
     dialogOptions.requestStopAll = [this] { RequestStopAll(); };
+    dialogOptions.clearFinished = [this] { ClearFinishedTasks(); };
     dialog_ = std::make_unique<ThemedFileTransferQueueDialog>(std::move(dialogOptions));
     for (unsigned int i = 0; i < maxConcurrentTransfers_; ++i) {
         workers_.emplace_back([this](std::stop_token token) { WorkerLoop(token); });
@@ -91,6 +93,7 @@ WebDavTransferQueueController::~WebDavTransferQueueController() {
 void WebDavTransferQueueController::EnqueueUploads(const std::vector<std::filesystem::path>& paths) {
     std::lock_guard lock(mutex_);
     std::unordered_set<std::wstring> submitted;
+    const auto queuedAt = std::chrono::system_clock::now();
     for (const auto& path : paths) {
         std::error_code ec;
         if (!std::filesystem::is_regular_file(path, ec)) continue;
@@ -110,6 +113,7 @@ void WebDavTransferQueueController::EnqueueUploads(const std::vector<std::filesy
         task->size = std::filesystem::file_size(path, ec);
         if (ec) task->size = 0;
         task->contentTotal = task->size;
+        task->queuedAt = queuedAt;
         tasks_.push_back(std::move(task));
     }
     condition_.notify_all();
@@ -118,6 +122,7 @@ void WebDavTransferQueueController::EnqueueUploads(const std::vector<std::filesy
 
 void WebDavTransferQueueController::EnqueueDownloads(const std::vector<WebDavFileRecord>& records) {
     std::lock_guard lock(mutex_);
+    const auto queuedAt = std::chrono::system_clock::now();
     for (const auto& record : records) {
         const bool duplicatePending = std::any_of(tasks_.begin(), tasks_.end(), [&](const auto& task) {
             return task->kind == Kind::Download && !Terminal(task->status) && task->downloadRecord.id == record.id;
@@ -131,6 +136,7 @@ void WebDavTransferQueueController::EnqueueDownloads(const std::vector<WebDavFil
         task->absolutePath = record.absolutePath;
         task->size = record.size;
         task->contentTotal = task->size;
+        task->queuedAt = queuedAt;
         tasks_.push_back(std::move(task));
     }
     condition_.notify_all();
@@ -142,12 +148,29 @@ bool WebDavTransferQueueController::Show() { return dialog_ && dialog_->Show(); 
 void WebDavTransferQueueController::RequestStopAll() {
     {
         std::lock_guard lock(mutex_);
+        const auto finishedAt = std::chrono::system_clock::now();
         for (const auto& task : tasks_) {
-            if (task->status == ThemedFileTransferStatus::Waiting) task->status = ThemedFileTransferStatus::Stopped;
+            if (task->status == ThemedFileTransferStatus::Waiting) {
+                task->status = ThemedFileTransferStatus::Stopped;
+                task->finishedAt = finishedAt;
+            }
             else if (Active(task->status)) task->stopRequested = true;
         }
     }
     condition_.notify_all(); NotifyChanged();
+}
+
+void WebDavTransferQueueController::ClearFinishedTasks() {
+    bool changed = false;
+    {
+        std::lock_guard lock(mutex_);
+        const auto before = tasks_.size();
+        tasks_.erase(std::remove_if(tasks_.begin(), tasks_.end(), [](const auto& task) {
+            return task && Terminal(task->status);
+        }), tasks_.end());
+        changed = tasks_.size() != before;
+    }
+    if (changed) NotifyChanged();
 }
 
 bool WebDavTransferQueueController::HasRunningOrWaitingTasks() const {
@@ -169,6 +192,7 @@ std::shared_ptr<WebDavTransferQueueController::Task> WebDavTransferQueueControll
     });
     if (it == tasks_.end()) return {};
     (*it)->status = ThemedFileTransferStatus::Preparing;
+    (*it)->startedAt = std::chrono::system_clock::now();
     return *it;
 }
 
@@ -227,6 +251,7 @@ void WebDavTransferQueueController::RunTask(const std::shared_ptr<Task>& task) {
         }
         if (finalState.empty()) finalState = result.ok ? L"成功" : L"失败";
         finalMessage = result.message;
+        task->finishedAt = std::chrono::system_clock::now();
         if (result.ok) {
             task->transferred = task->size;
             task->total = task->size;
@@ -274,6 +299,10 @@ ThemedFileTransferQueueSnapshot WebDavTransferQueueController::Snapshot() const 
     ThemedFileTransferQueueSnapshot snapshot;
     snapshot.title = L"WebDAV 文件传输";
     snapshot.rows.reserve(tasks_.size());
+    std::vector<ThemedFileTransferRow> activeRows;
+    std::vector<ThemedFileTransferRow> historyRows;
+    activeRows.reserve(tasks_.size());
+    historyRows.reserve(tasks_.size());
     std::uint64_t totalBytes = 0;
     std::uint64_t transferredBytes = 0;
     int completed = 0, failed = 0, stopped = 0, waiting = 0, active = 0;
@@ -297,7 +326,11 @@ ThemedFileTransferQueueSnapshot WebDavTransferQueueController::Snapshot() const 
         row.contentTotal = task->contentTotal;
         row.error = task->error;
         row.active = taskActive;
-        snapshot.rows.push_back(std::move(row));
+        row.queuedAt = task->queuedAt;
+        row.startedAt = task->startedAt;
+        row.finishedAt = task->finishedAt;
+        if (Terminal(task->status)) historyRows.push_back(std::move(row));
+        else activeRows.push_back(std::move(row));
 
         totalBytes += task->size;
         if (task->status == ThemedFileTransferStatus::UploadCompleted ||
@@ -316,6 +349,15 @@ ThemedFileTransferQueueSnapshot WebDavTransferQueueController::Snapshot() const 
             }
         }
     }
+    std::sort(historyRows.begin(), historyRows.end(), [](const auto& left, const auto& right) {
+        if (left.finishedAt != right.finishedAt) return left.finishedAt > right.finishedAt;
+        return left.id > right.id;
+    });
+    snapshot.rows.reserve(activeRows.size() + historyRows.size());
+    snapshot.rows.insert(snapshot.rows.end(),
+        std::make_move_iterator(activeRows.begin()), std::make_move_iterator(activeRows.end()));
+    snapshot.rows.insert(snapshot.rows.end(),
+        std::make_move_iterator(historyRows.begin()), std::make_move_iterator(historyRows.end()));
     snapshot.progress = totalBytes > 0
         ? std::clamp(static_cast<double>(transferredBytes) / static_cast<double>(totalBytes), 0.0, 1.0)
         : (tasks_.empty() ? 0.0 : static_cast<double>(completed) / static_cast<double>(tasks_.size()));

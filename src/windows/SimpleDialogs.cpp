@@ -4679,6 +4679,7 @@ private:
             const int downloadWidth = settingsUi.buttonWidth(L"从云端下载", ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
             const int testWidth = settingsUi.buttonWidth(L"测试连接", ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
             const int clearWidth = settingsUi.buttonWidth(L"清除密码", ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
+            const int fileManagerWidth = settingsUi.buttonWidth(L"打开文件管理", ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
             const ThemedSectionGeometry webDavSection = behaviorForm.section(
                 behaviorFrameLeft, pageTop, behaviorFrameWidth,
                 {behaviorForm.sectionRow({ThemedSectionItemKind::CheckBox}),
@@ -4689,7 +4690,6 @@ private:
                  behaviorForm.sectionRow({ThemedSectionItemKind::Edit}),
                  behaviorForm.sectionRow({ThemedSectionItemKind::Label}),
                  behaviorForm.sectionRow({ThemedSectionItemKind::Edit}),
-                 behaviorForm.sectionRow({ThemedSectionItemKind::Button}),
                  behaviorForm.sectionRow({ThemedSectionItemKind::Button})});
             HWND webDavGroup = AddSectionFrame(TabWebDav, L"WebDAV 备份", webDavSection.frame);
             webDavEnabled_ = CheckBox(TabWebDav, 208, L"启用 WebDAV 备份", behaviorLeft, behaviorForm.sectionItemY(webDavSection, 0, behaviorCheckHeight), draft_.webDavEnabled, behaviorCheckWidth);
@@ -4712,17 +4712,21 @@ private:
             webDavKeepCountEdit_ = NumberEdit(TabWebDav, 211, behaviorRight, behaviorForm.sectionItemY(webDavSection, 5, settingsUi.editHeight()), behaviorCheckWidth, draft_.webDavKeepCount);
             const int webDavButtonsWidth =
                 testWidth + behaviorLayout.controlGapX + clearWidth + behaviorLayout.controlGapX
-                + uploadWidth + behaviorLayout.controlGapX + downloadWidth;
+                + uploadWidth + behaviorLayout.controlGapX + downloadWidth + behaviorLayout.controlGapX
+                + fileManagerWidth;
             const int webDavButtonsX = settingsUi.centeredGroupX(webDavButtonsWidth);
             HWND webDavFilesLabel = Label(TabWebDav, L"文件目录", behaviorLeft, behaviorForm.sectionItemY(webDavSection, 6, settingsUi.labelHeight()), behaviorContentWidth);
             webDavFilesPathEdit_ = FramedEdit(TabWebDav, 219, behaviorLeft, behaviorForm.sectionItemY(webDavSection, 7, settingsUi.editHeight()), behaviorContentWidth, draft_.webDavFilesPath);
             const int webDavButtonsY = behaviorForm.sectionItemY(webDavSection, 8, settingsUi.buttonHeight());
+            const int webDavClearPasswordX = webDavButtonsX + testWidth + behaviorLayout.controlGapX;
+            const int webDavUploadX = webDavClearPasswordX + clearWidth + behaviorLayout.controlGapX;
+            const int webDavDownloadX = webDavUploadX + uploadWidth + behaviorLayout.controlGapX;
+            const int webDavFileManagerX = webDavDownloadX + downloadWidth + behaviorLayout.controlGapX;
             webDavTestButton_ = Button(TabWebDav, ID_WEBDAV_TEST, L"测试连接", webDavButtonsX, webDavButtonsY, testWidth);
-            webDavClearPasswordButton_ = Button(TabWebDav, ID_WEBDAV_CLEAR_PASSWORD, L"清除密码", webDavButtonsX + testWidth + behaviorLayout.controlGapX, webDavButtonsY, clearWidth);
-            webDavUploadButton_ = Button(TabWebDav, ID_WEBDAV_UPLOAD, L"上传到云端", webDavButtonsX + testWidth + behaviorLayout.controlGapX + clearWidth + behaviorLayout.controlGapX, webDavButtonsY, uploadWidth);
-            webDavDownloadButton_ = Button(TabWebDav, ID_WEBDAV_DOWNLOAD, L"从云端下载", webDavButtonsX + testWidth + behaviorLayout.controlGapX + clearWidth + behaviorLayout.controlGapX + uploadWidth + behaviorLayout.controlGapX, webDavButtonsY, downloadWidth);
-            const int fileManagerWidth = settingsUi.buttonWidth(L"打开文件管理", ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
-            webDavFileManagerButton_ = Button(TabWebDav, ID_WEBDAV_FILE_MANAGER, L"打开文件管理", settingsUi.centeredGroupX(fileManagerWidth), behaviorForm.sectionItemY(webDavSection, 9, settingsUi.buttonHeight()), fileManagerWidth);
+            webDavClearPasswordButton_ = Button(TabWebDav, ID_WEBDAV_CLEAR_PASSWORD, L"清除密码", webDavClearPasswordX, webDavButtonsY, clearWidth);
+            webDavUploadButton_ = Button(TabWebDav, ID_WEBDAV_UPLOAD, L"上传到云端", webDavUploadX, webDavButtonsY, uploadWidth);
+            webDavDownloadButton_ = Button(TabWebDav, ID_WEBDAV_DOWNLOAD, L"从云端下载", webDavDownloadX, webDavButtonsY, downloadWidth);
+            webDavFileManagerButton_ = Button(TabWebDav, ID_WEBDAV_FILE_MANAGER, L"打开文件管理", webDavFileManagerX, webDavButtonsY, fileManagerWidth);
             ThemedUi::BindGroupChildren(webDavGroup, {
                 webDavEnabled_, webDavUploadContextMenu_, webDavLastSyncLabel_, webDavUrlLabel, webDavUrlEdit_, webDavUserLabel,
                 webDavPasswordLabel, webDavUserNameEdit_, webDavPasswordEdit_, webDavTestButton_,
