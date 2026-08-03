@@ -58,6 +58,7 @@ private:
     };
 
     void ClearFinishedTasks();
+    void RequestSort(const std::wstring& columnKey, ThemedTableSortDirection direction);
     void WorkerLoop(std::stop_token stopToken);
     std::shared_ptr<Task> TakeWaitingTask();
     void RunTask(const std::shared_ptr<Task>& task);
@@ -76,5 +77,6 @@ private:
     std::vector<std::jthread> workers_;
     std::unique_ptr<ThemedFileTransferQueueDialog> dialog_;
     std::uint64_t nextTaskId_ = 1;
+    ThemedTableSortState sortState_{};
     bool shuttingDown_ = false;
 };

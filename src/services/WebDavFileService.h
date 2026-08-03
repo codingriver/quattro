@@ -19,6 +19,18 @@ enum class WebDavFileRecordHealth {
     MetadataReadFailed,
 };
 
+enum class WebDavLocalSyncState {
+    LocalMissing,
+    RemoteNewer,
+    Same,
+    LocalNewer,
+    Unknown,
+    Incomplete,
+    MissingMetadata,
+    InvalidMetadata,
+    MetadataReadFailed,
+};
+
 struct WebDavFileRecord {
     std::wstring id;
     std::wstring absolutePath;
@@ -90,7 +102,9 @@ public:
     static std::wstring FormatUploadedAtLocal(const std::wstring& uploadedAtUtc);
     static std::wstring FormatSourceModifiedAtLocal(const WebDavFileRecord& record);
     static std::wstring FormatLocalModifiedAt(const std::wstring& absolutePath);
+    static WebDavLocalSyncState LocalSyncState(const WebDavFileRecord& record);
     static std::wstring LocalSyncStatusText(const WebDavFileRecord& record);
+    static void SortByLocalSyncState(std::vector<WebDavFileRecord>& records, bool ascending);
     static std::wstring FormatRecordTooltip(const WebDavFileRecord& record);
     static bool IsCollectionSelfResponse(const std::wstring& remotePath, const WebDavRemoteFile& entry);
     static bool IsRecordDirectoryName(const std::wstring& name);

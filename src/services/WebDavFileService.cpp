@@ -181,19 +181,57 @@ std::wstring WebDavFileService::FormatLocalModifiedAt(const std::wstring& absolu
     return LocalFileLastWriteTime(absolutePath, fileTime) ? FormatFileTimeLocal(fileTime) : std::wstring{};
 }
 
-std::wstring WebDavFileService::LocalSyncStatusText(const WebDavFileRecord& record) {
-    if (record.health == WebDavFileRecordHealth::MissingMetadata) return L"Meta 缺失";
-    if (record.health == WebDavFileRecordHealth::InvalidMetadata) return L"Meta 无效";
-    if (record.health == WebDavFileRecordHealth::MetadataReadFailed) return L"Meta 读取失败";
-    if (!record.contentReady || ToLower(record.uploadState) != L"complete") return L"未完成";
+WebDavLocalSyncState WebDavFileService::LocalSyncState(const WebDavFileRecord& record) {
+    if (record.health == WebDavFileRecordHealth::MissingMetadata) return WebDavLocalSyncState::MissingMetadata;
+    if (record.health == WebDavFileRecordHealth::InvalidMetadata) return WebDavLocalSyncState::InvalidMetadata;
+    if (record.health == WebDavFileRecordHealth::MetadataReadFailed) return WebDavLocalSyncState::MetadataReadFailed;
+    if (!record.contentReady || ToLower(record.uploadState) != L"complete") return WebDavLocalSyncState::Incomplete;
     FILETIME remoteWrite{};
-    if (!ParseUtcFileTime(record.sourceLastWriteTimeUtc, remoteWrite)) return L"无法判断";
+    if (!ParseUtcFileTime(record.sourceLastWriteTimeUtc, remoteWrite)) return WebDavLocalSyncState::Unknown;
     FILETIME localWrite{};
-    if (!LocalFileLastWriteTime(record.absolutePath, localWrite)) return L"本地不存在";
+    if (!LocalFileLastWriteTime(record.absolutePath, localWrite)) return WebDavLocalSyncState::LocalMissing;
     const int comparison = CompareFileTime(&localWrite, &remoteWrite);
-    if (comparison > 0) return L"本地较新";
-    if (comparison < 0) return L"远端较新";
-    return L"相同";
+    if (comparison > 0) return WebDavLocalSyncState::LocalNewer;
+    if (comparison < 0) return WebDavLocalSyncState::RemoteNewer;
+    return WebDavLocalSyncState::Same;
+}
+
+std::wstring WebDavFileService::LocalSyncStatusText(const WebDavFileRecord& record) {
+    switch (LocalSyncState(record)) {
+    case WebDavLocalSyncState::LocalMissing: return L"本地不存在";
+    case WebDavLocalSyncState::RemoteNewer: return L"远端较新";
+    case WebDavLocalSyncState::Same: return L"相同";
+    case WebDavLocalSyncState::LocalNewer: return L"本地较新";
+    case WebDavLocalSyncState::Unknown: return L"无法判断";
+    case WebDavLocalSyncState::Incomplete: return L"未完成";
+    case WebDavLocalSyncState::MissingMetadata: return L"Meta 缺失";
+    case WebDavLocalSyncState::InvalidMetadata: return L"Meta 无效";
+    case WebDavLocalSyncState::MetadataReadFailed: return L"Meta 读取失败";
+    }
+    return L"无法判断";
+}
+
+void WebDavFileService::SortByLocalSyncState(
+    std::vector<WebDavFileRecord>& records,
+    bool ascending) {
+    struct RankedRecord {
+        WebDavFileRecord record;
+        WebDavLocalSyncState state = WebDavLocalSyncState::Unknown;
+    };
+    std::vector<RankedRecord> ranked;
+    ranked.reserve(records.size());
+    for (auto& record : records) {
+        const WebDavLocalSyncState state = LocalSyncState(record);
+        ranked.push_back(RankedRecord{std::move(record), state});
+    }
+    std::stable_sort(ranked.begin(), ranked.end(), [ascending](const auto& left, const auto& right) {
+        const int leftRank = static_cast<int>(left.state);
+        const int rightRank = static_cast<int>(right.state);
+        return ascending ? leftRank < rightRank : leftRank > rightRank;
+    });
+    records.clear();
+    records.reserve(ranked.size());
+    for (auto& entry : ranked) records.push_back(std::move(entry.record));
 }
 
 std::wstring WebDavFileService::FormatRecordTooltip(const WebDavFileRecord& record) {

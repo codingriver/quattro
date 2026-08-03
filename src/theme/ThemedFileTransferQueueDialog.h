@@ -64,6 +64,7 @@ struct ThemedFileTransferQueueSnapshot {
     bool running = false;
     bool stopRequested = false;
     bool currentProgressVisible = false;
+    ThemedTableSortState sortState{};
 };
 
 struct ThemedFileTransferQueueDialogOptions {
@@ -77,6 +78,7 @@ struct ThemedFileTransferQueueDialogOptions {
     std::function<ThemedFileTransferQueueSnapshot()> readSnapshot;
     std::function<void()> requestStopAll;
     std::function<void()> clearFinished;
+    std::function<void(const std::wstring&, ThemedTableSortDirection)> requestSort;
 };
 
 class ThemedFileTransferQueueDialog final {

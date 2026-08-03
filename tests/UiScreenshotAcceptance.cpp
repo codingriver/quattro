@@ -3404,6 +3404,95 @@ void RunTableGridLinesScenario(
     AcceptanceLog(L"end " + scenarioName);
 }
 
+void RunTableSortArrowScenario(const std::filesystem::path& outputDir, TestState& state) {
+    AcceptanceLog(L"begin table-sort-arrow");
+    HINSTANCE instance = GetModuleHandleW(nullptr);
+    TableHostWindow host;
+    host.instance_ = instance;
+    host.theme_ = Theme::Load(std::filesystem::current_path() / L"theme", L"default");
+
+    WNDCLASSEXW wc{};
+    wc.cbSize = sizeof(wc);
+    wc.lpfnWndProc = TableHostWindow::Proc;
+    wc.hInstance = instance;
+    wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    wc.lpszClassName = L"QuattroTableSortArrowHost";
+    RegisterClassExW(&wc);
+
+    HWND hwnd = CreateWindowExW(
+        WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+        wc.lpszClassName,
+        L"table sort arrow",
+        WS_OVERLAPPEDWINDOW,
+        140,
+        140,
+        400,
+        320,
+        nullptr,
+        nullptr,
+        instance,
+        &host);
+    if (!hwnd || !host.table_) {
+        state.Check(false, L"table-sort-arrow: host window/table creation failed");
+        return;
+    }
+    ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+    UpdateWindow(hwnd);
+    SetWindowPos(hwnd, HWND_BOTTOM, 0, 0, 0, 0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+    PumpMessagesFor(100);
+
+    HWND header = ListView_GetHeader(host.table_);
+    state.Check(header != nullptr, L"table-sort-arrow: header not found");
+    if (header) {
+        const auto captureHeader = [&]() {
+            RedrawWindow(host.table_, nullptr, nullptr,
+                RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW | RDW_ALLCHILDREN);
+            PumpMessagesFor(50);
+            return CaptureControlBitmap(header);
+        };
+        // Warm the shared D2D target before establishing the baseline. The
+        // first PrintWindow may create the render target and text formats,
+        // which can otherwise make the cold frame differ from later frames.
+        BitmapCapture warmup = captureHeader();
+        if (warmup.bitmap) DeleteObject(warmup.bitmap);
+        const BitmapCapture idle = captureHeader();
+        ThemedUi::SetTableSortState(host.table_, L"value", ThemedTableSortDirection::Ascending);
+        const BitmapCapture ascending = captureHeader();
+        ThemedUi::SetTableSortState(host.table_, L"value", ThemedTableSortDirection::Descending);
+        const BitmapCapture descending = captureHeader();
+        ThemedUi::ResetTableSortState(host.table_);
+        const BitmapCapture reset = captureHeader();
+
+        state.Check(idle.bitmap && ascending.bitmap && descending.bitmap && reset.bitmap,
+            L"table-sort-arrow: header capture failed");
+        if (idle.bitmap && ascending.bitmap && descending.bitmap && reset.bitmap) {
+            const std::size_t ascendingPixels = CountChangedPixelSamples(idle, ascending, 24, 1);
+            const std::size_t directionPixels = CountChangedPixelSamples(ascending, descending, 24, 1);
+            const std::size_t resetPixels = CountChangedPixelSamples(idle, reset, 24, 1);
+            AcceptanceLog(L"table-sort-arrow ascendingPixels=" + std::to_wstring(ascendingPixels) +
+                L" directionPixels=" + std::to_wstring(directionPixels) +
+                L" resetPixels=" + std::to_wstring(resetPixels));
+            state.Check(ascendingPixels >= 8,
+                L"table-sort-arrow: ascending arrow does not produce visible header pixels");
+            state.Check(directionPixels >= 4,
+                L"table-sort-arrow: ascending and descending arrows look identical");
+            state.Check(resetPixels <= 2,
+                L"table-sort-arrow: resetting sort leaves visible arrow pixels");
+            SavePng(ascending.bitmap, outputDir / L"table-sort-arrow-ascending.png");
+            SavePng(descending.bitmap, outputDir / L"table-sort-arrow-descending.png");
+            SavePng(reset.bitmap, outputDir / L"table-sort-arrow-reset.png");
+        }
+        if (idle.bitmap) DeleteObject(idle.bitmap);
+        if (ascending.bitmap) DeleteObject(ascending.bitmap);
+        if (descending.bitmap) DeleteObject(descending.bitmap);
+        if (reset.bitmap) DeleteObject(reset.bitmap);
+    }
+
+    DestroyWindow(hwnd);
+    AcceptanceLog(L"end table-sort-arrow");
+}
+
 void RunTableAlternatingRowsScenario(const std::filesystem::path& outputDir, TestState& state) {
     AcceptanceLog(L"begin table-alternating-rows");
     HINSTANCE instance = GetModuleHandleW(nullptr);
@@ -6689,6 +6778,7 @@ int wmain() {
         RunWebDavFileColumnsScenario(outputDir, state, 96);
         RunWebDavFileColumnsScenario(outputDir, state, 120);
         RunWebDavFileColumnsScenario(outputDir, state, 144);
+        RunTableSortArrowScenario(outputDir, state);
         RunTableHoverRepaintScenario(state);
         DestroyWindow(owner);
         OleUninitialize();
@@ -6853,6 +6943,7 @@ int wmain() {
     RunCheckableTableScenario(outputDir, state, 120);
     RunCheckableTableScenario(outputDir, state, 144);
     RunTableColumnResizeScenario(outputDir, state);
+    RunTableSortArrowScenario(outputDir, state);
     RunTableHoverRepaintScenario(state);
     RunTableGridLinesScenario(outputDir, state, false, L"table-grid-lines-default", L"table-grid-lines-default.png");
     RunTableGridLinesScenario(outputDir, state, true, L"table-grid-lines-enabled", L"table-grid-lines-enabled.png");

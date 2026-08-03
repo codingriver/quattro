@@ -43,6 +43,8 @@ private:
     void CompleteBlocked(std::vector<DisabledRecord> blocked, std::wstring storeError);
     void CompleteOperation(OperationResult result);
     void SelectTab(int index);
+    void SortScanItems();
+    void SortBlockedItems();
     void RebuildScanRows();
     void RebuildBlockedRows();
     void UpdateButtons();
@@ -76,7 +78,11 @@ private:
     HWND unblockButton_ = nullptr;
 
     std::vector<StartupItem> scanItems_;
+    std::vector<StartupItem> naturalScanItems_;
     std::vector<DisabledRecord> blocked_;
+    std::vector<DisabledRecord> naturalBlocked_;
+    ThemedTableSortState scanSortState_{};
+    ThemedTableSortState blockedSortState_{};
     std::wstring lastScanStatus_;
     std::map<std::wstring, std::intptr_t> stableRowKeys_;
     std::intptr_t nextStableRowKey_ = 1;

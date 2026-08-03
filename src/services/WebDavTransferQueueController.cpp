@@ -52,6 +52,55 @@ int Percent(std::uint64_t value, std::uint64_t total) {
     return static_cast<int>(std::clamp(
         static_cast<double>(value) * 100.0 / static_cast<double>(total), 0.0, 100.0));
 }
+
+int TransferStatusRank(ThemedFileTransferStatus status) {
+    switch (status) {
+    case ThemedFileTransferStatus::Waiting: return 0;
+    case ThemedFileTransferStatus::Preparing: return 1;
+    case ThemedFileTransferStatus::UploadingMeta:
+    case ThemedFileTransferStatus::Downloading: return 2;
+    case ThemedFileTransferStatus::Uploading:
+    case ThemedFileTransferStatus::Verifying: return 3;
+    case ThemedFileTransferStatus::Confirming: return 4;
+    case ThemedFileTransferStatus::UploadCompleted:
+    case ThemedFileTransferStatus::DownloadCompleted: return 5;
+    case ThemedFileTransferStatus::Stopped: return 6;
+    case ThemedFileTransferStatus::UploadFailed:
+    case ThemedFileTransferStatus::DownloadFailed: return 7;
+    }
+    return 0;
+}
+
+std::chrono::system_clock::time_point TransferSortTime(const ThemedFileTransferRow& row) {
+    if (Terminal(row.status)) return row.finishedAt;
+    if (Active(row.status)) return row.startedAt;
+    return row.queuedAt;
+}
+
+int CompareTransferRows(
+    const ThemedFileTransferRow& left,
+    const ThemedFileTransferRow& right,
+    const std::wstring& columnKey) {
+    if (columnKey == L"name") {
+        return ToLower(left.fileName).compare(ToLower(right.fileName));
+    }
+    if (columnKey == L"direction") {
+        const int leftValue = left.direction == ThemedFileTransferDirection::Upload ? 0 : 1;
+        const int rightValue = right.direction == ThemedFileTransferDirection::Upload ? 0 : 1;
+        return leftValue - rightValue;
+    }
+    if (columnKey == L"path") return ToLower(left.absolutePath).compare(ToLower(right.absolutePath));
+    if (columnKey == L"size") {
+        return left.size < right.size ? -1 : (left.size > right.size ? 1 : 0);
+    }
+    if (columnKey == L"status") return TransferStatusRank(left.status) - TransferStatusRank(right.status);
+    if (columnKey == L"time") {
+        const auto leftTime = TransferSortTime(left);
+        const auto rightTime = TransferSortTime(right);
+        return leftTime < rightTime ? -1 : (leftTime > rightTime ? 1 : 0);
+    }
+    return 0;
+}
 }
 
 WebDavTransferQueueController::WebDavTransferQueueController(
@@ -69,6 +118,9 @@ WebDavTransferQueueController::WebDavTransferQueueController(
     dialogOptions.readSnapshot = [this] { return Snapshot(); };
     dialogOptions.requestStopAll = [this] { RequestStopAll(); };
     dialogOptions.clearFinished = [this] { ClearFinishedTasks(); };
+    dialogOptions.requestSort = [this](const std::wstring& columnKey, ThemedTableSortDirection direction) {
+        RequestSort(columnKey, direction);
+    };
     dialog_ = std::make_unique<ThemedFileTransferQueueDialog>(std::move(dialogOptions));
     for (unsigned int i = 0; i < maxConcurrentTransfers_; ++i) {
         workers_.emplace_back([this](std::stop_token token) { WorkerLoop(token); });
@@ -171,6 +223,17 @@ void WebDavTransferQueueController::ClearFinishedTasks() {
         changed = tasks_.size() != before;
     }
     if (changed) NotifyChanged();
+}
+
+void WebDavTransferQueueController::RequestSort(
+    const std::wstring& columnKey,
+    ThemedTableSortDirection direction) {
+    {
+        std::lock_guard lock(mutex_);
+        sortState_.columnKey = direction == ThemedTableSortDirection::None ? L"" : columnKey;
+        sortState_.direction = direction;
+    }
+    NotifyChanged();
 }
 
 bool WebDavTransferQueueController::HasRunningOrWaitingTasks() const {
@@ -358,6 +421,17 @@ ThemedFileTransferQueueSnapshot WebDavTransferQueueController::Snapshot() const 
         std::make_move_iterator(activeRows.begin()), std::make_move_iterator(activeRows.end()));
     snapshot.rows.insert(snapshot.rows.end(),
         std::make_move_iterator(historyRows.begin()), std::make_move_iterator(historyRows.end()));
+    snapshot.sortState = sortState_;
+    if (sortState_.direction != ThemedTableSortDirection::None && !sortState_.columnKey.empty()) {
+        const auto sortColumn = sortState_.columnKey;
+        const bool ascending = sortState_.direction == ThemedTableSortDirection::Ascending;
+        std::sort(snapshot.rows.begin(), snapshot.rows.end(),
+            [&sortColumn, ascending](const auto& left, const auto& right) {
+                const int comparison = CompareTransferRows(left, right, sortColumn);
+                if (comparison != 0) return ascending ? comparison < 0 : comparison > 0;
+                return left.id < right.id;
+            });
+    }
     snapshot.progress = totalBytes > 0
         ? std::clamp(static_cast<double>(transferredBytes) / static_cast<double>(totalBytes), 0.0, 1.0)
         : (tasks_.empty() ? 0.0 : static_cast<double>(completed) / static_cast<double>(tasks_.size()));

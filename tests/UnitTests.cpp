@@ -753,6 +753,56 @@ int wmain() {
         "WebDAV local modified time returns empty for missing file");
     Check(WebDavFileService::LocalSyncStatusText(WebDavFileRecord{}) == L"无法判断",
         "WebDAV sync status treats old metadata without source modified time as unknown");
+    Check(WebDavFileService::LocalSyncState(WebDavFileRecord{}) == WebDavLocalSyncState::Unknown,
+        "WebDAV sync state exposes unknown metadata semantically");
+    Check(static_cast<int>(WebDavLocalSyncState::LocalMissing) < static_cast<int>(WebDavLocalSyncState::RemoteNewer) &&
+            static_cast<int>(WebDavLocalSyncState::RemoteNewer) < static_cast<int>(WebDavLocalSyncState::Same) &&
+            static_cast<int>(WebDavLocalSyncState::Same) < static_cast<int>(WebDavLocalSyncState::LocalNewer) &&
+            static_cast<int>(WebDavLocalSyncState::LocalNewer) < static_cast<int>(WebDavLocalSyncState::Unknown) &&
+            static_cast<int>(WebDavLocalSyncState::Unknown) < static_cast<int>(WebDavLocalSyncState::MissingMetadata),
+        "WebDAV sync states preserve the file manager semantic sort order");
+    {
+        WebDavFileRecord stateRecord;
+        stateRecord.contentReady = false;
+        Check(WebDavFileService::LocalSyncState(stateRecord) == WebDavLocalSyncState::Incomplete &&
+                WebDavFileService::LocalSyncStatusText(stateRecord) == L"未完成",
+            "WebDAV sync state identifies incomplete uploads");
+        stateRecord.health = WebDavFileRecordHealth::MissingMetadata;
+        Check(WebDavFileService::LocalSyncState(stateRecord) == WebDavLocalSyncState::MissingMetadata &&
+                WebDavFileService::LocalSyncStatusText(stateRecord) == L"Meta 缺失",
+            "WebDAV sync state identifies missing metadata before upload state");
+    }
+    {
+        WebDavFileRecord metadataMissing;
+        metadataMissing.id = L"metadata-missing";
+        metadataMissing.health = WebDavFileRecordHealth::MissingMetadata;
+        WebDavFileRecord unknownFirst;
+        unknownFirst.id = L"unknown-first";
+        WebDavFileRecord localMissing;
+        localMissing.id = L"local-missing";
+        localMissing.absolutePath = L"C:\\quattro\\definitely-missing-sync-sort.txt";
+        localMissing.sourceLastWriteTimeUtc = L"2026-07-21T14:35:10.0000000Z";
+        WebDavFileRecord unknownSecond;
+        unknownSecond.id = L"unknown-second";
+        WebDavFileRecord incomplete;
+        incomplete.id = L"incomplete";
+        incomplete.contentReady = false;
+        std::vector<WebDavFileRecord> statusRecords{
+            metadataMissing, unknownFirst, localMissing, unknownSecond, incomplete};
+        const auto ids = [](const std::vector<WebDavFileRecord>& records) {
+            std::vector<std::wstring> values;
+            for (const auto& record : records) values.push_back(record.id);
+            return values;
+        };
+        WebDavFileService::SortByLocalSyncState(statusRecords, true);
+        Check(ids(statusRecords) == std::vector<std::wstring>{
+                L"local-missing", L"unknown-first", L"unknown-second", L"incomplete", L"metadata-missing"},
+            "WebDAV file manager sync state ascending sort groups semantic states and preserves equal-state order");
+        WebDavFileService::SortByLocalSyncState(statusRecords, false);
+        Check(ids(statusRecords) == std::vector<std::wstring>{
+                L"metadata-missing", L"incomplete", L"unknown-first", L"unknown-second", L"local-missing"},
+            "WebDAV file manager sync state descending sort reverses groups and preserves equal-state order");
+    }
     {
         const std::filesystem::path syncRoot = std::filesystem::temp_directory_path() /
             (L"quattro_unit_webdav_sync_" + std::to_wstring(GetCurrentProcessId()));
@@ -786,18 +836,23 @@ int wmain() {
         syncRecord.size = 4;
         syncRecord.uploadedAtUtc = L"2026-07-21T14:35:11.000Z";
         syncRecord.sourceLastWriteTimeUtc = L"2026-07-21T14:35:10.0000000Z";
-        Check(WebDavFileService::LocalSyncStatusText(syncRecord) == L"相同",
+        Check(WebDavFileService::LocalSyncState(syncRecord) == WebDavLocalSyncState::Same &&
+                WebDavFileService::LocalSyncStatusText(syncRecord) == L"相同",
             "WebDAV sync status detects equal local and remote modified time");
         ULARGE_INTEGER ticks{};
         ticks.LowPart = base.dwLowDateTime;
         ticks.HighPart = base.dwHighDateTime;
         ticks.QuadPart += 10000000ull;
         FILETIME newer{ticks.LowPart, ticks.HighPart};
-        Check(setWriteTime(newer) && WebDavFileService::LocalSyncStatusText(syncRecord) == L"本地较新",
+        Check(setWriteTime(newer) &&
+                WebDavFileService::LocalSyncState(syncRecord) == WebDavLocalSyncState::LocalNewer &&
+                WebDavFileService::LocalSyncStatusText(syncRecord) == L"本地较新",
             "WebDAV sync status detects newer local file");
         ticks.QuadPart -= 20000000ull;
         FILETIME older{ticks.LowPart, ticks.HighPart};
-        Check(setWriteTime(older) && WebDavFileService::LocalSyncStatusText(syncRecord) == L"远端较新",
+        Check(setWriteTime(older) &&
+                WebDavFileService::LocalSyncState(syncRecord) == WebDavLocalSyncState::RemoteNewer &&
+                WebDavFileService::LocalSyncStatusText(syncRecord) == L"远端较新",
             "WebDAV sync status detects newer remote record");
         std::filesystem::remove_all(syncRoot);
     }
@@ -3345,6 +3400,18 @@ int wmain() {
             {ThemedTableColumn{L"name", L"Name", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, 120},
              ThemedTableColumn{L"value", L"Value", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Remaining, 0, true}},
             ThemedTableOptions{});
+        Check((GetWindowLongPtrW(sortableTable, GWL_STYLE) & LVS_NOSORTHEADER) == 0,
+            "Themed table keeps native header clicks enabled for public sort events");
+        HWND sortableHeader = ListView_GetHeader(sortableTable);
+        RECT sortableHeaderRect{};
+        Check(sortableHeader && GetWindowRect(sortableHeader, &sortableHeaderRect) &&
+                ThemedUi::IsTableHeaderContext(sortableTable, sortableHeader, POINT{-1, -1}),
+            "Themed table identifies header context menus from the header child");
+        const POINT sortableHeaderPoint{
+            sortableHeaderRect.left + 2,
+            sortableHeaderRect.top + 2};
+        Check(ThemedUi::IsTableHeaderContext(sortableTable, sortableTable, sortableHeaderPoint),
+            "Themed table identifies header context menus from screen coordinates");
         NMLISTVIEW nonSortableClick{};
         nonSortableClick.hdr.hwndFrom = sortableTable;
         nonSortableClick.hdr.code = LVN_COLUMNCLICK;
@@ -3357,9 +3424,34 @@ int wmain() {
         sortableClick.hdr.code = LVN_COLUMNCLICK;
         sortableClick.iSubItem = 1;
         Check(ThemedUi::DecodeTableEvent(sortableTable, reinterpret_cast<LPARAM>(&sortableClick), sortEvent) &&
-                sortEvent.kind == ThemedTableEventKind::SortRequested && sortEvent.column == 1,
-            "Themed table emits sort events only for sortable headers");
-        ThemedUi::SetTableSortState(sortableTable, L"value", 1);
+                sortEvent.kind == ThemedTableEventKind::SortRequested && sortEvent.column == 1 &&
+                sortEvent.columnKey == L"value" &&
+                sortEvent.requestedSortDirection == ThemedTableSortDirection::Ascending,
+            "Themed table emits ascending sort events with stable column key");
+        ThemedUi::SetTableSortState(sortableTable, L"value", ThemedTableSortDirection::Ascending);
+        Check(ThemedUi::TableSortState(sortableTable).columnKey == L"value" &&
+                ThemedUi::TableSortState(sortableTable).direction == ThemedTableSortDirection::Ascending,
+            "Themed table exposes current sort state");
+        Check(ThemedUi::DecodeTableEvent(sortableTable, reinterpret_cast<LPARAM>(&sortableClick), sortEvent) &&
+                sortEvent.requestedSortDirection == ThemedTableSortDirection::Descending,
+            "Themed table cycles the same sortable column to descending");
+        ThemedUi::SetTableSortState(sortableTable, L"value", ThemedTableSortDirection::Descending);
+        Check(ThemedUi::DecodeTableEvent(sortableTable, reinterpret_cast<LPARAM>(&sortableClick), sortEvent) &&
+                sortEvent.requestedSortDirection == ThemedTableSortDirection::None &&
+                sortEvent.requestedSortState.direction == ThemedTableSortDirection::None &&
+                sortEvent.requestedSortState.columnKey.empty(),
+            "Themed table cycles descending back to original order without a sort arrow");
+        ThemedUi::SetTableSortState(sortableTable, sortEvent.requestedSortState);
+        Check(ThemedUi::TableSortState(sortableTable).direction == ThemedTableSortDirection::None &&
+                ThemedUi::TableSortState(sortableTable).columnKey.empty(),
+            "Themed table clears sort column when restoring original order");
+        ThemedUi::SetTableSortState(sortableTable, L"value", ThemedTableSortDirection::Descending);
+        ThemedUi::ResetTableSortState(sortableTable);
+        Check(ThemedUi::TableSortState(sortableTable).direction == ThemedTableSortDirection::None &&
+                ThemedUi::TableSortState(sortableTable).columnKey.empty(),
+            "Themed table reset API clears sort state");
+        Check(ThemedUi::NextTableSortState(sortableTable, L"value").direction == ThemedTableSortDirection::Ascending,
+            "Themed table starts a new cycle at ascending after reset");
         HWND groupChild = CreateWindowExW(0, L"STATIC", L"child", WS_CHILD | WS_VISIBLE, 0, 0, 40, 20, controlParent, nullptr, GetModuleHandleW(nullptr), nullptr);
         HWND runtimeGroup = controlUi.GroupBox(512, L"Group", RECT{380, 0, 620, 120});
         const RECT runtimeGroupContent = ThemedUi::GroupContentRect(runtimeGroup);

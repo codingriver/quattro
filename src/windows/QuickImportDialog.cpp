@@ -14,7 +14,9 @@
 #include <commctrl.h>
 #include <cstdlib>
 #include <cstdint>
+#include <cwchar>
 #include <functional>
+#include <numeric>
 #include <memory>
 #include <shellapi.h>
 #include <shlobj.h>
@@ -356,10 +358,10 @@ private:
             IdList,
             listFrame_,
             {
-                ThemedTableColumn{L"name", L"名称", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, nameColumnWidth},
-                ThemedTableColumn{L"type", L"类型", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, typeColumnWidth},
-                ThemedTableColumn{L"path", L"路径", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Remaining},
-                ThemedTableColumn{L"status", L"状态", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, statusColumnWidth},
+                ThemedTableColumn{L"name", L"名称", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, nameColumnWidth, true},
+                ThemedTableColumn{L"type", L"类型", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, typeColumnWidth, true},
+                ThemedTableColumn{L"path", L"路径", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Remaining, 0, true},
+                ThemedTableColumn{L"status", L"状态", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, statusColumnWidth, true},
             },
             tableOptions);
         RebuildImageLists();
@@ -494,6 +496,12 @@ private:
         ThemedTableEvent event{};
         if (!ThemedUi::DecodeTableEvent(list_, lParam, event)) return false;
         switch (event.kind) {
+        case ThemedTableEventKind::SortRequested:
+                sortState_ = event.requestedSortState;
+                SortDisplayOrder();
+            PopulateList();
+            result = 0;
+            return true;
         case ThemedTableEventKind::Click:
             ToggleClickedListItem(event.point);
             result = 0;
@@ -682,12 +690,15 @@ private:
     void ClearScanResults() {
         StopIconLoadTask();
         items_.clear();
+        displayOrder_.clear();
+        sortState_ = {};
         itemImageIndexes_.clear();
         rowKeys_.clear();
         nextRowKey_ = 1;
         RebuildImageLists();
         if (list_) {
             ThemedUi::ClearTable(list_);
+            ThemedUi::SetTableSortState(list_, L"", ThemedTableSortDirection::None);
         }
     }
 
@@ -873,6 +884,9 @@ private:
             result = scanTask_->ResultCopy<QuickImportService::ScanResult>();
         }
         items_ = std::move(result.items);
+        displayOrder_.resize(items_.size());
+        std::iota(displayOrder_.begin(), displayOrder_.end(), std::size_t{0});
+        SortDisplayOrder();
         StopIconLoadTask();
         rowKeys_.clear();
         nextRowKey_ = 1;
@@ -943,12 +957,59 @@ private:
     }
 
     void PopulateList() {
+        const int selectedIndex = ThemedUi::TableSelectedIndex(list_);
+        const std::intptr_t selectedKey = selectedIndex >= 0 ? ThemedUi::TableRowKey(list_, selectedIndex) : 0;
+        const std::intptr_t topKey = ThemedUi::TableTopVisibleRowKey(list_);
+        if (displayOrder_.size() != items_.size()) {
+            displayOrder_.resize(items_.size());
+            std::iota(displayOrder_.begin(), displayOrder_.end(), std::size_t{0});
+        }
         std::vector<ThemedTableRow> rows;
-        rows.reserve(items_.size());
-        for (std::size_t i = 0; i < items_.size(); ++i) {
+        rows.reserve(displayOrder_.size());
+        for (const std::size_t i : displayOrder_) {
             rows.push_back(RowForItem(items_[i], i));
         }
         ThemedUi::SetTableRows(list_, rows);
+        ThemedUi::SetTableSortState(list_, sortState_);
+        if (selectedKey != 0) {
+            const int restored = ThemedUi::FindTableRowByKey(list_, selectedKey);
+            if (restored >= 0) ThemedUi::SetTableSelectedIndex(list_, restored);
+        }
+        ThemedUi::RestoreTableTopVisibleRowByKey(list_, topKey);
+    }
+
+    void SortDisplayOrder() {
+        if (sortState_.direction == ThemedTableSortDirection::None) {
+            displayOrder_.resize(items_.size());
+            std::iota(displayOrder_.begin(), displayOrder_.end(), std::size_t{0});
+            return;
+        }
+        if (displayOrder_.size() != items_.size()) {
+            displayOrder_.resize(items_.size());
+            std::iota(displayOrder_.begin(), displayOrder_.end(), std::size_t{0});
+        }
+        const bool ascending = sortState_.direction == ThemedTableSortDirection::Ascending;
+        const auto compareText = [](const std::wstring& left, const std::wstring& right) {
+            const int result = CompareStringOrdinal(left.c_str(), -1, right.c_str(), -1, TRUE);
+            return result == CSTR_LESS_THAN ? -1 : result == CSTR_GREATER_THAN ? 1 : 0;
+        };
+        const auto statusRank = [](const QuickImportService::Item& item) {
+            if (item.status == L"可导入") return 0;
+            if (item.status == L"已存在") return 1;
+            return 2;
+        };
+        std::stable_sort(displayOrder_.begin(), displayOrder_.end(), [&](std::size_t left, std::size_t right) {
+            const auto& a = items_[left];
+            const auto& b = items_[right];
+            int result = 0;
+            if (sortState_.columnKey == L"name") result = compareText(a.link.name, b.link.name);
+            else if (sortState_.columnKey == L"type") result = compareText(a.sourceName.empty() ? TypeText(a.link.type) : a.sourceName,
+                b.sourceName.empty() ? TypeText(b.link.type) : b.sourceName);
+            else if (sortState_.columnKey == L"path") result = compareText(a.link.path, b.link.path);
+            else if (sortState_.columnKey == L"status") result = statusRank(a) - statusRank(b);
+            if (result == 0) result = left < right ? -1 : left > right ? 1 : 0;
+            return ascending ? result < 0 : result > 0;
+        });
     }
 
     std::intptr_t RowKeyForItem(const QuickImportService::Item& item, std::size_t fallbackIndex) {
@@ -1047,6 +1108,8 @@ private:
     QuickImportService scanner_;
     DialogLayoutMetrics layout_{};
     std::vector<QuickImportService::Item> items_;
+    std::vector<std::size_t> displayOrder_;
+    ThemedTableSortState sortState_{};
     std::vector<int> itemImageIndexes_;
     std::unordered_map<std::wstring, std::intptr_t> rowKeys_;
     std::intptr_t nextRowKey_ = 1;

@@ -342,6 +342,7 @@ struct ProcessDisplayRow {
     DWORD pid = 0;
     std::wstring title;
     std::wstring detail;
+    std::wstring name;
 };
 
 std::vector<ProcessDisplayRow> QueryPortRows(unsigned short port) {
@@ -354,6 +355,7 @@ std::vector<ProcessDisplayRow> QueryPortRows(unsigned short port) {
         row.pid = pid;
         row.title = JoinStrings(record.endpoints, L" / ") + L"  PID " + std::to_wstring(pid) + L"  " + info.name;
         row.detail = info.path.empty() ? L"进程路径不可读，仍可尝试结束进程" : info.path;
+        row.name = info.name;
         rows.push_back(std::move(row));
     }
     return rows;
@@ -368,6 +370,7 @@ std::vector<ProcessDisplayRow> FileLockRowsFromResult(const FileLockQueryResult&
         row.pid = pid;
         row.title = L"PID " + std::to_wstring(pid) + L"  " + info.name;
         row.detail = info.path.empty() ? L"进程路径不可读，仍可尝试结束进程" : info.path;
+        row.name = info.name;
         rows.push_back(std::move(row));
     }
     return rows;
@@ -2413,10 +2416,10 @@ private:
         const int pidWidth = ui.tableColumnWidth({L"PID", L"999999"});
         const int actionWidth = ui.tableColumnWidth({L"操作", L"结束进程"});
         std::vector<ThemedTableColumn> columns{
-            ThemedTableColumn{L"name", L"进程名称", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, nameWidth},
-            ThemedTableColumn{L"pid", L"PID", ThemedTableColumnAlign::Center, ThemedTableColumnWidth::Fixed, pidWidth},
-            ThemedTableColumn{L"path", L"程序路径", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Remaining},
-            ThemedTableColumn{L"action", L"操作", ThemedTableColumnAlign::Center, ThemedTableColumnWidth::Fixed, actionWidth},
+            ThemedTableColumn{L"name", L"进程名称", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, nameWidth, true},
+            ThemedTableColumn{L"pid", L"PID", ThemedTableColumnAlign::Center, ThemedTableColumnWidth::Fixed, pidWidth, true},
+            ThemedTableColumn{L"path", L"程序路径", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Remaining, 0, true},
+            ThemedTableColumn{L"action", L"操作", ThemedTableColumnAlign::Center, ThemedTableColumnWidth::Fixed, actionWidth, false},
         };
         ThemedTableOptions options{};
         options.selection = ThemedTableSelection::Single;
@@ -2790,9 +2793,50 @@ private:
         }
     }
 
+    void SortProcessRows(std::vector<ProcessDisplayRow>& rows,
+        const std::vector<ProcessDisplayRow>& naturalRows,
+        const ThemedTableSortState& state) {
+        if (state.direction == ThemedTableSortDirection::None) {
+            rows = naturalRows;
+            return;
+        }
+        const bool ascending = state.direction == ThemedTableSortDirection::Ascending;
+        const auto compareText = [](const std::wstring& left, const std::wstring& right) {
+            const int result = CompareStringOrdinal(left.c_str(), -1, right.c_str(), -1, TRUE);
+            return result == CSTR_LESS_THAN ? -1 : result == CSTR_GREATER_THAN ? 1 : 0;
+        };
+        std::stable_sort(rows.begin(), rows.end(), [&](const auto& left, const auto& right) {
+            int result = 0;
+            if (state.columnKey == L"name") {
+                result = compareText(left.name.empty() ? left.title : left.name,
+                    right.name.empty() ? right.title : right.name);
+            } else if (state.columnKey == L"pid") {
+                result = left.pid < right.pid ? -1 : left.pid > right.pid ? 1 : 0;
+            } else if (state.columnKey == L"path") {
+                result = compareText(left.detail, right.detail);
+            }
+            if (result == 0) result = left.pid < right.pid ? -1 : left.pid > right.pid ? 1 : 0;
+            return ascending ? result < 0 : result > 0;
+        });
+    }
+
+    void ApplyProcessTableSort(HWND table, std::vector<ProcessDisplayRow>& rows,
+        const std::vector<ProcessDisplayRow>& naturalRows, ThemedTableSortState& state,
+        const ThemedTableSortState& requestedState) {
+        state = requestedState;
+        SortProcessRows(rows, naturalRows, state);
+        SetProcessRows(table, rows,
+            table == fileTable_ ? fileTerminatedPids_ : std::set<DWORD>{},
+            table == fileTable_ ? fileProtectedPids_ : std::set<DWORD>{});
+        ThemedUi::SetTableSortState(table, state);
+    }
+
     bool HandleTableEvent(LPARAM lParam) {
         ThemedTableEvent event{};
         if (processIdTable_ && ThemedUi::DecodeTableEvent(processIdTable_, lParam, event)) {
+            if (event.kind == ThemedTableEventKind::SortRequested) {
+                ApplyProcessTableSort(processIdTable_, processIdRows_, processIdNaturalRows_, processIdSortState_, event.requestedSortState);
+            }
             if (event.kind == ThemedTableEventKind::ActionInvoked) {
                 if (ConfirmAndKill(static_cast<DWORD>(event.rowKey), L"PID 查询")) {
                     QueryProcessId();
@@ -2801,6 +2845,9 @@ private:
             return true;
         }
         if (portTable_ && ThemedUi::DecodeTableEvent(portTable_, lParam, event)) {
+            if (event.kind == ThemedTableEventKind::SortRequested) {
+                ApplyProcessTableSort(portTable_, portRows_, portNaturalRows_, portSortState_, event.requestedSortState);
+            }
             if (event.kind == ThemedTableEventKind::ActionInvoked) {
                 if (ConfirmAndKill(static_cast<DWORD>(event.rowKey), L"端口占用")) {
                     QueryPort();
@@ -2809,6 +2856,9 @@ private:
             return true;
         }
         if (fileTable_ && ThemedUi::DecodeTableEvent(fileTable_, lParam, event)) {
+            if (event.kind == ThemedTableEventKind::SortRequested) {
+                ApplyProcessTableSort(fileTable_, fileRows_, fileNaturalRows_, fileSortState_, event.requestedSortState);
+            }
             if (event.kind == ThemedTableEventKind::ActionInvoked) {
                 const DWORD pid = static_cast<DWORD>(event.rowKey);
                 if (fileProtectedPids_.find(pid) != fileProtectedPids_.end()) {
@@ -2859,9 +2909,11 @@ private:
     }
 
     void SetFileProcessRows() {
+        SortProcessRows(fileRows_, fileNaturalRows_, fileSortState_);
         std::set<DWORD> disabledPids = fileTerminatedPids_;
         disabledPids.insert(fileProtectedPids_.begin(), fileProtectedPids_.end());
         SetProcessRows(fileTable_, fileRows_, disabledPids, fileProtectedPids_);
+        ThemedUi::SetTableSortState(fileTable_, fileSortState_);
         UpdateFileKillAllButton();
     }
 
@@ -3116,6 +3168,8 @@ private:
     void QueryProcessId() {
         const std::optional<int> parsedPid = ParseInt(Trim(GetText(processIdInput_)));
         if (!parsedPid || *parsedPid <= 0) {
+            processIdRows_.clear();
+            processIdNaturalRows_.clear();
             ThemedUi::ClearTable(processIdTable_);
             SetStatus(processIdStatus_, L"请输入有效的进程 ID。", ThemedStatusRole::Warning);
             return;
@@ -3130,9 +3184,14 @@ private:
                 static_cast<DWORD>(pid),
                 info.name,
                 info.path.empty() ? L"进程路径不可读，仍可尝试结束进程" : info.path,
+                info.name,
             });
         }
-        SetProcessRows(processIdTable_, rows);
+        processIdRows_ = rows;
+        processIdNaturalRows_ = processIdRows_;
+        SortProcessRows(processIdRows_, processIdNaturalRows_, processIdSortState_);
+        SetProcessRows(processIdTable_, processIdRows_);
+        ThemedUi::SetTableSortState(processIdTable_, processIdSortState_);
         SetStatus(
             processIdStatus_,
             rows.empty() ? L"未找到该进程，或进程已经退出。" : L"找到 1 个进程。",
@@ -3142,6 +3201,8 @@ private:
     void QueryPort() {
         const std::optional<int> parsedPort = ParseInt(Trim(GetText(portInput_)));
         if (!parsedPort || *parsedPort <= 0 || *parsedPort > 65535) {
+            portRows_.clear();
+            portNaturalRows_.clear();
             ThemedUi::ClearTable(portTable_);
             SetStatus(portStatus_, L"请输入 1–65535 之间的端口号。", ThemedStatusRole::Warning);
             return;
@@ -3176,15 +3237,20 @@ private:
                 JoinStrings(record.endpoints, L" / ") + L"  PID " +
                     std::to_wstring(record.processId) + L"  " + info.name,
                 info.path.empty() ? L"进程路径不可读，仍可尝试结束进程" : info.path,
+                info.name,
             });
         }
-        SetProcessRows(portTable_, rows);
+        portRows_ = std::move(rows);
+        portNaturalRows_ = portRows_;
+        SortProcessRows(portRows_, portNaturalRows_, portSortState_);
+        SetProcessRows(portTable_, portRows_);
+        ThemedUi::SetTableSortState(portTable_, portSortState_);
         SetStatus(
             portStatus_,
-            rows.empty()
+            portRows_.empty()
                 ? L"未发现占用进程。"
-                : L"发现 " + std::to_wstring(rows.size()) + L" 个占用端口 " + std::to_wstring(portScanValue_) + L" 的进程。",
-            rows.empty() ? ThemedStatusRole::Normal : ThemedStatusRole::Success);
+                : L"发现 " + std::to_wstring(portRows_.size()) + L" 个占用端口 " + std::to_wstring(portScanValue_) + L" 的进程。",
+            portRows_.empty() ? ThemedStatusRole::Normal : ThemedStatusRole::Success);
     }
 
     void PickFile() {
@@ -3219,6 +3285,7 @@ private:
         if (path.empty()) {
             ThemedUi::ClearTable(fileTable_);
             fileRows_.clear();
+            fileNaturalRows_.clear();
             fileTerminatedPids_.clear();
             fileProtectedPids_.clear();
             UpdateFileKillAllButton();
@@ -3247,6 +3314,7 @@ private:
         std::wstring detail;
         const std::vector<ProcessDisplayRow> rows = QueryFileLockRows(path, detail);
         fileRows_ = rows;
+        fileNaturalRows_ = rows;
         fileTerminatedPids_.clear();
         RefreshFileProtectedPids();
         SetFileProcessRows();
@@ -3281,6 +3349,7 @@ private:
 
         ThemedUi::ClearTable(fileTable_);
         fileRows_.clear();
+        fileNaturalRows_.clear();
         fileTerminatedPids_.clear();
         fileProtectedPids_.clear();
         UpdateFileKillAllButton();
@@ -3327,6 +3396,7 @@ private:
         fileLockTask_.reset();
         const std::vector<ProcessDisplayRow> rows = FileLockRowsFromResult(result);
         fileRows_ = rows;
+        fileNaturalRows_ = rows;
         fileTerminatedPids_.clear();
         RefreshFileProtectedPids();
         SetFileProcessRows();
@@ -3431,12 +3501,20 @@ private:
     HWND portStatus_ = nullptr;
     std::shared_ptr<ScanTaskHandle> portScanTask_;
     unsigned short portScanValue_ = 0;
+    std::vector<ProcessDisplayRow> processIdRows_;
+    std::vector<ProcessDisplayRow> processIdNaturalRows_;
+    std::vector<ProcessDisplayRow> portRows_;
+    std::vector<ProcessDisplayRow> portNaturalRows_;
+    ThemedTableSortState processIdSortState_{};
+    ThemedTableSortState portSortState_{};
     HWND filePathInput_ = nullptr;
     ThemedSplitButton filePickSplit_{};
     HWND fileTable_ = nullptr;
     HWND fileKillAll_ = nullptr;
     HWND fileStatus_ = nullptr;
     std::vector<ProcessDisplayRow> fileRows_;
+    std::vector<ProcessDisplayRow> fileNaturalRows_;
+    ThemedTableSortState fileSortState_{};
     std::set<DWORD> fileTerminatedPids_;
     std::set<DWORD> fileProtectedPids_;
     std::shared_ptr<ScanTaskHandle> fileLockTask_;

@@ -3306,9 +3306,9 @@ HWND ThemedUi::Table(int id, RECT frame, const std::vector<ThemedTableColumn>& c
     style |= options.view == ThemedTableView::Details ? LVS_REPORT : LVS_ICON;
     if (options.selection == ThemedTableSelection::Single) style |= LVS_SINGLESEL;
     if (!options.showHeader) style |= LVS_NOCOLUMNHEADER;
-    // Header items are never clickable sort buttons; column-divider dragging is
-    // controlled independently via HDS_NOSIZING in SetTableColumnResizeEnabled.
-    style |= LVS_NOSORTHEADER;
+    // Header clicks are decoded by the public Table facade and filtered by each
+    // column's sortable flag. Column-divider dragging remains controlled
+    // independently via HDS_NOSIZING in SetTableColumnResizeEnabled.
     HWND table = CreateWindowExW(
         0, WC_LISTVIEWW, L"", style,
         inner.left, inner.top, inner.right - inner.left, inner.bottom - inner.top,
@@ -3603,7 +3603,63 @@ int ThemedUi::FindTableRowByKey(HWND table, std::intptr_t key) {
 }
 
 void ThemedUi::SetTableSortState(HWND table, const std::wstring& columnKey, int direction) {
-    ThemedControls::SetTableSortState(table, columnKey, direction);
+    ThemedControls::SetTableSortState(
+        table,
+        direction == 0 ? L"" : columnKey,
+        direction);
+}
+
+void ThemedUi::SetTableSortState(
+    HWND table,
+    const std::wstring& columnKey,
+    ThemedTableSortDirection direction) {
+    SetTableSortState(table, columnKey, static_cast<int>(direction));
+}
+
+void ThemedUi::SetTableSortState(HWND table, const ThemedTableSortState& state) {
+    if (state.direction == ThemedTableSortDirection::None) {
+        ThemedControls::SetTableSortState(table, L"", 0);
+        return;
+    }
+    ThemedControls::SetTableSortState(
+        table,
+        state.columnKey,
+        static_cast<int>(state.direction));
+}
+
+void ThemedUi::ResetTableSortState(HWND table) {
+    ThemedControls::SetTableSortState(table, L"", 0);
+}
+
+ThemedTableSortState ThemedUi::TableSortState(HWND table) {
+    ThemedTableSortState state{};
+    state.columnKey = ThemedControls::TableSortColumnKey(table);
+    const int direction = ThemedControls::TableSortDirection(table);
+    state.direction = direction < 0
+        ? ThemedTableSortDirection::Descending
+        : (direction > 0 ? ThemedTableSortDirection::Ascending : ThemedTableSortDirection::None);
+    return state;
+}
+
+ThemedTableSortState ThemedUi::NextTableSortState(
+    HWND table,
+    const std::wstring& columnKey) {
+    const ThemedTableSortState state = TableSortState(table);
+    ThemedTableSortState next{};
+    if (state.columnKey != columnKey || state.direction == ThemedTableSortDirection::None) {
+        next.columnKey = columnKey;
+        next.direction = ThemedTableSortDirection::Ascending;
+    } else if (state.direction == ThemedTableSortDirection::Ascending) {
+        next.columnKey = columnKey;
+        next.direction = ThemedTableSortDirection::Descending;
+    }
+    return next;
+}
+
+ThemedTableSortDirection ThemedUi::NextTableSortDirection(
+    HWND table,
+    const std::wstring& columnKey) {
+    return NextTableSortState(table, columnKey).direction;
 }
 
 void ThemedUi::SetTableView(HWND table, ThemedTableView view) {
@@ -3708,6 +3764,15 @@ int ThemedUi::TableScreenHitTest(HWND table, POINT screenPoint, bool fullRow, bo
     ScreenToClient(table, &clientPoint);
     return TableHitTest(table, clientPoint, fullRow, stateIcon);
 }
+bool ThemedUi::IsTableHeaderContext(HWND table, HWND source, POINT screenPoint) {
+    if (!table) return false;
+    const HWND header = ListView_GetHeader(table);
+    if (!header) return false;
+    if (source == header) return true;
+    if (source != table || (screenPoint.x == -1 && screenPoint.y == -1)) return false;
+    RECT headerRect{};
+    return GetWindowRect(header, &headerRect) && PtInRect(&headerRect, screenPoint) != FALSE;
+}
 bool ThemedUi::TableCellScreenRect(HWND table, int row, int column, RECT& screenRect) {
     if (!table || row < 0 || column < 0) return false;
     RECT cell{LVIR_BOUNDS, column, 0, 0};
@@ -3760,6 +3825,9 @@ bool ThemedUi::DecodeTableEvent(HWND table, LPARAM lParam, ThemedTableEvent& eve
         if (!ThemedControls::IsTableColumnSortable(table, view->iSubItem)) return false;
         event.kind = ThemedTableEventKind::SortRequested;
         event.column = view->iSubItem;
+        event.columnKey = ThemedControls::TableColumnKey(table, view->iSubItem);
+        event.requestedSortState = NextTableSortState(table, event.columnKey);
+        event.requestedSortDirection = event.requestedSortState.direction;
         return true;
     }
     if (header->code == LVN_ITEMCHANGED) {

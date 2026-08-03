@@ -222,6 +222,17 @@ LRESULT ThemedFileTransferQueueDialog::Handle(UINT message, WPARAM wParam, LPARA
     case WM_TRANSFER_QUEUE_CHANGED:
         changePosted_ = false;
         Refresh(); return 0;
+    case WM_NOTIFY: {
+        ThemedTableEvent event{};
+        if (ThemedUi::DecodeTableEvent(table_, lParam, event) &&
+            event.kind == ThemedTableEventKind::SortRequested) {
+            if (options_.requestSort) {
+                options_.requestSort(event.columnKey, event.requestedSortDirection);
+            }
+            return 0;
+        }
+        break;
+    }
     case WM_COMMAND:
         if (LOWORD(wParam) == ID_CLEAR_FINISHED) {
             if (options_.clearFinished) options_.clearFinished();
@@ -253,12 +264,12 @@ void ThemedFileTransferQueueDialog::CreateControls() {
     progress_ = ui.ProgressBar(ID_PROGRESS, ui.contentLeft(), ui.contentTop(), ui.contentWidth(), progressOptions);
     currentProgress_ = ui.ProgressBar(ID_CURRENT_PROGRESS, ui.contentLeft(), ui.contentTop(), ui.contentWidth(), progressOptions);
     table_ = ui.Table(ID_TABLE, RECT{0,0,1,1}, {
-        {L"name", L"文件名", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, ui.scale(180)},
-        {L"direction", L"方向", ThemedTableColumnAlign::Center, ThemedTableColumnWidth::Fixed, ui.scale(56)},
-        {L"path", L"绝对路径", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Remaining},
-        {L"size", L"大小", ThemedTableColumnAlign::End, ThemedTableColumnWidth::Fixed, ui.scale(90)},
-        {L"status", L"状态", ThemedTableColumnAlign::Center, ThemedTableColumnWidth::Fixed, ui.scale(100)},
-        {L"time", L"时间", ThemedTableColumnAlign::Center, ThemedTableColumnWidth::Fixed, ui.scale(80)},
+        {L"name", L"文件名", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, ui.scale(180), true},
+        {L"direction", L"方向", ThemedTableColumnAlign::Center, ThemedTableColumnWidth::Fixed, ui.scale(56), true},
+        {L"path", L"绝对路径", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Remaining, 0, true},
+        {L"size", L"大小", ThemedTableColumnAlign::End, ThemedTableColumnWidth::Fixed, ui.scale(90), true},
+        {L"status", L"状态", ThemedTableColumnAlign::Center, ThemedTableColumnWidth::Fixed, ui.scale(100), true},
+        {L"time", L"时间", ThemedTableColumnAlign::Center, ThemedTableColumnWidth::Fixed, ui.scale(80), true},
     }, ThemedTableOptions{ThemedTableSelection::Single, ThemedTableView::Details, false, true, true, true, true, false, false, false, true});
     ThemedTooltipOptions rowTooltipOptions{};
     rowTooltipOptions.placement = ThemedTooltipPlacement::Cursor;
@@ -316,6 +327,11 @@ void ThemedFileTransferQueueDialog::Refresh() {
     if (!hasSnapshot_ || snapshot.progress != lastSnapshot_.progress) ThemedUi::SetProgress(progress_, std::clamp(snapshot.progress, 0.0, 1.0), false);
     if (!hasSnapshot_ || snapshot.currentProgress != lastSnapshot_.currentProgress) {
         ThemedUi::SetProgress(currentProgress_, std::clamp(snapshot.currentProgress, 0.0, 1.0), false);
+    }
+    if (!hasSnapshot_ ||
+        snapshot.sortState.columnKey != lastSnapshot_.sortState.columnKey ||
+        snapshot.sortState.direction != lastSnapshot_.sortState.direction) {
+        ThemedUi::SetTableSortState(table_, snapshot.sortState);
     }
     const bool sameOrder = hasSnapshot_ && SameRowOrder(table_, snapshot.rows);
     const bool appendOnly = hasSnapshot_ && !sameOrder &&

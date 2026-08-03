@@ -455,6 +455,9 @@ void ConfigureTableColumns(
     const std::vector<std::wstring>& keys = {},
     const std::vector<bool>& sortable = {});
 bool IsTableColumnSortable(HWND table, int column);
+std::wstring TableColumnKey(HWND table, int column);
+std::wstring TableSortColumnKey(HWND table);
+int TableSortDirection(HWND table);
 void SetTableSortState(HWND table, const std::wstring& columnKey, int direction);
 void MoveTable(HWND table, int x, int y, int width, int height);
 void ConfigureTableGridLines(HWND table, bool rowGridLines, bool columnGridLines);

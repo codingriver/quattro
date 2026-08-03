@@ -357,6 +357,17 @@ struct ThemedTableRow {
     bool active = false;
 };
 
+enum class ThemedTableSortDirection {
+    None = 0,
+    Ascending = 1,
+    Descending = -1,
+};
+
+struct ThemedTableSortState {
+    std::wstring columnKey;
+    ThemedTableSortDirection direction = ThemedTableSortDirection::None;
+};
+
 enum class ThemedTableEventKind {
     Click,
     Activated,
@@ -374,6 +385,9 @@ struct ThemedTableEvent {
     bool checked = false;
     std::intptr_t rowKey = 0;
     int actionId = 0;
+    std::wstring columnKey;
+    ThemedTableSortDirection requestedSortDirection = ThemedTableSortDirection::None;
+    ThemedTableSortState requestedSortState{};
 };
 
 enum class ThemedTooltipPlacement {
@@ -1019,6 +1033,19 @@ public:
     static bool RemoveTableRowByKey(HWND table, std::intptr_t key);
     static int FindTableRowByKey(HWND table, std::intptr_t key);
     static void SetTableSortState(HWND table, const std::wstring& columnKey, int direction);
+    static void SetTableSortState(
+        HWND table,
+        const std::wstring& columnKey,
+        ThemedTableSortDirection direction);
+    static void SetTableSortState(HWND table, const ThemedTableSortState& state);
+    static void ResetTableSortState(HWND table);
+    static ThemedTableSortState TableSortState(HWND table);
+    static ThemedTableSortState NextTableSortState(
+        HWND table,
+        const std::wstring& columnKey);
+    static ThemedTableSortDirection NextTableSortDirection(
+        HWND table,
+        const std::wstring& columnKey);
     static void SetTableView(HWND table, ThemedTableView view);
     static void SetTableChecked(HWND table, int index, bool checked);
     static void SetTableCheckedAll(HWND table, bool checked);
@@ -1034,6 +1061,7 @@ public:
     static bool RestoreTableTopVisibleRowByKey(HWND table, std::intptr_t key);
     static int TableHitTest(HWND table, POINT point, bool fullRow = false, bool* stateIcon = nullptr);
     static int TableScreenHitTest(HWND table, POINT screenPoint, bool fullRow = false, bool* stateIcon = nullptr);
+    static bool IsTableHeaderContext(HWND table, HWND source, POINT screenPoint);
     static bool TableCellScreenRect(HWND table, int row, int column, RECT& screenRect);
     static void SetTableIconSpacing(HWND table, int x, int y);
     static void ClearTable(HWND table);

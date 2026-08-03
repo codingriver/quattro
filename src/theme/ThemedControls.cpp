@@ -443,18 +443,6 @@ void DrawThemedLine(
     ThemedGdiFallback::DrawLine(dc, x1, y1, x2, y2, color, strokeWidth);
 }
 
-void FillThemedTriangle(HDC dc, const POINT* points, COLORREF color) {
-    HBRUSH brush = CreateSolidBrush(color);
-    HPEN pen = CreatePen(PS_SOLID, 1, color);
-    HGDIOBJ oldBrush = brush ? SelectObject(dc, brush) : nullptr;
-    HGDIOBJ oldPen = pen ? SelectObject(dc, pen) : nullptr;
-    Polygon(dc, points, 3);
-    if (oldBrush) SelectObject(dc, oldBrush);
-    if (oldPen) SelectObject(dc, oldPen);
-    if (brush) DeleteObject(brush);
-    if (pen) DeleteObject(pen);
-}
-
 void DrawButtonFrame(
     const Theme& theme,
     HDC dc,
@@ -2386,17 +2374,18 @@ void DrawHeaderItem(const Theme& theme, HWND header, const NMCUSTOMDRAW* draw) {
         const int arrowX = std::max(static_cast<int>(textRect.left), static_cast<int>(textRect.right) - arrowSize);
         const int arrowY = static_cast<int>(rect.top) +
             std::max(0, (static_cast<int>(rect.bottom - rect.top) - arrowSize) / 2);
-        POINT points[3]{};
+        const int strokeWidth = std::max(1, arrowSize / 4);
+        const int centerX = arrowX + arrowSize / 2;
+        const int top = arrowY + std::max(1, strokeWidth / 2);
+        const int bottom = arrowY + arrowSize - std::max(1, strokeWidth / 2);
+        const COLORREF arrowColor = ToColorRef(theme.color(component, L"normal", L"text"));
         if (sortDirection > 0) {
-            points[0] = POINT{arrowX, arrowY + arrowSize};
-            points[1] = POINT{arrowX + arrowSize / 2, arrowY};
-            points[2] = POINT{arrowX + arrowSize, arrowY + arrowSize};
+            DrawThemedLine(draw->hdc, arrowX, bottom, centerX, top, arrowColor, strokeWidth);
+            DrawThemedLine(draw->hdc, centerX, top, arrowX + arrowSize, bottom, arrowColor, strokeWidth);
         } else {
-            points[0] = POINT{arrowX, arrowY};
-            points[1] = POINT{arrowX + arrowSize, arrowY};
-            points[2] = POINT{arrowX + arrowSize / 2, arrowY + arrowSize};
+            DrawThemedLine(draw->hdc, arrowX, top, centerX, bottom, arrowColor, strokeWidth);
+            DrawThemedLine(draw->hdc, centerX, bottom, arrowX + arrowSize, top, arrowColor, strokeWidth);
         }
-        FillThemedTriangle(draw->hdc, points, ToColorRef(theme.color(component, L"normal", L"text")));
         textRect.right = static_cast<LONG>(std::max(static_cast<int>(textRect.left), arrowX - paddingX));
     }
     UINT format = DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS;
@@ -4249,6 +4238,24 @@ bool IsTableColumnSortable(HWND table, int column) {
     if (!state || state->kind != ControlKind::Table) return false;
     const std::size_t index = static_cast<std::size_t>(column);
     return index < state->tableColumnSortable.size() && state->tableColumnSortable[index];
+}
+
+std::wstring TableColumnKey(HWND table, int column) {
+    if (!table || column < 0) return {};
+    const auto state = FindState(table);
+    if (!state || state->kind != ControlKind::Table) return {};
+    const std::size_t index = static_cast<std::size_t>(column);
+    return index < state->tableColumnKeys.size() ? state->tableColumnKeys[index] : std::wstring{};
+}
+
+std::wstring TableSortColumnKey(HWND table) {
+    const auto state = FindState(table);
+    return state && state->kind == ControlKind::Table ? state->tableSortColumnKey : std::wstring{};
+}
+
+int TableSortDirection(HWND table) {
+    const auto state = FindState(table);
+    return state && state->kind == ControlKind::Table ? state->tableSortDirection : 0;
 }
 
 void SetTableSortState(HWND table, const std::wstring& columnKey, int direction) {

@@ -400,10 +400,22 @@ LRESULT AdBlockWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam) {
     case WM_NOTIFY: {
         ThemedTableEvent event{};
         if (ThemedUi::DecodeTableEvent(scanTable_, lParam, event)) {
+            if (event.kind == ThemedTableEventKind::SortRequested) {
+                scanSortState_ = event.requestedSortState;
+                RebuildScanRows();
+                UpdateButtons();
+                return 0;
+            }
             UpdateButtons();
             return 0;
         }
         if (ThemedUi::DecodeTableEvent(blockedTable_, lParam, event)) {
+            if (event.kind == ThemedTableEventKind::SortRequested) {
+                blockedSortState_ = event.requestedSortState;
+                RebuildBlockedRows();
+                UpdateButtons();
+                return 0;
+            }
             UpdateButtons();
             return 0;
         }
@@ -557,10 +569,10 @@ void AdBlockWindow::CreateControls() {
     tableOptions.showRowGridLines = true;
     tableOptions.showColumnGridLines = true;
     scanTable_ = ui.Table(ID_SCAN_TABLE, RECT{pageContent.left, listTop, pageContent.right, tableBottom},
-        {{L"name", L"名称", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Remaining},
-         {L"path", L"路径", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, ui.tableColumnWidth(L"C:\\Program Files\\Example\\example.exe")},
-         {L"impact", L"影响范围", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, ui.tableColumnWidth(L"所有同名 EXE")},
-         {L"state", L"状态", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, ui.tableColumnWidth(L"可拦截（未签名）")}},
+        {{L"name", L"名称", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Remaining, 0, true},
+         {L"path", L"路径", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, ui.tableColumnWidth(L"C:\\Program Files\\Example\\example.exe"), true},
+         {L"impact", L"影响范围", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, ui.tableColumnWidth(L"所有同名 EXE"), true},
+         {L"state", L"状态", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, ui.tableColumnWidth(L"可拦截（未签名）"), true}},
         tableOptions);
 
     // ---- 已拦截页控件 ----
@@ -569,11 +581,11 @@ void AdBlockWindow::CreateControls() {
     blockedOptions.showRowGridLines = true;
     blockedOptions.showColumnGridLines = true;
     blockedTable_ = ui.Table(ID_BLOCKED_TABLE, RECT{pageContent.left, bodyTop, pageContent.right, tableBottom},
-        {{L"name", L"名称", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Remaining},
-         {L"mode", L"模式", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, ui.tableColumnWidth(L"同名程序")},
-         {L"state", L"状态", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, ui.tableColumnWidth(L"被外部修改")},
-         {L"path", L"路径", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, ui.tableColumnWidth(L"C:\\Program Files\\Example\\example.exe")},
-         {L"time", L"拦截时间", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, ui.tableColumnWidth(L"2026-07-15")}},
+        {{L"name", L"名称", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Remaining, 0, true},
+         {L"mode", L"模式", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, ui.tableColumnWidth(L"同名程序"), true},
+         {L"state", L"状态", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, ui.tableColumnWidth(L"被外部修改"), true},
+         {L"path", L"路径", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, ui.tableColumnWidth(L"C:\\Program Files\\Example\\example.exe"), true},
+         {L"time", L"拦截时间", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, ui.tableColumnWidth(L"2026-07-15"), true}},
         blockedOptions);
 
     ThemedSelectableTextOptions statusOptions{};
@@ -698,6 +710,7 @@ void AdBlockWindow::StartScan() {
     busy_ = true;
     scanRunning_ = true;
     scanItems_.clear();
+    naturalScanItems_.clear();
     lastScanStatus_.clear();
     ThemedUi::ClearTable(scanTable_);
     ThemedUi::SetText(statusText_, L"正在后台递归检查目录…");
@@ -736,6 +749,7 @@ void AdBlockWindow::StartScan() {
 void AdBlockWindow::ClearScanResults() {
     if (busy_ || activeTab_ != 0) return;
     scanItems_.clear();
+    naturalScanItems_.clear();
     lastScanStatus_.clear();
     ThemedUi::ClearTable(scanTable_);
     ThemedUi::SetText(pathEdit_, L"");
@@ -904,6 +918,7 @@ void AdBlockWindow::CompleteScan(AdBlockScanResult scan) {
     busy_ = false;
     scanRunning_ = false;
     scanItems_ = std::move(scan.scan.items);
+    naturalScanItems_ = scanItems_;
     RebuildScanRows();
     const int blockable = static_cast<int>(std::count_if(scanItems_.begin(), scanItems_.end(),
         [](const StartupItem& item) { return item.canDisable; }));
@@ -937,6 +952,7 @@ void AdBlockWindow::CompleteBlocked(std::vector<DisabledRecord> blocked, std::ws
     busy_ = false;
     storeAvailable_ = storeError.empty();
     blocked_ = std::move(blocked);
+    naturalBlocked_ = blocked_;
     RebuildBlockedRows();
     if (!storeError.empty()) {
         AppendAppLaunchLockerLog(storeError);
@@ -1007,7 +1023,60 @@ void AdBlockWindow::SelectTab(int index) {
     UpdateButtons();
 }
 
+void AdBlockWindow::SortScanItems() {
+    if (scanSortState_.direction == ThemedTableSortDirection::None) {
+        scanItems_ = naturalScanItems_;
+        return;
+    }
+    const bool ascending = scanSortState_.direction == ThemedTableSortDirection::Ascending;
+    const auto compareText = [](const std::wstring& left, const std::wstring& right) {
+        const int result = CompareStringOrdinal(left.c_str(), -1, right.c_str(), -1, TRUE);
+        return result == CSTR_LESS_THAN ? -1 : result == CSTR_GREATER_THAN ? 1 : 0;
+    };
+    const std::wstring mode = SelectedMode();
+    std::stable_sort(scanItems_.begin(), scanItems_.end(), [&](const auto& left, const auto& right) {
+        const std::wstring leftPath = MapField(left.original, L"targetPath");
+        const std::wstring rightPath = MapField(right.original, L"targetPath");
+        int result = 0;
+        if (scanSortState_.columnKey == L"name") result = compareText(left.name, right.name);
+        else if (scanSortState_.columnKey == L"path") result = compareText(leftPath.empty() ? left.location : leftPath, rightPath.empty() ? right.location : rightPath);
+        else if (scanSortState_.columnKey == L"impact") result = compareText(ScanImpactText(left, mode), ScanImpactText(right, mode));
+        else if (scanSortState_.columnKey == L"state") result = compareText(ScanStatusText(left), ScanStatusText(right));
+        if (result == 0) result = compareText(left.id, right.id);
+        return ascending ? result < 0 : result > 0;
+    });
+}
+
+void AdBlockWindow::SortBlockedItems() {
+    if (blockedSortState_.direction == ThemedTableSortDirection::None) {
+        blocked_ = naturalBlocked_;
+        return;
+    }
+    const bool ascending = blockedSortState_.direction == ThemedTableSortDirection::Ascending;
+    const auto compareText = [](const std::wstring& left, const std::wstring& right) {
+        const int result = CompareStringOrdinal(left.c_str(), -1, right.c_str(), -1, TRUE);
+        return result == CSTR_LESS_THAN ? -1 : result == CSTR_GREATER_THAN ? 1 : 0;
+    };
+    AdBlockManager manager;
+    auto modeText = [](const DisabledRecord& record) {
+        const std::wstring mode = MapField(record.original, L"blockMode");
+        return mode == L"name" ? std::wstring(L"同名程序")
+            : mode == L"startup" ? std::wstring(L"已移除的禁止自启") : std::wstring(L"精确路径");
+    };
+    std::stable_sort(blocked_.begin(), blocked_.end(), [&](const auto& left, const auto& right) {
+        int result = 0;
+        if (blockedSortState_.columnKey == L"name") result = compareText(left.name, right.name);
+        else if (blockedSortState_.columnKey == L"mode") result = compareText(modeText(left), modeText(right));
+        else if (blockedSortState_.columnKey == L"state") result = compareText(AdBlockRecordStateText(manager.CheckRecordStatus(left).state), AdBlockRecordStateText(manager.CheckRecordStatus(right).state));
+        else if (blockedSortState_.columnKey == L"path") result = compareText(MapField(left.original, L"targetPath"), MapField(right.original, L"targetPath"));
+        else if (blockedSortState_.columnKey == L"time") result = compareText(left.disabledAt, right.disabledAt);
+        if (result == 0) result = compareText(left.recordId, right.recordId);
+        return ascending ? result < 0 : result > 0;
+    });
+}
+
 void AdBlockWindow::RebuildScanRows() {
+    SortScanItems();
     const int previousIndex = ThemedUi::TableSelectedIndex(scanTable_);
     const std::intptr_t previousKey = previousIndex >= 0 ? ThemedUi::TableRowKey(scanTable_, previousIndex) : 0;
     const std::intptr_t previousTopKey = ThemedUi::TableTopVisibleRowKey(scanTable_);
@@ -1022,6 +1091,7 @@ void AdBlockWindow::RebuildScanRows() {
             false, item.canDisable});
     }
     ThemedUi::SetTableRows(scanTable_, rows);
+    ThemedUi::SetTableSortState(scanTable_, scanSortState_);
     if (previousKey != 0) {
         const int restored = ThemedUi::FindTableRowByKey(scanTable_, previousKey);
         if (restored >= 0) ThemedUi::SetTableSelectedIndex(scanTable_, restored);
@@ -1030,6 +1100,7 @@ void AdBlockWindow::RebuildScanRows() {
 }
 
 void AdBlockWindow::RebuildBlockedRows() {
+    SortBlockedItems();
     const int previousIndex = ThemedUi::TableSelectedIndex(blockedTable_);
     const std::intptr_t previousKey = previousIndex >= 0 ? ThemedUi::TableRowKey(blockedTable_, previousIndex) : 0;
     const std::intptr_t previousTopKey = ThemedUi::TableTopVisibleRowKey(blockedTable_);
@@ -1049,6 +1120,7 @@ void AdBlockWindow::RebuildBlockedRows() {
             false, true});
     }
     ThemedUi::SetTableRows(blockedTable_, rows);
+    ThemedUi::SetTableSortState(blockedTable_, blockedSortState_);
     if (previousKey != 0) {
         const int restored = ThemedUi::FindTableRowByKey(blockedTable_, previousKey);
         if (restored >= 0) ThemedUi::SetTableSelectedIndex(blockedTable_, restored);

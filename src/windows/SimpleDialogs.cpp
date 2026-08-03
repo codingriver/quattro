@@ -50,6 +50,7 @@
 #include <memory>
 #include <map>
 #include <mutex>
+#include <numeric>
 #include <optional>
 #include <set>
 #include <sstream>
@@ -1393,12 +1394,37 @@ private:
     }
 
     void PopulateTable() {
+        const int selectedIndex = ThemedUi::TableSelectedIndex(table_);
+        const std::intptr_t selectedKey = selectedIndex >= 0 ? ThemedUi::TableRowKey(table_, selectedIndex) : 0;
+        if (order_.size() != backups_.size()) {
+            order_.resize(backups_.size());
+            std::iota(order_.begin(), order_.end(), std::size_t{0});
+        }
+        if (sortState_.direction == ThemedTableSortDirection::None) {
+            std::iota(order_.begin(), order_.end(), std::size_t{0});
+        } else {
+            const bool ascending = sortState_.direction == ThemedTableSortDirection::Ascending;
+            const auto compareText = [](const std::wstring& left, const std::wstring& right) {
+                const int result = CompareStringOrdinal(left.c_str(), -1, right.c_str(), -1, TRUE);
+                return result == CSTR_LESS_THAN ? -1 : result == CSTR_GREATER_THAN ? 1 : 0;
+            };
+            std::stable_sort(order_.begin(), order_.end(), [&](std::size_t left, std::size_t right) {
+                const auto& a = backups_[left];
+                const auto& b = backups_[right];
+                int result = 0;
+                if (sortState_.columnKey == L"name") result = compareText(a.name, b.name);
+                else if (sortState_.columnKey == L"size") result = a.size < b.size ? -1 : a.size > b.size ? 1 : 0;
+                else if (sortState_.columnKey == L"modified") result = compareText(a.lastModified, b.lastModified);
+                if (result == 0) result = left < right ? -1 : left > right ? 1 : 0;
+                return ascending ? result < 0 : result > 0;
+            });
+        }
         std::vector<ThemedTableRow> rows;
-        rows.reserve(backups_.size());
-        for (std::size_t index = 0; index < backups_.size(); ++index) {
+        rows.reserve(order_.size());
+        for (const std::size_t index : order_) {
             const auto& backup = backups_[index];
             ThemedTableRow row;
-            row.key = static_cast<std::intptr_t>(index);
+            row.key = static_cast<std::intptr_t>(index + 1);
             row.cells = {
                 ThemedTableCell{backup.name},
                 ThemedTableCell{FormatFileSize(backup.size)},
@@ -1407,16 +1433,24 @@ private:
             rows.push_back(std::move(row));
         }
         ThemedUi::SetTableRows(table_, rows);
-        if (!rows.empty()) ThemedUi::SetTableSelectedIndex(table_, 0);
+        ThemedUi::SetTableSortState(table_, sortState_);
+        if (selectedKey != 0) {
+            const int restored = ThemedUi::FindTableRowByKey(table_, selectedKey);
+            if (restored >= 0) ThemedUi::SetTableSelectedIndex(table_, restored);
+        } else if (!rows.empty()) {
+            ThemedUi::SetTableSelectedIndex(table_, 0);
+        }
     }
 
     void AcceptSelection() {
         const int selected = ThemedUi::TableSelectedIndex(table_);
-        if (selected < 0 || selected >= static_cast<int>(backups_.size())) {
+        const std::intptr_t key = selected >= 0 ? ThemedUi::TableRowKey(table_, selected) : 0;
+        const std::size_t backupIndex = key > 0 ? static_cast<std::size_t>(key - 1) : backups_.size();
+        if (backupIndex >= backups_.size()) {
             ShowThemedMessageBox(hwnd_, instance_, theme_, L"请选择一个备份文件。", L"选择 WebDAV 备份", MB_OK | MB_ICONWARNING);
             return;
         }
-        selectedName_ = backups_[static_cast<std::size_t>(selected)].name;
+        selectedName_ = backups_[backupIndex].name;
         accepted_ = true;
         done_ = true;
         DestroyWindow(hwnd_);
@@ -1444,9 +1478,9 @@ private:
                 ui.contentLeft(), tableTop, ui.contentLeft() + ui.contentWidth(),
                 std::max(tableTop + ui.tableHeightForRows(1, true), footerTop - layout.footerGap)};
             const std::vector<ThemedTableColumn> columns = {
-                {L"name", L"文件名", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Remaining},
-                {L"size", L"大小", ThemedTableColumnAlign::End, ThemedTableColumnWidth::Content},
-                {L"modified", L"修改时间", ThemedTableColumnAlign::End, ThemedTableColumnWidth::Content},
+                {L"name", L"文件名", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Remaining, 0, true},
+                {L"size", L"大小", ThemedTableColumnAlign::End, ThemedTableColumnWidth::Content, 0, true},
+                {L"modified", L"修改时间", ThemedTableColumnAlign::End, ThemedTableColumnWidth::Content, 0, true},
             };
             table_ = ui.Table(ID_WEBDAV_BACKUP_LIST, tableFrame, columns);
             PopulateTable();
@@ -1465,6 +1499,12 @@ private:
         }
         case WM_NOTIFY: {
             ThemedTableEvent event;
+            if (ThemedUi::DecodeTableEvent(table_, lParam, event) &&
+                event.kind == ThemedTableEventKind::SortRequested) {
+                sortState_ = event.requestedSortState;
+                PopulateTable();
+                return 0;
+            }
             if (ThemedUi::DecodeTableEvent(table_, lParam, event) &&
                 event.kind == ThemedTableEventKind::Activated) {
                 AcceptSelection();
@@ -1502,6 +1542,8 @@ private:
     HWND table_ = nullptr;
     const Theme& theme_;
     const std::vector<WebDavRemoteFile>& backups_;
+    std::vector<std::size_t> order_;
+    ThemedTableSortState sortState_{};
     std::wstring& selectedName_;
     std::unique_ptr<ThemedWindowUi> windowUi_;
     bool accepted_ = false;
@@ -1632,6 +1674,42 @@ private:
             checkedIds_.contains(record.id),
             !deletingIds_.contains(record.id)};
     }
+    void RestoreNaturalOrder() {
+        std::vector<WebDavFileRecord> restored;
+        restored.reserve(records_.size());
+        for (const auto& id : naturalOrderIds_) {
+            const auto found = std::find_if(records_.begin(), records_.end(),
+                [&](const auto& record) { return record.id == id; });
+            if (found != records_.end()) restored.push_back(*found);
+        }
+        for (const auto& record : records_) {
+            if (std::find(naturalOrderIds_.begin(), naturalOrderIds_.end(), record.id) == naturalOrderIds_.end()) {
+                restored.push_back(record);
+            }
+        }
+        records_ = std::move(restored);
+    }
+    void SortRecords() {
+        RestoreNaturalOrder();
+        if (sortState_.direction == ThemedTableSortDirection::None) return;
+        const bool ascending = sortState_.direction == ThemedTableSortDirection::Ascending;
+        const auto compareText = [](const std::wstring& left, const std::wstring& right) {
+            const int result = CompareStringOrdinal(left.c_str(), -1, right.c_str(), -1, TRUE);
+            return result == CSTR_LESS_THAN ? -1 : result == CSTR_GREATER_THAN ? 1 : 0;
+        };
+        if (sortState_.columnKey == L"status") {
+            WebDavFileService::SortByLocalSyncState(records_, ascending);
+            return;
+        }
+        std::stable_sort(records_.begin(), records_.end(), [&](const auto& left, const auto& right) {
+            int result = 0;
+            if (sortState_.columnKey == L"name") result = compareText(left.displayName, right.displayName);
+            else if (sortState_.columnKey == L"size") result = left.size < right.size ? -1 : left.size > right.size ? 1 : 0;
+            else if (sortState_.columnKey == L"time") result = compareText(left.uploadedAtUtc, right.uploadedAtUtc);
+            if (result == 0) result = compareText(left.id, right.id);
+            return ascending ? result < 0 : result > 0;
+        });
+    }
     int RecordIndex(const std::wstring& id) const {
         const auto found = std::find_if(records_.begin(), records_.end(),
             [&](const auto& record) { return record.id == id; });
@@ -1694,10 +1772,20 @@ private:
         InvalidateRect(hwnd_, nullptr, FALSE);
     }
     void PopulateTable() {
+        const int selectedIndex = ThemedUi::TableSelectedIndex(table_);
+        const std::intptr_t selectedKey = selectedIndex >= 0 ? ThemedUi::TableRowKey(table_, selectedIndex) : 0;
+        const std::intptr_t topKey = ThemedUi::TableTopVisibleRowKey(table_);
         std::vector<ThemedTableRow> rows; rows.reserve(records_.size());
         for (const auto& record : records_) rows.push_back(TableRow(record));
         ThemedUi::SetTableRows(table_, rows);
-        if (!rows.empty() && ThemedUi::TableSelectedIndex(table_) < 0) ThemedUi::SetTableSelectedIndex(table_, 0);
+        ThemedUi::SetTableSortState(table_, sortState_);
+        if (selectedKey != 0) {
+            const int restored = ThemedUi::FindTableRowByKey(table_, selectedKey);
+            if (restored >= 0) ThemedUi::SetTableSelectedIndex(table_, restored);
+        } else if (!rows.empty()) {
+            ThemedUi::SetTableSelectedIndex(table_, 0);
+        }
+        ThemedUi::RestoreTableTopVisibleRowByKey(table_, topKey);
         UpdateSelectionState();
     }
     struct MergeSummary { int appended = 0; int updated = 0; int unchanged = 0; };
@@ -1708,6 +1796,7 @@ private:
             const int index = RecordIndex(record.id);
             if (index < 0) {
                 records_.push_back(record);
+                naturalOrderIds_.push_back(record.id);
                 ThemedUi::AppendTableRow(table_, TableRow(records_.back()));
                 ++summary.appended;
             } else if (!SameRecord(records_[static_cast<std::size_t>(index)], record)) {
@@ -1725,6 +1814,9 @@ private:
         std::vector<WebDavFileRecord> cached;
         if (cache_.Load(cached, cacheRefreshedAt_)) {
             records_ = std::move(cached);
+            naturalOrderIds_.clear();
+            naturalOrderIds_.reserve(records_.size());
+            for (const auto& record : records_) naturalOrderIds_.push_back(record.id);
             PopulateTable();
         }
     }
@@ -1800,6 +1892,10 @@ private:
     void ApplyBatch(std::unique_ptr<BatchResult> batch) {
         if (!batch || batch->generation != refreshGeneration_) return;
         const MergeSummary summary = MergeRecords(batch->records);
+        if (summary.appended + summary.updated > 0) {
+            SortRecords();
+            PopulateTable();
+        }
         WriteAppLog(L"WebDAV 文件表格增量批次: 新增 " + std::to_wstring(summary.appended) +
             L"，更新 " + std::to_wstring(summary.updated) +
             L"，未变化 " + std::to_wstring(summary.unchanged));
@@ -1844,6 +1940,7 @@ private:
             checkedIds_.erase(id);
             ThemedUi::RemoveTableRow(table_, index);
             records_.erase(records_.begin() + index);
+            naturalOrderIds_.erase(std::remove(naturalOrderIds_.begin(), naturalOrderIds_.end(), id), naturalOrderIds_.end());
             ++removed;
         }
         cacheRefreshedAt_ = result->refreshedAtUtc;
@@ -1853,6 +1950,8 @@ private:
         for (auto it = deletedTombstones_.begin(); it != deletedTombstones_.end();) {
             if (!deletingIds_.contains(*it)) it = deletedTombstones_.erase(it); else ++it;
         }
+        SortRecords();
+        PopulateTable();
         UpdateSelectionState();
         WriteAppLog(L"WebDAV 文件表格刷新收尾: 移除 " + std::to_wstring(removed) +
             L"，最终 " + std::to_wstring(records_.size()) + L" 行");
@@ -2213,6 +2312,7 @@ private:
                 ThemedUi::RemoveTableRow(table_, index);
                 records_.erase(records_.begin() + index);
             }
+            naturalOrderIds_.erase(std::remove(naturalOrderIds_.begin(), naturalOrderIds_.end(), result->id), naturalOrderIds_.end());
             checkedIds_.erase(result->id);
             deletingIds_.erase(result->id);
         } else {
@@ -2361,11 +2461,11 @@ private:
             ThemedTableOptions tableOptions{}; tableOptions.checkable = true; tableOptions.allowColumnResize = true;
             tableOptions.reserveScrollBarGutter = true;
             table_ = ui.Table(430, frame, {
-                {L"name", L"文件名", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Remaining},
-                {L"size", L"大小", ThemedTableColumnAlign::End, ThemedTableColumnWidth::Fixed, fileSizeWidth},
-                {L"time", L"上传时间", ThemedTableColumnAlign::End, ThemedTableColumnWidth::Fixed, uploadTimeWidth},
-                {L"status", L"本地状态", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, statusWidth},
-                {L"action", L"操作", ThemedTableColumnAlign::Center, ThemedTableColumnWidth::Fixed, actionWidth},
+                {L"name", L"文件名", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Remaining, 0, true},
+                {L"size", L"大小", ThemedTableColumnAlign::End, ThemedTableColumnWidth::Fixed, fileSizeWidth, true},
+                {L"time", L"上传时间", ThemedTableColumnAlign::End, ThemedTableColumnWidth::Fixed, uploadTimeWidth, true},
+                {L"status", L"本地状态", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, statusWidth, true},
+                {L"action", L"操作", ThemedTableColumnAlign::Center, ThemedTableColumnWidth::Fixed, actionWidth, false},
             }, tableOptions);
             ThemedTooltipOptions rowTooltipOptions{};
             rowTooltipOptions.placement = ThemedTooltipPlacement::Cursor;
@@ -2389,6 +2489,8 @@ private:
                 sample.uploadedAtUtc = L"2026-07-21T08:31:35.872Z";
                 sample.sourceLastWriteTimeUtc = L"2026-07-21T08:31:35.8720000Z";
                 records_ = {std::move(sample)};
+                naturalOrderIds_.clear();
+                naturalOrderIds_.push_back(records_.front().id);
                 PopulateTable();
                 PostMessageW(hwnd_, WM_WEBDAV_FILE_SHOW_TEST_DETAILS, 0, 0);
             }
@@ -2424,6 +2526,12 @@ private:
         case WM_NOTIFY: {
             ThemedTableEvent event{};
             if (ThemedUi::DecodeTableEvent(table_, lParam, event)) {
+                if (event.kind == ThemedTableEventKind::SortRequested) {
+                    sortState_ = event.requestedSortState;
+                    SortRecords();
+                    PopulateTable();
+                    return 0;
+                }
                 if (event.kind == ThemedTableEventKind::CheckChanged && event.row >= 0 && event.row < static_cast<int>(records_.size())) {
                     const auto& id = records_[static_cast<std::size_t>(event.row)].id;
                     if (event.checked) checkedIds_.insert(id); else checkedIds_.erase(id);
@@ -2442,8 +2550,13 @@ private:
             return 0;
         }
         case WM_CONTEXTMENU: {
-            if (reinterpret_cast<HWND>(wParam) != table_) return DefWindowProcW(hwnd_, message, wParam, lParam);
-            POINT anchor{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+            const HWND source = reinterpret_cast<HWND>(wParam);
+            const POINT contextPoint{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+            if (ThemedUi::IsTableHeaderContext(table_, source, contextPoint)) {
+                return 0;
+            }
+            if (source != table_) return DefWindowProcW(hwnd_, message, wParam, lParam);
+            POINT anchor = contextPoint;
             int row = -1;
             if (anchor.x == -1 && anchor.y == -1) {
                 row = Selected();
@@ -2464,7 +2577,10 @@ private:
     HWND refreshButton_{}; HWND transferQueueButton_{}; HWND selectAllButton_{}; HWND clearSelectionButton_{};
     HWND selectionStatus_{}; HWND uploadSelectedButton_{}; HWND downloadSelectedButton_{}; HWND deleteSelectedButton_{};
     const Theme& theme_; AppConfig config_; WebDavFileIndexCache cache_{config_}; std::wstring cacheRefreshedAt_;
-    std::vector<WebDavFileRecord> records_; std::map<std::wstring, std::intptr_t> rowKeys_; std::intptr_t nextRowKey_ = 1;
+    std::vector<WebDavFileRecord> records_;
+    std::vector<std::wstring> naturalOrderIds_;
+    std::map<std::wstring, std::intptr_t> rowKeys_; std::intptr_t nextRowKey_ = 1;
+    ThemedTableSortState sortState_{};
     std::set<std::wstring> checkedIds_; std::set<std::wstring> deletingIds_;
     std::set<std::wstring> deletedTombstones_; std::unique_ptr<ThemedWindowUi> windowUi_;
     std::shared_ptr<DeleteTaskState> deleteTaskState_;
