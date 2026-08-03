@@ -5777,12 +5777,20 @@ void RunWebDavFileManagerQueueEntryScenario(
             }
         }
         HWND refreshButton = VisibleButtonByText(window, L"刷新");
+        HWND queueButton = VisibleButtonByText(window, L"队列");
         state.Check(refreshButton != nullptr,
             L"webdav file manager background refresh: refresh button not found");
         if (refreshButton) {
             SendMessageW(refreshButton, BM_CLICK, 0, 0);
             state.Check(WaitForWindowText(window, L"正在后台刷新", 2000),
                 L"webdav file manager background refresh: inline status did not appear");
+            RECT refreshRect{};
+            RECT queueRect{};
+            state.Check(queueButton &&
+                    GetWindowRect(refreshButton, &refreshRect) &&
+                    GetWindowRect(queueButton, &queueRect) &&
+                    (refreshRect.right - refreshRect.left) > (queueRect.right - queueRect.left),
+                L"webdav file manager background refresh: refresh button did not reserve width for busy text");
             Scenario refreshScenario = scenario;
             refreshScenario.name = L"webdav-file-manager-background-refresh-" + DpiPercentSuffix(dpi);
             refreshScenario.screenshotName = refreshScenario.name + L".png";
@@ -5988,7 +5996,11 @@ int wmain() {
     }
 
     wchar_t webDavTransferQueueOnly[8]{};
-    if (GetEnvironmentVariableW(
+    wchar_t webDavFileManagerOnly[8]{};
+    const bool webDavFileManagerOnlyRequested = GetEnvironmentVariableW(
+        L"QUATTRO_UI_ACCEPTANCE_WEBDAV_FILE_MANAGER_ONLY", webDavFileManagerOnly,
+        static_cast<DWORD>(std::size(webDavFileManagerOnly))) > 0;
+    if (webDavFileManagerOnlyRequested || GetEnvironmentVariableW(
             L"QUATTRO_UI_ACCEPTANCE_WEBDAV_TRANSFER_QUEUE_ONLY",
             webDavTransferQueueOnly,
             static_cast<DWORD>(std::size(webDavTransferQueueOnly))) > 0) {
@@ -6008,15 +6020,19 @@ int wmain() {
             L"QUATTRO_UI_ACCEPTANCE_WEBDAV_QUEUE_DIALOG_ONLY", queueDialogOnly,
             static_cast<DWORD>(std::size(queueDialogOnly))) > 0;
         for (const UINT dpi : dpis) {
-            RunWebDavTransferQueueScenario(instance, theme, outputDir, state, dpi);
-            RunTooltipVisualScenario(
-                owner, instance, theme, outputDir, state, dpi,
-                L"report.zip  ·  136 MB\nD:\\项目资料\\report.zip\n上传中（3 / 4） · 46 MB / 136 MB（33%）",
-                L"webdav-transfer-row-tooltip");
+            if (!webDavFileManagerOnlyRequested) {
+                RunWebDavTransferQueueScenario(instance, theme, outputDir, state, dpi);
+                RunTooltipVisualScenario(
+                    owner, instance, theme, outputDir, state, dpi,
+                    L"report.zip  ·  136 MB\nD:\\项目资料\\report.zip\n上传中（3 / 4） · 46 MB / 136 MB（33%）",
+                    L"webdav-transfer-row-tooltip");
+            }
             if (!queueDialogOnlyRequested) {
                 RunWebDavFileManagerQueueEntryScenario(owner, instance, theme, config, outputDir, state, dpi);
-                RunWebDavFileDetailsScenario(owner, instance, theme, config, outputDir, state, dpi);
-                RunWebDavDeleteProgressScenario(owner, instance, theme, config, outputDir, state, dpi);
+                if (!webDavFileManagerOnlyRequested) {
+                    RunWebDavFileDetailsScenario(owner, instance, theme, config, outputDir, state, dpi);
+                    RunWebDavDeleteProgressScenario(owner, instance, theme, config, outputDir, state, dpi);
+                }
             }
         }
         DestroyWindow(owner);

@@ -1629,6 +1629,13 @@ private:
     static bool IsHealthy(const WebDavFileRecord& record) {
         return record.health == WebDavFileRecordHealth::Healthy;
     }
+    static int RefreshButtonWidth(const ThemedUi& ui) {
+        return std::max(
+            ui.buttonWidth(
+                L"刷新", ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text),
+            ui.buttonWidth(
+                L"刷新中", ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text));
+    }
     static std::wstring HealthText(const WebDavFileRecord& record) {
         switch (record.health) {
         case WebDavFileRecordHealth::MissingMetadata: return L"Meta 缺失";
@@ -1723,8 +1730,7 @@ private:
             client.right, client.bottom, windowUi_.get(), windowUi_.get(), windowUi_.get(), windowUi_.get());
         const auto& layout = ui.layout();
         const int buttonHeight = ui.buttonHeight();
-        const int refreshWidth = ui.buttonWidth(
-            L"刷新", ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
+        const int refreshWidth = RefreshButtonWidth(ui);
         const int queueWidth = ui.buttonWidth(
             L"队列", ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
         const int topGroupWidth = refreshWidth + layout.controlGapX + queueWidth;
@@ -2416,7 +2422,7 @@ private:
             windowUi_->SetDpiChangedCallback([this](UINT) { LayoutControls(); });
             const auto& ui = windowUi_->ui(); const auto& layout = ui.layout();
             const int buttonHeight = ui.buttonHeight();
-            const int refreshWidth = ui.buttonWidth(L"刷新", ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
+            const int refreshWidth = RefreshButtonWidth(ui);
             const int queueWidth = ui.buttonWidth(L"队列", ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
             const int topGroupWidth = refreshWidth + layout.controlGapX + queueWidth;
             const int topGroupX = ui.contentLeft() + ui.contentWidth() - topGroupWidth;
