@@ -2326,13 +2326,18 @@ void DrawTableActiveRowFrame(
     const int width = std::max(1, TableScaledMetric(
         table, theme, L"table", L"activeRowBorderWidth", 2.0f));
     const COLORREF color = ToColorRef(theme.color(L"table", L"activeRow", L"border"));
-    DrawThemedLine(draw->nmcd.hdc, cellRect.left, cellRect.top, cellRect.right, cellRect.top, color, width);
-    DrawThemedLine(draw->nmcd.hdc, cellRect.left, cellRect.bottom - 1, cellRect.right, cellRect.bottom - 1, color, width);
+    // Keep the active-row accent fully inside the ListView row bounds. The
+    // previous stroked lines were centered on the cell edge, so a 2px border
+    // could spill into adjacent rows; incremental row invalidation then left
+    // stray blue pixels behind when the active row moved to the next item.
+    const int insetWidth = std::min(width, std::max(1, static_cast<int>((cellRect.bottom - cellRect.top) / 2)));
+    FillThemedRect(draw->nmcd.hdc, RECT{cellRect.left, cellRect.top, cellRect.right, cellRect.top + insetWidth}, color);
+    FillThemedRect(draw->nmcd.hdc, RECT{cellRect.left, cellRect.bottom - insetWidth, cellRect.right, cellRect.bottom}, color);
     if (column == 0) {
-        DrawThemedLine(draw->nmcd.hdc, cellRect.left, cellRect.top, cellRect.left, cellRect.bottom, color, width);
+        FillThemedRect(draw->nmcd.hdc, RECT{cellRect.left, cellRect.top, cellRect.left + insetWidth, cellRect.bottom}, color);
     }
     if (column == columnCount - 1) {
-        DrawThemedLine(draw->nmcd.hdc, cellRect.right - 1, cellRect.top, cellRect.right - 1, cellRect.bottom, color, width);
+        FillThemedRect(draw->nmcd.hdc, RECT{cellRect.right - insetWidth, cellRect.top, cellRect.right, cellRect.bottom}, color);
     }
 }
 
