@@ -3397,6 +3397,9 @@ int wmain() {
         HWND resizeHeader = ListView_GetHeader(resizeTable);
         Check(resizeHeader && ((GetWindowLongPtrW(resizeHeader, GWL_STYLE) & HDS_NOSIZING) == 0),
             "Themed table preserves explicit header resize opt-in");
+        Check(ThemedControls::IsTableColumnResizable(resizeTable, 0) &&
+                ThemedControls::IsTableColumnResizable(resizeTable, 1),
+            "Themed table keeps columns resizable by default");
         HDITEMW resizeItem{};
         resizeItem.mask = HDI_WIDTH;
         resizeItem.cxy = 1;
@@ -3437,6 +3440,47 @@ int wmain() {
                 ListView_GetColumnWidth(resizeTable, 0) + ListView_GetColumnWidth(resizeTable, 1)
                     == resizeAvailableWidth,
             "Themed table relayout preserves every minimum width and fills the client width");
+        HWND lockedActionTable = controlUi.Table(
+            7113,
+            RECT{0, 460, 360, 520},
+            {ThemedTableColumn{L"name", L"Name", ThemedTableColumnAlign::Start,
+                 ThemedTableColumnWidth::Remaining},
+             ThemedTableColumn{L"action", L"Action", ThemedTableColumnAlign::Center,
+                 ThemedTableColumnWidth::Fixed, 76, false, 76, false}},
+            resizeTableOptions);
+        HWND lockedActionHeader = ListView_GetHeader(lockedActionTable);
+        Check(lockedActionTable && lockedActionHeader &&
+                !ThemedControls::IsTableColumnResizable(lockedActionTable, 1),
+            "Themed table exposes a locked action column through the public column definition");
+        NMHEADERW lockedBegin{};
+        lockedBegin.hdr.hwndFrom = lockedActionHeader;
+        lockedBegin.hdr.idFrom = lockedActionHeader
+            ? static_cast<UINT_PTR>(GetDlgCtrlID(lockedActionHeader)) : 0;
+        lockedBegin.hdr.code = HDN_BEGINTRACKW;
+        lockedBegin.iItem = 1;
+        Check(SendMessageW(lockedActionTable, WM_NOTIFY, lockedBegin.hdr.idFrom,
+                reinterpret_cast<LPARAM>(&lockedBegin)) == TRUE,
+            "Themed table rejects interactive resizing of a locked action column");
+        RECT lockedActionHeaderRect{};
+        Check(Header_GetItemRect(lockedActionHeader, 1, &lockedActionHeaderRect),
+            "Themed table exposes the locked action header rectangle");
+        POINT lockedActionDivider{
+            lockedActionHeaderRect.right - 1,
+            (lockedActionHeaderRect.top + lockedActionHeaderRect.bottom) / 2};
+        ClientToScreen(lockedActionHeader, &lockedActionDivider);
+        Check(ThemedControls::IsLockedTableHeaderDivider(
+                lockedActionTable, lockedActionDivider),
+            "Themed table identifies the locked action column cursor boundary");
+        RECT resizableNameHeaderRect{};
+        Check(Header_GetItemRect(lockedActionHeader, 0, &resizableNameHeaderRect),
+            "Themed table exposes the resizable name header rectangle");
+        POINT resizableNameDivider{
+            resizableNameHeaderRect.right - 1,
+            (resizableNameHeaderRect.top + resizableNameHeaderRect.bottom) / 2};
+        ClientToScreen(lockedActionHeader, &resizableNameDivider);
+        Check(!ThemedControls::IsLockedTableHeaderDivider(
+                lockedActionTable, resizableNameDivider),
+            "Themed table preserves the resize cursor boundary for resizable columns");
         HWND sortableTable = controlUi.Table(
             7112, RECT{0, 365, 360, 455},
             {ThemedTableColumn{L"name", L"Name", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, 120},

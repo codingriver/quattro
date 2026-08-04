@@ -318,6 +318,7 @@ struct ThemedTableColumn {
     bool sortable = false;
     // Target-DPI pixels. Zero uses the public title-width minimum.
     int minimumWidth = 0;
+    bool resizable = true;
 };
 
 struct ThemedTableOptions {

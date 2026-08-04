@@ -2472,7 +2472,7 @@ private:
                 {L"time", L"上传时间", ThemedTableColumnAlign::End, ThemedTableColumnWidth::Fixed, uploadTimeWidth, true},
                 {L"status", L"本地状态", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, statusWidth, true},
                 {L"action", L"操作", ThemedTableColumnAlign::Center,
-                    ThemedTableColumnWidth::Fixed, actionWidth, false, actionWidth},
+                    ThemedTableColumnWidth::Fixed, actionWidth, false, actionWidth, false},
             }, tableOptions);
             ThemedTooltipOptions rowTooltipOptions{};
             rowTooltipOptions.placement = ThemedTooltipPlacement::Cursor;

@@ -118,6 +118,7 @@ struct ControlState {
     std::vector<int> tableColumnMinimumWidths;
     std::vector<std::wstring> tableColumnKeys;
     std::vector<bool> tableColumnSortable;
+    std::vector<bool> tableColumnResizable;
     std::wstring tableSortColumnKey;
     int tableSortDirection = 0;
     std::vector<bool> tableRowEnabled;
@@ -1018,6 +1019,13 @@ void DrawMiniButton(const Theme& theme, const DRAWITEMSTRUCT* draw);
 void DrawSlider(HWND hwnd, HDC dc);
 
 constexpr int kRemainingTableColumnMode = 2;  // ThemedTableColumnWidth::Remaining
+thread_local int g_tableColumnRelayoutDepth = 0;
+
+class ScopedTableColumnRelayout final {
+public:
+    ScopedTableColumnRelayout() { ++g_tableColumnRelayoutDepth; }
+    ~ScopedTableColumnRelayout() { --g_tableColumnRelayoutDepth; }
+};
 
 int TableColumnMinimumWidth(const ControlState& state, int column) {
     if (column >= 0 && static_cast<std::size_t>(column) < state.tableColumnMinimumWidths.size()) {
@@ -1035,18 +1043,42 @@ int TableAdjustmentColumn(const ControlState& state, int draggedIndex) {
         }
     }
     for (int i = static_cast<int>(modes.size()) - 1; i >= 0; --i) {
-        if (i != draggedIndex) {
+        if (i != draggedIndex &&
+            (static_cast<std::size_t>(i) >= state.tableColumnResizable.size() ||
+             state.tableColumnResizable[static_cast<std::size_t>(i)])) {
             return i;
         }
     }
     return -1;
 }
 
-int TableReservedScrollBarGutter(const ControlState& state) {
-    return state.tableAllowHorizontalScroll || !state.tableReserveScrollBarGutter
+bool TableVerticalScrollBarVisible(HWND table) {
+    if (!table || (GetWindowLongPtrW(table, GWL_STYLE) & WS_VSCROLL) == 0) {
+        return false;
+    }
+    SCROLLINFO info{};
+    info.cbSize = sizeof(info);
+    info.fMask = SIF_RANGE | SIF_PAGE;
+    return GetScrollInfo(table, SB_VERT, &info) &&
+        info.nMax >= info.nMin &&
+        static_cast<UINT>(info.nMax - info.nMin + 1) > info.nPage;
+}
+
+int TableReservedScrollBarGutter(HWND table, const ControlState& state) {
+    return state.tableAllowHorizontalScroll || !state.tableReserveScrollBarGutter ||
+            TableVerticalScrollBarVisible(table)
         ? 0
         : GetSystemMetricsForDpi(
             SM_CXVSCROLL, state.tableDpi ? state.tableDpi : USER_DEFAULT_SCREEN_DPI);
+}
+
+int AvailableTableColumnWidth(HWND table, const ControlState& state) {
+    RECT client{};
+    if (!GetClientRect(table, &client)) {
+        return 0;
+    }
+    return std::max(0, static_cast<int>(client.right - client.left) -
+        TableReservedScrollBarGutter(table, state));
 }
 
 int ClampInteractiveTableColumnWidth(HWND table, int draggedIndex, int proposedWidth) {
@@ -1060,8 +1092,8 @@ int ClampInteractiveTableColumnWidth(HWND table, int draggedIndex, int proposedW
         return std::max(minimumWidth, proposedWidth);
     }
 
-    RECT client{};
-    if (!GetClientRect(table, &client)) {
+    const int availableWidth = AvailableTableColumnWidth(table, *state);
+    if (availableWidth <= 0) {
         return std::max(minimumWidth, proposedWidth);
     }
     const int adjustIndex = TableAdjustmentColumn(*state, draggedIndex);
@@ -1074,8 +1106,6 @@ int ClampInteractiveTableColumnWidth(HWND table, int draggedIndex, int proposedW
     if (adjustIndex >= 0) {
         occupiedWidth += TableColumnMinimumWidth(*state, adjustIndex);
     }
-    const int availableWidth = static_cast<int>(client.right - client.left)
-        - TableReservedScrollBarGutter(*state);
     const int maximumWidth = std::max(minimumWidth, availableWidth - occupiedWidth);
     return std::clamp(proposedWidth, minimumWidth, maximumWidth);
 }
@@ -1087,6 +1117,9 @@ int ClampInteractiveTableColumnWidth(HWND table, int draggedIndex, int proposedW
 // draggedWidth describe the column the user resized (-1 when unknown; current
 // widths are then read back from the control).
 void RelayoutTableRemainingColumns(HWND table, int draggedIndex, int draggedWidth) {
+    if (g_tableColumnRelayoutDepth > 0) {
+        return;
+    }
     const auto state = FindState(table);
     if (!state || state->kind != ControlKind::Table || state->tableColumnWidthModes.empty()) {
         return;
@@ -1100,7 +1133,7 @@ void RelayoutTableRemainingColumns(HWND table, int draggedIndex, int draggedWidt
     if (!GetClientRect(table, &client)) {
         return;
     }
-    const int reservedGutter = TableReservedScrollBarGutter(*state);
+    const int availableWidth = AvailableTableColumnWidth(table, *state);
     int otherColumnsWidth = 0;
     for (int i = 0; i < static_cast<int>(modes.size()); ++i) {
         if (i == adjustIndex) {
@@ -1111,7 +1144,8 @@ void RelayoutTableRemainingColumns(HWND table, int draggedIndex, int draggedWidt
             : ListView_GetColumnWidth(table, i);
     }
     const int minimumWidth = TableColumnMinimumWidth(*state, adjustIndex);
-    const int width = std::max(minimumWidth, static_cast<int>(client.right - client.left - reservedGutter - otherColumnsWidth));
+    const int width = std::max(minimumWidth, availableWidth - otherColumnsWidth);
+    ScopedTableColumnRelayout relayoutGuard;
     RECT changedColumns = client;
     if (HWND header = ListView_GetHeader(table)) {
         RECT columnRect{};
@@ -1172,6 +1206,15 @@ LRESULT CALLBACK ThemedControlProc(HWND hwnd, UINT message, WPARAM wParam, LPARA
                     hwnd, headerNotify->iItem, headerNotify->pitem->cxy);
             }
         }
+        if (nm && (nm->code == HDN_ITEMCHANGEDW || nm->code == HDN_ITEMCHANGEDA)) {
+            auto* headerNotify = reinterpret_cast<NMHEADERW*>(lParam);
+            const int draggedWidth = headerNotify->pitem && (headerNotify->pitem->mask & HDI_WIDTH)
+                ? headerNotify->pitem->cxy
+                : -1;
+            const LRESULT changedResult = DefSubclassProc(hwnd, message, wParam, lParam);
+            RelayoutTableRemainingColumns(hwnd, headerNotify->iItem, draggedWidth);
+            return changedResult;
+        }
         if (nm && (nm->code == HDN_ENDTRACKW || nm->code == HDN_ENDTRACKA)) {
             // The header applies the dragged width only after this notification
             // returns, so pass the final width from the notification explicitly.
@@ -1184,6 +1227,10 @@ LRESULT CALLBACK ThemedControlProc(HWND hwnd, UINT message, WPARAM wParam, LPARA
             return trackResult;
         }
         if (nm && (nm->code == HDN_DIVIDERDBLCLICKW || nm->code == HDN_DIVIDERDBLCLICKA)) {
+            const auto* headerNotify = reinterpret_cast<NMHEADERW*>(lParam);
+            if (!ThemedControls::IsTableColumnResizable(hwnd, headerNotify->iItem)) {
+                return TRUE;
+            }
             // The ListView performs the autosize while handling this notification,
             // so current widths are final once DefSubclassProc returns.
             const LRESULT clickResult = DefSubclassProc(hwnd, message, wParam, lParam);
@@ -1594,8 +1641,35 @@ LRESULT CALLBACK ThemedControlProc(HWND hwnd, UINT message, WPARAM wParam, LPARA
     return DefSubclassProc(hwnd, message, wParam, lParam);
 }
 
+LRESULT CALLBACK ThemedTableHeaderProc(
+    HWND hwnd,
+    UINT message,
+    WPARAM wParam,
+    LPARAM lParam,
+    UINT_PTR subclassId,
+    DWORD_PTR) {
+    if (message == WM_SETCURSOR) {
+        POINT cursor{};
+        if (GetCursorPos(&cursor) &&
+            ThemedControls::IsLockedTableHeaderDivider(GetParent(hwnd), cursor)) {
+            SetCursor(LoadCursorW(nullptr, IDC_ARROW));
+            return TRUE;
+        }
+    }
+    if (message == WM_NCDESTROY) {
+        RemoveWindowSubclass(hwnd, ThemedTableHeaderProc, subclassId);
+    }
+    return DefSubclassProc(hwnd, message, wParam, lParam);
+}
+
 void AttachThemedBehavior(HWND hwnd) {
     SetWindowSubclass(hwnd, ThemedControlProc, 1, 0);
+}
+
+void AttachTableHeaderBehavior(HWND table) {
+    if (HWND header = table ? ListView_GetHeader(table) : nullptr) {
+        SetWindowSubclass(header, ThemedTableHeaderProc, 2, 0);
+    }
 }
 
 void DrawSlider(HWND hwnd, HDC dc) {
@@ -4312,19 +4386,34 @@ void ConfigureTableColumns(
     const std::vector<int>& widthModes,
     const std::vector<std::wstring>& keys,
     const std::vector<bool>& sortable,
-    const std::vector<int>& minimumWidths) {
+    const std::vector<int>& minimumWidths,
+    const std::vector<bool>& resizable) {
     if (!table) return;
     auto& state = StateFor(table);
     state.tableColumnWidthModes = widthModes;
     state.tableColumnMinimumWidths = minimumWidths;
     state.tableColumnKeys = keys;
     state.tableColumnSortable = sortable;
+    state.tableColumnResizable = resizable;
     state.tableColumnMinimumWidths.resize(widthModes.size(), 1);
     for (int& width : state.tableColumnMinimumWidths) {
         width = std::max(1, width);
     }
     state.tableColumnKeys.resize(widthModes.size());
     state.tableColumnSortable.resize(widthModes.size(), false);
+    state.tableColumnResizable.resize(widthModes.size(), true);
+}
+
+int TableAvailableColumnWidth(HWND table) {
+    if (!table) return 0;
+    const auto state = FindState(table);
+    if (!state || state->kind != ControlKind::Table) {
+        RECT client{};
+        return GetClientRect(table, &client)
+            ? std::max(0, static_cast<int>(client.right - client.left))
+            : 0;
+    }
+    return AvailableTableColumnWidth(table, *state);
 }
 
 bool IsTableColumnSortable(HWND table, int column) {
@@ -4333,6 +4422,31 @@ bool IsTableColumnSortable(HWND table, int column) {
     if (!state || state->kind != ControlKind::Table) return false;
     const std::size_t index = static_cast<std::size_t>(column);
     return index < state->tableColumnSortable.size() && state->tableColumnSortable[index];
+}
+
+bool IsTableColumnResizable(HWND table, int column) {
+    if (!table || column < 0) return false;
+    const auto state = FindState(table);
+    if (!state || state->kind != ControlKind::Table || !state->tableAllowColumnResize) {
+        return false;
+    }
+    const std::size_t index = static_cast<std::size_t>(column);
+    return index >= state->tableColumnResizable.size() || state->tableColumnResizable[index];
+}
+
+bool IsLockedTableHeaderDivider(HWND table, POINT screenPoint) {
+    if (!table) return false;
+    HWND header = ListView_GetHeader(table);
+    if (!header) return false;
+    POINT clientPoint = screenPoint;
+    if (!ScreenToClient(header, &clientPoint)) return false;
+    HDHITTESTINFO hit{};
+    hit.pt = clientPoint;
+    const int column = static_cast<int>(SendMessageW(
+        header, HDM_HITTEST, 0, reinterpret_cast<LPARAM>(&hit)));
+    return column >= 0 &&
+        (hit.flags & (HHT_ONDIVIDER | HHT_ONDIVOPEN)) != 0 &&
+        !IsTableColumnResizable(table, column);
 }
 
 std::wstring TableColumnKey(HWND table, int column) {
@@ -4383,6 +4497,7 @@ void ConfigureTableGridLines(HWND table, bool rowGridLines, bool columnGridLines
 void SetTableColumnResizeEnabled(HWND table, bool enabled) {
     if (!table) return;
     StateFor(table).tableAllowColumnResize = enabled;
+    AttachTableHeaderBehavior(table);
     HWND header = ListView_GetHeader(table);
     if (!header) return;
     LONG_PTR style = GetWindowLongPtrW(header, GWL_STYLE);
@@ -4606,13 +4721,19 @@ void RefreshTableDpiResources(HWND table, UINT dpi) {
     const UINT oldDpi = state.tableDpi ? state.tableDpi : USER_DEFAULT_SCREEN_DPI;
     const UINT newDpi = dpi ? dpi : oldDpi;
     if (newDpi != oldDpi) {
-        for (int& minimumWidth : state.tableColumnMinimumWidths) {
-            minimumWidth = std::max(1, MulDiv(minimumWidth, newDpi, oldDpi));
-        }
-        const int columnCount = Header_GetItemCount(ListView_GetHeader(table));
-        for (int column = 0; column < columnCount; ++column) {
-            const int width = ListView_GetColumnWidth(table, column);
-            ListView_SetColumnWidth(table, column, std::max(1, MulDiv(width, newDpi, oldDpi)));
+        // Scaling each native column is a batch operation, not a user drag.
+        // Suppress HDN_ITEMCHANGED reflow until every column has its new DPI
+        // width, then perform one deterministic Remaining-column adjustment.
+        {
+            ScopedTableColumnRelayout dpiScaleGuard;
+            for (int& minimumWidth : state.tableColumnMinimumWidths) {
+                minimumWidth = std::max(1, MulDiv(minimumWidth, newDpi, oldDpi));
+            }
+            const int columnCount = Header_GetItemCount(ListView_GetHeader(table));
+            for (int column = 0; column < columnCount; ++column) {
+                const int width = ListView_GetColumnWidth(table, column);
+                ListView_SetColumnWidth(table, column, std::max(1, MulDiv(width, newDpi, oldDpi)));
+            }
         }
         state.tableDpi = newDpi;
         constexpr int remainingMode = 2;  // ThemedTableColumnWidth::Remaining
@@ -4744,8 +4865,8 @@ bool HandleListViewCustomDraw(const Theme& theme, LPARAM lParam, LRESULT& result
     if (className == L"SysHeader32" &&
         (header->code == HDN_BEGINTRACKW || header->code == HDN_BEGINTRACKA)) {
         HWND table = GetParent(header->hwndFrom);
-        const auto state = FindState(table);
-        if (state && state->kind == ControlKind::Table && !state->tableAllowColumnResize) {
+        const auto* headerNotify = reinterpret_cast<NMHEADERW*>(lParam);
+        if (!ThemedControls::IsTableColumnResizable(table, headerNotify->iItem)) {
             result = TRUE;
             return true;
         }

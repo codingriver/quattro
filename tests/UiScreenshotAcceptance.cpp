@@ -2722,6 +2722,7 @@ struct TableHostWindow {
     bool webDavColumns_ = false;
     bool showHeader_ = true;
     int visibleRows_ = 0;
+    int webDavRowCount_ = 2;
     UINT forcedDpi_ = 0;
     HFONT forcedFont_ = nullptr;
     Theme theme_;
@@ -2789,7 +2790,7 @@ struct TableHostWindow {
                     {L"status", L"本地状态", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed,
                         ui.tableColumnWidth({L"本地状态", L"本地不存在", L"本地较新"})},
                     {L"action", L"操作", ThemedTableColumnAlign::Center, ThemedTableColumnWidth::Fixed,
-                        webDavActionWidth, false, webDavActionWidth},
+                        webDavActionWidth, false, webDavActionWidth, false},
                 }
                 : std::vector<ThemedTableColumn>{
                     {L"name", L"名称", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Remaining},
@@ -2805,12 +2806,24 @@ struct TableHostWindow {
                 firstAction.role = ThemedTableCellRole::Action;
                 firstAction.actionId = 434;
                 ThemedTableCell secondAction = firstAction;
-                ThemedUi::SetTableRows(table_, {
+                std::vector<ThemedTableRow> rows{
                     {1, {{L"quattro-webdav-rightclick-test-6d19acf4b6a74a4ab51a525522e4a38.ext"},
                          {L"51 B"}, {L"2026-07-21T06:50:00.000Z"}, {L"本地较新"}, firstAction}, false, true},
                     {2, {{L"AGENTS.md"}, {L"4 KB"},
                          {L"2026-07-21T07:42:00.000Z"}, {L"相同"}, secondAction}, false, true},
-                });
+                };
+                for (int row = 3; row <= webDavRowCount_; ++row) {
+                    rows.push_back(ThemedTableRow{
+                        row,
+                        {{L"file-" + std::to_wstring(row) + L".txt"},
+                         {std::to_wstring(row) + L" KB"},
+                         {L"2026-07-21T07:42:00.000Z"},
+                         {L"相同"},
+                         secondAction},
+                        false,
+                        true});
+                }
+                ThemedUi::SetTableRows(table_, rows);
             } else if (checkable_) {
                 ThemedUi::SetTableRows(table_, {
                     {1, {{L"已勾选"}, {L"已安装"}}, true, true},
@@ -3573,6 +3586,9 @@ void RunWebDavFileColumnsScenario(const std::filesystem::path& outputDir, TestSt
     TableHostWindow host;
     host.instance_ = instance;
     host.webDavColumns_ = true;
+    host.checkable_ = true;
+    host.visibleRows_ = 8;
+    host.webDavRowCount_ = 28;
     host.forcedDpi_ = dpi;
     host.theme_ = Theme::Load(std::filesystem::current_path() / L"theme", L"default");
 
@@ -3619,9 +3635,15 @@ void RunWebDavFileColumnsScenario(const std::filesystem::path& outputDir, TestSt
     int actionId = 0;
     state.Check(ThemedControls::TableCellAction(host.table_, 0, 4, actionId) && actionId == 434,
         scenario + L": three-dot action cell is not invokable");
+    state.Check(!ThemedControls::IsTableColumnResizable(host.table_, 4),
+        scenario + L": operation column is not locked");
     RECT actionCell{};
     state.Check(ThemedUi::TableCellScreenRect(host.table_, 0, 4, actionCell),
         scenario + L": action cell screen rectangle is unavailable");
+    POINT actionRight{actionCell.right, actionCell.top};
+    ScreenToClient(host.table_, &actionRight);
+    state.Check(std::abs(actionRight.x - (tableClient.right - tableClient.left)) <= 1,
+        scenario + L": operation column is not anchored to the usable right boundary");
     const POINT actionCellCenter{
         (actionCell.left + actionCell.right) / 2,
         (actionCell.top + actionCell.bottom) / 2};

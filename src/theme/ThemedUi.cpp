@@ -3345,10 +3345,12 @@ HWND ThemedUi::Table(int id, RECT frame, const std::vector<ThemedTableColumn>& c
     std::vector<int> minimumWidths;
     std::vector<std::wstring> columnKeys;
     std::vector<bool> sortableColumns;
+    std::vector<bool> resizableColumns;
     widthModes.reserve(columns.size());
     minimumWidths.reserve(columns.size());
     columnKeys.reserve(columns.size());
     sortableColumns.reserve(columns.size());
+    resizableColumns.reserve(columns.size());
     for (const auto& column : columns) {
         const int minimumWidth = ThemedControls::ResolveTableColumnMinimumWidth(
             table, column.title, column.minimumWidth, column.fixedWidth);
@@ -3362,11 +3364,9 @@ HWND ThemedUi::Table(int id, RECT frame, const std::vector<ThemedTableColumn>& c
         minimumWidths.push_back(minimumWidth);
         columnKeys.push_back(column.key);
         sortableColumns.push_back(column.sortable);
+        resizableColumns.push_back(column.resizable);
     }
-    const int scrollBarGutter = options.reserveScrollBarGutter
-        ? GetSystemMetricsForDpi(SM_CXVSCROLL, dpi_)
-        : 0;
-    const int available = std::max(0, static_cast<int>(inner.right - inner.left) - fixedWidth - scrollBarGutter);
+    const int available = std::max(0, ThemedControls::TableAvailableColumnWidth(table) - fixedWidth);
     const int remainingExtra = std::max(0, available - remainingMinimumWidth);
     const int remainingExtraPerColumn = remainingCount > 0 ? remainingExtra / remainingCount : 0;
     const int remainingExtraRemainder = remainingCount > 0 ? remainingExtra % remainingCount : 0;
@@ -3389,7 +3389,7 @@ HWND ThemedUi::Table(int id, RECT frame, const std::vector<ThemedTableColumn>& c
         ListView_InsertColumn(table, static_cast<int>(i), &column);
     }
     ThemedControls::ConfigureTableColumns(
-        table, widthModes, columnKeys, sortableColumns, minimumWidths);
+        table, widthModes, columnKeys, sortableColumns, minimumWidths, resizableColumns);
     ThemedControls::SetTableHorizontalScrollEnabled(table, options.allowHorizontalScroll);
     // The native header can be created lazily when columns are inserted, so
     // apply the resize policy again after column creation.
@@ -3400,13 +3400,15 @@ HWND ThemedUi::Table(int id, RECT frame, const std::vector<ThemedTableColumn>& c
 
 void ThemedUi::SetTableColumns(HWND table, const std::vector<ThemedTableColumn>& columns) {
     if (!table) return;
+    // Column deletion/insertion emits native header change notifications. Clear
+    // the old layout contract so incremental relayout does not act on stale
+    // indices while the column set is being replaced.
+    ThemedControls::ConfigureTableColumns(table, {});
     const int existing = Header_GetItemCount(ListView_GetHeader(table));
     for (int index = existing - 1; index >= 0; --index) {
         ListView_DeleteColumn(table, index);
     }
 
-    RECT client{};
-    GetClientRect(table, &client);
     int fixedWidth = 0;
     int remainingCount = 0;
     int remainingMinimumWidth = 0;
@@ -3414,10 +3416,12 @@ void ThemedUi::SetTableColumns(HWND table, const std::vector<ThemedTableColumn>&
     std::vector<int> minimumWidths;
     std::vector<std::wstring> columnKeys;
     std::vector<bool> sortableColumns;
+    std::vector<bool> resizableColumns;
     widthModes.reserve(columns.size());
     minimumWidths.reserve(columns.size());
     columnKeys.reserve(columns.size());
     sortableColumns.reserve(columns.size());
+    resizableColumns.reserve(columns.size());
     for (const auto& column : columns) {
         const int minimumWidth = ThemedControls::ResolveTableColumnMinimumWidth(
             table, column.title, column.minimumWidth, column.fixedWidth);
@@ -3431,8 +3435,9 @@ void ThemedUi::SetTableColumns(HWND table, const std::vector<ThemedTableColumn>&
         minimumWidths.push_back(minimumWidth);
         columnKeys.push_back(column.key);
         sortableColumns.push_back(column.sortable);
+        resizableColumns.push_back(column.resizable);
     }
-    const int available = std::max(0, static_cast<int>(client.right - client.left) - fixedWidth);
+    const int available = std::max(0, ThemedControls::TableAvailableColumnWidth(table) - fixedWidth);
     const int remainingExtra = std::max(0, available - remainingMinimumWidth);
     const int remainingExtraPerColumn = remainingCount > 0 ? remainingExtra / remainingCount : 0;
     const int remainingExtraRemainder = remainingCount > 0 ? remainingExtra % remainingCount : 0;
@@ -3455,7 +3460,7 @@ void ThemedUi::SetTableColumns(HWND table, const std::vector<ThemedTableColumn>&
         ListView_InsertColumn(table, static_cast<int>(i), &column);
     }
     ThemedControls::ConfigureTableColumns(
-        table, widthModes, columnKeys, sortableColumns, minimumWidths);
+        table, widthModes, columnKeys, sortableColumns, minimumWidths, resizableColumns);
     InvalidateRect(table, nullptr, TRUE);
     if (HWND header = ListView_GetHeader(table)) {
         InvalidateRect(header, nullptr, TRUE);

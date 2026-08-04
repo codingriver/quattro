@@ -459,8 +459,12 @@ void ConfigureTableColumns(
     const std::vector<int>& widthModes,
     const std::vector<std::wstring>& keys = {},
     const std::vector<bool>& sortable = {},
-    const std::vector<int>& minimumWidths = {});
+    const std::vector<int>& minimumWidths = {},
+    const std::vector<bool>& resizable = {});
+int TableAvailableColumnWidth(HWND table);
 bool IsTableColumnSortable(HWND table, int column);
+bool IsTableColumnResizable(HWND table, int column);
+bool IsLockedTableHeaderDivider(HWND table, POINT screenPoint);
 std::wstring TableColumnKey(HWND table, int column);
 std::wstring TableSortColumnKey(HWND table);
 int TableSortDirection(HWND table);
