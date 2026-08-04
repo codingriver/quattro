@@ -316,6 +316,8 @@ struct ThemedTableColumn {
     ThemedTableColumnWidth widthMode = ThemedTableColumnWidth::Remaining;
     int fixedWidth = 0;
     bool sortable = false;
+    // Target-DPI pixels. Zero uses the public title-width minimum.
+    int minimumWidth = 0;
 };
 
 struct ThemedTableOptions {

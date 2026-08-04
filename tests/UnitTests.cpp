@@ -3389,12 +3389,54 @@ int wmain() {
         resizeTableOptions.allowColumnResize = true;
         HWND resizeTable = controlUi.Table(
             7111, RECT{370, 270, 730, 360},
-            {ThemedTableColumn{L"name", L"Name", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, 120},
-             ThemedTableColumn{L"value", L"Value", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Remaining}},
+            {ThemedTableColumn{L"name", L"Name", ThemedTableColumnAlign::Start,
+                 ThemedTableColumnWidth::Fixed, 120, false, 80},
+             ThemedTableColumn{L"value", L"Value", ThemedTableColumnAlign::Start,
+                 ThemedTableColumnWidth::Remaining, 0, false, 100}},
             resizeTableOptions);
         HWND resizeHeader = ListView_GetHeader(resizeTable);
         Check(resizeHeader && ((GetWindowLongPtrW(resizeHeader, GWL_STYLE) & HDS_NOSIZING) == 0),
             "Themed table preserves explicit header resize opt-in");
+        HDITEMW resizeItem{};
+        resizeItem.mask = HDI_WIDTH;
+        resizeItem.cxy = 1;
+        NMHEADERW resizeChanging{};
+        resizeChanging.hdr.hwndFrom = resizeHeader;
+        resizeChanging.hdr.idFrom = resizeHeader
+            ? static_cast<UINT_PTR>(GetDlgCtrlID(resizeHeader)) : 0;
+        resizeChanging.hdr.code = HDN_ITEMCHANGINGW;
+        resizeChanging.iItem = 0;
+        resizeChanging.pitem = &resizeItem;
+        SendMessageW(resizeTable, WM_NOTIFY, resizeChanging.hdr.idFrom,
+            reinterpret_cast<LPARAM>(&resizeChanging));
+        Check(resizeItem.cxy == 80,
+            "Themed table clamps an interactive column resize to its public minimum width");
+        HDITEMW nativeResizeItem{};
+        nativeResizeItem.mask = HDI_WIDTH;
+        nativeResizeItem.cxy = 1;
+        Header_SetItem(resizeHeader, 0, &nativeResizeItem);
+        Check(ListView_GetColumnWidth(resizeTable, 0) == 80,
+            "Themed table native header applies the clamped public minimum width");
+
+        RECT resizeClient{};
+        GetClientRect(resizeTable, &resizeClient);
+        resizeItem.cxy = 10000;
+        SendMessageW(resizeTable, WM_NOTIFY, resizeChanging.hdr.idFrom,
+            reinterpret_cast<LPARAM>(&resizeChanging));
+        const int resizeAvailableWidth = resizeClient.right - resizeClient.left;
+        Check(resizeItem.cxy == resizeAvailableWidth - 100,
+            "Themed table preserves the adjustment column minimum while another column grows");
+
+        ListView_SetColumnWidth(resizeTable, 0, resizeItem.cxy);
+        NMHEADERW resizeEnded = resizeChanging;
+        resizeEnded.hdr.code = HDN_ENDTRACKW;
+        SendMessageW(resizeTable, WM_NOTIFY, resizeEnded.hdr.idFrom,
+            reinterpret_cast<LPARAM>(&resizeEnded));
+        Check(ListView_GetColumnWidth(resizeTable, 0) >= 80 &&
+                ListView_GetColumnWidth(resizeTable, 1) >= 100 &&
+                ListView_GetColumnWidth(resizeTable, 0) + ListView_GetColumnWidth(resizeTable, 1)
+                    == resizeAvailableWidth,
+            "Themed table relayout preserves every minimum width and fills the client width");
         HWND sortableTable = controlUi.Table(
             7112, RECT{0, 365, 360, 455},
             {ThemedTableColumn{L"name", L"Name", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, 120},

@@ -2471,7 +2471,8 @@ private:
                 {L"size", L"大小", ThemedTableColumnAlign::End, ThemedTableColumnWidth::Fixed, fileSizeWidth, true},
                 {L"time", L"上传时间", ThemedTableColumnAlign::End, ThemedTableColumnWidth::Fixed, uploadTimeWidth, true},
                 {L"status", L"本地状态", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, statusWidth, true},
-                {L"action", L"操作", ThemedTableColumnAlign::Center, ThemedTableColumnWidth::Fixed, actionWidth, false},
+                {L"action", L"操作", ThemedTableColumnAlign::Center,
+                    ThemedTableColumnWidth::Fixed, actionWidth, false, actionWidth},
             }, tableOptions);
             ThemedTooltipOptions rowTooltipOptions{};
             rowTooltipOptions.placement = ThemedTooltipPlacement::Cursor;

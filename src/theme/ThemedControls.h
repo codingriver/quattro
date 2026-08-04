@@ -449,11 +449,17 @@ struct TableCellRuntime {
 };
 void RegisterTable(HWND table, const Theme& theme, UINT dpi = 0);
 void ConfigureTableRowPresentation(HWND table, bool twoLines);
+int ResolveTableColumnMinimumWidth(
+    HWND table,
+    const std::wstring& title,
+    int explicitMinimumWidth = 0,
+    int initialWidth = 0);
 void ConfigureTableColumns(
     HWND table,
     const std::vector<int>& widthModes,
     const std::vector<std::wstring>& keys = {},
-    const std::vector<bool>& sortable = {});
+    const std::vector<bool>& sortable = {},
+    const std::vector<int>& minimumWidths = {});
 bool IsTableColumnSortable(HWND table, int column);
 std::wstring TableColumnKey(HWND table, int column);
 std::wstring TableSortColumnKey(HWND table);

@@ -3340,24 +3340,36 @@ HWND ThemedUi::Table(int id, RECT frame, const std::vector<ThemedTableColumn>& c
 
     int fixedWidth = 0;
     int remainingCount = 0;
+    int remainingMinimumWidth = 0;
     std::vector<int> widthModes;
+    std::vector<int> minimumWidths;
     std::vector<std::wstring> columnKeys;
     std::vector<bool> sortableColumns;
     widthModes.reserve(columns.size());
+    minimumWidths.reserve(columns.size());
     columnKeys.reserve(columns.size());
     sortableColumns.reserve(columns.size());
     for (const auto& column : columns) {
-        if (column.widthMode == ThemedTableColumnWidth::Remaining) ++remainingCount;
-        else fixedWidth += std::max(0, column.fixedWidth);
+        const int minimumWidth = ThemedControls::ResolveTableColumnMinimumWidth(
+            table, column.title, column.minimumWidth, column.fixedWidth);
+        if (column.widthMode == ThemedTableColumnWidth::Remaining) {
+            ++remainingCount;
+            remainingMinimumWidth += minimumWidth;
+        } else {
+            fixedWidth += std::max(minimumWidth, column.fixedWidth);
+        }
         widthModes.push_back(static_cast<int>(column.widthMode));
+        minimumWidths.push_back(minimumWidth);
         columnKeys.push_back(column.key);
         sortableColumns.push_back(column.sortable);
     }
     const int scrollBarGutter = options.reserveScrollBarGutter
         ? GetSystemMetricsForDpi(SM_CXVSCROLL, dpi_)
         : 0;
-    const int available = std::max(40, static_cast<int>(inner.right - inner.left) - fixedWidth - scrollBarGutter);
-    int assignedRemainingWidth = 0;
+    const int available = std::max(0, static_cast<int>(inner.right - inner.left) - fixedWidth - scrollBarGutter);
+    const int remainingExtra = std::max(0, available - remainingMinimumWidth);
+    const int remainingExtraPerColumn = remainingCount > 0 ? remainingExtra / remainingCount : 0;
+    const int remainingExtraRemainder = remainingCount > 0 ? remainingExtra % remainingCount : 0;
     int remainingIndex = 0;
     for (std::size_t i = 0; i < columns.size(); ++i) {
         const auto& source = columns[i];
@@ -3366,19 +3378,18 @@ HWND ThemedUi::Table(int id, RECT frame, const std::vector<ThemedTableColumn>& c
         column.pszText = const_cast<wchar_t*>(source.title.c_str());
         column.iSubItem = static_cast<int>(i);
         if (source.widthMode == ThemedTableColumnWidth::Remaining) {
+            column.cx = minimumWidths[i] + remainingExtraPerColumn
+                + (remainingIndex < remainingExtraRemainder ? 1 : 0);
             ++remainingIndex;
-            column.cx = remainingIndex == remainingCount
-                ? std::max(24, available - assignedRemainingWidth)
-                : std::max(24, available / std::max(1, remainingCount));
-            assignedRemainingWidth += column.cx;
         } else {
-            column.cx = std::max(24, source.fixedWidth);
+            column.cx = std::max(minimumWidths[i], source.fixedWidth);
         }
         column.fmt = source.align == ThemedTableColumnAlign::Center ? LVCFMT_CENTER
             : (source.align == ThemedTableColumnAlign::End ? LVCFMT_RIGHT : LVCFMT_LEFT);
         ListView_InsertColumn(table, static_cast<int>(i), &column);
     }
-    ThemedControls::ConfigureTableColumns(table, widthModes, columnKeys, sortableColumns);
+    ThemedControls::ConfigureTableColumns(
+        table, widthModes, columnKeys, sortableColumns, minimumWidths);
     ThemedControls::SetTableHorizontalScrollEnabled(table, options.allowHorizontalScroll);
     // The native header can be created lazily when columns are inserted, so
     // apply the resize policy again after column creation.
@@ -3398,21 +3409,33 @@ void ThemedUi::SetTableColumns(HWND table, const std::vector<ThemedTableColumn>&
     GetClientRect(table, &client);
     int fixedWidth = 0;
     int remainingCount = 0;
+    int remainingMinimumWidth = 0;
     std::vector<int> widthModes;
+    std::vector<int> minimumWidths;
     std::vector<std::wstring> columnKeys;
     std::vector<bool> sortableColumns;
     widthModes.reserve(columns.size());
+    minimumWidths.reserve(columns.size());
     columnKeys.reserve(columns.size());
     sortableColumns.reserve(columns.size());
     for (const auto& column : columns) {
-        if (column.widthMode == ThemedTableColumnWidth::Remaining) ++remainingCount;
-        else fixedWidth += std::max(0, column.fixedWidth);
+        const int minimumWidth = ThemedControls::ResolveTableColumnMinimumWidth(
+            table, column.title, column.minimumWidth, column.fixedWidth);
+        if (column.widthMode == ThemedTableColumnWidth::Remaining) {
+            ++remainingCount;
+            remainingMinimumWidth += minimumWidth;
+        } else {
+            fixedWidth += std::max(minimumWidth, column.fixedWidth);
+        }
         widthModes.push_back(static_cast<int>(column.widthMode));
+        minimumWidths.push_back(minimumWidth);
         columnKeys.push_back(column.key);
         sortableColumns.push_back(column.sortable);
     }
-    const int available = std::max(40, static_cast<int>(client.right - client.left) - fixedWidth);
-    int assignedRemainingWidth = 0;
+    const int available = std::max(0, static_cast<int>(client.right - client.left) - fixedWidth);
+    const int remainingExtra = std::max(0, available - remainingMinimumWidth);
+    const int remainingExtraPerColumn = remainingCount > 0 ? remainingExtra / remainingCount : 0;
+    const int remainingExtraRemainder = remainingCount > 0 ? remainingExtra % remainingCount : 0;
     int remainingIndex = 0;
     for (std::size_t i = 0; i < columns.size(); ++i) {
         const auto& source = columns[i];
@@ -3421,19 +3444,18 @@ void ThemedUi::SetTableColumns(HWND table, const std::vector<ThemedTableColumn>&
         column.pszText = const_cast<wchar_t*>(source.title.c_str());
         column.iSubItem = static_cast<int>(i);
         if (source.widthMode == ThemedTableColumnWidth::Remaining) {
+            column.cx = minimumWidths[i] + remainingExtraPerColumn
+                + (remainingIndex < remainingExtraRemainder ? 1 : 0);
             ++remainingIndex;
-            column.cx = remainingIndex == remainingCount
-                ? std::max(24, available - assignedRemainingWidth)
-                : std::max(24, available / std::max(1, remainingCount));
-            assignedRemainingWidth += column.cx;
         } else {
-            column.cx = std::max(24, source.fixedWidth);
+            column.cx = std::max(minimumWidths[i], source.fixedWidth);
         }
         column.fmt = source.align == ThemedTableColumnAlign::Center ? LVCFMT_CENTER
             : (source.align == ThemedTableColumnAlign::End ? LVCFMT_RIGHT : LVCFMT_LEFT);
         ListView_InsertColumn(table, static_cast<int>(i), &column);
     }
-    ThemedControls::ConfigureTableColumns(table, widthModes, columnKeys, sortableColumns);
+    ThemedControls::ConfigureTableColumns(
+        table, widthModes, columnKeys, sortableColumns, minimumWidths);
     InvalidateRect(table, nullptr, TRUE);
     if (HWND header = ListView_GetHeader(table)) {
         InvalidateRect(header, nullptr, TRUE);

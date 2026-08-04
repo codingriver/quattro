@@ -2776,6 +2776,9 @@ struct TableHostWindow {
             const int tableBottom = visibleRows_ > 0
                 ? ui.scale(16) + ui.tableHeightForRows(visibleRows_, showHeader_)
                 : ui.scale(240);
+            const int webDavActionWidth = ui.buttonWidth(
+                L"…", ThemedButtonRole::Normal, ThemedButtonSize::Compact,
+                ThemedButtonWidthMode::Text) + ui.denseGap();
             const std::vector<ThemedTableColumn> columns = webDavColumns_
                 ? std::vector<ThemedTableColumn>{
                     {L"name", L"文件名", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Remaining},
@@ -2786,8 +2789,7 @@ struct TableHostWindow {
                     {L"status", L"本地状态", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed,
                         ui.tableColumnWidth({L"本地状态", L"本地不存在", L"本地较新"})},
                     {L"action", L"操作", ThemedTableColumnAlign::Center, ThemedTableColumnWidth::Fixed,
-                        ui.buttonWidth(L"…", ThemedButtonRole::Normal, ThemedButtonSize::Compact,
-                            ThemedButtonWidthMode::Text) + ui.denseGap()},
+                        webDavActionWidth, false, webDavActionWidth},
                 }
                 : std::vector<ThemedTableColumn>{
                     {L"name", L"名称", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Remaining},
@@ -3605,6 +3607,15 @@ void RunWebDavFileColumnsScenario(const std::filesystem::path& outputDir, TestSt
     headerItem.cchTextMax = static_cast<int>(std::size(headerText));
     state.Check(Header_GetItem(header, 3, &headerItem) && std::wstring(headerText) == L"本地状态",
         scenario + L": local-status column is missing");
+    RECT tableClient{};
+    GetClientRect(host.table_, &tableClient);
+    int columnsWidth = 0;
+    for (int column = 0; column < Header_GetItemCount(header); ++column) {
+        columnsWidth += ListView_GetColumnWidth(host.table_, column);
+    }
+    state.Check(columnsWidth >= tableClient.right - tableClient.left - 1 &&
+            columnsWidth <= tableClient.right - tableClient.left + 1,
+        scenario + L": columns leave a trailing blank strip in the table client area");
     int actionId = 0;
     state.Check(ThemedControls::TableCellAction(host.table_, 0, 4, actionId) && actionId == 434,
         scenario + L": three-dot action cell is not invokable");
@@ -3857,6 +3868,7 @@ void RunTableColumnResizeScenario(const std::filesystem::path& outputDir, TestSt
     TableHostWindow host;
     host.instance_ = instance;
     host.allowColumnResize_ = true;
+    host.webDavColumns_ = true;
     host.theme_ = Theme::Load(std::filesystem::current_path() / L"theme", L"default");
 
     WNDCLASSEXW wc{};
@@ -3868,7 +3880,7 @@ void RunTableColumnResizeScenario(const std::filesystem::path& outputDir, TestSt
     RegisterClassExW(&wc);
 
     HWND hwnd = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, wc.lpszClassName, L"table column resize", WS_OVERLAPPEDWINDOW,
-        140, 140, 400, 320, nullptr, nullptr, instance, &host);
+        140, 140, 760, 320, nullptr, nullptr, instance, &host);
     if (!hwnd || !host.table_) {
         state.Check(false, L"table-column-resize: host window/table creation failed");
         return;
@@ -3892,22 +3904,51 @@ void RunTableColumnResizeScenario(const std::filesystem::path& outputDir, TestSt
     RECT tableClient{};
     GetClientRect(host.table_, &tableClient);
 
-    // Simulate a completed header drag: apply the new width (what the header
-    // does during the drag), then deliver HDN_ENDTRACK to the ListView the way
-    // the header would. This exercises the shared subclass routing that refills
-    // the Remaining column so the table keeps spanning its client width.
-    const int firstWidthBefore = ListView_GetColumnWidth(host.table_, 0);
-    SendMessageW(host.table_, LVM_SETCOLUMNWIDTH, 0, MAKELPARAM(firstWidthBefore - 40, 0));
+    // Simulate narrowing the fixed upload-time column. During a real drag every
+    // later column, including the owner-drawn action cell, is temporarily
+    // painted to the left. HDN_ENDTRACK then grows the Remaining name column
+    // and returns those later columns to their original positions.
+    constexpr int draggedColumn = 2;
+    constexpr int actionColumn = 4;
+    const int actionMinimumWidth = ListView_GetColumnWidth(host.table_, actionColumn);
+    const int draggedWidth = ListView_GetColumnWidth(host.table_, draggedColumn) - 40;
+    SendMessageW(host.table_, LVM_SETCOLUMNWIDTH, draggedColumn, MAKELPARAM(draggedWidth, 0));
+    RedrawWindow(host.table_, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW | RDW_ALLCHILDREN);
+    RECT transientActionRect{LVIR_BOUNDS, actionColumn, 0, 0};
+    ListView_GetSubItemRect(host.table_, 0, actionColumn, LVIR_BOUNDS, &transientActionRect);
+    ValidateRect(host.table_, nullptr);
     if (header) {
         NMHEADERW endTrack{};
         endTrack.hdr.hwndFrom = header;
         endTrack.hdr.idFrom = static_cast<UINT_PTR>(GetDlgCtrlID(header));
         endTrack.hdr.code = HDN_ENDTRACKW;
-        endTrack.iItem = 0;
+        endTrack.iItem = draggedColumn;
         HDITEMW item{};
+        item.mask = HDI_WIDTH;
+        item.cxy = draggedWidth;
         endTrack.pitem = &item;
         SendMessageW(host.table_, WM_NOTIFY, endTrack.hdr.idFrom, reinterpret_cast<LPARAM>(&endTrack));
     }
+    RECT resizeUpdateRect{};
+    const bool hasResizeUpdate = GetUpdateRect(host.table_, &resizeUpdateRect, FALSE) != FALSE;
+    state.Check(hasResizeUpdate && resizeUpdateRect.left <= transientActionRect.left &&
+            resizeUpdateRect.right >= transientActionRect.right,
+        L"table-column-resize: relayout does not invalidate the action cell's temporary position");
+
+    HDITEMW actionResizeItem{};
+    actionResizeItem.mask = HDI_WIDTH;
+    actionResizeItem.cxy = 1;
+    NMHEADERW actionResizeChanging{};
+    actionResizeChanging.hdr.hwndFrom = header;
+    actionResizeChanging.hdr.idFrom = header
+        ? static_cast<UINT_PTR>(GetDlgCtrlID(header)) : 0;
+    actionResizeChanging.hdr.code = HDN_ITEMCHANGINGW;
+    actionResizeChanging.iItem = actionColumn;
+    actionResizeChanging.pitem = &actionResizeItem;
+    SendMessageW(host.table_, WM_NOTIFY, actionResizeChanging.hdr.idFrom,
+        reinterpret_cast<LPARAM>(&actionResizeChanging));
+    state.Check(actionResizeItem.cxy == actionMinimumWidth,
+        L"table-column-resize: action column can be dragged below its button width");
     RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW | RDW_ALLCHILDREN);
     Sleep(100);
 
@@ -6794,6 +6835,7 @@ int wmain() {
         RunWebDavFileColumnsScenario(outputDir, state, 96);
         RunWebDavFileColumnsScenario(outputDir, state, 120);
         RunWebDavFileColumnsScenario(outputDir, state, 144);
+        RunTableColumnResizeScenario(outputDir, state);
         RunTableSortArrowScenario(outputDir, state);
         RunTableHoverRepaintScenario(state);
         DestroyWindow(owner);
