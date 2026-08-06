@@ -681,6 +681,7 @@ void Theme::SetDefaults() {
     PutState(L"tableHeader", L"normal", L"bg", palette_[L"surfaceRaised"]);
     PutState(L"tableHeader", L"normal", L"text", palette_[L"text"]);
     PutState(L"tableHeader", L"normal", L"border", palette_[L"line"]);
+    PutState(L"tableHeader", L"resizeLimited", L"border", palette_[L"focus"]);
     PutState(L"link", L"normal", L"text", palette_[L"accent"]);
     PutState(L"link", L"external", L"text", palette_[L"accent"]);
     PutState(L"link", L"muted", L"text", palette_[L"mutedText"]);
@@ -1077,6 +1078,7 @@ void Theme::SetDefaults() {
     PutMetric(L"table", L"gridWidth", 1.0f);
     PutMetric(L"table", L"activeRowBorderWidth", 2.0f);
     PutMetric(L"tableHeader", L"height", 28.0f);
+    PutMetric(L"tableHeader", L"resizeLimitedDividerWidth", 3.0f);
     PutMetric(L"groupBox", L"radius", 7.0f);
     PutMetric(L"groupBox", L"borderWidth", 1.0f);
     PutMetric(L"groupBox", L"paddingX", 12.0f);

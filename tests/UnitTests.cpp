@@ -2582,6 +2582,10 @@ int wmain() {
     Check(Near(fallbackTheme.metric(L"table", L"activeRowBorderWidth", 0.0f), 2.0f),
         "Theme default table active-row border width");
     Check(Near(fallbackTheme.metric(L"tableHeader", L"height", 0.0f), 28.0f), "Theme default table header height");
+    Check(fallbackTheme.color(L"tableHeader", L"resizeLimited", L"border").a > 0.9f,
+        "Theme default table resize-limit divider color");
+    Check(Near(fallbackTheme.metric(L"tableHeader", L"resizeLimitedDividerWidth", 0.0f), 3.0f),
+        "Theme default table resize-limit divider width");
     Check(Near(fallbackTheme.metric(L"tooltip", L"maxWidth", 0.0f), 420.0f), "Theme default tooltip max width");
     Check(fallbackTheme.color(L"groupBox", L"normal", L"border").a > 0.9f, "Theme default group box border");
     Check(fallbackTheme.color(L"tabControl", L"normal", L"bg").a > 0.9f, "Theme default tab control background");
@@ -3440,6 +3444,159 @@ int wmain() {
                 ListView_GetColumnWidth(resizeTable, 0) + ListView_GetColumnWidth(resizeTable, 1)
                     == resizeAvailableWidth,
             "Themed table relayout preserves every minimum width and fills the client width");
+
+        HWND linkedResizeTable = controlUi.Table(
+            7114,
+            RECT{0, 525, 520, 615},
+            {
+                ThemedTableColumn{L"first", L"First", ThemedTableColumnAlign::Start,
+                    ThemedTableColumnWidth::Fixed, 100, false, 60},
+                ThemedTableColumn{L"second", L"Second", ThemedTableColumnAlign::Start,
+                    ThemedTableColumnWidth::Fixed, 100, false, 60},
+                ThemedTableColumn{L"locked", L"Locked", ThemedTableColumnAlign::Center,
+                    ThemedTableColumnWidth::Fixed, 80, false, 80, false},
+                ThemedTableColumn{L"fourth", L"Fourth", ThemedTableColumnAlign::Start,
+                    ThemedTableColumnWidth::Fixed, 100, false, 60},
+                ThemedTableColumn{L"tail", L"Tail", ThemedTableColumnAlign::Start,
+                    ThemedTableColumnWidth::Remaining, 0, false, 60},
+            },
+            resizeTableOptions);
+        HWND linkedResizeHeader = ListView_GetHeader(linkedResizeTable);
+        std::vector<int> linkedInitialWidths;
+        int linkedInitialTotal = 0;
+        for (int column = 0; column < 5; ++column) {
+            const int width = ListView_GetColumnWidth(linkedResizeTable, column);
+            linkedInitialWidths.push_back(width);
+            linkedInitialTotal += width;
+        }
+        RECT linkedDividerRect{};
+        Header_GetItemRect(linkedResizeHeader, 1, &linkedDividerRect);
+        const int linkedDividerX = linkedDividerRect.right - 1;
+        const int linkedDividerY = (linkedDividerRect.top + linkedDividerRect.bottom) / 2;
+        SendMessageW(linkedResizeHeader, WM_LBUTTONDOWN, MK_LBUTTON,
+            MAKELPARAM(linkedDividerX, linkedDividerY));
+        Check(GetCapture() == linkedResizeHeader,
+            "Themed table owns mouse capture for linked header resizing");
+        SendMessageW(linkedResizeHeader, WM_MOUSEMOVE, MK_LBUTTON,
+            MAKELPARAM(linkedDividerX - 10000, linkedDividerY));
+        const int ownedLeftCapacity =
+            (linkedInitialWidths[0] - 60) + (linkedInitialWidths[1] - 60);
+        Check(ListView_GetColumnWidth(linkedResizeTable, 0) == 60 &&
+                ListView_GetColumnWidth(linkedResizeTable, 1) == 60 &&
+                ListView_GetColumnWidth(linkedResizeTable, 2) == linkedInitialWidths[2] &&
+                ListView_GetColumnWidth(linkedResizeTable, 3) ==
+                    linkedInitialWidths[3] + ownedLeftCapacity,
+            "Themed table passes a real left mouse drag through minimum-width columns and across a locked column");
+        int saturatedDivider = 0;
+        for (int column = 0; column <= 1; ++column) {
+            saturatedDivider += ListView_GetColumnWidth(linkedResizeTable, column);
+        }
+        SendMessageW(linkedResizeHeader, WM_MOUSEMOVE, MK_LBUTTON,
+            MAKELPARAM(linkedDividerX - 9999, linkedDividerY));
+        int reversedDivider = 0;
+        for (int column = 0; column <= 1; ++column) {
+            reversedDivider += ListView_GetColumnWidth(linkedResizeTable, column);
+        }
+        Check(reversedDivider > saturatedDivider,
+            "Themed table responds immediately when a saturated divider reverses");
+        SendMessageW(linkedResizeHeader, WM_CANCELMODE, 0, 0);
+        bool linkedCancelRestored = GetCapture() != linkedResizeHeader;
+        for (int column = 0; column < 5; ++column) {
+            linkedCancelRestored = linkedCancelRestored &&
+                ListView_GetColumnWidth(linkedResizeTable, column) == linkedInitialWidths[column];
+        }
+        Check(linkedCancelRestored,
+            "Themed table restores the drag snapshot and releases capture when linked resizing is cancelled");
+
+        SendMessageW(linkedResizeHeader, WM_LBUTTONDOWN, MK_LBUTTON,
+            MAKELPARAM(linkedDividerX, linkedDividerY));
+        SendMessageW(linkedResizeHeader, WM_MOUSEMOVE, MK_LBUTTON,
+            MAKELPARAM(linkedDividerX + 30, linkedDividerY));
+        std::vector<int> committedMouseWidths;
+        for (int column = 0; column < 5; ++column) {
+            committedMouseWidths.push_back(ListView_GetColumnWidth(linkedResizeTable, column));
+        }
+        SendMessageW(linkedResizeHeader, WM_LBUTTONUP, 0,
+            MAKELPARAM(linkedDividerX + 30, linkedDividerY));
+        bool linkedMouseCommitted = GetCapture() != linkedResizeHeader;
+        for (int column = 0; column < 5; ++column) {
+            linkedMouseCommitted = linkedMouseCommitted &&
+                ListView_GetColumnWidth(linkedResizeTable, column) == committedMouseWidths[column];
+        }
+        Check(linkedMouseCommitted,
+            "Themed table commits the linked mouse drag without an end-track width rebound");
+        for (int column = 0; column < 5; ++column) {
+            ListView_SetColumnWidth(linkedResizeTable, column, linkedInitialWidths[column]);
+        }
+
+        NMHEADERW linkedBegin{};
+        linkedBegin.hdr.hwndFrom = linkedResizeHeader;
+        linkedBegin.hdr.idFrom = linkedResizeHeader
+            ? static_cast<UINT_PTR>(GetDlgCtrlID(linkedResizeHeader)) : 0;
+        linkedBegin.hdr.code = HDN_BEGINTRACKW;
+        linkedBegin.iItem = 1;
+        Check(SendMessageW(linkedResizeTable, WM_NOTIFY, linkedBegin.hdr.idFrom,
+                reinterpret_cast<LPARAM>(&linkedBegin)) == TRUE,
+            "Themed table blocks native tracking for linked column resizing");
+        HDITEMW linkedItem{};
+        linkedItem.mask = HDI_WIDTH;
+        linkedItem.cxy = 1;
+        NMHEADERW linkedChanging = linkedBegin;
+        linkedChanging.hdr.code = HDN_ITEMCHANGINGW;
+        linkedChanging.pitem = &linkedItem;
+        SendMessageW(linkedResizeTable, WM_NOTIFY, linkedChanging.hdr.idFrom,
+            reinterpret_cast<LPARAM>(&linkedChanging));
+        bool nativeTrackUnchanged = linkedItem.cxy >= 60;
+        for (int column = 0; column < 5; ++column) {
+            nativeTrackUnchanged = nativeTrackUnchanged &&
+                ListView_GetColumnWidth(linkedResizeTable, column) == linkedInitialWidths[column];
+        }
+        Check(nativeTrackUnchanged,
+            "Themed table does not run a second linked layout from native tracking notifications");
+        NMHEADERW linkedEnded = linkedChanging;
+        linkedEnded.hdr.code = HDN_ENDTRACKW;
+        SendMessageW(linkedResizeTable, WM_NOTIFY, linkedEnded.hdr.idFrom,
+            reinterpret_cast<LPARAM>(&linkedEnded));
+        bool nativeEndUnchanged = true;
+        for (int column = 0; column < 5; ++column) {
+            nativeEndUnchanged = nativeEndUnchanged &&
+                ListView_GetColumnWidth(linkedResizeTable, column) == linkedInitialWidths[column];
+        }
+        Check(nativeEndUnchanged,
+            "Themed table ignores native end-track after blocking linked tracking");
+
+        HWND horizontalResizeTable = controlUi.Table(
+            7115,
+            RECT{530, 525, 890, 615},
+            {
+                ThemedTableColumn{L"left", L"Left", ThemedTableColumnAlign::Start,
+                    ThemedTableColumnWidth::Fixed, 120, false, 60},
+                ThemedTableColumn{L"right", L"Right", ThemedTableColumnAlign::Start,
+                    ThemedTableColumnWidth::Fixed, 160, false, 60},
+            },
+            ThemedTableOptions{ThemedTableSelection::Single, ThemedTableView::Details,
+                false, true, true, true, true, true});
+        HWND horizontalResizeHeader = ListView_GetHeader(horizontalResizeTable);
+        const int horizontalRightWidth = ListView_GetColumnWidth(horizontalResizeTable, 1);
+        NMHEADERW horizontalBegin{};
+        horizontalBegin.hdr.hwndFrom = horizontalResizeHeader;
+        horizontalBegin.hdr.idFrom = horizontalResizeHeader
+            ? static_cast<UINT_PTR>(GetDlgCtrlID(horizontalResizeHeader)) : 0;
+        horizontalBegin.hdr.code = HDN_BEGINTRACKW;
+        horizontalBegin.iItem = 0;
+        SendMessageW(horizontalResizeTable, WM_NOTIFY, horizontalBegin.hdr.idFrom,
+            reinterpret_cast<LPARAM>(&horizontalBegin));
+        HDITEMW horizontalItem{};
+        horizontalItem.mask = HDI_WIDTH;
+        horizontalItem.cxy = 70;
+        NMHEADERW horizontalChanging = horizontalBegin;
+        horizontalChanging.hdr.code = HDN_ITEMCHANGINGW;
+        horizontalChanging.pitem = &horizontalItem;
+        SendMessageW(horizontalResizeTable, WM_NOTIFY, horizontalChanging.hdr.idFrom,
+            reinterpret_cast<LPARAM>(&horizontalChanging));
+        Check(horizontalItem.cxy == 70 &&
+                ListView_GetColumnWidth(horizontalResizeTable, 1) == horizontalRightWidth,
+            "Themed table with horizontal scrolling keeps independent column resize behavior");
         HWND lockedActionTable = controlUi.Table(
             7113,
             RECT{0, 460, 360, 520},

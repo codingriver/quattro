@@ -617,7 +617,9 @@
     </Component>
     <Component name="tableHeader">
         <Metric name="height" value="28"/>
+        <Metric name="resizeLimitedDividerWidth" value="3"/>
         <State name="normal" bg="@surfaceRaised" text="@text" border="@line"/>
+        <State name="resizeLimited" border="@focus"/>
     </Component>
     <Component name="groupBox">
         <Metric name="radius" value="7"/>

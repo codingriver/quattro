@@ -119,6 +119,15 @@ struct ControlState {
     std::vector<std::wstring> tableColumnKeys;
     std::vector<bool> tableColumnSortable;
     std::vector<bool> tableColumnResizable;
+    int tableColumnDragIndex = -1;
+    std::vector<int> tableColumnDragWidths;
+    int tableColumnDragDivider = 0;
+    int tableColumnDragDelta = 0;
+    int tableColumnDragPointerX = 0;
+    std::vector<int> tableColumnDragAppliedWidths;
+    int tableColumnDragLimitDirection = 0;
+    bool tableColumnDragOwned = false;
+    bool tableColumnNativeTrackBlocked = false;
     std::wstring tableSortColumnKey;
     int tableSortDirection = 0;
     std::vector<bool> tableRowEnabled;
@@ -1020,11 +1029,18 @@ void DrawSlider(HWND hwnd, HDC dc);
 
 constexpr int kRemainingTableColumnMode = 2;  // ThemedTableColumnWidth::Remaining
 thread_local int g_tableColumnRelayoutDepth = 0;
+thread_local int g_tableColumnPaintTransactionDepth = 0;
 
 class ScopedTableColumnRelayout final {
 public:
     ScopedTableColumnRelayout() { ++g_tableColumnRelayoutDepth; }
     ~ScopedTableColumnRelayout() { --g_tableColumnRelayoutDepth; }
+};
+
+class ScopedTableColumnPaintTransaction final {
+public:
+    ScopedTableColumnPaintTransaction() { ++g_tableColumnPaintTransactionDepth; }
+    ~ScopedTableColumnPaintTransaction() { --g_tableColumnPaintTransactionDepth; }
 };
 
 int TableColumnMinimumWidth(const ControlState& state, int column) {
@@ -1033,6 +1049,349 @@ int TableColumnMinimumWidth(const ControlState& state, int column) {
     }
     return std::max(1, MulDiv(24, state.tableDpi ? state.tableDpi : USER_DEFAULT_SCREEN_DPI,
         USER_DEFAULT_SCREEN_DPI));
+}
+
+bool IsTableColumnResizable(const ControlState& state, int column) {
+    if (column < 0) return false;
+    const std::size_t index = static_cast<std::size_t>(column);
+    return index >= state.tableColumnResizable.size() || state.tableColumnResizable[index];
+}
+
+void RedrawTableDragDivider(HWND table, int column) {
+    HWND header = table ? ListView_GetHeader(table) : nullptr;
+    if (!header || column < 0) return;
+    RECT dividerRect{};
+    if (!Header_GetItemRect(header, column, &dividerRect)) return;
+    const auto state = FindState(table);
+    const UINT dpi = state && state->tableDpi ? state->tableDpi : USER_DEFAULT_SCREEN_DPI;
+    const int lineWidth = std::max(1, MulDiv(3, dpi, USER_DEFAULT_SCREEN_DPI));
+    dividerRect.left = std::max(dividerRect.left, dividerRect.right - lineWidth);
+    RedrawWindow(header, &dividerRect, nullptr,
+        RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
+}
+
+void ResetTableColumnDrag(HWND table) {
+    if (!table) return;
+    auto& state = StateFor(table);
+    const int limitedDivider = state.tableColumnDragLimitDirection != 0
+        ? state.tableColumnDragIndex : -1;
+    const bool releaseHeaderCapture = state.tableColumnDragOwned &&
+        GetCapture() == ListView_GetHeader(table);
+    state.tableColumnDragIndex = -1;
+    state.tableColumnDragWidths.clear();
+    state.tableColumnDragDivider = 0;
+    state.tableColumnDragDelta = 0;
+    state.tableColumnDragPointerX = 0;
+    state.tableColumnDragAppliedWidths.clear();
+    state.tableColumnDragLimitDirection = 0;
+    state.tableColumnDragOwned = false;
+    state.tableColumnNativeTrackBlocked = false;
+    if (limitedDivider >= 0) RedrawTableDragDivider(table, limitedDivider);
+    if (releaseHeaderCapture) ReleaseCapture();
+}
+
+bool BeginTableColumnDrag(HWND table, int draggedIndex, int pointerX, bool owned) {
+    if (!table) return false;
+    auto& state = StateFor(table);
+    ResetTableColumnDrag(table);
+    if (state.kind != ControlKind::Table || !state.tableAllowColumnResize ||
+        state.tableAllowHorizontalScroll || !IsTableColumnResizable(state, draggedIndex)) {
+        return false;
+    }
+    const int columnCount = static_cast<int>(state.tableColumnWidthModes.size());
+    if (draggedIndex < 0 || draggedIndex >= columnCount - 1) return false;
+    state.tableColumnDragWidths.reserve(static_cast<std::size_t>(columnCount));
+    for (int column = 0; column < columnCount; ++column) {
+        const int width = ListView_GetColumnWidth(table, column);
+        state.tableColumnDragWidths.push_back(width);
+        if (column <= draggedIndex) state.tableColumnDragDivider += width;
+    }
+    state.tableColumnDragIndex = draggedIndex;
+    state.tableColumnDragPointerX = pointerX;
+    state.tableColumnDragAppliedWidths = state.tableColumnDragWidths;
+    state.tableColumnDragOwned = owned;
+    return true;
+}
+
+struct LinkedTableColumnWidths {
+    std::vector<int> widths;
+    int appliedDelta = 0;
+    int limitDirection = 0;
+};
+
+LinkedTableColumnWidths ResolveLinkedTableColumnWidths(
+    const ControlState& state,
+    int requestedDelta) {
+    LinkedTableColumnWidths result{state.tableColumnDragWidths, 0};
+    const int divider = state.tableColumnDragIndex;
+    const int columnCount = static_cast<int>(result.widths.size());
+    if (requestedDelta == 0 || divider < 0 || divider >= columnCount - 1) return result;
+
+    int growIndex = -1;
+    int remaining = requestedDelta < 0 ? -requestedDelta : requestedDelta;
+    if (requestedDelta < 0) {
+        for (int column = divider + 1; column < columnCount; ++column) {
+            if (IsTableColumnResizable(state, column)) {
+                growIndex = column;
+                break;
+            }
+        }
+        if (growIndex < 0) {
+            result.limitDirection = -1;
+            return result;
+        }
+        for (int column = divider; column >= 0 && remaining > 0; --column) {
+            if (!IsTableColumnResizable(state, column)) continue;
+            const int capacity = std::max(0, result.widths[static_cast<std::size_t>(column)] -
+                TableColumnMinimumWidth(state, column));
+            const int consumed = std::min(capacity, remaining);
+            result.widths[static_cast<std::size_t>(column)] -= consumed;
+            remaining -= consumed;
+        }
+        const int applied = -requestedDelta - remaining;
+        result.widths[static_cast<std::size_t>(growIndex)] += applied;
+        result.appliedDelta = -applied;
+        result.limitDirection = remaining > 0 ? -1 : 0;
+        return result;
+    }
+
+    for (int column = divider; column >= 0; --column) {
+        if (IsTableColumnResizable(state, column)) {
+            growIndex = column;
+            break;
+        }
+    }
+    if (growIndex < 0) {
+        result.limitDirection = 1;
+        return result;
+    }
+    for (int column = divider + 1; column < columnCount && remaining > 0; ++column) {
+        if (!IsTableColumnResizable(state, column)) continue;
+        const int capacity = std::max(0, result.widths[static_cast<std::size_t>(column)] -
+            TableColumnMinimumWidth(state, column));
+        const int consumed = std::min(capacity, remaining);
+        result.widths[static_cast<std::size_t>(column)] -= consumed;
+        remaining -= consumed;
+    }
+    const int applied = requestedDelta - remaining;
+    result.widths[static_cast<std::size_t>(growIndex)] += applied;
+    result.appliedDelta = applied;
+    result.limitDirection = remaining > 0 ? 1 : 0;
+    return result;
+}
+
+class SavedUpdateRegion final {
+public:
+    explicit SavedUpdateRegion(HWND hwnd) : hwnd_(hwnd), region_(CreateRectRgn(0, 0, 0, 0)) {
+        if (!hwnd_ || !region_) return;
+        const int type = GetUpdateRgn(hwnd_, region_, FALSE);
+        hasRegion_ = type != ERROR && type != NULLREGION;
+    }
+
+    ~SavedUpdateRegion() {
+        if (region_) DeleteObject(region_);
+    }
+
+    SavedUpdateRegion(const SavedUpdateRegion&) = delete;
+    SavedUpdateRegion& operator=(const SavedUpdateRegion&) = delete;
+
+    void Restore() const {
+        if (hwnd_ && hasRegion_) InvalidateRgn(hwnd_, region_, FALSE);
+    }
+
+    bool Bounds(RECT& bounds) const {
+        return hasRegion_ && GetRgnBox(region_, &bounds) != ERROR;
+    }
+
+private:
+    HWND hwnd_ = nullptr;
+    HRGN region_ = nullptr;
+    bool hasRegion_ = false;
+};
+
+bool UnionNonEmptyRect(RECT& destination, const RECT& source) {
+    if (IsRectEmpty(&source)) return false;
+    if (IsRectEmpty(&destination)) {
+        destination = source;
+        return true;
+    }
+    RECT combined{};
+    if (!UnionRect(&combined, &destination, &source)) return false;
+    destination = combined;
+    return true;
+}
+
+RECT MapClientRect(HWND from, HWND to, RECT rect) {
+    POINT points[2]{{rect.left, rect.top}, {rect.right, rect.bottom}};
+    MapWindowPoints(from, to, points, 2);
+    return RECT{points[0].x, points[0].y, points[1].x, points[1].y};
+}
+
+bool ApplyLinkedTableColumnWidths(HWND table, const std::vector<int>& widths) {
+    if (!table || widths.empty()) return false;
+    RECT client{};
+    if (!GetClientRect(table, &client)) return false;
+    int changedLeft = client.right;
+    int changedRight = client.left;
+    int oldLeft = client.left;
+    int newLeft = client.left;
+    std::vector<int> oldWidths;
+    oldWidths.reserve(widths.size());
+    for (int column = 0; column < static_cast<int>(widths.size()); ++column) {
+        const int oldWidth = ListView_GetColumnWidth(table, column);
+        oldWidths.push_back(oldWidth);
+        const int newWidth = widths[static_cast<std::size_t>(column)];
+        const int oldRight = oldLeft + oldWidth;
+        const int newRight = newLeft + newWidth;
+        if (oldLeft != newLeft || oldRight != newRight) {
+            changedLeft = std::min(changedLeft, std::min(oldLeft, newLeft));
+            changedRight = std::max(changedRight, std::max(oldRight, newRight));
+        }
+        oldLeft = oldRight;
+        newLeft = newRight;
+    }
+    if (changedLeft >= client.right) return false;
+
+    HWND header = ListView_GetHeader(table);
+    const SavedUpdateRegion tableUpdate(table);
+    const SavedUpdateRegion headerUpdate(header);
+    {
+        ScopedTableColumnRelayout relayoutGuard;
+        ScopedTableColumnPaintTransaction paintTransaction;
+        // Apply shrinking columns before growing columns. This keeps every
+        // intermediate native ListView layout at or below the final total
+        // width. ListView may synchronously send WM_PAINT after each width;
+        // the paint transaction validates those temporary regions, and the
+        // final state is custom-drawn once after this scope ends.
+        for (int direction : {-1, 1}) {
+            for (int column = 0; column < static_cast<int>(widths.size()); ++column) {
+                const int oldWidth = oldWidths[static_cast<std::size_t>(column)];
+                const int newWidth = widths[static_cast<std::size_t>(column)];
+                const int delta = newWidth - oldWidth;
+                if ((direction < 0 && delta < 0) || (direction > 0 && delta > 0)) {
+                    ListView_SetColumnWidth(table, column, newWidth);
+                }
+            }
+        }
+    }
+
+    RECT changedColumns = client;
+    changedColumns.left = std::max(static_cast<int>(client.left), changedLeft);
+    changedColumns.right = std::min(static_cast<int>(client.right),
+        std::max(static_cast<int>(changedColumns.left) + 1, changedRight));
+    RECT repaintBounds = changedColumns;
+    RECT previousBounds{};
+    if (tableUpdate.Bounds(previousBounds)) UnionNonEmptyRect(repaintBounds, previousBounds);
+
+    // LVM_SETCOLUMNWIDTH may invalidate a much wider region than the cells that
+    // actually moved. Replace that native update region with the pre-existing
+    // damage plus the precise old/new column bounds, and never request a
+    // background erase. The final RedrawWindow below drains the transaction
+    // synchronously before another mouse message can expose an intermediate
+    // header/body layout.
+    ValidateRect(table, nullptr);
+    tableUpdate.Restore();
+    InvalidateRect(table, &changedColumns, FALSE);
+    if (header) {
+        RECT headerClient{};
+        GetClientRect(header, &headerClient);
+        RECT changedHeader = MapClientRect(table, header, changedColumns);
+        IntersectRect(&changedHeader, &changedHeader, &headerClient);
+        if (changedHeader.right <= changedHeader.left) {
+            changedHeader.right = std::min(headerClient.right, changedHeader.left + 1);
+        }
+        ValidateRect(header, nullptr);
+        headerUpdate.Restore();
+        InvalidateRect(header, &changedHeader, FALSE);
+        RECT headerPrevious{};
+        if (headerUpdate.Bounds(headerPrevious)) {
+            const RECT mappedPrevious = MapClientRect(header, table, headerPrevious);
+            UnionNonEmptyRect(repaintBounds, mappedPrevious);
+        }
+        UnionNonEmptyRect(repaintBounds, MapClientRect(header, table, changedHeader));
+    }
+    IntersectRect(&repaintBounds, &repaintBounds, &client);
+    RedrawWindow(table, &repaintBounds, nullptr,
+        RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE | RDW_ALLCHILDREN);
+    return true;
+}
+
+int HeaderPointerXInTable(HWND header, HWND table, int headerX) {
+    POINT point{headerX, 0};
+    MapWindowPoints(header, table, &point, 1);
+    return point.x;
+}
+
+int ResizableTableHeaderDividerAt(HWND header, POINT headerPoint) {
+    if (!header) return -1;
+    HWND table = GetParent(header);
+    const auto state = FindState(table);
+    if (!state || state->kind != ControlKind::Table || !state->tableAllowColumnResize ||
+        state->tableAllowHorizontalScroll) {
+        return -1;
+    }
+    HDHITTESTINFO hit{};
+    hit.pt = headerPoint;
+    const int column = static_cast<int>(SendMessageW(
+        header, HDM_HITTEST, 0, reinterpret_cast<LPARAM>(&hit)));
+    const int columnCount = Header_GetItemCount(header);
+    return column >= 0 && column < columnCount - 1 &&
+            (hit.flags & (HHT_ONDIVIDER | HHT_ONDIVOPEN)) != 0 &&
+            IsTableColumnResizable(*state, column)
+        ? column
+        : -1;
+}
+
+bool MoveOwnedTableColumnDrag(HWND header, int headerX) {
+    HWND table = header ? GetParent(header) : nullptr;
+    const auto state = FindState(table);
+    if (!state || !state->tableColumnDragOwned || state->tableColumnDragWidths.empty()) {
+        return false;
+    }
+    const int pointerX = HeaderPointerXInTable(header, table, headerX);
+    if (pointerX == state->tableColumnDragPointerX) return true;
+    const int requestedDelta = state->tableColumnDragDelta +
+        (pointerX - state->tableColumnDragPointerX);
+    const LinkedTableColumnWidths resolved = ResolveLinkedTableColumnWidths(*state, requestedDelta);
+    const bool widthsChanged = resolved.widths != state->tableColumnDragAppliedWidths;
+    const bool limitChanged = resolved.limitDirection != state->tableColumnDragLimitDirection;
+    auto& mutableState = StateFor(table);
+    mutableState.tableColumnDragDelta = resolved.appliedDelta;
+    mutableState.tableColumnDragPointerX = pointerX;
+    mutableState.tableColumnDragAppliedWidths = resolved.widths;
+    mutableState.tableColumnDragLimitDirection = resolved.limitDirection;
+    if (widthsChanged) {
+        ApplyLinkedTableColumnWidths(table, resolved.widths);
+    } else if (limitChanged && header) {
+        RECT dividerRect{};
+        if (Header_GetItemRect(header, mutableState.tableColumnDragIndex, &dividerRect)) {
+            const int lineWidth = std::max(1, MulDiv(3,
+                mutableState.tableDpi ? mutableState.tableDpi : USER_DEFAULT_SCREEN_DPI,
+                USER_DEFAULT_SCREEN_DPI));
+            dividerRect.left = std::max(dividerRect.left, dividerRect.right - lineWidth);
+            RedrawWindow(header, &dividerRect, nullptr,
+                RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
+        }
+    }
+    return true;
+}
+
+void FinishOwnedTableColumnDrag(HWND header, bool commit) {
+    HWND table = header ? GetParent(header) : nullptr;
+    const auto state = FindState(table);
+    if (!state || !state->tableColumnDragOwned) return;
+    if (!commit) ApplyLinkedTableColumnWidths(table, state->tableColumnDragWidths);
+    ResetTableColumnDrag(table);
+    if (table) ShowScrollBar(table, SB_HORZ, FALSE);
+}
+
+void CancelTableColumnDrag(HWND table) {
+    const auto state = FindState(table);
+    if (state && state->tableColumnDragOwned) {
+        FinishOwnedTableColumnDrag(ListView_GetHeader(table), false);
+    } else {
+        ResetTableColumnDrag(table);
+    }
 }
 
 int TableAdjustmentColumn(const ControlState& state, int draggedIndex) {
@@ -1200,30 +1559,41 @@ LRESULT CALLBACK ThemedControlProc(HWND hwnd, UINT message, WPARAM wParam, LPARA
         if (nm && (nm->code == HDN_ITEMCHANGINGW || nm->code == HDN_ITEMCHANGINGA)) {
             auto* headerNotify = reinterpret_cast<NMHEADERW*>(lParam);
             const auto state = FindState(hwnd);
-            if (state && state->tableAllowColumnResize && headerNotify->pitem &&
-                (headerNotify->pitem->mask & HDI_WIDTH)) {
+            if (g_tableColumnRelayoutDepth == 0 && state && state->tableAllowColumnResize &&
+                headerNotify->pitem && (headerNotify->pitem->mask & HDI_WIDTH)) {
                 headerNotify->pitem->cxy = ClampInteractiveTableColumnWidth(
                     hwnd, headerNotify->iItem, headerNotify->pitem->cxy);
+                if (state->tableColumnNativeTrackBlocked) return TRUE;
             }
         }
         if (nm && (nm->code == HDN_ITEMCHANGEDW || nm->code == HDN_ITEMCHANGEDA)) {
             auto* headerNotify = reinterpret_cast<NMHEADERW*>(lParam);
+            const auto state = FindState(hwnd);
             const int draggedWidth = headerNotify->pitem && (headerNotify->pitem->mask & HDI_WIDTH)
                 ? headerNotify->pitem->cxy
                 : -1;
             const LRESULT changedResult = DefSubclassProc(hwnd, message, wParam, lParam);
-            RelayoutTableRemainingColumns(hwnd, headerNotify->iItem, draggedWidth);
+            if (g_tableColumnRelayoutDepth == 0 &&
+                (!state || !state->tableAllowHorizontalScroll)) {
+                RelayoutTableRemainingColumns(hwnd, headerNotify->iItem, draggedWidth);
+            }
             return changedResult;
         }
         if (nm && (nm->code == HDN_ENDTRACKW || nm->code == HDN_ENDTRACKA)) {
-            // The header applies the dragged width only after this notification
-            // returns, so pass the final width from the notification explicitly.
             auto* headerNotify = reinterpret_cast<NMHEADERW*>(lParam);
+            const auto state = FindState(hwnd);
+            if (state && state->tableColumnNativeTrackBlocked) {
+                StateFor(hwnd).tableColumnNativeTrackBlocked = false;
+                return TRUE;
+            }
             const int draggedWidth = headerNotify->pitem && (headerNotify->pitem->mask & HDI_WIDTH)
                 ? headerNotify->pitem->cxy
                 : -1;
             const LRESULT trackResult = DefSubclassProc(hwnd, message, wParam, lParam);
-            RelayoutTableRemainingColumns(hwnd, headerNotify->iItem, draggedWidth);
+            if (g_tableColumnRelayoutDepth == 0 &&
+                (!state || !state->tableAllowHorizontalScroll)) {
+                RelayoutTableRemainingColumns(hwnd, headerNotify->iItem, draggedWidth);
+            }
             return trackResult;
         }
         if (nm && (nm->code == HDN_DIVIDERDBLCLICKW || nm->code == HDN_DIVIDERDBLCLICKA)) {
@@ -1241,6 +1611,7 @@ LRESULT CALLBACK ThemedControlProc(HWND hwnd, UINT message, WPARAM wParam, LPARA
     switch (message) {
     case WM_SIZE:
         if (KindFor(hwnd) == ControlKind::Table) {
+            CancelTableColumnDrag(hwnd);
             if (auto state = FindState(hwnd); state && !state->tableAllowHorizontalScroll) {
                 RelayoutTableRemainingColumns(hwnd, -1, -1);
                 ShowScrollBar(hwnd, SB_HORZ, FALSE);
@@ -1437,6 +1808,7 @@ LRESULT CALLBACK ThemedControlProc(HWND hwnd, UINT message, WPARAM wParam, LPARA
         }
         break;
     case WM_ERASEBKGND:
+        if (KindFor(hwnd) == ControlKind::Table) return 1;
         if (KindFor(hwnd) == ControlKind::Edit &&
             PaintInheritedEditSurface(hwnd, reinterpret_cast<HDC>(wParam), false)) {
             return 1;
@@ -1448,6 +1820,10 @@ LRESULT CALLBACK ThemedControlProc(HWND hwnd, UINT message, WPARAM wParam, LPARA
         break;
     case WM_PAINT: {
         ControlKind kind = KindFor(hwnd);
+        if (kind == ControlKind::Table && g_tableColumnPaintTransactionDepth > 0) {
+            ValidateRect(hwnd, nullptr);
+            return 0;
+        }
         if (IsOwnerDrawButtonKind(kind)) {
             return DefSubclassProc(hwnd, message, wParam, lParam);
         }
@@ -1648,16 +2024,84 @@ LRESULT CALLBACK ThemedTableHeaderProc(
     LPARAM lParam,
     UINT_PTR subclassId,
     DWORD_PTR) {
-    if (message == WM_SETCURSOR) {
+    HWND table = GetParent(hwnd);
+    switch (message) {
+    case WM_LBUTTONDOWN: {
+        const POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+        const int column = ResizableTableHeaderDividerAt(hwnd, point);
+        if (column >= 0) {
+            const int pointerX = HeaderPointerXInTable(hwnd, table, point.x);
+            if (BeginTableColumnDrag(table, column, pointerX, true)) {
+                SetCapture(hwnd);
+                if (GetActiveWindow() == GetAncestor(table, GA_ROOT)) SetFocus(table);
+                return 0;
+            }
+        }
+        break;
+    }
+    case WM_ERASEBKGND:
+        return 1;
+    case WM_PAINT:
+        if (g_tableColumnPaintTransactionDepth > 0) {
+            ValidateRect(hwnd, nullptr);
+            return 0;
+        }
+        break;
+    case WM_MOUSEMOVE:
+        if (GetCapture() == hwnd && MoveOwnedTableColumnDrag(hwnd, GET_X_LPARAM(lParam))) {
+            SetCursor(LoadCursorW(nullptr, IDC_SIZEWE));
+            return 0;
+        }
+        break;
+    case WM_LBUTTONUP: {
+        const auto state = FindState(table);
+        if (GetCapture() == hwnd && state && state->tableColumnDragOwned) {
+            MoveOwnedTableColumnDrag(hwnd, GET_X_LPARAM(lParam));
+            FinishOwnedTableColumnDrag(hwnd, true);
+            return 0;
+        }
+        break;
+    }
+    case WM_KEYDOWN:
+        if (wParam == VK_ESCAPE) {
+            const auto state = FindState(table);
+            if (state && state->tableColumnDragOwned) {
+                FinishOwnedTableColumnDrag(hwnd, false);
+                return 0;
+            }
+        }
+        break;
+    case WM_CANCELMODE:
+        FinishOwnedTableColumnDrag(hwnd, false);
+        return 0;
+    case WM_CAPTURECHANGED: {
+        const auto state = FindState(table);
+        if (state && state->tableColumnDragOwned &&
+            reinterpret_cast<HWND>(lParam) != hwnd) {
+            FinishOwnedTableColumnDrag(hwnd, false);
+        }
+        break;
+    }
+    case WM_SETCURSOR: {
+        const auto state = FindState(table);
+        if (state && state->tableColumnDragOwned) {
+            SetCursor(LoadCursorW(nullptr, IDC_SIZEWE));
+            return TRUE;
+        }
         POINT cursor{};
         if (GetCursorPos(&cursor) &&
-            ThemedControls::IsLockedTableHeaderDivider(GetParent(hwnd), cursor)) {
+            ThemedControls::IsLockedTableHeaderDivider(table, cursor)) {
             SetCursor(LoadCursorW(nullptr, IDC_ARROW));
             return TRUE;
         }
+        break;
     }
-    if (message == WM_NCDESTROY) {
+    case WM_NCDESTROY:
+        FinishOwnedTableColumnDrag(hwnd, false);
         RemoveWindowSubclass(hwnd, ThemedTableHeaderProc, subclassId);
+        break;
+    default:
+        break;
     }
     return DefSubclassProc(hwnd, message, wParam, lParam);
 }
@@ -2495,7 +2939,21 @@ void DrawHeaderItem(const Theme& theme, HWND header, const NMCUSTOMDRAW* draw) {
         if ((!table || TableShowsDefaultHeaderGridLine(tableHwnd) || TableShowsColumnGridLines(tableHwnd)) &&
             index >= 0 &&
             index < itemCount - 1) {
-            DrawThemedLine(draw->hdc, rect.right - 1, rect.top, rect.right - 1, rect.bottom, line, 1);
+            const auto state = table ? FindState(tableHwnd) : std::optional<ControlState>{};
+            const bool resizeLimited = state &&
+                state->tableColumnDragLimitDirection != 0 &&
+                state->tableColumnDragIndex == index;
+            if (resizeLimited) {
+                const int width = std::max(1, TableScaledMetric(
+                    tableHwnd, theme, L"tableHeader", L"resizeLimitedDividerWidth", 3.0f));
+                const RECT divider{std::max(rect.left, rect.right - width), rect.top,
+                    rect.right, rect.bottom};
+                FillThemedRect(draw->hdc, divider,
+                    ToColorRef(theme.color(L"tableHeader", L"resizeLimited", L"border")));
+            } else {
+                DrawThemedLine(draw->hdc, rect.right - 1, rect.top,
+                    rect.right - 1, rect.bottom, line, 1);
+            }
         }
     }
 
@@ -4389,6 +4847,7 @@ void ConfigureTableColumns(
     const std::vector<int>& minimumWidths,
     const std::vector<bool>& resizable) {
     if (!table) return;
+    CancelTableColumnDrag(table);
     auto& state = StateFor(table);
     state.tableColumnWidthModes = widthModes;
     state.tableColumnMinimumWidths = minimumWidths;
@@ -4479,6 +4938,7 @@ void SetTableSortState(HWND table, const std::wstring& columnKey, int direction)
 
 void MoveTable(HWND table, int x, int y, int width, int height) {
     if (!table) return;
+    CancelTableColumnDrag(table);
     SetWindowPos(table, nullptr, x, y, std::max(1, width), std::max(1, height), SWP_NOACTIVATE | SWP_NOZORDER);
     RelayoutTableRemainingColumns(table, -1, -1);
 }
@@ -4496,6 +4956,7 @@ void ConfigureTableGridLines(HWND table, bool rowGridLines, bool columnGridLines
 
 void SetTableColumnResizeEnabled(HWND table, bool enabled) {
     if (!table) return;
+    CancelTableColumnDrag(table);
     StateFor(table).tableAllowColumnResize = enabled;
     AttachTableHeaderBehavior(table);
     HWND header = ListView_GetHeader(table);
@@ -4512,6 +4973,7 @@ void SetTableColumnResizeEnabled(HWND table, bool enabled) {
 
 void SetTableHorizontalScrollEnabled(HWND table, bool enabled) {
     if (!table) return;
+    CancelTableColumnDrag(table);
     StateFor(table).tableAllowHorizontalScroll = enabled;
     if (!enabled) {
         RelayoutTableRemainingColumns(table, -1, -1);
@@ -4721,6 +5183,7 @@ void RefreshTableDpiResources(HWND table, UINT dpi) {
     const UINT oldDpi = state.tableDpi ? state.tableDpi : USER_DEFAULT_SCREEN_DPI;
     const UINT newDpi = dpi ? dpi : oldDpi;
     if (newDpi != oldDpi) {
+        CancelTableColumnDrag(table);
         // Scaling each native column is a batch operation, not a user drag.
         // Suppress HDN_ITEMCHANGED reflow until every column has its new DPI
         // width, then perform one deterministic Remaining-column adjustment.
@@ -4866,7 +5329,12 @@ bool HandleListViewCustomDraw(const Theme& theme, LPARAM lParam, LRESULT& result
         (header->code == HDN_BEGINTRACKW || header->code == HDN_BEGINTRACKA)) {
         HWND table = GetParent(header->hwndFrom);
         const auto* headerNotify = reinterpret_cast<NMHEADERW*>(lParam);
-        if (!ThemedControls::IsTableColumnResizable(table, headerNotify->iItem)) {
+        const auto state = FindState(table);
+        if (!ThemedControls::IsTableColumnResizable(table, headerNotify->iItem) ||
+            (state && state->tableAllowColumnResize && !state->tableAllowHorizontalScroll)) {
+            if (state && state->tableAllowColumnResize && !state->tableAllowHorizontalScroll) {
+                StateFor(table).tableColumnNativeTrackBlocked = true;
+            }
             result = TRUE;
             return true;
         }
@@ -4917,9 +5385,15 @@ bool HandleListViewCustomDraw(const Theme& theme, LPARAM lParam, LRESULT& result
     auto* draw = reinterpret_cast<NMLVCUSTOMDRAW*>(lParam);
 
     switch (draw->nmcd.dwDrawStage) {
-    case CDDS_PREPAINT:
+    case CDDS_PREPAINT: {
+        RECT client{};
+        if (GetClientRect(header->hwndFrom, &client)) {
+            FillThemedRect(draw->nmcd.hdc, client,
+                ToColorRef(theme.color(L"table", L"normal", L"bg")));
+        }
         result = CDRF_NOTIFYITEMDRAW;
         return true;
+    }
     case CDDS_ITEMPREPAINT: {
         const int row = static_cast<int>(draw->nmcd.dwItemSpec);
         if (!IsTableDetailsView(header->hwndFrom)) {

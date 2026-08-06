@@ -100,6 +100,60 @@ struct TableMutationProbe {
     int redrawSuspendCount = 0;
 };
 
+struct TableResizePaintProbe {
+    int columnWidthSetCount = 0;
+    int redrawSuspendCount = 0;
+    int eraseCount = 0;
+    int paintCount = 0;
+    int prepaintCount = 0;
+    RECT paintBounds{};
+
+    void Reset() {
+        columnWidthSetCount = 0;
+        redrawSuspendCount = 0;
+        eraseCount = 0;
+        paintCount = 0;
+        prepaintCount = 0;
+        SetRectEmpty(&paintBounds);
+    }
+};
+
+LRESULT CALLBACK TableResizePaintProbeProc(
+    HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR id, DWORD_PTR refData) {
+    auto* probe = reinterpret_cast<TableResizePaintProbe*>(refData);
+    if (message == WM_ERASEBKGND) {
+        const LRESULT result = DefSubclassProc(hwnd, message, wParam, lParam);
+        if (probe && result == 0) ++probe->eraseCount;
+        return result;
+    }
+    if (probe) {
+        if (message == LVM_SETCOLUMNWIDTH) ++probe->columnWidthSetCount;
+        if (message == WM_SETREDRAW && !wParam) ++probe->redrawSuspendCount;
+        if (message == WM_PAINT) {
+            RECT update{};
+            if (GetUpdateRect(hwnd, &update, FALSE)) {
+                ++probe->paintCount;
+                if (IsRectEmpty(&probe->paintBounds)) {
+                    probe->paintBounds = update;
+                } else {
+                    RECT combined{};
+                    UnionRect(&combined, &probe->paintBounds, &update);
+                    probe->paintBounds = combined;
+                }
+            }
+        }
+        if (message == WM_NOTIFY) {
+            const auto* notify = reinterpret_cast<const NMHDR*>(lParam);
+            if (notify && notify->code == NM_CUSTOMDRAW) {
+                const auto* draw = reinterpret_cast<const NMCUSTOMDRAW*>(lParam);
+                if (draw->dwDrawStage == CDDS_PREPAINT) ++probe->prepaintCount;
+            }
+        }
+    }
+    if (message == WM_NCDESTROY) RemoveWindowSubclass(hwnd, TableResizePaintProbeProc, id);
+    return DefSubclassProc(hwnd, message, wParam, lParam);
+}
+
 LRESULT CALLBACK TableMutationProbeProc(
     HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR id, DWORD_PTR refData) {
     auto* probe = reinterpret_cast<TableMutationProbe*>(refData);
@@ -394,7 +448,7 @@ struct BitmapCapture {
     int height = 0;
 };
 
-BitmapCapture CaptureWindowBitmap(HWND hwnd) {
+BitmapCapture CaptureWindowBitmap(HWND hwnd, bool refresh = true) {
     RECT rect{};
     GetWindowRect(hwnd, &rect);
     const int width = std::max(1, static_cast<int>(rect.right - rect.left));
@@ -419,8 +473,10 @@ BitmapCapture CaptureWindowBitmap(HWND hwnd) {
         0,
         0,
         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
-    RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
-    Sleep(120);
+    if (refresh) {
+        RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
+        Sleep(120);
+    }
     const std::wstring className = ClassName(hwnd);
     BOOL printed = FALSE;
     if (className == L"QuattroThemedEditFrame") {
@@ -736,6 +792,61 @@ COLORREF BitmapPixel(HBITMAP bitmap, int x, int y) {
     return color;
 }
 
+int VisibleTableRowCount(HWND table) {
+    if (!table) return 0;
+    RECT client{};
+    GetClientRect(table, &client);
+    const int itemCount = ListView_GetItemCount(table);
+    int visible = 0;
+    for (int row = 0; row < itemCount; ++row) {
+        RECT rowRect{};
+        if (!ListView_GetItemRect(table, row, &rowRect, LVIR_BOUNDS)) continue;
+        if (rowRect.top < client.top || rowRect.bottom > client.bottom) continue;
+        ++visible;
+    }
+    return visible;
+}
+
+int DetailedTableRowCount(const BitmapCapture& capture, HWND host, HWND table) {
+    if (!capture.bitmap || !host || !table) return 0;
+    RECT hostRect{};
+    RECT tableRect{};
+    RECT tableClient{};
+    GetWindowRect(host, &hostRect);
+    GetWindowRect(table, &tableRect);
+    GetClientRect(table, &tableClient);
+    const int offsetX = tableRect.left - hostRect.left;
+    const int offsetY = tableRect.top - hostRect.top;
+    const int itemCount = ListView_GetItemCount(table);
+    int detailed = 0;
+    HDC dc = CreateCompatibleDC(nullptr);
+    HGDIOBJ old = SelectObject(dc, capture.bitmap);
+    for (int row = 0; row < itemCount; ++row) {
+        RECT rowRect{};
+        if (!ListView_GetItemRect(table, row, &rowRect, LVIR_BOUNDS) ||
+            rowRect.top < tableClient.top || rowRect.bottom > tableClient.bottom) {
+            continue;
+        }
+        const int left = std::clamp(offsetX + static_cast<int>(rowRect.left) + 2, 0, capture.width);
+        const int right = std::clamp(offsetX + static_cast<int>(
+                std::min(rowRect.right, tableClient.right)) - 2,
+            0, capture.width);
+        const int top = std::clamp(offsetY + static_cast<int>(rowRect.top) + 2, 0, capture.height);
+        const int bottom = std::clamp(offsetY + static_cast<int>(rowRect.bottom) - 2, 0, capture.height);
+        std::set<COLORREF> colors;
+        for (int y = top; y < bottom && colors.size() < 6; y += 2) {
+            for (int x = left; x < right && colors.size() < 6; x += 2) {
+                const COLORREF color = GetPixel(dc, x, y);
+                if (color != CLR_INVALID) colors.insert(color);
+            }
+        }
+        if (colors.size() >= 4) ++detailed;
+    }
+    SelectObject(dc, old);
+    DeleteDC(dc);
+    return detailed;
+}
+
 COLORREF AverageBitmapAreaColor(HBITMAP bitmap, int width, int height, RECT area, int sampleStep = 2) {
     if (!bitmap || width <= 0 || height <= 0) {
         return CLR_INVALID;
@@ -831,6 +942,42 @@ std::size_t CountChangedPixelSamples(
     for (int y = 0; y < first.height; y += std::max(1, sampleStep)) {
         for (int x = 0; x < first.width; x += std::max(1, sampleStep)) {
             if (ColorDistance(GetPixel(firstDc, x, y), GetPixel(secondDc, x, y)) >= minimumColorDistance) {
+                ++changed;
+            }
+        }
+    }
+    SelectObject(firstDc, oldFirst);
+    SelectObject(secondDc, oldSecond);
+    DeleteDC(firstDc);
+    DeleteDC(secondDc);
+    return changed;
+}
+
+std::size_t CountChangedPixelSamplesOutsideRects(
+    const BitmapCapture& first,
+    const BitmapCapture& second,
+    const std::vector<RECT>& allowed,
+    int minimumColorDistance = 24) {
+    if (!first.bitmap || !second.bitmap || first.width != second.width || first.height != second.height) {
+        return 0;
+    }
+    HDC firstDc = CreateCompatibleDC(nullptr);
+    HDC secondDc = CreateCompatibleDC(nullptr);
+    HGDIOBJ oldFirst = SelectObject(firstDc, first.bitmap);
+    HGDIOBJ oldSecond = SelectObject(secondDc, second.bitmap);
+    std::size_t changed = 0;
+    for (int y = 0; y < first.height; ++y) {
+        for (int x = 0; x < first.width; ++x) {
+            bool ignored = false;
+            const POINT point{x, y};
+            for (const RECT& rect : allowed) {
+                if (PtInRect(&rect, point)) {
+                    ignored = true;
+                    break;
+                }
+            }
+            if (!ignored && ColorDistance(GetPixel(firstDc, x, y), GetPixel(secondDc, x, y)) >=
+                    minimumColorDistance) {
                 ++changed;
             }
         }
@@ -3841,7 +3988,12 @@ int CountHeaderDividers(HBITMAP bitmap, int captureWidth, HWND host, HWND table)
     // whole width.
     const int yBottom = bottom - 4;
     const int left = headerRect.left - hostRect.left;
-    const int right = std::min(static_cast<int>(headerRect.right - hostRect.left), captureWidth);
+    int right = std::min(static_cast<int>(headerRect.right - hostRect.left), captureWidth);
+    RECT lastColumn{};
+    const int itemCount = Header_GetItemCount(header);
+    if (itemCount > 0 && Header_GetItemRect(header, itemCount - 1, &lastColumn)) {
+        right = std::min(right, left + static_cast<int>(lastColumn.right) - 1);
+    }
     const COLORREF bg = BitmapPixel(bitmap, left + 2, yMiddle);
     int dividers = 0;
     bool inRun = false;
@@ -3857,8 +4009,9 @@ int CountHeaderDividers(HBITMAP bitmap, int captureWidth, HWND host, HWND table)
     return dividers;
 }
 
-void RunTableColumnResizeScenario(const std::filesystem::path& outputDir, TestState& state) {
-    AcceptanceLog(L"begin table-column-resize");
+void RunTableColumnResizeScenario(
+    const std::filesystem::path& outputDir, TestState& state, UINT dpi) {
+    AcceptanceLog(L"begin table-column-resize dpi=" + std::to_wstring(dpi));
     HINSTANCE instance = GetModuleHandleW(nullptr);
 
     // Default options: dragging must be disabled via HDS_NOSIZING.
@@ -3891,6 +4044,9 @@ void RunTableColumnResizeScenario(const std::filesystem::path& outputDir, TestSt
     host.instance_ = instance;
     host.allowColumnResize_ = true;
     host.webDavColumns_ = true;
+    host.webDavRowCount_ = 28;
+    host.visibleRows_ = 18;
+    host.forcedDpi_ = dpi;
     host.theme_ = Theme::Load(std::filesystem::current_path() / L"theme", L"default");
 
     WNDCLASSEXW wc{};
@@ -3902,7 +4058,8 @@ void RunTableColumnResizeScenario(const std::filesystem::path& outputDir, TestSt
     RegisterClassExW(&wc);
 
     HWND hwnd = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, wc.lpszClassName, L"table column resize", WS_OVERLAPPEDWINDOW,
-        140, 140, 760, 320, nullptr, nullptr, instance, &host);
+        140, 140, MulDiv(760, static_cast<int>(dpi), 96),
+        MulDiv(620, static_cast<int>(dpi), 96), nullptr, nullptr, instance, &host);
     if (!hwnd || !host.table_) {
         state.Check(false, L"table-column-resize: host window/table creation failed");
         return;
@@ -3925,6 +4082,199 @@ void RunTableColumnResizeScenario(const std::filesystem::path& outputDir, TestSt
     const int columnCount = header ? Header_GetItemCount(header) : 0;
     RECT tableClient{};
     GetClientRect(host.table_, &tableClient);
+
+    if (header && columnCount >= 5) {
+        constexpr int linkedDivider = 2;
+        TableResizePaintProbe tablePaintProbe;
+        TableResizePaintProbe headerPaintProbe;
+        SetWindowSubclass(host.table_, TableResizePaintProbeProc, 81,
+            reinterpret_cast<DWORD_PTR>(&tablePaintProbe));
+        SetWindowSubclass(header, TableResizePaintProbeProc, 82,
+            reinterpret_cast<DWORD_PTR>(&headerPaintProbe));
+        SetWindowSubclass(hwnd, TableResizePaintProbeProc, 83,
+            reinterpret_cast<DWORD_PTR>(&headerPaintProbe));
+        std::vector<int> initialWidths;
+        int initialTotal = 0;
+        for (int column = 0; column < columnCount; ++column) {
+            const int width = ListView_GetColumnWidth(host.table_, column);
+            initialWidths.push_back(width);
+            initialTotal += width;
+        }
+        RECT dividerRect{};
+        Header_GetItemRect(header, linkedDivider, &dividerRect);
+        const int dividerX = dividerRect.right - 1;
+        const int dividerY = (dividerRect.top + dividerRect.bottom) / 2;
+        ValidateRect(host.table_, nullptr);
+        ValidateRect(header, nullptr);
+        SendMessageW(header, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(dividerX, dividerY));
+        state.Check(GetCapture() == header,
+            L"table-column-resize: real divider drag does not capture the header");
+        tablePaintProbe.Reset();
+        headerPaintProbe.Reset();
+        SendMessageW(header, WM_MOUSEMOVE, MK_LBUTTON,
+            MAKELPARAM(dividerX - 10000, dividerY));
+        int mouseLinkedTotal = 0;
+        for (int column = 0; column < columnCount; ++column) {
+            mouseLinkedTotal += ListView_GetColumnWidth(host.table_, column);
+        }
+        state.Check(ListView_GetColumnWidth(host.table_, linkedDivider) <= initialWidths[linkedDivider] &&
+                ListView_GetColumnWidth(host.table_, linkedDivider - 1) <= initialWidths[linkedDivider - 1],
+            L"table-column-resize: real left mouse drag does not propagate through minimum-width columns");
+        state.Check(ListView_GetColumnWidth(host.table_, 4) == initialWidths[4],
+            L"table-column-resize: real linked drag changes the locked action column width");
+        state.Check(mouseLinkedTotal == initialTotal,
+            L"table-column-resize: real linked drag does not preserve total column width");
+        state.Check(tablePaintProbe.columnWidthSetCount > 0 &&
+                tablePaintProbe.redrawSuspendCount == 0 &&
+                headerPaintProbe.redrawSuspendCount == 0,
+            L"table-column-resize: linked drag suspends redraw or skips the atomic width transaction");
+        state.Check(tablePaintProbe.eraseCount == 0 && headerPaintProbe.eraseCount == 0,
+            L"table-column-resize: linked drag requests a background erase table=" +
+                std::to_wstring(tablePaintProbe.eraseCount) + L" header=" +
+                std::to_wstring(headerPaintProbe.eraseCount));
+        state.Check(tablePaintProbe.prepaintCount <= 1 && headerPaintProbe.prepaintCount <= 1,
+            L"table-column-resize: one mouse move produces multiple real paints body=" +
+                std::to_wstring(headerPaintProbe.prepaintCount) + L" header=" +
+                std::to_wstring(tablePaintProbe.prepaintCount));
+        RECT pendingUpdate{};
+        state.Check(!GetUpdateRect(host.table_, &pendingUpdate, FALSE) &&
+                !GetUpdateRect(header, &pendingUpdate, FALSE),
+            L"table-column-resize: atomic drag leaves queued table/header update regions");
+        BitmapCapture saturatedFrame = CaptureWindowBitmap(hwnd, false);
+        const int visibleRows = VisibleTableRowCount(host.table_);
+        state.Check(saturatedFrame.bitmap && visibleRows >= 12 &&
+                DetailedTableRowCount(saturatedFrame, hwnd, host.table_) == visibleRows,
+            L"table-column-resize: saturated drag frame loses visible row content detailed=" +
+                std::to_wstring(DetailedTableRowCount(saturatedFrame, hwnd, host.table_)) +
+                L" visible=" + std::to_wstring(visibleRows));
+        int saturatedDivider = 0;
+        for (int column = 0; column <= linkedDivider; ++column) {
+            saturatedDivider += ListView_GetColumnWidth(host.table_, column);
+        }
+        tablePaintProbe.Reset();
+        headerPaintProbe.Reset();
+        SendMessageW(header, WM_MOUSEMOVE, MK_LBUTTON,
+            MAKELPARAM(dividerX - 10001, dividerY));
+        state.Check(tablePaintProbe.columnWidthSetCount == 0 &&
+                tablePaintProbe.prepaintCount == 0 && headerPaintProbe.prepaintCount == 0,
+            L"table-column-resize: continued movement beyond the limit repaints unchanged content");
+        SendMessageW(header, WM_MOUSEMOVE, MK_LBUTTON,
+            MAKELPARAM(dividerX - 10000, dividerY));
+        int reversedDivider = 0;
+        for (int column = 0; column <= linkedDivider; ++column) {
+            reversedDivider += ListView_GetColumnWidth(host.table_, column);
+        }
+        state.Check(reversedDivider > saturatedDivider,
+            L"table-column-resize: saturated real drag does not reverse immediately");
+        SendMessageW(header, WM_CANCELMODE, 0, 0);
+        bool mouseRestored = GetCapture() != header;
+        for (int column = 0; column < columnCount; ++column) {
+            mouseRestored = mouseRestored &&
+                ListView_GetColumnWidth(host.table_, column) == initialWidths[column];
+        }
+        state.Check(mouseRestored,
+            L"table-column-resize: cancelling a real drag does not restore its snapshot");
+
+        NMHEADERW beginTrack{};
+        beginTrack.hdr.hwndFrom = header;
+        beginTrack.hdr.idFrom = static_cast<UINT_PTR>(GetDlgCtrlID(header));
+        beginTrack.hdr.code = HDN_BEGINTRACKW;
+        beginTrack.iItem = linkedDivider;
+        state.Check(SendMessageW(host.table_, WM_NOTIFY, beginTrack.hdr.idFrom,
+                reinterpret_cast<LPARAM>(&beginTrack)) == TRUE,
+            L"table-column-resize: native tracking is not blocked for linked tables");
+        HDITEMW linkedItem{};
+        linkedItem.mask = HDI_WIDTH;
+        linkedItem.cxy = 1;
+        NMHEADERW linkedChanging = beginTrack;
+        linkedChanging.hdr.code = HDN_ITEMCHANGINGW;
+        linkedChanging.pitem = &linkedItem;
+        SendMessageW(host.table_, WM_NOTIFY, linkedChanging.hdr.idFrom,
+            reinterpret_cast<LPARAM>(&linkedChanging));
+        bool nativeTrackUnchanged = true;
+        for (int column = 0; column < columnCount; ++column) {
+            nativeTrackUnchanged = nativeTrackUnchanged &&
+                ListView_GetColumnWidth(host.table_, column) == initialWidths[column];
+        }
+        state.Check(nativeTrackUnchanged,
+            L"table-column-resize: native tracking performs a second linked width commit");
+        NMHEADERW linkedEnd = linkedChanging;
+        linkedEnd.hdr.code = HDN_ENDTRACKW;
+        SendMessageW(host.table_, WM_NOTIFY, linkedEnd.hdr.idFrom,
+            reinterpret_cast<LPARAM>(&linkedEnd));
+
+        Header_GetItemRect(header, linkedDivider, &dividerRect);
+        const int commitX = dividerRect.right - 1;
+        SendMessageW(header, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(commitX, dividerY));
+        SendMessageW(header, WM_MOUSEMOVE, MK_LBUTTON,
+            MAKELPARAM(commitX + MulDiv(30, static_cast<int>(dpi), 96), dividerY));
+        std::vector<int> releaseWidths;
+        for (int column = 0; column < columnCount; ++column) {
+            releaseWidths.push_back(ListView_GetColumnWidth(host.table_, column));
+        }
+        BitmapCapture beforeRelease = CaptureWindowBitmap(hwnd, false);
+        SendMessageW(header, WM_LBUTTONUP, 0,
+            MAKELPARAM(commitX + MulDiv(30, static_cast<int>(dpi), 96), dividerY));
+        BitmapCapture afterRelease = CaptureWindowBitmap(hwnd, false);
+        PumpMessagesFor(80);
+        BitmapCapture stableRelease = CaptureWindowBitmap(hwnd, false);
+        if (beforeRelease.bitmap) SavePng(beforeRelease.bitmap, outputDir /
+            (L"table-column-resize-before-release-" + std::to_wstring(dpi * 100 / 96) + L".png"));
+        if (afterRelease.bitmap) SavePng(afterRelease.bitmap, outputDir /
+            (L"table-column-resize-after-release-" + std::to_wstring(dpi * 100 / 96) + L".png"));
+        if (stableRelease.bitmap) SavePng(stableRelease.bitmap, outputDir /
+            (L"table-column-resize-stable-release-" + std::to_wstring(dpi * 100 / 96) + L".png"));
+        bool releaseWidthsStable = true;
+        for (int column = 0; column < columnCount; ++column) {
+            releaseWidthsStable = releaseWidthsStable &&
+                ListView_GetColumnWidth(host.table_, column) == releaseWidths[column];
+        }
+        RECT hostWindow{};
+        RECT tableWindow{};
+        GetWindowRect(hwnd, &hostWindow);
+        GetWindowRect(host.table_, &tableWindow);
+        const RECT tableInHost{
+            tableWindow.left - hostWindow.left,
+            tableWindow.top - hostWindow.top,
+            tableWindow.right - hostWindow.left,
+            tableWindow.bottom - hostWindow.top};
+        const int frameAllowance = std::max(2, MulDiv(6, static_cast<int>(dpi), 96));
+        std::vector<RECT> stableAllowed{
+            {tableInHost.left, tableInHost.top, tableInHost.right,
+                tableInHost.top + frameAllowance},
+            {tableInHost.left, tableInHost.bottom - frameAllowance,
+                tableInHost.right, tableInHost.bottom},
+            {tableInHost.left, tableInHost.top, tableInHost.left + frameAllowance,
+                tableInHost.bottom},
+            {tableInHost.right - frameAllowance, tableInHost.top,
+                tableInHost.right, tableInHost.bottom},
+        };
+        RECT releaseDivider{};
+        Header_GetItemRect(header, linkedDivider, &releaseDivider);
+        POINT releaseDividerPoints[2]{{releaseDivider.right -
+                std::max(2, MulDiv(4, static_cast<int>(dpi), 96)), releaseDivider.top},
+            {releaseDivider.right + 1, releaseDivider.bottom}};
+        MapWindowPoints(header, hwnd, releaseDividerPoints, 2);
+        std::vector<RECT> releaseAllowed = stableAllowed;
+        releaseAllowed.push_back(RECT{releaseDividerPoints[0].x, releaseDividerPoints[0].y,
+            releaseDividerPoints[1].x, releaseDividerPoints[1].y});
+        const std::size_t releaseChanged = CountChangedPixelSamplesOutsideRects(
+            beforeRelease, afterRelease, releaseAllowed);
+        const std::size_t stableChanged = CountChangedPixelSamplesOutsideRects(
+            afterRelease, stableRelease, stableAllowed);
+        state.Check(GetCapture() != header && releaseWidthsStable &&
+                releaseChanged == 0 && stableChanged == 0,
+            L"table-column-resize: release changes the final frame capture=" +
+                std::to_wstring(GetCapture() == header) + L" release=" +
+                std::to_wstring(releaseChanged) + L" stable=" + std::to_wstring(stableChanged));
+        if (saturatedFrame.bitmap) DeleteObject(saturatedFrame.bitmap);
+        if (beforeRelease.bitmap) DeleteObject(beforeRelease.bitmap);
+        if (afterRelease.bitmap) DeleteObject(afterRelease.bitmap);
+        if (stableRelease.bitmap) DeleteObject(stableRelease.bitmap);
+        RemoveWindowSubclass(host.table_, TableResizePaintProbeProc, 81);
+        RemoveWindowSubclass(header, TableResizePaintProbeProc, 82);
+        RemoveWindowSubclass(hwnd, TableResizePaintProbeProc, 83);
+    }
 
     // Simulate narrowing the fixed upload-time column. During a real drag every
     // later column, including the owner-drawn action cell, is temporarily
@@ -3984,7 +4334,8 @@ void RunTableColumnResizeScenario(const std::filesystem::path& outputDir, TestSt
         // change: one divider between each pair of adjacent columns and none at
         // the last column's right edge.
         state.Check(dividers == columnCount - 1,
-            L"table-column-resize: header divider count is not column count - 1 after column width change");
+            L"table-column-resize: header divider count=" + std::to_wstring(dividers) +
+                L" expected=" + std::to_wstring(columnCount - 1));
 
         // The trailing area right of the last column must show no divider: the
         // relayout should have refilled the full client width, so the last
@@ -3998,13 +4349,14 @@ void RunTableColumnResizeScenario(const std::filesystem::path& outputDir, TestSt
         state.Check(columnsWidth >= tableClient.right - 1 && columnsWidth <= tableClient.right + 1,
             L"table-column-resize: columns do not refill the table width after resize");
 
-        const std::filesystem::path screenshot = outputDir / L"table-column-resize.png";
+        const std::filesystem::path screenshot = outputDir /
+            (L"table-column-resize-" + std::to_wstring(dpi * 100 / 96) + L".png");
         SavePng(capture.bitmap, screenshot);
         DeleteObject(capture.bitmap);
     }
 
     DestroyWindow(hwnd);
-    AcceptanceLog(L"end table-column-resize");
+    AcceptanceLog(L"end table-column-resize dpi=" + std::to_wstring(dpi));
 }
 
 // The cursor entering or leaving the table used to invalidate the whole
@@ -6857,7 +7209,9 @@ int wmain() {
         RunWebDavFileColumnsScenario(outputDir, state, 96);
         RunWebDavFileColumnsScenario(outputDir, state, 120);
         RunWebDavFileColumnsScenario(outputDir, state, 144);
-        RunTableColumnResizeScenario(outputDir, state);
+        for (const UINT dpi : {96u, 120u, 144u}) {
+            RunTableColumnResizeScenario(outputDir, state, dpi);
+        }
         RunTableSortArrowScenario(outputDir, state);
         RunTableHoverRepaintScenario(state);
         DestroyWindow(owner);
@@ -7022,7 +7376,9 @@ int wmain() {
     RunCheckableTableScenario(outputDir, state, 96);
     RunCheckableTableScenario(outputDir, state, 120);
     RunCheckableTableScenario(outputDir, state, 144);
-    RunTableColumnResizeScenario(outputDir, state);
+    for (const UINT dpi : {96u, 120u, 144u}) {
+        RunTableColumnResizeScenario(outputDir, state, dpi);
+    }
     RunTableSortArrowScenario(outputDir, state);
     RunTableHoverRepaintScenario(state);
     RunTableGridLinesScenario(outputDir, state, false, L"table-grid-lines-default", L"table-grid-lines-default.png");
