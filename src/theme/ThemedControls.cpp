@@ -124,6 +124,8 @@ struct ControlState {
     int tableColumnDragDivider = 0;
     int tableColumnDragDelta = 0;
     int tableColumnDragPointerX = 0;
+    int tableColumnDragPreviewX = 0;
+    bool tableColumnDragPreviewDrawn = false;
     std::vector<int> tableColumnDragAppliedWidths;
     int tableColumnDragLimitDirection = 0;
     bool tableColumnDragOwned = false;
@@ -1029,7 +1031,6 @@ void DrawSlider(HWND hwnd, HDC dc);
 
 constexpr int kRemainingTableColumnMode = 2;  // ThemedTableColumnWidth::Remaining
 thread_local int g_tableColumnRelayoutDepth = 0;
-thread_local int g_tableColumnPaintTransactionDepth = 0;
 
 class ScopedTableColumnRelayout final {
 public:

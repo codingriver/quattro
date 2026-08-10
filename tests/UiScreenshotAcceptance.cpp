@@ -4239,22 +4239,31 @@ void RunTableColumnResizeScenario(
             tableWindow.right - hostWindow.left,
             tableWindow.bottom - hostWindow.top};
         const int frameAllowance = std::max(2, MulDiv(6, static_cast<int>(dpi), 96));
+        const RECT tableFrameArea{
+            tableInHost.left - frameAllowance,
+            tableInHost.top - frameAllowance,
+            tableInHost.right + frameAllowance,
+            tableInHost.bottom + frameAllowance};
         std::vector<RECT> stableAllowed{
-            {tableInHost.left, tableInHost.top, tableInHost.right,
+            {tableFrameArea.left, tableFrameArea.top, tableFrameArea.right,
                 tableInHost.top + frameAllowance},
-            {tableInHost.left, tableInHost.bottom - frameAllowance,
-                tableInHost.right, tableInHost.bottom},
-            {tableInHost.left, tableInHost.top, tableInHost.left + frameAllowance,
-                tableInHost.bottom},
-            {tableInHost.right - frameAllowance, tableInHost.top,
-                tableInHost.right, tableInHost.bottom},
+            {tableFrameArea.left, tableInHost.bottom - frameAllowance,
+                tableFrameArea.right, tableFrameArea.bottom},
+            {tableFrameArea.left, tableFrameArea.top, tableInHost.left + frameAllowance,
+                tableFrameArea.bottom},
+            {tableInHost.right - frameAllowance, tableFrameArea.top,
+                tableFrameArea.right, tableFrameArea.bottom},
         };
         RECT releaseDivider{};
         Header_GetItemRect(header, linkedDivider, &releaseDivider);
         POINT releaseDividerPoints[2]{{releaseDivider.right -
                 std::max(2, MulDiv(4, static_cast<int>(dpi), 96)), releaseDivider.top},
             {releaseDivider.right + 1, releaseDivider.bottom}};
-        MapWindowPoints(header, hwnd, releaseDividerPoints, 2);
+        MapWindowPoints(header, nullptr, releaseDividerPoints, 2);
+        for (POINT& point : releaseDividerPoints) {
+            point.x -= hostWindow.left;
+            point.y -= hostWindow.top;
+        }
         std::vector<RECT> releaseAllowed = stableAllowed;
         releaseAllowed.push_back(RECT{releaseDividerPoints[0].x, releaseDividerPoints[0].y,
             releaseDividerPoints[1].x, releaseDividerPoints[1].y});
