@@ -1031,6 +1031,7 @@ void DrawSlider(HWND hwnd, HDC dc);
 
 constexpr int kRemainingTableColumnMode = 2;  // ThemedTableColumnWidth::Remaining
 thread_local int g_tableColumnRelayoutDepth = 0;
+thread_local int g_tableColumnPaintTransactionDepth = 0;
 
 class ScopedTableColumnRelayout final {
 public:

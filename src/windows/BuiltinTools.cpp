@@ -86,6 +86,9 @@ constexpr int ID_LOCATOR_KILL = 7503;
 constexpr int ID_LOCATOR_OPEN = 7504;
 constexpr int ID_LOCATOR_PID_VALUE = 7506;
 constexpr int ID_LOCATOR_PATH_VALUE = 7507;
+constexpr int ID_LOCATOR_PATH_DROP = 7511;
+// History popup menu item ids; keep clear of other id ranges.
+constexpr int ID_LOCATOR_PATH_HISTORY_FIRST = 7530;
 constexpr int ID_FILE_LOCK_PATH = 7601;
 constexpr int ID_FILE_LOCK_PICK_FILE = 7602;
 constexpr int ID_FILE_LOCK_PICK_DIR = 7603;
@@ -138,6 +141,44 @@ std::wstring GetText(HWND hwnd) {
     }
     text.resize(static_cast<std::size_t>(length));
     return text;
+}
+
+std::vector<std::wstring> SplitString(const std::wstring& input, wchar_t delimiter) {
+    std::vector<std::wstring> result;
+    if (input.empty()) return result;
+    size_t start = 0;
+    while (start < input.size()) {
+        size_t end = input.find(delimiter, start);
+        if (end == std::wstring::npos) {
+            end = input.size();
+        }
+        result.push_back(input.substr(start, end - start));
+        start = end + 1;
+    }
+    return result;
+}
+
+std::wstring JoinString(const std::vector<std::wstring>& parts, wchar_t delimiter) {
+    std::wstring result;
+    for (size_t i = 0; i < parts.size(); ++i) {
+        if (i > 0) result += delimiter;
+        result += parts[i];
+    }
+    return result;
+}
+
+// UTF-8 helper for the locator history cache file so paths with non-ASCII
+// (e.g. Chinese directories) survive a plain text round-trip. (Utf8ToWide
+// already exists elsewhere in this translation unit.)
+std::string WideToUtf8(const std::wstring& text) {
+    if (text.empty()) return {};
+    const int size = WideCharToMultiByte(CP_UTF8, 0, text.data(), static_cast<int>(text.size()),
+        nullptr, 0, nullptr, nullptr);
+    if (size <= 0) return {};
+    std::string result(static_cast<size_t>(size), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, text.data(), static_cast<int>(text.size()),
+        result.data(), size, nullptr, nullptr);
+    return result;
 }
 
 std::filesystem::path ToolWindowStatePath() {
@@ -939,22 +980,18 @@ private:
 
         MakeUi().SelectableLabel(L"鼠标按键", left, row2 + labelOffsetY, layout.labelWidth);
         button_ = MakeUi().ComboBox(ID_CLICK_BUTTON, fieldX, row2 + 2, layout.footerButtonWidth);
-        SendMessageW(button_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"左键"));
-        SendMessageW(button_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"右键"));
-        SendMessageW(button_, CB_SETCURSEL, registry_.GetSetting(pluginId, L"button", L"left") == L"right" ? 1 : 0, 0);
+        MakeUi().SetComboBoxItems(button_, clickButtonItems_, registry_.GetSetting(pluginId, L"button", L"left") == L"right" ? 1 : 0);
 
         MakeUi().SelectableLabel(L"倒计时(s)", rightLabelX, row2 + labelOffsetY, layout.labelWidth);
         countdownEdit_ = CreateEdit(ID_CLICK_COUNTDOWN, rightFieldX, row2, fieldW, registry_.GetSetting(pluginId, L"countdown", L"3"), ES_NUMBER);
 
-        const wchar_t* hotKeys[] = {L"F6", L"F7", L"F8", L"F9", L"F10", L"F11", L"F12"};
-
         MakeUi().SelectableLabel(L"启动停止热键", left, row3 + labelOffsetY, layout.labelWidth + layout.labelGap);
         toggleHotKey_ = MakeUi().ComboBox(ID_CLICK_HOTKEY, fieldX, row3 + 2, fieldW);
-        FillHotKeyCombo(toggleHotKey_, registry_.GetSetting(pluginId, L"toggleHotKey", registry_.GetSetting(pluginId, L"stopHotKey", L"F8")), hotKeys, 7);
+        FillHotKeyCombo(toggleHotKey_, registry_.GetSetting(pluginId, L"toggleHotKey", registry_.GetSetting(pluginId, L"stopHotKey", L"F8")), clickHotKeyItems_);
 
         MakeUi().SelectableLabel(L"拾取热键", rightLabelX, row3 + labelOffsetY, layout.labelWidth);
         pickHotKey_ = MakeUi().ComboBox(ID_CLICK_PICK_HOTKEY_CONTROL, rightFieldX, row3 + 2, fieldW);
-        FillHotKeyCombo(pickHotKey_, registry_.GetSetting(pluginId, L"pickHotKey", L"F9"), hotKeys, 7);
+        FillHotKeyCombo(pickHotKey_, registry_.GetSetting(pluginId, L"pickHotKey", L"F9"), clickHotKeyItems_);
 
         const int toggleY = row3 + rowStep + layout.footerGap;
         toggle_ = MakeUi().Button(
@@ -1053,25 +1090,22 @@ private:
         UnregisterToolHotKeys();
     }
 
-    void FillHotKeyCombo(HWND combo, const std::wstring& selected, const wchar_t* const* hotKeys, int count) {
+    void FillHotKeyCombo(HWND combo, const std::wstring& selected, const std::vector<std::wstring>& items) {
         int selectedIndex = 0;
-        for (int i = 0; i < count; ++i) {
-            SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(hotKeys[i]));
-            if (selected == hotKeys[i]) {
+        for (int i = 0; i < static_cast<int>(items.size()); ++i) {
+            if (selected == items[i]) {
                 selectedIndex = i;
             }
         }
-        SendMessageW(combo, CB_SETCURSEL, selectedIndex, 0);
+        MakeUi().SetComboBoxItems(combo, items, selectedIndex);
     }
 
     std::wstring SelectedHotKeyName(HWND combo, const std::wstring& fallback) const {
-        const LRESULT selected = SendMessageW(combo, CB_GETCURSEL, 0, 0);
-        if (selected < 0) {
+        const int idx = MakeUi().ComboBoxSelectedIndex(combo);
+        if (idx < 0 || idx >= static_cast<int>(clickHotKeyItems_.size())) {
             return fallback;
         }
-        wchar_t text[32]{};
-        SendMessageW(combo, CB_GETLBTEXT, static_cast<WPARAM>(selected), reinterpret_cast<LPARAM>(text));
-        return text[0] ? std::wstring(text) : fallback;
+        return clickHotKeyItems_[idx].empty() ? fallback : clickHotKeyItems_[idx];
     }
 
     void SaveHotKeySettings() {
@@ -1147,7 +1181,7 @@ private:
         SetText(count_, std::to_wstring(totalClicks_));
         SetText(interval_, std::to_wstring(intervalMs_));
         SetText(countdownEdit_, std::to_wstring(countdown_));
-        const bool rightButton = SendMessageW(button_, CB_GETCURSEL, 0, 0) == 1;
+        const bool rightButton = MakeUi().ComboBoxSelectedIndex(button_) == 1;
         toggleHotKeyCode_ = HotKeyFromName(SelectedHotKeyName(toggleHotKey_, L"F8"));
         pickHotKeyCode_ = HotKeyFromName(SelectedHotKeyName(pickHotKey_, L"F9"));
 
@@ -1235,6 +1269,8 @@ private:
     HWND countdownEdit_ = nullptr;
     HWND toggleHotKey_ = nullptr;
     HWND pickHotKey_ = nullptr;
+    std::vector<std::wstring> clickButtonItems_ = {L"左键", L"右键"};
+    std::vector<std::wstring> clickHotKeyItems_ = {L"F6", L"F7", L"F8", L"F9", L"F10", L"F11", L"F12"};
     HWND progress_ = nullptr;
     HWND toggle_ = nullptr;
     HWND status_ = nullptr;
@@ -2217,6 +2253,7 @@ private:
         if (ThemedWindowUi::HandleCommonMessage(windowUi_, message, wParam, lParam, commonResult)) {
             if (message == WM_DESTROY) {
                 SaveToolWindowPosition(L"quattro.builtin.process-tools", hwnd_);
+                SaveLocatorHistory();
                 CancelFileLockQueryAndWait();
                 if (gProcessToolsWindow.load() == hwnd_) {
                     gProcessToolsWindow.store(nullptr);
@@ -2451,6 +2488,7 @@ private:
 
         const int pageTop = ui.tabPageTop(tabStripRect_);
         CreateLocatorPage(pageTop);
+        LoadLocatorHistory();
         CreateProcessIdPage(pageTop);
         CreatePortPage(pageTop);
         CreateFileLockPage(pageTop);
@@ -2529,11 +2567,15 @@ private:
         const int fieldX = left + layout.labelWidth + layout.labelGap;
         const int fieldWidth = ui.clientWidth() - left - fieldX - layout.controlGapX - actionWidth;
 
+        const int chevronGap = ui.scale(2);
+        const int chevronWidth = ui.scale(22);
+        const int editWidth = fieldWidth - chevronGap - chevronWidth;
+
         AddLabel(page, L"进程 ID", left, detailsTop + labelOffsetY, layout.labelWidth);
         locatorPid_ = AddEdit(
             page,
             ID_LOCATOR_PID_VALUE,
-            ui.rect(fieldX, detailsTop + fieldOffsetY, fieldWidth, fieldHeight),
+            ui.rect(fieldX, detailsTop + fieldOffsetY, editWidth, fieldHeight),
             L"等待获取",
             readOnlyOptions);
         locatorKill_ = AddButton(
@@ -2552,9 +2594,20 @@ private:
         locatorPath_ = AddEdit(
             page,
             ID_LOCATOR_PATH_VALUE,
-            ui.rect(fieldX, pathRowY + fieldOffsetY, fieldWidth, fieldHeight),
+            ui.rect(fieldX, pathRowY + fieldOffsetY, editWidth, fieldHeight),
             L"等待获取",
             readOnlyOptions);
+        locatorPathDrop_ = AddButton(
+            page,
+            ID_LOCATOR_PATH_DROP,
+            L"",
+            fieldX + editWidth + chevronGap,
+            pathRowY + buttonOffsetY,
+            ThemedButtonRole::Normal,
+            ThemedButtonSize::Normal,
+            ThemedButtonWidthMode::Fixed,
+            chevronWidth);
+        ThemedControls::SetButtonTablerIcon(locatorPathDrop_, TablerIconId::ChevronDown);
         locatorOpen_ = AddButton(
             page,
             ID_LOCATOR_OPEN,
@@ -2740,6 +2793,9 @@ private:
             return;
         }
         switch (id) {
+        case ID_LOCATOR_PATH_DROP:
+            ShowLocatorHistoryMenu();
+            break;
         case ID_LOCATOR_PICK:
             if (locatorPickArmed_) {
                 CancelLocatorPickMode(L"已取消进程定位选择。");
@@ -3047,7 +3103,102 @@ private:
         if (config_.processLocatorHotKey == 0) {
             return L"将鼠标移到目标程序上，然后点击立即获取。";
         }
-        return L"将鼠标移到目标程序上，然后按 " + FormatGlobalHotKeyText(config_.processLocatorHotKey) + L"。";
+            return L"将鼠标移到目标程序上，然后按 " + FormatGlobalHotKeyText(config_.processLocatorHotKey) + L"。";
+    }
+
+    void LoadLocatorHistory() {
+        locatorPathHistory_.clear();
+        std::error_code ec;
+        if (!std::filesystem::exists(locatorHistoryFile_, ec)) return;
+        std::ifstream file(locatorHistoryFile_, std::ios::binary);
+        if (!file) return;
+        std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+        // Strip UTF-8 BOM if present.
+        if (content.size() >= 3 &&
+            static_cast<unsigned char>(content[0]) == 0xEF &&
+            static_cast<unsigned char>(content[1]) == 0xBB &&
+            static_cast<unsigned char>(content[2]) == 0xBF) {
+            content.erase(0, 3);
+        }
+        // One path per line (CRLF or LF). File is stored most-recent-first.
+        size_t start = 0;
+        while (start < content.size()) {
+            size_t end = content.find('\n', start);
+            if (end == std::string::npos) end = content.size();
+            std::string line = content.substr(start, end - start);
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            const std::wstring path = Trim(Utf8ToWide(line));
+            if (!path.empty()) {
+                locatorPathHistory_.push_back(path);
+                if (static_cast<int>(locatorPathHistory_.size()) >= kMaxLocatorHistory) break;
+            }
+            start = end + 1;
+        }
+    }
+
+    void SaveLocatorHistory() {
+        std::error_code ec;
+        std::filesystem::create_directories(locatorHistoryFile_.parent_path(), ec);
+        std::ofstream file(locatorHistoryFile_, std::ios::binary | std::ios::trunc);
+        if (!file) return;
+        // UTF-8 BOM so paths with non-ASCII render correctly in editors.
+        file.write("\xEF\xBB\xBF", 3);
+        for (const auto& path : locatorPathHistory_) {
+            const std::string line = WideToUtf8(path);
+            file.write(line.data(), static_cast<std::streamsize>(line.size()));
+            file.write("\r\n", 2);
+        }
+    }
+
+    void AddToLocatorHistory(const std::wstring& path) {
+        if (path.empty()) return;
+        // Remove existing same path (dedup)
+        auto it = std::find(locatorPathHistory_.begin(), locatorPathHistory_.end(), path);
+        if (it != locatorPathHistory_.end()) {
+            locatorPathHistory_.erase(it);
+        }
+        // Insert at front (most recent first)
+        locatorPathHistory_.insert(locatorPathHistory_.begin(), path);
+        // Trim to max
+        while (static_cast<int>(locatorPathHistory_.size()) > kMaxLocatorHistory) {
+            locatorPathHistory_.pop_back();
+        }
+        SaveLocatorHistory();
+    }
+
+    void ShowLocatorHistoryMenu() {
+        const auto& history = locatorPathHistory_;
+        if (history.empty()) {
+            SetStatus(locatorStatus_, L"暂无历史记录。", ThemedStatusRole::Normal);
+            return;
+        }
+        const int base = ID_LOCATOR_PATH_HISTORY_FIRST;
+        std::vector<ThemedSplitButtonMenuItem> items;
+        items.reserve(history.size());
+        for (size_t i = 0; i < history.size(); ++i) {
+            ThemedSplitButtonMenuItem item{};
+            item.id = base + static_cast<int>(i);
+            item.text = history[i];
+            item.enabled = true;
+            items.push_back(item);
+        }
+        const UINT command = Ui().ShowSplitButtonMenu(hwnd_, locatorPathDrop_, items);
+        if (command == 0) return;
+        const int offset = static_cast<int>(command) - base;
+        if (offset < 0 || offset >= static_cast<int>(history.size())) return;
+        ApplyLocatorHistorySelection(static_cast<size_t>(offset));
+    }
+
+    void ApplyLocatorHistorySelection(size_t index) {
+        if (index >= locatorPathHistory_.size()) return;
+        // Path-only history: PID is not cached, so clear it.
+        locatedPid_ = 0;
+        locatedPath_ = locatorPathHistory_[index];
+        Ui().SetText(locatorPid_, L"—");
+        Ui().SetText(locatorPath_, locatedPath_);
+        UpdateLocatorButtons();
+        SetStatus(locatorStatus_, L"已从历史记录选择路径（PID 未缓存，结束进程需重新定位）。",
+            ThemedStatusRole::Normal);
     }
 
     void LocateHoveredProcess() {
@@ -3062,8 +3213,8 @@ private:
         if (!hovered.pid) {
             locatedPid_ = 0;
             locatedPath_.clear();
-            SetText(locatorPid_, L"获取失败");
-            SetText(locatorPath_, L"无法获取");
+            Ui().SetText(locatorPid_, L"获取失败");
+            Ui().SetText(locatorPath_, L"无法获取");
             UpdateLocatorButtons();
             SetStatus(
                 locatorStatus_,
@@ -3076,8 +3227,13 @@ private:
         locatedPid_ = hovered.pid;
         const ProcessInfo info = QueryProcessInfo(locatedPid_);
         locatedPath_ = info.path;
-        SetText(locatorPid_, std::to_wstring(locatedPid_));
-        SetText(locatorPath_, locatedPath_.empty() ? L"无法获取" : locatedPath_);
+        const std::wstring pidStr = std::to_wstring(locatedPid_);
+        const std::wstring pathStr = locatedPath_.empty() ? L"无法获取" : locatedPath_;
+        if (!locatedPath_.empty()) {
+            AddToLocatorHistory(locatedPath_);
+        }
+        Ui().SetText(locatorPid_, pidStr);
+        Ui().SetText(locatorPath_, pathStr);
         UpdateLocatorButtons();
         SetStatus(
             locatorStatus_,
@@ -3133,8 +3289,8 @@ private:
         }
         locatedPid_ = 0;
         locatedPath_.clear();
-        SetText(locatorPid_, L"进程已结束");
-        SetText(locatorPath_, L"等待获取");
+        Ui().SetText(locatorPid_, L"进程已结束");
+        Ui().SetText(locatorPath_, L"等待获取");
         UpdateLocatorButtons();
         SetStatus(locatorStatus_, L"目标进程已结束。", ThemedStatusRole::Success);
     }
@@ -3486,12 +3642,16 @@ private:
     HWND locatorPick_ = nullptr;
     HWND locatorPid_ = nullptr;
     HWND locatorPath_ = nullptr;
+    HWND locatorPathDrop_ = nullptr;
     HWND locatorKill_ = nullptr;
     HWND locatorOpen_ = nullptr;
     HWND locatorStatus_ = nullptr;
     bool locatorPickArmed_ = false;
     DWORD locatedPid_ = 0;
     std::wstring locatedPath_;
+    static constexpr int kMaxLocatorHistory = 10;
+    std::vector<std::wstring> locatorPathHistory_;
+    std::filesystem::path locatorHistoryFile_ = QuattroUserConfigDirectory() / L"locator_history.txt";
 
     HWND processIdInput_ = nullptr;
     HWND processIdTable_ = nullptr;

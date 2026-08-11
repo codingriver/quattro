@@ -1,5 +1,29 @@
 # Agent Rules
 
+## ⛔ 强制合规规则（最高优先级，所有任务强制遵守）
+
+AGENTS.md 是本仓库**唯一权威规则文档**，具有最高优先级。任何代码修改、新增需求、bug 修复、重构、测试或文档变更，都必须先遵守本文件；个人习惯、旧模板或其它来源的实践不得覆盖本规则。
+
+### 每次动手前的强制动作（不得跳过）
+1. **定位职责**：按“Project Orientation Rules”确定本次改动归属哪个文件/类/服务（`MainWindow.*`、`*Dialog.*`、`SimpleDialogs.cpp`、`BuiltinTools.cpp`、`src/theme/`、`src/domain/`、`src/services/`、`src/applaunchlocker/` 等）。职责不匹配的文件，不得塞入实现。
+2. **检索规则**：用关键词在本文件检索相关约束，至少覆盖：控件名（`ComboBox`/`Table`/`Edit`/`Tab`/`ToolBar`/`Panel`…）、Win32 消息或 style（`CBS_*`/`LBS_*`/`SS_*`/`LVS_*`/`LVM_*`/`TCM_*`/`TB_*`/`BM_*`）、模块名（`ThemedUi`/`ThemedWindowUi`/`IconResolverService`/`TaskExecutionService`/`ScanExecutionService`…）、行为（`SetTableRows`/搜索/持久化/异步/DPI）。
+3. **红线校验**：确认方案不触碰下方“禁止即失败”清单。若所需能力公共层尚无，先扩展 `ThemedUi`/`ThemedWindowUi`/对应 service 及测试，再接入业务；禁止在窗口层补私有实现绕过规则。
+
+### 禁止即失败（红线清单）
+- 禁止向公共控件接口传入 `CBS_*`/`LBS_*`/`SS_*`/`LVS_*`/`TCM_*`/`TB_*`/`BM_*` 等底层 style 或行为标志。
+- 禁止窗口直接对 facade 创建的控件发送 `CB_*`/`LVM_*`/`TCM_*`/`BM_*`/`LB_*` 等底层状态消息——改用 `ThemedUi::SetComboBoxItems`/`SetComboBoxSelectedIndex`/`SetTable*`/`SetChecked`/`SetProgress`/`SetEnabled` 等语义接口。
+- 禁止业务窗口直接创建 `WC_LISTVIEW`/`WC_TABCONTROL`/`TOOLBARCLASSNAME`，或调用 `ListView_*`/`TabCtrl_*`/`Toolbar_*` 维护表格/标签/工具栏。
+- 日常增量更新禁止调用 `SetTableRows`（会触发 `ListView_DeleteAllItems` 引起闪烁/选择丢失）；仅首次创建、整体导入/恢复、列结构变化或确需整体重排时允许。
+- 禁止新增、恢复或暴露搜索功能/搜索入口/搜索热键/搜索配置。
+- 禁止绕过 `ThemedUi`/`ThemedWindowUi` 公共 facade 在窗口层私绘控件、手写布局/尺寸/间距/样式，或重复处理公共消息、背景绘制、owner-draw、资源释放。
+- 禁止在多处重复保存同一事实；异步任务结果回到 UI 线程前禁止直接操作 HWND/Table/模型容器。
+- 新增公共能力必须同步补 `ThemedUi.h` 接口、`ThemedUi.cpp`/`ThemedControls.*` 实现、`Theme.cpp` fallback、`theme/default.xml`、主题 lint、单元测试，涉及视觉的还要补 100%/125%/150% DPI 截图验收；公共接口未完成前业务窗口不得先落私有版本。
+
+### 冲突与验收
+- 当实现需求与 AGENTS.md 冲突时，**以扩展公共层为先**，不得为图省事违反规则在业务层补私有实现。
+- 修改完成后必须按“Acceptance Rules”在本项目范围内验收（功能向走自动化测试，表现向走后台截图），并保留证据。
+- 任何未通过红线校验的方案都视为**未完成任务**；提交前必须自查是否存在上述“禁止即失败”行为。
+
 ## Project Orientation Rules
 
 - 本项目是原生 Windows C++ 快速启动器。核心目标是以尽可能短的操作路径管理并启动程序、文件、文件夹、网址、Shell 系统位置和系统功能，同时提供标签化便签、待办、热键、托盘、备份/WebDAV、HTTP 文件服务和少量高频工具；新增需求必须优先服务“快速找到当前分组/标签中的入口并立即执行”，不得把主流程演变成通用文件管理器、浏览器或复杂信息管理系统。
