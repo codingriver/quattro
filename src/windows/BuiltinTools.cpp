@@ -2254,6 +2254,7 @@ private:
             if (message == WM_DESTROY) {
                 SaveToolWindowPosition(L"quattro.builtin.process-tools", hwnd_);
                 SaveLocatorHistory();
+                DestroyPickOverlay();
                 CancelFileLockQueryAndWait();
                 if (gProcessToolsWindow.load() == hwnd_) {
                     gProcessToolsWindow.store(nullptr);
@@ -3210,6 +3211,10 @@ private:
     }
 
     void ApplyLocatedProcessResult(const HoveredProcessResult& hovered) {
+        WriteAppLog(L"[PICK-OVERLAY-v4] ApplyLocatedProcessResult pid=" + std::to_wstring(hovered.pid)
+            + L" trayTarget=" + (hovered.trayTarget ? L"1" : L"0")
+            + L" error=" + std::to_wstring(hovered.error)
+            + L" selfPid=" + std::to_wstring(GetCurrentProcessId()));
         if (!hovered.pid) {
             locatedPid_ = 0;
             locatedPath_.clear();
@@ -3244,9 +3249,16 @@ private:
     }
 
     void BeginLocatorPickMode() {
+        if (locatorPickArmed_) return;
         locatorPickArmed_ = true;
-        SetCapture(hwnd_);
-        SetCursor(LoadCursorW(nullptr, IDC_CROSS));
+        // An earlier build corrupted the system cursor table (it passed a shared
+        // system cursor to SetSystemCursor, then DestroyCursor'd it), which left
+        // IDC_CROSS pointing at a broken/blank cursor. Reload all system cursors from
+        // the registry scheme so LoadCursor(IDC_CROSS) returns a real cross again.
+        const BOOL reloaded = SystemParametersInfoW(SPI_SETCURSORS, 0, nullptr, 0);
+        WriteAppLog(L"[PICK-OVERLAY-v4] SPI_SETCURSORS reload=" + std::to_wstring(reloaded)
+            + L" crossHandle=" + std::to_wstring(reinterpret_cast<uintptr_t>(LoadCursorW(nullptr, IDC_CROSS))));
+        CreatePickOverlay();
         UpdateLocatorPickButton();
         SetStatus(locatorStatus_, L"选择模式：点击目标窗口或托盘图标；按 Esc 或右键取消。", ThemedStatusRole::Info);
     }
@@ -3256,12 +3268,63 @@ private:
             return;
         }
         locatorPickArmed_ = false;
-        if (GetCapture() == hwnd_) {
-            ReleaseCapture();
-        }
+        DestroyPickOverlay();
         UpdateLocatorPickButton();
         if (restoreStatus) {
             SetStatus(locatorStatus_, LocatorStatusText(), ThemedStatusRole::Normal);
+        }
+    }
+
+    // Create a transparent, topmost, full-screen overlay that owns the cross cursor
+    // and captures the pick click. Using an overlay (instead of mutating the global
+    // system cursor via SetSystemCursor) keeps the cross visible over every window
+    // without risking corruption of the system cursor table (which an earlier build
+    // left in a broken state, making SetSystemCursor fail silently).
+    void CreatePickOverlay() {
+        if (pickOverlay_) return;
+        WriteAppLog(L"[PICK-OVERLAY-v4] CreatePickOverlay enter");
+        static constexpr wchar_t kPickOverlayClass[] = L"QuattroPickOverlay";
+        static bool classRegistered = false;
+        if (!classRegistered) {
+            WNDCLASSEXW wc{};
+            wc.cbSize = sizeof(wc);
+            wc.lpfnWndProc = PickOverlayProc;
+            wc.hInstance = instance_;
+            wc.lpszClassName = kPickOverlayClass;
+            wc.hCursor = LoadCursorW(nullptr, IDC_CROSS);
+            wc.style = CS_HREDRAW | CS_VREDRAW;
+            const ATOM atom = RegisterClassExW(&wc);
+            WriteAppLog(L"[PICK-OVERLAY-v4] RegisterClassExW atom=" + std::to_wstring(atom)
+                + L" err=" + std::to_wstring(GetLastError()));
+            classRegistered = true;
+        }
+        const int x = GetSystemMetrics(SM_XVIRTUALSCREEN);
+        const int y = GetSystemMetrics(SM_YVIRTUALSCREEN);
+        const int w = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+        const int h = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+        pickOverlay_ = CreateWindowExW(
+            WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+            kPickOverlayClass, L"", WS_POPUP,
+            x, y, w, h, nullptr, nullptr, instance_, this);
+        WriteAppLog(L"[PICK-OVERLAY-v4] CreateWindowExW handle=" + std::to_wstring(reinterpret_cast<uintptr_t>(pickOverlay_))
+            + L" err=" + std::to_wstring(GetLastError())
+            + L" rect=(" + std::to_wstring(x) + L"," + std::to_wstring(y) + L"," + std::to_wstring(w) + L"x" + std::to_wstring(h) + L")");
+        if (pickOverlay_) {
+            const BOOL attr = SetLayeredWindowAttributes(pickOverlay_, RGB(0, 0, 0), 1, LWA_ALPHA);
+            ShowWindow(pickOverlay_, SW_SHOW);
+            // Force topmost explicitly in case the creation style didn't take effect.
+            SetWindowPos(pickOverlay_, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            const HCURSOR cross = LoadCursorW(nullptr, IDC_CROSS);
+            SetCursor(cross);
+            WriteAppLog(L"[PICK-OVERLAY-v4] shown, SetLayeredWindowAttributes=" + std::to_wstring(attr)
+                + L" crossHandle=" + std::to_wstring(reinterpret_cast<uintptr_t>(cross)));
+        }
+    }
+
+    void DestroyPickOverlay() {
+        if (pickOverlay_) {
+            DestroyWindow(pickOverlay_);
+            pickOverlay_ = nullptr;
         }
     }
 
@@ -3647,6 +3710,8 @@ private:
     HWND locatorOpen_ = nullptr;
     HWND locatorStatus_ = nullptr;
     bool locatorPickArmed_ = false;
+    HWND pickOverlay_ = nullptr;  // transparent full-screen window owning the cross cursor during pick
+    static LRESULT CALLBACK PickOverlayProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
     DWORD locatedPid_ = 0;
     std::wstring locatedPath_;
     static constexpr int kMaxLocatorHistory = 10;
@@ -3680,6 +3745,67 @@ private:
     std::shared_ptr<ScanTaskHandle> fileLockTask_;
     std::unique_ptr<ThemedTaskProgressDialog> fileLockProgressDialog_;
 };
+
+LRESULT CALLBACK ProcessToolsDialog::PickOverlayProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
+    ProcessToolsDialog* self = nullptr;
+    if (message == WM_NCCREATE) {
+        auto* cs = reinterpret_cast<CREATESTRUCTW*>(lParam);
+        self = static_cast<ProcessToolsDialog*>(cs->lpCreateParams);
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self));
+    } else {
+        self = reinterpret_cast<ProcessToolsDialog*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    }
+    if (!self) {
+        return DefWindowProcW(hwnd, message, wParam, lParam);
+    }
+    switch (message) {
+    case WM_SETCURSOR: {
+        HCURSOR cross = LoadCursorW(nullptr, IDC_CROSS);
+        SetCursor(cross);
+        static int setCursorLogs = 0;
+        if (setCursorLogs < 3) {
+            ++setCursorLogs;
+            WriteAppLog(L"[PICK-OVERLAY-v4] WM_SETCURSOR #" + std::to_wstring(setCursorLogs)
+                + L" cross=" + std::to_wstring(reinterpret_cast<uintptr_t>(cross))
+                + L" getCursor=" + std::to_wstring(reinterpret_cast<uintptr_t>(GetCursor())));
+        }
+        return TRUE;
+    }
+    case WM_LBUTTONDOWN: {
+        POINT pt{};
+        GetCursorPos(&pt);
+        // Make the overlay transparent to mouse hit-testing so WindowFromPoint
+        // resolves the real window beneath it (more reliable than SW_HIDE which may
+        // not take effect synchronously for hit-testing inside the click handler).
+        LONG_PTR ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+        SetWindowLongPtrW(hwnd, GWL_EXSTYLE, ex | WS_EX_TRANSPARENT);
+        SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+        HWND target = WindowFromPoint(pt);
+        WriteAppLog(L"[PICK-OVERLAY-v4] click (" + std::to_wstring(pt.x) + L"," + std::to_wstring(pt.y)
+            + L") windowFromPoint=" + std::to_wstring(reinterpret_cast<uintptr_t>(target))
+            + L" self=" + std::to_wstring(reinterpret_cast<uintptr_t>(self->hwnd_))
+            + L" isSelf=" + ((target == self->hwnd_ || IsChild(self->hwnd_, target)) ? L"1" : L"0"));
+        self->CompleteLocatorPickAtPoint(pt);
+        self->DestroyPickOverlay();
+        return 0;
+    }
+    case WM_RBUTTONDOWN:
+        self->CancelLocatorPickMode(L"已取消进程定位选择。");
+        self->DestroyPickOverlay();
+        return 0;
+    case WM_KEYDOWN:
+    case WM_SYSKEYDOWN:
+        if (wParam == VK_ESCAPE) {
+            self->CancelLocatorPickMode(L"已取消进程定位选择。");
+            self->DestroyPickOverlay();
+        }
+        return 0;
+    default:
+        return DefWindowProcW(hwnd, message, wParam, lParam);
+    }
+}
+
 }
 
 bool PreTranslateBuiltinToolMessage(const MSG& message) {
