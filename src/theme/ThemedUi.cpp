@@ -3327,6 +3327,7 @@ HWND ThemedUi::Table(int id, RECT frame, const std::vector<ThemedTableColumn>& c
     if (options.fullRowSelect) extended |= LVS_EX_FULLROWSELECT;
     ListView_SetExtendedListViewStyle(table, extended);
     ThemedControls::RegisterTable(table, theme_, dpi_);
+    ThemedControls::SetTableSelectionMode(table, options.selection);
     ThemedControls::ConfigureTableRowPresentation(
         table, options.rowPresentation == ThemedTableRowPresentation::TwoLine);
     if (options.checkable) {
@@ -3717,6 +3718,20 @@ void ThemedUi::SetTableCheckedAll(HWND table, bool checked) {
     SendMessageW(table, WM_SETREDRAW, TRUE, 0);
     InvalidateRect(table, nullptr, FALSE);
 }
+
+void ThemedUi::SetTableCheckedIndices(HWND table, const std::vector<int>& indices, bool checked) {
+    if (!table || indices.empty()) return;
+    const ScopedTableRowsUpdate update(table);
+    SendMessageW(table, WM_SETREDRAW, FALSE, 0);
+    for (int index : indices) {
+        if (index >= 0 && index < ListView_GetItemCount(table) && IsTableRowEnabled(table, index)) {
+            ListView_SetCheckState(table, index, checked ? TRUE : FALSE);
+        }
+    }
+    SendMessageW(table, WM_SETREDRAW, TRUE, 0);
+    InvalidateRect(table, nullptr, FALSE);
+}
+
 bool ThemedUi::IsTableChecked(HWND table, int index) { return table && ListView_GetCheckState(table, index) != FALSE; }
 bool ThemedUi::IsTableRowEnabled(HWND table, int index) { return ThemedControls::IsTableRowEnabled(table, index); }
 bool ThemedUi::IsTableRowActive(HWND table, int index) { return ThemedControls::IsTableRowActive(table, index); }
@@ -3738,6 +3753,105 @@ bool ThemedUi::SetTableSelectedKey(HWND table, std::intptr_t key) {
     SetTableSelectedIndex(table, index);
     return true;
 }
+
+std::vector<int> ThemedUi::TableSelectedIndices(HWND table) {
+    std::vector<int> result;
+    if (!table) return result;
+    int row = -1;
+    while ((row = ListView_GetNextItem(table, row, LVNI_SELECTED)) >= 0) {
+        result.push_back(row);
+    }
+    return result;
+}
+
+std::vector<std::intptr_t> ThemedUi::TableSelectedKeys(HWND table) {
+    std::vector<std::intptr_t> result;
+    if (!table) return result;
+    for (int row : TableSelectedIndices(table)) {
+        result.push_back(TableRowKey(table, row));
+    }
+    return result;
+}
+
+void ThemedUi::SetTableSelectedIndices(HWND table, const std::vector<int>& indices) {
+    if (!table) return;
+    const int count = ListView_GetItemCount(table);
+    SendMessageW(table, WM_SETREDRAW, FALSE, 0);
+    for (int row = 0; row < count; ++row) {
+        ListView_SetItemState(table, row, 0, LVIS_SELECTED);
+    }
+    int focusRow = -1;
+    for (int index : indices) {
+        if (index >= 0 && index < count) {
+            ListView_SetItemState(table, index, LVIS_SELECTED, LVIS_SELECTED);
+            focusRow = index;
+        }
+    }
+    if (focusRow >= 0) {
+        ListView_SetItemState(table, focusRow, LVIS_FOCUSED, LVIS_FOCUSED);
+        ListView_EnsureVisible(table, focusRow, FALSE);
+    }
+    SendMessageW(table, WM_SETREDRAW, TRUE, 0);
+    InvalidateRect(table, nullptr, FALSE);
+}
+
+bool ThemedUi::SetTableSelectedKeys(HWND table, const std::vector<std::intptr_t>& keys) {
+    if (!table) return false;
+    std::vector<int> indices;
+    indices.reserve(keys.size());
+    for (std::intptr_t key : keys) {
+        const int index = FindTableRowByKey(table, key);
+        if (index >= 0) indices.push_back(index);
+    }
+    SetTableSelectedIndices(table, indices);
+    return !indices.empty();
+}
+
+void ThemedUi::SetTableSelectedRange(HWND table, int anchor, int target) {
+    if (!table) return;
+    const int count = ListView_GetItemCount(table);
+    if (anchor < 0 || anchor >= count || target < 0 || target >= count) return;
+    const int start = std::min(anchor, target);
+    const int end = std::max(anchor, target);
+    SendMessageW(table, WM_SETREDRAW, FALSE, 0);
+    for (int row = 0; row < count; ++row) {
+        ListView_SetItemState(table, row, 0, LVIS_SELECTED);
+    }
+    for (int row = start; row <= end; ++row) {
+        ListView_SetItemState(table, row, LVIS_SELECTED, LVIS_SELECTED);
+    }
+    ListView_SetItemState(table, target, LVIS_FOCUSED, LVIS_FOCUSED);
+    ListView_EnsureVisible(table, target, FALSE);
+    SendMessageW(table, WM_SETREDRAW, TRUE, 0);
+    InvalidateRect(table, nullptr, FALSE);
+}
+
+void ThemedUi::AddTableSelectedRange(HWND table, int anchor, int target) {
+    if (!table) return;
+    const int count = ListView_GetItemCount(table);
+    if (anchor < 0 || anchor >= count || target < 0 || target >= count) return;
+    const int start = std::min(anchor, target);
+    const int end = std::max(anchor, target);
+    SendMessageW(table, WM_SETREDRAW, FALSE, 0);
+    for (int row = start; row <= end; ++row) {
+        ListView_SetItemState(table, row, LVIS_SELECTED, LVIS_SELECTED);
+    }
+    ListView_SetItemState(table, target, LVIS_FOCUSED, LVIS_FOCUSED);
+    ListView_EnsureVisible(table, target, FALSE);
+    SendMessageW(table, WM_SETREDRAW, TRUE, 0);
+    InvalidateRect(table, nullptr, FALSE);
+}
+
+int ThemedUi::TableFocusedIndex(HWND table) {
+    return table ? ListView_GetNextItem(table, -1, LVNI_FOCUSED) : -1;
+}
+
+void ThemedUi::SetTableFocusedIndex(HWND table, int index) {
+    if (!table || index < 0 || index >= ListView_GetItemCount(table)) return;
+    ListView_SetItemState(table, index, LVIS_FOCUSED, LVIS_FOCUSED);
+    ListView_EnsureVisible(table, index, FALSE);
+}
+
 std::intptr_t ThemedUi::TableRowKey(HWND table, int index) {
     if (!table || index < 0) return 0;
     LVITEMW item{};

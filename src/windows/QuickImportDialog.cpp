@@ -244,6 +244,9 @@ private:
             case IdSelectAll:
                 SetAllChecks(true);
                 return 0;
+            case ThemedControls::ID_TABLE_SELECT_ALL:
+                SetAllChecks(true);
+                return 0;
             case IdSelectNone:
                 SetAllChecks(false);
                 return 0;
@@ -349,6 +352,7 @@ private:
         listFrame_ = RECT{layout_.contentInsetX, statusRowY + statusRowHeight + layout_.rowGap, clientWidth - layout_.contentInsetX, clientHeight - layout_.footerInsetY - buttonHeight - layout_.footerGap};
         ThemedTableOptions tableOptions{};
         tableOptions.checkable = true;
+        tableOptions.selection = ThemedTableSelection::Multiple;
         tableOptions.allowHorizontalScroll = false;
         tableOptions.reserveScrollBarGutter = true;
         const int nameColumnWidth = ui.scale(170);

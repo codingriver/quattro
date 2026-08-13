@@ -3374,6 +3374,66 @@ int wmain() {
             "Themed table standalone checkbox update preserves existing notification behavior");
         RemoveWindowSubclass(controlParent, TableUpdateNotificationParentProc, 17);
 
+        ThemedTableOptions multiSelectOptions{};
+        multiSelectOptions.checkable = true;
+        multiSelectOptions.showHeader = false;
+        multiSelectOptions.selection = ThemedTableSelection::Multiple;
+        HWND multiSelectTable = controlUi.Table(
+            7112, RECT{0, 0, 320, controlUi.tableHeightForRows(5, false)},
+            {ThemedTableColumn{
+                L"name", L"Name", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Remaining}},
+            multiSelectOptions);
+        std::vector<ThemedTableRow> multiRows;
+        for (int index = 0; index < 5; ++index) {
+            multiRows.push_back(ThemedTableRow{
+                index + 1,
+                {{L"row " + std::to_wstring(index)}},
+                false,
+                true});
+        }
+        ThemedUi::SetTableRows(multiSelectTable, multiRows);
+        ThemedUi::SetTableSelectedRange(multiSelectTable, 1, 3);
+        Check(ThemedUi::TableSelectedIndices(multiSelectTable) == std::vector<int>{1, 2, 3},
+            "Themed table range selection selects contiguous rows");
+        ThemedUi::SetTableSelectedIndices(multiSelectTable, {0, 2, 4});
+        Check(ThemedUi::TableSelectedIndices(multiSelectTable) == std::vector<int>{0, 2, 4},
+            "Themed table index selection selects arbitrary rows");
+        Check(ThemedUi::TableSelectedKeys(multiSelectTable) == std::vector<std::intptr_t>{1, 3, 5},
+            "Themed table selected keys map from indices");
+        ThemedUi::SetTableCheckedIndices(multiSelectTable, {0, 2, 4}, true);
+        Check(ThemedUi::IsTableChecked(multiSelectTable, 0) &&
+                ThemedUi::IsTableChecked(multiSelectTable, 2) &&
+                ThemedUi::IsTableChecked(multiSelectTable, 4) &&
+                !ThemedUi::IsTableChecked(multiSelectTable, 1),
+            "Themed table batch checkbox update toggles only specified rows");
+        ThemedUi::SetTableCheckedIndices(multiSelectTable, {0, 2, 4}, false);
+        ThemedUi::SetTableChecked(multiSelectTable, 1, true);
+        ThemedUi::SetTableSelectedIndices(multiSelectTable, {1, 2});
+        // Simulate the subclass proc Space handler: toggle all selected rows based on any checked.
+        ThemedUi::SetTableCheckedIndices(multiSelectTable, {1, 2}, true);
+        Check(ThemedUi::IsTableChecked(multiSelectTable, 1) && ThemedUi::IsTableChecked(multiSelectTable, 2),
+            "Themed table selected rows can be batch-checked");
+
+        ThemedTableOptions singleSelectOptions{};
+        singleSelectOptions.checkable = true;
+        singleSelectOptions.showHeader = false;
+        singleSelectOptions.selection = ThemedTableSelection::Single;
+        HWND singleSelectTable = controlUi.Table(
+            7113, RECT{0, 0, 320, controlUi.tableHeightForRows(3, false)},
+            {ThemedTableColumn{
+                L"name", L"Name", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Remaining}},
+            singleSelectOptions);
+        ThemedUi::SetTableRows(singleSelectTable, {
+            ThemedTableRow{1, {{L"a"}}, false, true},
+            ThemedTableRow{2, {{L"b"}}, false, true},
+            ThemedTableRow{3, {{L"c"}}, false, true}});
+        const DWORD singleSelectStyle = static_cast<DWORD>(GetWindowLongPtrW(singleSelectTable, GWL_STYLE));
+        Check((singleSelectStyle & LVS_SINGLESEL) != 0,
+            "Themed single-selection table keeps LVS_SINGLESEL style");
+        ThemedUi::SetTableSelectedIndex(singleSelectTable, 1);
+        Check(ThemedUi::TableSelectedIndex(singleSelectTable) == 1,
+            "Themed single-selection table programmatic selection stays single");
+
         RECT runtimeTableClient{};
         GetClientRect(runtimeTable, &runtimeTableClient);
         const int runtimeTableColumnWidth =

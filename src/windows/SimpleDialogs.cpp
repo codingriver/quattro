@@ -129,6 +129,7 @@ constexpr int ID_MESSAGE_TEXT = 501;
 constexpr int ID_HOTKEY_CONFLICT_IGNORE = 502;
 constexpr int ID_MAIN_HOTKEY_PROBE = 0x5148;
 constexpr UINT WM_SETTINGS_WEBDAV_DONE = WM_APP + 0x81;
+constexpr int ID_TABLE_SELECT_ALL_CMD = ThemedControls::ID_TABLE_SELECT_ALL;
 constexpr UINT WM_CONTEXT_MENU_REFRESH_DONE = WM_APP + 0x82;
 constexpr UINT WM_CONTEXT_MENU_ICON_LOAD_REQUEST = WM_APP + 0x83;
 constexpr UINT WM_CONTEXT_MENU_ICON_LOAD_DONE = WM_APP + 0x84;
@@ -1346,6 +1347,8 @@ public:
         std::wstring& selectedName)
         : owner_(owner), instance_(instance), theme_(theme), backups_(backups), selectedName_(selectedName) {}
 
+    const std::vector<std::wstring>& SelectedNames() const { return selectedNames_; }
+
     bool Run() {
         const std::wstring className = L"QuattroWebDavBackupSelectionDialog_" +
             std::to_wstring(GetCurrentProcessId()) + L"_" + std::to_wstring(GetTickCount64());
@@ -1443,14 +1446,23 @@ private:
     }
 
     void AcceptSelection() {
-        const int selected = ThemedUi::TableSelectedIndex(table_);
-        const std::intptr_t key = selected >= 0 ? ThemedUi::TableRowKey(table_, selected) : 0;
-        const std::size_t backupIndex = key > 0 ? static_cast<std::size_t>(key - 1) : backups_.size();
-        if (backupIndex >= backups_.size()) {
-            ShowThemedMessageBox(hwnd_, instance_, theme_, L"请选择一个备份文件。", L"选择 WebDAV 备份", MB_OK | MB_ICONWARNING);
+        const std::vector<std::intptr_t> keys = ThemedUi::TableSelectedKeys(table_);
+        if (keys.empty()) {
+            ShowThemedMessageBox(hwnd_, instance_, theme_, L"请选择至少一个备份文件。", L"选择 WebDAV 备份", MB_OK | MB_ICONWARNING);
             return;
         }
-        selectedName_ = backups_[backupIndex].name;
+        selectedNames_.clear();
+        for (std::intptr_t key : keys) {
+            const std::size_t backupIndex = key > 0 ? static_cast<std::size_t>(key - 1) : backups_.size();
+            if (backupIndex < backups_.size()) {
+                selectedNames_.push_back(backups_[backupIndex].name);
+            }
+        }
+        if (selectedNames_.empty()) {
+            ShowThemedMessageBox(hwnd_, instance_, theme_, L"请选择至少一个备份文件。", L"选择 WebDAV 备份", MB_OK | MB_ICONWARNING);
+            return;
+        }
+        selectedName_ = selectedNames_.front();
         accepted_ = true;
         done_ = true;
         DestroyWindow(hwnd_);
@@ -1482,7 +1494,10 @@ private:
                 {L"size", L"大小", ThemedTableColumnAlign::End, ThemedTableColumnWidth::Content, 0, true},
                 {L"modified", L"修改时间", ThemedTableColumnAlign::End, ThemedTableColumnWidth::Content, 0, true},
             };
-            table_ = ui.Table(ID_WEBDAV_BACKUP_LIST, tableFrame, columns);
+            ThemedTableOptions backupTableOptions{};
+            backupTableOptions.selection = ThemedTableSelection::Multiple;
+            backupTableOptions.reserveScrollBarGutter = true;
+            table_ = ui.Table(ID_WEBDAV_BACKUP_LIST, tableFrame, columns, backupTableOptions);
             PopulateTable();
             ui.FooterButton(IDOK, L"下载", 0, 2, true, true);
             ui.FooterButton(IDCANCEL, L"取消", 1, 2);
@@ -1517,6 +1532,13 @@ private:
                 AcceptSelection();
                 return 0;
             }
+            if (LOWORD(wParam) == ThemedControls::ID_TABLE_SELECT_ALL) {
+                const int count = ThemedUi::TableRowCount(table_);
+                std::vector<int> all(static_cast<std::size_t>(count));
+                for (int i = 0; i < count; ++i) all[i] = i;
+                ThemedUi::SetTableSelectedIndices(table_, all);
+                return 0;
+            }
             if (LOWORD(wParam) == IDCANCEL) {
                 done_ = true;
                 DestroyWindow(hwnd_);
@@ -1545,6 +1567,7 @@ private:
     std::vector<std::size_t> order_;
     ThemedTableSortState sortState_{};
     std::wstring& selectedName_;
+    std::vector<std::wstring> selectedNames_;
     std::unique_ptr<ThemedWindowUi> windowUi_;
     bool accepted_ = false;
     bool done_ = false;
@@ -1778,18 +1801,24 @@ private:
         InvalidateRect(hwnd_, nullptr, FALSE);
     }
     void PopulateTable() {
-        const int selectedIndex = ThemedUi::TableSelectedIndex(table_);
-        const std::intptr_t selectedKey = selectedIndex >= 0 ? ThemedUi::TableRowKey(table_, selectedIndex) : 0;
+        const std::vector<std::intptr_t> selectedKeys = ThemedUi::TableSelectedKeys(table_);
+        const std::intptr_t focusedKey = [this]() -> std::intptr_t {
+            const int focused = ThemedUi::TableFocusedIndex(table_);
+            return focused >= 0 ? ThemedUi::TableRowKey(table_, focused) : 0;
+        }();
         const std::intptr_t topKey = ThemedUi::TableTopVisibleRowKey(table_);
         std::vector<ThemedTableRow> rows; rows.reserve(records_.size());
         for (const auto& record : records_) rows.push_back(TableRow(record));
         ThemedUi::SetTableRows(table_, rows);
         ThemedUi::SetTableSortState(table_, sortState_);
-        if (selectedKey != 0) {
-            const int restored = ThemedUi::FindTableRowByKey(table_, selectedKey);
-            if (restored >= 0) ThemedUi::SetTableSelectedIndex(table_, restored);
+        if (!selectedKeys.empty()) {
+            ThemedUi::SetTableSelectedKeys(table_, selectedKeys);
         } else if (!rows.empty()) {
             ThemedUi::SetTableSelectedIndex(table_, 0);
+        }
+        if (focusedKey != 0) {
+            const int restored = ThemedUi::FindTableRowByKey(table_, focusedKey);
+            if (restored >= 0) ThemedUi::SetTableFocusedIndex(table_, restored);
         }
         ThemedUi::RestoreTableTopVisibleRowByKey(table_, topKey);
         UpdateSelectionState();
@@ -2016,6 +2045,27 @@ private:
         checkedIds_.clear();
         if (checked) for (const auto& record : records_) checkedIds_.insert(record.id);
         PopulateTable();
+    }
+    void ToggleCheckedForSelection() {
+        const auto indices = ThemedUi::TableSelectedIndices(table_);
+        if (indices.empty()) return;
+        bool anyChecked = false;
+        for (int index : indices) {
+            if (index >= 0 && index < static_cast<int>(records_.size()) &&
+                ThemedUi::IsTableChecked(table_, index)) {
+                anyChecked = true;
+                break;
+            }
+        }
+        const bool target = !anyChecked;
+        for (int index : indices) {
+            if (index >= 0 && index < static_cast<int>(records_.size())) {
+                const auto& id = records_[static_cast<std::size_t>(index)].id;
+                if (target) checkedIds_.insert(id); else checkedIds_.erase(id);
+            }
+        }
+        ThemedUi::SetTableCheckedIndices(table_, indices, target);
+        UpdateSelectionState();
     }
     void ShowToast(const std::wstring& text, ThemedToastRole role, int durationMs = 0) {
         if (!windowUi_) return;
@@ -2464,7 +2514,9 @@ private:
             const int statusWidth = ui.tableColumnWidth({L"本地状态", L"本地不存在", L"本地较新"});
             const int actionWidth = ui.buttonWidth(
                 L"…", ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text) + ui.denseGap();
-            ThemedTableOptions tableOptions{}; tableOptions.checkable = true; tableOptions.allowColumnResize = true;
+            ThemedTableOptions tableOptions{}; tableOptions.checkable = true;
+            tableOptions.selection = ThemedTableSelection::Multiple;
+            tableOptions.allowColumnResize = true;
             tableOptions.reserveScrollBarGutter = true;
             table_ = ui.Table(430, frame, {
                 {L"name", L"文件名", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Remaining, 0, true},
@@ -2545,6 +2597,10 @@ private:
                     UpdateSelectionState();
                     return 0;
                 }
+                if (event.kind == ThemedTableEventKind::SelectionChanged) {
+                    UpdateSelectionState();
+                    return 0;
+                }
                 if (event.kind == ThemedTableEventKind::ActionInvoked && event.actionId == ID_FILE_ROW_MENU) {
                     ShowFileActionMenu(event.row, ActionMenuAnchor(event.row));
                     return 0;
@@ -2574,7 +2630,7 @@ private:
             ShowFileActionMenu(row, anchor);
             return 0;
         }
-        case WM_COMMAND: if (LOWORD(wParam)==ID_WEBDAV_FILE_REFRESH) { StartRefresh(); return 0; } if (LOWORD(wParam)==ID_WEBDAV_FILE_TRANSFER_QUEUE) { ShowTransferQueue(); return 0; } if (LOWORD(wParam)==ID_WEBDAV_FILE_SELECT_ALL) { SelectAll(true); return 0; } if (LOWORD(wParam)==ID_WEBDAV_FILE_CLEAR_SELECTION) { SelectAll(false); return 0; } if (LOWORD(wParam)==ID_WEBDAV_FILE_UPLOAD_SELECTED) { UploadSelected(); return 0; } if (LOWORD(wParam)==ID_WEBDAV_FILE_DOWNLOAD_SELECTED) { DownloadSelected(); return 0; } if (LOWORD(wParam)==ID_WEBDAV_FILE_DELETE_SELECTED) { DeleteChecked(); return 0; } if (LOWORD(wParam)==ID_WEBDAV_FILE_DOWNLOAD) { Download(); return 0; } if (LOWORD(wParam)==ID_WEBDAV_FILE_DELETE) { DeleteSelected(); return 0; } return 0;
+        case WM_COMMAND: if (LOWORD(wParam)==ID_WEBDAV_FILE_REFRESH) { StartRefresh(); return 0; } if (LOWORD(wParam)==ID_WEBDAV_FILE_TRANSFER_QUEUE) { ShowTransferQueue(); return 0; } if (LOWORD(wParam)==ID_WEBDAV_FILE_SELECT_ALL) { SelectAll(true); return 0; } if (LOWORD(wParam)==ThemedControls::ID_TABLE_SELECT_ALL) { SelectAll(true); return 0; } if (LOWORD(wParam)==ID_WEBDAV_FILE_CLEAR_SELECTION) { SelectAll(false); return 0; } if (LOWORD(wParam)==ID_WEBDAV_FILE_UPLOAD_SELECTED) { UploadSelected(); return 0; } if (LOWORD(wParam)==ID_WEBDAV_FILE_DOWNLOAD_SELECTED) { DownloadSelected(); return 0; } if (LOWORD(wParam)==ID_WEBDAV_FILE_DELETE_SELECTED) { DeleteChecked(); return 0; } if (LOWORD(wParam)==ID_WEBDAV_FILE_DOWNLOAD) { Download(); return 0; } if (LOWORD(wParam)==ID_WEBDAV_FILE_DELETE) { DeleteSelected(); return 0; } return 0;
         case WM_CLOSE: if (refreshTask_) refreshTask_->RequestStop(); done_=true; DestroyWindow(hwnd_); return 0;
         case WM_NCDESTROY: if (refreshTask_) refreshTask_->RequestStop(); alive_->store(false); RemovePropW(hwnd_, L"QuattroWebDavIncrementalApplied"); RemovePropW(hwnd_, L"QuattroWebDavFileActionMenuHasOpenLocation"); RemovePropW(hwnd_, L"QuattroWebDavFileActionMenuHasUpload"); done_=true; hwnd_=nullptr; return 0;
         default: return DefWindowProcW(hwnd_, message, wParam, lParam);
@@ -3569,23 +3625,27 @@ private:
                 hwnd_, instance_, theme_, L"当前无法访问右键菜单缓存。", L"重置右键菜单", MB_OK | MB_ICONWARNING);
             return;
         }
+        const std::vector<std::intptr_t> selectedKeys = SelectedContextMenuProviderKeys();
+        const bool hasSelection = !selectedKeys.empty();
+        const std::wstring scopeText = hasSelection
+            ? (L"将只重置选中的 " + std::to_wstring(selectedKeys.size()) + L" 个工具的右键菜单跟踪。是否继续？")
+            : L"重置后将关闭所有右键菜单跟踪开关，并清除全部启动项缓存的菜单列表、启用状态和菜单图标。是否继续？";
         const int answer = ShowThemedMessageBox(
-            hwnd_,
-            instance_,
-            theme_,
-            L"重置后将关闭所有右键菜单跟踪开关，并清除全部启动项缓存的菜单列表、启用状态和菜单图标。是否继续？",
-            L"重置右键菜单",
-            MB_YESNO | MB_ICONWARNING);
+            hwnd_, instance_, theme_, scopeText, L"重置右键菜单", MB_YESNO | MB_ICONWARNING);
         if (answer != IDYES) {
             return;
         }
         if (resetContextMenuCallback_()) {
             for (const auto& provider : TrackedContextMenuProviders()) {
+                if (hasSelection && !IsContextMenuProviderSelected(selectedKeys, provider.checkBoxControlId)) {
+                    continue;
+                }
                 config_.*(provider.configMember) = false;
                 draft_.*(provider.configMember) = false;
             }
             AddContextMenuTableRows();
-            ShowToast(L"右键菜单已重置，跟踪开关与缓存均已恢复默认。", ThemedToastRole::Success, 5000);
+            ShowToast(hasSelection ? L"已重置所选工具的右键菜单跟踪。" : L"右键菜单已重置，跟踪开关与缓存均已恢复默认。",
+                ThemedToastRole::Success, 5000);
         } else {
             ShowThemedMessageBox(
                 hwnd_, instance_, theme_, L"右键菜单重置失败，请确认缓存目录可写。", L"重置右键菜单", MB_OK | MB_ICONWARNING);
@@ -3596,6 +3656,29 @@ private:
         ShellContextMenuTrackingOptions tracking;
         for (const auto& provider : TrackedContextMenuProviders()) {
             tracking.*(provider.trackingMember) = draft_.*(provider.configMember);
+        }
+        return tracking;
+    }
+
+    std::vector<std::intptr_t> SelectedContextMenuProviderKeys() const {
+        if (!contextMenuTable_) return {};
+        return ThemedUi::TableSelectedKeys(contextMenuTable_);
+    }
+
+    bool IsContextMenuProviderSelected(
+        const std::vector<std::intptr_t>& selectedKeys, int checkBoxControlId) const {
+        for (std::intptr_t key : selectedKeys) {
+            if (key == static_cast<std::intptr_t>(checkBoxControlId)) return true;
+        }
+        return false;
+    }
+
+    ShellContextMenuTrackingOptions ContextMenuTrackingDraftForSelection(
+        const std::vector<std::intptr_t>& selectedKeys) const {
+        ShellContextMenuTrackingOptions tracking;
+        for (const auto& provider : TrackedContextMenuProviders()) {
+            const bool selected = IsContextMenuProviderSelected(selectedKeys, provider.checkBoxControlId);
+            tracking.*(provider.trackingMember) = selected ? draft_.*(provider.configMember) : false;
         }
         return tracking;
     }
@@ -3668,10 +3751,16 @@ private:
             ShowToast(L"Windows 菜单正在刷新，请稍候。", ThemedToastRole::Info);
             return;
         }
-        const ShellContextMenuTrackingOptions tracking = ContextMenuTrackingDraft();
+        const std::vector<std::intptr_t> selectedKeys = SelectedContextMenuProviderKeys();
+        const bool hasSelection = !selectedKeys.empty();
+        const ShellContextMenuTrackingOptions tracking = hasSelection
+            ? ContextMenuTrackingDraftForSelection(selectedKeys)
+            : ContextMenuTrackingDraft();
         if (!tracking.Any()) {
             ShowThemedMessageBox(
-                hwnd_, instance_, theme_, L"没有启用需要跟踪的工具。", L"从Windows菜单刷新", MB_OK | MB_ICONINFORMATION);
+                hwnd_, instance_, theme_,
+                hasSelection ? L"所选工具均未启用跟踪，无法刷新。" : L"没有启用需要跟踪的工具。",
+                L"从Windows菜单刷新", MB_OK | MB_ICONINFORMATION);
             return;
         }
         if (contextMenuLinks_.empty()) {
@@ -3801,6 +3890,39 @@ private:
         }).detach();
     }
 
+    void DownloadAndApplySelectedWebDavBackups(const AppConfig& config, const std::vector<std::wstring>& names) {
+        SetWebDavBusy(true, SettingsWebDavOperation::DownloadApply);
+        const HWND target = hwnd_;
+        const std::filesystem::path appDirectory = appDirectory_;
+        std::thread([target, appDirectory, config, names]() {
+            auto result = std::make_unique<SettingsWebDavResult>();
+            result->operation = SettingsWebDavOperation::DownloadApply;
+            WebDavBackupService service(appDirectory, config);
+            bool ok = true;
+            std::wstring detail;
+            for (const std::wstring& name : names) {
+                const auto preview = service.DownloadAndPreviewMerge(name);
+                if (!preview.ok) {
+                    ok = false;
+                    detail += L"\n" + name + L"：下载失败，" + preview.message;
+                    continue;
+                }
+                const auto apply = service.ApplyDownloadedMerge(
+                    preview.downloadedPackagePath, preview.remoteName, TodoRestorePolicy::KeepDeleted, preview.mergePreview.stateToken);
+                if (!apply.ok) {
+                    ok = false;
+                    detail += L"\n" + name + L"：合并失败，" + apply.message;
+                } else {
+                    detail += L"\n" + name + L"：已合并。";
+                }
+            }
+            result->ok = ok;
+            result->message = detail.empty() ? L"已下载并合并所选备份。" : detail;
+            SettingsWebDavResult* raw = result.release();
+            if (!PostMessageW(target, WM_SETTINGS_WEBDAV_DONE, 0, reinterpret_cast<LPARAM>(raw))) delete raw;
+        }).detach();
+    }
+
     void DownloadWebDavBackup() {
         if (!EnsureWebDavIdle()) {
             return;
@@ -3910,26 +4032,44 @@ private:
         if (!selectionDialog.Run()) {
             return;
         }
-        auto selectedBackup = std::find_if(result.backups.begin(), result.backups.end(), [&](const WebDavRemoteFile& backup) {
-            return backup.name == fileName;
-        });
-        if (selectedBackup == result.backups.end()) {
-            ShowThemedMessageBox(hwnd_, instance_, theme_, L"未找到所选 WebDAV 备份，请重新选择。", L"从云端下载", MB_OK | MB_ICONWARNING);
+        const std::vector<std::wstring>& selectedNames = selectionDialog.SelectedNames();
+        if (selectedNames.empty()) {
             return;
         }
 
+        if (selectedNames.size() == 1) {
+            const std::wstring single = selectedNames.front();
+            auto selectedBackup = std::find_if(result.backups.begin(), result.backups.end(), [&](const WebDavRemoteFile& backup) {
+                return backup.name == single;
+            });
+            if (selectedBackup == result.backups.end()) {
+                ShowThemedMessageBox(hwnd_, instance_, theme_, L"未找到所选 WebDAV 备份，请重新选择。", L"从云端下载", MB_OK | MB_ICONWARNING);
+                return;
+            }
+            const int confirm = ShowThemedMessageBox(
+                hwnd_,
+                instance_,
+                theme_,
+                FormatBackupConfirmationText(*selectedBackup),
+                L"从云端下载",
+                MB_OKCANCEL | MB_ICONINFORMATION);
+            if (confirm != IDOK) {
+                return;
+            }
+            DownloadSelectedWebDavBackup(result.config, single);
+            return;
+        }
+
+        std::wstring listText;
+        for (const auto& name : selectedNames) listText += L"- " + name + L"\n";
+        const std::wstring message = L"将依次下载并合并以下 " + std::to_wstring(selectedNames.size()) +
+            L" 个备份（已删除的待办将保持删除）：\n\n" + listText;
         const int confirm = ShowThemedMessageBox(
-            hwnd_,
-            instance_,
-            theme_,
-            FormatBackupConfirmationText(*selectedBackup),
-            L"从云端下载",
-            MB_OKCANCEL | MB_ICONINFORMATION);
+            hwnd_, instance_, theme_, message, L"从云端下载", MB_OKCANCEL | MB_ICONINFORMATION);
         if (confirm != IDOK) {
             return;
         }
-
-        DownloadSelectedWebDavBackup(result.config, fileName);
+        DownloadAndApplySelectedWebDavBackups(result.config, selectedNames);
     }
 
     void TestWebDavConnection() {
@@ -4598,6 +4738,7 @@ private:
             contextMenuTableOptions.showHeader = false;
             contextMenuTableOptions.reserveScrollBarGutter = true;
             contextMenuTableOptions.fullRowSelect = true;
+            contextMenuTableOptions.selection = ThemedTableSelection::Multiple;
             contextMenuTable_ = MakeUi().Table(
                 ID_CONTEXT_MENU_TABLE,
                 contextMenuTableFrame,
@@ -5111,6 +5252,15 @@ private:
             }
             if (LOWORD(wParam) == ID_REFRESH_CONTEXT_MENU_FROM_NATIVE) {
                 RefreshContextMenuFromNative();
+                return 0;
+            }
+            if (LOWORD(wParam) == ID_TABLE_SELECT_ALL_CMD) {
+                if (contextMenuTable_) {
+                    const int count = ThemedUi::TableRowCount(contextMenuTable_);
+                    std::vector<int> all(static_cast<std::size_t>(count));
+                    for (int i = 0; i < count; ++i) all[i] = i;
+                    ThemedUi::SetTableSelectedIndices(contextMenuTable_, all);
+                }
                 return 0;
             }
             if (LOWORD(wParam) == ID_WEBDAV_UPLOAD) {

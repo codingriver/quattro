@@ -7,11 +7,17 @@
 #include <vector>
 #include <windows.h>
 
+enum class ThemedTableSelection {
+    Single,
+    Multiple,
+};
+
 namespace ThemedControls {
 
 COLORREF ListSurfaceColor(const Theme& theme);
 
 constexpr UINT WM_HOTKEY_CAPTURED = WM_APP + 0x361;
+constexpr int ID_TABLE_SELECT_ALL = 0x7FFE;
 
 HWND CreateButton(
     HINSTANCE instance,
@@ -449,6 +455,7 @@ struct TableCellRuntime {
 };
 void RegisterTable(HWND table, const Theme& theme, UINT dpi = 0);
 void ConfigureTableRowPresentation(HWND table, bool twoLines);
+void SetTableSelectionMode(HWND table, ThemedTableSelection mode);
 int ResolveTableColumnMinimumWidth(
     HWND table,
     const std::wstring& title,

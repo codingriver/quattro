@@ -113,6 +113,7 @@ struct ControlState {
     bool tableShowRowGridLines = false;
     bool tableShowColumnGridLines = false;
     bool tableTwoLineRows = false;
+    ThemedTableSelection tableSelectionMode = ThemedTableSelection::Single;
     int tableRowsUpdateDepth = 0;
     std::vector<int> tableColumnWidthModes;
     std::vector<int> tableColumnMinimumWidths;
@@ -191,6 +192,48 @@ void EraseState(HWND hwnd) {
         map.erase(it);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Table multi-selection helpers (used by the themed subclass proc).
+// ---------------------------------------------------------------------------
+
+int TableFocusedRow(HWND table) {
+    return table ? ListView_GetNextItem(table, -1, LVNI_FOCUSED) : -1;
+}
+
+void ClearTableSelection(HWND table) {
+    if (!table) return;
+    const int count = ListView_GetItemCount(table);
+    for (int row = 0; row < count; ++row) {
+        ListView_SetItemState(table, row, 0, LVIS_SELECTED);
+    }
+}
+
+void ToggleCheckedForSelectedTableRows(HWND table) {
+    if (!table) return;
+    const int count = ListView_GetItemCount(table);
+    std::vector<int> selected;
+    int row = -1;
+    while ((row = ListView_GetNextItem(table, row, LVNI_SELECTED)) >= 0) {
+        selected.push_back(row);
+    }
+    if (selected.empty()) return;
+    bool anyChecked = false;
+    for (int index : selected) {
+        if (index < count && ThemedControls::IsTableRowEnabled(table, index) && ListView_GetCheckState(table, index)) {
+            anyChecked = true;
+            break;
+        }
+    }
+    const BOOL target = anyChecked ? FALSE : TRUE;
+    for (int index : selected) {
+        if (index < count && ThemedControls::IsTableRowEnabled(table, index)) {
+            ListView_SetCheckState(table, index, target);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 
 bool IsOwnerDrawButtonKind(ControlKind kind) {
     return kind == ControlKind::Button ||
@@ -1755,14 +1798,32 @@ LRESULT CALLBACK ThemedControlProc(HWND hwnd, UINT message, WPARAM wParam, LPARA
         break;
     case WM_KEYDOWN:
     case WM_SYSKEYDOWN:
-        if (KindFor(hwnd) == ControlKind::Table && wParam == VK_SPACE) {
-            const int selected = ListView_GetNextItem(hwnd, -1, LVNI_SELECTED);
-            if (selected >= 0 && !ThemedControls::IsTableRowEnabled(hwnd, selected)) {
+        if (KindFor(hwnd) == ControlKind::Table && IsWindowEnabled(hwnd)) {
+            auto& tableState = StateFor(hwnd);
+            const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+            const bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+            const bool multi = tableState.tableSelectionMode == ThemedTableSelection::Multiple;
+
+            if (multi && ctrl && !shift && (wParam == L'A' || wParam == L'a')) {
+                if (HWND parent = GetParent(hwnd)) {
+                    SendMessageW(parent, WM_COMMAND,
+                        MAKEWPARAM(ThemedControls::ID_TABLE_SELECT_ALL, 0),
+                        reinterpret_cast<LPARAM>(hwnd));
+                }
                 return 0;
             }
-            if (selected >= 0 && IsWindowEnabled(hwnd)) {
-                const BOOL checked = ListView_GetCheckState(hwnd, selected) != FALSE;
-                ListView_SetCheckState(hwnd, selected, checked ? FALSE : TRUE);
+
+            if (wParam == VK_SPACE) {
+                ToggleCheckedForSelectedTableRows(hwnd);
+                return 0;
+            }
+
+            if (multi && wParam == VK_ESCAPE) {
+                const int focused = TableFocusedRow(hwnd);
+                ClearTableSelection(hwnd);
+                if (focused >= 0) {
+                    ListView_SetItemState(hwnd, focused, LVIS_FOCUSED, LVIS_FOCUSED);
+                }
                 return 0;
             }
         }
@@ -4801,6 +4862,11 @@ void RegisterTable(HWND table, const Theme& theme, UINT dpi) {
     AttachThemedBehavior(table);
     ApplyListViewTheme(table, theme);
     ThemedControls::RestoreTableDefaultImageList(table);
+}
+
+void SetTableSelectionMode(HWND table, ThemedTableSelection mode) {
+    if (!table) return;
+    StateFor(table).tableSelectionMode = mode;
 }
 
 void ConfigureTableRowPresentation(HWND table, bool twoLines) {

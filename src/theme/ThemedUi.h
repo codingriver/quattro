@@ -282,11 +282,6 @@ struct ThemedLinkOptions {
     bool visited = false;
 };
 
-enum class ThemedTableSelection {
-    Single,
-    Multiple,
-};
-
 enum class ThemedTableView {
     Details,
     Icons,
@@ -1052,6 +1047,7 @@ public:
     static void SetTableView(HWND table, ThemedTableView view);
     static void SetTableChecked(HWND table, int index, bool checked);
     static void SetTableCheckedAll(HWND table, bool checked);
+    static void SetTableCheckedIndices(HWND table, const std::vector<int>& indices, bool checked);
     static bool IsTableChecked(HWND table, int index);
     static bool IsTableRowEnabled(HWND table, int index);
     static bool IsTableRowActive(HWND table, int index);
@@ -1059,6 +1055,14 @@ public:
     static int TableSelectedIndex(HWND table);
     static void SetTableSelectedIndex(HWND table, int index);
     static bool SetTableSelectedKey(HWND table, std::intptr_t key);
+    static std::vector<int> TableSelectedIndices(HWND table);
+    static std::vector<std::intptr_t> TableSelectedKeys(HWND table);
+    static void SetTableSelectedIndices(HWND table, const std::vector<int>& indices);
+    static bool SetTableSelectedKeys(HWND table, const std::vector<std::intptr_t>& keys);
+    static void SetTableSelectedRange(HWND table, int anchor, int target);
+    static void AddTableSelectedRange(HWND table, int anchor, int target);
+    static int TableFocusedIndex(HWND table);
+    static void SetTableFocusedIndex(HWND table, int index);
     static std::intptr_t TableRowKey(HWND table, int index);
     static std::intptr_t TableTopVisibleRowKey(HWND table);
     static bool RestoreTableTopVisibleRowByKey(HWND table, std::intptr_t key);

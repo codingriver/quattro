@@ -319,9 +319,10 @@ int RunCli(const std::vector<std::wstring>& arguments) {
 int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int) {
     int argumentCount = 0;
     LPWSTR* rawArguments = CommandLineToArgvW(GetCommandLineW(), &argumentCount);
-    // IFEO 占位：系统会把被拦截程序改为启动本 exe 的 --ifeo-noop 分支。必须在任何
-    // 窗口/COM/CLI 初始化之前判定并瞬时退出，做到零副作用、零依赖。
-    if (argumentCount == 2 && rawArguments && wcscmp(rawArguments[1], L"--ifeo-noop") == 0) {
+    // IFEO 占位：系统会把被拦截程序改为启动本 exe 的 --ifeo-noop 分支，并在此后追加
+    // 被拦截程序的完整路径和原始命令行参数（argc 必然 >= 3）。必须在任何窗口/COM/CLI
+    // 初始化之前判定并瞬时退出，做到零副作用、零依赖。
+    if (argumentCount >= 2 && rawArguments && wcscmp(rawArguments[1], L"--ifeo-noop") == 0) {
         LocalFree(rawArguments);
         return 0;
     }

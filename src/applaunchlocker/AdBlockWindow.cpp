@@ -377,6 +377,9 @@ LRESULT AdBlockWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam) {
             StartScan();
         } else if (id == ID_BLOCK_SELECTED) {
             StartBlockSelected();
+        } else if (id == ThemedControls::ID_TABLE_SELECT_ALL) {
+            ThemedUi::SetTableCheckedAll(scanTable_, true);
+            return 0;
         } else if (id == ID_UNBLOCK) {
             StartUnblock();
         } else if (id == ID_UNBLOCK_ALL) {
@@ -565,6 +568,7 @@ void AdBlockWindow::CreateControls() {
 
     ThemedTableOptions tableOptions{};
     tableOptions.checkable = true;
+    tableOptions.selection = ThemedTableSelection::Multiple;
     tableOptions.allowColumnResize = true;
     tableOptions.showRowGridLines = true;
     tableOptions.showColumnGridLines = true;

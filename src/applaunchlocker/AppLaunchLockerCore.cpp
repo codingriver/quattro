@@ -1622,6 +1622,12 @@ std::wstring HashHex(const std::wstring& input) {
 
 constexpr const wchar_t* kIfeoBase = L"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options";
 
+// IFEO Debugger 的查找发生在发起 CreateProcess 的进程中，并按「调用者」的位数走
+// WOW64 重定向：64 位父进程读 64 位视图，32 位父进程读 Wow6432Node 视图，与被拦
+// 截程序自身的位数无关。因此拦截必须同时写入两个视图，否则来自另一视图的启动方
+// 会完全绕过拦截（这正是"已拦截但程序仍被拉起"的根因）。
+constexpr REGSAM kIfeoViews[] = {KEY_WOW64_64KEY, KEY_WOW64_32KEY};
+
 // 从完整路径取文件名（小写归一化）。
 std::wstring FileNameOf(const std::wstring& path) {
     const std::size_t slash = path.find_last_of(L"\\/");
@@ -1832,33 +1838,6 @@ GuardVerdict EvaluateGuard(const std::wstring& targetPath, const std::wstring& i
     return {true, true, L"无法验证该程序签名，请确认这不是你需要的安全软件"};
 }
 
-// 判断目标 PE 是 32 位还是 64 位映像，决定 IFEO 注册表视图。
-std::wstring DetectIfeoView(const std::wstring& path) {
-    HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
-        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (file == INVALID_HANDLE_VALUE) return L"64";
-    std::wstring view = L"64";
-    IMAGE_DOS_HEADER dos{};
-    DWORD read = 0;
-    if (ReadFile(file, &dos, sizeof(dos), &read, nullptr) && read == sizeof(dos) && dos.e_magic == IMAGE_DOS_SIGNATURE) {
-        if (SetFilePointer(file, dos.e_lfanew, nullptr, FILE_BEGIN) != INVALID_SET_FILE_POINTER) {
-            DWORD signature = 0;
-            IMAGE_FILE_HEADER header{};
-            if (ReadFile(file, &signature, sizeof(signature), &read, nullptr) && read == sizeof(signature) &&
-                signature == IMAGE_NT_SIGNATURE &&
-                ReadFile(file, &header, sizeof(header), &read, nullptr) && read == sizeof(header)) {
-                if (header.Machine == IMAGE_FILE_MACHINE_I386) view = L"32";
-            }
-        }
-    }
-    CloseHandle(file);
-    return view;
-}
-
-REGSAM IfeoView(const DisabledRecord& record) {
-    return MapValue(record.original, L"ifeoView") == L"32" ? KEY_WOW64_32KEY : KEY_WOW64_64KEY;
-}
-
 OperationResult WriteRegString(HKEY key, const wchar_t* name, DWORD type, const std::wstring& value) {
     const LSTATUS status = RegSetValueExW(key, name, 0, type,
         reinterpret_cast<const BYTE*>(value.c_str()),
@@ -1885,7 +1864,8 @@ void RemoveEmptyIfeoKey(const std::wstring& imageName, REGSAM view) {
     }
 }
 
-// 写入 IFEO 拦截；补充 record.original 的恢复字段。
+// 写入 IFEO 拦截；补充 record.original 的恢复字段。两个注册表视图（64 位 /
+// Wow6432Node）都会写入，保证任意位数的启动方都会被拦截。
 OperationResult ApplyIfeoBlock(DisabledRecord& record) {
     const std::wstring imageName = MapValue(record.original, L"ifeoImageName");
     if (imageName.empty()) return {false, L"拦截目标无效。"};
@@ -1894,46 +1874,55 @@ OperationResult ApplyIfeoBlock(DisabledRecord& record) {
     const GuardVerdict guard = EvaluateGuard(targetPath, imageName);
     if (!guard.allow) return {false, L"该程序不允许拦截：" + guard.reason};
 
-    const REGSAM view = IfeoView(record);
     const std::wstring debugger = L"\"" + CurrentExecutablePath() + L"\" --ifeo-noop";
     const std::wstring keyPath = std::wstring(kIfeoBase) + L"\\" + imageName;
+    const bool exact = MapValue(record.original, L"blockMode") == L"exact";
+    const std::wstring subName = exact ? L"AppLaunchLocker_" + HashHex(Lower(targetPath)) : std::wstring{};
 
-    HKEY rawKey = nullptr;
-    LSTATUS status = RegCreateKeyExW(HKEY_LOCAL_MACHINE, keyPath.c_str(), 0, nullptr, 0,
-        KEY_QUERY_VALUE | KEY_SET_VALUE | KEY_CREATE_SUB_KEY | view, nullptr, &rawKey, nullptr);
-    if (status != ERROR_SUCCESS) return {false, L"无法写入 IFEO 键：" + LastErrorText(status)};
-    UniqueRegKey key(rawKey);
+    bool originalBackedUp = false;
+    for (const REGSAM view : kIfeoViews) {
+        HKEY rawKey = nullptr;
+        LSTATUS status = RegCreateKeyExW(HKEY_LOCAL_MACHINE, keyPath.c_str(), 0, nullptr, 0,
+            KEY_QUERY_VALUE | KEY_SET_VALUE | KEY_CREATE_SUB_KEY | view, nullptr, &rawKey, nullptr);
+        if (status != ERROR_SUCCESS) return {false, L"无法写入 IFEO 键：" + LastErrorText(status)};
+        UniqueRegKey key(rawKey);
 
-    if (MapValue(record.original, L"blockMode") == L"exact") {
-        DWORD useFilter = 1;
-        RegSetValueExW(rawKey, L"UseFilter", 0, REG_DWORD, reinterpret_cast<const BYTE*>(&useFilter), sizeof(useFilter));
-        const std::wstring subName = L"AppLaunchLocker_" + HashHex(Lower(targetPath));
-        HKEY rawSub = nullptr;
-        status = RegCreateKeyExW(rawKey, subName.c_str(), 0, nullptr, 0,
-            KEY_SET_VALUE | view, nullptr, &rawSub, nullptr);
-        if (status != ERROR_SUCCESS) return {false, L"无法写入 IFEO 过滤子键：" + LastErrorText(status)};
-        UniqueRegKey sub(rawSub);
-        OperationResult wrote = WriteRegString(rawSub, L"FilterFullPath", REG_SZ, targetPath);
-        if (!wrote.success) return wrote;
-        wrote = WriteRegString(rawSub, L"Debugger", REG_SZ, debugger);
-        if (!wrote.success) return wrote;
+        if (exact) {
+            DWORD useFilter = 1;
+            RegSetValueExW(rawKey, L"UseFilter", 0, REG_DWORD, reinterpret_cast<const BYTE*>(&useFilter), sizeof(useFilter));
+            HKEY rawSub = nullptr;
+            status = RegCreateKeyExW(rawKey, subName.c_str(), 0, nullptr, 0,
+                KEY_SET_VALUE | view, nullptr, &rawSub, nullptr);
+            if (status != ERROR_SUCCESS) return {false, L"无法写入 IFEO 过滤子键：" + LastErrorText(status)};
+            UniqueRegKey sub(rawSub);
+            OperationResult wrote = WriteRegString(rawSub, L"FilterFullPath", REG_SZ, targetPath);
+            if (!wrote.success) return wrote;
+            wrote = WriteRegString(rawSub, L"Debugger", REG_SZ, debugger);
+            if (!wrote.success) return wrote;
+        } else {
+            // 原 Debugger 只备份一次；两个视图内容一致时以先读到的为准。
+            if (!originalBackedUp) {
+                DWORD type = 0;
+                DWORD bytes = 0;
+                const LSTATUS query = RegQueryValueExW(rawKey, L"Debugger", nullptr, &type, nullptr, &bytes);
+                if (query == ERROR_SUCCESS && (type == REG_SZ || type == REG_EXPAND_SZ) && bytes) {
+                    std::vector<BYTE> existing(bytes, 0);
+                    RegQueryValueExW(rawKey, L"Debugger", nullptr, &type, existing.data(), &bytes);
+                    record.original[L"ifeoHadOriginal"] = L"1";
+                    record.original[L"ifeoOriginalDebugger"] = BytesToHex(existing);
+                    record.original[L"ifeoOriginalType"] = std::to_wstring(type);
+                } else {
+                    record.original[L"ifeoHadOriginal"] = L"0";
+                }
+                originalBackedUp = true;
+            }
+            OperationResult wrote = WriteRegString(rawKey, L"Debugger", REG_SZ, debugger);
+            if (!wrote.success) return wrote;
+        }
+    }
+    if (exact) {
         record.original[L"ifeoSubKey"] = subName;
         record.original[L"ifeoHadOriginal"] = L"0";
-    } else {
-        DWORD type = 0;
-        DWORD bytes = 0;
-        const LSTATUS query = RegQueryValueExW(rawKey, L"Debugger", nullptr, &type, nullptr, &bytes);
-        if (query == ERROR_SUCCESS && (type == REG_SZ || type == REG_EXPAND_SZ) && bytes) {
-            std::vector<BYTE> existing(bytes, 0);
-            RegQueryValueExW(rawKey, L"Debugger", nullptr, &type, existing.data(), &bytes);
-            record.original[L"ifeoHadOriginal"] = L"1";
-            record.original[L"ifeoOriginalDebugger"] = BytesToHex(existing);
-            record.original[L"ifeoOriginalType"] = std::to_wstring(type);
-        } else {
-            record.original[L"ifeoHadOriginal"] = L"0";
-        }
-        OperationResult wrote = WriteRegString(rawKey, L"Debugger", REG_SZ, debugger);
-        if (!wrote.success) return wrote;
     }
     return {true, L"已拦截。"};
 }
@@ -1941,33 +1930,35 @@ OperationResult ApplyIfeoBlock(DisabledRecord& record) {
 OperationResult RestoreIfeoBlock(const DisabledRecord& record) {
     const std::wstring imageName = MapValue(record.original, L"ifeoImageName");
     if (imageName.empty()) return {false, L"记录无效。"};
-    const REGSAM view = IfeoView(record);
     const std::wstring keyPath = std::wstring(kIfeoBase) + L"\\" + imageName;
+    const bool exact = MapValue(record.original, L"blockMode") == L"exact";
 
-    HKEY rawKey = nullptr;
-    const LSTATUS opened = RegOpenKeyExW(HKEY_LOCAL_MACHINE, keyPath.c_str(), 0,
-        KEY_QUERY_VALUE | KEY_SET_VALUE | KEY_ENUMERATE_SUB_KEYS | view, &rawKey);
-    if (opened == ERROR_FILE_NOT_FOUND) return {true, L"已解除拦截。"};
-    if (opened != ERROR_SUCCESS) return {false, L"无法打开 IFEO 键：" + LastErrorText(opened)};
-    {
-        UniqueRegKey key(rawKey);
-        if (MapValue(record.original, L"blockMode") == L"exact") {
-            const std::wstring subName = MapValue(record.original, L"ifeoSubKey");
-            if (!subName.empty()) RegDeleteKeyExW(rawKey, subName.c_str(), view, 0);
-            DWORD subKeys = 0;
-            RegQueryInfoKeyW(rawKey, nullptr, nullptr, nullptr, &subKeys, nullptr, nullptr, nullptr,
-                nullptr, nullptr, nullptr, nullptr);
-            if (subKeys == 0) RegDeleteValueW(rawKey, L"UseFilter");
-        } else if (MapValue(record.original, L"ifeoHadOriginal") == L"1") {
-            const std::vector<BYTE> data = HexToBytes(MapValue(record.original, L"ifeoOriginalDebugger"));
-            DWORD type = REG_SZ;
-            ParseUnsigned(MapValue(record.original, L"ifeoOriginalType"), type);
-            RegSetValueExW(rawKey, L"Debugger", 0, type, data.data(), static_cast<DWORD>(data.size()));
-        } else {
-            RegDeleteValueW(rawKey, L"Debugger");
+    for (const REGSAM view : kIfeoViews) {
+        HKEY rawKey = nullptr;
+        const LSTATUS opened = RegOpenKeyExW(HKEY_LOCAL_MACHINE, keyPath.c_str(), 0,
+            KEY_QUERY_VALUE | KEY_SET_VALUE | KEY_ENUMERATE_SUB_KEYS | view, &rawKey);
+        if (opened == ERROR_FILE_NOT_FOUND) continue;
+        if (opened != ERROR_SUCCESS) return {false, L"无法打开 IFEO 键：" + LastErrorText(opened)};
+        {
+            UniqueRegKey key(rawKey);
+            if (exact) {
+                const std::wstring subName = MapValue(record.original, L"ifeoSubKey");
+                if (!subName.empty()) RegDeleteKeyExW(rawKey, subName.c_str(), view, 0);
+                DWORD subKeys = 0;
+                RegQueryInfoKeyW(rawKey, nullptr, nullptr, nullptr, &subKeys, nullptr, nullptr, nullptr,
+                    nullptr, nullptr, nullptr, nullptr);
+                if (subKeys == 0) RegDeleteValueW(rawKey, L"UseFilter");
+            } else if (MapValue(record.original, L"ifeoHadOriginal") == L"1") {
+                const std::vector<BYTE> data = HexToBytes(MapValue(record.original, L"ifeoOriginalDebugger"));
+                DWORD type = REG_SZ;
+                ParseUnsigned(MapValue(record.original, L"ifeoOriginalType"), type);
+                RegSetValueExW(rawKey, L"Debugger", 0, type, data.data(), static_cast<DWORD>(data.size()));
+            } else {
+                RegDeleteValueW(rawKey, L"Debugger");
+            }
         }
+        RemoveEmptyIfeoKey(imageName, view);
     }
-    RemoveEmptyIfeoKey(imageName, view);
     return {true, L"已解除拦截。"};
 }
 
@@ -1983,60 +1974,88 @@ OperationResult ReapplyIfeoBlock(const DisabledRecord& record) {
     const GuardVerdict guard = EvaluateGuard(targetPath, imageName);
     if (!guard.allow) return {false, L"该程序不允许拦截：" + guard.reason};
 
-    const REGSAM view = IfeoView(record);
     const std::wstring debugger = L"\"" + CurrentExecutablePath() + L"\" --ifeo-noop";
     const std::wstring keyPath = std::wstring(kIfeoBase) + L"\\" + imageName;
-    HKEY rawKey = nullptr;
-    LSTATUS status = RegCreateKeyExW(HKEY_LOCAL_MACHINE, keyPath.c_str(), 0, nullptr, 0,
-        KEY_QUERY_VALUE | KEY_SET_VALUE | KEY_CREATE_SUB_KEY | view, nullptr, &rawKey, nullptr);
-    if (status != ERROR_SUCCESS) return {false, L"无法写入 IFEO 键：" + LastErrorText(status)};
-    UniqueRegKey key(rawKey);
+    const bool exact = MapValue(record.original, L"blockMode") == L"exact";
 
-    if (MapValue(record.original, L"blockMode") == L"exact") {
-        const std::wstring subName = MapValue(record.original, L"ifeoSubKey");
-        if (subName.empty()) return {false, L"记录缺少 IFEO 过滤子键。"};
-        DWORD useFilter = 1;
-        RegSetValueExW(rawKey, L"UseFilter", 0, REG_DWORD, reinterpret_cast<const BYTE*>(&useFilter), sizeof(useFilter));
-        HKEY rawSub = nullptr;
-        status = RegCreateKeyExW(rawKey, subName.c_str(), 0, nullptr, 0,
-            KEY_SET_VALUE | view, nullptr, &rawSub, nullptr);
-        if (status != ERROR_SUCCESS) return {false, L"无法写入 IFEO 过滤子键：" + LastErrorText(status)};
-        UniqueRegKey sub(rawSub);
-        OperationResult wrote = WriteRegString(rawSub, L"FilterFullPath", REG_SZ, targetPath);
-        if (!wrote.success) return wrote;
-        wrote = WriteRegString(rawSub, L"Debugger", REG_SZ, debugger);
-        if (!wrote.success) return wrote;
-    } else {
-        OperationResult wrote = WriteRegString(rawKey, L"Debugger", REG_SZ, debugger);
-        if (!wrote.success) return wrote;
+    for (const REGSAM view : kIfeoViews) {
+        HKEY rawKey = nullptr;
+        LSTATUS status = RegCreateKeyExW(HKEY_LOCAL_MACHINE, keyPath.c_str(), 0, nullptr, 0,
+            KEY_QUERY_VALUE | KEY_SET_VALUE | KEY_CREATE_SUB_KEY | view, nullptr, &rawKey, nullptr);
+        if (status != ERROR_SUCCESS) return {false, L"无法写入 IFEO 键：" + LastErrorText(status)};
+        UniqueRegKey key(rawKey);
+
+        if (exact) {
+            const std::wstring subName = MapValue(record.original, L"ifeoSubKey");
+            if (subName.empty()) return {false, L"记录缺少 IFEO 过滤子键。"};
+            DWORD useFilter = 1;
+            RegSetValueExW(rawKey, L"UseFilter", 0, REG_DWORD, reinterpret_cast<const BYTE*>(&useFilter), sizeof(useFilter));
+            HKEY rawSub = nullptr;
+            status = RegCreateKeyExW(rawKey, subName.c_str(), 0, nullptr, 0,
+                KEY_SET_VALUE | view, nullptr, &rawSub, nullptr);
+            if (status != ERROR_SUCCESS) return {false, L"无法写入 IFEO 过滤子键：" + LastErrorText(status)};
+            UniqueRegKey sub(rawSub);
+            OperationResult wrote = WriteRegString(rawSub, L"FilterFullPath", REG_SZ, targetPath);
+            if (!wrote.success) return wrote;
+            wrote = WriteRegString(rawSub, L"Debugger", REG_SZ, debugger);
+            if (!wrote.success) return wrote;
+        } else {
+            OperationResult wrote = WriteRegString(rawKey, L"Debugger", REG_SZ, debugger);
+            if (!wrote.success) return wrote;
+        }
     }
     return VerifyIfeoBlock(record) ? OperationResult{true, L"已修复拦截。"}
         : OperationResult{false, L"已尝试修复，但未能确认 IFEO 拦截生效。"};
 }
 
+// 读取指定视图下 IFEO 映像键的 UseFilter 是否为 1（exact 模式过滤生效的前提）。
+bool ReadIfeoUseFilterEnabled(const std::wstring& imageName, REGSAM view) {
+    const std::wstring keyPath = std::wstring(kIfeoBase) + L"\\" + imageName;
+    HKEY rawKey = nullptr;
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, keyPath.c_str(), 0, KEY_QUERY_VALUE | view, &rawKey) != ERROR_SUCCESS) {
+        return false;
+    }
+    UniqueRegKey key(rawKey);
+    DWORD value = 0;
+    DWORD type = 0;
+    DWORD bytes = sizeof(value);
+    if (RegQueryValueExW(rawKey, L"UseFilter", nullptr, &type, reinterpret_cast<BYTE*>(&value), &bytes) != ERROR_SUCCESS ||
+        type != REG_DWORD) {
+        return false;
+    }
+    return value == 1;
+}
+
+// 两个视图都必须确认本工具的 Debugger 就位（exact 模式还要求父键 UseFilter=1），
+// 任何一个视图缺失都会让对应位数的启动方绕过拦截。
 bool VerifyIfeoBlock(const DisabledRecord& record) {
     const std::wstring imageName = MapValue(record.original, L"ifeoImageName");
     if (imageName.empty()) return false;
-    const REGSAM view = IfeoView(record);
-    std::wstring keyPath = std::wstring(kIfeoBase) + L"\\" + imageName;
-    if (MapValue(record.original, L"blockMode") == L"exact") {
-        const std::wstring subName = MapValue(record.original, L"ifeoSubKey");
-        if (subName.empty()) return false;
-        keyPath += L"\\" + subName;
+    const bool exact = MapValue(record.original, L"blockMode") == L"exact";
+    const std::wstring subName = exact ? MapValue(record.original, L"ifeoSubKey") : std::wstring{};
+    if (exact && subName.empty()) return false;
+
+    for (const REGSAM view : kIfeoViews) {
+        if (exact && !ReadIfeoUseFilterEnabled(imageName, view)) return false;
+        std::wstring keyPath = std::wstring(kIfeoBase) + L"\\" + imageName;
+        if (exact) keyPath += L"\\" + subName;
+        HKEY rawKey = nullptr;
+        if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, keyPath.c_str(), 0, KEY_QUERY_VALUE | view, &rawKey) != ERROR_SUCCESS) {
+            return false;
+        }
+        UniqueRegKey key(rawKey);
+        DWORD type = 0;
+        DWORD bytes = 0;
+        if (RegQueryValueExW(rawKey, L"Debugger", nullptr, &type, nullptr, &bytes) != ERROR_SUCCESS ||
+            (type != REG_SZ && type != REG_EXPAND_SZ) || !bytes) {
+            return false;
+        }
+        std::vector<BYTE> data(bytes + sizeof(wchar_t), 0);
+        if (RegQueryValueExW(rawKey, L"Debugger", nullptr, &type, data.data(), &bytes) != ERROR_SUCCESS) return false;
+        const std::wstring debugger = Lower(std::wstring(reinterpret_cast<const wchar_t*>(data.data())));
+        if (debugger.find(L"--ifeo-noop") == std::wstring::npos) return false;
     }
-    HKEY rawKey = nullptr;
-    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, keyPath.c_str(), 0, KEY_QUERY_VALUE | view, &rawKey) != ERROR_SUCCESS) return false;
-    UniqueRegKey key(rawKey);
-    DWORD type = 0;
-    DWORD bytes = 0;
-    if (RegQueryValueExW(rawKey, L"Debugger", nullptr, &type, nullptr, &bytes) != ERROR_SUCCESS ||
-        (type != REG_SZ && type != REG_EXPAND_SZ) || !bytes) {
-        return false;
-    }
-    std::vector<BYTE> data(bytes + sizeof(wchar_t), 0);
-    if (RegQueryValueExW(rawKey, L"Debugger", nullptr, &type, data.data(), &bytes) != ERROR_SUCCESS) return false;
-    const std::wstring debugger = Lower(std::wstring(reinterpret_cast<const wchar_t*>(data.data())));
-    return debugger.find(L"--ifeo-noop") != std::wstring::npos;
+    return true;
 }
 
 struct IfeoDebuggerState {
@@ -2093,15 +2112,33 @@ AdBlockRecordStatus CheckIfeoRecordStatus(const DisabledRecord& record) {
     if (exact && subKey.empty()) {
         return {AdBlockRecordState::BrokenRecord, L"记录缺少精确路径 IFEO 子键。", false, true};
     }
-    const IfeoDebuggerState state = ReadIfeoDebuggerState(imageName, IfeoView(record), subKey);
-    if (!state.error.empty()) return {AdBlockRecordState::Unknown, state.error, false, true};
-    if (!state.keyExists || !state.hasDebugger) {
-        return {AdBlockRecordState::Inactive, L"系统中已找不到本工具写入的 IFEO 拦截。", true, true};
+    // 逐视图核对：只有两个视图都被本工具的 Debugger 覆盖（exact 模式还要求父键
+    // UseFilter=1）才算真正生效；只覆盖一个视图时，另一位数视图的启动方仍可拉起目标。
+    int coveredViews = 0;
+    bool sawForeignDebugger = false;
+    for (const REGSAM view : kIfeoViews) {
+        const IfeoDebuggerState state = ReadIfeoDebuggerState(imageName, view, subKey);
+        if (!state.error.empty()) return {AdBlockRecordState::Unknown, state.error, false, true};
+        const bool filterEnabled = !exact || ReadIfeoUseFilterEnabled(imageName, view);
+        if (state.hasDebugger && state.createdByThisTool && filterEnabled) {
+            ++coveredViews;
+        } else if (state.hasDebugger && !state.createdByThisTool) {
+            sawForeignDebugger = true;
+        }
     }
-    if (!state.createdByThisTool) {
+    constexpr int kViewCount = static_cast<int>(sizeof(kIfeoViews) / sizeof(kIfeoViews[0]));
+    if (coveredViews == kViewCount) {
+        return {AdBlockRecordState::Active, L"IFEO 拦截生效中。", false, true};
+    }
+    if (coveredViews > 0) {
+        return {AdBlockRecordState::PartiallyActive,
+            L"IFEO 拦截只覆盖了部分注册表视图，某些启动方仍能拉起该程序，请修复。",
+            true, true};
+    }
+    if (sawForeignDebugger) {
         return {AdBlockRecordState::Overwritten, L"IFEO Debugger 已被外部程序改写，解除时将尝试恢复原值。", true, true};
     }
-    return {AdBlockRecordState::Active, L"IFEO 拦截生效中。", false, true};
+    return {AdBlockRecordState::Inactive, L"系统中已找不到本工具写入的 IFEO 拦截。", true, true};
 }
 
 AdBlockRecordStatus CheckStartupApprovedRecordStatus(const DisabledRecord& record) {
@@ -4097,12 +4134,19 @@ AdBlockPlan AdBlockManager::BuildBlockPlan(const std::vector<std::wstring>& targ
         item.willModifyIfeo = true;
         item.impactText = mode == L"exact" ? L"仅阻止此完整路径" : L"阻止所有同名可执行程序";
         const std::wstring subKey = mode == L"exact" ? (L"AppLaunchLocker_" + HashHex(Lower(target.path))) : std::wstring{};
-        const IfeoDebuggerState ifeo = ReadIfeoDebuggerState(target.imageName, DetectIfeoView(target.path) == L"32" ? KEY_WOW64_32KEY : KEY_WOW64_64KEY, subKey);
-        const IfeoDebuggerState parentIfeo = mode == L"exact"
-            ? ReadIfeoDebuggerState(target.imageName, DetectIfeoView(target.path) == L"32" ? KEY_WOW64_32KEY : KEY_WOW64_64KEY)
-            : ifeo;
-        item.hasExistingIfeoDebugger = (ifeo.hasDebugger && !ifeo.createdByThisTool) ||
-            (parentIfeo.hasDebugger && !parentIfeo.createdByThisTool);
+        // 两个视图都要检查既有 Debugger：拦截会同时覆盖两个视图，任一视图存在第三方
+        // Debugger 都需要提示备份/恢复语义。
+        bool hasForeignIfeoDebugger = false;
+        for (const REGSAM view : kIfeoViews) {
+            const IfeoDebuggerState ifeo = ReadIfeoDebuggerState(target.imageName, view, subKey);
+            const IfeoDebuggerState parentIfeo = mode == L"exact"
+                ? ReadIfeoDebuggerState(target.imageName, view)
+                : ifeo;
+            hasForeignIfeoDebugger = hasForeignIfeoDebugger ||
+                (ifeo.hasDebugger && !ifeo.createdByThisTool) ||
+                (parentIfeo.hasDebugger && !parentIfeo.createdByThisTool);
+        }
+        item.hasExistingIfeoDebugger = hasForeignIfeoDebugger;
         if (item.hasExistingIfeoDebugger) {
             item.riskLevel = L"warn";
             item.reason = L"目标已有 IFEO Debugger，拦截会备份并在解除时恢复。";
@@ -4160,7 +4204,6 @@ OperationResult AdBlockManager::Block(const std::wstring& targetPath, const std:
         {L"mechanism", L"ifeo"},
         {L"blockMode", mode},
         {L"ifeoImageName", imageName},
-        {L"ifeoView", DetectIfeoView(target.path)},
         {L"targetPath", target.path},
     };
     if (mode == L"name") record.original[L"filterFullPath"] = L"";

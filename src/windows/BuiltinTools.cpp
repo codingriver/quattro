@@ -100,6 +100,7 @@ constexpr int ID_PROCESS_TOOLS_TAB_BASE = 7710;
 constexpr int ID_PROCESS_TOOLS_PORT_TABLE = 7720;
 constexpr int ID_PROCESS_TOOLS_PID_TABLE = 7721;
 constexpr int ID_PROCESS_TOOLS_FILE_TABLE = 7722;
+constexpr int ID_PROCESS_KILL_SELECTED = 7790;
 constexpr int ID_FILE_LOCK_PROGRESS_BAR = 7730;
 constexpr int ID_FILE_LOCK_PROGRESS_STOP = 7731;
 constexpr int ID_FILE_LOCK_PROGRESS_CLOSE = 7732;
@@ -2460,7 +2461,7 @@ private:
             ThemedTableColumn{L"action", L"操作", ThemedTableColumnAlign::Center, ThemedTableColumnWidth::Fixed, actionWidth, false},
         };
         ThemedTableOptions options{};
-        options.selection = ThemedTableSelection::Single;
+        options.selection = ThemedTableSelection::Multiple;
         options.reserveScrollBarGutter = true;
         HWND table = ui.Table(id, frame, columns, options);
         AddPageControl(page, table);
@@ -2662,10 +2663,19 @@ private:
             buttonWidth,
             true);
 
+        const int killSelectedWidth = ui.buttonWidth(
+            L"结束选中", ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
+        const int killSelectedY = StatusY() - layout.rowGap - ui.buttonHeight();
+        RECT processIdTableFrame = ResultsFrame(pageTop + rowHeight + layout.sectionGap);
+        processIdTableFrame.bottom = killSelectedY - layout.rowGap;
         processIdTable_ = AddProcessTable(
             page,
             ID_PROCESS_TOOLS_PID_TABLE,
-            ResultsFrame(pageTop + rowHeight + layout.sectionGap));
+            processIdTableFrame);
+        AddButton(
+            page, ID_PROCESS_KILL_SELECTED, L"结束选中",
+            ui.clientWidth() - left - killSelectedWidth, killSelectedY,
+            ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, killSelectedWidth);
         processIdStatus_ = AddStatus(page, L"输入进程 ID 后点击查询。", left, StatusY(), ui.contentWidth());
     }
 
@@ -2707,10 +2717,19 @@ private:
             buttonWidth,
             true);
 
+        const int killSelectedWidth = ui.buttonWidth(
+            L"结束选中", ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
+        const int killSelectedY = StatusY() - layout.rowGap - ui.buttonHeight();
+        RECT portTableFrame = ResultsFrame(pageTop + rowHeight + layout.sectionGap);
+        portTableFrame.bottom = killSelectedY - layout.rowGap;
         portTable_ = AddProcessTable(
             page,
             ID_PROCESS_TOOLS_PORT_TABLE,
-            ResultsFrame(pageTop + rowHeight + layout.sectionGap));
+            portTableFrame);
+        AddButton(
+            page, ID_PROCESS_KILL_SELECTED, L"结束选中",
+            ui.clientWidth() - left - killSelectedWidth, killSelectedY,
+            ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, killSelectedWidth);
         portStatus_ = AddStatus(page, L"输入端口号后点击检查。", left, StatusY(), ui.contentWidth());
     }
 
@@ -2775,6 +2794,18 @@ private:
             ThemedButtonSize::Normal,
             ThemedButtonWidthMode::Fixed,
             killAllWidth);
+        const int killSelectedWidth = ui.buttonWidth(
+            L"结束选中", ThemedButtonRole::Normal, ThemedButtonSize::Normal, ThemedButtonWidthMode::Text);
+        fileKillSelected_ = AddButton(
+            page,
+            ID_PROCESS_KILL_SELECTED,
+            L"结束选中",
+            left,
+            killAllY,
+            ThemedButtonRole::Normal,
+            ThemedButtonSize::Normal,
+            ThemedButtonWidthMode::Fixed,
+            killSelectedWidth);
         fileStatus_ = AddStatus(page, L"输入文件或目录路径后点击检查。", left, StatusY(), ui.contentWidth());
         UpdateFileKillAllButton();
     }
@@ -2838,6 +2869,12 @@ private:
         case ID_FILE_LOCK_KILL_ALL:
             KillAllFileLockProcesses();
             break;
+        case ID_PROCESS_KILL_SELECTED:
+            KillSelectedProcesses();
+            break;
+        case ThemedControls::ID_TABLE_SELECT_ALL:
+            SelectAllProcessRows();
+            break;
         case IDCANCEL:
             if (locatorPickArmed_) {
                 CancelLocatorPickMode(L"已取消进程定位选择。");
@@ -2847,6 +2884,81 @@ private:
             break;
         default:
             break;
+        }
+    }
+
+    HWND CurrentProcessTable() const {
+        switch (static_cast<Page>(ThemedUi::ActiveTab(tabs_))) {
+            case Page::ProcessId: return processIdTable_;
+            case Page::Port: return portTable_;
+            case Page::FileLock: return fileTable_;
+            default: return nullptr;
+        }
+    }
+
+    void SelectAllProcessRows() {
+        HWND table = CurrentProcessTable();
+        if (!table) return;
+        const int count = ThemedUi::TableRowCount(table);
+        std::vector<int> indices(static_cast<std::size_t>(count));
+        for (int i = 0; i < count; ++i) indices[i] = i;
+        ThemedUi::SetTableSelectedIndices(table, indices);
+    }
+
+    void KillSelectedProcesses() {
+        const Page page = static_cast<Page>(ThemedUi::ActiveTab(tabs_));
+        HWND table = CurrentProcessTable();
+        HWND status = page == Page::ProcessId ? processIdStatus_
+            : page == Page::Port ? portStatus_
+            : page == Page::FileLock ? fileStatus_
+            : processIdStatus_;
+        if (!table) {
+            SetStatus(processIdStatus_, L"进程定位页面请先定位并结束目标进程。", ThemedStatusRole::Info);
+            return;
+        }
+        const std::vector<std::intptr_t> keys = ThemedUi::TableSelectedKeys(table);
+        if (keys.empty()) {
+            SetStatus(status, L"请先选择要结束的进程（Shift 或 Ctrl 多选）。", ThemedStatusRole::Info);
+            return;
+        }
+        std::vector<DWORD> pids;
+        pids.reserve(keys.size());
+        for (std::intptr_t key : keys) {
+            const DWORD pid = static_cast<DWORD>(key);
+            if (page == Page::FileLock && fileProtectedPids_.find(pid) != fileProtectedPids_.end()) {
+                continue;
+            }
+            pids.push_back(pid);
+        }
+        if (pids.empty()) {
+            SetStatus(status, L"所选进程均为系统关键进程，已保护。", ThemedStatusRole::Warning);
+            return;
+        }
+        const std::wstring message = L"确认结束选中的 " + std::to_wstring(pids.size()) +
+            L" 个进程？\n此操作不会自动重新检查。";
+        if (ShowThemedMessageBox(hwnd_, instance_, theme_, message, L"结束进程", MB_OKCANCEL | MB_ICONWARNING) != IDOK) {
+            return;
+        }
+        std::size_t success = 0;
+        std::size_t failure = 0;
+        for (DWORD pid : pids) {
+            const std::wstring error = KillProcessById(pid);
+            if (error.empty()) {
+                ++success;
+                if (page == Page::FileLock) fileTerminatedPids_.insert(pid);
+            } else {
+                ++failure;
+                WriteAppLog(L"批量结束进程失败: pid=" + std::to_wstring(pid) + L", error=" + error);
+            }
+        }
+        if (page == Page::FileLock) {
+            SetFileProcessRows();
+            UpdateFileKillAllButton();
+            SetStatus(fileStatus_, L"已结束所选进程。", ThemedStatusRole::Success);
+        } else if (page == Page::ProcessId) {
+            QueryProcessId();
+        } else if (page == Page::Port) {
+            QueryPort();
         }
     }
 
@@ -3736,6 +3848,7 @@ private:
     ThemedSplitButton filePickSplit_{};
     HWND fileTable_ = nullptr;
     HWND fileKillAll_ = nullptr;
+    HWND fileKillSelected_ = nullptr;
     HWND fileStatus_ = nullptr;
     std::vector<ProcessDisplayRow> fileRows_;
     std::vector<ProcessDisplayRow> fileNaturalRows_;
