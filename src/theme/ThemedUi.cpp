@@ -1964,6 +1964,10 @@ int ThemedUi::checkBoxHeight(ThemedCheckBoxSize size) const {
     return size == ThemedCheckBoxSize::TwoLines ? height * 2 + layout_.rowGap : height;
 }
 
+int ThemedUi::radioButtonHeight() const {
+    return scale(ThemedControls::RadioButtonHeight(theme_));
+}
+
 int ThemedUi::toggleHeight() const {
     return scale(ThemedControls::ToggleHeight(theme_));
 }
@@ -2087,6 +2091,12 @@ int ThemedUi::pathPickerSplitButtonWidth(
 
 int ThemedUi::textWidth(const std::wstring& text) const {
     return TextWidth(parent_, font_, text);
+}
+
+int ThemedUi::radioButtonWidth(const std::wstring& text) const {
+    const int dot = scale(static_cast<int>(theme_.metric(L"radio", L"dotSize", 16.0f)));
+    const int gap = scale(static_cast<int>(theme_.metric(L"radio", L"gap", 8.0f)));
+    return textWidth(text) + dot + gap + scale(8);
 }
 
 int ThemedUi::comboBoxWidth(const std::vector<std::wstring>& items) const {

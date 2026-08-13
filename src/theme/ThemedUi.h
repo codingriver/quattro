@@ -856,6 +856,7 @@ public:
     int timeDisplayHeight() const;
     SIZE timeDisplayPreferredSize(const std::wstring& text) const;
     int checkBoxHeight(ThemedCheckBoxSize size = ThemedCheckBoxSize::Normal) const;
+    int radioButtonHeight() const;
     int toggleHeight() const;
     int tabButtonHeight() const;
     int comboBoxHeight() const;
@@ -883,6 +884,7 @@ public:
         ThemedButtonWidthMode widthMode = ThemedButtonWidthMode::Text,
         int fixedWidth = 0) const;
     int textWidth(const std::wstring& text) const;
+    int radioButtonWidth(const std::wstring& text) const;
     int comboBoxWidth(const std::vector<std::wstring>& items) const;
     int tableColumnWidth(const std::wstring& widestText) const;
     int tableColumnWidth(std::initializer_list<std::wstring_view> candidateTexts) const;

@@ -2046,27 +2046,6 @@ private:
         if (checked) for (const auto& record : records_) checkedIds_.insert(record.id);
         PopulateTable();
     }
-    void ToggleCheckedForSelection() {
-        const auto indices = ThemedUi::TableSelectedIndices(table_);
-        if (indices.empty()) return;
-        bool anyChecked = false;
-        for (int index : indices) {
-            if (index >= 0 && index < static_cast<int>(records_.size()) &&
-                ThemedUi::IsTableChecked(table_, index)) {
-                anyChecked = true;
-                break;
-            }
-        }
-        const bool target = !anyChecked;
-        for (int index : indices) {
-            if (index >= 0 && index < static_cast<int>(records_.size())) {
-                const auto& id = records_[static_cast<std::size_t>(index)].id;
-                if (target) checkedIds_.insert(id); else checkedIds_.erase(id);
-            }
-        }
-        ThemedUi::SetTableCheckedIndices(table_, indices, target);
-        UpdateSelectionState();
-    }
     void ShowToast(const std::wstring& text, ThemedToastRole role, int durationMs = 0) {
         if (!windowUi_) return;
         ThemedToastOptions options{};
@@ -2630,7 +2609,7 @@ private:
             ShowFileActionMenu(row, anchor);
             return 0;
         }
-        case WM_COMMAND: if (LOWORD(wParam)==ID_WEBDAV_FILE_REFRESH) { StartRefresh(); return 0; } if (LOWORD(wParam)==ID_WEBDAV_FILE_TRANSFER_QUEUE) { ShowTransferQueue(); return 0; } if (LOWORD(wParam)==ID_WEBDAV_FILE_SELECT_ALL) { SelectAll(true); return 0; } if (LOWORD(wParam)==ThemedControls::ID_TABLE_SELECT_ALL) { SelectAll(true); return 0; } if (LOWORD(wParam)==ID_WEBDAV_FILE_CLEAR_SELECTION) { SelectAll(false); return 0; } if (LOWORD(wParam)==ID_WEBDAV_FILE_UPLOAD_SELECTED) { UploadSelected(); return 0; } if (LOWORD(wParam)==ID_WEBDAV_FILE_DOWNLOAD_SELECTED) { DownloadSelected(); return 0; } if (LOWORD(wParam)==ID_WEBDAV_FILE_DELETE_SELECTED) { DeleteChecked(); return 0; } if (LOWORD(wParam)==ID_WEBDAV_FILE_DOWNLOAD) { Download(); return 0; } if (LOWORD(wParam)==ID_WEBDAV_FILE_DELETE) { DeleteSelected(); return 0; } return 0;
+        case WM_COMMAND: if (LOWORD(wParam)==ID_WEBDAV_FILE_REFRESH) { StartRefresh(); return 0; } if (LOWORD(wParam)==ID_WEBDAV_FILE_TRANSFER_QUEUE) { ShowTransferQueue(); return 0; } if (LOWORD(wParam)==ID_WEBDAV_FILE_SELECT_ALL) { SelectAll(true); return 0; } if (LOWORD(wParam)==ThemedControls::ID_TABLE_SELECT_ALL) { const int cnt = ThemedUi::TableRowCount(table_); std::vector<int> all(static_cast<std::size_t>(cnt)); for (int i = 0; i < cnt; ++i) all[i] = i; ThemedUi::SetTableSelectedIndices(table_, all); return 0; } if (LOWORD(wParam)==ID_WEBDAV_FILE_CLEAR_SELECTION) { SelectAll(false); return 0; } if (LOWORD(wParam)==ID_WEBDAV_FILE_UPLOAD_SELECTED) { UploadSelected(); return 0; } if (LOWORD(wParam)==ID_WEBDAV_FILE_DOWNLOAD_SELECTED) { DownloadSelected(); return 0; } if (LOWORD(wParam)==ID_WEBDAV_FILE_DELETE_SELECTED) { DeleteChecked(); return 0; } if (LOWORD(wParam)==ID_WEBDAV_FILE_DOWNLOAD) { Download(); return 0; } if (LOWORD(wParam)==ID_WEBDAV_FILE_DELETE) { DeleteSelected(); return 0; } return 0;
         case WM_CLOSE: if (refreshTask_) refreshTask_->RequestStop(); done_=true; DestroyWindow(hwnd_); return 0;
         case WM_NCDESTROY: if (refreshTask_) refreshTask_->RequestStop(); alive_->store(false); RemovePropW(hwnd_, L"QuattroWebDavIncrementalApplied"); RemovePropW(hwnd_, L"QuattroWebDavFileActionMenuHasOpenLocation"); RemovePropW(hwnd_, L"QuattroWebDavFileActionMenuHasUpload"); done_=true; hwnd_=nullptr; return 0;
         default: return DefWindowProcW(hwnd_, message, wParam, lParam);

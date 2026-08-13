@@ -244,9 +244,13 @@ private:
             case IdSelectAll:
                 SetAllChecks(true);
                 return 0;
-            case ThemedControls::ID_TABLE_SELECT_ALL:
-                SetAllChecks(true);
+            case ThemedControls::ID_TABLE_SELECT_ALL: {
+                const int cnt = ThemedUi::TableRowCount(list_);
+                std::vector<int> all(static_cast<std::size_t>(cnt));
+                for (int i = 0; i < cnt; ++i) all[i] = i;
+                ThemedUi::SetTableSelectedIndices(list_, all);
                 return 0;
+            }
             case IdSelectNone:
                 SetAllChecks(false);
                 return 0;

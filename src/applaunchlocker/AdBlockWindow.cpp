@@ -378,7 +378,10 @@ LRESULT AdBlockWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam) {
         } else if (id == ID_BLOCK_SELECTED) {
             StartBlockSelected();
         } else if (id == ThemedControls::ID_TABLE_SELECT_ALL) {
-            ThemedUi::SetTableCheckedAll(scanTable_, true);
+            const int cnt = ThemedUi::TableRowCount(scanTable_);
+            std::vector<int> all(static_cast<std::size_t>(cnt));
+            for (int i = 0; i < cnt; ++i) all[i] = i;
+            ThemedUi::SetTableSelectedIndices(scanTable_, all);
             return 0;
         } else if (id == ID_UNBLOCK) {
             StartUnblock();
@@ -553,13 +556,13 @@ void AdBlockWindow::CreateControls() {
         ThemedButtonRole::Primary, ThemedButtonSize::Normal, ThemedButtonWidthMode::Fixed, checkWidth, true);
 
     const int listTop = ui.nextRowY(pathY, std::max(editHeight, labelHeight));
-    const int modeY = footerY + (ui.footerButtonHeight() - ui.checkBoxHeight()) / 2;
+    const int modeY = footerY + (ui.footerButtonHeight() - ui.radioButtonHeight()) / 2;
     const int modeLabelWidth = ui.textWidth(L"拦截模式：") + ui.layout().rowGap;
     HWND modeLabel = ui.SelectableLabel(L"拦截模式：", content.left,
-        modeY + (ui.checkBoxHeight() - labelHeight) / 2, modeLabelWidth);
+        modeY + (ui.radioButtonHeight() - labelHeight) / 2, modeLabelWidth);
     const int radioLeft = content.left + modeLabelWidth + gapX;
-    const int exactRadioWidth = ui.textWidth(L"精确路径") + ui.scale(28);
-    const int nameRadioWidth = ui.textWidth(L"同名程序") + ui.scale(28);
+    const int exactRadioWidth = ui.radioButtonWidth(L"精确路径");
+    const int nameRadioWidth = ui.radioButtonWidth(L"同名程序");
     modeExactRadio_ = ui.RadioButton(ID_MODE_EXACT, L"精确路径", radioLeft, modeY, exactRadioWidth,
         ThemedRadioButtonOptions{1, true, true});
     modeNameRadio_ = ui.RadioButton(ID_MODE_NAME, L"同名程序",
