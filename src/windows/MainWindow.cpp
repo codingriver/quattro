@@ -2101,7 +2101,7 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         WakeUp(L"single-instance");
         return 0;
     case WM_QUATTRO_DOCK_PEEK_ACTIVATE:
-        if (dockHidden_) {
+        if (dockHidden_ && !IsDockRevealSuppressed()) {
             DockRestore(L"dock-peek");
         }
         return 0;
@@ -2109,6 +2109,13 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         return QuattroTestMode() && DockHide(false) ? TRUE : FALSE;
     case WM_QUATTRO_TEST_DOCK_HIDDEN:
         return QuattroTestMode() && dockHidden_ ? TRUE : FALSE;
+    case WM_QUATTRO_TEST_DOCK_FULLSCREEN:
+        if (!QuattroTestMode()) {
+            return FALSE;
+        }
+        testDockFullScreenForeground_ = wParam != 0;
+        UpdateDockState();
+        return TRUE;
     case WM_QUATTRO_TEST_TODO_MENU:
         if (QuattroTestMode()) {
             RECT rect{};
@@ -2315,7 +2322,7 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
     case WM_NCHITTEST: {
         if (dockHidden_) {
             POINT screenPoint{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
-            if (IsNearDockEdge(screenPoint)) {
+            if (!IsDockRevealSuppressed() && IsNearDockEdge(screenPoint)) {
                 DockRestore(L"dock-hidden-hit-test");
             }
             return HTCLIENT;
@@ -6101,10 +6108,39 @@ void MainWindow::RequestMainWindowHideAfterToolOpen() {
     }
 }
 
+bool MainWindow::IsDockFullScreenForeground() const {
+    return (QuattroTestMode() && testDockFullScreenForeground_) || IsFullScreenForegroundWindow();
+}
+
+bool MainWindow::IsDockRevealSuppressed() const {
+    return dockFullScreenSuppressed_ || dockRevealRequiresEdgeExit_ || IsDockFullScreenForeground();
+}
+
 void MainWindow::UpdateDockState() {
     if (!config_.autoDock || !IsWindowVisible(hwnd_) || IsIconic(hwnd_)) {
         dockHideDueTick_ = 0;
+        dockFullScreenSuppressed_ = false;
+        dockRevealRequiresEdgeExit_ = false;
         HideDockPeek();
+        return;
+    }
+    if (IsDockFullScreenForeground()) {
+        dockHideDueTick_ = 0;
+        dockFullScreenSuppressed_ = true;
+        dockRevealRequiresEdgeExit_ = false;
+        HideDockPeek();
+        return;
+    }
+    if (dockFullScreenSuppressed_) {
+        dockHideDueTick_ = 0;
+        dockFullScreenSuppressed_ = false;
+        if (dockHidden_) {
+            // Fullscreen applications commonly leave the cursor pinned to the
+            // dock edge. Restore only the peek strip until the cursor exits
+            // that edge once, so leaving fullscreen cannot expand the window.
+            dockRevealRequiresEdgeExit_ = true;
+            EnsureDockPeekZOrder(true);
+        }
         return;
     }
     if (DockAutoHidePaused() || ShouldPauseDockForFocusedWindow(GetFocus())) {
@@ -6114,17 +6150,22 @@ void MainWindow::UpdateDockState() {
     }
     POINT cursor{};
     GetCursorPos(&cursor);
+    if (dockRevealRequiresEdgeExit_) {
+        if (!IsNearDockEdge(cursor)) {
+            dockRevealRequiresEdgeExit_ = false;
+        }
+        if (dockHidden_) {
+            EnsureDockPeekZOrder(true);
+        }
+        dockHideDueTick_ = 0;
+        return;
+    }
     if (dockHidden_) {
         if (IsNearDockEdge(cursor)) {
             DockRestore(L"dock-timer");
         } else {
             EnsureDockPeekZOrder(true);
         }
-        dockHideDueTick_ = 0;
-        return;
-    }
-
-    if (IsFullScreenForegroundWindow()) {
         dockHideDueTick_ = 0;
         return;
     }
@@ -6266,6 +6307,7 @@ bool MainWindow::DockHide(bool persistWindowState) {
         configService_.SaveWindowState(config_);
     }
 
+    dockRevealRequiresEdgeExit_ = false;
     dockHidden_ = true;
     if (!SetWindowPos(hwnd_,
                       MainWindowMoveInsertAfter(config_.topMost),
@@ -6298,6 +6340,7 @@ void MainWindow::DockRestore(const wchar_t* source) {
                  height,
                  MainWindowMoveFlags(config_.topMost, SWP_NOZORDER | SWP_NOACTIVATE));
     dockHidden_ = false;
+    dockRevealRequiresEdgeExit_ = false;
     dockHideDueTick_ = GetTickCount64() + kDockRestoreGraceMs;
     WriteAppLog(L"停靠窗口已恢复: source=" + std::wstring(source ? source : L""));
 }

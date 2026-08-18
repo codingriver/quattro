@@ -61,6 +61,7 @@ constexpr UINT WM_QUATTRO_TEST_SET_NOTE_TEXT = WM_APP + 0x7C;
 constexpr UINT WM_QUATTRO_TEST_REAPPLY_THEME = WM_APP + 0x7D;
 constexpr UINT WM_QUATTRO_TEST_NOTE_EDIT_GENERATION = WM_APP + 0x7E;
 constexpr UINT WM_QUATTRO_TEST_NOTE_DOCK_FOCUS = WM_APP + 0x80;
+constexpr UINT WM_QUATTRO_TEST_DOCK_FULLSCREEN = WM_APP + 0x81;
 
 class OleDropTarget;
 class TaskHandle;
@@ -297,6 +298,8 @@ private:
     bool IsAtDockTarget() const;
     void RequestMainWindowHideAfterToolOpen();
     void CancelPendingToolOpenHide();
+    bool IsDockFullScreenForeground() const;
+    bool IsDockRevealSuppressed() const;
     void UpdateDockState();
     bool DockHide(bool persistWindowState = true);
     void DockRestore(const wchar_t* source = L"dock");
@@ -567,6 +570,9 @@ private:
     HWND dockPeek_ = nullptr;
     UINT_PTR dockTimerId_ = 0;
     ULONGLONG dockHideDueTick_ = 0;
+    bool dockFullScreenSuppressed_ = false;
+    bool dockRevealRequiresEdgeExit_ = false;
+    bool testDockFullScreenForeground_ = false;
     bool toolOpenHideTimerActive_ = false;
     int dockAutoHidePauseDepth_ = 0;
     int popupMenuDepth_ = 0;

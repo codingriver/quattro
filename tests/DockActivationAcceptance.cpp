@@ -308,6 +308,60 @@ int wmain() {
         }
     }
 
+    if (result == 0 && !DockAtAvailableEdge(mainWindow)) {
+        std::cerr << "unable to re-enter dock-hidden state for fullscreen suppression\n";
+        result = 1;
+    }
+    if (result == 0) {
+        HWND peek = FindProcessWindow(process.dwProcessId, L"QuattroDockPeekWindow", false);
+        if (!peek) {
+            std::cerr << "dock peek window missing before fullscreen suppression test\n";
+            result = 1;
+        } else {
+            SendMessageW(mainWindow, WM_QUATTRO_TEST_DOCK_FULLSCREEN, TRUE, 0);
+            if (!IsDockHidden(mainWindow) || IsWindowVisible(peek)) {
+                std::cerr << "fullscreen foreground did not preserve hidden state or suppress dock peek\n";
+                result = 1;
+            }
+        }
+    }
+    if (result == 0) {
+        HWND peek = FindProcessWindow(process.dwProcessId, L"QuattroDockPeekWindow", false);
+        RECT peekRect{};
+        if (!peek || !GetWindowRect(peek, &peekRect)) {
+            std::cerr << "unable to resolve dock peek bounds during fullscreen suppression\n";
+            result = 1;
+        } else {
+            SendMessageW(mainWindow, WM_NCHITTEST, 0, MAKELPARAM(peekRect.left, peekRect.top));
+            if (!IsDockHidden(mainWindow)) {
+                std::cerr << "hidden main window hit test revealed the window during fullscreen suppression\n";
+                result = 1;
+            }
+        }
+    }
+    if (result == 0) {
+        SendMessageW(mainWindow, WM_QUATTRO_DOCK_PEEK_ACTIVATE, 0, 0);
+        if (!IsDockHidden(mainWindow)) {
+            std::cerr << "dock peek activation revealed the main window during fullscreen suppression\n";
+            result = 1;
+        }
+    }
+    if (result == 0) {
+        HWND peek = FindProcessWindow(process.dwProcessId, L"QuattroDockPeekWindow", false);
+        SendMessageW(mainWindow, WM_QUATTRO_TEST_DOCK_FULLSCREEN, FALSE, 0);
+        if (!IsDockHidden(mainWindow) || !peek || !IsWindowVisible(peek)) {
+            std::cerr << "leaving fullscreen did not restore only the dock peek state\n";
+            result = 1;
+        }
+    }
+    if (result == 0) {
+        SendMessageW(mainWindow, WM_QUATTRO_DOCK_PEEK_ACTIVATE, 0, 0);
+        if (!IsDockHidden(mainWindow)) {
+            std::cerr << "dock peek activation revealed the main window before the cursor left the edge\n";
+            result = 1;
+        }
+    }
+
     if (mainWindow && IsWindow(mainWindow)) {
         PostMessageW(mainWindow, WM_COMMAND, MAKEWPARAM(ID_MENU_EXIT, 0), 0);
     }

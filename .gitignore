@@ -20,6 +20,7 @@
 !/icons/menu/tabler/**
 /docs/*
 !/docs/UPDATE_DESIGN.md
+!/docs/WEBDAV_FILE_MANAGER_DESIGN.md
 /docs/Quattro/*
 
 /screenshots/*
