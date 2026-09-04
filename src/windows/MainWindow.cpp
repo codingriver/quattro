@@ -2405,6 +2405,7 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             CancelLinkDrag();
         }
         if (wParam) {
+            ClearUnactivatedPresentation();
             CancelPendingToolOpenHide();
         }
         if (!wParam && config_.hideWhenInactive && IsWindowVisible(hwnd_) && !DockAutoHidePaused()) {
@@ -2517,6 +2518,9 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         return 0;
     }
     case WM_SIZE:
+        if (wParam == SIZE_MINIMIZED) {
+            ClearUnactivatedPresentation();
+        }
         OnResize(LOWORD(lParam), HIWORD(lParam));
         return 0;
     case WM_MOVE:
@@ -6277,6 +6281,7 @@ void MainWindow::HideDockPeek() {
 }
 
 bool MainWindow::DockHide(bool persistWindowState) {
+    ClearUnactivatedPresentation();
     HideItemTooltip();
     if (dockHidden_) {
         return true;
@@ -7890,6 +7895,7 @@ void MainWindow::SaveWindowState() {
 }
 
 void MainWindow::WakeUp(const wchar_t* source) {
+    ClearUnactivatedPresentation();
     if (popupMenuDepth_ > 0) {
         popupWakePending_ = true;
         return;
@@ -7910,6 +7916,7 @@ void MainWindow::WakeUp(const wchar_t* source) {
                  0,
                  SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED | SWP_SHOWWINDOW);
     const bool activated = ActivateWindow(hwnd_);
+    RecordUnactivatedPresentation(activated);
     WriteAppLog(
         L"主窗口唤起完成: source=" + std::wstring(source ? source : L"") +
         L", topmost=" + std::wstring(config_.topMost ? L"1" : L"0") +
@@ -7921,22 +7928,52 @@ bool MainWindow::IsEffectivelyVisible() const {
     return IsWindowVisible(hwnd_) && !dockHidden_;
 }
 
-bool MainWindow::IsMainWindowForeground() const {
+bool MainWindow::IsMainWindowForeground(HWND foregroundWindow) const {
     if (!IsEffectivelyVisible() || IsIconic(hwnd_)) {
         return false;
     }
-    const HWND foreground = GetForegroundWindow();
-    const HWND foregroundRoot = foreground ? GetAncestor(foreground, GA_ROOT) : nullptr;
+    const HWND foregroundRoot =
+        foregroundWindow ? GetAncestor(foregroundWindow, GA_ROOT) : nullptr;
     const HWND mainRoot = GetAncestor(hwnd_, GA_ROOT);
     return foregroundRoot && foregroundRoot == (mainRoot ? mainRoot : hwnd_);
 }
 
+bool MainWindow::ShouldHideMainWindowFromHotKey() const {
+    const HWND foreground = GetForegroundWindow();
+    const bool presentedWithoutActivation =
+        mainWindowPresentedWithoutActivation_ &&
+        foregroundAtUnactivatedPresentation_ != nullptr &&
+        foreground == foregroundAtUnactivatedPresentation_;
+    const MainHotKeyWindowState state{
+        IsEffectivelyVisible(),
+        IsIconic(hwnd_) != FALSE,
+        IsMainWindowForeground(foreground),
+        config_.topMost,
+        presentedWithoutActivation,
+    };
+    return DecideMainHotKeyAction(state) == MainHotKeyAction::Hide;
+}
+
+void MainWindow::ClearUnactivatedPresentation() {
+    mainWindowPresentedWithoutActivation_ = false;
+    foregroundAtUnactivatedPresentation_ = nullptr;
+}
+
+void MainWindow::RecordUnactivatedPresentation(bool activated) {
+    ClearUnactivatedPresentation();
+    if (activated || !IsEffectivelyVisible() || IsIconic(hwnd_)) {
+        return;
+    }
+    foregroundAtUnactivatedPresentation_ = GetForegroundWindow();
+    mainWindowPresentedWithoutActivation_ = foregroundAtUnactivatedPresentation_ != nullptr;
+}
+
 void MainWindow::ToggleMainWindowFromHotKey() {
-    if (IsMainWindowForeground()) {
+    if (ShouldHideMainWindowFromHotKey()) {
         HideMainWindow();
         return;
     }
-    WakeUp();
+    WakeUp(L"hotkey");
 }
 
 void MainWindow::HideMainWindowAfterLink() {
@@ -7947,6 +7984,7 @@ void MainWindow::HideMainWindowAfterLink() {
 }
 
 void MainWindow::HideMainWindow() {
+    ClearUnactivatedPresentation();
     HideItemTooltip();
     if (dockHidden_) {
         HideDockPeek();

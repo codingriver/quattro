@@ -47,6 +47,7 @@
 #include "../src/services/WebDavRecoveryService.h"
 #include "../src/services/WebDavTransferCoordinator.h"
 #include "../src/windows/MenuAnchorGeometry.h"
+#include "../src/windows/MainHotKey.h"
 #include "../src/windows/MainTitleBuildMarkerLayout.h"
 #include "../src/windows/ToastFeedback.h"
 #include "Version.h"
@@ -119,6 +120,32 @@ void Check(bool condition, const char* name) {
         std::cerr << "FAILED: " << name << "\n";
         ++failures;
     }
+}
+
+void TestMainHotKeyActionDecision() {
+    Check(
+        DecideMainHotKeyAction(MainHotKeyWindowState{}) == MainHotKeyAction::Wake,
+        "Main hotkey wakes a hidden window");
+    Check(
+        DecideMainHotKeyAction(MainHotKeyWindowState{true, true, true, true, true}) ==
+            MainHotKeyAction::Wake,
+        "Main hotkey wakes a minimized window before considering presentation state");
+    Check(
+        DecideMainHotKeyAction(MainHotKeyWindowState{true, false, true, false, false}) ==
+            MainHotKeyAction::Hide,
+        "Main hotkey hides the foreground window");
+    Check(
+        DecideMainHotKeyAction(MainHotKeyWindowState{true, false, false, false, false}) ==
+            MainHotKeyAction::Wake,
+        "Main hotkey wakes a visible non-topmost background window");
+    Check(
+        DecideMainHotKeyAction(MainHotKeyWindowState{true, false, false, true, false}) ==
+            MainHotKeyAction::Hide,
+        "Main hotkey hides a visible inactive topmost window");
+    Check(
+        DecideMainHotKeyAction(MainHotKeyWindowState{true, false, false, false, true}) ==
+            MainHotKeyAction::Hide,
+        "Main hotkey hides a window presented by a failed activation attempt");
 }
 
 void TestWebDavDownloadTargetPathValidation() {
@@ -317,6 +344,7 @@ int wmain() {
     Check(FormatVersionForDisplay(L"V0.1.0") == L"v0.1.0", "Version display normalizes prefix");
     Check(FormatVersionForDisplay(L" 0.1.0 ") == L"v0.1.0", "Version display trims whitespace");
     Check(FormatVersionForDisplay(L"").empty(), "Version display preserves empty value");
+    TestMainHotKeyActionDecision();
     Check(FormatByteSizeForDisplay(0) == L"0 B", "Byte size display zero");
     Check(FormatByteSizeForDisplay(1024) == L"1.00 KB", "Byte size display kilobytes");
     Check(FormatByteSizeForDisplay(12ull * 1024ull * 1024ull) == L"12.0 MB", "Byte size display megabytes");

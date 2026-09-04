@@ -234,6 +234,42 @@ int wmain() {
         }
     }
 
+    if (result == 0) {
+        SendMessageW(mainWindow, WM_HOTKEY, 1, 0);
+        if (IsWindowVisible(mainWindow)) {
+            std::cerr << "main hotkey did not hide a window already presented by a failed activation attempt\n";
+            result = 1;
+        }
+    }
+
+    if (result == 0) {
+        SendMessageW(mainWindow, WM_HOTKEY, 1, 0);
+        if (!IsWindowVisible(mainWindow) || IsIconic(mainWindow) || IsDockHidden(mainWindow)) {
+            std::cerr << "main hotkey did not wake the hidden main window after failed-activation toggle\n";
+            result = 1;
+        }
+    }
+
+    if (result == 0) {
+        // Reset the failed-activation presentation marker through the window's
+        // process-local activation path without activating the real desktop.
+        SendMessageW(mainWindow, WM_ACTIVATEAPP, TRUE, 0);
+        SendMessageW(mainWindow, WM_COMMAND, MAKEWPARAM(ID_MENU_TOGGLE_TOPMOST, 0), 0);
+        SendMessageW(mainWindow, WM_HOTKEY, 1, 0);
+        if (IsWindowVisible(mainWindow)) {
+            std::cerr << "main hotkey did not hide a visible inactive topmost window\n";
+            result = 1;
+        }
+    }
+    if (result == 0) {
+        SendMessageW(mainWindow, WM_HOTKEY, 1, 0);
+        if (!IsWindowVisible(mainWindow) || IsIconic(mainWindow) || IsDockHidden(mainWindow)) {
+            std::cerr << "main hotkey did not wake the hidden topmost window\n";
+            result = 1;
+        }
+        SendMessageW(mainWindow, WM_COMMAND, MAKEWPARAM(ID_MENU_TOGGLE_TOPMOST, 0), 0);
+    }
+
     if (result == 0 && !DockAtAvailableEdge(mainWindow)) {
         std::cerr << "unable to enter dock-hidden state\n";
         result = 1;

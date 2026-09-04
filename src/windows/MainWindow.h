@@ -309,7 +309,10 @@ private:
     bool SnapDockWindowRect(RECT& window) const;
     bool IsNearDockEdge(POINT screenPoint) const;
     bool IsEffectivelyVisible() const;
-    bool IsMainWindowForeground() const;
+    bool IsMainWindowForeground(HWND foregroundWindow) const;
+    bool ShouldHideMainWindowFromHotKey() const;
+    void ClearUnactivatedPresentation();
+    void RecordUnactivatedPresentation(bool activated);
     void ToggleMainWindowFromHotKey();
     void HideMainWindowAfterLink();
     void HideMainWindow();
@@ -557,6 +560,8 @@ private:
     bool processLocatorHotKeyRegistered_ = false;
     bool copySelectedPathsHotKeyRegistered_ = false;
     bool hotKeyConflictWarningShown_ = false;
+    bool mainWindowPresentedWithoutActivation_ = false;
+    HWND foregroundAtUnactivatedPresentation_ = nullptr;
     bool runningAsAdmin_ = false;
     bool exitingForPrivilegeRestart_ = false;
     bool startupFirstPaintLogged_ = false;
