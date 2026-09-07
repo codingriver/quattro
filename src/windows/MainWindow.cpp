@@ -511,13 +511,6 @@ HWND MainWindowMoveInsertAfter(bool topMost) {
     return topMost ? HWND_TOPMOST : nullptr;
 }
 
-HWND MainWindowActivationInsertAfter(bool topMost) {
-    if (BackgroundAcceptanceMode()) {
-        return HWND_BOTTOM;
-    }
-    return topMost ? HWND_TOPMOST : HWND_TOP;
-}
-
 UINT MainWindowMoveFlags(bool topMost, UINT flags) {
     if (topMost) {
         return flags & ~SWP_NOZORDER;
@@ -2100,6 +2093,25 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
     case WM_QUATTRO_WAKEUP:
         WakeUp(L"single-instance");
         return 0;
+    case WM_QUATTRO_WAKE_RETRY: {
+        const auto state = QueryWindowPresentation(hwnd_);
+        if (wakeRetry_.Consume(wParam, state.foregroundWindow, state.foreground,
+                IsEffectivelyVisible() && !state.minimized && popupMenuDepth_ == 0)) {
+            AttemptMainWindowWake(L"retry", wParam, true);
+        }
+        return 0;
+    }
+    case WM_QUATTRO_TEST_MAIN_FRONTNESS:
+        if (!QuattroTestMode() || !BackgroundAcceptanceMode() || !SuppressForegroundActivation() ||
+            wParam > 3) {
+            return FALSE;
+        }
+        if (wParam == 0) {
+            testMainFrontness_.reset();
+        } else {
+            testMainFrontness_ = static_cast<WindowFrontness>(wParam - 1);
+        }
+        return TRUE;
     case WM_QUATTRO_DOCK_PEEK_ACTIVATE:
         if (dockHidden_ && !IsDockRevealSuppressed()) {
             DockRestore(L"dock-peek");
@@ -2401,11 +2413,11 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         return DefWindowProcW(hwnd_, message, wParam, lParam);
     case WM_ACTIVATEAPP:
         if (!wParam) {
+            wakeRetry_.Cancel();
             CancelNavDrag();
             CancelLinkDrag();
         }
         if (wParam) {
-            ClearUnactivatedPresentation();
             CancelPendingToolOpenHide();
         }
         if (!wParam && config_.hideWhenInactive && IsWindowVisible(hwnd_) && !DockAutoHidePaused()) {
@@ -2519,10 +2531,17 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
     }
     case WM_SIZE:
         if (wParam == SIZE_MINIMIZED) {
-            ClearUnactivatedPresentation();
+            wakeRetry_.Cancel();
+            popupWakePending_ = false;
         }
         OnResize(LOWORD(lParam), HIWORD(lParam));
         return 0;
+    case WM_SHOWWINDOW:
+        if (!wParam) {
+            wakeRetry_.Cancel();
+            popupWakePending_ = false;
+        }
+        return DefWindowProcW(hwnd_, message, wParam, lParam);
     case WM_MOVE:
         HideItemTooltip();
         SaveWindowState();
@@ -3141,6 +3160,7 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         }
         return DefWindowProcW(hwnd_, message, wParam, lParam);
     case WM_DESTROY:
+        wakeRetry_.Cancel();
         WriteAppLog(L"主窗口销毁，准备退出消息循环。");
         CancelResourceRefresh();
         CancelNavDrag();
@@ -6281,7 +6301,7 @@ void MainWindow::HideDockPeek() {
 }
 
 bool MainWindow::DockHide(bool persistWindowState) {
-    ClearUnactivatedPresentation();
+    wakeRetry_.Cancel();
     HideItemTooltip();
     if (dockHidden_) {
         return true;
@@ -7895,7 +7915,7 @@ void MainWindow::SaveWindowState() {
 }
 
 void MainWindow::WakeUp(const wchar_t* source) {
-    ClearUnactivatedPresentation();
+    const UINT_PTR generation = wakeRetry_.Begin();
     if (popupMenuDepth_ > 0) {
         popupWakePending_ = true;
         return;
@@ -7904,68 +7924,53 @@ void MainWindow::WakeUp(const wchar_t* source) {
         DockRestore(source);
     }
     dockHideDueTick_ = GetTickCount64() + kDockRestoreGraceMs;
-    if (!IsWindowVisible(hwnd_)) {
-        ShowWindowRespectFocusPolicy(hwnd_, SW_SHOWNORMAL);
+    AttemptMainWindowWake(source, generation, false);
+}
+
+void MainWindow::AttemptMainWindowWake(const wchar_t* source, UINT_PTR generation, bool retry) {
+    const HWND previousForeground = GetForegroundWindow();
+    const auto result = RequestWindowForeground(hwnd_, config_.topMost,
+        [this, generation]() { return wakeRetry_.IsCurrent(generation); });
+    if (!retry && wakeRetry_.Schedule(generation, result, previousForeground)) {
+        if (!PostMessageW(hwnd_, WM_QUATTRO_WAKE_RETRY, generation, 0)) {
+            wakeRetry_.Cancel();
+            WriteAppLog(L"Main window wake retry could not be queued.");
+        }
     }
-    ShowWindowRespectFocusPolicy(hwnd_, SW_RESTORE);
-    SetWindowPos(hwnd_,
-                 MainWindowActivationInsertAfter(config_.topMost),
-                 0,
-                 0,
-                 0,
-                 0,
-                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED | SWP_SHOWWINDOW);
-    const bool activated = ActivateWindow(hwnd_);
-    RecordUnactivatedPresentation(activated);
     WriteAppLog(
-        L"主窗口唤起完成: source=" + std::wstring(source ? source : L"") +
+        L"主窗口唤起结果: source=" + std::wstring(source ? source : L"") +
+        L", generation=" + std::to_wstring(generation) +
         L", topmost=" + std::wstring(config_.topMost ? L"1" : L"0") +
         L", dock_hidden=" + std::wstring(dockHidden_ ? L"1" : L"0") +
-        L", activated=" + std::wstring(activated ? L"1" : L"0"));
+        L", retry=" + std::to_wstring(retry) +
+        L", suppressed=" + std::to_wstring(result.suppressed) +
+        L", cancelled=" + std::to_wstring(result.cancelled) +
+        L", foreground_request=" + std::to_wstring(result.foregroundRequested) +
+        L", position_error=" + std::to_wstring(result.positionError) +
+        L", visible=" + std::to_wstring(result.presentation.visible) +
+        L", minimized=" + std::to_wstring(result.presentation.minimized) +
+        L", foreground=" + std::to_wstring(result.presentation.foreground) +
+        L", focused=" + std::to_wstring(result.presentation.focused) +
+        L", frontness=" + std::to_wstring(static_cast<int>(result.presentation.frontness)) +
+        L", activated=" + std::to_wstring(result.Succeeded()));
 }
 
 bool MainWindow::IsEffectivelyVisible() const {
     return IsWindowVisible(hwnd_) && !dockHidden_;
 }
 
-bool MainWindow::IsMainWindowForeground(HWND foregroundWindow) const {
-    if (!IsEffectivelyVisible() || IsIconic(hwnd_)) {
-        return false;
-    }
-    const HWND foregroundRoot =
-        foregroundWindow ? GetAncestor(foregroundWindow, GA_ROOT) : nullptr;
-    const HWND mainRoot = GetAncestor(hwnd_, GA_ROOT);
-    return foregroundRoot && foregroundRoot == (mainRoot ? mainRoot : hwnd_);
-}
-
 bool MainWindow::ShouldHideMainWindowFromHotKey() const {
-    const HWND foreground = GetForegroundWindow();
-    const bool presentedWithoutActivation =
-        mainWindowPresentedWithoutActivation_ &&
-        foregroundAtUnactivatedPresentation_ != nullptr &&
-        foreground == foregroundAtUnactivatedPresentation_;
+    auto presentation = QueryWindowPresentation(hwnd_);
+    if (QuattroTestMode() && BackgroundAcceptanceMode() && SuppressForegroundActivation() &&
+        testMainFrontness_) {
+        presentation.frontness = *testMainFrontness_;
+    }
     const MainHotKeyWindowState state{
-        IsEffectivelyVisible(),
-        IsIconic(hwnd_) != FALSE,
-        IsMainWindowForeground(foreground),
-        config_.topMost,
-        presentedWithoutActivation,
+        presentation.visible && !dockHidden_,
+        presentation.minimized,
+        presentation.frontness,
     };
     return DecideMainHotKeyAction(state) == MainHotKeyAction::Hide;
-}
-
-void MainWindow::ClearUnactivatedPresentation() {
-    mainWindowPresentedWithoutActivation_ = false;
-    foregroundAtUnactivatedPresentation_ = nullptr;
-}
-
-void MainWindow::RecordUnactivatedPresentation(bool activated) {
-    ClearUnactivatedPresentation();
-    if (activated || !IsEffectivelyVisible() || IsIconic(hwnd_)) {
-        return;
-    }
-    foregroundAtUnactivatedPresentation_ = GetForegroundWindow();
-    mainWindowPresentedWithoutActivation_ = foregroundAtUnactivatedPresentation_ != nullptr;
 }
 
 void MainWindow::ToggleMainWindowFromHotKey() {
@@ -7984,7 +7989,8 @@ void MainWindow::HideMainWindowAfterLink() {
 }
 
 void MainWindow::HideMainWindow() {
-    ClearUnactivatedPresentation();
+    wakeRetry_.Cancel();
+    popupWakePending_ = false;
     HideItemTooltip();
     if (dockHidden_) {
         HideDockPeek();

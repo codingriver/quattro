@@ -2,9 +2,14 @@
 
 #include <algorithm>
 #include <cwctype>
+#include <cwchar>
 #include <fstream>
 #include <iomanip>
+#include <iterator>
 #include <sstream>
+#include <unordered_set>
+#include <utility>
+#include <dwmapi.h>
 
 std::filesystem::path GetModuleDirectory() {
     std::wstring buffer(MAX_PATH, L'\0');
@@ -350,6 +355,209 @@ bool ActivateWindow(HWND hwnd) {
     const HWND foreground = GetForegroundWindow();
     const HWND foregroundRoot = foreground ? GetAncestor(foreground, GA_ROOT) : nullptr;
     return foregroundRoot == (target ? target : hwnd);
+}
+
+WindowFrontness EvaluateWindowFrontness(
+    HWND target, const std::vector<WindowZOrderEntry>& entries) {
+    const auto found = std::find_if(entries.begin(), entries.end(),
+        [target](const auto& entry) { return entry.window == target; });
+    if (!target || found == entries.end() || !found->valid || !found->rootOwner ||
+        !found->visible || found->minimized || found->cloaked) {
+        return WindowFrontness::Unknown;
+    }
+    bool behind = false;
+    for (auto it = entries.begin(); it != found; ++it) {
+        if (!it->valid) {
+            return WindowFrontness::Unknown;
+        }
+        if (it->visible && !it->minimized && !it->cloaked && !it->auxiliary &&
+            it->rootOwner != found->rootOwner && it->topMost == found->topMost) {
+            behind = true;
+        }
+    }
+    return behind ? WindowFrontness::Behind : WindowFrontness::Front;
+}
+
+namespace {
+WindowZOrderEntry ReadZOrderEntry(HWND hwnd) {
+    WindowZOrderEntry entry;
+    entry.window = hwnd;
+    WINDOWINFO info{};
+    info.cbSize = sizeof(info);
+    if (!IsWindow(hwnd) || !GetWindowInfo(hwnd, &info)) {
+        return entry;
+    }
+    entry.rootOwner = GetAncestor(hwnd, GA_ROOTOWNER);
+    entry.visible = (info.dwStyle & WS_VISIBLE) != 0;
+    entry.minimized = (info.dwStyle & WS_MINIMIZE) != 0;
+    entry.topMost = (info.dwExStyle & WS_EX_TOPMOST) != 0;
+    entry.valid = entry.rootOwner != nullptr;
+    if (!entry.visible || entry.minimized) {
+        return entry;
+    }
+    wchar_t name[128]{};
+    if (!GetClassNameW(hwnd, name, static_cast<int>(std::size(name)))) {
+        entry.valid = false;
+        return entry;
+    }
+    entry.auxiliary = hwnd == GetShellWindow() || hwnd == GetDesktopWindow() ||
+        wcscmp(name, L"Shell_TrayWnd") == 0 || wcscmp(name, L"Shell_SecondaryTrayWnd") == 0 ||
+        wcscmp(name, L"Progman") == 0 || wcscmp(name, L"WorkerW") == 0 ||
+        wcscmp(name, L"#32768") == 0 || wcscmp(name, L"tooltips_class32") == 0 ||
+        ((info.dwExStyle & WS_EX_APPWINDOW) == 0 &&
+            (info.dwExStyle & (WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE)) != 0) ||
+        IsRectEmpty(&info.rcWindow);
+    if (!entry.auxiliary) {
+        using GetAttribute = HRESULT(WINAPI*)(HWND, DWORD, PVOID, DWORD);
+        static const auto getAttribute = []() -> GetAttribute {
+            const HMODULE module = LoadLibraryW(L"dwmapi.dll");
+            return module ? reinterpret_cast<GetAttribute>(
+                GetProcAddress(module, "DwmGetWindowAttribute")) : nullptr;
+        }();
+        DWORD cloaked = 0;
+        if (!getAttribute || FAILED(getAttribute(hwnd, DWMWA_CLOAKED, &cloaked, sizeof(cloaked)))) {
+            entry.valid = false;
+        }
+        entry.cloaked = cloaked != 0;
+    }
+    entry.valid = entry.valid && IsWindow(hwnd);
+    return entry;
+}
+
+std::vector<WindowZOrderEntry> ReadZOrderThrough(HWND target) {
+    std::vector<WindowZOrderEntry> entries;
+    std::unordered_set<HWND> visited;
+    HWND window = GetTopWindow(nullptr);
+    while (window && entries.size() < 4096 && visited.insert(window).second) {
+        entries.push_back(ReadZOrderEntry(window));
+        if (!entries.back().valid || window == target) {
+            return entries;
+        }
+        window = GetWindow(window, GW_HWNDNEXT);
+    }
+    return entries;
+}
+}
+
+WindowPresentation QueryWindowPresentation(HWND hwnd) {
+    WindowPresentation state;
+    if (!hwnd || !IsWindow(hwnd)) {
+        return state;
+    }
+    state.visible = IsWindowVisible(hwnd) != FALSE;
+    state.minimized = IsIconic(hwnd) != FALSE;
+    state.topMost = (GetWindowLongPtrW(hwnd, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0;
+    state.foregroundWindow = GetForegroundWindow();
+    const HWND owner = GetAncestor(hwnd, GA_ROOTOWNER);
+    state.foreground = owner && state.foregroundWindow &&
+        GetAncestor(state.foregroundWindow, GA_ROOTOWNER) == owner;
+    GUITHREADINFO gui{};
+    gui.cbSize = sizeof(gui);
+    const DWORD thread = GetWindowThreadProcessId(hwnd, nullptr);
+    if (state.foreground && thread && GetGUIThreadInfo(thread, &gui) && gui.hwndFocus) {
+        state.focused = GetAncestor(gui.hwndFocus, GA_ROOTOWNER) == owner;
+    }
+    // Background acceptance uses synthetic snapshots, never the user's Z order.
+    if (!state.visible || state.minimized || BackgroundAcceptanceMode()) {
+        return state;
+    }
+    const auto first = ReadZOrderThrough(hwnd);
+    const auto second = ReadZOrderThrough(hwnd);
+    if (first == second && IsWindow(hwnd)) {
+        state.frontness = EvaluateWindowFrontness(hwnd, second);
+    }
+    const HWND finalForeground = GetForegroundWindow();
+    if (finalForeground != state.foregroundWindow) {
+        state.foregroundWindow = finalForeground;
+        state.foreground = false;
+        state.focused = false;
+        state.frontness = WindowFrontness::Unknown;
+    }
+    return state;
+}
+
+WindowActivationResult PerformWindowActivationAttempt(
+    const WindowActivationOperations& operations, bool suppressed) {
+    WindowActivationResult result;
+    result.suppressed = suppressed;
+    const auto continueRequest = [&]() {
+        result.cancelled = operations.continueRequest && !operations.continueRequest();
+        return !result.cancelled;
+    };
+    if (continueRequest()) {
+        operations.restore();
+        if (!suppressed && continueRequest()) {
+            result.foregroundRequested = operations.requestForeground();
+            if (continueRequest()) {
+                result.positionError = operations.raise();
+            }
+        }
+    }
+    result.presentation = operations.query();
+    if (!result.cancelled) {
+        continueRequest();
+    }
+    return result;
+}
+
+WindowActivationResult RequestWindowForeground(
+    HWND hwnd, bool topMost, std::function<bool()> continueRequest) {
+    if (!hwnd || !IsWindow(hwnd)) {
+        WindowActivationResult result;
+        result.positionError = ERROR_INVALID_WINDOW_HANDLE;
+        return result;
+    }
+    const bool suppressed = SuppressForegroundActivation() || BackgroundAcceptanceMode();
+    const WindowActivationOperations operations{
+        [=]() {
+            if (suppressed) {
+                ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+                ApplyWindowBackgroundPolicy(hwnd);
+            } else {
+                ShowWindowRespectFocusPolicy(hwnd, SW_RESTORE);
+            }
+        },
+        [=]() { return ActivateWindow(hwnd); },
+        [=]() -> DWORD {
+            // A wake is an activation request, unlike passive moves and layout.
+            const HWND after = topMost ? HWND_TOPMOST :
+                ((GetWindowLongPtrW(hwnd, GWL_EXSTYLE) & WS_EX_TOPMOST) ? HWND_NOTOPMOST : HWND_TOP);
+            SetLastError(ERROR_SUCCESS);
+            if (SetWindowPos(hwnd, after, 0, 0, 0, 0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW)) {
+                return ERROR_SUCCESS;
+            }
+            const DWORD error = GetLastError();
+            return error ? error : ERROR_GEN_FAILURE;
+        },
+        [=]() { return QueryWindowPresentation(hwnd); },
+        std::move(continueRequest),
+    };
+    return PerformWindowActivationAttempt(operations, suppressed);
+}
+
+bool WindowActivationRetry::Schedule(
+    UINT_PTR generation, const WindowActivationResult& result, HWND previousForeground) {
+    if (generation != generation_ || scheduled_ || result.Succeeded() || result.suppressed || result.cancelled ||
+        !result.presentation.visible || result.presentation.minimized ||
+        !previousForeground ||
+        (!result.presentation.foreground && result.presentation.foregroundWindow != previousForeground)) {
+        return false;
+    }
+    previousForeground_ = previousForeground;
+    pending_ = true;
+    scheduled_ = true;
+    return true;
+}
+
+bool WindowActivationRetry::Consume(
+    UINT_PTR generation, HWND currentForeground, bool targetForeground, bool visible) {
+    if (generation != generation_ || !pending_) {
+        return false;
+    }
+    pending_ = false;
+    return visible && currentForeground &&
+        (targetForeground || currentForeground == previousForeground_);
 }
 
 void ShowWindowRespectFocusPolicy(HWND hwnd, int showCommand) {

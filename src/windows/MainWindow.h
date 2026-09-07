@@ -14,6 +14,7 @@
 #include "SystemFunctions.h"
 #include "Theme.h"
 #include "UrlIconDownloadService.h"
+#include "../common/Utilities.h"
 
 #include <d2d1.h>
 #include <dwrite.h>
@@ -62,6 +63,8 @@ constexpr UINT WM_QUATTRO_TEST_REAPPLY_THEME = WM_APP + 0x7D;
 constexpr UINT WM_QUATTRO_TEST_NOTE_EDIT_GENERATION = WM_APP + 0x7E;
 constexpr UINT WM_QUATTRO_TEST_NOTE_DOCK_FOCUS = WM_APP + 0x80;
 constexpr UINT WM_QUATTRO_TEST_DOCK_FULLSCREEN = WM_APP + 0x81;
+constexpr UINT WM_QUATTRO_WAKE_RETRY = WM_APP + 0x82;
+constexpr UINT WM_QUATTRO_TEST_MAIN_FRONTNESS = WM_APP + 0x83;
 
 class OleDropTarget;
 class TaskHandle;
@@ -309,10 +312,8 @@ private:
     bool SnapDockWindowRect(RECT& window) const;
     bool IsNearDockEdge(POINT screenPoint) const;
     bool IsEffectivelyVisible() const;
-    bool IsMainWindowForeground(HWND foregroundWindow) const;
     bool ShouldHideMainWindowFromHotKey() const;
-    void ClearUnactivatedPresentation();
-    void RecordUnactivatedPresentation(bool activated);
+    void AttemptMainWindowWake(const wchar_t* source, UINT_PTR generation, bool retry);
     void ToggleMainWindowFromHotKey();
     void HideMainWindowAfterLink();
     void HideMainWindow();
@@ -560,8 +561,8 @@ private:
     bool processLocatorHotKeyRegistered_ = false;
     bool copySelectedPathsHotKeyRegistered_ = false;
     bool hotKeyConflictWarningShown_ = false;
-    bool mainWindowPresentedWithoutActivation_ = false;
-    HWND foregroundAtUnactivatedPresentation_ = nullptr;
+    WindowActivationRetry wakeRetry_;
+    std::optional<WindowFrontness> testMainFrontness_;
     bool runningAsAdmin_ = false;
     bool exitingForPrivilegeRestart_ = false;
     bool startupFirstPaintLogged_ = false;

@@ -12,6 +12,13 @@ namespace {
 constexpr DWORD kStepTimeoutMs = 5000;
 constexpr DWORD kTotalTimeoutMs = 30000;
 
+bool SetTestFrontness(HWND window, WindowFrontness frontness) {
+    DWORD_PTR result = FALSE;
+    return SendMessageTimeoutW(window, WM_QUATTRO_TEST_MAIN_FRONTNESS,
+        static_cast<WPARAM>(frontness) + 1, 0, SMTO_ABORTIFHUNG, kStepTimeoutMs, &result) &&
+        result == TRUE;
+}
+
 std::wstring ClassName(HWND hwnd) {
     wchar_t buffer[128]{};
     GetClassNameW(hwnd, buffer, static_cast<int>(std::size(buffer)));
@@ -226,6 +233,10 @@ int wmain() {
         }
     }
 
+    if (result == 0 && !SetTestFrontness(mainWindow, WindowFrontness::Behind)) {
+        std::cerr << "unable to set isolated hotkey presentation snapshot\n";
+        result = 1;
+    }
     if (result == 0) {
         SendMessageW(mainWindow, WM_HOTKEY, 1, 0);
         if (!IsWindowVisible(mainWindow) || IsIconic(mainWindow) || IsDockHidden(mainWindow)) {
@@ -236,25 +247,47 @@ int wmain() {
 
     if (result == 0) {
         SendMessageW(mainWindow, WM_HOTKEY, 1, 0);
-        if (IsWindowVisible(mainWindow)) {
-            std::cerr << "main hotkey did not hide a window already presented by a failed activation attempt\n";
+        if (!IsWindowVisible(mainWindow)) {
+            std::cerr << "main hotkey hid a still-background window after activation was suppressed\n";
             result = 1;
         }
     }
 
+    if (result == 0 && !SetTestFrontness(mainWindow, WindowFrontness::Front)) {
+        result = 1;
+    }
+    if (result == 0) {
+        SendMessageW(mainWindow, WM_HOTKEY, 1, 0);
+        if (IsWindowVisible(mainWindow)) {
+            std::cerr << "main hotkey did not hide the simulated front window without focus\n";
+            result = 1;
+        }
+    }
     if (result == 0) {
         SendMessageW(mainWindow, WM_HOTKEY, 1, 0);
         if (!IsWindowVisible(mainWindow) || IsIconic(mainWindow) || IsDockHidden(mainWindow)) {
-            std::cerr << "main hotkey did not wake the hidden main window after failed-activation toggle\n";
+            std::cerr << "main hotkey did not wake the hidden main window\n";
             result = 1;
         }
     }
 
     if (result == 0) {
-        // Reset the failed-activation presentation marker through the window's
-        // process-local activation path without activating the real desktop.
-        SendMessageW(mainWindow, WM_ACTIVATEAPP, TRUE, 0);
         SendMessageW(mainWindow, WM_COMMAND, MAKEWPARAM(ID_MENU_TOGGLE_TOPMOST, 0), 0);
+        if (!SetTestFrontness(mainWindow, WindowFrontness::Behind)) {
+            result = 1;
+        }
+    }
+    if (result == 0) {
+        SendMessageW(mainWindow, WM_HOTKEY, 1, 0);
+        if (!IsWindowVisible(mainWindow)) {
+            std::cerr << "configured topmost window behind its peers was incorrectly hidden\n";
+            result = 1;
+        }
+    }
+    if (result == 0 && !SetTestFrontness(mainWindow, WindowFrontness::Front)) {
+        result = 1;
+    }
+    if (result == 0) {
         SendMessageW(mainWindow, WM_HOTKEY, 1, 0);
         if (IsWindowVisible(mainWindow)) {
             std::cerr << "main hotkey did not hide a visible inactive topmost window\n";
@@ -268,6 +301,17 @@ int wmain() {
             result = 1;
         }
         SendMessageW(mainWindow, WM_COMMAND, MAKEWPARAM(ID_MENU_TOGGLE_TOPMOST, 0), 0);
+    }
+    if (result == 0 && !SetTestFrontness(mainWindow, WindowFrontness::Unknown)) {
+        result = 1;
+    }
+    if (result == 0) {
+        SendMessageW(mainWindow, WM_HOTKEY, 1, 0);
+        if (!IsWindowVisible(mainWindow)) {
+            std::cerr << "unknown presentation state incorrectly hid the main window\n";
+            result = 1;
+        }
+        SendMessageW(mainWindow, WM_QUATTRO_TEST_MAIN_FRONTNESS, 0, 0);
     }
 
     if (result == 0 && !DockAtAvailableEdge(mainWindow)) {

@@ -127,25 +127,191 @@ void TestMainHotKeyActionDecision() {
         DecideMainHotKeyAction(MainHotKeyWindowState{}) == MainHotKeyAction::Wake,
         "Main hotkey wakes a hidden window");
     Check(
-        DecideMainHotKeyAction(MainHotKeyWindowState{true, true, true, true, true}) ==
+        DecideMainHotKeyAction(MainHotKeyWindowState{true, true, WindowFrontness::Front}) ==
             MainHotKeyAction::Wake,
         "Main hotkey wakes a minimized window before considering presentation state");
     Check(
-        DecideMainHotKeyAction(MainHotKeyWindowState{true, false, true, false, false}) ==
+        DecideMainHotKeyAction(MainHotKeyWindowState{true, false, WindowFrontness::Front}) ==
             MainHotKeyAction::Hide,
-        "Main hotkey hides the foreground window");
+        "Main hotkey hides the front window regardless of keyboard focus");
     Check(
-        DecideMainHotKeyAction(MainHotKeyWindowState{true, false, false, false, false}) ==
+        DecideMainHotKeyAction(MainHotKeyWindowState{true, false, WindowFrontness::Behind}) ==
             MainHotKeyAction::Wake,
         "Main hotkey wakes a visible non-topmost background window");
     Check(
-        DecideMainHotKeyAction(MainHotKeyWindowState{true, false, false, true, false}) ==
-            MainHotKeyAction::Hide,
-        "Main hotkey hides a visible inactive topmost window");
+        DecideMainHotKeyAction(MainHotKeyWindowState{true, false, WindowFrontness::Unknown}) ==
+            MainHotKeyAction::Wake,
+        "Unknown Z order must not hide a visible window");
     Check(
-        DecideMainHotKeyAction(MainHotKeyWindowState{true, false, false, false, true}) ==
-            MainHotKeyAction::Hide,
-        "Main hotkey hides a window presented by a failed activation attempt");
+        DecideMainHotKeyAction(MainHotKeyWindowState{false, false, WindowFrontness::Front}) ==
+            MainHotKeyAction::Wake,
+        "Dock-hidden window wakes even when its Z order is front");
+}
+
+void TestWindowPresentationPolicy() {
+    const HWND target = reinterpret_cast<HWND>(static_cast<UINT_PTR>(1));
+    const HWND other = reinterpret_cast<HWND>(static_cast<UINT_PTR>(2));
+    const HWND owned = reinterpret_cast<HWND>(static_cast<UINT_PTR>(3));
+    const WindowZOrderEntry main{target, target, true, true};
+    const WindowZOrderEntry foreign{other, other, true, true};
+    Check(EvaluateWindowFrontness(target, {main, foreign}) == WindowFrontness::Front,
+        "Top ordinary window is front without needing focus");
+    Check(EvaluateWindowFrontness(target, {foreign, main}) == WindowFrontness::Behind,
+        "Higher ordinary window competes regardless of overlap or monitor");
+    Check(EvaluateWindowFrontness(target, {foreign}) == WindowFrontness::Unknown,
+        "Missing target cannot be classified as front");
+    Check(EvaluateWindowFrontness(nullptr, {}) == WindowFrontness::Unknown,
+        "Invalid target cannot be classified as front");
+    auto excluded = foreign;
+    excluded.visible = false;
+    Check(EvaluateWindowFrontness(target, {excluded, main}) == WindowFrontness::Front,
+        "Hidden windows do not compete");
+    excluded = foreign;
+    excluded.minimized = true;
+    Check(EvaluateWindowFrontness(target, {excluded, main}) == WindowFrontness::Front,
+        "Minimized windows do not compete");
+    excluded = foreign;
+    excluded.cloaked = true;
+    Check(EvaluateWindowFrontness(target, {excluded, main}) == WindowFrontness::Front,
+        "Cloaked and other-desktop windows do not compete");
+    excluded = foreign;
+    excluded.auxiliary = true;
+    Check(EvaluateWindowFrontness(target, {excluded, main}) == WindowFrontness::Front,
+        "Shell, menus and tooltips do not compete");
+    excluded = foreign;
+    excluded.topMost = true;
+    Check(EvaluateWindowFrontness(target, {excluded, main}) == WindowFrontness::Front,
+        "Pinned windows do not compete with an ordinary target");
+    auto pinned = main;
+    pinned.topMost = true;
+    Check(EvaluateWindowFrontness(target, {excluded, pinned}) == WindowFrontness::Behind,
+        "Topmost setting alone does not prove the target is front");
+    Check(EvaluateWindowFrontness(target, {pinned, excluded}) == WindowFrontness::Front,
+        "First pinned application is front within its band");
+    excluded = foreign;
+    excluded.window = owned;
+    excluded.rootOwner = target;
+    Check(EvaluateWindowFrontness(target, {excluded, main}) == WindowFrontness::Front,
+        "Owned windows belong to the target group");
+    excluded = foreign;
+    excluded.valid = false;
+    Check(EvaluateWindowFrontness(target, {foreign, excluded, main}) == WindowFrontness::Unknown,
+        "Failed or destroyed entries invalidate the snapshot even behind a competitor");
+    auto invalid = main;
+    invalid.valid = false;
+    Check(EvaluateWindowFrontness(target, {invalid}) == WindowFrontness::Unknown,
+        "Failed target query is unknown");
+    invalid = main;
+    invalid.cloaked = true;
+    Check(EvaluateWindowFrontness(target, {invalid}) == WindowFrontness::Unknown,
+        "Cloaked target is not considered presented");
+}
+
+void TestWindowActivationSequence() {
+    const HWND other = reinterpret_cast<HWND>(static_cast<UINT_PTR>(1));
+    const HWND changed = reinterpret_cast<HWND>(static_cast<UINT_PTR>(2));
+    WindowPresentation state;
+    state.visible = true;
+    state.frontness = WindowFrontness::Behind;
+    state.foregroundWindow = other;
+    bool allowActivation = false;
+    DWORD positionError = ERROR_SUCCESS;
+    std::string calls;
+    const WindowActivationOperations operations{
+        [&]() { calls += 'S'; },
+        [&]() { calls += 'A'; return allowActivation; },
+        [&]() { calls += 'Z'; return positionError; },
+        [&]() { calls += 'Q'; return state; },
+    };
+    WindowActivationRetry retry;
+    auto generation = retry.Begin();
+    auto result = PerformWindowActivationAttempt(operations, false);
+    Check(calls == "SAZQ", "Wake restores, requests foreground, raises, then verifies");
+    Check(!result.Succeeded(), "Visible but inactive and behind is not successful");
+    Check(DecideMainHotKeyAction({state.visible, state.minimized, state.frontness}) ==
+        MainHotKeyAction::Wake, "Failed activation behind remains a wake on the next hotkey");
+    Check(retry.Schedule(generation, result, other), "Failed activation queues one retry");
+    Check(retry.Consume(generation, other, false, true), "Unchanged foreground permits retry");
+    result = PerformWindowActivationAttempt(operations, false);
+    Check(!result.Succeeded() && calls == "SAZQSAZQ", "Two failures stop after two attempts");
+    Check(!retry.Schedule(generation, result, other), "Consumed retry cannot be scheduled again");
+    Check(!retry.Consume(generation, other, false, true), "Retry can only be consumed once");
+
+    generation = retry.Begin();
+    Check(retry.Schedule(generation, result, other), "New wake may retry again");
+    Check(retry.Consume(generation, other, false, true), "Retry starts for new generation");
+    state.foreground = true;
+    state.focused = true;
+    state.frontness = WindowFrontness::Front;
+    allowActivation = true;
+    result = PerformWindowActivationAttempt(operations, false);
+    Check(result.Succeeded(), "Retry succeeds only with foreground, focus and front Z order");
+    generation = retry.Begin();
+    Check(!retry.Schedule(generation, result, other), "First-attempt success needs no retry");
+    state.focused = false;
+    Check(!PerformWindowActivationAttempt(operations, false).Succeeded(),
+        "Foreground without focus is not complete activation");
+    Check(DecideMainHotKeyAction({state.visible, state.minimized, state.frontness}) ==
+        MainHotKeyAction::Hide, "Front window without focus still hides on explicit hotkey");
+    state.focused = true;
+    positionError = ERROR_ACCESS_DENIED;
+    Check(!PerformWindowActivationAttempt(operations, false).Succeeded(),
+        "Failed positioning is not reported as full success");
+    positionError = ERROR_SUCCESS;
+    calls.clear();
+    result = PerformWindowActivationAttempt(operations, true);
+    Check(calls == "SQ" && result.suppressed && !result.Succeeded(),
+        "Background policy restores and queries without activation or raising");
+    Check(!retry.Schedule(generation, result, other), "Suppressed activation does not retry");
+
+    state.foreground = false;
+    state.focused = false;
+    state.frontness = WindowFrontness::Behind;
+    result = PerformWindowActivationAttempt(operations, false);
+    generation = retry.Begin();
+    Check(retry.Schedule(generation, result, other), "Pending retry established");
+    retry.Cancel();
+    Check(!retry.Consume(generation, other, false, true),
+        "Hide, minimize, dock hide, deactivation and destruction cancel stale retries");
+    generation = retry.Begin();
+    Check(retry.Schedule(generation, result, other), "Pending retry before new wake");
+    retry.Begin();
+    Check(!retry.Consume(generation, other, false, true), "New wake invalidates old messages");
+    generation = retry.Begin();
+    Check(retry.Schedule(generation, result, other), "Pending retry before foreground change");
+    Check(!retry.Consume(generation, changed, false, true),
+        "User choosing another foreground cancels retry");
+    generation = retry.Begin();
+    Check(retry.Schedule(generation, result, other), "Pending retry before hidden state");
+    Check(!retry.Consume(generation, other, false, false), "Hidden target must not be resurrected");
+    generation = retry.Begin();
+    result.presentation.foregroundWindow = changed;
+    Check(!retry.Schedule(generation, result, other),
+        "Foreground changed during the initial attempt does not queue retry");
+
+    auto cancellable = operations;
+    generation = retry.Begin();
+    cancellable.continueRequest = [&]() { return retry.IsCurrent(generation); };
+    cancellable.restore = [&]() { calls += 'S'; retry.Cancel(); };
+    calls.clear();
+    result = PerformWindowActivationAttempt(cancellable, false);
+    Check(calls == "SQ" && result.cancelled && !result.Succeeded(),
+        "Cancellation during restore prevents activation and raising");
+    generation = retry.Begin();
+    cancellable.restore = operations.restore;
+    cancellable.requestForeground = [&]() { calls += 'A'; retry.Cancel(); return false; };
+    calls.clear();
+    result = PerformWindowActivationAttempt(cancellable, false);
+    Check(calls == "SAQ" && result.cancelled && !result.Succeeded(),
+        "Cancellation during foreground request prevents later raising");
+    Check(!retry.Schedule(generation, result, other), "Cancelled attempt does not retry");
+    generation = retry.Begin();
+    cancellable.requestForeground = operations.requestForeground;
+    cancellable.raise = [&]() -> DWORD { calls += 'Z'; retry.Cancel(); return ERROR_SUCCESS; };
+    calls.clear();
+    result = PerformWindowActivationAttempt(cancellable, false);
+    Check(calls == "SAZQ" && result.cancelled && !result.Succeeded(),
+        "Cancellation in positioning is recorded in the final result");
 }
 
 void TestWebDavDownloadTargetPathValidation() {
@@ -345,6 +511,8 @@ int wmain() {
     Check(FormatVersionForDisplay(L" 0.1.0 ") == L"v0.1.0", "Version display trims whitespace");
     Check(FormatVersionForDisplay(L"").empty(), "Version display preserves empty value");
     TestMainHotKeyActionDecision();
+    TestWindowPresentationPolicy();
+    TestWindowActivationSequence();
     Check(FormatByteSizeForDisplay(0) == L"0 B", "Byte size display zero");
     Check(FormatByteSizeForDisplay(1024) == L"1.00 KB", "Byte size display kilobytes");
     Check(FormatByteSizeForDisplay(12ull * 1024ull * 1024ull) == L"12.0 MB", "Byte size display megabytes");

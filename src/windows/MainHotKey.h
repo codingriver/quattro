@@ -1,5 +1,6 @@
 #pragma once
 
+#include "../common/Utilities.h"
 #include <string>
 
 constexpr int kMainHotKeyDoubleAlt = -1;
@@ -12,16 +13,14 @@ enum class MainHotKeyAction {
 struct MainHotKeyWindowState {
     bool effectivelyVisible = false;
     bool minimized = false;
-    bool foreground = false;
-    bool topMost = false;
-    bool presentedWithoutActivation = false;
+    WindowFrontness frontness = WindowFrontness::Unknown;
 };
 
 constexpr MainHotKeyAction DecideMainHotKeyAction(const MainHotKeyWindowState& state) noexcept {
     if (!state.effectivelyVisible || state.minimized) {
         return MainHotKeyAction::Wake;
     }
-    if (state.foreground || state.topMost || state.presentedWithoutActivation) {
+    if (state.frontness == WindowFrontness::Front) {
         return MainHotKeyAction::Hide;
     }
     return MainHotKeyAction::Wake;
