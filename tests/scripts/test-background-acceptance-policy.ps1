@@ -47,6 +47,39 @@ foreach ($name in $backgroundScripts) {
     }
 }
 
+$activationRunner = Get-Content -LiteralPath (Join-Path $PSScriptRoot "run-window-activation-tests.ps1") -Raw
+foreach ($pattern in $forbidden) {
+    if ($activationRunner -match $pattern) {
+        throw "Window activation runner contains forbidden desktop/process operation: $pattern"
+    }
+}
+foreach ($required in @(
+    'CreateNoWindow = $true',
+    "ProcessWindowStyle]::Hidden",
+    "QUATTRO_TEST_MODE",
+    "QUATTRO_TEST_NO_FOCUS",
+    "QUATTRO_ACCEPTANCE_MODE",
+    "QUATTRO_TEST_RUN_ID",
+    "QUATTRO_USER_CONFIG_DIR",
+    "--window-activation-only",
+    "60000",
+    "existing_instances_unchanged"
+)) {
+    if ($activationRunner -notmatch [regex]::Escape($required)) {
+        throw "Window activation runner is missing isolation behavior: $required"
+    }
+}
+
+$windowUtilities = Get-Content -LiteralPath (Join-Path $root "src/common/Utilities.cpp") -Raw
+foreach ($required in @(
+    "PerformForegroundInputRecovery(recovery, suppressed || QuattroTestMode())",
+    "RequestWindowForegroundImpl(hwnd, topMost, nullptr, std::move(continueRequest))"
+)) {
+    if ($windowUtilities -notmatch [regex]::Escape($required)) {
+        throw "Foreground input recovery is missing a test-mode guard or ordinary-call isolation: $required"
+    }
+}
+
 $harness = Get-Content -LiteralPath (Join-Path $PSScriptRoot "QuattroTestHarness.ps1") -Raw
 foreach ($required in @(
     "QUATTRO_USER_CONFIG_DIR",

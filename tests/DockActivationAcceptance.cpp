@@ -455,6 +455,12 @@ int wmain() {
         std::cerr << "test process became the foreground window during background acceptance\n";
         result = 1;
     }
+    if (initialForeground != finalForeground) {
+        // This can also be unrelated user activity; do not attribute it to the
+        // product, but never label an unverified background run as passed.
+        std::cerr << "foreground changed; background non-interference could not be verified\n";
+        result = 1;
+    }
     if (GetTickCount64() - totalBegin > kTotalTimeoutMs) {
         std::cerr << "acceptance exceeded total timeout\n";
         result = 1;

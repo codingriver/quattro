@@ -2,6 +2,7 @@
 
 #include <windows.h>
 
+#include <array>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
@@ -62,14 +63,52 @@ struct WindowPresentation {
 
 WindowPresentation QueryWindowPresentation(HWND hwnd);
 
+enum class ForegroundInputRecoveryStatus {
+    NotRequested, Suppressed, Cancelled, KeysHeld, InputRejected, PartialInput, Injected,
+};
+
+struct ForegroundInputSendResult {
+    UINT inserted = 0;
+    DWORD error = ERROR_SUCCESS;
+};
+
+struct ForegroundInputRecoveryResult {
+    ForegroundInputRecoveryStatus status = ForegroundInputRecoveryStatus::NotRequested;
+    ForegroundInputSendResult pair;
+    ForegroundInputSendResult release;
+    bool MayActivate() const {
+        return status == ForegroundInputRecoveryStatus::NotRequested ||
+            status == ForegroundInputRecoveryStatus::Injected;
+    }
+};
+
+// Injectable operations keep all input recovery tests free of desktop input.
+struct ForegroundInputRecoveryOperations {
+    std::function<bool()> contextCurrent;
+    std::function<bool()> keysReleased;
+    std::function<ForegroundInputSendResult()> sendAltPair;
+    std::function<ForegroundInputSendResult()> releaseAlt;
+};
+constexpr ULONG_PTR kForegroundRecoveryInputTag = 0x51575241; // QWRA
+ForegroundInputRecoveryResult PerformForegroundInputRecovery(
+    const ForegroundInputRecoveryOperations& operations, bool suppressed);
+std::array<INPUT, 2> MakeForegroundRecoveryAltInputs();
+const wchar_t* ForegroundInputRecoveryStatusText(ForegroundInputRecoveryStatus status);
+
 struct WindowActivationResult {
     WindowPresentation presentation;
+    ForegroundInputRecoveryResult inputRecovery;
+    HWND foregroundBeforeRequest = nullptr;
+    DWORD foregroundGuiFlags = 0;
+    bool foregroundGuiKnown = false;
     bool suppressed = false;
     bool cancelled = false;
+    bool foregroundAttempted = false;
+    // Raw SetForegroundWindow return, separate from actual presentation.
     bool foregroundRequested = false;
     DWORD positionError = ERROR_SUCCESS;
     bool Succeeded() const {
-        return !suppressed && !cancelled && positionError == ERROR_SUCCESS &&
+        return !suppressed && !cancelled && inputRecovery.MayActivate() && positionError == ERROR_SUCCESS &&
             presentation.visible && !presentation.minimized &&
             presentation.foreground && presentation.focused &&
             presentation.frontness == WindowFrontness::Front;
@@ -83,24 +122,32 @@ struct WindowActivationOperations {
     std::function<DWORD()> raise;
     std::function<WindowPresentation()> query;
     std::function<bool()> continueRequest;
+    std::function<ForegroundInputRecoveryResult()> recoverForeground;
 };
 WindowActivationResult PerformWindowActivationAttempt(
     const WindowActivationOperations& operations, bool suppressed);
 WindowActivationResult RequestWindowForeground(
     HWND hwnd, bool topMost, std::function<bool()> continueRequest = {});
+// Explicit opt-in for the sole retry of a physical user gesture. Ordinary
+// ActivateWindow/RequestWindowForeground callers never synthesize input.
+WindowActivationResult RequestWindowForegroundWithInputRecovery(
+    HWND hwnd, bool topMost, HWND expectedForeground, std::function<bool()> continueRequest);
 
 class WindowActivationRetry {
 public:
     UINT_PTR Begin() { Cancel(); return generation_; }
-    void Cancel() { ++generation_; pending_ = false; scheduled_ = false; }
+    void Cancel() { ++generation_; pending_ = false; scheduled_ = false; inputRecovery_ = false; }
     bool IsCurrent(UINT_PTR generation) const { return generation == generation_; }
-    bool Schedule(UINT_PTR generation, const WindowActivationResult& result, HWND previousForeground);
-    bool Consume(UINT_PTR generation, HWND currentForeground, bool targetForeground, bool visible);
+    bool Schedule(UINT_PTR generation, const WindowActivationResult& result, HWND previousForeground,
+        bool allowInputRecovery = false);
+    bool Consume(UINT_PTR generation, HWND currentForeground, bool targetForeground, bool visible,
+        bool* recoverInput = nullptr);
 private:
     UINT_PTR generation_ = 0;
     bool pending_ = false;
     bool scheduled_ = false;
     HWND previousForeground_ = nullptr;
+    bool inputRecovery_ = false;
 };
 
 void ShowWindowRespectFocusPolicy(HWND hwnd, int showCommand);

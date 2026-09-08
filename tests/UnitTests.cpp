@@ -207,6 +207,190 @@ void TestWindowPresentationPolicy() {
         "Cloaked target is not considered presented");
 }
 
+void TestDoubleAltGesture() {
+    DoubleAltGesture gesture;
+    const auto tap = [&](DWORD tick, DWORD key = VK_LMENU, bool injected = false) {
+        Check(gesture.OnKey(key, true, tick, injected) == 0, "Alt down never dispatches");
+        return gesture.OnKey(key, false, tick + 10, injected);
+    };
+    Check(tap(0) == 0, "First clean Alt tap only arms recognition");
+    const auto first = tap(100);
+    Check(gesture.IsPending(first), "Second release produces a deferred gesture token");
+    Check(gesture.Consume(first) && !gesture.Consume(first), "Gesture dispatches at most once");
+    Check(tap(200) == 0, "Third tap starts a new pair, not a second toggle");
+    Check(gesture.Consume(tap(300, VK_RMENU)), "Either Alt can complete the pair");
+
+    gesture.Reset();
+    tap(100);
+    Check(tap(551) == 0, "More than 450ms between releases is not a double tap");
+    Check(gesture.Consume(tap(650)), "Expired tap can start the next pair");
+    gesture.Reset();
+    tap(MAXDWORD - 100);
+    Check(gesture.Consume(tap(20)), "Tick rollover does not break the interval");
+
+    gesture.Reset();
+    tap(100);
+    gesture.OnKey(VK_LMENU, true, 200);
+    gesture.OnKey(VK_TAB, true, 210);
+    gesture.OnKey(VK_TAB, false, 220);
+    gesture.OnKey(VK_LMENU, true, 230);
+    Check(!gesture.OnKey(VK_LMENU, false, 240), "Alt+Tab and Alt repeat cannot toggle");
+    Check(!tap(300), "Alt chord invalidates the previous tap");
+
+    gesture.Reset();
+    gesture.OnKey(VK_LCONTROL, true, 0);
+    Check(!tap(100) && !tap(200), "Ctrl held before Alt prevents double-Alt recognition");
+    gesture.OnKey(VK_LCONTROL, false, 220);
+    Check(!tap(300) && gesture.Consume(tap(400)), "Clean pair works after modifier release");
+    gesture.Reset();
+    Check(!tap(100, VK_RMENU, true) && !tap(200, VK_RMENU, true),
+        "Injected Alt events cannot activate the product");
+    Check(!tap(300), "Injected input cannot arm a physical double tap");
+    gesture.OnKey(VK_LMENU, true, 400);
+    gesture.OnKey(VK_RMENU, true, 410);
+    gesture.OnKey(VK_RMENU, false, 420);
+    Check(!gesture.OnKey(VK_LMENU, false, 430), "Overlapping Alt keys are not two taps");
+    gesture.Reset();
+    Check(!gesture.OnKey(VK_LMENU, false, 0), "Unmatched key release is not a tap");
+
+    tap(100);
+    auto token = tap(200);
+    gesture.OnKey('X', true, 230);
+    Check(!gesture.Consume(token), "New input cancels deferred activation");
+    gesture.Reset();
+    tap(300);
+    token = tap(400);
+    gesture.CancelPending();
+    Check(!gesture.Consume(token), "Lifecycle changes cancel deferred activation");
+    gesture.Reset();
+    tap(500);
+    const auto replacement = tap(600);
+    Check(replacement != token && !gesture.Consume(token) && gesture.Consume(replacement),
+        "Re-registration never accepts an old queued token");
+    const auto inputSerial = gesture.InputSerial();
+    Check(!gesture.OnKey(VK_LMENU, true, 700, true, kForegroundRecoveryInputTag) &&
+        !gesture.OnKey(VK_LMENU, false, 701, true, kForegroundRecoveryInputTag) &&
+        gesture.InputSerial() == inputSerial,
+        "Own recovery pair neither toggles nor cancels its active wake");
+    gesture.OnKey('X', true, 720);
+    Check(gesture.InputSerial() != inputSerial, "New physical input invalidates input recovery serial");
+}
+
+void TestForegroundInputRecovery() {
+    const auto inputs = MakeForegroundRecoveryAltInputs();
+    Check(inputs[0].type == INPUT_KEYBOARD && inputs[1].type == INPUT_KEYBOARD &&
+        inputs[0].ki.wVk == VK_MENU && inputs[1].ki.wVk == VK_MENU &&
+        inputs[0].ki.dwFlags == 0 && inputs[1].ki.dwFlags == KEYEVENTF_KEYUP &&
+        inputs[0].ki.dwExtraInfo == kForegroundRecoveryInputTag &&
+        inputs[1].ki.dwExtraInfo == kForegroundRecoveryInputTag,
+        "Recovery consists of a tagged balanced Alt pair, not arbitrary user input");
+
+    bool valid = true;
+    bool released = true;
+    bool changeDuringSend = false;
+    ForegroundInputSendResult pair{2, ERROR_SUCCESS};
+    ForegroundInputSendResult release{1, ERROR_SUCCESS};
+    std::string calls;
+    ForegroundInputRecoveryOperations operations{
+        [&]() { calls += 'C'; return valid; },
+        [&]() { calls += 'K'; return released; },
+        [&]() { calls += 'I'; if (changeDuringSend) valid = false; return pair; },
+        [&]() { calls += 'U'; return release; },
+    };
+    auto result = PerformForegroundInputRecovery(operations, true);
+    Check(calls.empty() && result.status == ForegroundInputRecoveryStatus::Suppressed,
+        "Suppressed recovery does not query keys, inspect context or inject input");
+    valid = false;
+    result = PerformForegroundInputRecovery(operations, false);
+    Check(calls == "C" && result.status == ForegroundInputRecoveryStatus::Cancelled,
+        "Stale generation/changed foreground cancels recovery before reading keys");
+    valid = true;
+    released = false;
+    calls.clear();
+    result = PerformForegroundInputRecovery(operations, false);
+    Check(calls == "CK" && result.status == ForegroundInputRecoveryStatus::KeysHeld,
+        "Any held keyboard key or mouse button prevents injection");
+    released = true;
+    const auto originalKeyQuery = operations.keysReleased;
+    operations.keysReleased = [&]() { calls += 'K'; valid = false; return true; };
+    calls.clear();
+    result = PerformForegroundInputRecovery(operations, false);
+    Check(calls == "CKC" && result.status == ForegroundInputRecoveryStatus::Cancelled,
+        "Context is rechecked after key-state sampling");
+    operations.keysReleased = originalKeyQuery;
+    valid = true;
+    calls.clear();
+    result = PerformForegroundInputRecovery(operations, false);
+    Check(calls == "CKCIC" && result.pair.inserted == 2 && result.MayActivate(),
+        "Exactly one complete pair permits a subsequent activation attempt");
+    pair = {0, ERROR_ACCESS_DENIED};
+    calls.clear();
+    result = PerformForegroundInputRecovery(operations, false);
+    Check(calls == "CKCI" && !result.MayActivate() &&
+        result.status == ForegroundInputRecoveryStatus::InputRejected && result.pair.error == ERROR_ACCESS_DENIED,
+        "Rejected injection is reported, not retried or treated as activation");
+    pair = {1, ERROR_SUCCESS};
+    changeDuringSend = true;
+    calls.clear();
+    result = PerformForegroundInputRecovery(operations, false);
+    Check(calls == "CKCIU" && result.status == ForegroundInputRecoveryStatus::PartialInput &&
+        result.release.inserted == 1 && !result.MayActivate(),
+        "Partial injection balances its own Alt down even after cancellation");
+    valid = true;
+    release = {0, ERROR_ACCESS_DENIED};
+    calls.clear();
+    result = PerformForegroundInputRecovery(operations, false);
+    Check(calls == "CKCIU" && result.release.inserted == 0 &&
+        result.release.error == ERROR_ACCESS_DENIED && !result.MayActivate(),
+        "Failed balancing release is reported without an unbounded input loop");
+    valid = true;
+    pair = {2, ERROR_SUCCESS};
+    calls.clear();
+    result = PerformForegroundInputRecovery(operations, false);
+    Check(calls == "CKCIC" && result.status == ForegroundInputRecoveryStatus::Cancelled,
+        "Input accepted but foreground/lifecycle changed prevents activation");
+
+    WindowPresentation state;
+    state.visible = true;
+    state.frontness = WindowFrontness::Behind;
+    ForegroundInputRecoveryResult recovery;
+    recovery.status = ForegroundInputRecoveryStatus::Injected;
+    WindowActivationOperations activation{
+        [&]() { calls += 'S'; },
+        [&]() { calls += 'A'; return true; },
+        [&]() { calls += 'Z'; return ERROR_SUCCESS; },
+        [&]() { calls += 'Q'; return state; },
+        {},
+        [&]() { calls += 'R'; return recovery; },
+    };
+    calls.clear();
+    auto wake = PerformWindowActivationAttempt(activation, false);
+    Check(calls == "SRAZQ" && !wake.Succeeded(),
+        "Recovery precedes foreground/Z requests; injected input is not itself success");
+    state.foreground = state.focused = true;
+    state.frontness = WindowFrontness::Front;
+    Check(PerformWindowActivationAttempt(activation, false).Succeeded(),
+        "Recovery is successful only when focus, foreground and actual frontness agree");
+    recovery.status = ForegroundInputRecoveryStatus::InputRejected;
+    calls.clear();
+    wake = PerformWindowActivationAttempt(activation, false);
+    Check(calls == "SRQ" && !wake.foregroundAttempted && !wake.Succeeded(),
+        "Input failure aborts the retry before further foreground/Z manipulation");
+    recovery.status = ForegroundInputRecoveryStatus::Cancelled;
+    calls.clear();
+    wake = PerformWindowActivationAttempt(activation, false);
+    Check(calls == "SRQ" && wake.cancelled, "Recovery cancellation propagates to the wake");
+    calls.clear();
+    wake = PerformWindowActivationAttempt(activation, true);
+    Check(calls == "SQ" && wake.inputRecovery.status == ForegroundInputRecoveryStatus::Suppressed,
+        "Background activation bypasses even the recovery callback");
+    activation.continueRequest = []() { return false; };
+    calls.clear();
+    wake = PerformWindowActivationAttempt(activation, false);
+    Check(calls == "Q" && wake.cancelled && !wake.foregroundAttempted,
+        "Foreground changing after retry validation cancels before restore or recovery");
+}
+
 void TestWindowActivationSequence() {
     const HWND other = reinterpret_cast<HWND>(static_cast<UINT_PTR>(1));
     const HWND changed = reinterpret_cast<HWND>(static_cast<UINT_PTR>(2));
@@ -227,6 +411,8 @@ void TestWindowActivationSequence() {
     auto generation = retry.Begin();
     auto result = PerformWindowActivationAttempt(operations, false);
     Check(calls == "SAZQ", "Wake restores, requests foreground, raises, then verifies");
+    Check(result.foregroundAttempted && !result.foregroundRequested,
+        "Raw foreground API failure is recorded independently of positioning");
     Check(!result.Succeeded(), "Visible but inactive and behind is not successful");
     Check(DecideMainHotKeyAction({state.visible, state.minimized, state.frontness}) ==
         MainHotKeyAction::Wake, "Failed activation behind remains a wake on the next hotkey");
@@ -249,8 +435,9 @@ void TestWindowActivationSequence() {
     generation = retry.Begin();
     Check(!retry.Schedule(generation, result, other), "First-attempt success needs no retry");
     state.focused = false;
-    Check(!PerformWindowActivationAttempt(operations, false).Succeeded(),
-        "Foreground without focus is not complete activation");
+    result = PerformWindowActivationAttempt(operations, false);
+    Check(result.foregroundRequested && !result.Succeeded(),
+        "Raw API success without focus is not complete activation");
     Check(DecideMainHotKeyAction({state.visible, state.minimized, state.frontness}) ==
         MainHotKeyAction::Hide, "Front window without focus still hides on explicit hotkey");
     state.focused = true;
@@ -260,7 +447,7 @@ void TestWindowActivationSequence() {
     positionError = ERROR_SUCCESS;
     calls.clear();
     result = PerformWindowActivationAttempt(operations, true);
-    Check(calls == "SQ" && result.suppressed && !result.Succeeded(),
+    Check(calls == "SQ" && result.suppressed && !result.foregroundAttempted && !result.Succeeded(),
         "Background policy restores and queries without activation or raising");
     Check(!retry.Schedule(generation, result, other), "Suppressed activation does not retry");
 
@@ -312,6 +499,43 @@ void TestWindowActivationSequence() {
     result = PerformWindowActivationAttempt(cancellable, false);
     Check(calls == "SAZQ" && result.cancelled && !result.Succeeded(),
         "Cancellation in positioning is recorded in the final result");
+
+    WindowActivationResult failed;
+    failed.foregroundAttempted = true;
+    failed.presentation.visible = true;
+    failed.presentation.foregroundWindow = other;
+    failed.presentation.frontness = WindowFrontness::Behind;
+    bool recoverInput = true;
+    generation = retry.Begin();
+    Check(retry.Schedule(generation, failed, other) &&
+        retry.Consume(generation, other, false, true, &recoverInput) && !recoverInput,
+        "Ordinary hotkey, tray and single-instance retries never opt into input recovery");
+    generation = retry.Begin();
+    Check(retry.Schedule(generation, failed, other, true) &&
+        retry.Consume(generation, other, false, true, &recoverInput) && recoverInput,
+        "Explicit double-Alt foreground refusal enables recovery on the sole retry");
+    Check(!retry.Consume(generation, other, false, true, &recoverInput) && !recoverInput,
+        "Input recovery permit cannot be consumed twice");
+    Check(!retry.Schedule(generation, failed, other, true), "Input recovery cannot schedule a third attempt");
+    generation = retry.Begin();
+    Check(retry.Schedule(generation, failed, other, true) &&
+        retry.Consume(generation, other, true, true, &recoverInput) && !recoverInput,
+        "Target becoming foreground before retry avoids unnecessary injected input");
+    generation = retry.Begin();
+    failed.foregroundRequested = true;
+    Check(retry.Schedule(generation, failed, other, true) &&
+        retry.Consume(generation, other, false, true, &recoverInput) && !recoverInput,
+        "Accepted foreground request awaiting completion does not justify injection");
+    failed.foregroundRequested = false;
+    generation = retry.Begin();
+    Check(retry.Schedule(generation, failed, other, true), "Recovery retry before foreground switch");
+    Check(!retry.Consume(generation, changed, false, true, &recoverInput) && !recoverInput,
+        "A different foreground discards the input recovery permit");
+    generation = retry.Begin();
+    Check(retry.Schedule(generation, failed, other, true), "Recovery retry before lifecycle cancellation");
+    retry.Cancel();
+    Check(!retry.Consume(generation, other, false, true, &recoverInput) && !recoverInput,
+        "Lifecycle cancellation revokes the input recovery permit");
 }
 
 void TestWebDavDownloadTargetPathValidation() {
@@ -497,7 +721,19 @@ LRESULT CALLBACK TableUpdateNotificationParentProc(
 }
 }
 
-int wmain() {
+int wmain(int argc, wchar_t* argv[]) {
+    if (argc == 2 && std::wstring(argv[1]) == L"--window-activation-only") {
+        TestDoubleAltGesture();
+        TestForegroundInputRecovery();
+        TestMainHotKeyActionDecision();
+        TestWindowPresentationPolicy();
+        TestWindowActivationSequence();
+        if (failures == 0) {
+            std::cout << "window_activation_unit_tests=passed\n";
+        }
+        return failures == 0 ? 0 : 1;
+    }
+
     const std::filesystem::path unitUserConfigRoot = std::filesystem::temp_directory_path() / (L"quattro_unit_user_config_" + std::to_wstring(GetCurrentProcessId()));
     std::error_code ec;
     std::filesystem::remove_all(unitUserConfigRoot, ec);
@@ -510,6 +746,8 @@ int wmain() {
     Check(FormatVersionForDisplay(L"V0.1.0") == L"v0.1.0", "Version display normalizes prefix");
     Check(FormatVersionForDisplay(L" 0.1.0 ") == L"v0.1.0", "Version display trims whitespace");
     Check(FormatVersionForDisplay(L"").empty(), "Version display preserves empty value");
+    TestDoubleAltGesture();
+    TestForegroundInputRecovery();
     TestMainHotKeyActionDecision();
     TestWindowPresentationPolicy();
     TestWindowActivationSequence();

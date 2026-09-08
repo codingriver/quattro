@@ -313,8 +313,10 @@ private:
     bool IsNearDockEdge(POINT screenPoint) const;
     bool IsEffectivelyVisible() const;
     bool ShouldHideMainWindowFromHotKey() const;
-    void AttemptMainWindowWake(const wchar_t* source, UINT_PTR generation, bool retry);
-    void ToggleMainWindowFromHotKey();
+    void CancelPendingMainWindowWake();
+    void AttemptMainWindowWake(const wchar_t* source, UINT_PTR generation, bool retry,
+        bool allowInputRecovery = false, HWND recoveryForeground = nullptr);
+    void ToggleMainWindowFromHotKey(const wchar_t* source = L"hotkey", bool allowInputRecovery = false);
     void HideMainWindowAfterLink();
     void HideMainWindow();
     bool ImportPath(const std::wstring& path, bool showError = true);
@@ -375,7 +377,7 @@ private:
     void AppendTagTargetMenu(HMENU menu, UINT commandBase, std::vector<int>& targetIds, int excludedTagId);
     void AppendGroupedTagTargetMenu(HMENU menu, UINT commandBase, std::vector<int>& targetIds, int excludedTagId);
     void SaveWindowState();
-    void WakeUp(const wchar_t* source = L"explicit");
+    void WakeUp(const wchar_t* source = L"explicit", bool allowInputRecovery = false);
 
     void DiscardDeviceResources();
     HRESULT CreateDeviceResources();
@@ -562,6 +564,12 @@ private:
     bool copySelectedPathsHotKeyRegistered_ = false;
     bool hotKeyConflictWarningShown_ = false;
     WindowActivationRetry wakeRetry_;
+    UINT_PTR wakeRetryTimerGeneration_ = 0;
+    UINT_PTR wakeInputSerial_ = 0;
+    ULONGLONG wakeRetryDueTick_ = 0;
+    UINT_PTR doubleAltToken_ = 0;
+    HWND doubleAltForeground_ = nullptr;
+    ULONGLONG doubleAltDueTick_ = 0;
     std::optional<WindowFrontness> testMainFrontness_;
     bool runningAsAdmin_ = false;
     bool exitingForPrivilegeRestart_ = false;

@@ -476,10 +476,71 @@ WindowPresentation QueryWindowPresentation(HWND hwnd) {
     return state;
 }
 
+ForegroundInputRecoveryResult PerformForegroundInputRecovery(
+    const ForegroundInputRecoveryOperations& operations, bool suppressed) {
+    ForegroundInputRecoveryResult result;
+    if (suppressed) {
+        result.status = ForegroundInputRecoveryStatus::Suppressed;
+        return result; // Includes key-state queries, not just SendInput.
+    }
+    if (!operations.contextCurrent()) {
+        result.status = ForegroundInputRecoveryStatus::Cancelled;
+        return result;
+    }
+    if (!operations.keysReleased()) {
+        result.status = ForegroundInputRecoveryStatus::KeysHeld;
+        return result;
+    }
+    if (!operations.contextCurrent()) {
+        result.status = ForegroundInputRecoveryStatus::Cancelled;
+        return result;
+    }
+    result.pair = operations.sendAltPair();
+    if (result.pair.inserted == 1) {
+        // Even if the wake was cancelled during injection, balance our own
+        // accepted key-down once. Never resend the pair or loop on failure.
+        result.release = operations.releaseAlt();
+        result.status = ForegroundInputRecoveryStatus::PartialInput;
+    } else if (result.pair.inserted != 2) {
+        result.status = ForegroundInputRecoveryStatus::InputRejected;
+    } else {
+        result.status = operations.contextCurrent()
+            ? ForegroundInputRecoveryStatus::Injected : ForegroundInputRecoveryStatus::Cancelled;
+    }
+    return result;
+}
+
+std::array<INPUT, 2> MakeForegroundRecoveryAltInputs() {
+    std::array<INPUT, 2> inputs{};
+    for (auto& input : inputs) {
+        input.type = INPUT_KEYBOARD;
+        input.ki.wVk = VK_MENU;
+        input.ki.dwExtraInfo = kForegroundRecoveryInputTag;
+    }
+    inputs[1].ki.dwFlags = KEYEVENTF_KEYUP;
+    return inputs;
+}
+
+const wchar_t* ForegroundInputRecoveryStatusText(ForegroundInputRecoveryStatus status) {
+    switch (status) {
+    case ForegroundInputRecoveryStatus::NotRequested: return L"not-requested";
+    case ForegroundInputRecoveryStatus::Suppressed: return L"suppressed";
+    case ForegroundInputRecoveryStatus::Cancelled: return L"cancelled";
+    case ForegroundInputRecoveryStatus::KeysHeld: return L"keys-held";
+    case ForegroundInputRecoveryStatus::InputRejected: return L"input-rejected";
+    case ForegroundInputRecoveryStatus::PartialInput: return L"partial-input";
+    case ForegroundInputRecoveryStatus::Injected: return L"injected";
+    }
+    return L"unknown";
+}
+
 WindowActivationResult PerformWindowActivationAttempt(
     const WindowActivationOperations& operations, bool suppressed) {
     WindowActivationResult result;
     result.suppressed = suppressed;
+    if (suppressed && operations.recoverForeground) {
+        result.inputRecovery.status = ForegroundInputRecoveryStatus::Suppressed;
+    }
     const auto continueRequest = [&]() {
         result.cancelled = operations.continueRequest && !operations.continueRequest();
         return !result.cancelled;
@@ -487,9 +548,16 @@ WindowActivationResult PerformWindowActivationAttempt(
     if (continueRequest()) {
         operations.restore();
         if (!suppressed && continueRequest()) {
-            result.foregroundRequested = operations.requestForeground();
-            if (continueRequest()) {
-                result.positionError = operations.raise();
+            if (operations.recoverForeground) {
+                result.inputRecovery = operations.recoverForeground();
+                result.cancelled = result.inputRecovery.status == ForegroundInputRecoveryStatus::Cancelled;
+            }
+            if (!result.cancelled && result.inputRecovery.MayActivate() && continueRequest()) {
+                result.foregroundAttempted = true;
+                result.foregroundRequested = operations.requestForeground();
+                if (continueRequest()) {
+                    result.positionError = operations.raise();
+                }
             }
         }
     }
@@ -500,15 +568,21 @@ WindowActivationResult PerformWindowActivationAttempt(
     return result;
 }
 
-WindowActivationResult RequestWindowForeground(
-    HWND hwnd, bool topMost, std::function<bool()> continueRequest) {
+namespace {
+WindowActivationResult RequestWindowForegroundImpl(
+    HWND hwnd, bool topMost, HWND recoveryForeground, std::function<bool()> continueRequest) {
     if (!hwnd || !IsWindow(hwnd)) {
         WindowActivationResult result;
         result.positionError = ERROR_INVALID_WINDOW_HANDLE;
         return result;
     }
     const bool suppressed = SuppressForegroundActivation() || BackgroundAcceptanceMode();
-    const WindowActivationOperations operations{
+    HWND foregroundBeforeRequest = nullptr;
+    GUITHREADINFO foregroundGui{};
+    foregroundGui.cbSize = sizeof(foregroundGui);
+    bool foregroundGuiKnown = false;
+    bool foregroundRequestStarted = false;
+    WindowActivationOperations operations{
         [=]() {
             if (suppressed) {
                 ShowWindow(hwnd, SW_SHOWNOACTIVATE);
@@ -517,27 +591,103 @@ WindowActivationResult RequestWindowForeground(
                 ShowWindowRespectFocusPolicy(hwnd, SW_RESTORE);
             }
         },
-        [=]() { return ActivateWindow(hwnd); },
+        [&]() {
+            foregroundBeforeRequest = GetForegroundWindow();
+            const DWORD thread = foregroundBeforeRequest
+                ? GetWindowThreadProcessId(foregroundBeforeRequest, nullptr) : 0;
+            foregroundGuiKnown = thread && GetGUIThreadInfo(thread, &foregroundGui);
+            const HWND root = GetAncestor(hwnd, GA_ROOT);
+            // Unlike ActivateWindow(), report the API result without conflating
+            // it with an immediate foreground snapshot. Query below verifies it.
+            foregroundRequestStarted = true;
+            return SetForegroundWindow(root ? root : hwnd) != FALSE;
+        },
         [=]() -> DWORD {
-            // A wake is an activation request, unlike passive moves and layout.
+            // Activation was explicitly requested above. Do not issue another
+            // implicit activation while applying the configured Z-order band.
+            // NOACTIVATE is NOT a bypass of Windows foreground permission.
             const HWND after = topMost ? HWND_TOPMOST :
                 ((GetWindowLongPtrW(hwnd, GWL_EXSTYLE) & WS_EX_TOPMOST) ? HWND_NOTOPMOST : HWND_TOP);
             SetLastError(ERROR_SUCCESS);
             if (SetWindowPos(hwnd, after, 0, 0, 0, 0,
-                SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW)) {
+                SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW | SWP_NOACTIVATE)) {
                 return ERROR_SUCCESS;
             }
             const DWORD error = GetLastError();
             return error ? error : ERROR_GEN_FAILURE;
         },
         [=]() { return QueryWindowPresentation(hwnd); },
-        std::move(continueRequest),
+        continueRequest,
     };
-    return PerformWindowActivationAttempt(operations, suppressed);
+    if (recoveryForeground) {
+        operations.continueRequest = [&]() {
+            if (continueRequest && !continueRequest()) return false;
+            if (suppressed || QuattroTestMode()) return true;
+            const HWND foreground = GetForegroundWindow();
+            // Before activation only the original foreground is acceptable;
+            // afterwards accept our own window group too, never a third window.
+            return foreground == recoveryForeground ||
+                (foregroundRequestStarted && foreground &&
+                    GetAncestor(foreground, GA_ROOTOWNER) == GetAncestor(hwnd, GA_ROOTOWNER));
+        };
+        operations.recoverForeground = [&]() {
+            const ForegroundInputRecoveryOperations recovery{
+                [&]() {
+                    return (!continueRequest || continueRequest()) &&
+                        IsWindow(hwnd) && IsWindowVisible(hwnd) && !IsIconic(hwnd) &&
+                        IsWindow(recoveryForeground) && GetForegroundWindow() == recoveryForeground &&
+                        GetAncestor(hwnd, GA_ROOTOWNER) != GetAncestor(recoveryForeground, GA_ROOTOWNER);
+                },
+                []() {
+                    // Include mouse buttons and all modifiers. Do not release,
+                    // modify or combine with a key the user is still holding.
+                    for (int key = 1; key < 256; ++key) {
+                        if (GetAsyncKeyState(key) & 0x8000) return false;
+                    }
+                    return true;
+                },
+                []() {
+                    auto inputs = MakeForegroundRecoveryAltInputs();
+                    SetLastError(ERROR_SUCCESS);
+                    const UINT inserted = SendInput(2, inputs.data(), sizeof(INPUT));
+                    return ForegroundInputSendResult{inserted, inserted == 2 ? ERROR_SUCCESS : GetLastError()};
+                },
+                []() {
+                    auto inputs = MakeForegroundRecoveryAltInputs();
+                    SetLastError(ERROR_SUCCESS);
+                    const UINT inserted = SendInput(1, &inputs[1], sizeof(INPUT));
+                    return ForegroundInputSendResult{inserted, inserted == 1 ? ERROR_SUCCESS : GetLastError()};
+                },
+            };
+            return PerformForegroundInputRecovery(recovery, suppressed || QuattroTestMode());
+        };
+    }
+    auto result = PerformWindowActivationAttempt(operations, suppressed);
+    result.foregroundBeforeRequest = foregroundBeforeRequest;
+    result.foregroundGuiKnown = foregroundGuiKnown;
+    result.foregroundGuiFlags = foregroundGui.flags;
+    return result;
+}
+}
+
+WindowActivationResult RequestWindowForeground(
+    HWND hwnd, bool topMost, std::function<bool()> continueRequest) {
+    return RequestWindowForegroundImpl(hwnd, topMost, nullptr, std::move(continueRequest));
+}
+
+WindowActivationResult RequestWindowForegroundWithInputRecovery(
+    HWND hwnd, bool topMost, HWND expectedForeground, std::function<bool()> continueRequest) {
+    if (!expectedForeground) {
+        WindowActivationResult result;
+        result.cancelled = true;
+        result.inputRecovery.status = ForegroundInputRecoveryStatus::Cancelled;
+        return result;
+    }
+    return RequestWindowForegroundImpl(hwnd, topMost, expectedForeground, std::move(continueRequest));
 }
 
 bool WindowActivationRetry::Schedule(
-    UINT_PTR generation, const WindowActivationResult& result, HWND previousForeground) {
+    UINT_PTR generation, const WindowActivationResult& result, HWND previousForeground, bool allowInputRecovery) {
     if (generation != generation_ || scheduled_ || result.Succeeded() || result.suppressed || result.cancelled ||
         !result.presentation.visible || result.presentation.minimized ||
         !previousForeground ||
@@ -547,17 +697,23 @@ bool WindowActivationRetry::Schedule(
     previousForeground_ = previousForeground;
     pending_ = true;
     scheduled_ = true;
+    inputRecovery_ = allowInputRecovery && result.foregroundAttempted &&
+        !result.foregroundRequested && !result.presentation.foreground;
     return true;
 }
 
 bool WindowActivationRetry::Consume(
-    UINT_PTR generation, HWND currentForeground, bool targetForeground, bool visible) {
+    UINT_PTR generation, HWND currentForeground, bool targetForeground, bool visible, bool* recoverInput) {
+    if (recoverInput) *recoverInput = false;
     if (generation != generation_ || !pending_) {
         return false;
     }
     pending_ = false;
-    return visible && currentForeground &&
+    const bool consumed = visible && currentForeground &&
         (targetForeground || currentForeground == previousForeground_);
+    if (recoverInput) *recoverInput = consumed && inputRecovery_ && !targetForeground;
+    inputRecovery_ = false;
+    return consumed;
 }
 
 void ShowWindowRespectFocusPolicy(HWND hwnd, int showCommand) {
