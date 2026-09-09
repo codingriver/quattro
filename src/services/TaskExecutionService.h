@@ -136,30 +136,44 @@ public:
         }
 
         std::atomic_size_t nextIndex{0};
+        std::atomic_bool failed{false};
+        std::mutex failureMutex;
+        std::exception_ptr failure;
         auto runWorker = [&](std::size_t workerIndex) {
-            LocalResult& local = localResults[workerIndex];
-            while (!StopRequested()) {
-                const std::size_t itemIndex = nextIndex.fetch_add(1);
-                if (itemIndex >= items.size()) {
-                    break;
+            try {
+                LocalResult& local = localResults[workerIndex];
+                while (!failed.load() && !StopRequested()) {
+                    const std::size_t itemIndex = nextIndex.fetch_add(1);
+                    if (itemIndex >= items.size()) {
+                        break;
+                    }
+                    process(items[itemIndex], local, *this);
                 }
-                process(items[itemIndex], local, *this);
+            } catch (...) {
+                failed.store(true);
+                std::lock_guard lock(failureMutex);
+                if (!failure) failure = std::current_exception();
             }
         };
 
         if (workerCount <= 1) {
             runWorker(0);
         } else {
-            std::vector<std::thread> workers;
+            // Join even when creating a later worker throws. Captured stage
+            // state must outlive every worker before propagating any failure.
+            std::vector<std::jthread> workers;
             workers.reserve(workerCount);
-            for (std::size_t index = 0; index < workerCount; ++index) {
-                workers.emplace_back(runWorker, index);
-            }
-            for (std::thread& worker : workers) {
-                worker.join();
+            try {
+                for (std::size_t index = 0; index < workerCount; ++index) {
+                    workers.emplace_back(runWorker, index);
+                }
+            } catch (...) {
+                failed.store(true);
+                throw;
             }
         }
 
+        if (failure) std::rethrow_exception(failure);
         for (LocalResult& local : localResults) {
             merge(std::move(local));
         }

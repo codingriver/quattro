@@ -1,6 +1,9 @@
 #include "../src/theme/Theme.h"
 #include "../src/theme/ThemedUi.h"
 #include "../src/theme/ThemedWindowUi.h"
+#include "../src/theme/ThemedTaskProgressDialog.h"
+#include "../src/theme/ThemedD2D.h"
+#include "../src/theme/ThemedGdiFallback.h"
 
 #include <windows.h>
 #include <commctrl.h>
@@ -17,10 +20,12 @@
 namespace {
 
 std::unique_ptr<ThemedWindowUi> g_windowUi;
+bool g_forwardCommonMessages = true;
 
 LRESULT CALLBACK HostProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
     LRESULT result = 0;
-    if (ThemedWindowUi::HandleCommonMessage(g_windowUi, message, wParam, lParam, result)) {
+    if (g_forwardCommonMessages &&
+            ThemedWindowUi::HandleCommonMessage(g_windowUi, message, wParam, lParam, result)) {
         return result;
     }
     return DefWindowProcW(hwnd, message, wParam, lParam);
@@ -38,6 +43,7 @@ void PumpMessages(DWORD durationMs) {
     while (GetTickCount64() - begin < durationMs) {
         MSG msg{};
         while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+            if (ThemedUi::PreTranslateMessage(msg)) continue;
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
@@ -71,7 +77,7 @@ HWND FindToastWindow(HWND host) {
             }
             wchar_t className[64]{};
             GetClassNameW(hwnd, className, static_cast<int>(std::size(className)));
-            if (std::wstring(className) != L"QuattroThemedToast") {
+            if (std::wstring(className) != L"QuattroThemedToast" || GetWindow(hwnd, GW_OWNER) != data->host) {
                 return TRUE;
             }
             data->match = hwnd;
@@ -166,7 +172,10 @@ bool CaptureWindowPng(HWND hwnd, const std::filesystem::path& path) {
                     colors.push_back(color);
                 }
             }
-            valid = colors.size() >= 12;
+            const auto sentinelPixels = std::count_if(pixels.begin(), pixels.end(), [](std::uint32_t value) {
+                return (value & 0x00ffffffu) == 0x00ff00ffu;
+            });
+            valid = colors.size() >= 12 && static_cast<std::size_t>(sentinelPixels) < pixels.size() / 20;
         }
     }
 
@@ -178,6 +187,246 @@ bool CaptureWindowPng(HWND hwnd, const std::filesystem::path& path) {
     }
     DeleteObject(bitmap);
     return saved;
+}
+
+bool RequireSurfacePixels(const std::filesystem::path& file, Color foreground, Color base) {
+    // Independent opaque-surface oracle; do not call the production compositor.
+    const int r = static_cast<int>(255 * (foreground.r * foreground.a + base.r * (1 - foreground.a)));
+    const int g = static_cast<int>(255 * (foreground.g * foreground.a + base.g * (1 - foreground.a)));
+    const int b = static_cast<int>(255 * (foreground.b * foreground.a + base.b * (1 - foreground.a)));
+    Gdiplus::Bitmap image(file.c_str());
+    if (image.GetLastStatus() != Gdiplus::Ok) return false;
+    std::size_t matching = 0;
+    for (UINT y = 0; y < image.GetHeight(); ++y) {
+        for (UINT x = 0; x < image.GetWidth(); ++x) {
+            Gdiplus::Color pixel;
+            image.GetPixel(x, y, &pixel);
+            matching += std::abs(int(pixel.GetR()) - r) + std::abs(int(pixel.GetG()) - g) +
+                std::abs(int(pixel.GetB()) - b) <= 6;
+        }
+    }
+    std::wcout << L"surface_pixels file=" << file.filename().wstring() << L" matching=" << matching << L"\n";
+    return Require(matching > image.GetWidth() * image.GetHeight() / 4,
+        L"translucent role background is composed over its public surface");
+}
+
+bool RunToastRegressionAcceptance(HWND host, const Theme& theme, const std::filesystem::path& outputDir) {
+    bool ok = true;
+    for (bool fallback : {false, true}) {
+        g_windowUi.reset();
+        SetEnvironmentVariableW(L"QUATTRO_FORCE_GDI_FALLBACK", fallback ? L"1" : nullptr);
+        g_windowUi = std::make_unique<ThemedWindowUi>(
+            GetModuleHandleW(nullptr), nullptr, host, theme, DialogLayoutKind::Compact, 640, 420);
+        for (UINT dpi : {96u, 120u, 144u}) {
+            RECT hostRect{120, 120, 760, 540};
+            SendMessageW(host, WM_DPICHANGED, MAKEWPARAM(dpi, dpi), reinterpret_cast<LPARAM>(&hostRect));
+            SetWindowPos(host, HWND_BOTTOM, 120, 120, 640, 420, SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+            const std::wstring suffix = std::wstring(fallback ? L"-gdi-" : L"-d2d-") + std::to_wstring(dpi);
+            const struct { const wchar_t* name; const wchar_t* text; bool multiline; } texts[] = {
+                {L"medium", L"成功提示：网址已复制到剪贴板。", true},
+                {L"short", L"设置已保存。", true},
+                {L"mixed", L"保存 Quattro 设置失败，请重试；路径 C:/test/conf.ini。", true},
+                {L"newline", L"第一行\r\n第二行的内容仍应完整显示。", true},
+                {L"long", L"批量处理已经结束，其中部分项目未能完成。请保留当前结果，检查失败项目后重试；之前已完成的内容不会丢失。", true},
+                {L"single", L"成功提示：网址已复制到剪贴板。", false},
+            };
+            for (const auto& sample : texts) {
+                ThemedToastOptions options;
+                options.durationMs = 0;
+                options.role = ThemedToastRole::Danger;
+                options.multiline = sample.multiline;
+                const auto layout = g_windowUi->ui().MeasureToast(sample.text, options);
+                g_windowUi->ui().ShowToast(sample.text, options);
+                PumpMessages(30);
+                HWND toast = FindToastWindow(host);
+                ok &= Require(toast != nullptr, L"regression toast exists");
+                if (!toast) continue;
+                RECT client{};
+                GetClientRect(toast, &client);
+                const int width = layout.text.right - layout.text.left;
+                const SIZE required = fallback
+                    ? ThemedGdiFallback::MeasureTextLayout(g_windowUi->font(), sample.text, -1, width, sample.multiline)
+                    : ThemedD2D::MeasureText(g_windowUi->font(), sample.text, width, sample.multiline);
+                ok &= Require(required.cy > 0 && required.cy <= layout.text.bottom - layout.text.top &&
+                    required.cx <= width && client.right == layout.size.cx && client.bottom == layout.size.cy,
+                    L"all toast text fits inside the actual window");
+                ok &= Require(layout.text.right < layout.closeButton.left &&
+                    layout.closeButton.bottom <= client.bottom, L"toast text and close button do not overlap");
+                POINT close{(layout.closeButton.left + layout.closeButton.right) / 2,
+                    (layout.closeButton.top + layout.closeButton.bottom) / 2};
+                ClientToScreen(toast, &close);
+                ok &= Require(SendMessageW(toast, WM_NCHITTEST, 0, MAKELPARAM(close.x, close.y)) == HTCLIENT,
+                    L"close hit test consumes the measured geometry");
+                const auto file = outputDir / (L"toast-fit-" + std::wstring(sample.name) + suffix + L".png");
+                ok &= Require(CaptureWindowPng(toast, file), L"toast fit capture contains valid pixels");
+                ok &= RequireSurfacePixels(file, theme.color(L"toast", L"danger", L"bg"),
+                    theme.color(L"toast", L"normal", L"bg"));
+                ok &= RequireToastWindowPolicy(host, toast);
+                std::wcout << L"toast_fit sample=" << sample.name << L" dpi=" << dpi << L" gdi=" << fallback
+                    << L" available=" << width << L"x" << layout.text.bottom - layout.text.top
+                    << L" required=" << required.cx << L"x" << required.cy << L"\n";
+            }
+            HWND badge = g_windowUi->ui().StatusBadge(
+                L"保存失败", 20, 20, g_windowUi->ui().scale(180), ThemedStatusRole::Danger);
+            const auto badgeFile = outputDir / (L"badge-danger" + suffix + L".png");
+            ok &= Require(CaptureWindowPng(badge, badgeFile), L"danger badge capture contains valid pixels");
+            ok &= RequireSurfacePixels(badgeFile, theme.color(L"global", L"danger", L"bg"),
+                theme.color(L"dialog", L"normal", L"bg"));
+            DestroyWindow(badge);
+
+            // An embedded facade must work even when its host does not forward common messages.
+            g_forwardCommonMessages = false;
+            for (auto anchor : {ThemedToastAnchor::OwnerBottomRight, ThemedToastAnchor::OwnerTopRight,
+                    ThemedToastAnchor::ScreenBottomRight}) {
+                SetWindowPos(host, HWND_BOTTOM, 120, 120, 640, 420, SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+                ThemedToastOptions options;
+                options.durationMs = 0;
+                options.anchor = anchor;
+                g_windowUi->ui().ShowToast(L"跟随位置验证", options);
+                HWND toast = FindToastWindow(host);
+                RECT before{}, after{};
+                GetWindowRect(toast, &before);
+                SetWindowPos(host, HWND_BOTTOM, 200, 160, 640, 420, SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+                GetWindowRect(toast, &after);
+                const bool screen = anchor == ThemedToastAnchor::ScreenBottomRight;
+                ok &= Require(after.left - before.left == (screen ? 0 : 80) &&
+                    after.top - before.top == (screen ? 0 : 40), L"toast follows only owner anchor movement");
+                before = after;
+                SetWindowPos(host, HWND_BOTTOM, 200, 160, 700, 450, SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+                GetWindowRect(toast, &after);
+                ok &= Require(after.left - before.left == (screen ? 0 : 60) &&
+                    after.top - before.top == (anchor == ThemedToastAnchor::OwnerBottomRight ? 30 : 0),
+                    L"toast follows its anchor when owner is resized");
+                std::wcout << L"toast_anchor dpi=" << dpi << L" gdi=" << fallback
+                    << L" anchor=" << static_cast<int>(anchor) << L" moved_and_resized=checked\n";
+                if (!screen) {
+                    const auto file = outputDir / (L"toast-moved-" + std::to_wstring(static_cast<int>(anchor)) + suffix + L".png");
+                    ok &= Require(CaptureWindowPng(toast, file), L"moved toast capture is valid");
+                    ShowWindow(host, SW_HIDE);
+                    ok &= Require(!IsWindowVisible(toast), L"hiding owner dismisses its toast");
+                    ShowWindow(host, SW_SHOWNOACTIVATE);
+                    SetWindowPos(host, HWND_BOTTOM, 0, 0, 0, 0,
+                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+                    ok &= Require(!IsWindowVisible(toast), L"restoring owner does not revive a stale toast");
+                    g_windowUi->ui().ShowToast(L"最小化状态验证", options);
+                    SendMessageW(host, WM_SIZE, SIZE_MINIMIZED, 0);
+                    ok &= Require(!IsWindowVisible(toast), L"owner minimized state dismisses its toast");
+                }
+            }
+            ThemedToastOptions timeout;
+            timeout.durationMs = 80;
+            g_windowUi->ui().ShowToast(L"不转发消息时仍自动关闭", timeout);
+            PumpMessages(160);
+            ok &= Require(!IsWindowVisible(FindToastWindow(host)), L"toast lifetime does not depend on host message forwarding");
+            g_forwardCommonMessages = true;
+        }
+    }
+    g_windowUi.reset();
+    SetEnvironmentVariableW(L"QUATTRO_FORCE_GDI_FALLBACK", nullptr);
+    g_windowUi = std::make_unique<ThemedWindowUi>(
+        GetModuleHandleW(nullptr), nullptr, host, theme, DialogLayoutKind::Compact, 640, 420);
+    HWND detachedHost = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, L"STATIC", L"",
+        WS_POPUP, 120, 120, 320, 240, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+    ok &= Require(detachedHost != nullptr, L"independent toast lifecycle host created");
+    if (detachedHost) {
+        ShowWindow(detachedHost, SW_SHOWNOACTIVATE);
+        SetWindowPos(detachedHost, HWND_BOTTOM, 0, 0, 0, 0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+        ThemedWindowUi detached(GetModuleHandleW(nullptr), nullptr, detachedHost, theme,
+            DialogLayoutKind::Compact, 320, 240);
+        detached.ui().ShowToast(L"宿主销毁验证");
+        const HWND toast = FindToastWindow(detachedHost);
+        ok &= Require(toast != nullptr, L"independent toast created before owner teardown");
+        DestroyWindow(detachedHost);
+        ok &= Require(!IsWindow(toast) && detached.hwnd() == nullptr,
+            L"owner teardown detaches a surviving facade and destroys its toast");
+        detached.ui().ShowToast(L"宿主已销毁");
+        ok &= Require(FindToastWindow(detachedHost) == nullptr, L"destroyed owner cannot create another toast");
+    }
+    return ok;
+}
+
+bool RunTaskProgressAcceptance(HWND owner, const Theme& theme, const std::filesystem::path& outputDir) {
+    bool ok = true;
+    for (UINT dpi : {96u, 120u, 144u}) {
+        TaskProgressSnapshot snapshot;
+        snapshot.status = L"正在扫描";
+        snapshot.detail = L"正在读取文件";
+        snapshot.error = L"读取失败，请重试。";
+        snapshot.current = 3;
+        snapshot.total = 10;
+        snapshot.indeterminate = false;
+        snapshot.workerCount = 2;
+        snapshot.taskStatus = TaskStatus::Running;
+        ThemedTaskProgressDialogOptions options;
+        options.owner = owner;
+        options.instance = GetModuleHandleW(nullptr);
+        options.theme = theme;
+        options.className = L"QuattroTaskProgressAcceptance";
+        options.title = L"任务进度验收";
+        options.closeOnCompleted = false;
+        options.readSnapshot = [&] { return ToThemedTaskProgressSnapshot(snapshot); };
+        ThemedTaskProgressDialog dialog(options);
+        ok &= Require(dialog.Show(), L"task progress window created");
+        if (!dialog.hwnd()) continue;
+        RECT rect{};
+        GetWindowRect(dialog.hwnd(), &rect);
+        rect.right = rect.left + MulDiv(rect.right - rect.left, dpi, 96);
+        rect.bottom = rect.top + MulDiv(rect.bottom - rect.top, dpi, 96);
+        SendMessageW(dialog.hwnd(), WM_DPICHANGED, MAKEWPARAM(dpi, dpi),
+            reinterpret_cast<LPARAM>(&rect));
+        const struct {
+            TaskStatus status;
+            const wchar_t* name;
+            const wchar_t* text;
+            const wchar_t* role;
+        } cases[] = {
+            {TaskStatus::Running, L"running", L"正在扫描", L"info"},
+            {TaskStatus::Stopped, L"stopped", L"任务已停止", L"warning"},
+            {TaskStatus::Failed, L"failed", L"任务失败", L"danger"},
+            {TaskStatus::Completed, L"completed", L"任务完成", L"success"},
+        };
+        for (const auto& state : cases) {
+            snapshot.taskStatus = state.status;
+            PumpMessages(120);
+            struct TextQuery { const wchar_t* text; HWND hwnd = nullptr; } query{state.text};
+            EnumChildWindows(dialog.hwnd(), [](HWND child, LPARAM value) -> BOOL {
+                auto& query = *reinterpret_cast<TextQuery*>(value);
+                if (WindowText(child) == query.text) query.hwnd = child;
+                return TRUE;
+            }, reinterpret_cast<LPARAM>(&query));
+            ok &= Require(query.hwnd != nullptr, L"task progress displays the current terminal status");
+            const auto file = outputDir /
+                (L"task-progress-" + std::wstring(state.name) + L"-" + std::to_wstring(dpi) + L".png");
+            ok &= Require(CaptureWindowPng(dialog.hwnd(), file), L"task progress screenshot is valid");
+            if (query.hwnd) {
+                RECT statusRect{}, windowRect{};
+                GetWindowRect(query.hwnd, &statusRect);
+                GetWindowRect(dialog.hwnd(), &windowRect);
+                OffsetRect(&statusRect, -windowRect.left, -windowRect.top);
+                const Color expected = theme.color(L"global", state.role, L"text");
+                Gdiplus::Bitmap image(file.c_str());
+                int coloredPixels = 0;
+                for (int y = std::max(0L, statusRect.top);
+                        y < std::min<LONG>(statusRect.bottom, image.GetHeight()); ++y) {
+                    for (int x = std::max(0L, statusRect.left);
+                            x < std::min<LONG>(statusRect.right, image.GetWidth()); ++x) {
+                        Gdiplus::Color pixel;
+                        image.GetPixel(x, y, &pixel);
+                        const int distance = std::abs(int(pixel.GetR()) - int(expected.r * 255)) +
+                            std::abs(int(pixel.GetG()) - int(expected.g * 255)) +
+                            std::abs(int(pixel.GetB()) - int(expected.b * 255));
+                        coloredPixels += distance < 45;
+                    }
+                }
+                ok &= Require(coloredPixels >= 5, L"task progress status applies the semantic role color");
+                std::wcout << L"task_progress dpi=" << dpi << L" state=" << state.name
+                           << L" role_pixels=" << coloredPixels << L"\n";
+            }
+        }
+        dialog.Close();
+    }
+    return ok;
 }
 
 } // namespace
@@ -296,6 +545,8 @@ int wmain(int argc, wchar_t** argv) {
         ok &= Require(!toast || !IsWindowVisible(toast), L"HideToast hides the window");
     }
 
+    ok &= RunToastRegressionAcceptance(host, theme, outputDir);
+    ok &= RunTaskProgressAcceptance(host, theme, outputDir);
     DestroyWindow(host);
     PumpMessages(60);
     ok &= Require(FindToastWindow(host) == nullptr, L"destroying the host destroys its owned toast");

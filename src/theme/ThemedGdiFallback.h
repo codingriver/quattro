@@ -14,6 +14,7 @@ void DrawText(
     HDC dc, HFONT font, const wchar_t* text, int textLength,
     RECT rect, UINT format, COLORREF color);
 SIZE MeasureText(HDC dc, HFONT font, const wchar_t* text, int textLength);
+SIZE MeasureTextLayout(HFONT font, const wchar_t* text, int textLength, int maxWidth, bool wrap);
 void FillSolidRect(HDC dc, RECT rect, COLORREF fill);
 void FillEllipse(HDC dc, RECT rect, COLORREF fill, COLORREF border, int borderWidth);
 void DrawPolyline(HDC dc, const POINT* points, int pointCount, COLORREF color, int strokeWidth);

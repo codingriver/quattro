@@ -58,6 +58,19 @@ SIZE MeasureText(HDC dc, HFONT font, const wchar_t* text, int textLength) {
     return size;
 }
 
+SIZE MeasureTextLayout(HFONT font, const wchar_t* text, int textLength, int maxWidth, bool wrap) {
+    if (!text || textLength == 0) return SIZE{};
+    HDC dc = CreateCompatibleDC(nullptr);
+    if (!dc) return SIZE{};
+    HGDIOBJ oldFont = font ? SelectObject(dc, font) : nullptr;
+    RECT rect{0, 0, std::max(1, maxWidth), 0};
+    DrawTextW(dc, text, textLength, &rect,
+        DT_CALCRECT | DT_NOPREFIX | (wrap ? DT_WORDBREAK : DT_SINGLELINE));
+    if (oldFont) SelectObject(dc, oldFont);
+    DeleteDC(dc);
+    return SIZE{rect.right - rect.left, rect.bottom - rect.top};
+}
+
 void FillSolidRect(HDC dc, RECT rect, COLORREF fill) {
     if (!dc) return;
     HBRUSH brush = CreateSolidBrush(fill);

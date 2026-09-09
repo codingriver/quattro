@@ -6,6 +6,7 @@
 #include "Utilities.h"
 #include "WebDavClient.h"
 #include "WebDavCredentialService.h"
+#include "WebDavFileIndexCache.h"
 
 #include <bcrypt.h>
 #include <algorithm>
@@ -14,6 +15,8 @@
 #include <sstream>
 #include <chrono>
 #include <cwctype>
+#include <map>
+#include <stdexcept>
 
 namespace {
 std::wstring JsonEscape(const std::wstring& value) {
@@ -635,17 +638,136 @@ WebDavFileOperationResult WebDavFileService::Download(const WebDavFileRecord& re
 }
 
 bool WebDavFileService::Delete(const WebDavFileRecord& record, std::wstring& error,
-    WebDavFileDeleteProgressCallback progress) {
+    WebDavFileDeleteProgressCallback progress, std::stop_token stopToken) {
+    const auto stopped = [&]() {
+        if (!stopToken.stop_requested()) return false;
+        error = L"删除已停止，请刷新确认远端状态。";
+        return true;
+    };
+    if (stopped()) return false;
     std::wstring password; if (!LoadPassword(password, error)) return false; WebDavClient client(config_, password);
     const auto base = WebDavClient::CombineRemotePath(FilesDirectory(config_), record.id);
+    if (stopped()) return false;
     if (progress) progress(WebDavFileDeletePhase::DeletingContent, false);
+    if (stopped()) return false;
     if (!client.DeleteRemoteFile(WebDavClient::CombineRemotePath(base, L"content"))) { error = client.lastError(); return false; }
+    if (stopped()) return false;
     if (progress) progress(WebDavFileDeletePhase::DeletingContent, true);
     if (progress) progress(WebDavFileDeletePhase::DeletingMetadata, false);
+    if (stopped()) return false;
     if (!client.DeleteRemoteFile(WebDavClient::CombineRemotePath(base, L"metadata.json"))) { error = client.lastError(); return false; }
+    if (stopped()) return false;
     if (progress) progress(WebDavFileDeletePhase::DeletingMetadata, true);
     if (progress) progress(WebDavFileDeletePhase::DeletingDirectory, false);
+    if (stopped()) return false;
     if (!client.DeleteRemoteDirectory(base)) { error = client.lastError(); return false; }
-    if (progress) progress(WebDavFileDeletePhase::DeletingDirectory, true);
+    if (!stopToken.stop_requested() && progress) progress(WebDavFileDeletePhase::DeletingDirectory, true);
     return true;
+}
+
+std::shared_ptr<TaskHandle> WebDavFileService::StartDeleteBatch(
+    std::vector<WebDavFileRecord> records, TaskOptions options, WebDavFileDeleteOperations operations) const {
+    options.maxWorkers = options.maxWorkers == 0 ? 4 : std::min<std::size_t>(4, options.maxWorkers);
+    if (!operations.deleteRemote) {
+        operations.deleteRemote = [config = config_](const WebDavFileRecord& record,
+                std::wstring& error, WebDavFileDeleteProgressCallback progress, std::stop_token stop) {
+            return WebDavFileService(config).Delete(record, error, std::move(progress), stop);
+        };
+    }
+    if (!operations.removeCachedRecords) {
+        operations.removeCachedRecords = [config = config_](const std::vector<std::wstring>& ids) {
+            return WebDavFileIndexCache(config).RemoveBatch(ids);
+        };
+    }
+    return TaskExecutionService::StartTyped<WebDavFileDeleteBatchResult>(std::move(options),
+        [records = std::move(records), operations = std::move(operations)](TaskContext& context) mutable {
+            std::map<std::wstring, bool> seen;
+            std::vector<WebDavFileRecord> unique;
+            for (auto& record : records) {
+                if (!IsRecordDirectoryName(record.id)) throw std::invalid_argument("Invalid WebDAV record identity");
+                if (seen.emplace(record.id, true).second) unique.push_back(std::move(record));
+            }
+            if (context.StopRequested()) {
+                WebDavFileDeleteBatchResult result;
+                result.stopped = true;
+                for (const auto& record : unique) result.notStartedIds.push_back(record.id);
+                return result;
+            }
+            TaskProgressUpdate progress;
+            progress.title = L"删除 WebDAV 文件";
+            progress.status = L"正在删除远端文件";
+            progress.total = unique.size() + 1;
+            progress.indeterminate = false;
+            context.Report(std::move(progress));
+            struct Outcome { std::wstring id; bool deleted = false; std::wstring error; };
+            std::map<std::wstring, Outcome> outcomes;
+            context.ForEach<WebDavFileRecord, std::vector<Outcome>>(unique,
+                [] { return std::vector<Outcome>{}; },
+                [&](const WebDavFileRecord& record, std::vector<Outcome>& local, TaskContext& worker) {
+                    if (worker.StopRequested()) return;
+                    Outcome outcome{record.id};
+                    try {
+                        outcome.deleted = operations.deleteRemote(record, outcome.error,
+                            [&](WebDavFileDeletePhase phase, bool) {
+                                if (worker.StopRequested()) return;
+                                worker.UpdateProgress([&](TaskProgressUpdate& value) {
+                                    value.phase = L"remote-delete";
+                                    value.status = phase == WebDavFileDeletePhase::DeletingContent
+                                        ? L"正在删除文件内容" : phase == WebDavFileDeletePhase::DeletingMetadata
+                                            ? L"正在删除元数据" : L"正在删除远端目录";
+                                    value.detail = record.displayName;
+                                });
+                            }, worker.StopToken());
+                    } catch (...) {
+                        outcome.error = L"远端删除异常，请刷新确认状态后重试。";
+                    }
+                    // Retain irreversible outcomes locally even when stop arrived in the call.
+                    const bool stopped = worker.StopRequested();
+                    if (!outcome.deleted && outcome.error.empty()) outcome.error = L"远端删除失败，请重试。";
+                    if (!stopped) {
+                        worker.UpdateProgress([&](TaskProgressUpdate& value) {
+                            ++value.current;
+                            ++value.completed;
+                            if (outcome.deleted) ++value.succeeded; else ++value.failed;
+                        });
+                    }
+                    local.push_back(std::move(outcome));
+                },
+                [&](std::vector<Outcome> local) {
+                    for (auto& outcome : local) outcomes.emplace(outcome.id, std::move(outcome));
+                });
+            WebDavFileDeleteBatchResult result;
+            for (const auto& record : unique) {
+                const auto found = outcomes.find(record.id);
+                if (found == outcomes.end()) result.notStartedIds.push_back(record.id);
+                else if (found->second.deleted) result.remoteDeletedIds.push_back(record.id);
+                else {
+                    result.failedIds.push_back(record.id);
+                    result.error = found->second.error;
+                }
+            }
+            result.cacheSynchronized = result.remoteDeletedIds.empty();
+            if (!result.remoteDeletedIds.empty() && !context.StopRequested()) {
+                context.UpdateProgress([](TaskProgressUpdate& value) {
+                    value.phase = L"cache-commit";
+                    value.status = L"正在同步本地记录";
+                });
+                if (!context.StopRequested()) {
+                    try {
+                        result.cacheSynchronized = operations.removeCachedRecords(result.remoteDeletedIds);
+                    } catch (...) {
+                        result.cacheSynchronized = false;
+                    }
+                    if (!result.cacheSynchronized) result.cacheError = L"本地记录同步失败，请刷新后重试。";
+                }
+            }
+            result.stopped = context.StopRequested();
+            if (!result.cacheSynchronized && result.cacheError.empty()) {
+                result.cacheError = L"远端已删除，本地记录尚未同步，请刷新。";
+            }
+            if (!result.stopped) {
+                context.UpdateProgress([](TaskProgressUpdate& value) { value.current = value.total; });
+            }
+            return result;
+        });
 }

@@ -1185,25 +1185,54 @@ bool StorageService::UpdateLink(const Link& source) {
 }
 
 bool StorageService::DeleteLink(int linkId) {
+    return DeleteLinks({linkId});
+}
+
+bool StorageService::DeleteLinks(const std::vector<int>& linkIds) {
     lastError_.clear();
+    if (linkIds.empty()) return true;
+    std::vector<int> uniqueIds = linkIds;
+    std::sort(uniqueIds.begin(), uniqueIds.end());
+    uniqueIds.erase(std::unique(uniqueIds.begin(), uniqueIds.end()), uniqueIds.end());
+    if (uniqueIds.front() <= 0) {
+        lastError_ = L"启动项不存在。";
+        return false;
+    }
     SQLiteDatabase db(appDirectory_ / L"db" / L"link.db");
     if (!db.ok()) {
         lastError_ = db.Error();
         return false;
     }
 
-    SQLiteStatement statement(db.get(), L"DELETE FROM Links WHERE ID=?;");
-    if (!statement.ok()) {
-        lastError_ = L"删除启动项 SQL 准备失败。";
+    if (!Exec(db.get(), "BEGIN IMMEDIATE;", lastError_)) return false;
+    const auto rollback = [&] {
+        std::wstring ignored;
+        Exec(db.get(), "ROLLBACK;", ignored);
+    };
+    for (int id : uniqueIds) {
+        SQLiteStatement statement(db.get(), L"DELETE FROM Links WHERE ID=?;");
+        if (!statement.ok()) {
+            lastError_ = L"删除启动项 SQL 准备失败。";
+            rollback();
+            return false;
+        }
+        statement.bindInt(1, id);
+        if (statement.step() != SQLITE_DONE) {
+            lastError_ = db.Error();
+            rollback();
+            return false;
+        }
+        if (sqlite3_changes(db.get()) == 0) {
+            lastError_ = L"启动项不存在，请刷新后重试。";
+            rollback();
+            return false;
+        }
+    }
+    if (!Exec(db.get(), "COMMIT;", lastError_)) {
+        rollback();
         return false;
     }
-    statement.bindInt(1, linkId);
-    if (statement.step() != SQLITE_DONE) {
-        const void* message = sqlite3_errmsg16(db.get());
-        lastError_ = message ? static_cast<const wchar_t*>(message) : L"删除启动项失败。";
-        return false;
-    }
-    return sqlite3_changes(db.get()) > 0;
+    return true;
 }
 
 bool StorageService::IncrementRunCount(int linkId, int runCount) {

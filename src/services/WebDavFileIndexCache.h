@@ -15,6 +15,8 @@ public:
     bool Replace(const std::vector<WebDavFileRecord>& records, const std::wstring& refreshedAtUtc) const;
     bool Upsert(const WebDavFileRecord& record) const;
     bool Remove(const std::wstring& recordId) const;
+    // One locked read/atomic replacement; unknown IDs are a no-op, read/write errors fail.
+    bool RemoveBatch(const std::vector<std::wstring>& recordIds) const;
 
     const std::filesystem::path& path() const { return path_; }
     static std::filesystem::path CachePath(const AppConfig& config);

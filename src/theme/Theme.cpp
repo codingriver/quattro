@@ -9,6 +9,18 @@
 #include <vector>
 #include <windows.h>
 
+Color Color::Over(Color background) const {
+    const float alpha = std::clamp(a, 0.0f, 1.0f);
+    const float behind = std::clamp(background.a, 0.0f, 1.0f) * (1.0f - alpha);
+    const float resultAlpha = alpha + behind;
+    if (resultAlpha <= 0.0f) return Color{0, 0, 0, 0};
+    return Color{
+        (r * alpha + background.r * behind) / resultAlpha,
+        (g * alpha + background.g * behind) / resultAlpha,
+        (b * alpha + background.b * behind) / resultAlpha,
+        resultAlpha};
+}
+
 namespace {
 constexpr const wchar_t* kGlobalComponent = L"global";
 constexpr const wchar_t* kNormalState = L"normal";
@@ -1127,6 +1139,8 @@ void Theme::SetDefaults() {
     PutMetric(L"toast", L"paddingX", 12.0f);
     PutMetric(L"toast", L"paddingY", 9.0f);
     PutMetric(L"toast", L"maxWidth", 360.0f);
+    PutMetric(L"toast", L"closeSize", 16.0f);
+    PutMetric(L"toast", L"closeGap", 6.0f);
     PutMetric(L"toast", L"marginX", 16.0f);
     PutMetric(L"toast", L"marginY", 16.0f);
     PutMetric(L"separator", L"thickness", 1.0f);

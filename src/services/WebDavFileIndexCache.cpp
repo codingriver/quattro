@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <fstream>
 #include <sstream>
+#include <unordered_set>
 #include <windows.h>
 
 namespace {
@@ -141,9 +142,26 @@ bool WebDavFileIndexCache::Upsert(const WebDavFileRecord& record) const {
 }
 
 bool WebDavFileIndexCache::Remove(const std::wstring& recordId) const {
+    return RemoveBatch({recordId});
+}
+
+bool WebDavFileIndexCache::RemoveBatch(const std::vector<std::wstring>& recordIds) const {
+    if (recordIds.empty()) return true;
+    std::unordered_set<std::wstring> ids;
+    for (const auto& id : recordIds) {
+        if (!WebDavFileService::IsRecordDirectoryName(id)) return false;
+        ids.insert(id);
+    }
     MutexLock lock(mutexName_); if (!lock.locked()) return false;
     std::vector<WebDavFileRecord> records; std::wstring refreshed;
-    if (!LoadUnlocked(records, refreshed)) return true;
-    records.erase(std::remove_if(records.begin(), records.end(), [&](const auto& item) { return item.id == recordId; }), records.end());
+    if (!LoadUnlocked(records, refreshed)) {
+        std::error_code error;
+        const bool exists = std::filesystem::exists(path_, error);
+        return !error && !exists;
+    }
+    const auto firstRemoved = std::remove_if(records.begin(), records.end(),
+        [&](const auto& item) { return ids.contains(item.id); });
+    if (firstRemoved == records.end()) return true;
+    records.erase(firstRemoved, records.end());
     return SaveUnlocked(records, refreshed);
 }

@@ -707,6 +707,8 @@
         <Metric name="paddingX" value="12"/>
         <Metric name="paddingY" value="9"/>
         <Metric name="maxWidth" value="360"/>
+        <Metric name="closeSize" value="16"/>
+        <Metric name="closeGap" value="6"/>
         <Metric name="marginX" value="16"/>
         <Metric name="marginY" value="16"/>
         <State name="normal" bg="@surfaceRaised" text="@text" border="@border"/>

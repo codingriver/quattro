@@ -487,6 +487,7 @@ void SetTableCells(HWND table, const std::vector<std::vector<TableCellRuntime>>&
 void InsertTableRowState(HWND table, int index, bool enabled, bool active, std::vector<TableCellRuntime> cells);
 void UpdateTableRowState(HWND table, int index, bool enabled, bool active, std::vector<TableCellRuntime> cells);
 void RemoveTableRowState(HWND table, int index);
+bool ReorderTableRows(HWND table, const std::vector<std::intptr_t>& keys);
 void BeginTableRowsUpdate(HWND table);
 void EndTableRowsUpdate(HWND table);
 void BeginTableRowUpdate(HWND table);

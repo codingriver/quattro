@@ -33,6 +33,7 @@
 
 class ThemedWindowUi;
 class ThemedMenuFontCache;
+struct SettingsApplyResult;
 enum class ThemedToastRole;
 enum class ThemedPopupMenuSource;
 
@@ -58,6 +59,7 @@ constexpr UINT WM_QUATTRO_TEST_LINK_MENU = WM_APP + 0x78;
 constexpr UINT WM_QUATTRO_TEST_TAG_MENU = WM_APP + 0x79;
 constexpr UINT WM_QUATTRO_RESOURCE_REFRESH_DONE = WM_APP + 0x7A;
 constexpr UINT WM_QUATTRO_TEST_SELECT_TAG = WM_APP + 0x7B;
+// wParam 0: navigation fixture; 1: distinct unsaved exit fixture.
 constexpr UINT WM_QUATTRO_TEST_SET_NOTE_TEXT = WM_APP + 0x7C;
 constexpr UINT WM_QUATTRO_TEST_REAPPLY_THEME = WM_APP + 0x7D;
 constexpr UINT WM_QUATTRO_TEST_NOTE_EDIT_GENERATION = WM_APP + 0x7E;
@@ -65,6 +67,8 @@ constexpr UINT WM_QUATTRO_TEST_NOTE_DOCK_FOCUS = WM_APP + 0x80;
 constexpr UINT WM_QUATTRO_TEST_DOCK_FULLSCREEN = WM_APP + 0x81;
 constexpr UINT WM_QUATTRO_WAKE_RETRY = WM_APP + 0x82;
 constexpr UINT WM_QUATTRO_TEST_MAIN_FRONTNESS = WM_APP + 0x83;
+// wParam 0 reads title visibility; 1 commits lParam as title visibility.
+constexpr UINT WM_QUATTRO_TEST_SETTINGS_COMMIT = WM_APP + 0x84;
 
 class OleDropTarget;
 class TaskHandle;
@@ -266,7 +270,7 @@ private:
     void ShowClipboardImportNotification(int count, int failedCount = 0, const std::wstring& pathDetail = L"");
     bool EnsureNotificationIcon();
     void OpenSettings();
-    void CommitSettingsConfig(const AppConfig& next, bool importedData);
+    SettingsApplyResult CommitSettingsConfig(const AppConfig& next, bool importedData);
     void ToggleAutoRun();
     bool CreateLinkNameTextFormats();
     void OpenBuiltinTool(std::size_t index);
@@ -328,7 +332,7 @@ private:
     bool RestartHttpServer(bool showMessage);
     void SyncHttpServerRuntime(const AppConfig& previous);
     void ApplyConfigRuntimeChanges(const AppConfig& previous);
-    bool SyncAutoRun(const AppConfig& previous);
+    bool SyncAutoRun(const AppConfig& previous, std::wstring& error, bool force = false);
     void RegisterConfiguredHotKeys();
     void ShowHotKeyConflictWarning(const std::wstring& failures);
     void UnregisterConfiguredHotKeys();
@@ -504,6 +508,7 @@ private:
     PluginRegistry pluginRegistry_;
     ShellContextMenuCacheService shellContextMenuCache_;
     AppConfig config_;
+    bool settingsIntegrationRetry_ = false;
     AppModel model_;
     Theme theme_;
     Launcher launcher_;

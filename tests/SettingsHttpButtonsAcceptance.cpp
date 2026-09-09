@@ -275,7 +275,7 @@ int wmain() {
         localOk = Require(ClickCommandButton(settings, L"应用"), L"Apply button should be clickable") && localOk;
         localOk = Require(WaitForFlag(applyCalled), L"Apply button should invoke settings apply callback") && localOk;
         localOk = Require(!appliedShowTooltip.load(), L"Apply button should publish edited settings") && localOk;
-        localOk = Require(!appliedHideOnStart.load(), L"Apply button should not publish edits from another settings tab") && localOk;
+        localOk = Require(appliedHideOnStart.load(), L"Apply button should publish edits from every settings tab") && localOk;
         localOk = Require(FindTopWindow(L"QuattroThemedMessageDialog", L"热键冲突") == nullptr,
             L"Applying a non-hotkey tab should not show a hotkey conflict") && localOk;
         localOk = Require(IsWindow(settings), L"Apply button should keep settings dialog open") && localOk;
@@ -318,11 +318,14 @@ int wmain() {
         interactionDone = true;
     });
 
-    auto applyCallback = [&](const AppConfig& applied, bool) -> bool {
+    auto applyCallback = [&](const AppConfig& applied, bool) {
         appliedShowTooltip = applied.showTooltip;
         appliedHideOnStart = applied.hideOnStart;
         applyCalled = true;
-        return false;
+        SettingsApplyResult result;
+        result.saved = true;
+        result.config = applied;
+        return result;
     };
     auto resetContextMenuCallback = [&]() -> bool {
         resetContextMenuCalled = true;

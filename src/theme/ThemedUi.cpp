@@ -3620,15 +3620,35 @@ bool ThemedUi::UpdateTableRowByKey(HWND table, std::intptr_t key, const ThemedTa
 
 bool ThemedUi::RemoveTableRow(HWND table, int index) {
     if (!table || index < 0 || index >= ListView_GetItemCount(table)) return false;
+    const int oldTop = ListView_GetTopIndex(table);
+    RECT before{};
+    const bool hasTop = oldTop >= 0 && ListView_GetItemRect(table, oldTop, &before, LVIR_BOUNDS);
     const ScopedTableRowsUpdate update(table);
     if (!ListView_DeleteItem(table, index)) return false;
     ThemedControls::RemoveTableRowState(table, index);
+    const int count = ListView_GetItemCount(table);
+    const int newTop = std::min(oldTop - (index < oldTop ? 1 : 0), count - 1);
+    RECT after{};
+    if (count > 0 && count <= ListView_GetCountPerPage(table)) {
+        // Native row-rounded scrolling can retain a negative origin as the
+        // last scrollable rows disappear. A fitting dataset starts at row zero.
+        const int scrolledRows = ListView_GetTopIndex(table);
+        if (scrolledRows != 0 && ListView_GetItemRect(table, 0, &after, LVIR_BOUNDS)) {
+            ListView_Scroll(table, 0, -scrolledRows * (after.bottom - after.top));
+        }
+    } else if (hasTop && newTop >= 0 && ListView_GetItemRect(table, newTop, &after, LVIR_BOUNDS)) {
+        ListView_Scroll(table, 0, after.top - before.top);
+    }
     return true;
 }
 
 bool ThemedUi::RemoveTableRowByKey(HWND table, std::intptr_t key) {
     const int index = FindTableRowByKey(table, key);
     return index >= 0 && RemoveTableRow(table, index);
+}
+
+bool ThemedUi::SetTableRowOrder(HWND table, const std::vector<std::intptr_t>& keys) {
+    return ThemedControls::ReorderTableRows(table, keys);
 }
 
 int ThemedUi::FindTableRowByKey(HWND table, std::intptr_t key) {
@@ -4090,6 +4110,34 @@ void ThemedUi::HideTooltip() const {
 
 void ThemedUi::ShowToast(const std::wstring& text, ThemedToastOptions options) const {
     if (toastRegistry_) toastRegistry_->ShowToast(text, options);
+}
+
+ThemedToastLayout ThemedUi::MeasureToast(const std::wstring& text, ThemedToastOptions options) const {
+    const int maxWidth = std::max(scale(120), scale(options.maxWidth > 0
+        ? options.maxWidth : static_cast<int>(theme_.metric(L"toast", L"maxWidth", 360.0f))));
+    const int paddingX = scale(static_cast<int>(theme_.metric(L"toast", L"paddingX", 12.0f)));
+    const int paddingY = scale(static_cast<int>(theme_.metric(L"toast", L"paddingY", 9.0f)));
+    const int closeSize = scale(static_cast<int>(theme_.metric(L"toast", L"closeSize", 16.0f)));
+    const int closeGap = scale(static_cast<int>(theme_.metric(L"toast", L"closeGap", 6.0f)));
+    auto measure = [&](int width) {
+        SIZE size = ThemedD2D::MeasureText(font_, text, width, options.multiline);
+        if (size.cy <= 0) {
+            size = ThemedGdiFallback::MeasureTextLayout(
+                font_, text.c_str(), static_cast<int>(text.size()), width, options.multiline);
+        }
+        return size;
+    };
+    const SIZE measured = measure(maxWidth);
+    ThemedToastLayout result;
+    result.size.cx = std::max(scale(160), static_cast<int>(measured.cx) + paddingX * 2 + closeSize + closeGap);
+    const int textWidth = result.size.cx - paddingX * 2 - closeSize - closeGap;
+    // Re-measure at the exact final width, including rounding at fractional DPI.
+    const SIZE fitted = measure(textWidth);
+    result.size.cy = std::max(scale(32), std::max(static_cast<int>(fitted.cy), closeSize) + paddingY * 2);
+    result.text = RECT{paddingX, paddingY, paddingX + textWidth, result.size.cy - paddingY};
+    result.closeButton = RECT{result.size.cx - paddingX - closeSize, paddingY,
+        result.size.cx - paddingX, paddingY + closeSize};
+    return result;
 }
 
 void ThemedUi::HideToast() const {

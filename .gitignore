@@ -21,6 +21,7 @@
 /docs/*
 !/docs/UPDATE_DESIGN.md
 !/docs/WEBDAV_FILE_MANAGER_DESIGN.md
+!/docs/TOAST_UI_CONTRACT.md
 /docs/Quattro/*
 
 /screenshots/*

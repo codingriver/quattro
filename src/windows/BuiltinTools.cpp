@@ -117,6 +117,7 @@ constexpr wchar_t kClockWindowClass[] = L"QuattroClockTool";
 constexpr wchar_t kFileLockProgressWindowTitle[] = L"文件占用检查进度";
 constexpr UINT kTimerDisplayIntervalMs = 33;
 std::atomic<HWND> gProcessToolsWindow{nullptr};
+std::atomic<std::uintptr_t> gProcessToolsQueryGeneration{0};
 std::atomic<HWND> gClockWindow{nullptr};
 std::unordered_map<std::wstring, HWND> gBuiltinToolWindows;
 #ifndef AF_INET6
@@ -415,27 +416,6 @@ std::vector<ProcessDisplayRow> FileLockRowsFromResult(const FileLockQueryResult&
         row.name = info.name;
         rows.push_back(std::move(row));
     }
-    return rows;
-}
-
-std::vector<ProcessDisplayRow> QueryFileLockRows(const std::wstring& rawPath, std::wstring& statusSuffix) {
-    statusSuffix.clear();
-    const FileLockQueryResult query = QueryFileLocks(rawPath);
-    if (!query.error.empty()) {
-        statusSuffix = query.error;
-        return {};
-    }
-    if (query.cancelled) {
-        statusSuffix = L"检查已停止。";
-        return {};
-    }
-
-    std::vector<ProcessDisplayRow> rows = FileLockRowsFromResult(query);
-    statusSuffix = L"已检查 " + std::to_wstring(query.checkedPaths) + L" 个路径";
-    if (!query.warning.empty()) {
-        statusSuffix += L"，" + query.warning;
-    }
-    statusSuffix += L"。";
     return rows;
 }
 
@@ -2155,6 +2135,16 @@ FileLockQueryOptions BackgroundFileLockQueryOptions() {
     return options;
 }
 
+std::wstring FileLockSourceKey(const std::wstring& path) {
+    if (path.empty()) return {};
+    std::error_code error;
+    auto normalized = std::filesystem::absolute(std::filesystem::path(path), error);
+    if (error) normalized = path;
+    normalized = normalized.lexically_normal().make_preferred();
+    if (normalized.has_relative_path() && normalized.filename().empty()) normalized = normalized.parent_path();
+    return LowerAscii(normalized.wstring());
+}
+
 class ProcessToolsDialog final {
 public:
     enum class Page {
@@ -2256,7 +2246,7 @@ private:
                 SaveToolWindowPosition(L"quattro.builtin.process-tools", hwnd_);
                 SaveLocatorHistory();
                 DestroyPickOverlay();
-                CancelFileLockQueryAndWait();
+                CancelQueries();
                 if (gProcessToolsWindow.load() == hwnd_) {
                     gProcessToolsWindow.store(nullptr);
                 }
@@ -2280,10 +2270,16 @@ private:
             }
             return DefWindowProcW(hwnd_, message, wParam, lParam);
         case WM_QUATTRO_FILE_LOCK_COMPLETE:
-            FinishDirectoryFileLockQuery();
+            if (wParam == fileLockGeneration_) FinishDirectoryFileLockQuery();
             return 0;
         case WM_QUATTRO_PORT_SCAN_COMPLETE:
-            FinishPortQuery();
+            FinishPortQuery(wParam);
+            return 0;
+        case WM_QUATTRO_TEST_PROCESS_TOOLS:
+            if (QuattroTestMode() && BackgroundAcceptanceMode()) {
+                return HandleAcceptance(static_cast<ProcessToolsTestCommand>(wParam),
+                    reinterpret_cast<const ProcessToolsTestRequest*>(lParam));
+            }
             return 0;
         case WM_QUATTRO_PROCESS_TOOLS_ACTIVATE: {
             const int requestedPage = std::clamp(static_cast<int>(wParam), 0, kPageCount - 1);
@@ -2353,7 +2349,7 @@ private:
         }
         case WM_CLOSE:
             EndLocatorPickMode(false);
-            CancelFileLockQueryAndWait();
+            CancelQueries();
             DestroyWindow(hwnd_);
             return 0;
         default:
@@ -2452,7 +2448,7 @@ private:
     HWND AddProcessTable(Page page, int id, RECT frame) {
         const ThemedUi ui = Ui();
         const int nameWidth = ui.tableColumnWidth({L"进程名称", L"Application.exe"});
-        const int pidWidth = ui.tableColumnWidth({L"PID", L"999999"});
+        const int pidWidth = ui.tableColumnWidth({L"PID", L"9999999"});
         const int actionWidth = ui.tableColumnWidth({L"操作", L"结束进程"});
         std::vector<ThemedTableColumn> columns{
             ThemedTableColumn{L"name", L"进程名称", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Fixed, nameWidth, true},
@@ -2820,6 +2816,14 @@ private:
     }
 
     void HandleCommand(int id, int notify) {
+        if (id == ID_PORT_VALUE && notify == EN_CHANGE) {
+            InvalidatePortQuery();
+            if (portStatus_) {
+                SetStatus(portStatus_, L"输入已更改，请重新检查。 当前列表为上次结果。",
+                    ThemedStatusRole::Info);
+            }
+            return;
+        }
         if (id == ID_PROCESS_TOOLS_TAB && notify == CBN_SELCHANGE) {
             ShowPage(static_cast<Page>(ThemedUi::ActiveTab(tabs_)));
             return;
@@ -2925,24 +2929,25 @@ private:
         pids.reserve(keys.size());
         for (std::intptr_t key : keys) {
             const DWORD pid = static_cast<DWORD>(key);
-            if (page == Page::FileLock && fileProtectedPids_.find(pid) != fileProtectedPids_.end()) {
+            if (page == Page::FileLock &&
+                    (fileProtectedPids_.contains(pid) || fileTerminatedPids_.contains(pid))) {
                 continue;
             }
             pids.push_back(pid);
         }
         if (pids.empty()) {
-            SetStatus(status, L"所选进程均为系统关键进程，已保护。", ThemedStatusRole::Warning);
+            SetStatus(status, L"所选进程已结束或已受保护，无需再次结束。", ThemedStatusRole::Warning);
             return;
         }
         const std::wstring message = L"确认结束选中的 " + std::to_wstring(pids.size()) +
             L" 个进程？\n此操作不会自动重新检查。";
-        if (ShowThemedMessageBox(hwnd_, instance_, theme_, message, L"结束进程", MB_OKCANCEL | MB_ICONWARNING) != IDOK) {
+        if (!ConfirmProcessTermination(message, L"结束进程")) {
             return;
         }
         std::size_t success = 0;
         std::size_t failure = 0;
         for (DWORD pid : pids) {
-            const std::wstring error = KillProcessById(pid);
+            const std::wstring error = EndProcess(pid);
             if (error.empty()) {
                 ++success;
                 if (page == Page::FileLock) fileTerminatedPids_.insert(pid);
@@ -2954,12 +2959,12 @@ private:
         if (page == Page::FileLock) {
             SetFileProcessRows();
             UpdateFileKillAllButton();
-            SetStatus(fileStatus_, L"已结束所选进程。", ThemedStatusRole::Success);
         } else if (page == Page::ProcessId) {
             QueryProcessId();
         } else if (page == Page::Port) {
             QueryPort();
         }
+        SetProcessTerminationStatus(status, success, failure);
     }
 
     void SortProcessRows(std::vector<ProcessDisplayRow>& rows,
@@ -2994,9 +2999,11 @@ private:
         const ThemedTableSortState& requestedState) {
         state = requestedState;
         SortProcessRows(rows, naturalRows, state);
-        SetProcessRows(table, rows,
-            table == fileTable_ ? fileTerminatedPids_ : std::set<DWORD>{},
-            table == fileTable_ ? fileProtectedPids_ : std::set<DWORD>{});
+        if (table == fileTable_) {
+            SetFileProcessRows();
+        } else {
+            SetProcessRows(table, rows);
+        }
         ThemedUi::SetTableSortState(table, state);
     }
 
@@ -3048,21 +3055,103 @@ private:
         Ui().SetStatusTextRole(status, role);
     }
 
+    bool ConfirmProcessTermination(const std::wstring& message, const wchar_t* title) {
+        if (acceptance_ && QuattroTestMode() && BackgroundAcceptanceMode()) return acceptance_->confirm;
+        return ShowThemedMessageBox(hwnd_, instance_, theme_, message, title,
+            MB_OKCANCEL | MB_ICONWARNING) == IDOK;
+    }
+
+    std::wstring EndProcess(DWORD pid) {
+        if (acceptance_ && QuattroTestMode() && BackgroundAcceptanceMode()) {
+            return acceptance_->failedPids.contains(pid) ? L"测试替身拒绝结束进程。" : L"";
+        }
+        return KillProcessById(pid);
+    }
+
+    void SetProcessTerminationStatus(HWND status, std::size_t succeeded,
+        std::size_t failed, std::size_t protectedCount = 0) {
+        std::wstring text = succeeded == 0 && failed > 0
+            ? L"结束失败，共 " + std::to_wstring(failed) + L" 个进程，可重试。"
+            : L"已结束 " + std::to_wstring(succeeded) + L" 个进程" +
+                (failed > 0 ? L"，失败 " + std::to_wstring(failed) + L" 个，可重试。" : L"。");
+        if (protectedCount > 0) {
+            text += L" 已忽略 " + std::to_wstring(protectedCount) + L" 个系统关键进程。";
+        }
+        SetStatus(status, text, failed == 0 ? ThemedStatusRole::Success
+            : succeeded == 0 ? ThemedStatusRole::Danger : ThemedStatusRole::Warning);
+    }
+
+    LRESULT HandleAcceptance(ProcessToolsTestCommand command, const ProcessToolsTestRequest* request) {
+        if (request) acceptance_ = *request;
+        switch (command) {
+        case ProcessToolsTestCommand::SetRows:
+            if (!request) return 0;
+            ShowPage(Page::FileLock);
+            fileRows_.clear();
+            fileProtectedPids_.clear();
+            fileTerminatedPids_.clear();
+            for (const auto& row : request->rows) {
+                fileRows_.push_back({row.pid, row.name, row.path, row.name});
+                if (row.protectedProcess) fileProtectedPids_.insert(row.pid);
+                if (row.terminated) fileTerminatedPids_.insert(row.pid);
+            }
+            fileNaturalRows_ = fileRows_;
+            fileSourceKey_ = FileLockSourceKey(request->path);
+            SetFileProcessRows();
+            return 1;
+        case ProcessToolsTestCommand::RefreshRows:
+            SetFileProcessRows();
+            return 1;
+        case ProcessToolsTestCommand::SortDescending:
+            ApplyProcessTableSort(fileTable_, fileRows_, fileNaturalRows_, fileSortState_,
+                {L"pid", ThemedTableSortDirection::Descending});
+            return 1;
+        case ProcessToolsTestCommand::KillSelected:
+            KillSelectedProcesses();
+            return 1;
+        case ProcessToolsTestCommand::KillAll:
+            KillAllFileLockProcesses();
+            return 1;
+        case ProcessToolsTestCommand::QueryFileLock:
+            if (!acceptance_ || !acceptance_->fileLockQuery) return 0;
+            ShowPage(Page::FileLock);
+            SetText(filePathInput_, acceptance_->path);
+            QueryFileLock();
+            return 1;
+        case ProcessToolsTestCommand::StopFileLock:
+            if (fileLockTask_) fileLockTask_->RequestStop();
+            return 1;
+        case ProcessToolsTestCommand::FileLockPending:
+            return fileLockTask_ ? 1 : 0;
+        case ProcessToolsTestCommand::QueryPort:
+            if (!request) return 0;
+            ShowPage(Page::Port);
+            SetText(portInput_, request->portText);
+            QueryPort();
+            return 1;
+        case ProcessToolsTestCommand::PortPending:
+            return portScanTask_ ? 1 : 0;
+        }
+        return 0;
+    }
+
     void SetProcessRows(
         HWND table,
         const std::vector<ProcessDisplayRow>& rows,
         const std::set<DWORD>& disabledPids = {},
         const std::set<DWORD>& protectedPids = {}) {
-        std::vector<ThemedTableRow> tableRows;
-        tableRows.reserve(rows.size());
+        auto& rendered = renderedProcessRows_[table];
+        std::map<std::intptr_t, ThemedTableRow> desired;
+        std::vector<std::intptr_t> order;
+        order.reserve(rows.size());
+        const int previousSelection = ThemedUi::TableSelectedIndex(table);
         for (const auto& row : rows) {
-            const ProcessInfo info = QueryProcessInfo(row.pid);
-            const std::wstring name = info.name.empty() ? L"未知进程" : info.name;
-            std::wstring path = info.path.empty() ? row.detail : info.path;
+            const std::wstring name = row.name.empty() ? L"未知进程" : row.name;
+            std::wstring path = row.detail;
             if (protectedPids.find(row.pid) != protectedPids.end()) {
                 path += L"（系统关键进程，已保护）";
             }
-            tableRows.push_back(ThemedTableRow{
+            ThemedTableRow item{
                 static_cast<std::intptr_t>(row.pid),
                 {
                     ThemedTableCell{name},
@@ -3072,9 +3161,67 @@ private:
                 },
                 false,
                 disabledPids.find(row.pid) == disabledPids.end(),
-            });
+            };
+            if (!desired.emplace(item.key, item).second) continue;
+            order.push_back(item.key);
+            const int index = ThemedUi::FindTableRowByKey(table, item.key);
+            if (index < 0) {
+                if (ThemedUi::AppendTableRow(table, item) < 0) {
+                    WriteAppLog(L"进程表追加失败，将在下次刷新时重试。");
+                    return;
+                }
+            } else {
+                const auto previous = rendered.find(item.key);
+                if (previous == rendered.end() || !SameProcessTableRow(previous->second, item)) {
+                    item.checked = ThemedUi::IsTableChecked(table, index);
+                    if (!ThemedUi::UpdateTableRow(table, index, item)) {
+                        rendered.erase(item.key);
+                        WriteAppLog(L"进程表更新失败，将在下次刷新时重试。");
+                        return;
+                    }
+                }
+            }
         }
-        ThemedUi::SetTableRows(table, tableRows);
+        for (int index = ThemedUi::TableRowCount(table) - 1; index >= 0; --index) {
+            if (!desired.contains(ThemedUi::TableRowKey(table, index))) {
+                if (!ThemedUi::RemoveTableRow(table, index)) {
+                    WriteAppLog(L"进程表删除失败，将在下次刷新时重试。");
+                    return;
+                }
+            }
+        }
+        if (!ThemedUi::SetTableRowOrder(table, order)) {
+            WriteAppLog(L"进程表更新失败，将在下次刷新时重试。");
+            return;
+        }
+        rendered = std::move(desired);
+        if (previousSelection >= 0 && ThemedUi::TableSelectedIndex(table) < 0) {
+            const int count = ThemedUi::TableRowCount(table);
+            const int adjacent = std::min(previousSelection, count - 1);
+            for (int distance = 0; distance < count; ++distance) {
+                const int after = adjacent + distance;
+                const int before = adjacent - distance;
+                if (after < count && ThemedUi::IsTableRowEnabled(table, after)) {
+                    ThemedUi::SetTableSelectedIndex(table, after);
+                    break;
+                }
+                if (before >= 0 && ThemedUi::IsTableRowEnabled(table, before)) {
+                    ThemedUi::SetTableSelectedIndex(table, before);
+                    break;
+                }
+            }
+        }
+    }
+
+    static bool SameProcessTableRow(const ThemedTableRow& a, const ThemedTableRow& b) {
+        return a.key == b.key && a.enabled == b.enabled && a.active == b.active &&
+            a.cells.size() == b.cells.size() &&
+            std::equal(a.cells.begin(), a.cells.end(), b.cells.begin(),
+                [](const ThemedTableCell& left, const ThemedTableCell& right) {
+                    return left.text == right.text && left.image == right.image &&
+                        left.role == right.role && left.actionId == right.actionId &&
+                        left.secondaryText == right.secondaryText;
+                });
     }
 
     void SetFileProcessRows() {
@@ -3122,10 +3269,10 @@ private:
         const ProcessInfo info = QueryProcessInfo(pid);
         const std::wstring name = info.name.empty() ? L"未知进程" : info.name;
         const std::wstring message = L"确认结束进程 " + name + L" (PID " + std::to_wstring(pid) + L")？";
-        if (ShowThemedMessageBox(hwnd_, instance_, theme_, message, title, MB_OKCANCEL | MB_ICONWARNING) != IDOK) {
+        if (!ConfirmProcessTermination(message, title)) {
             return false;
         }
-        const std::wstring error = KillProcessById(pid);
+        const std::wstring error = EndProcess(pid);
         if (!error.empty()) {
             ShowThemedMessageBox(hwnd_, instance_, theme_, error, title, MB_OK | MB_ICONWARNING);
             return false;
@@ -3144,7 +3291,8 @@ private:
                 skippedProtected.find(row.pid) != skippedProtected.end()) {
                 continue;
             }
-            const ProcessInfo info = QueryProcessInfo(row.pid);
+            const ProcessInfo info = acceptance_ && QuattroTestMode() && BackgroundAcceptanceMode()
+                ? ProcessInfo{} : QueryProcessInfo(row.pid);
             if (IsBatchKillProtectedSystemProcess(row.pid, info)) {
                 skippedProtected.insert(row.pid);
                 continue;
@@ -3168,14 +3316,14 @@ private:
             message += L"\n已忽略 " + std::to_wstring(skippedProtected.size()) + L" 个系统关键进程。";
         }
         message += L"\n此操作不会自动重新检查。";
-        if (ShowThemedMessageBox(hwnd_, instance_, theme_, message, L"文件占用", MB_OKCANCEL | MB_ICONWARNING) != IDOK) {
+        if (!ConfirmProcessTermination(message, L"文件占用")) {
             return;
         }
 
         std::size_t successCount = 0;
         std::size_t failureCount = 0;
         for (const auto& [pid, info] : candidates) {
-            const std::wstring error = KillProcessById(pid);
+            const std::wstring error = EndProcess(pid);
             if (error.empty()) {
                 fileTerminatedPids_.insert(pid);
                 ++successCount;
@@ -3188,15 +3336,7 @@ private:
         }
 
         SetFileProcessRows();
-        std::wstring status = L"已结束 " + std::to_wstring(successCount) + L" 个进程";
-        if (failureCount > 0) {
-            status += L"，失败 " + std::to_wstring(failureCount) + L" 个";
-        }
-        if (!skippedProtected.empty()) {
-            status += L"，已忽略 " + std::to_wstring(skippedProtected.size()) + L" 个系统关键进程";
-        }
-        status += L"。";
-        SetStatus(fileStatus_, status, failureCount > 0 ? ThemedStatusRole::Warning : ThemedStatusRole::Success);
+        SetProcessTerminationStatus(fileStatus_, successCount, failureCount, skippedProtected.size());
     }
 
     std::wstring LocatorHotKeyText() const {
@@ -3530,36 +3670,59 @@ private:
     }
 
     void QueryPort() {
+        InvalidatePortQuery();
         const std::optional<int> parsedPort = ParseInt(Trim(GetText(portInput_)));
         if (!parsedPort || *parsedPort <= 0 || *parsedPort > 65535) {
-            portRows_.clear();
-            portNaturalRows_.clear();
-            ThemedUi::ClearTable(portTable_);
-            SetStatus(portStatus_, L"请输入 1–65535 之间的端口号。", ThemedStatusRole::Warning);
+            SetStatus(portStatus_, L"请输入 1–65535 之间的端口号。 已保留上次结果。",
+                ThemedStatusRole::Warning);
             return;
         }
 
         const int port = *parsedPort;
         registry_.SetSetting(L"quattro.builtin.process-tools", L"port", std::to_wstring(port));
-        if (portScanTask_ && !portScanTask_->IsFinished()) {
-            portScanTask_->RequestStop();
-        }
         portScanValue_ = static_cast<unsigned short>(port);
         const HWND notifyWindow = hwnd_;
-        portScanTask_ = PortScanService().StartScan(portScanValue_, [notifyWindow]() {
-            PostMessageW(notifyWindow, WM_QUATTRO_PORT_SCAN_COMPLETE, 0, 0);
+        const auto generation = portScanGeneration_;
+        PortScanOperations operations;
+        if (acceptance_ && QuattroTestMode() && BackgroundAcceptanceMode()) {
+            operations = acceptance_->portScanOperations;
+        }
+        portScanTask_ = PortScanService(std::move(operations)).StartScan(portScanValue_, [notifyWindow, generation]() {
+            PostMessageW(notifyWindow, WM_QUATTRO_PORT_SCAN_COMPLETE, generation, 0);
         });
         SetStatus(portStatus_, L"正在后台扫描端口占用…", ThemedStatusRole::Info);
     }
 
-    void FinishPortQuery() {
+    void FinishPortQuery(std::uintptr_t generation) {
+        // 忽略过时的扫描结果，防止覆盖新的校验错误
+        if (generation != portScanGeneration_) return;
         if (!portScanTask_ || !portScanTask_->IsFinished()) return;
         portScanTask_->Wait();
+        const auto status = portScanTask_->Status();
         PortScanResult scan;
-        if (portScanTask_->Status() != ScanTaskStatus::Failed) {
+        if (status != ScanTaskStatus::Failed) {
             scan = portScanTask_->ResultCopy<PortScanResult>();
         }
         portScanTask_.reset();
+
+        if (status == ScanTaskStatus::Failed) {
+            SetStatus(portStatus_, L"端口扫描失败，请重试。 已保留上次结果。", ThemedStatusRole::Danger);
+            return;
+        }
+        if (status == ScanTaskStatus::Stopped) {
+            SetStatus(portStatus_, L"端口扫描已停止。 已保留上次结果。", ThemedStatusRole::Warning);
+            return;
+        }
+        if (!scan.error.empty()) {
+            SetStatus(portStatus_, L"端口扫描失败，请重试。 已保留上次结果。", ThemedStatusRole::Danger);
+            return;
+        }
+        if (!scan.warning.empty() && scan.records.empty()) {
+            SetStatus(portStatus_, L"端口扫描不完整，无法确认是否被占用。 已保留上次结果。",
+                ThemedStatusRole::Warning);
+            return;
+        }
+
         std::vector<ProcessDisplayRow> rows;
         for (const PortScanRecord& record : scan.records) {
             const ProcessInfo info = QueryProcessInfo(record.processId);
@@ -3578,10 +3741,22 @@ private:
         ThemedUi::SetTableSortState(portTable_, portSortState_);
         SetStatus(
             portStatus_,
-            portRows_.empty()
+            !scan.warning.empty()
+                ? L"发现至少 " + std::to_wstring(portRows_.size()) + L" 个占用端口 " +
+                    std::to_wstring(portScanValue_) + L" 的进程，部分网络连接信息读取失败。"
+                : portRows_.empty()
                 ? L"未发现占用进程。"
                 : L"发现 " + std::to_wstring(portRows_.size()) + L" 个占用端口 " + std::to_wstring(portScanValue_) + L" 的进程。",
-            portRows_.empty() ? ThemedStatusRole::Normal : ThemedStatusRole::Success);
+            !scan.warning.empty() ? ThemedStatusRole::Warning
+                : portRows_.empty() ? ThemedStatusRole::Normal : ThemedStatusRole::Success);
+    }
+
+    void InvalidatePortQuery() {
+        if (portScanTask_) {
+            portScanTask_->RequestStop();
+            portScanTask_.reset();
+        }
+        portScanGeneration_ = ++gProcessToolsQueryGeneration;
     }
 
     void PickFile() {
@@ -3614,82 +3789,56 @@ private:
     void QueryFileLock() {
         const std::wstring path = Trim(GetText(filePathInput_));
         if (path.empty()) {
-            ThemedUi::ClearTable(fileTable_);
-            fileRows_.clear();
-            fileNaturalRows_.clear();
-            fileTerminatedPids_.clear();
-            fileProtectedPids_.clear();
-            UpdateFileKillAllButton();
             SetStatus(fileStatus_, L"请输入文件或目录路径。", ThemedStatusRole::Warning);
             return;
         }
 
         registry_.SetSetting(L"quattro.builtin.process-tools", L"path", path);
-        if (fileLockTask_) {
+        const std::wstring source = FileLockSourceKey(path);
+        if (fileLockTask_ && fileSourceKey_ == source) {
             if (!fileLockTask_->IsFinished()) {
                 if (fileLockProgressDialog_) {
                     fileLockProgressDialog_->Show();
                 }
-                SetStatus(fileStatus_, L"目录检查正在后台运行，可在进度窗口中查看或停止。", ThemedStatusRole::Info);
+                SetStatus(fileStatus_, L"检查正在后台运行，可在进度窗口中查看或停止。", ThemedStatusRole::Info);
                 return;
             }
             FinishDirectoryFileLockQuery();
         }
-
-        const DWORD attributes = GetFileAttributesW(path.c_str());
-        if (attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
-            StartDirectoryFileLockQuery(path);
-            return;
-        }
-
-        std::wstring detail;
-        const std::vector<ProcessDisplayRow> rows = QueryFileLockRows(path, detail);
-        fileRows_ = rows;
-        fileNaturalRows_ = rows;
-        fileTerminatedPids_.clear();
-        RefreshFileProtectedPids();
-        SetFileProcessRows();
-        std::wstring status;
-        if (rows.empty()) {
-            status = detail.starts_with(L"已检查")
-                ? L"未发现占用进程。 " + detail
-                : (detail.empty() ? L"未发现占用进程。" : detail);
-        } else {
-            status = L"发现 " + std::to_wstring(rows.size()) + L" 个占用进程。";
-            if (fileProtectedPids_.size() == rows.size()) {
-                status = L"发现 " + std::to_wstring(rows.size()) + L" 个占用进程，均为系统关键进程，已保护。";
-            } else if (!fileProtectedPids_.empty()) {
-                status += L" 其中 " + std::to_wstring(fileProtectedPids_.size()) + L" 个系统关键进程已保护。";
-            }
-            if (!detail.empty()) {
-                status += L" " + detail;
-            }
-        }
-        SetStatus(
-            fileStatus_,
-            status,
-            rows.empty()
-                ? ThemedStatusRole::Normal
-                : (fileProtectedPids_.size() == rows.size() ? ThemedStatusRole::Warning : ThemedStatusRole::Success));
+        StartDirectoryFileLockQuery(path);
     }
 
     void StartDirectoryFileLockQuery(const std::wstring& path) {
         if (fileLockProgressDialog_) {
             fileLockProgressDialog_->Close();
         }
-
-        ThemedUi::ClearTable(fileTable_);
-        fileRows_.clear();
-        fileNaturalRows_.clear();
-        fileTerminatedPids_.clear();
-        fileProtectedPids_.clear();
-        UpdateFileKillAllButton();
-        SetStatus(fileStatus_, L"正在后台检查目录占用…", ThemedStatusRole::Info);
+        if (fileLockTask_) fileLockTask_->RequestStop();
+        fileLockGeneration_ = ++gProcessToolsQueryGeneration;
+        const std::wstring source = FileLockSourceKey(path);
+        if (fileSourceKey_ != source) {
+            fileRows_.clear();
+            fileNaturalRows_.clear();
+            fileTerminatedPids_.clear();
+            fileProtectedPids_.clear();
+            SetFileProcessRows();
+            fileSourceKey_ = source;
+        }
+        SetStatus(fileStatus_, L"正在后台检查占用…", ThemedStatusRole::Info);
         const HWND notifyWindow = hwnd_;
+        const auto generation = fileLockGeneration_;
         const FileLockQueryOptions options = BackgroundFileLockQueryOptions();
-        fileLockTask_ = StartFileLockQuery(path, options, [notifyWindow]() {
-            PostMessageW(notifyWindow, WM_QUATTRO_FILE_LOCK_COMPLETE, 0, 0);
-        });
+        const auto notify = [notifyWindow, generation]() {
+            PostMessageW(notifyWindow, WM_QUATTRO_FILE_LOCK_COMPLETE, generation, 0);
+        };
+        if (acceptance_ && acceptance_->fileLockQuery && QuattroTestMode() && BackgroundAcceptanceMode()) {
+            TaskOptions taskOptions;
+            taskOptions.mode = TaskExecutionMode::BackgroundSingle;
+            taskOptions.completionCallback = notify;
+            fileLockTask_ = TaskExecutionService::StartTyped<FileLockQueryResult>(
+                taskOptions, acceptance_->fileLockQuery);
+        } else {
+            fileLockTask_ = StartFileLockQuery(path, options, notify);
+        }
         ThemedTaskProgressDialogOptions progressOptions{};
         progressOptions.owner = hwnd_;
         progressOptions.instance = instance_;
@@ -3702,7 +3851,22 @@ private:
         progressOptions.stopButtonId = ID_FILE_LOCK_PROGRESS_STOP;
         progressOptions.closeButtonId = ID_FILE_LOCK_PROGRESS_CLOSE;
         progressOptions.readSnapshot = [task = fileLockTask_]() {
-            return ToThemedTaskProgressSnapshot(task->Snapshot());
+            const auto state = task->Snapshot();
+            auto snapshot = ToThemedTaskProgressSnapshot(state);
+            if (state.taskStatus == TaskStatus::Completed) {
+                const auto result = task->ResultCopy<FileLockQueryResult>();
+                if (!result.error.empty()) {
+                    snapshot.completed = false;
+                    snapshot.role = ThemedStatusRole::Danger;
+                    snapshot.status = L"检查失败";
+                    snapshot.detail = result.error + L" 请检查路径后重试。";
+                } else if (result.cancelled) {
+                    snapshot.completed = false;
+                    snapshot.role = ThemedStatusRole::Warning;
+                    snapshot.status = L"检查已停止";
+                }
+            }
+            return snapshot;
         };
         progressOptions.requestStop = [task = fileLockTask_]() { task->RequestStop(); };
         fileLockProgressDialog_ = std::make_unique<ThemedTaskProgressDialog>(std::move(progressOptions));
@@ -3717,25 +3881,46 @@ private:
         if (!fileLockTask_->IsFinished()) {
             return;
         }
-        fileLockTask_->Wait();
+        const auto status = fileLockTask_->Status();
         FileLockQueryResult result;
-        if (fileLockTask_->Status() == ScanTaskStatus::Failed) {
+        if (status == ScanTaskStatus::Failed) {
             result.error = fileLockTask_->Snapshot().error;
         } else {
             result = fileLockTask_->ResultCopy<FileLockQueryResult>();
         }
         fileLockTask_.reset();
-        const std::vector<ProcessDisplayRow> rows = FileLockRowsFromResult(result);
+        const std::wstring retained = fileRows_.empty() ? L"" : L" 已保留上次结果。";
+        if (status == ScanTaskStatus::Failed || !result.error.empty()) {
+            WriteAppLog(L"文件占用检查失败: " + result.error);
+            SetStatus(fileStatus_, L"检查失败，请重试。" + retained, ThemedStatusRole::Danger);
+            return;
+        }
+        if (status == ScanTaskStatus::Stopped || result.cancelled) {
+            SetStatus(fileStatus_, L"检查已停止。" + retained, ThemedStatusRole::Warning);
+            return;
+        }
+        std::vector<ProcessDisplayRow> rows;
+        if (acceptance_ && acceptance_->fileLockQuery && QuattroTestMode() && BackgroundAcceptanceMode()) {
+            for (const auto& row : acceptance_->rows) {
+                if (std::find(result.processIds.begin(), result.processIds.end(), row.pid) != result.processIds.end()) {
+                    rows.push_back({row.pid, row.name, row.path, row.name});
+                }
+            }
+        } else {
+            rows = FileLockRowsFromResult(result);
+        }
         fileRows_ = rows;
         fileNaturalRows_ = rows;
         fileTerminatedPids_.clear();
-        RefreshFileProtectedPids();
-        SetFileProcessRows();
-
-        if (!result.error.empty()) {
-            SetStatus(fileStatus_, result.error, ThemedStatusRole::Danger);
-            return;
+        if (acceptance_ && acceptance_->fileLockQuery && QuattroTestMode() && BackgroundAcceptanceMode()) {
+            fileProtectedPids_.clear();
+            for (const auto& row : acceptance_->rows) {
+                if (row.protectedProcess) fileProtectedPids_.insert(row.pid);
+            }
+        } else {
+            RefreshFileProtectedPids();
         }
+        SetFileProcessRows();
 
         std::wstring detail = L"已检查 " + std::to_wstring(result.checkedPaths) + L" / " +
             std::to_wstring(result.totalPaths) + L" 个路径";
@@ -3751,47 +3936,30 @@ private:
         }
         detail += L"。";
 
-        if (result.cancelled) {
-            std::wstring status = L"检查已停止。";
-            if (!rows.empty()) {
-                status += L" 已发现 " + std::to_wstring(rows.size()) + L" 个占用进程。";
-                if (fileProtectedPids_.size() == rows.size()) {
-                    status += L" 均为系统关键进程，已保护。";
-                } else if (!fileProtectedPids_.empty()) {
-                    status += L" 其中 " + std::to_wstring(fileProtectedPids_.size()) + L" 个系统关键进程已保护。";
-                }
-            }
-            status += L" " + detail;
-            SetStatus(fileStatus_, status, ThemedStatusRole::Warning);
-            return;
-        }
-
-        std::wstring status = rows.empty()
+        std::wstring statusText = rows.empty()
             ? L"未发现占用进程。 " + detail
             : L"发现 " + std::to_wstring(rows.size()) + L" 个占用进程。";
         if (!rows.empty()) {
             if (fileProtectedPids_.size() == rows.size()) {
-                status = L"发现 " + std::to_wstring(rows.size()) + L" 个占用进程，均为系统关键进程，已保护。";
+                statusText = L"发现 " + std::to_wstring(rows.size()) + L" 个占用进程，均为系统关键进程，已保护。";
             } else if (!fileProtectedPids_.empty()) {
-                status += L" 其中 " + std::to_wstring(fileProtectedPids_.size()) + L" 个系统关键进程已保护。";
+                statusText += L" 其中 " + std::to_wstring(fileProtectedPids_.size()) + L" 个系统关键进程已保护。";
             }
-            status += L" " + detail;
+            statusText += L" " + detail;
         }
         SetStatus(
             fileStatus_,
-            status,
+            statusText,
             !result.warning.empty() || (!rows.empty() && fileProtectedPids_.size() == rows.size())
                 ? ThemedStatusRole::Warning
                 : (rows.empty() ? ThemedStatusRole::Normal : ThemedStatusRole::Success));
     }
 
-    void CancelFileLockQueryAndWait() {
-        if (portScanTask_) {
-            portScanTask_->RequestStop();
-            portScanTask_->Wait();
-            portScanTask_.reset();
-        }
+    void CancelQueries() {
+        InvalidatePortQuery();
         if (fileLockTask_) fileLockTask_->RequestStop();
+        fileLockGeneration_ = ++gProcessToolsQueryGeneration;
+        fileLockTask_.reset();
         if (fileLockProgressDialog_) {
             fileLockProgressDialog_->Close();
         }
@@ -3838,7 +4006,10 @@ private:
     HWND portStatus_ = nullptr;
     std::shared_ptr<ScanTaskHandle> portScanTask_;
     unsigned short portScanValue_ = 0;
+    std::uintptr_t portScanGeneration_ = 0;
     std::vector<ProcessDisplayRow> processIdRows_;
+    // Derived paint snapshots only; process/query models remain authoritative.
+    std::map<HWND, std::map<std::intptr_t, ThemedTableRow>> renderedProcessRows_;
     std::vector<ProcessDisplayRow> processIdNaturalRows_;
     std::vector<ProcessDisplayRow> portRows_;
     std::vector<ProcessDisplayRow> portNaturalRows_;
@@ -3850,12 +4021,15 @@ private:
     HWND fileKillAll_ = nullptr;
     HWND fileKillSelected_ = nullptr;
     HWND fileStatus_ = nullptr;
+    std::optional<ProcessToolsTestRequest> acceptance_;
     std::vector<ProcessDisplayRow> fileRows_;
     std::vector<ProcessDisplayRow> fileNaturalRows_;
     ThemedTableSortState fileSortState_{};
     std::set<DWORD> fileTerminatedPids_;
     std::set<DWORD> fileProtectedPids_;
     std::shared_ptr<ScanTaskHandle> fileLockTask_;
+    std::uintptr_t fileLockGeneration_ = 0;
+    std::wstring fileSourceKey_;
     std::unique_ptr<ThemedTaskProgressDialog> fileLockProgressDialog_;
 };
 

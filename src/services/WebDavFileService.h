@@ -2,6 +2,7 @@
 
 #include "Models.h"
 #include "ScanExecutionService.h"
+#include "TaskExecutionService.h"
 
 #include <cstdint>
 #include <filesystem>
@@ -66,6 +67,22 @@ using WebDavFileProgressCallback = std::function<bool(
     std::uint64_t total)>;
 using WebDavFileDeleteProgressCallback = std::function<void(WebDavFileDeletePhase phase, bool completed)>;
 
+struct WebDavFileDeleteBatchResult {
+    std::vector<std::wstring> remoteDeletedIds;
+    std::vector<std::wstring> failedIds;
+    std::vector<std::wstring> notStartedIds;
+    std::wstring error;
+    std::wstring cacheError;
+    bool cacheSynchronized = true;
+    bool stopped = false;
+};
+
+struct WebDavFileDeleteOperations {
+    std::function<bool(const WebDavFileRecord&, std::wstring&,
+        WebDavFileDeleteProgressCallback, std::stop_token)> deleteRemote;
+    std::function<bool(const std::vector<std::wstring>&)> removeCachedRecords;
+};
+
 struct WebDavFileOperationResult {
     bool ok = false;
     std::wstring message;
@@ -92,7 +109,9 @@ public:
     WebDavFileOperationResult Download(const WebDavFileRecord& record,
         WebDavFileProgressCallback progress = {}, std::stop_token stopToken = {});
     bool Delete(const WebDavFileRecord& record, std::wstring& error,
-        WebDavFileDeleteProgressCallback progress = {});
+        WebDavFileDeleteProgressCallback progress = {}, std::stop_token stopToken = {});
+    std::shared_ptr<TaskHandle> StartDeleteBatch(std::vector<WebDavFileRecord> records,
+        TaskOptions options = {}, WebDavFileDeleteOperations operations = {}) const;
 
     static std::wstring CanonicalPath(const std::filesystem::path& path);
     static bool ValidateDownloadTargetPath(const std::wstring& absolutePath,

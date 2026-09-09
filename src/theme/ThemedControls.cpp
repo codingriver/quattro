@@ -772,7 +772,8 @@ void DrawStatusBadge(HWND hwnd, HDC dc, RECT rect) {
     }
 
     const std::wstring backgroundComponent = BackgroundComponent(hwnd);
-    FillThemedRect(dc, rect, ToColorRef(theme->color(backgroundComponent, L"normal", L"bg")));
+    const Color background = theme->color(backgroundComponent, L"normal", L"bg");
+    FillThemedRect(dc, rect, ToColorRef(background));
 
     RECT badge = rect;
     InflateRect(&badge, 0, -1);
@@ -783,7 +784,7 @@ void DrawStatusBadge(HWND hwnd, HDC dc, RECT rect) {
         dc,
         badge,
         height / 2,
-        ToColorRef(theme->color(L"global", state, L"bg")),
+        ToColorRef(theme->color(L"global", state, L"bg").Over(background)),
         ToColorRef(theme->color(L"global", state, L"text")),
         1);
 
@@ -5106,6 +5107,86 @@ void RemoveTableRowState(HWND table, int index) {
     if (position < state.tableCells.size()) {
         state.tableCells.erase(state.tableCells.begin() + position);
     }
+    if (state.tableHotRow == index) state.tableHotRow = -1;
+    else if (state.tableHotRow > index) --state.tableHotRow;
+    state.tablePressedRow = -1;
+    state.tablePressedColumn = -1;
+}
+
+namespace {
+int CALLBACK CompareTableRowOrder(LPARAM left, LPARAM right, LPARAM context) {
+    const auto& ranks = *reinterpret_cast<const std::unordered_map<LPARAM, int>*>(context);
+    const auto a = ranks.find(left);
+    const auto b = ranks.find(right);
+    if (a == ranks.end() || b == ranks.end()) return 0;
+    return a->second < b->second ? -1 : a->second > b->second ? 1 : 0;
+}
+}
+
+bool ReorderTableRows(HWND table, const std::vector<std::intptr_t>& keys) {
+    const auto old = FindState(table);
+    if (!table || !old || old->kind != ControlKind::Table) return false;
+    const int count = ListView_GetItemCount(table);
+    if (keys.size() != static_cast<std::size_t>(count)) return false;
+    std::unordered_map<LPARAM, int> ranks;
+    for (int index = 0; index < count; ++index) {
+        if (!ranks.emplace(static_cast<LPARAM>(keys[index]), index).second) return false;
+    }
+    std::vector<int> destinations;
+    destinations.reserve(keys.size());
+    std::vector<bool> seen(keys.size(), false);
+    bool changed = false;
+    for (int index = 0; index < count; ++index) {
+        LVITEMW item{};
+        item.mask = LVIF_PARAM;
+        item.iItem = index;
+        if (!ListView_GetItem(table, &item)) return false;
+        const auto destination = ranks.find(item.lParam);
+        if (destination == ranks.end() || seen[destination->second]) return false;
+        seen[destination->second] = true;
+        destinations.push_back(destination->second);
+        changed = changed || index != destination->second;
+    }
+    if (!changed) return true;
+    std::vector<bool> enabled(keys.size(), true);
+    std::vector<bool> active(keys.size(), false);
+    std::vector<std::vector<TableCellRuntime>> cells(keys.size());
+    for (int index = 0; index < count; ++index) {
+        const int destination = destinations[index];
+        if (index < static_cast<int>(old->tableRowEnabled.size())) enabled[destination] = old->tableRowEnabled[index];
+        if (index < static_cast<int>(old->tableRowActive.size())) active[destination] = old->tableRowActive[index];
+        if (index < static_cast<int>(old->tableCells.size())) cells[destination] = old->tableCells[index];
+    }
+    const auto movedIndex = [&](int index) {
+        return index >= 0 && index < count ? destinations[index] : -1;
+    };
+    const int selectionMark = movedIndex(ListView_GetSelectionMark(table));
+    const int oldTop = ListView_GetTopIndex(table);
+    RECT oldTopRect{};
+    const bool hasTop = oldTop >= 0 && oldTop < count &&
+        ListView_GetItemRect(table, oldTop, &oldTopRect, LVIR_BOUNDS);
+
+    BeginTableRowsUpdate(table);
+    if (!ListView_SortItems(table, CompareTableRowOrder, reinterpret_cast<LPARAM>(&ranks))) {
+        EndTableRowsUpdate(table);
+        return false;
+    }
+    auto& state = StateFor(table);
+    state.tableRowEnabled.swap(enabled);
+    state.tableRowActive.swap(active);
+    state.tableCells.swap(cells);
+    state.tableHotRow = movedIndex(old->tableHotRow);
+    state.tablePressedRow = -1;
+    state.tablePressedColumn = -1;
+    ListView_SetSelectionMark(table, selectionMark);
+    if (hasTop) {
+        RECT newTopRect{};
+        if (ListView_GetItemRect(table, destinations[oldTop], &newTopRect, LVIR_BOUNDS)) {
+            ListView_Scroll(table, 0, newTopRect.top - oldTopRect.top);
+        }
+    }
+    EndTableRowsUpdate(table);
+    return true;
 }
 
 void BeginTableRowsUpdate(HWND table) {

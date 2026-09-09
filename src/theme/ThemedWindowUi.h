@@ -182,7 +182,6 @@ private:
     SIZE MeasureTooltip(const std::wstring& text, const ThemedTooltipOptions& options) const;
     void PaintTooltip(HDC dc) const;
     bool EnsureToastWindow();
-    SIZE MeasureToast(const std::wstring& text, const ThemedToastOptions& options) const;
     void PositionToast();
     void PaintToast(HDC dc) const;
     RECT ToastCloseButtonRect() const;
@@ -193,6 +192,7 @@ private:
     static LRESULT CALLBACK TableChildProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR id, DWORD_PTR data);
     static LRESULT CALLBACK TooltipProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
     static LRESULT CALLBACK ToastProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
+    static LRESULT CALLBACK ToastOwnerProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR id, DWORD_PTR data);
 
     HINSTANCE instance_ = nullptr;
     HWND owner_ = nullptr;
@@ -221,7 +221,7 @@ private:
     HWND toast_ = nullptr;
     std::wstring toastText_;
     ThemedToastOptions toastOptions_{};
-    SIZE toastSize_{};
+    ThemedToastLayout toastLayout_{};
     bool toastLayoutValid_ = false;
     bool toastCloseHovered_ = false;
     bool toastClosePressed_ = false;

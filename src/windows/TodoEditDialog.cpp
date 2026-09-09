@@ -1352,20 +1352,38 @@ private:
         paint.DrawText(text, rect, component, state, options);
     }
 
-    RECT CalendarPrevRect() const {
-        return RECT{calendarRect_.left + 8, calendarRect_.top + 5, calendarRect_.left + 30, calendarRect_.top + 27};
+    struct CalendarHeader {
+        RECT previous{}, next{}, year{}, month{}, title{};
+    };
+
+    CalendarHeader CalendarHeaderRects() const {
+        const ThemedUi ui = windowUi_->ui();
+        const int height = ui.compactButtonHeight();
+        const int top = calendarRect_.top + (CalendarHeaderHeight() - height) / 2;
+        const int gap = ui.denseGap();
+        const int yearWidth = ui.textWidth(L"8888年") + gap * 2;
+        const int monthWidth = ui.textWidth(L"12月") + gap * 2;
+        const int groupWidth = yearWidth + gap + monthWidth;
+        const int groupLeft = calendarRect_.left + (CalendarWidth() - groupWidth) / 2;
+        CalendarHeader result;
+        result.previous = RECT{calendarRect_.left + gap, top, calendarRect_.left + gap + height, top + height};
+        result.next = RECT{calendarRect_.right - gap - height, top, calendarRect_.right - gap, top + height};
+        result.year = RECT{groupLeft, top, groupLeft + yearWidth, top + height};
+        result.month = RECT{result.year.right + gap, top, groupLeft + groupWidth, top + height};
+        result.title = RECT{result.previous.right + gap, top, result.next.left - gap, top + height};
+        return result;
     }
 
-    RECT CalendarNextRect() const {
-        return RECT{calendarRect_.right - 30, calendarRect_.top + 5, calendarRect_.right - 8, calendarRect_.top + 27};
-    }
+    RECT CalendarPrevRect() const { return CalendarHeaderRects().previous; }
+    RECT CalendarNextRect() const { return CalendarHeaderRects().next; }
+    RECT CalendarYearTitleRect() const { return CalendarHeaderRects().year; }
+    RECT CalendarMonthTitleRect() const { return CalendarHeaderRects().month; }
 
-    RECT CalendarYearTitleRect() const {
-        return RECT{calendarRect_.left + 72, calendarRect_.top + 5, calendarRect_.left + 130, calendarRect_.top + 28};
-    }
-
-    RECT CalendarMonthTitleRect() const {
-        return RECT{calendarRect_.left + 130, calendarRect_.top + 5, calendarRect_.left + 166, calendarRect_.top + 28};
+    RECT CalendarPickerGridRect(bool year) const {
+        const int width = (year ? CalendarYearCellWidth() : CalendarMonthCellWidth()) * 2;
+        const int left = calendarRect_.left + (CalendarWidth() - width) / 2;
+        const int top = calendarRect_.top + CalendarHeaderHeight() + windowUi_->ui().layout().sectionGap;
+        return RECT{left, top, left + width, top + CalendarCellHeight() * 6};
     }
 
     int CalendarDayFromPoint(POINT point) const {
@@ -1396,8 +1414,9 @@ private:
             return 0;
         }
         const int logicalY = point.y + scrollY_;
-        const int gridLeft = calendarRect_.left + 46;
-        const int gridTop = calendarRect_.top + 42;
+        const RECT grid = CalendarPickerGridRect(false);
+        const int gridLeft = grid.left;
+        const int gridTop = grid.top;
         if (point.x < gridLeft || point.x >= gridLeft + CalendarMonthCellWidth() * 2 ||
             logicalY < gridTop || logicalY >= gridTop + CalendarMonthCellHeight() * 6) {
             return 0;
@@ -1446,8 +1465,9 @@ private:
             return 0;
         }
         const int logicalY = point.y + scrollY_;
-        const int gridLeft = calendarRect_.left + 28;
-        const int gridTop = calendarRect_.top + 42;
+        const RECT grid = CalendarPickerGridRect(true);
+        const int gridLeft = grid.left;
+        const int gridTop = grid.top;
         if (point.x < gridLeft || point.x >= gridLeft + CalendarYearCellWidth() * 2 ||
             logicalY < gridTop || logicalY >= gridTop + CalendarYearCellHeight() * 6) {
             return 0;
@@ -1565,18 +1585,18 @@ private:
 
         if (calendarPickerMode_ == CalendarPickerMode::Year) {
             const std::wstring title = std::to_wstring(calendarYearPageStart_) + L"-" + std::to_wstring(calendarYearPageStart_ + 11);
-            DrawTextIn(paint, title, RECT{rect.left + 42, rect.top + 6, rect.right - 42, rect.top + 28}, ThemedPaintComponent::Text, ThemedPaintState::Normal, ThemedPaintTextAlign::Center);
-            const int gridLeft = rect.left + 28;
-            const int gridTop = rect.top + 42;
+            DrawTextIn(paint, title, Offset(CalendarHeaderRects().title), ThemedPaintComponent::Text, ThemedPaintState::Normal, ThemedPaintTextAlign::Center);
+            const RECT grid = Offset(CalendarPickerGridRect(true));
+            const int inset = windowUi_->ui().denseGap();
             for (int i = 0; i < 12; ++i) {
                 const int year = calendarYearPageStart_ + i;
                 const int row = i / 2;
                 const int col = i % 2;
                 RECT cell{
-                    gridLeft + col * CalendarYearCellWidth() + 6,
-                    gridTop + row * CalendarYearCellHeight() + 3,
-                    gridLeft + (col + 1) * CalendarYearCellWidth() - 6,
-                    gridTop + (row + 1) * CalendarYearCellHeight() - 3,
+                    grid.left + col * CalendarYearCellWidth() + inset,
+                    grid.top + row * CalendarYearCellHeight(),
+                    grid.left + (col + 1) * CalendarYearCellWidth() - inset,
+                    grid.top + (row + 1) * CalendarYearCellHeight(),
                 };
                 const bool selected = selectedDate_.wYear == year;
                 if (selected) {
@@ -1599,17 +1619,17 @@ private:
                 L"1月", L"2月", L"3月", L"4月", L"5月", L"6月",
                 L"7月", L"8月", L"9月", L"10月", L"11月", L"12月",
             };
-            const int gridLeft = rect.left + 46;
-            const int gridTop = rect.top + 42;
+            const RECT grid = Offset(CalendarPickerGridRect(false));
+            const int inset = windowUi_->ui().denseGap();
             for (int month = 1; month <= 12; ++month) {
                 const int index = month - 1;
                 const int row = index / 2;
                 const int col = index % 2;
                 RECT cell{
-                    gridLeft + col * CalendarMonthCellWidth() + 4,
-                    gridTop + row * CalendarMonthCellHeight() + 3,
-                    gridLeft + (col + 1) * CalendarMonthCellWidth() - 4,
-                    gridTop + (row + 1) * CalendarMonthCellHeight() - 3,
+                    grid.left + col * CalendarMonthCellWidth() + inset,
+                    grid.top + row * CalendarMonthCellHeight(),
+                    grid.left + (col + 1) * CalendarMonthCellWidth() - inset,
+                    grid.top + (row + 1) * CalendarMonthCellHeight(),
                 };
                 const bool selected = selectedDate_.wYear == calendarYear_ && selectedDate_.wMonth == month;
                 if (selected) {
@@ -1693,6 +1713,28 @@ private:
             return commonResult;
         }
         switch (message) {
+        case WM_QUATTRO_TEST_TODO_CALENDAR: {
+            if (!QuattroTestMode() || !BackgroundAcceptanceMode() || !windowUi_ || wParam > 2) return FALSE;
+            calendarPickerMode_ = static_cast<CalendarPickerMode>(wParam);
+            calendarYearPageStart_ = calendarYear_ - ((calendarYear_ - 1900) % 12);
+            const auto header = CalendarHeaderRects();
+            const auto ui = windowUi_->ui();
+            const RECT grid = CalendarPickerGridRect(wParam == 2);
+            bool valid = header.previous.right <= header.year.left && header.year.right < header.month.left &&
+                header.month.right <= header.next.left &&
+                ui.textWidth(std::to_wstring(calendarYear_) + L"年") <= header.year.right - header.year.left &&
+                ui.textWidth(L"12月") <= header.month.right - header.month.left &&
+                grid.left >= calendarRect_.left && grid.right <= calendarRect_.right && grid.bottom <= calendarRect_.bottom;
+            for (int index = 0; wParam != 0 && index < 12; ++index) {
+                const int width = wParam == 2 ? CalendarYearCellWidth() : CalendarMonthCellWidth();
+                const POINT point{grid.left + (index % 2) * width + width / 2,
+                    grid.top + (index / 2) * CalendarCellHeight() + CalendarCellHeight() / 2 - scrollY_};
+                valid = valid && (wParam == 2 ? CalendarYearFromPoint(point) == calendarYearPageStart_ + index
+                    : CalendarMonthFromPoint(point) == index + 1);
+            }
+            InvalidateRect(hwnd_, nullptr, FALSE);
+            return valid ? TRUE : FALSE;
+        }
         case WM_CREATE:
         {
             RECT client{};

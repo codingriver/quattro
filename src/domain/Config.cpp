@@ -5,12 +5,106 @@
 #include "Utilities.h"
 
 #include <algorithm>
+#include <atomic>
+#include <mutex>
+#include <vector>
 
 namespace {
 constexpr const wchar_t* kSection = L"main";
 constexpr const wchar_t* kWebDavSection = L"webdav";
 constexpr const wchar_t* kHttpSection = L"http";
 constexpr const wchar_t* kContextMenuSection = L"contextMenu";
+std::recursive_mutex configMutex;
+
+struct ConfigWriteError {
+    std::filesystem::path path;
+    DWORD code;
+    bool rollbackFailed = false;
+};
+
+class StagedConfigFiles {
+public:
+    struct File {
+        std::filesystem::path target, staged, backup;
+        bool hasBackup = false;
+        bool committed = false;
+        bool preserveBackup = false;
+    };
+
+    ~StagedConfigFiles() {
+        for (const auto& file : files_) {
+            std::error_code ignored;
+            if (!file.staged.empty()) std::filesystem::remove(file.staged, ignored);
+            if (file.hasBackup && !file.preserveBackup) std::filesystem::remove(file.backup, ignored);
+        }
+    }
+
+    std::filesystem::path Prepare(const std::filesystem::path& requested) {
+        std::error_code ec;
+        const auto target = std::filesystem::absolute(requested, ec).lexically_normal();
+        if (ec) throw ConfigWriteError{requested, static_cast<DWORD>(ec.value())};
+        for (const auto& file : files_) {
+            if (ToLower(file.target.wstring()) == ToLower(target.wstring())) {
+                throw ConfigWriteError{target, ERROR_INVALID_PARAMETER};
+            }
+        }
+        std::filesystem::create_directories(target.parent_path(), ec);
+        if (ec) throw ConfigWriteError{target, static_cast<DWORD>(ec.value())};
+        const DWORD attributes = GetFileAttributesW(target.c_str());
+        const bool exists = attributes != INVALID_FILE_ATTRIBUTES;
+        if (exists && (attributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_READONLY))) {
+            throw ConfigWriteError{target, ERROR_ACCESS_DENIED};
+        }
+        files_.push_back(File{target});
+        auto& file = files_.back();
+        static std::atomic<unsigned long long> sequence{0};
+        HANDLE handle = INVALID_HANDLE_VALUE;
+        for (int attempt = 0; attempt < 64; ++attempt) {
+            const auto candidate = target.wstring() + L".staged." + std::to_wstring(GetCurrentProcessId()) +
+                L"." + std::to_wstring(++sequence);
+            handle = CreateFileW(candidate.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+            if (handle != INVALID_HANDLE_VALUE) {
+                file.staged = candidate;
+                break;
+            }
+            if (GetLastError() != ERROR_FILE_EXISTS) throw ConfigWriteError{target, GetLastError()};
+        }
+        if (handle == INVALID_HANDLE_VALUE) throw ConfigWriteError{target, ERROR_FILE_EXISTS};
+        CloseHandle(handle);
+        if (exists) {
+            if (!CopyFileW(target.c_str(), file.staged.c_str(), FALSE)) throw ConfigWriteError{target, GetLastError()};
+            file.backup = file.staged.wstring() + L".previous";
+            if (!CopyFileW(target.c_str(), file.backup.c_str(), TRUE)) throw ConfigWriteError{target, GetLastError()};
+            file.hasBackup = true;
+        }
+        return file.staged;
+    }
+
+    void Commit() {
+        for (auto& file : files_) {
+            if (!MoveFileExW(file.staged.c_str(), file.target.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+                const ConfigWriteError error{file.target, GetLastError()};
+                bool rollbackFailed = false;
+                for (auto it = files_.rbegin(); it != files_.rend(); ++it) {
+                    if (!it->committed) continue;
+                    const bool restored = it->hasBackup
+                        ? MoveFileExW(it->backup.c_str(), it->target.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != FALSE
+                        : DeleteFileW(it->target.c_str()) != FALSE;
+                    if (!restored) {
+                        it->preserveBackup = it->hasBackup;
+                        rollbackFailed = true;
+                    }
+                }
+                if (rollbackFailed) throw ConfigWriteError{error.path, error.code, true};
+                throw error;
+            }
+            file.committed = true;
+        }
+    }
+
+private:
+    std::vector<File> files_;
+};
 
 int Clamp(int value, int minValue, int maxValue) {
     return std::max(minValue, std::min(maxValue, value));
@@ -63,6 +157,7 @@ ConfigService::ConfigService(std::filesystem::path configPath)
 }
 
 AppConfig ConfigService::Load() const {
+    const std::lock_guard lock(configMutex);
     AppConfig config;
     config.autoRun = ReadBool(L"bAutoRun", config.autoRun);
     config.showTitle = ReadBool(L"bShowTitle", config.showTitle);
@@ -375,7 +470,7 @@ bool ConfigService::UpgradeToSchemaVersion(int targetVersion) const {
     bool compatible = true;
     AppConfig config = LoadForSchemaUpgrade(targetVersion, compatible);
     config.version = targetVersion;
-    Save(config);
+    if (!Save(config)) return false;
     if (Load().version != targetVersion) {
         AppConfig fallback;
         fallback.version = targetVersion;
@@ -385,7 +480,39 @@ bool ConfigService::UpgradeToSchemaVersion(int targetVersion) const {
     return compatible;
 }
 
-void ConfigService::SaveWindowState(const AppConfig& config) const {
+bool ConfigService::Save(const AppConfig& config, std::wstring* error) const {
+    return Commit(config, true, error);
+}
+
+bool ConfigService::SaveWindowState(const AppConfig& config, std::wstring* error) const {
+    return Commit(config, false, error);
+}
+
+bool ConfigService::Commit(const AppConfig& config, bool full, std::wstring* error) const {
+    const std::lock_guard lock(configMutex);
+    if (error) error->clear();
+    try {
+        StagedConfigFiles files;
+        ConfigService writer(files.Prepare(configPath_));
+        writer.stagedExternalPaths_[0] = files.Prepare(WebDavConfigPath());
+        writer.stagedExternalPaths_[1] = files.Prepare(HttpConfigPath());
+        if (full) writer.stagedExternalPaths_[2] = files.Prepare(ContextMenuConfigPath());
+        if (full) writer.WriteSettings(config);
+        else writer.WriteWindowSettings(config);
+        files.Commit();
+        return true;
+    } catch (const ConfigWriteError& failure) {
+        if (error) {
+            *error = L"无法保存配置文件 " + failure.path.wstring() + L"：" + FormatLastError(failure.code);
+            if (failure.rollbackFailed) *error += L" 回滚未完成，请保留配置目录中的 .previous 备份以恢复原设置。";
+        }
+    } catch (const std::exception&) {
+        if (error) *error = L"无法保存配置，请检查配置目录后重试。";
+    }
+    return false;
+}
+
+void ConfigService::WriteWindowSettings(const AppConfig& config) const {
     WriteInt(L"nVersion", config.version);
     WriteInt(L"bShowTitle", config.showTitle ? 1 : 0);
     WriteInt(L"bShowGroup", config.showGroup ? 1 : 0);
@@ -433,8 +560,8 @@ void ConfigService::SaveWindowState(const AppConfig& config) const {
     WriteString(L"bDickCorner", L"");
 }
 
-void ConfigService::Save(const AppConfig& config) const {
-    SaveWindowState(config);
+void ConfigService::WriteSettings(const AppConfig& config) const {
+    WriteWindowSettings(config);
     WriteInt(L"bAutoRun", config.autoRun ? 1 : 0);
     WriteInt(L"bLnkNameSingleline", config.linkNameSingleLine ? 1 : 0);
     WriteInt(L"bLnkNameBold", config.linkNameBold ? 1 : 0);
@@ -474,8 +601,6 @@ void ConfigService::Save(const AppConfig& config) const {
     WriteString(L"HelpUrl", L"");
     WriteString(L"FaqUrl", L"");
     WriteString(L"RewardUrl", L"");
-    SaveExternalNetworkSettings(config);
-    DeleteLegacyNetworkSettings();
 }
 
 bool ConfigService::HasKey(const wchar_t* key) const {
@@ -544,14 +669,11 @@ void ConfigService::WriteInt(const wchar_t* key, int value) const {
 }
 
 void ConfigService::WriteString(const wchar_t* key, const std::wstring& value) const {
-    std::error_code ec;
-    if (!configPath_.parent_path().empty()) {
-        std::filesystem::create_directories(configPath_.parent_path(), ec);
-    }
-    WritePrivateProfileStringW(kSection, key, value.empty() ? nullptr : value.c_str(), configPath_.c_str());
+    WriteExternalString(configPath_, kSection, key, value);
 }
 
 std::filesystem::path ConfigService::WebDavConfigPath() const {
+    if (!stagedExternalPaths_[0].empty()) return stagedExternalPaths_[0];
     return QuattroUserConfigDirectory() / L"webdav.ini";
 }
 
@@ -568,10 +690,12 @@ std::wstring ConfigService::ReadWebDavRoot(const std::filesystem::path& path, bo
 }
 
 std::filesystem::path ConfigService::HttpConfigPath() const {
+    if (!stagedExternalPaths_[1].empty()) return stagedExternalPaths_[1];
     return QuattroUserConfigDirectory() / L"http.ini";
 }
 
 std::filesystem::path ConfigService::ContextMenuConfigPath() const {
+    if (!stagedExternalPaths_[2].empty()) return stagedExternalPaths_[2];
     return QuattroUserConfigDirectory() / L"context-menu.ini";
 }
 
@@ -601,7 +725,10 @@ void ConfigService::WriteExternalInt(const std::filesystem::path& path, const wc
 void ConfigService::WriteExternalString(const std::filesystem::path& path, const wchar_t* section, const wchar_t* key, const std::wstring& value) const {
     std::error_code ec;
     std::filesystem::create_directories(path.parent_path(), ec);
-    WritePrivateProfileStringW(section, key, value.empty() ? nullptr : value.c_str(), path.c_str());
+    if (ec) throw ConfigWriteError{path, static_cast<DWORD>(ec.value())};
+    if (!WritePrivateProfileStringW(section, key, value.empty() ? nullptr : value.c_str(), path.c_str())) {
+        throw ConfigWriteError{path, GetLastError()};
+    }
 }
 
 void ConfigService::SaveExternalNetworkSettings(const AppConfig& config) const {

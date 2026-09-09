@@ -4,7 +4,7 @@ file(GLOB APP_LAUNCH_LOCKER_UI_SOURCES "${SOURCE_DIR}/src/applaunchlocker/*Windo
 list(APPEND WINDOW_SOURCES ${APP_LAUNCH_LOCKER_UI_SOURCES})
 
 set(FORBIDDEN_PATTERN
-    "ThemedControls::Create(SingleLineEdit|MultiLineEdit|CheckBox|ComboBox|ListBox|StaticText|LabelText|ProgressBar|LinkText|GroupBox|TabControlFrame|ToolBarFrame)|ThemedControls::Draw(FieldFrame|PanelFrame|TabGroupFrame)|ThemedControls::ApplyListViewTheme|ThemedControls::RegisterTable|WC_LISTVIEW|ListView_|LVS_|LVCOLUMN|LVITEM|WC_TABCONTROL|TabCtrl_|TCM_|TOOLBARCLASSNAME|BS_GROUPBOX")
+    "ThemedControls::Create(SingleLineEdit|MultiLineEdit|CheckBox|ComboBox|ListBox|StaticText|LabelText|ProgressBar|LinkText|GroupBox|TabControlFrame|ToolBarFrame)|ThemedControls::Draw(FieldFrame|PanelFrame|TabGroupFrame)|ThemedControls::ApplyListViewTheme|ThemedControls::RegisterTable|ThemedControls::ReorderTableRows|WC_LISTVIEW|ListView_|LVS_|LVCOLUMN|LVITEM|WC_TABCONTROL|TabCtrl_|TCM_|TOOLBARCLASSNAME|BS_GROUPBOX")
 
 foreach(SOURCE_FILE IN LISTS WINDOW_SOURCES)
     file(READ "${SOURCE_FILE}" SOURCE_TEXT)
@@ -101,6 +101,14 @@ if(EXISTS "${DEFAULT_THEME}")
         string(FIND "${DEFAULT_THEME_TEXT}" "${REQUIRED_METRIC}" REQUIRED_METRIC_INDEX)
         if(REQUIRED_METRIC_INDEX LESS 0)
             message(FATAL_ERROR "Theme scale violation: missing canonical metric ${REQUIRED_METRIC}")
+        endif()
+    endforeach()
+    string(REGEX MATCH "<Component name=\"toast\">[^<]*(<[^/][^>]*>[^<]*|</State>[^<]*)*</Component>"
+        TOAST_COMPONENT "${DEFAULT_THEME_TEXT}")
+    foreach(TOAST_METRIC IN ITEMS "closeSize\" value=\"16" "closeGap\" value=\"6")
+        string(FIND "${TOAST_COMPONENT}" "${TOAST_METRIC}" TOAST_METRIC_INDEX)
+        if(TOAST_METRIC_INDEX LESS 0)
+            message(FATAL_ERROR "Theme toast geometry violation: missing ${TOAST_METRIC}")
         endif()
     endforeach()
 endif()

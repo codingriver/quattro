@@ -866,6 +866,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
         L"created=" + BoolText(runtime.sharedMemory != nullptr) + L", error=" + std::to_wstring(sharedMemoryError));
 
     HRESULT ole = OleInitialize(nullptr);
+    struct OleLifetime {
+        HRESULT result;
+        ~OleLifetime() { if (SUCCEEDED(result)) OleUninitialize(); }
+    } oleLifetime{ole};
     WriteStartupTiming(L"ole initialized", L"hr=" + std::to_wstring(static_cast<long>(ole)));
     if (!WebDavRecoveryService::HasWebDavSettings(config)) {
         WebDavRecoveryService recoveryService;
@@ -908,9 +912,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     if (!window.Create()) {
         WriteAppLog(L"主窗口初始化失败。");
         MessageBoxW(nullptr, L"主窗口初始化失败。", L"Quattro快速启动器", MB_ICONERROR | MB_OK);
-        if (SUCCEEDED(ole)) {
-            OleUninitialize();
-        }
         return 1;
     }
     WriteStartupTiming(L"main window create completed");
@@ -930,8 +931,5 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
 
     int result = window.RunMessageLoop();
     WriteAppLog(L"应用退出。pid=" + CurrentPidText());
-    if (SUCCEEDED(ole)) {
-        OleUninitialize();
-    }
     return result;
 }

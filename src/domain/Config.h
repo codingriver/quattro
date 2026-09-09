@@ -3,6 +3,7 @@
 #include "Models.h"
 
 #include <filesystem>
+#include <array>
 
 class ConfigService {
 public:
@@ -11,11 +12,14 @@ public:
     AppConfig Load() const;
     AppConfig LoadForSchemaUpgrade(int targetVersion, bool& compatible) const;
     bool UpgradeToSchemaVersion(int targetVersion) const;
-    void Save(const AppConfig& config) const;
-    void SaveWindowState(const AppConfig& config) const;
+    bool Save(const AppConfig& config, std::wstring* error = nullptr) const;
+    bool SaveWindowState(const AppConfig& config, std::wstring* error = nullptr) const;
     const std::filesystem::path& path() const { return configPath_; }
 
 private:
+    bool Commit(const AppConfig& config, bool full, std::wstring* error) const;
+    void WriteSettings(const AppConfig& config) const;
+    void WriteWindowSettings(const AppConfig& config) const;
     bool HasKey(const wchar_t* key) const;
     bool TryReadInt(const wchar_t* key, int& value) const;
     bool TryReadBool(const wchar_t* key, bool& value) const;
@@ -40,4 +44,6 @@ private:
     void DeleteLegacyContextMenuSettings() const;
 
     std::filesystem::path configPath_;
+    // Used only by the short-lived staged writer inside Commit.
+    std::array<std::filesystem::path, 3> stagedExternalPaths_{};
 };

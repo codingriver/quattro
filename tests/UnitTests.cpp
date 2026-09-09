@@ -18,6 +18,7 @@
 #include "../src/services/LinkResourceRefreshService.h"
 #include "../src/services/AppLaunchLockerLocator.h"
 #include "../src/services/QuickImportService.h"
+#include "../src/services/PortScanService.h"
 #include "../src/services/ScanExecutionService.h"
 #include "../src/services/TaskExecutionService.h"
 #include "../src/domain/MenuCatalog.h"
@@ -895,6 +896,42 @@ int wmain(int argc, wchar_t* argv[]) {
         Check(failedTask->Status() == ScanTaskStatus::Failed && !failedTask->Snapshot().error.empty(),
             "Scan exceptions become failed tasks");
 
+        for (TaskExecutionMode mode : {TaskExecutionMode::BackgroundParallel,
+                TaskExecutionMode::BackgroundSingle, TaskExecutionMode::CallerParallel,
+                TaskExecutionMode::CallerSingle}) {
+            TaskOptions options;
+            options.mode = mode;
+            options.maxWorkers = 4;
+            bool merged = false;
+            auto workerFailure = TaskExecutionService::StartTyped<int>(options,
+                [&](TaskContext& context) {
+                    const std::array<int, 32> items{};
+                    context.ForEach<int, int>(items, [] { return 0; },
+                        [](int, int&, TaskContext&) { throw std::runtime_error("worker failure"); },
+                        [&](int&&) { merged = true; });
+                    return 1;
+                });
+            workerFailure->Wait();
+            Check(workerFailure->Status() == TaskStatus::Failed &&
+                    workerFailure->Snapshot().error == L"worker failure" && !merged,
+                "Task worker exception is joined and failed without merging partial results");
+        }
+        {
+            TaskOptions options;
+            options.mode = TaskExecutionMode::BackgroundParallel;
+            auto workerFailure = TaskExecutionService::StartTyped<int>(options,
+                [](TaskContext& context) {
+                    const std::array<int, 16> items{};
+                    context.ForEach<int, int>(items, [] { return 0; },
+                        [](int, int&, TaskContext&) { throw 42; }, [](int&&) {});
+                    return 1;
+                });
+            workerFailure->Wait();
+            Check(workerFailure->Status() == TaskStatus::Failed &&
+                    !workerFailure->Snapshot().error.empty(),
+                "Task worker nonstandard exception becomes a failed snapshot");
+        }
+
         ScanTaskOptions progressOptions;
         progressOptions.mode = ScanExecutionMode::CallerSingle;
         auto progressTask = ScanExecutionService::StartTyped<int>(progressOptions,
@@ -920,6 +957,27 @@ int wmain(int argc, wchar_t* argv[]) {
                 stoppedUiProgress.finished && !stoppedUiProgress.completed,
             "Scan progress adapter auto-closes only successful completion");
 
+        TaskProgressSnapshot terminalProgress;
+        terminalProgress.status = L"正在扫描";
+        terminalProgress.detail = L"正在读取文件";
+        terminalProgress.workerCount = 4;
+        terminalProgress.error = L"读取失败，请重试。";
+        terminalProgress.taskStatus = TaskStatus::Failed;
+        const auto failedUi = ToThemedTaskProgressSnapshot(terminalProgress);
+        Check(failedUi.status == L"任务失败" && failedUi.detail == terminalProgress.error &&
+                failedUi.role == ThemedStatusRole::Danger && failedUi.finished &&
+                !failedUi.indeterminate && !failedUi.activity && !failedUi.showPercent,
+            "Failed task replaces stale status with error and stops unknown progress animation");
+        terminalProgress.taskStatus = TaskStatus::Stopped;
+        const auto stoppedUi = ToThemedTaskProgressSnapshot(terminalProgress);
+        Check(stoppedUi.status == L"任务已停止" && stoppedUi.role == ThemedStatusRole::Warning &&
+                !stoppedUi.indeterminate && !stoppedUi.activity,
+            "Stopped task replaces stale running status and stops animation");
+        terminalProgress.taskStatus = TaskStatus::Completed;
+        const auto completedUi = ToThemedTaskProgressSnapshot(terminalProgress);
+        Check(completedUi.status == L"任务完成" && completedUi.role == ThemedStatusRole::Success,
+            "Completed task replaces stale running status");
+
         ScanProgressSnapshot startedDeterminate;
         startedDeterminate.taskStatus = ScanTaskStatus::Running;
         startedDeterminate.indeterminate = false;
@@ -928,8 +986,8 @@ int wmain(int argc, wchar_t* argv[]) {
         const ThemedTaskProgressSnapshot startedDeterminateUi =
             ToThemedTaskProgressSnapshot(startedDeterminate);
         Check(!startedDeterminateUi.indeterminate && startedDeterminateUi.showPercent &&
-                startedDeterminateUi.activity && startedDeterminateUi.value == 0.01,
-            "Scan progress adapter shows visual one percent and activity for known running work");
+                startedDeterminateUi.activity && startedDeterminateUi.value == 0.0,
+            "Scan progress adapter shows real zero percent and activity for known running work");
 
         ScanProgressSnapshot midwayDeterminate = startedDeterminate;
         midwayDeterminate.current = 42;
@@ -994,6 +1052,53 @@ int wmain(int argc, wchar_t* argv[]) {
         const int partialResult = stoppedTask->ResultCopy<int>();
         Check(partialResult > 0 && partialResult < 1000,
             "Scan stop preserves partial results");
+
+        std::vector<PortScanSource> portSources;
+        PortScanOperations portOperations;
+        portOperations.querySource = [&](PortScanSource source, unsigned short port) {
+            portSources.push_back(source);
+            PortScanSourceResult sourceResult;
+            if (source == PortScanSource::TcpIPv4) {
+                sourceResult.records.push_back({700001, {L"TCP LISTEN"}});
+            } else if (source == PortScanSource::UdpIPv4) {
+                sourceResult.records.push_back({700001, {L"UDP"}});
+            }
+            Check(port == 8080, "Port scan source receives requested port");
+            return sourceResult;
+        };
+        const PortScanResult completePortScan = PortScanService(portOperations).Scan(8080);
+        Check(portSources == std::vector<PortScanSource>{PortScanSource::TcpIPv4,
+                PortScanSource::TcpIPv6, PortScanSource::UdpIPv4, PortScanSource::UdpIPv6} &&
+                completePortScan.failedSources.empty() && completePortScan.error.empty() &&
+                completePortScan.warning.empty() && completePortScan.records.size() == 1 &&
+                completePortScan.records[0].processId == 700001 &&
+                completePortScan.records[0].endpoints == std::set<std::wstring>{L"TCP LISTEN", L"UDP"},
+            "Port scan merges complete source results deterministically");
+
+        portOperations.querySource = [](PortScanSource source, unsigned short) {
+            PortScanSourceResult sourceResult;
+            if (source == PortScanSource::TcpIPv6) {
+                sourceResult.errorCode = ERROR_ACCESS_DENIED;
+            } else if (source == PortScanSource::TcpIPv4) {
+                sourceResult.records.push_back({700002, {L"TCP ESTABLISHED"}});
+            }
+            return sourceResult;
+        };
+        const PortScanResult partialPortScan = PortScanService(portOperations).Scan(443);
+        Check(partialPortScan.error.empty() && !partialPortScan.warning.empty() &&
+                partialPortScan.failedSources == std::vector<PortScanSource>{PortScanSource::TcpIPv6} &&
+                partialPortScan.records.size() == 1 && partialPortScan.records[0].processId == 700002,
+            "Port scan reports partial API coverage without claiming an empty success");
+
+        portOperations.querySource = [](PortScanSource, unsigned short) {
+            PortScanSourceResult sourceResult;
+            sourceResult.errorCode = ERROR_ACCESS_DENIED;
+            return sourceResult;
+        };
+        const PortScanResult failedPortScan = PortScanService(portOperations).Scan(443);
+        Check(!failedPortScan.error.empty() && failedPortScan.warning.empty() &&
+                failedPortScan.failedSources.size() == 4 && failedPortScan.records.empty(),
+            "Port scan reports complete API failure instead of no occupancy");
 
         Link invalidUrl;
         invalidUrl.id = 7001;
@@ -1349,6 +1454,46 @@ int wmain(int argc, wchar_t* argv[]) {
                 cachedRecords[0].id == second.id,
             "WebDAV file index cache removal does not require a remote refresh");
 
+        std::vector<WebDavFileRecord> batchRecords;
+        std::vector<std::wstring> removedIds;
+        for (int index = 0; index < 40; ++index) {
+            auto record = first;
+            record.id = WebDavFileService::RecordId(L"batch-cache-" + std::to_wstring(index));
+            batchRecords.push_back(record);
+            if (index % 2 == 0) removedIds.push_back(record.id);
+        }
+        removedIds.push_back(removedIds.front());
+        const std::wstring refreshedBefore = L"2026-07-21T14:36:00.000Z";
+        Check(cache.Replace(batchRecords, refreshedBefore), "WebDAV batch cache fixture saved");
+        HANDLE lockedCache = CreateFileW(cache.path().c_str(), GENERIC_READ, FILE_SHARE_READ,
+            nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        Check(lockedCache != INVALID_HANDLE_VALUE, "WebDAV batch cache replacement lock acquired");
+        if (lockedCache != INVALID_HANDLE_VALUE) {
+            Check(cache.RemoveBatch({}) && cache.RemoveBatch({std::wstring(64, L'c')}),
+                "WebDAV empty or unknown batch does not rewrite a locked cache");
+            Check(!cache.RemoveBatch(removedIds) && cache.Load(cachedRecords, refreshedAt) &&
+                cachedRecords.size() == batchRecords.size() && refreshedAt == refreshedBefore,
+                "WebDAV batch replacement failure preserves all original records");
+            CloseHandle(lockedCache);
+        }
+        Check(cache.RemoveBatch(removedIds) && cache.Load(cachedRecords, refreshedAt) &&
+            cachedRecords.size() == 20 && refreshedAt == refreshedBefore,
+            "WebDAV batch removes duplicate IDs once and retains refresh metadata");
+        bool remainingOrder = cachedRecords.size() == 20;
+        for (std::size_t index = 0; index < cachedRecords.size() && remainingOrder; ++index) {
+            remainingOrder = cachedRecords[index].id == batchRecords[index * 2 + 1].id;
+        }
+        Check(remainingOrder, "WebDAV batch preserves unrelated records and order");
+        Check(!cache.RemoveBatch({L"invalid"}) && cache.Load(cachedRecords, refreshedAt) && cachedRecords.size() == 20,
+            "WebDAV batch rejects invalid IDs without mutation");
+        {
+            std::ofstream corrupt(cache.path(), std::ios::binary | std::ios::trunc);
+            corrupt << "invalid cache";
+        }
+        Check(!cache.RemoveBatch(removedIds) && LoadUtf8File(cache.path()) == L"invalid cache",
+            "WebDAV batch reports corrupt cache instead of claiming successful removal");
+        Check(cache.Replace({second}, refreshedBefore), "WebDAV cache fixture restored after fault injection");
+
         AppConfig otherUser = cacheConfig;
         otherUser.webDavUserName = L"other-user";
         AppConfig otherDirectory = cacheConfig;
@@ -1356,6 +1501,137 @@ int wmain(int argc, wchar_t* argv[]) {
         Check(WebDavFileIndexCache::CachePath(cacheConfig) != WebDavFileIndexCache::CachePath(otherUser) &&
                 WebDavFileIndexCache::CachePath(cacheConfig) != WebDavFileIndexCache::CachePath(otherDirectory),
             "WebDAV file index cache is isolated by account and remote directory");
+
+        TaskOptions deleteOptions;
+        deleteOptions.mode = TaskExecutionMode::CallerSingle;
+        WebDavFileDeleteOperations deleteOperations;
+        std::vector<std::wstring> remoteCalls;
+        std::vector<std::wstring> committedIds;
+        int commits = 0;
+        deleteOperations.deleteRemote = [&](const WebDavFileRecord& record, std::wstring&,
+                WebDavFileDeleteProgressCallback progress, std::stop_token) {
+            remoteCalls.push_back(record.id);
+            progress(WebDavFileDeletePhase::DeletingContent, false);
+            return true;
+        };
+        deleteOperations.removeCachedRecords = [&](const std::vector<std::wstring>& ids) {
+            ++commits;
+            committedIds = ids;
+            return cache.RemoveBatch(ids);
+        };
+        Check(cache.Replace({first, second}, refreshedBefore), "WebDAV delete batch cache seeded");
+        auto deletion = WebDavFileService(cacheConfig).StartDeleteBatch(
+            {second, first, second}, deleteOptions, deleteOperations);
+        auto deleted = deletion->ResultCopy<WebDavFileDeleteBatchResult>();
+        Check(deletion->Status() == TaskStatus::Completed && deleted.cacheSynchronized &&
+            deleted.remoteDeletedIds == std::vector<std::wstring>{second.id, first.id} &&
+            remoteCalls == deleted.remoteDeletedIds && committedIds == remoteCalls && commits == 1 &&
+            cache.Load(cachedRecords, refreshedAt) && cachedRecords.empty(),
+            "WebDAV public delete deduplicates, preserves request order and commits cache once");
+        Check(deletion->Snapshot().total == 3 && deletion->Snapshot().current == 3 &&
+            !deletion->Snapshot().indeterminate,
+            "WebDAV deletion uses known item plus commit progress");
+
+        commits = 0;
+        remoteCalls.clear();
+        deletion = WebDavFileService(cacheConfig).StartDeleteBatch({}, deleteOptions, deleteOperations);
+        Check(deletion->ResultCopy<WebDavFileDeleteBatchResult>().cacheSynchronized &&
+            remoteCalls.empty() && commits == 0, "WebDAV empty deletion performs no external work");
+        auto invalid = first;
+        invalid.id = L"../invalid";
+        deletion = WebDavFileService(cacheConfig).StartDeleteBatch({first, invalid}, deleteOptions, deleteOperations);
+        Check(deletion->Status() == TaskStatus::Failed && remoteCalls.empty() && commits == 0,
+            "WebDAV batch validates every identity before any deletion");
+
+        deleteOperations.deleteRemote = [&](const WebDavFileRecord& record, std::wstring& error,
+                WebDavFileDeleteProgressCallback, std::stop_token) {
+            if (record.id == first.id) { error = L"拒绝删除"; return false; }
+            return true;
+        };
+        deleteOperations.removeCachedRecords = [&](const std::vector<std::wstring>& ids) {
+            ++commits;
+            committedIds = ids;
+            return true;
+        };
+        deletion = WebDavFileService(cacheConfig).StartDeleteBatch({first, second}, deleteOptions, deleteOperations);
+        deleted = deletion->ResultCopy<WebDavFileDeleteBatchResult>();
+        Check(deleted.failedIds == std::vector<std::wstring>{first.id} &&
+            deleted.remoteDeletedIds == std::vector<std::wstring>{second.id} &&
+            deleted.error == L"拒绝删除" && commits == 1 && committedIds == deleted.remoteDeletedIds,
+            "WebDAV partial delete commits only actual remote successes");
+        deleteOperations.removeCachedRecords = [](const auto&) { return false; };
+        deletion = WebDavFileService(cacheConfig).StartDeleteBatch({second}, deleteOptions, deleteOperations);
+        deleted = deletion->ResultCopy<WebDavFileDeleteBatchResult>();
+        Check(!deleted.cacheSynchronized && !deleted.cacheError.empty() &&
+            deleted.remoteDeletedIds == std::vector<std::wstring>{second.id},
+            "WebDAV cache failure preserves remote outcome without reporting synchronization");
+        deleteOperations.deleteRemote = [](const auto&, auto&, auto, auto) -> bool {
+            throw std::runtime_error("injected remote failure");
+        };
+        commits = 0;
+        deleteOperations.removeCachedRecords = [&](const auto&) { ++commits; return true; };
+        deletion = WebDavFileService(cacheConfig).StartDeleteBatch({first, second}, deleteOptions, deleteOperations);
+        deleted = deletion->ResultCopy<WebDavFileDeleteBatchResult>();
+        Check(deleted.failedIds.size() == 2 && deleted.remoteDeletedIds.empty() &&
+            !deleted.error.empty() && commits == 0,
+            "WebDAV operation exceptions retain failed identities and skip cache writes");
+
+        HANDLE entered = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        HANDLE release = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        Check(entered && release, "WebDAV cancellation fixture events created");
+        if (entered && release) {
+            deleteOptions.mode = TaskExecutionMode::BackgroundSingle;
+            deleteOperations.deleteRemote = [&](const auto&, auto&, auto progress, auto) {
+                SetEvent(entered);
+                WaitForSingleObject(release, 5000);
+                progress(WebDavFileDeletePhase::DeletingDirectory, true);
+                return true;
+            };
+            deletion = WebDavFileService(cacheConfig).StartDeleteBatch(
+                {first, second}, deleteOptions, deleteOperations);
+            const bool inFlight = WaitForSingleObject(entered, 5000) == WAIT_OBJECT_0;
+            Check(inFlight, "WebDAV deletion entered the isolated remote substitute");
+            deletion->RequestStop();
+            const auto beforeStopReturn = deletion->Snapshot();
+            SetEvent(release);
+            deletion->Wait();
+            deleted = deletion->ResultCopy<WebDavFileDeleteBatchResult>();
+            Check(deletion->Status() == TaskStatus::Stopped && deleted.stopped &&
+                deleted.remoteDeletedIds == std::vector<std::wstring>{first.id} &&
+                deleted.notStartedIds == std::vector<std::wstring>{second.id} &&
+                !deleted.cacheSynchronized && commits == 0 &&
+                deletion->Snapshot().current == beforeStopReturn.current,
+                "WebDAV stop retains irreversible success but starts no next item or cache commit");
+        }
+        if (entered) CloseHandle(entered);
+        if (release) CloseHandle(release);
+        std::atomic_int activeDeletes{0};
+        std::atomic_int peakDeletes{0};
+        commits = 0;
+        deleteOptions.mode = TaskExecutionMode::BackgroundParallel;
+        deleteOptions.maxWorkers = 99;
+        deleteOperations.deleteRemote = [&](const auto&, auto&, auto, auto) {
+            const int active = ++activeDeletes;
+            int peak = peakDeletes.load();
+            while (peak < active && !peakDeletes.compare_exchange_weak(peak, active)) {}
+            Sleep(5);
+            --activeDeletes;
+            return true;
+        };
+        deleteOperations.removeCachedRecords = [&](const auto& ids) {
+            ++commits;
+            committedIds = ids;
+            return true;
+        };
+        deletion = WebDavFileService(cacheConfig).StartDeleteBatch(batchRecords, deleteOptions, deleteOperations);
+        deletion->Wait();
+        deleted = deletion->ResultCopy<WebDavFileDeleteBatchResult>();
+        std::vector<std::wstring> orderedIds;
+        for (const auto& record : batchRecords) orderedIds.push_back(record.id);
+        Check(deletion->Status() == TaskStatus::Completed && deleted.remoteDeletedIds == orderedIds &&
+            committedIds == orderedIds && commits == 1 && peakDeletes >= 1 && peakDeletes <= 4 &&
+            deletion->Snapshot().workerCount <= 4,
+            "WebDAV network batch caps parallel workers at four and merges deterministically before one commit");
     }
     Check(WebDavTransferQueueOptions{}.maxConcurrentTransfers == 1,
         "WebDAV transfer queue defaults to one concurrent task");
@@ -1780,7 +2056,7 @@ int wmain(int argc, wchar_t* argv[]) {
     config.copySelectedPathsHotKey = L'X';
     config.registerCopyPathContextMenu = true;
     config.registerWebDavUploadContextMenu = true;
-    service.Save(config);
+    Check(service.Save(config), "Config reports successful complete save");
 
     AppConfig loaded = service.Load();
     Check(loaded.width == 500, "Config width");
@@ -1816,6 +2092,61 @@ int wmain(int argc, wchar_t* argv[]) {
     Check(savedConfigText.find(L"HttpServerPort") == std::wstring::npos, "Config removes legacy http fields");
     Check(savedConfigText.find(L"bTrackGitContextMenu") == std::wstring::npos, "Config removes legacy context menu fields");
     Check(savedConfigText.find(L"password") == std::wstring::npos && savedConfigText.find(L"Password") == std::wstring::npos, "Config does not persist webdav password");
+    {
+        const auto readBytes = [](const std::filesystem::path& path) {
+            std::ifstream input(path, std::ios::binary);
+            return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+        };
+        const std::array<std::filesystem::path, 4> paths{
+            temp, unitUserConfigRoot / L"webdav.ini", unitUserConfigRoot / L"http.ini",
+            unitUserConfigRoot / L"context-menu.ini"};
+        Check(WritePrivateProfileStringW(L"unrelated", L"retained", L"existing-value", temp.c_str()) != FALSE,
+            "Config unrelated section fixture written");
+        std::array<std::string, 4> originalBytes;
+        for (std::size_t index = 0; index < paths.size(); ++index) originalBytes[index] = readBytes(paths[index]);
+        HANDLE lock = CreateFileW(paths.back().c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        Check(lock != INVALID_HANDLE_VALUE, "Config replacement fault fixture locks the final file");
+        AppConfig proposed = config;
+        proposed.width = 913;
+        proposed.webDavUserName = L"not-committed";
+        proposed.httpServerPort = 45123;
+        std::wstring saveError;
+        if (lock != INVALID_HANDLE_VALUE) {
+            Check(!service.Save(proposed, &saveError) && !saveError.empty(),
+                "Config final-file replacement failure is reported");
+            for (std::size_t index = 0; index < paths.size(); ++index) {
+                Check(readBytes(paths[index]) == originalBytes[index],
+                    "Config replacement failure rolls every file back byte-for-byte");
+            }
+            CloseHandle(lock);
+        }
+        Check(service.Save(proposed, &saveError) && saveError.empty() && service.Load().width == 913 &&
+            service.Load().webDavUserName == proposed.webDavUserName && service.Load().httpServerPort == 45123,
+            "Config can retry a failed multi-file commit");
+        wchar_t unrelated[64]{};
+        GetPrivateProfileStringW(L"unrelated", L"retained", L"", unrelated, 64, temp.c_str());
+        Check(std::wstring(unrelated) == L"existing-value", "Config staged writes preserve unrelated INI sections");
+        const DWORD attributes = GetFileAttributesW(paths[2].c_str());
+        Check(SetFileAttributesW(paths[2].c_str(), attributes | FILE_ATTRIBUTE_READONLY) != FALSE,
+            "Config read-only fixture set");
+        const std::string beforeReadOnly = readBytes(temp);
+        Check(!service.SaveWindowState(config, &saveError) && !saveError.empty() && readBytes(temp) == beforeReadOnly,
+            "Config window-state save reports preparation failure without modifying other files");
+        SetFileAttributesW(paths[2].c_str(), attributes);
+        const auto blocked = unitUserConfigRoot / L"blocked-config-parent";
+        { std::ofstream file(blocked); file << "not a directory"; }
+        Check(!ConfigService(blocked / L"conf.ini").Save(config, &saveError) && !saveError.empty(),
+            "Config invalid parent failure is reported");
+        for (const auto& directory : {temp.parent_path(), unitUserConfigRoot}) {
+            bool stagedFilesRemain = false;
+            for (const auto& item : std::filesystem::directory_iterator(directory)) {
+                stagedFilesRemain = stagedFilesRemain || item.path().filename().wstring().find(L".staged.") != std::wstring::npos;
+            }
+            Check(!stagedFilesRemain, "Config successful rollback and commit clean their temporary files");
+        }
+        Check(service.Save(config), "Config fixture restored after fault tests");
+    }
     std::filesystem::remove(temp, ec);
 
     RECT workArea{};
@@ -3225,6 +3556,18 @@ int wmain(int argc, wchar_t* argv[]) {
     Check(fallbackTheme.color(L"slider", L"disabled", L"thumb").a > 0.9f, "Theme default slider disabled state");
     Check(fallbackTheme.color(L"toast", L"success", L"border").a > 0.9f, "Theme default toast success state");
     Check(Near(fallbackTheme.metric(L"toast", L"maxWidth", 0.0f), 360.0f), "Theme default toast max width");
+    Check(Near(fallbackTheme.metric(L"toast", L"closeSize", 0.0f), 16.0f) &&
+        Near(fallbackTheme.metric(L"toast", L"closeGap", 0.0f), 6.0f), "Theme default toast close geometry");
+    const Color composed = Color{1, 0, 0, 0.25f}.Over(Color{0, 0, 1, 1});
+    Check(Near(composed.r, 0.25f) && Near(composed.b, 0.75f) && Near(composed.a, 1),
+        "Public color composition preserves translucent foreground semantics");
+    const Color translucent = Color{1, 0, 0, 0.5f}.Over(Color{0, 0, 1, 0.5f});
+    Check(Near(translucent.a, 0.75f) && Near(translucent.r, 2.0f / 3) && Near(translucent.b, 1.0f / 3),
+        "Public color composition retains resulting alpha");
+    Check(Near(Color{1, 0, 0, 0}.Over(Color{0, 1, 0, 1}).g, 1) &&
+        Near(Color{1, 0, 0, 1}.Over(Color{0, 1, 0, 1}).r, 1) &&
+        Near(Color{1, 0, 0, 0}.Over(Color{0, 1, 0, 0}).a, 0),
+        "Public color composition handles transparent and opaque limits");
     Check(ThemedWindowUi::ScaleForDpi(544, 120) == 680, "Themed window scales logical width at 125 percent DPI");
     Check(ThemedWindowUi::ScaleForDpi(441, 144) == 662, "Themed window scales logical height at 150 percent DPI");
     Check(ThemedWindowUi::ScaleForDpi(kThemedManagementClientWidth, 120) == 950,
@@ -3243,6 +3586,30 @@ int wmain(int argc, wchar_t* argv[]) {
         0, 0, 320, 200, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
     Check(controlParent != nullptr, "Themed control test parent created");
     if (controlParent) {
+        {
+            ThemedWindowUi toastUi(GetModuleHandleW(nullptr), nullptr, controlParent, fallbackTheme,
+                DialogLayoutKind::Compact, 320, 200);
+            for (UINT dpi : {96u, 120u, 144u}) {
+                LRESULT dpiResult = 0;
+                toastUi.HandleMessage(WM_DPICHANGED, MAKEWPARAM(dpi, dpi), 0, dpiResult);
+                for (const wchar_t* fallback : {static_cast<const wchar_t*>(nullptr), L"1"}) {
+                    SetEnvironmentVariableW(L"QUATTRO_FORCE_GDI_FALLBACK", fallback);
+                    ThemedToastOptions options;
+                    options.maxWidth = 160;
+                    const auto layout = toastUi.ui().MeasureToast(
+                        L"成功提示：网址已复制到剪贴板。\r\n第二行 Quattro。", options);
+                    Check(layout.text.left > 0 && layout.text.right < layout.closeButton.left &&
+                        layout.closeButton.right < layout.size.cx &&
+                        layout.text.bottom < layout.size.cy && layout.text.bottom > layout.text.top,
+                        "Toast layout shares bounded text and close geometry at every DPI/backend");
+                    Check(layout.closeButton.right - layout.closeButton.left == toastUi.ui().scale(16),
+                        "Toast close target scales with the public DPI geometry");
+                    Check(layout.text.bottom - layout.text.top >= toastUi.ui().scale(32),
+                        "Toast multiline measurement is nonempty in DirectWrite and GDI fallback");
+                    SetEnvironmentVariableW(L"QUATTRO_FORCE_GDI_FALLBACK", nullptr);
+                }
+            }
+        }
         {
             ThemedWindowUi frameUi(
                 GetModuleHandleW(nullptr), nullptr, controlParent, fallbackTheme,
@@ -3806,6 +4173,75 @@ int wmain(int argc, wchar_t* argv[]) {
         ThemedUi::SetTableChecked(updateNotificationTable, 1, true);
         Check(updateProbe.checkChangedCount == 1 && ThemedUi::TableSelectedIndex(updateNotificationTable) == 1,
             "Themed table standalone checkbox update preserves existing notification behavior");
+        ThemedUi::UpdateTableRowByKey(updateNotificationTable, 4,
+            ThemedTableRow{4, {{L"disabled"}}, true, false, true});
+        ThemedUi::UpdateTableRowByKey(updateNotificationTable, 5,
+            ThemedTableRow{5, {{L"action", -1, ThemedTableCellRole::Action, 77, L"secondary"}}, true, true});
+        ListView_EnsureVisible(updateNotificationTable, 7, FALSE);
+        const int oldTopIndex = ListView_GetTopIndex(updateNotificationTable);
+        const auto oldTopKey = ThemedUi::TableRowKey(updateNotificationTable, oldTopIndex);
+        RECT beforeOrderRect{};
+        ListView_GetItemRect(updateNotificationTable, oldTopIndex, &beforeOrderRect, LVIR_BOUNDS);
+        const auto selectedBeforeOrder = ThemedUi::TableSelectedKeys(updateNotificationTable);
+        const int notificationsBeforeOrder = updateProbe.checkChangedCount;
+        const std::vector<std::intptr_t> reverseOrder{10, 9, 8, 7, 6, 5, 4, 3, 2, 1};
+        Check(ThemedUi::SetTableRowOrder(updateNotificationTable, reverseOrder),
+            "Themed table reorders existing rows by stable key");
+        bool orderMatches = true;
+        for (int index = 0; index < 10; ++index) {
+            orderMatches = orderMatches && ThemedUi::TableRowKey(updateNotificationTable, index) == reverseOrder[index];
+        }
+        RECT afterOrderRect{};
+        ListView_GetItemRect(updateNotificationTable,
+            ThemedUi::FindTableRowByKey(updateNotificationTable, oldTopKey), &afterOrderRect, LVIR_BOUNDS);
+        Check(orderMatches && ThemedUi::TableSelectedKeys(updateNotificationTable) == selectedBeforeOrder,
+            "Themed table reorder preserves selected business identity");
+        Check(ThemedUi::TableRowKey(updateNotificationTable, ListView_GetTopIndex(updateNotificationTable)) == oldTopKey &&
+                beforeOrderRect.top == afterOrderRect.top,
+            "Themed table reorder preserves viewport identity and pixel offset");
+        Check(!ThemedUi::IsTableRowEnabled(updateNotificationTable, 6) &&
+                ThemedUi::IsTableRowActive(updateNotificationTable, 6) &&
+                ThemedUi::IsTableChecked(updateNotificationTable, 6),
+            "Themed table reorder preserves disabled active checked row state");
+        int reorderedAction = 0;
+        Check(ThemedControls::TableCellAction(updateNotificationTable, 5, 0, reorderedAction) &&
+                reorderedAction == 77,
+            "Themed table reorder preserves cell action identity");
+        Check(updateProbe.checkChangedCount == notificationsBeforeOrder && updateProbe.deleteAllCount == 0,
+            "Themed table reorder does not delete all rows or emit user checkbox events");
+        auto invalidOrder = reverseOrder;
+        invalidOrder.back() = 10;
+        Check(!ThemedUi::SetTableRowOrder(updateNotificationTable, invalidOrder) &&
+                !ThemedUi::SetTableRowOrder(updateNotificationTable, {10}) &&
+                ThemedUi::TableRowKey(updateNotificationTable, 0) == 10,
+            "Themed table rejects duplicate or incomplete orders without mutation");
+        invalidOrder.back() = 99;
+        Check(!ThemedUi::SetTableRowOrder(updateNotificationTable, invalidOrder) &&
+                ThemedUi::SetTableRowOrder(updateNotificationTable, reverseOrder),
+            "Themed table rejects unknown keys and accepts unchanged order");
+        ListView_EnsureVisible(updateNotificationTable, 6, FALSE);
+        const auto deletionTopKey = ThemedUi::TableRowKey(updateNotificationTable,
+            ListView_GetTopIndex(updateNotificationTable));
+        RECT beforeDelete{}, afterDelete{};
+        ListView_GetItemRect(updateNotificationTable,
+            ThemedUi::FindTableRowByKey(updateNotificationTable, deletionTopKey), &beforeDelete, LVIR_BOUNDS);
+        const auto deletionSelection = ThemedUi::TableSelectedKeys(updateNotificationTable);
+        Check(ThemedUi::RemoveTableRow(updateNotificationTable, 0),
+            "Themed table deletes a row above the viewport");
+        ListView_GetItemRect(updateNotificationTable,
+            ThemedUi::FindTableRowByKey(updateNotificationTable, deletionTopKey), &afterDelete, LVIR_BOUNDS);
+        Check(ThemedUi::TableRowKey(updateNotificationTable, ListView_GetTopIndex(updateNotificationTable)) ==
+                deletionTopKey && beforeDelete.top == afterDelete.top &&
+                ThemedUi::TableSelectedKeys(updateNotificationTable) == deletionSelection &&
+                updateProbe.checkChangedCount == notificationsBeforeOrder && updateProbe.deleteAllCount == 0,
+            "Themed table deletion preserves viewport selection and notification semantics");
+        for (int count = ThemedUi::TableRowCount(updateNotificationTable); count > 2; --count) {
+            Check(ThemedUi::RemoveTableRow(updateNotificationTable, 0),
+                "Themed table shrinks below one viewport without full deletion");
+        }
+        Check(ListView_GetTopIndex(updateNotificationTable) == 0 && updateProbe.deleteAllCount == 0 &&
+                updateProbe.checkChangedCount == notificationsBeforeOrder,
+            "Themed table fitting dataset resets to a nonnegative first row");
         RemoveWindowSubclass(controlParent, TableUpdateNotificationParentProc, 17);
 
         ThemedTableOptions multiSelectOptions{};
@@ -4932,6 +5368,44 @@ int wmain(int argc, wchar_t* argv[]) {
     Check(foundCronTodo, "Storage reload cron todo");
     Check(storage.SetTodoEnabled(todo.id, true), "Storage enable todo");
     Check(storage.SetTodoCompleted(todo.id, false), "Storage reopen todo");
+    {
+        Link first = link;
+        first.name = L"Batch first";
+        Link second = link;
+        second.name = L"Batch second";
+        Check(storage.InsertLink(first) && storage.InsertLink(second), "Storage seed batch links");
+        sqlite3* db = nullptr;
+        Check(sqlite3_open16((storageRoot / L"db/link.db").c_str(), &db) == SQLITE_OK && db,
+            "Storage open batch fault fixture");
+        if (db) {
+            const std::string trigger = "CREATE TRIGGER reject_batch_delete BEFORE DELETE ON Links "
+                "WHEN OLD.ID=" + std::to_string(second.id) +
+                " BEGIN SELECT RAISE(ABORT,'expected delete failure'); END;";
+            Check(ExecSql(db, trigger.c_str()), "Storage inject second deletion failure");
+            Check(!storage.DeleteLinks({first.id, second.id}) && !storage.lastError().empty(),
+                "Storage batch reports deletion failure");
+            const auto retained = storage.Load();
+            Check(std::count_if(retained.links.begin(), retained.links.end(), [&](const Link& item) {
+                    return item.id == first.id || item.id == second.id;
+                }) == 2, "Storage batch failure rolls back all deletions");
+            Check(ExecSql(db, "DROP TRIGGER reject_batch_delete;"), "Storage remove batch fault");
+            sqlite3_close(db);
+        }
+        Check(!storage.DeleteLinks({first.id, INT_MAX}), "Storage batch rejects missing member");
+        const auto afterMissing = storage.Load();
+        Check(std::any_of(afterMissing.links.begin(), afterMissing.links.end(), [&](const Link& item) {
+                return item.id == first.id;
+            }), "Storage missing member rolls back earlier deletion");
+        Check(storage.DeleteLinks({first.id, second.id, first.id}),
+            "Storage batch deletes unique stable keys atomically");
+        Check(storage.DeleteLinks({}), "Storage empty batch succeeds");
+        const auto afterBatch = storage.Load();
+        Check(std::none_of(afterBatch.links.begin(), afterBatch.links.end(), [&](const Link& item) {
+                return item.id == first.id || item.id == second.id;
+            }) && std::any_of(afterBatch.links.begin(), afterBatch.links.end(), [&](const Link& item) {
+                return item.id == link.id;
+            }), "Storage batch leaves unrelated link intact");
+    }
     Check(storage.DeleteLink(link.id), "Storage delete link");
     Check(storage.DeleteGroup(group.id), "Storage delete group tree");
     AppModel afterDelete = storage.Load();

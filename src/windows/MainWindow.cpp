@@ -311,6 +311,8 @@ HWND FindMainWindowForProcess(DWORD processId, const std::vector<std::pair<DWORD
 
 std::vector<SiblingQuattroProcess> CollectSiblingQuattroProcesses() {
     std::vector<SiblingQuattroProcess> siblings;
+    // Background acceptance must never discover or send messages to other runs.
+    if (QuattroTestMode() && BackgroundAcceptanceMode()) return siblings;
     const std::wstring currentPath = NormalizeProcessPath(CurrentExecutablePath());
     if (currentPath.empty()) {
         WriteAppLog(L"退出清理：无法获取当前可执行文件路径。");
@@ -335,7 +337,7 @@ std::vector<SiblingQuattroProcess> CollectSiblingQuattroProcesses() {
                 continue;
             }
 
-            HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE | SYNCHRONIZE,
+            HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION,
                                          FALSE,
                                          entry.th32ProcessID);
             if (!process) {
@@ -385,7 +387,7 @@ void DeleteTrayIconForWindow(HWND hwnd, const wchar_t* context) {
     }
 }
 
-void TerminateSiblingQuattroProcesses() {
+void RequestSiblingQuattroExit() {
     std::vector<SiblingQuattroProcess> siblings = CollectSiblingQuattroProcesses();
     if (siblings.empty()) {
         WriteAppLog(L"退出清理：未发现同路径后台实例。");
@@ -402,40 +404,10 @@ void TerminateSiblingQuattroProcesses() {
                             L"，错误=" + FormatLastError(GetLastError()));
             }
         } else {
-            WriteAppLog(L"退出清理：实例无可用主窗口，将等待后强制结束 pid=" + std::to_wstring(sibling.processId));
+            WriteAppLog(L"退出清理：实例无可用主窗口，跳过退出通知 pid=" + std::to_wstring(sibling.processId));
         }
     }
-
-    const ULONGLONG deadline = GetTickCount64() + 2000;
-    for (;;) {
-        bool allExited = true;
-        for (const auto& sibling : siblings) {
-            if (sibling.process && WaitForSingleObject(sibling.process, 0) == WAIT_TIMEOUT) {
-                allExited = false;
-                break;
-            }
-        }
-        if (allExited || GetTickCount64() >= deadline) {
-            break;
-        }
-        Sleep(50);
-    }
-
-    for (const auto& sibling : siblings) {
-        if (!sibling.process || WaitForSingleObject(sibling.process, 0) != WAIT_TIMEOUT) {
-            continue;
-        }
-        if (sibling.mainWindow && IsWindow(sibling.mainWindow)) {
-            DeleteTrayIconForWindow(sibling.mainWindow, L"退出清理");
-        }
-        if (TerminateProcess(sibling.process, 0)) {
-            WriteAppLog(L"退出清理：已强制结束失控实例 pid=" + std::to_wstring(sibling.processId));
-        } else {
-            WriteAppLog(L"退出清理：强制结束失控实例失败 pid=" + std::to_wstring(sibling.processId) +
-                        L"，错误=" + FormatLastError(GetLastError()));
-        }
-    }
-
+    // Each recipient owns its save/exit decision. A refused save is not a hung process.
     CloseSiblingHandles(siblings);
 }
 
@@ -1882,7 +1854,6 @@ MainWindow::MainWindow(
 MainWindow::~MainWindow() {
     CancelResourceRefresh();
     httpServerService_.Stop();
-    SaveCurrentNotePage();
     if (dockPeek_) {
         DestroyWindow(dockPeek_);
         dockPeek_ = nullptr;
@@ -2202,7 +2173,9 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         return FALSE;
     case WM_QUATTRO_TEST_SET_NOTE_TEXT:
         if (QuattroTestMode() && noteEdit_) {
-            SetWindowTextW(noteEdit_, L"便签切换后仍应显示这段文本\r\n这是切换前新输入的内容");
+            SetWindowTextW(noteEdit_, wParam == 1
+                ? L"退出前尚未保存的便签内容\r\n保存失败后重试仍应保留"
+                : L"便签切换后仍应显示这段文本\r\n这是切换前新输入的内容");
             UpdateWindow(noteEdit_);
             return TRUE;
         }
@@ -2260,9 +2233,19 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         }
         return FALSE;
     case WM_QUATTRO_EXIT_INSTANCE:
+        if (!SaveCurrentNotePage()) return FALSE;
         WriteAppLog(L"收到同路径实例退出通知，销毁主窗口。");
         DestroyWindow(hwnd_);
         return 0;
+    case WM_QUATTRO_TEST_SETTINGS_COMMIT:
+        if (!QuattroTestMode() || !BackgroundAcceptanceMode()) return FALSE;
+        if (wParam == 0) return config_.showTitle ? TRUE : FALSE;
+        if (wParam == 1) {
+            AppConfig next = config_;
+            next.showTitle = lParam != 0;
+            return CommitSettingsConfig(next, false).saved ? TRUE : FALSE;
+        }
+        return FALSE;
     case WM_QUATTRO_STARTUP_ACTIVATE:
         ActivateWindow(hwnd_);
         return 0;
@@ -2800,8 +2783,11 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         info->ptMinTrackSize.y = MulDiv(320, dpi, 96);
         return 0;
     }
+    case WM_QUERYENDSESSION:
+        return SaveCurrentNotePage() ? TRUE : FALSE;
     case WM_CLOSE:
         if (exitingForPrivilegeRestart_) {
+            if (!SaveCurrentNotePage()) return 0;
             DestroyWindow(hwnd_);
             return 0;
         }
@@ -3122,9 +3108,10 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             }
             return 0;
         case ID_MENU_EXIT:
-            WriteAppLog(L"收到退出命令，准备清理同路径后台实例。");
-            TerminateSiblingQuattroProcesses();
-            WriteAppLog(L"退出清理完成，销毁当前主窗口。");
+            if (!SaveCurrentNotePage()) return 0;
+            WriteAppLog(L"收到退出命令，准备通知同路径后台实例。");
+            RequestSiblingQuattroExit();
+            WriteAppLog(L"退出通知已发送，销毁当前主窗口。");
             DestroyWindow(hwnd_);
             return 0;
         default:
@@ -3187,6 +3174,7 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         CancelLinkDrag();
         RemoveTrayIcon();
         SaveCurrentNotePage();
+        DestroyNoteEdit();
         urlIconDownloadService_.Shutdown();
         HideItemTooltip();
         if (dockTimerId_ != 0) {
@@ -4655,13 +4643,11 @@ void MainWindow::ClearCurrentTagLinks() {
     if (MessageBoxW(hwnd_, message.c_str(), L"清空本页应用", MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) != IDYES) {
         return;
     }
-    for (int id : linkIds) {
-        if (!storageService_.DeleteLink(id)) {
-            MessageBoxW(hwnd_, storageService_.lastError().c_str(), L"清空本页应用", MB_OK | MB_ICONWARNING);
-            return;
-        }
-        shellContextMenuCache_.Remove(id);
+    if (!storageService_.DeleteLinks(linkIds)) {
+        MessageBoxW(hwnd_, storageService_.lastError().c_str(), L"清空本页应用", MB_OK | MB_ICONWARNING);
+        return;
     }
+    shellContextMenuCache_.RemoveBatch(linkIds);
     model_.links.erase(std::remove_if(model_.links.begin(), model_.links.end(), [tagId](const Link& link) {
         return link.parentGroup == tagId;
     }), model_.links.end());
@@ -5254,24 +5240,26 @@ void MainWindow::OpenSettings() {
     }
     AppConfig next = config_;
     bool importedData = false;
-    auto applySettings = [this, &next](const AppConfig& applied, bool appliedImportedData) -> bool {
-        CommitSettingsConfig(applied, appliedImportedData);
-        next = config_;
-        return mainHotKeyRegistered_;
+    std::wstring commitWarning;
+    auto applySettings = [this, &commitWarning](const AppConfig& applied, bool appliedImportedData) {
+        auto result = CommitSettingsConfig(applied, appliedImportedData);
+        commitWarning = result.warning;
+        return result;
     };
     auto resetContextMenu = [this, &next]() -> bool {
-        const bool menuCacheReset = shellContextMenuCache_.Reset();
-        const bool providerIconCacheReset = ContextMenuProviderIconService().ResetCache();
-        if (!menuCacheReset || !providerIconCacheReset) {
-            return false;
-        }
         AppConfig reset = config_;
         for (const auto& provider : TrackedContextMenuProviders()) {
             reset.*(provider.configMember) = false;
         }
-        CommitSettingsConfig(reset, false);
+        const auto result = CommitSettingsConfig(reset, false);
+        if (!result.saved) {
+            ShowToast(result.error, ThemedToastRole::Danger);
+            return false;
+        }
         next = config_;
-        return true;
+        const bool menuCacheReset = shellContextMenuCache_.Reset();
+        const bool providerIconCacheReset = ContextMenuProviderIconService().ResetCache();
+        return menuCacheReset && providerIconCacheReset;
     };
     auto applyContextMenuRefresh = [this](const ShellContextMenuRefreshResult& result) {
         ShellContextMenuTrackingOptions nativeTracking = result.tracking;
@@ -5292,18 +5280,6 @@ void MainWindow::OpenSettings() {
         }
         shellContextMenuCache_.UpdateBatch(cacheUpdates);
     };
-    auto updateCopyPathContextMenu = [](bool enabled, std::wstring& error) -> bool {
-        ExplorerCopyPathContextMenuService service =
-            ExplorerCopyPathContextMenuService::ForCurrentProcess();
-        return service.Reconcile(
-            enabled,
-            ExplorerCopyPathContextMenuService::CurrentExecutablePath(),
-            error);
-    };
-    auto updateWebDavUploadContextMenu = [](bool enabled, std::wstring& error) -> bool {
-        ExplorerWebDavUploadContextMenuService service;
-        return service.Reconcile(enabled, ExplorerWebDavUploadContextMenuService::CurrentExecutablePath(), error);
-    };
     if (!ShowSettingsDialog(
             hwnd_,
             instance_,
@@ -5320,10 +5296,7 @@ void MainWindow::OpenSettings() {
             resetContextMenu,
             model_.links,
             {},
-            applyContextMenuRefresh,
-            {},
-            updateCopyPathContextMenu,
-            updateWebDavUploadContextMenu)) {
+            applyContextMenuRefresh)) {
         if (importedData) {
             model_ = storageService_.Load();
             RestoreLegacyBuiltinSystemFunctionKeys();
@@ -5335,14 +5308,24 @@ void MainWindow::OpenSettings() {
         InvalidateRect(hwnd_, nullptr, FALSE);
         return;
     }
-    CommitSettingsConfig(next, importedData);
-    ShowToast(importedData ? L"设置和导入数据已保存。" : L"设置已保存。", ThemedToastRole::Success);
+    ShowToast(commitWarning.empty() ? L"设置已保存。" : commitWarning,
+        commitWarning.empty() ? ThemedToastRole::Success : ThemedToastRole::Warning);
 }
 
-void MainWindow::CommitSettingsConfig(const AppConfig& next, bool importedData) {
-    AppConfig previous = config_;
+SettingsApplyResult MainWindow::CommitSettingsConfig(const AppConfig& next, bool importedData) {
+    SettingsApplyResult result;
+    std::wstring saveError;
+    if (!configService_.Save(next, &saveError)) {
+        WriteAppLog(L"保存设置失败: " + saveError);
+        result.error = L"设置保存失败，请检查配置目录是否可写后重试。";
+        return result;
+    }
+    const AppConfig previous = config_;
     config_ = next;
-    if (previous.registerCopyPathContextMenu != config_.registerCopyPathContextMenu) {
+    AppConfig effective = config_;
+    bool integrationFailed = false;
+    if (settingsIntegrationRetry_ ||
+        previous.registerCopyPathContextMenu != config_.registerCopyPathContextMenu) {
         ExplorerCopyPathContextMenuService service =
             ExplorerCopyPathContextMenuService::ForCurrentProcess();
         std::wstring error;
@@ -5350,26 +5333,39 @@ void MainWindow::CommitSettingsConfig(const AppConfig& next, bool importedData) 
                 config_.registerCopyPathContextMenu,
                 ExplorerCopyPathContextMenuService::CurrentExecutablePath(),
                 error)) {
-            config_.registerCopyPathContextMenu = previous.registerCopyPathContextMenu;
+            effective.registerCopyPathContextMenu = previous.registerCopyPathContextMenu;
+            integrationFailed = true;
             WriteAppLog(L"更新复制绝对路径右键菜单失败: " + error);
-            ShowToast(L"资源管理器右键菜单更新失败，设置已回退。", ThemedToastRole::Warning);
         }
     }
-    if (previous.registerWebDavUploadContextMenu != config_.registerWebDavUploadContextMenu) {
+    if (settingsIntegrationRetry_ ||
+        previous.registerWebDavUploadContextMenu != config_.registerWebDavUploadContextMenu) {
         ExplorerWebDavUploadContextMenuService service;
         std::wstring error;
         if (!service.Reconcile(config_.registerWebDavUploadContextMenu,
                 ExplorerWebDavUploadContextMenuService::CurrentExecutablePath(), error)) {
-            config_.registerWebDavUploadContextMenu = previous.registerWebDavUploadContextMenu;
+            effective.registerWebDavUploadContextMenu = previous.registerWebDavUploadContextMenu;
+            integrationFailed = true;
             WriteAppLog(L"更新 WebDAV 上传右键菜单失败: " + error);
-            ShowToast(L"WebDAV 上传右键菜单更新失败，设置已回退。", ThemedToastRole::Warning);
         }
     }
-    if (!SyncAutoRun(previous)) {
-        config_.autoRun = previous.autoRun;
+    std::wstring autoRunError;
+    if (!SyncAutoRun(previous, autoRunError, settingsIntegrationRetry_)) {
+        effective.autoRun = previous.autoRun;
+        integrationFailed = true;
+    }
+    settingsIntegrationRetry_ = integrationFailed;
+    if (integrationFailed) {
+        result.warning = L"设置已保存，但部分系统设置未生效，请检查权限后重试。";
+        if (configService_.Save(effective, &saveError)) {
+            config_ = effective;
+        } else {
+            // Keep memory consistent with the proposal that actually reached disk.
+            WriteAppLog(L"保存系统设置回退结果失败: " + saveError);
+            result.warning = L"设置已保存，但系统设置未完全生效且无法保存回退结果。请重试。";
+        }
     }
     NotifyOpenSettingsDialogAutoRunChanged(hwnd_, config_.autoRun);
-    configService_.Save(config_);
     for (const auto& provider : TrackedContextMenuProviders()) {
         if (previous.*(provider.configMember) && !(config_.*(provider.configMember))) {
             shellContextMenuCache_.RemoveProvider(provider.providerId);
@@ -5393,12 +5389,26 @@ void MainWindow::CommitSettingsConfig(const AppConfig& next, bool importedData) 
         ClearUiBitmaps();
     }
     InvalidateRect(hwnd_, nullptr, FALSE);
+    result.saved = true;
+    result.config = config_;
+    result.mainHotKeyRegistered = mainHotKeyRegistered_;
+    result.processLocatorHotKeyRegistered = processLocatorHotKeyRegistered_;
+    result.copySelectedPathsHotKeyRegistered = copySelectedPathsHotKeyRegistered_;
+    return result;
 }
 
 void MainWindow::ToggleAutoRun() {
     AppConfig next = config_;
     next.autoRun = !config_.autoRun;
-    CommitSettingsConfig(next, false);
+    const auto result = CommitSettingsConfig(next, false);
+    if (!result.saved) {
+        ShowToast(result.error, ThemedToastRole::Danger);
+    } else if (!result.warning.empty()) {
+        ShowToast(result.warning, ThemedToastRole::Warning);
+    } else {
+        ShowToast(config_.autoRun ? L"开机自启动已启用。" : L"已关闭开机自启动。",
+            ThemedToastRole::Success);
+    }
 }
 
 bool MainWindow::CreateLinkNameTextFormats() {
@@ -5881,6 +5891,7 @@ void MainWindow::CheckForUpdates() {
     plan.latestVersion = info.latestVersion;
     plan.assetName = info.assetName;
     plan.assetSizeBytes = info.assetSizeBytes;
+    if (!SaveCurrentNotePage()) return;
     if (!LaunchEmbeddedUpdater(plan, error)) {
         MessageBoxW(hwnd_, error.empty() ? L"启动更新器失败。" : error.c_str(), L"检查更新", MB_OK | MB_ICONWARNING);
         return;
@@ -5894,6 +5905,7 @@ void MainWindow::CheckForUpdates() {
 }
 
 void MainWindow::RestartWithOppositePrivilege() {
+    if (!SaveCurrentNotePage()) return;
     config_.preferAdminRun = !runningAsAdmin_;
     configService_.Save(config_);
 
@@ -6813,19 +6825,16 @@ void MainWindow::ApplyConfigRuntimeChanges(const AppConfig& previous) {
     SyncHttpServerRuntime(previous);
 }
 
-bool MainWindow::SyncAutoRun(const AppConfig& previous) {
-    if (previous.autoRun == config_.autoRun && (!config_.autoRun || StartupShortcutExists(appDirectory_))) {
+bool MainWindow::SyncAutoRun(const AppConfig& previous, std::wstring& error, bool force) {
+    if (!force && previous.autoRun == config_.autoRun && (!config_.autoRun || StartupShortcutExists(appDirectory_))) {
         return true;
     }
 
-    std::wstring error;
     if (!SyncStartupShortcut(appDirectory_, config_.autoRun, error)) {
         WriteAppLog(L"开机自启动同步失败: " + error);
-        MessageBoxW(hwnd_, error.empty() ? L"开机自启动同步失败。" : error.c_str(), L"开机自启动", MB_OK | MB_ICONWARNING);
         return false;
     }
     WriteAppLog(config_.autoRun ? L"开机自启动已启用。" : L"开机自启动已关闭。");
-    ShowToast(config_.autoRun ? L"开机自启动已启用。" : L"已关闭开机自启动。", ThemedToastRole::Success);
     return true;
 }
 
@@ -10548,6 +10557,10 @@ bool MainWindow::SaveCurrentNotePage() {
     const Group* tag = FindGroup(tagId);
     if (!noteEdit_ || tagId <= 0 || !tag || !IsNoteTag(*tag)) {
         return true;
+    }
+    if (!IsWindow(noteEdit_)) {
+        WriteAppLog(L"Note editor is no longer available; refusing to overwrite saved content.");
+        return false;
     }
 
     const int textLength = GetWindowTextLengthW(noteEdit_);

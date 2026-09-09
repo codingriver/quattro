@@ -24,6 +24,7 @@ public:
     bool InsertLink(Link& link);
     bool UpdateLink(const Link& link);
     bool DeleteLink(int linkId);
+    bool DeleteLinks(const std::vector<int>& linkIds);
     bool IncrementRunCount(int linkId, int runCount);
     bool SaveNotePage(int tagId, const std::wstring& content);
     bool InsertTodoItem(TodoItem& item);

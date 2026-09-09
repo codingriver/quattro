@@ -1037,6 +1037,7 @@ target_link_libraries(QuattroToastAcceptance PRIVATE
 target_link_libraries(QuattroTests PRIVATE
     QuattroThemedUi
     QuattroScanCore
+    QuattroPortScan
     sqlite3
     ccronexpr
     advapi32

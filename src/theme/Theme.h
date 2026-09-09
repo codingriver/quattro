@@ -16,6 +16,8 @@ struct Color {
     D2D1_COLOR_F d2d() const {
         return D2D1::ColorF(r, g, b, a);
     }
+
+    Color Over(Color background) const;
 };
 
 class Theme {

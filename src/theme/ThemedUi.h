@@ -432,7 +432,14 @@ struct ThemedToastOptions {
     bool multiline = true;
     bool enabled = true;
     int durationMs = 3000;
+    // Maximum text width in logical pixels; chrome is added by the facade.
     int maxWidth = 0;
+};
+
+struct ThemedToastLayout {
+    SIZE size{};
+    RECT text{};
+    RECT closeButton{};
 };
 
 struct ThemedGroupBoxOptions {
@@ -1029,8 +1036,12 @@ public:
     static int AppendTableRow(HWND table, const ThemedTableRow& row);
     static bool UpdateTableRow(HWND table, int index, const ThemedTableRow& row);
     static bool UpdateTableRowByKey(HWND table, std::intptr_t key, const ThemedTableRow& row);
+    // Keeps the previous top row/offset when it survives, within native scroll limits.
     static bool RemoveTableRow(HWND table, int index);
     static bool RemoveTableRowByKey(HWND table, std::intptr_t key);
+    // Requires every existing key exactly once; preserves selection/checks and restores
+    // the previous top key and pixel offset within the native scroll range.
+    static bool SetTableRowOrder(HWND table, const std::vector<std::intptr_t>& keys);
     static int FindTableRowByKey(HWND table, std::intptr_t key);
     static void SetTableSortState(HWND table, const std::wstring& columnKey, int direction);
     static void SetTableSortState(
@@ -1093,6 +1104,7 @@ public:
     void ShowTooltip(const std::wstring& text, POINT screenPoint, ThemedTooltipOptions options = {}) const;
     void HideTooltip() const;
     void ShowToast(const std::wstring& text, ThemedToastOptions options = {}) const;
+    ThemedToastLayout MeasureToast(const std::wstring& text, ThemedToastOptions options = {}) const;
     void HideToast() const;
     HWND Edit(int id, RECT frame, const std::wstring& value, ThemedEditOptions options = {}) const;
     HWND ReadOnlyText(int id, RECT frame, const std::wstring& value, ThemedReadOnlyTextOptions options = {}) const;

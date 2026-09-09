@@ -27,6 +27,7 @@
 #include <commctrl.h>
 #include <gdiplus.h>
 #include <shlobj.h>
+#include <sqlite3.h>
 #include <windows.h>
 
 #ifndef HDS_NOSIZING
@@ -42,6 +43,7 @@
 #include <functional>
 #include <iostream>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -81,6 +83,7 @@ struct Scenario {
     std::wstring expectedContextMenuStatus;
     int splitButtonMenuId = 0;
     bool validateSplitButtonPopup = false;
+    int calendarView = -1;
 };
 
 struct TestState {
@@ -98,6 +101,8 @@ struct TestState {
 struct TableMutationProbe {
     int deleteAllCount = 0;
     int redrawSuspendCount = 0;
+    int rowWriteCount = 0;
+    bool rejectNextWrite = false;
 };
 
 struct TableResizePaintProbe {
@@ -160,6 +165,14 @@ LRESULT CALLBACK TableMutationProbeProc(
     if (probe) {
         if (message == LVM_DELETEALLITEMS) ++probe->deleteAllCount;
         if (message == WM_SETREDRAW && !wParam) ++probe->redrawSuspendCount;
+        if (message == LVM_SETITEMW && lParam &&
+                (reinterpret_cast<const LVITEMW*>(lParam)->mask & LVIF_PARAM)) {
+            ++probe->rowWriteCount;
+            if (probe->rejectNextWrite) {
+                probe->rejectNextWrite = false;
+                return FALSE;
+            }
+        }
     }
     if (message == WM_NCDESTROY) RemoveWindowSubclass(hwnd, TableMutationProbeProc, id);
     return DefSubclassProc(hwnd, message, wParam, lParam);
@@ -1285,6 +1298,12 @@ void ValidateAndCapture(HWND hwnd, const Scenario& scenario, const std::filesyst
     GetClientRect(hwnd, &client);
     state.Check(client.right - client.left >= 120 && client.bottom - client.top >= 80, scenario.name + L": client area too small");
 
+    if (scenario.calendarView >= 0) {
+        state.Check(SendMessageW(hwnd, WM_QUATTRO_TEST_TODO_CALENDAR, scenario.calendarView, 0) == TRUE,
+            scenario.name + L": calendar titles fit and all picker cells match hit testing");
+        RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+    }
+
     auto children = Children(hwnd);
     if (!scenario.activateButtonText.empty()) {
         auto button = std::find_if(children.begin(), children.end(), [&](const ChildInfo& child) {
@@ -2371,6 +2390,7 @@ void RunMainWindowScenario(
     childSettings.currentGroupId = linkGroup.id;
     childSettings.currentTagId = linkTag.id;
     childSettings.autoDock = false;
+    childSettings.autoRun = false;
     childSettings.hideWhenInactive = false;
     childSettings.globalHotKeysEnabled = false;
     childSettings.width = 720;
@@ -2402,6 +2422,28 @@ void RunMainWindowScenario(
         Scenario scenario{L"main-window-" + dpiSuffix, L"QuattroMainWindow", L"", screenshotName, {expectedTitle}, {}, 0, 0, false};
         scenario.forcedDpi = dpi;
         ValidateAndCapture(hwnd, scenario, outputDir, state);
+
+        const bool originalShowTitle = SendMessageW(hwnd, WM_QUATTRO_TEST_SETTINGS_COMMIT, 0, 0) != 0;
+        HANDLE lockedConfig = CreateFileW(childConfig.path().c_str(), GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
+        state.Check(lockedConfig != INVALID_HANDLE_VALUE,
+            L"main-window-settings: could not inject config replacement failure");
+        if (lockedConfig != INVALID_HANDLE_VALUE) {
+            state.Check(SendMessageW(hwnd, WM_QUATTRO_TEST_SETTINGS_COMMIT, 1, !originalShowTitle) == FALSE,
+                L"main-window-settings: failed save was reported as success");
+            state.Check((SendMessageW(hwnd, WM_QUATTRO_TEST_SETTINGS_COMMIT, 0, 0) != 0) == originalShowTitle,
+                L"main-window-settings: failed save changed the runtime model");
+            state.Check(childConfig.Load().showTitle == originalShowTitle,
+                L"main-window-settings: failed save changed persisted settings");
+            CloseHandle(lockedConfig);
+            state.Check(SendMessageW(hwnd, WM_QUATTRO_TEST_SETTINGS_COMMIT, 1, !originalShowTitle) == TRUE,
+                L"main-window-settings: retry failed");
+            state.Check(childConfig.Load().showTitle != originalShowTitle &&
+                (SendMessageW(hwnd, WM_QUATTRO_TEST_SETTINGS_COMMIT, 0, 0) != 0) != originalShowTitle,
+                L"main-window-settings: retry did not update disk and model");
+            state.Check(SendMessageW(hwnd, WM_QUATTRO_TEST_SETTINGS_COMMIT, 1, originalShowTitle) == TRUE,
+                L"main-window-settings: fixture restore failed");
+        }
 
         state.Check(
             SendMessageW(hwnd, WM_QUATTRO_TEST_SELECT_TAG, static_cast<WPARAM>(noteTag.id), 0) == TRUE,
@@ -2691,6 +2733,13 @@ void RunMainWindowScenario(
                         }
                     }
                 }
+                // A visible native popup can precede its first owner-draw paint.
+                DWORD_PTR ready = 0;
+                state.Check(SendMessageTimeoutW(testPopup, WM_NULL, 0, 0, SMTO_ABORTIFHUNG,
+                    1500, &ready) != 0, scenarioName + L": popup thread did not reach capture readiness");
+                state.Check(RedrawWindow(testPopup, nullptr, nullptr,
+                    RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW) != FALSE,
+                    scenarioName + L": popup redraw failed before capture");
                 BitmapCapture popupCapture = CaptureWindowBitmap(testPopup);
                 state.Check(
                     popupCapture.bitmap && BitmapHasVisualContent(
@@ -2813,15 +2862,58 @@ void RunMainWindowScenario(
             PostMessageW(hwnd, WM_CANCELMODE, 0, 0);
         }
         noOverdueMenuThread.join();
-        PostMessageW(hwnd, WM_COMMAND, MAKEWPARAM(ID_MENU_EXIT, 0), 0);
+        state.Check(SendMessageW(hwnd, WM_QUATTRO_TEST_SELECT_TAG, noteTag.id, 0) == TRUE,
+            L"main-window-note-exit: open note editor");
+        sqlite3* faultDb = nullptr;
+        const bool opened = sqlite3_open16(
+            (childEnvironment.root() / L"db/link.db").c_str(), &faultDb) == SQLITE_OK;
+        state.Check(opened, L"main-window-note-exit: open isolated fault database");
+        if (opened) {
+            const bool injected = sqlite3_exec(faultDb,
+                "CREATE TRIGGER reject_note_exit BEFORE UPDATE ON NotePages "
+                "BEGIN SELECT RAISE(ABORT,'expected note save failure'); END;",
+                nullptr, nullptr, nullptr) == SQLITE_OK;
+            state.Check(injected, L"main-window-note-exit: inject save failure");
+            if (injected) {
+                state.Check(SendMessageW(hwnd, WM_QUATTRO_TEST_SET_NOTE_TEXT, 1, 0) == TRUE,
+                    L"main-window-note-exit: prepare unsaved content after injecting failure");
+                DWORD_PTR exitResult{};
+                state.Check(SendMessageTimeoutW(hwnd, WM_COMMAND, ID_MENU_EXIT, 0,
+                        SMTO_ABORTIFHUNG | SMTO_BLOCK, 5000, &exitResult) != 0,
+                    L"main-window-note-exit: exit command remained responsive");
+                state.Check(WaitForSingleObject(process.hProcess, 100) == WAIT_TIMEOUT && IsWindow(hwnd),
+                    L"main-window-note-exit: failed save must preserve the live editor");
+                state.Check(SendMessageTimeoutW(hwnd, WM_QUATTRO_EXIT_INSTANCE, 0, 0,
+                        SMTO_ABORTIFHUNG | SMTO_BLOCK, 5000, &exitResult) != 0,
+                    L"main-window-note-exit: peer exit request remained responsive");
+                state.Check(WaitForSingleObject(process.hProcess, 100) == WAIT_TIMEOUT && IsWindow(hwnd),
+                    L"main-window-note-exit: failed save vetoes peer exit requests");
+                state.Check(sqlite3_exec(faultDb, "DROP TRIGGER reject_note_exit;",
+                        nullptr, nullptr, nullptr) == SQLITE_OK,
+                    L"main-window-note-exit: remove save failure");
+            }
+        }
+        if (faultDb) sqlite3_close(faultDb);
+        if (dpi == 120) PostMessageW(hwnd, WM_QUATTRO_EXIT_INSTANCE, 0, 0);
+        else PostMessageW(hwnd, WM_COMMAND, MAKEWPARAM(ID_MENU_EXIT, 0), 0);
     } else {
         state.Check(false, L"main-window: window did not appear");
         AcceptanceLog(L"missing main-window");
     }
 
     if (WaitForSingleObject(process.hProcess, 5000) == WAIT_TIMEOUT) {
+        state.Check(false, L"main-window-note-exit: process did not exit after save recovered");
         TerminateProcess(process.hProcess, 2);
+        WaitForSingleObject(process.hProcess, 5000);
     }
+    DWORD exitCode = STILL_ACTIVE;
+    state.Check(GetExitCodeProcess(process.hProcess, &exitCode) && exitCode == 0,
+        L"main-window-note-exit: process exited abnormally: " + std::to_wstring(exitCode));
+    const AppModel exitModel = storage.Load();
+    state.Check(std::any_of(exitModel.notes.begin(), exitModel.notes.end(), [&](const NotePage& note) {
+            return note.tagId == noteTag.id &&
+                note.content == L"退出前尚未保存的便签内容\r\n保存失败后重试仍应保留";
+        }), L"main-window-note-exit: edited note survived exit without being overwritten");
     CloseHandle(process.hThread);
     CloseHandle(process.hProcess);
     AcceptanceLog(L"end main-window-" + dpiSuffix);
@@ -2868,6 +2960,8 @@ struct TableHostWindow {
     bool checkable_ = false;
     bool webDavColumns_ = false;
     bool showHeader_ = true;
+    bool twoLineRows_ = false;
+    ThemedTableSelection selection_ = ThemedTableSelection::Single;
     int visibleRows_ = 0;
     int webDavRowCount_ = 2;
     UINT forcedDpi_ = 0;
@@ -2912,7 +3006,9 @@ struct TableHostWindow {
             }
             const ThemedUi ui = forcedUi ? *forcedUi : windowUi_->ui();
             ThemedTableOptions tableOptions{};
-            tableOptions.selection = ThemedTableSelection::Single;
+            tableOptions.selection = selection_;
+            tableOptions.rowPresentation = twoLineRows_
+                ? ThemedTableRowPresentation::TwoLine : ThemedTableRowPresentation::SingleLine;
             tableOptions.view = ThemedTableView::Details;
             tableOptions.checkable = checkable_;
             tableOptions.fullRowSelect = true;
@@ -5519,7 +5615,7 @@ void RunProcessToolsFileLockProgressScenario(
         }
         state.Check(!IsWindow(progressWindow), scenarioName + L": close button did not close the progress window");
         state.Check(
-            WindowContainsText(mainWindow, L"正在后台检查目录占用"),
+            WindowContainsText(mainWindow, L"正在后台检查占用"),
             scenarioName + L": closing progress unexpectedly ended the background task");
 
         checkButton = VisibleButtonByText(mainWindow, L"检查(&C)");
@@ -6344,6 +6440,926 @@ void RunWebDavDeleteProgressScenario(
     SetEnvironmentVariableW(L"QUATTRO_TEST_WEBDAV_FILE_MANAGER_SKIP_REFRESH", nullptr);
 }
 
+void RunWebDavDeleteMutationScenarios(HWND owner, HINSTANCE instance, const Theme& theme,
+    const AppConfig& config, const std::filesystem::path& output, TestState& state) {
+    SetEnvironmentVariableW(L"QUATTRO_TEST_WEBDAV_FILE_MANAGER_SKIP_REFRESH", L"1");
+    struct Signals {
+        HANDLE entered = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        HANDLE release = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        HANDLE returned = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        std::atomic_int calls{0};
+        std::atomic_int commits{0};
+        ~Signals() { CloseHandle(entered); CloseHandle(release); CloseHandle(returned); }
+    };
+    for (UINT dpi : {96u, 120u, 144u}) {
+        for (int mode = 0; mode < 8; ++mode) {
+            const std::wstring name = L"webdav-delete-" + DpiPercentSuffix(dpi) + L"-" + std::to_wstring(mode);
+            ShowWebDavFileManagerDialog(owner, instance, theme, config, [&](HWND window) {
+                const auto invoke = [&](WebDavDeleteTestCommand command, const WebDavDeleteTestRequest* request = nullptr) {
+                    return SendMessageW(window, WM_QUATTRO_TEST_WEBDAV_DELETE,
+                        static_cast<WPARAM>(command), reinterpret_cast<LPARAM>(request));
+                };
+                const auto wait = [&](auto predicate, const wchar_t* label) {
+                    const auto begin = GetTickCount64();
+                    while (!predicate() && GetTickCount64() - begin < 5000) PumpMessagesFor(10);
+                    state.Check(predicate(), name + L": timeout " + label);
+                };
+                const auto capture = [&](HWND target, const std::wstring& suffix) {
+                    if (!target || !IsWindow(target)) { state.Check(false, name + L": capture target missing"); return; }
+                    RECT initial{};
+                    GetWindowRect(target, &initial);
+                    const UINT previousDpi = GetDpiForWindow(target);
+                    RECT suggested{initial.left, initial.top, initial.left + MulDiv(initial.right - initial.left, dpi, previousDpi),
+                        initial.top + MulDiv(initial.bottom - initial.top, dpi, previousDpi)};
+                    SendMessageW(target, WM_DPICHANGED, MAKEWPARAM(dpi, dpi), reinterpret_cast<LPARAM>(&suggested));
+                    PumpMessagesFor(100);
+                    RedrawWindow(target, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+                    auto bitmap = CaptureWindowBitmap(target);
+                    state.Check(bitmap.bitmap && BitmapHasVisualContent(bitmap.bitmap, bitmap.width, bitmap.height),
+                        name + L": invalid HWND capture");
+                    if (bitmap.bitmap) {
+                        state.Check(SavePng(bitmap.bitmap, output / (name + suffix + L".png")), name + L": screenshot save");
+                        DeleteObject(bitmap.bitmap);
+                    }
+                };
+                WebDavDeleteTestRequest fixture;
+                for (int index = 0; index < 40; ++index) {
+                    WebDavFileRecord record;
+                    record.id = WebDavFileService::RecordId(L"delete-fixture-" + std::to_wstring(index));
+                    record.displayName = L"记录-" + std::to_wstring(index) + L".txt";
+                    record.absolutePath = L"C:\\Fixtures\\delete-" + std::to_wstring(index) + L".txt";
+                    record.uploadedAtUtc = L"2026-09-08T00:00:00Z";
+                    fixture.records.push_back(record);
+                }
+                state.Check(invoke(WebDavDeleteTestCommand::SetRows, &fixture) != 0, name + L": fixture seed");
+                HWND table = ChildById(window, 430);
+                const auto selectedKey = ThemedUi::TableRowKey(table, 25);
+                ThemedUi::SetTableSelectedKeys(table, {selectedKey});
+                ThemedUi::RestoreTableTopVisibleRowByKey(table, ThemedUi::TableRowKey(table, 20));
+                const auto topKey = ThemedUi::TableTopVisibleRowKey(table);
+                TableMutationProbe probe;
+                SetWindowSubclass(table, TableMutationProbeProc, 57, reinterpret_cast<DWORD_PTR>(&probe));
+                auto signals = std::make_shared<Signals>();
+                WebDavDeleteTestRequest request;
+                request.records = {fixture.records[0], fixture.records[1]};
+                request.confirm = mode != 6;
+                request.operations.deleteRemote = [signals, mode](const auto&, auto& error, auto progress, auto) {
+                    const int call = ++signals->calls;
+                    if (call == 1) {
+                        SetEvent(signals->entered);
+                        WaitForSingleObject(signals->release, 10000);
+                    }
+                    progress(WebDavFileDeletePhase::DeletingDirectory, true);
+                    SetEvent(signals->returned);
+                    if (mode == 5) throw std::runtime_error("isolated delete failure");
+                    if (mode == 2 || (mode == 1 && call == 2)) { error = L"拒绝删除，请重试。"; return false; }
+                    return true;
+                };
+                request.operations.removeCachedRecords = [signals, mode, config](const auto& ids) {
+                    ++signals->commits;
+                    return mode != 3 && WebDavFileIndexCache(config).RemoveBatch(ids);
+                };
+                invoke(WebDavDeleteTestCommand::Delete, &request);
+                if (mode == 6) {
+                    state.Check(!invoke(WebDavDeleteTestCommand::Pending) && signals->calls == 0 &&
+                        signals->commits == 0 && ThemedUi::TableRowCount(table) == 40,
+                        name + L": cancelled confirmation performed work");
+                } else {
+                    wait([&]() { return WaitForSingleObject(signals->entered, 0) == WAIT_OBJECT_0; }, L"remote entry");
+                    invoke(WebDavDeleteTestCommand::ObsoleteCompletion);
+                    state.Check(invoke(WebDavDeleteTestCommand::Pending) != 0, name + L": obsolete completion accepted");
+                    HWND progress = reinterpret_cast<HWND>(invoke(WebDavDeleteTestCommand::ProgressWindow));
+                    if (mode == 4) invoke(WebDavDeleteTestCommand::Stop);
+                    if (mode == 0) capture(progress, L"-running");
+                    if (mode == 7) {
+                        RemoveWindowSubclass(table, TableMutationProbeProc, 57);
+                        const auto begin = GetTickCount64();
+                        DestroyWindow(window);
+                        state.Check(GetTickCount64() - begin < 500, name + L": close waited for live task");
+                        SetEvent(signals->release);
+                        wait([&]() { return WaitForSingleObject(signals->returned, 0) == WAIT_OBJECT_0; }, L"closed worker return");
+                        PumpMessagesFor(80);
+                        state.Check(signals->commits == 0, name + L": closed task committed after stop");
+                        std::wcout << name << L" owner_close=checked commits=" << signals->commits << L"\n";
+                        return;
+                    }
+                    SetEvent(signals->release);
+                    wait([&]() { return !invoke(WebDavDeleteTestCommand::Pending); }, L"delete completion");
+                    const int removed = mode == 0 ? 2 : mode == 1 ? 1 : 0;
+                    state.Check(ThemedUi::TableRowCount(table) == 40 - removed &&
+                        ThemedUi::TableSelectedKeys(table) == std::vector<std::intptr_t>{selectedKey} &&
+                        ThemedUi::TableTopVisibleRowKey(table) == topKey,
+                        name + L": mutation lost rows, selection or viewport");
+                    state.Check(signals->commits == ((mode == 0 || mode == 1 || mode == 3) ? 1 : 0),
+                        name + L": incorrect cache commit count");
+                    capture(window, L"-result");
+                    progress = reinterpret_cast<HWND>(invoke(WebDavDeleteTestCommand::ProgressWindow));
+                    if (mode == 0) {
+                        wait([&]() { return !IsWindow(progress); }, L"successful progress auto-close");
+                    } else {
+                        state.Check(progress && IsWindow(progress), name + L": unsuccessful progress auto-closed");
+                        if (progress) {
+                            capture(progress, L"-terminal");
+                            const std::wstring expectedStatus = mode == 4 ? L"删除已停止"
+                                : mode == 3 ? L"远端删除已执行，本地待同步" : L"删除未全部成功";
+                            state.Check(WindowContainsText(progress, expectedStatus), name + L": incorrect terminal status");
+                            const auto children = Children(progress);
+                            const auto status = std::find_if(children.begin(), children.end(),
+                                [&](const auto& child) { return child.text == expectedStatus; });
+                            if (status != children.end()) {
+                                auto image = CaptureWindowBitmap(progress);
+                                RECT bounds{}, outer{};
+                                GetWindowRect(status->hwnd, &bounds);
+                                GetWindowRect(progress, &outer);
+                                OffsetRect(&bounds, -outer.left, -outer.top);
+                                const auto role = theme.color(L"global", (mode == 2 || mode == 5) ? L"danger" : L"warning", L"text");
+                                const COLORREF color = RGB(static_cast<BYTE>(role.r * 255),
+                                    static_cast<BYTE>(role.g * 255), static_cast<BYTE>(role.b * 255));
+                                const auto pixels = image.bitmap ? CountPixelsNearColor(image.bitmap, image.width, image.height, bounds, color, 45) : 0;
+                                state.Check(pixels >= 5, name + L": missing terminal role pixels");
+                                std::wcout << name << L" role_pixels=" << pixels << L"\n";
+                                if (image.bitmap) DeleteObject(image.bitmap);
+                            }
+                            HWND detail = ChildById(progress, -1002);
+                            const auto text = WindowText(detail);
+                            RECT bounds{};
+                            SendMessageW(detail, EM_GETRECT, 0, reinterpret_cast<LPARAM>(&bounds));
+                            HDC dc = GetDC(detail);
+                            const auto oldFont = SelectObject(dc, reinterpret_cast<HFONT>(SendMessageW(detail, WM_GETFONT, 0, 0)));
+                            SIZE textSize{};
+                            GetTextExtentPoint32W(dc, text.c_str(), static_cast<int>(text.size()), &textSize);
+                            SelectObject(dc, oldFont);
+                            ReleaseDC(detail, dc);
+                            state.Check(!text.empty() && textSize.cx <= bounds.right - bounds.left,
+                                name + L": terminal next step is clipped");
+                        }
+                    }
+                    if (mode == 3 || mode == 4) {
+                        const auto deletedKey = ThemedUi::TableRowKey(table, 0);
+                        state.Check(!ThemedUi::IsTableRowEnabled(table, 0), name + L": unsynchronized deletion remains actionable");
+                        ThemedUi::RestoreTableTopVisibleRowByKey(table, deletedKey);
+                        capture(window, L"-pending-sync");
+                        WebDavDeleteTestRequest refreshed = fixture;
+                        refreshed.records.erase(refreshed.records.begin(), refreshed.records.begin() + (mode == 3 ? 2 : 1));
+                        invoke(WebDavDeleteTestCommand::RefreshResult, &refreshed);
+                        state.Check(ThemedUi::FindTableRowByKey(table, deletedKey) < 0 &&
+                            ThemedUi::TableRowCount(table) == static_cast<int>(refreshed.records.size()),
+                            name + L": refresh did not reconcile stopped/cache-failed deletion");
+                        std::vector<WebDavFileRecord> cached;
+                        std::wstring timestamp;
+                        state.Check(WebDavFileIndexCache(config).Load(cached, timestamp) &&
+                            cached.size() == refreshed.records.size(), name + L": reconciled cache mismatch");
+                    }
+                }
+                state.Check(probe.deleteAllCount == 0, name + L": daily delete/refresh rebuilt the table");
+                RemoveWindowSubclass(table, TableMutationProbeProc, 57);
+                DestroyWindow(window);
+                std::wcout << name << L" commits=" << signals->commits << L" delete_all=" << probe.deleteAllCount << L"\n";
+            });
+        }
+    }
+    SetEnvironmentVariableW(L"QUATTRO_TEST_WEBDAV_FILE_MANAGER_SKIP_REFRESH", nullptr);
+}
+
+void RunProcessMutationScenarios(HWND owner, HINSTANCE instance, const Theme& theme,
+    const std::filesystem::path& output, TestState& state) {
+    PluginRegistry registry(std::filesystem::current_path());
+    AppConfig config;
+    for (UINT dpi : {96u, 120u, 144u}) {
+        const std::wstring name = L"process-mutations-" + DpiPercentSuffix(dpi);
+        state.Check(ShowBuiltinTool(owner, instance, theme, registry, config, L"file-lock-inspector"),
+            name + L": open failed");
+        HWND window = FindTopWindow({L"QuattroProcessTools", L"进程工具", GetCurrentProcessId()});
+        state.Check(window != nullptr, name + L": missing window");
+        if (!window) continue;
+        RECT initial{};
+        GetWindowRect(window, &initial);
+        RECT suggested{initial.left, initial.top,
+            initial.left + ThemedWindowUi::ScaleForDpi(initial.right - initial.left, dpi),
+            initial.top + ThemedWindowUi::ScaleForDpi(initial.bottom - initial.top, dpi)};
+        SendMessageW(window, WM_DPICHANGED, MAKEWPARAM(dpi, dpi), reinterpret_cast<LPARAM>(&suggested));
+        PumpMessagesFor(100);
+        HWND table = ChildById(window, 7722);
+        const auto invoke = [&](ProcessToolsTestCommand command, const ProcessToolsTestRequest* request = nullptr) {
+            return SendMessageW(window, WM_QUATTRO_TEST_PROCESS_TOOLS,
+                static_cast<WPARAM>(command), reinterpret_cast<LPARAM>(request));
+        };
+        const auto capture = [&](const std::wstring& suffix, const std::wstring& expectedText = L"",
+                const wchar_t* role = nullptr) {
+            PumpMessagesFor(80);
+            RedrawWindow(window, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+            BitmapCapture bitmap = CaptureWindowBitmap(window);
+            state.Check(bitmap.bitmap && BitmapHasVisualContent(bitmap.bitmap, bitmap.width, bitmap.height),
+                name + L": invalid capture");
+            if (!bitmap.bitmap) return;
+            state.Check(SavePng(bitmap.bitmap, output / (name + suffix + L".png")), name + L": save failed");
+            if (!expectedText.empty()) {
+                struct StatusQuery { std::wstring text; HWND hwnd = nullptr; } query{expectedText};
+                EnumChildWindows(window, [](HWND child, LPARAM value) -> BOOL {
+                    auto& query = *reinterpret_cast<StatusQuery*>(value);
+                    if (WindowText(child) == query.text) query.hwnd = child;
+                    return TRUE;
+                }, reinterpret_cast<LPARAM>(&query));
+                state.Check(query.hwnd != nullptr, name + suffix + L": incorrect outcome text");
+                if (query.hwnd && role) {
+                    RECT bounds{}, outer{};
+                    GetWindowRect(query.hwnd, &bounds);
+                    GetWindowRect(window, &outer);
+                    OffsetRect(&bounds, -outer.left, -outer.top);
+                    const Color expected = theme.color(L"global", role, L"text");
+                    const COLORREF color = RGB(static_cast<BYTE>(expected.r * 255),
+                        static_cast<BYTE>(expected.g * 255), static_cast<BYTE>(expected.b * 255));
+                    const auto pixels = CountPixelsNearColor(bitmap.bitmap, bitmap.width, bitmap.height, bounds, color, 45);
+                    state.Check(pixels >= 5, name + suffix + L": outcome role color missing");
+                    std::wcout << name << suffix << L" role_pixels=" << pixels << L"\n";
+                }
+            }
+            DeleteObject(bitmap.bitmap);
+        };
+        ProcessToolsTestRequest fixture;
+        for (DWORD index = 0; index < 100; ++index) {
+            fixture.rows.push_back({410000 + index, L"进程 " + std::to_wstring(index),
+                L"C:\\Fixtures\\Process-" + std::to_wstring(index) + L".exe", index == 5, index == 6});
+        }
+        invoke(ProcessToolsTestCommand::SetRows, &fixture);
+        state.Check(table && ThemedUi::TableRowCount(table) == 100, name + L": seed failed");
+        if (!table) { DestroyWindow(window); continue; }
+        HDC tableDc = GetDC(table);
+        SIZE sixDigitPid{};
+        HGDIOBJ oldTableFont = tableDc
+            ? SelectObject(tableDc, reinterpret_cast<HFONT>(SendMessageW(table, WM_GETFONT, 0, 0)))
+            : nullptr;
+        if (tableDc) {
+            GetTextExtentPoint32W(tableDc, L"999999", 6, &sixDigitPid);
+            if (oldTableFont) SelectObject(tableDc, oldTableFont);
+            ReleaseDC(table, tableDc);
+        }
+        state.Check(ListView_GetColumnWidth(table, 1) >=
+                sixDigitPid.cx + MulDiv(20, static_cast<int>(dpi), USER_DEFAULT_SCREEN_DPI),
+            name + L": PID column cannot display a six-digit PID without ellipsis");
+        RECT initialFirstRow{};
+        ListView_GetItemRect(table, 0, &initialFirstRow, LVIR_BOUNDS);
+        ListView_EnsureVisible(table, 48, FALSE);
+        const auto top = [&]() { return ThemedUi::TableRowKey(table, ListView_GetTopIndex(table)); };
+        const auto topKey = top();
+        ThemedUi::SetTableSelectedKeys(table, {410045, 410046});
+        TableMutationProbe probe;
+        SetWindowSubclass(table, TableMutationProbeProc, 51, reinterpret_cast<DWORD_PTR>(&probe));
+        invoke(ProcessToolsTestCommand::RefreshRows);
+        state.Check(probe.rowWriteCount == 0, name + L": unchanged rows were rewritten");
+        fixture.rows[45].name = L"更新后的进程";
+        invoke(ProcessToolsTestCommand::SetRows, &fixture);
+        state.Check(probe.rowWriteCount == 1 && top() == topKey &&
+            ThemedUi::TableSelectedKeys(table) == std::vector<std::intptr_t>{410045, 410046},
+            name + L": single update lost state or rewrote other rows");
+        probe.rowWriteCount = 0;
+        fixture.rows[45].name = L"失败后重试";
+        probe.rejectNextWrite = true;
+        invoke(ProcessToolsTestCommand::SetRows, &fixture);
+        invoke(ProcessToolsTestCommand::RefreshRows);
+        wchar_t text[256]{};
+        ListView_GetItemText(table, ThemedUi::FindTableRowByKey(table, 410045), 0, text, 256);
+        state.Check(probe.rowWriteCount == 2 && std::wstring(text) == fixture.rows[45].name,
+            name + L": failed mutation was cached as successful");
+        invoke(ProcessToolsTestCommand::SortDescending);
+        state.Check(top() == topKey && ThemedUi::FindTableRowByKey(table, 410099) == 0,
+            name + L": sort lost viewport/order");
+        state.Check(!ThemedUi::IsTableRowEnabled(table, ThemedUi::FindTableRowByKey(table, 410005)) &&
+            !ThemedUi::IsTableRowEnabled(table, ThemedUi::FindTableRowByKey(table, 410006)),
+            name + L": sort lost protected/terminated state");
+        fixture.rows.pop_back();
+        invoke(ProcessToolsTestCommand::SetRows, &fixture);
+        state.Check(top() == topKey && ThemedUi::TableRowCount(table) == 99,
+            name + L": deletion above viewport lost top key");
+        fixture.rows.push_back({410100, L"新增进程", L"C:\\Fixtures\\Added.exe"});
+        invoke(ProcessToolsTestCommand::SetRows, &fixture);
+        state.Check(top() == topKey && ThemedUi::FindTableRowByKey(table, 410100) == 0,
+            name + L": sorted append lost viewport/order");
+        ThemedUi::SetTableSelectedKeys(table, {410045});
+        fixture.rows.erase(std::remove_if(fixture.rows.begin(), fixture.rows.end(),
+            [](const auto& row) { return row.pid == 410045; }), fixture.rows.end());
+        invoke(ProcessToolsTestCommand::SetRows, &fixture);
+        state.Check(ThemedUi::TableSelectedKeys(table) == std::vector<std::intptr_t>{410044},
+            name + L": deleting selection did not select adjacent row");
+        capture(L"-incremental");
+        state.Check(probe.deleteAllCount == 0, name + L": daily update deleted all rows");
+
+        for (bool all : {false, true}) {
+            for (int failures : {0, 1, 2}) {
+                ProcessToolsTestRequest batch;
+                batch.rows = {{420001, L"示例甲", L"C:\\Fixtures\\A.exe"},
+                    {420002, L"示例乙", L"C:\\Fixtures\\B.exe"}};
+                if (failures > 0) batch.failedPids.insert(420001);
+                if (failures > 1) batch.failedPids.insert(420002);
+                invoke(ProcessToolsTestCommand::SetRows, &batch);
+                ThemedUi::SetTableSelectedKeys(table, {420001, 420002});
+                invoke(all ? ProcessToolsTestCommand::KillAll : ProcessToolsTestCommand::KillSelected);
+                RECT firstRowRect{}, headerRect{};
+                ListView_GetItemRect(table, 0, &firstRowRect, LVIR_BOUNDS);
+                GetWindowRect(ListView_GetHeader(table), &headerRect);
+                MapWindowPoints(HWND_DESKTOP, table, reinterpret_cast<POINT*>(&headerRect), 2);
+                state.Check(firstRowRect.top == initialFirstRow.top && ListView_GetTopIndex(table) == 0,
+                    name + L": short table has a blank row above its first item");
+                std::wcout << name << L" short_first_top=" << firstRowRect.top
+                    << L" header_bottom=" << headerRect.bottom
+                    << L" top_index=" << ListView_GetTopIndex(table) << L"\n";
+                const std::wstring expected = failures == 0 ? L"已结束 2 个进程。"
+                    : failures == 1 ? L"已结束 1 个进程，失败 1 个，可重试。"
+                    : L"结束失败，共 2 个进程，可重试。";
+                const auto suffix = (all ? L"-all-" : L"-selected-") + std::to_wstring(failures);
+                capture(suffix, expected, failures == 0 ? L"success" : failures == 1 ? L"warning" : L"danger");
+                for (const auto& row : batch.rows) {
+                    const int index = ThemedUi::FindTableRowByKey(table, row.pid);
+                    ListView_GetItemText(table, index, 0, text, 256);
+                    state.Check(std::wstring(text) == row.name &&
+                        ThemedUi::IsTableRowEnabled(table, index) == batch.failedPids.contains(row.pid),
+                        name + L": termination lost name or retry state");
+                    ListView_GetItemText(table, index, 2, text, 256);
+                    state.Check(std::wstring(text) == row.path, name + L": termination lost path");
+                }
+                if (failures > 0) {
+                    batch.failedPids.clear();
+                    invoke(all ? ProcessToolsTestCommand::KillAll : ProcessToolsTestCommand::KillSelected, &batch);
+                    state.Check(!ThemedUi::IsTableRowEnabled(table, 0) &&
+                        !ThemedUi::IsTableRowEnabled(table, 1), name + L": failed rows could not retry");
+                }
+            }
+        }
+        ProcessToolsTestRequest protectedBatch;
+        protectedBatch.rows = {{420001, L"受保护进程", L"C:\\Fixtures\\Protected.exe", true},
+            {420002, L"普通进程", L"C:\\Fixtures\\Normal.exe"}};
+        protectedBatch.confirm = false;
+        invoke(ProcessToolsTestCommand::SetRows, &protectedBatch);
+        invoke(ProcessToolsTestCommand::KillAll);
+        state.Check(ThemedUi::IsTableRowEnabled(table, ThemedUi::FindTableRowByKey(table, 420002)),
+            name + L": cancelled confirmation performed termination");
+        protectedBatch.confirm = true;
+        invoke(ProcessToolsTestCommand::KillAll, &protectedBatch);
+        capture(L"-protected", L"已结束 1 个进程。 已忽略 1 个系统关键进程。", L"success");
+
+        ProcessToolsTestRequest scanFixture;
+        scanFixture.path = (output / L"source-a").wstring();
+        for (DWORD index = 0; index < 30; ++index) {
+            scanFixture.rows.push_back({510000 + index, L"扫描进程 " + std::to_wstring(index),
+                L"C:\\Fixtures\\Scan-" + std::to_wstring(index) + L".exe", index == 4});
+        }
+        invoke(ProcessToolsTestCommand::SetRows, &scanFixture);
+        ListView_EnsureVisible(table, 18, FALSE);
+        const auto scanTop = top();
+        const auto scanSelected = ThemedUi::TableRowKey(table, ListView_GetTopIndex(table) + 1);
+        ThemedUi::SetTableSelectedKeys(table, {scanSelected});
+        const auto waitUntil = [&](const std::function<bool()>& ready, const std::wstring& label) {
+            const auto deadline = GetTickCount64() + 5000;
+            while (!ready() && GetTickCount64() < deadline) PumpMessagesFor(20);
+            state.Check(ready(), name + L": timed out " + label);
+        };
+        const auto query = [&](ProcessToolsTestRequest request, int mode,
+                const std::shared_ptr<std::atomic_bool>& release,
+                const std::shared_ptr<std::atomic_bool>& exited, bool ignoreStop = false) {
+            FileLockQueryResult result;
+            for (const auto& row : request.rows) result.processIds.push_back(row.pid);
+            result.checkedPaths = result.totalPaths = 30;
+            result.directory = true;
+            request.fileLockQuery = [result, mode, release, exited, ignoreStop](TaskContext& context) mutable {
+                context.UpdateProgress([](TaskProgressUpdate& value) {
+                    value.status = L"正在检查占用";
+                    value.current = 1;
+                    value.total = 30;
+                    value.indeterminate = false;
+                });
+                const auto deadline = GetTickCount64() + 10000;
+                while (!release->load() && (ignoreStop || !context.StopRequested()) &&
+                        GetTickCount64() < deadline) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                }
+                exited->store(true);
+                if (mode == 1) throw std::runtime_error("injected query failure");
+                if (mode == 2) result.error = L"测试替身拒绝扫描。";
+                if (mode == 3 || mode == 4 || context.StopRequested()) result.cancelled = true;
+                return result;
+            };
+            invoke(ProcessToolsTestCommand::QueryFileLock, &request);
+        };
+        for (int mode : {1, 2, 3, 4}) {
+            const auto release = std::make_shared<std::atomic_bool>(false);
+            const auto exited = std::make_shared<std::atomic_bool>(false);
+            const int writesBefore = probe.rowWriteCount;
+            query(scanFixture, mode, release, exited);
+            state.Check(ThemedUi::TableRowCount(table) == 30 && top() == scanTop &&
+                ThemedUi::TableSelectedKeys(table) == std::vector<std::intptr_t>{scanSelected},
+                name + L": refresh cleared existing data");
+            if (mode == 1) capture(L"-scan-running", L"正在后台检查占用…", L"info");
+            if (mode == 3) invoke(ProcessToolsTestCommand::StopFileLock);
+            else release->store(true);
+            waitUntil([&]() { return !invoke(ProcessToolsTestCommand::FileLockPending); }, L"failed/stopped query");
+            state.Check(exited->load() && ThemedUi::TableRowCount(table) == 30 &&
+                probe.rowWriteCount == writesBefore && top() == scanTop &&
+                ThemedUi::TableSelectedKeys(table) == std::vector<std::intptr_t>{scanSelected},
+                name + L": failure/stop replaced old results");
+            PumpMessagesFor(200);
+            HWND progress = FindTopWindow({L"", L"文件占用检查进度", GetCurrentProcessId()});
+            state.Check(progress != nullptr, name + L": failed/stopped progress auto-closed as success");
+            if (progress && (mode == 2 || mode == 4)) {
+                state.Check(WindowContainsText(progress, mode == 2 ? L"检查失败" : L"检查已停止"),
+                    name + L": result-level terminal status was not applied to progress");
+            }
+            capture(L"-scan-retained-" + std::to_wstring(mode),
+                mode >= 3 ? L"检查已停止。 已保留上次结果。" : L"检查失败，请重试。 已保留上次结果。",
+                mode >= 3 ? L"warning" : L"danger");
+        }
+        auto successful = scanFixture;
+        successful.rows[10].name = L"刷新后的进程";
+        successful.rows.push_back({510031, L"扫描新增进程", L"C:\\Fixtures\\Scan-added.exe"});
+        auto ready = std::make_shared<std::atomic_bool>(true);
+        auto completed = std::make_shared<std::atomic_bool>(false);
+        query(successful, 0, ready, completed);
+        waitUntil([&]() { return !invoke(ProcessToolsTestCommand::FileLockPending); }, L"successful query");
+        ListView_GetItemText(table, ThemedUi::FindTableRowByKey(table, 510010), 0, text, 256);
+        state.Check(std::wstring(text) == successful.rows[10].name &&
+            ThemedUi::TableRowCount(table) == 31 && top() == scanTop &&
+            ThemedUi::TableSelectedKeys(table) == std::vector<std::intptr_t>{scanSelected},
+            name + L": successful refresh failed to merge while preserving state");
+        capture(L"-scan-success");
+
+        const auto staleRelease = std::make_shared<std::atomic_bool>(false);
+        const auto staleExited = std::make_shared<std::atomic_bool>(false);
+        query(scanFixture, 0, staleRelease, staleExited, true);
+        ProcessToolsTestRequest otherSource;
+        otherSource.path = (output / L"source-b").wstring();
+        otherSource.rows = {{520001, L"新来源进程", L"C:\\Fixtures\\Other.exe"}};
+        ready = std::make_shared<std::atomic_bool>(true);
+        completed = std::make_shared<std::atomic_bool>(false);
+        query(otherSource, 0, ready, completed);
+        state.Check(!staleExited->load(), name + L": obsolete query did not remain in flight");
+        waitUntil([&]() { return !invoke(ProcessToolsTestCommand::FileLockPending); }, L"source switch");
+        state.Check(ThemedUi::TableRowCount(table) == 1 && ThemedUi::TableRowKey(table, 0) == 520001,
+            name + L": source switch mixed datasets");
+        staleRelease->store(true);
+        waitUntil([&]() { return staleExited->load(); }, L"obsolete worker");
+        PumpMessagesFor(100);
+        state.Check(ThemedUi::TableRowCount(table) == 1 && ThemedUi::TableRowKey(table, 0) == 520001,
+            name + L": stale completion replaced current data");
+        capture(L"-scan-source-switch");
+
+        HWND portTable = ChildById(window, 7720);
+        ProcessToolsTestRequest portSuccess;
+        portSuccess.portText = L"8080";
+        portSuccess.portScanOperations.querySource = [](PortScanSource source, unsigned short) {
+            PortScanSourceResult result;
+            if (source == PortScanSource::TcpIPv4) {
+                result.records.push_back({610001, {L"TCP LISTEN"}});
+            }
+            return result;
+        };
+        invoke(ProcessToolsTestCommand::QueryPort, &portSuccess);
+        waitUntil([&]() { return !invoke(ProcessToolsTestCommand::PortPending); }, L"successful port query");
+        state.Check(portTable && ThemedUi::TableRowCount(portTable) == 1 &&
+                ThemedUi::TableRowKey(portTable, 0) == 610001,
+            name + L": complete port result was not displayed");
+        capture(L"-port-success", L"发现 1 个占用端口 8080 的进程。", L"success");
+
+        ProcessToolsTestRequest portFailure = portSuccess;
+        portFailure.portScanOperations.querySource = [](PortScanSource, unsigned short) {
+            PortScanSourceResult result;
+            result.errorCode = ERROR_ACCESS_DENIED;
+            return result;
+        };
+        invoke(ProcessToolsTestCommand::QueryPort, &portFailure);
+        waitUntil([&]() { return !invoke(ProcessToolsTestCommand::PortPending); }, L"failed port query");
+        state.Check(ThemedUi::TableRowCount(portTable) == 1 && ThemedUi::TableRowKey(portTable, 0) == 610001,
+            name + L": complete port API failure replaced previous rows");
+        capture(L"-port-failed", L"端口扫描失败，请重试。 已保留上次结果。", L"danger");
+
+        ProcessToolsTestRequest portPartial = portSuccess;
+        portPartial.portScanOperations.querySource = [](PortScanSource source, unsigned short) {
+            PortScanSourceResult result;
+            if (source == PortScanSource::TcpIPv6) result.errorCode = ERROR_ACCESS_DENIED;
+            return result;
+        };
+        invoke(ProcessToolsTestCommand::QueryPort, &portPartial);
+        waitUntil([&]() { return !invoke(ProcessToolsTestCommand::PortPending); }, L"partial port query");
+        state.Check(ThemedUi::TableRowCount(portTable) == 1 && ThemedUi::TableRowKey(portTable, 0) == 610001,
+            name + L": inconclusive port result replaced previous rows");
+        capture(L"-port-partial", L"端口扫描不完整，无法确认是否被占用。 已保留上次结果。", L"warning");
+
+        const auto oldPortEntered = std::make_shared<std::atomic_bool>(false);
+        const auto oldPortRelease = std::make_shared<std::atomic_bool>(false);
+        const auto oldPortExited = std::make_shared<std::atomic_bool>(false);
+        ProcessToolsTestRequest oldPort = portSuccess;
+        oldPort.portText = L"9090";
+        oldPort.portScanOperations.querySource = [oldPortEntered, oldPortRelease, oldPortExited](
+                PortScanSource source, unsigned short) {
+            PortScanSourceResult result;
+            if (source == PortScanSource::TcpIPv4) {
+                oldPortEntered->store(true);
+                while (!oldPortRelease->load()) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                oldPortExited->store(true);
+                result.records.push_back({610002, {L"TCP LISTEN"}});
+            }
+            return result;
+        };
+        invoke(ProcessToolsTestCommand::QueryPort, &oldPort);
+        waitUntil([&]() { return oldPortEntered->load(); }, L"old port query start");
+        ProcessToolsTestRequest invalidPort = oldPort;
+        invalidPort.portText = L"70000";
+        invoke(ProcessToolsTestCommand::QueryPort, &invalidPort);
+        capture(L"-port-invalid", L"请输入 1–65535 之间的端口号。 已保留上次结果。", L"warning");
+        oldPortRelease->store(true);
+        waitUntil([&]() { return oldPortExited->load(); }, L"obsolete port query exit");
+        PumpMessagesFor(150);
+        state.Check(ThemedUi::TableRowCount(portTable) == 1 && ThemedUi::TableRowKey(portTable, 0) == 610001,
+            name + L": obsolete port completion replaced validation state or rows");
+        capture(L"-port-stale-invalid", L"请输入 1–65535 之间的端口号。 已保留上次结果。", L"warning");
+
+        const auto closingRelease = std::make_shared<std::atomic_bool>(false);
+        const auto closingExited = std::make_shared<std::atomic_bool>(false);
+        query(otherSource, 0, closingRelease, closingExited, true);
+        state.Check(probe.deleteAllCount == 0, name + L": action rebuilt table");
+        RemoveWindowSubclass(table, TableMutationProbeProc, 51);
+        const auto closeStart = GetTickCount64();
+        SendMessageW(window, WM_CLOSE, 0, 0);
+        state.Check(!IsWindow(window) && GetTickCount64() - closeStart < 1000 &&
+            !closingExited->load(), name + L": closing waited for an in-flight system call");
+        closingRelease->store(true);
+        waitUntil([&]() { return closingExited->load(); }, L"worker after window destruction");
+        PumpMessagesFor(100);
+        std::wcout << name << L" delete_all=" << probe.deleteAllCount << L"\n";
+    }
+}
+
+void RunTableRowOrderScenarios(HINSTANCE instance, const Theme& theme,
+    const std::filesystem::path& output, TestState& state) {
+    for (UINT dpi : {96u, 120u, 144u}) {
+        const std::wstring name = L"table-row-order-" + DpiPercentSuffix(dpi);
+        TableHostWindow host;
+        host.instance_ = instance;
+        host.theme_ = theme;
+        host.forcedDpi_ = dpi;
+        host.checkable_ = true;
+        host.twoLineRows_ = true;
+        host.selection_ = ThemedTableSelection::Multiple;
+        const std::wstring className = L"QuattroTableRowOrder_" + std::to_wstring(dpi);
+        auto options = ThemedWindowUi::DialogOptions(instance, nullptr, className.c_str(),
+            name.c_str(), TableHostWindow::Proc, &host);
+        options.scaleForDpi = false;
+        options.clientWidth = ThemedWindowUi::ScaleForDpi(360, dpi);
+        options.clientHeight = ThemedWindowUi::ScaleForDpi(260, dpi);
+        HWND window = ThemedWindowUi::CreateWindowHandle(options);
+        state.Check(window && host.table_, name + L": host creation failed");
+        if (!window) continue;
+        host.windowUi_->ShowModeless();
+        std::vector<ThemedTableRow> rows;
+        for (int index = 0; index < 40; ++index) {
+            ThemedTableCell cell{L"任务 " + std::to_wstring(index + 1)};
+            cell.secondaryText = L"C:\\Apps\\Task-" + std::to_wstring(index + 1) + L".exe";
+            rows.push_back({1000 + index, {cell, {L"执行", -1, ThemedTableCellRole::Action, 7}},
+                index % 2 == 0, index % 7 != 0, index % 3 == 0});
+        }
+        ThemedUi::SetTableRows(host.table_, rows);
+        ListView_EnsureVisible(host.table_, 16, FALSE);
+        const int oldTop = ListView_GetTopIndex(host.table_);
+        const auto topKey = ThemedUi::TableRowKey(host.table_, oldTop);
+        const auto selectedKey = ThemedUi::TableRowKey(host.table_, oldTop + 1);
+        ThemedUi::SetTableSelectedKeys(host.table_, {topKey, selectedKey});
+        const auto selection = ThemedUi::TableSelectedKeys(host.table_);
+        const auto capture = [&](const wchar_t* suffix) {
+            RedrawWindow(window, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+            BitmapCapture bitmap = CaptureWindowBitmap(window);
+            state.Check(bitmap.bitmap && BitmapHasVisualContent(bitmap.bitmap, bitmap.width, bitmap.height),
+                name + L": invalid capture");
+            if (bitmap.bitmap) {
+                state.Check(SavePng(bitmap.bitmap, output / (name + suffix + L".png")),
+                    name + L": screenshot save failed");
+                DeleteObject(bitmap.bitmap);
+            }
+        };
+        capture(L"-before");
+        TableMutationProbe probe;
+        SetWindowSubclass(host.table_, TableMutationProbeProc, 47, reinterpret_cast<DWORD_PTR>(&probe));
+        std::vector<std::intptr_t> order;
+        for (int index = 39; index >= 0; --index) order.push_back(rows[index].key);
+        state.Check(ThemedUi::SetTableRowOrder(host.table_, order), name + L": reorder failed");
+        auto afterSelection = ThemedUi::TableSelectedKeys(host.table_);
+        auto beforeSelection = selection;
+        std::sort(afterSelection.begin(), afterSelection.end());
+        std::sort(beforeSelection.begin(), beforeSelection.end());
+        state.Check(afterSelection == beforeSelection, name + L": selection identity changed");
+        state.Check(ThemedUi::TableRowKey(host.table_, ListView_GetTopIndex(host.table_)) == topKey,
+            name + L": top visible key changed");
+        for (int index = 0; index < 40; ++index) {
+            const auto& expected = rows[39 - index];
+            state.Check(ThemedUi::TableRowKey(host.table_, index) == expected.key &&
+                ThemedUi::IsTableChecked(host.table_, index) == expected.checked &&
+                ThemedUi::IsTableRowEnabled(host.table_, index) == expected.enabled &&
+                ThemedUi::IsTableRowActive(host.table_, index) == expected.active,
+                name + L": row presentation detached from key");
+        }
+        capture(L"-after");
+        state.Check(probe.deleteAllCount == 0, name + L": reorder deleted all native rows");
+        RemoveWindowSubclass(host.table_, TableMutationProbeProc, 47);
+        DestroyWindow(window);
+        std::wcout << name << L" top_key=" << topKey << L" delete_all=" << probe.deleteAllCount << L"\n";
+    }
+}
+
+struct SettingsCommitProbe {
+    TestState* state = nullptr;
+    AppConfig* config = nullptr;
+    ConfigService* storage = nullptr;
+    std::filesystem::path output;
+    std::wstring name;
+    int mode = 0;
+    UINT dpi = 96;
+    int commits = 0;
+    int runtimeUpdates = 0;
+    int passwordWrites = 0;
+    int standaloneIntegrations = 0;
+    int importedCommits = 0;
+    HANDLE lockedConfig = INVALID_HANDLE_VALUE;
+    ULONGLONG deadline = 0;
+    bool inspected = false;
+    std::atomic_int providerMode{0};
+
+    void Check(bool value, const wchar_t* message) {
+        state->Check(value, name + L": " + message);
+    }
+
+    void Unlock() {
+        if (lockedConfig != INVALID_HANDLE_VALUE) {
+            CloseHandle(lockedConfig);
+            lockedConfig = INVALID_HANDLE_VALUE;
+        }
+    }
+};
+
+SettingsCommitProbe* gSettingsCommitProbe = nullptr;
+
+void CALLBACK SettingsCommitTimer(HWND, UINT, UINT_PTR timer, DWORD) {
+    auto& probe = *gSettingsCommitProbe;
+    HWND dialog = FindTopWindow({L"QuattroSettingsDialog", L"", GetCurrentProcessId()});
+    if (!dialog) {
+        if (GetTickCount64() > probe.deadline) {
+            KillTimer(nullptr, timer);
+            probe.Check(false, L"dialog creation timed out");
+            PostQuitMessage(1);
+        }
+        return;
+    }
+    KillTimer(nullptr, timer);
+    probe.inspected = true;
+    const auto check = [&](int id, bool value) {
+        HWND control = GetDlgItem(dialog, id);
+        probe.Check(control != nullptr, L"required semantic control is missing");
+        ThemedUi::SetChecked(control, value);
+    };
+    HWND tabs = GetDlgItem(dialog, 279);
+    if (probe.mode == 2) {
+        ThemedUi::SetActiveTab(tabs, 2, true);
+        const auto invoke = [&](SettingsProviderTestCommand command) {
+            return SendMessageW(dialog, WM_QUATTRO_TEST_SETTINGS_PROVIDER, static_cast<WPARAM>(command), 0);
+        };
+        const auto finishLoad = [&]() {
+            PumpMessagesFor(30);
+            const auto deadline = GetTickCount64() + 5000;
+            while (invoke(SettingsProviderTestCommand::Pending) && GetTickCount64() < deadline) PumpMessagesFor(10);
+            probe.Check(!invoke(SettingsProviderTestCommand::Pending), L"provider load timed out");
+        };
+        finishLoad();
+        HWND table = GetDlgItem(dialog, 447);
+        probe.Check(table && ThemedUi::TableRowCount(table) >= 2, L"provider table fixture missing");
+        std::vector<std::intptr_t> selected{
+            ThemedUi::TableRowKey(table, 0), ThemedUi::TableRowKey(table, 1)};
+        ThemedUi::SetTableSelectedKeys(table, selected);
+        const auto top = ThemedUi::TableTopVisibleRowKey(table);
+        TableMutationProbe mutations;
+        SetWindowSubclass(table, TableMutationProbeProc, 59, reinterpret_cast<DWORD_PTR>(&mutations));
+        invoke(SettingsProviderTestCommand::Rebuild);
+        probe.Check(mutations.rowWriteCount == 0, L"unchanged provider rows were rewritten");
+        probe.providerMode = 1;
+        invoke(SettingsProviderTestCommand::Refresh);
+        finishLoad();
+        wchar_t status[128]{};
+        ListView_GetItemText(table, 0, 1, status, 128);
+        probe.Check(std::wstring(status) == L"获取失败", L"provider task exception was not surfaced");
+        probe.providerMode = 0;
+        mutations.rejectNextWrite = true;
+        invoke(SettingsProviderTestCommand::Refresh);
+        finishLoad();
+        invoke(SettingsProviderTestCommand::Rebuild);
+        for (int row = 0; row < ThemedUi::TableRowCount(table); ++row) {
+            ListView_GetItemText(table, row, 1, status, 128);
+            probe.Check(std::wstring(status) != L"获取失败", L"failed provider mutation was not retried");
+        }
+        probe.Check(mutations.deleteAllCount == 0 &&
+            ThemedUi::TableSelectedKeys(table) == selected && ThemedUi::TableTopVisibleRowKey(table) == top,
+            L"provider refresh rebuilt rows or lost multiple selection/viewport");
+        RemoveWindowSubclass(table, TableMutationProbeProc, 59);
+        std::wcout << probe.name << L" provider_incremental=passed delete_all=" << mutations.deleteAllCount << L"\n";
+    }
+    ThemedUi::SetActiveTab(tabs, 0, true);
+    check(101, false);
+    ThemedUi::SetActiveTab(tabs, 1, true);
+    check(105, true);
+    check(448, true);
+    check(109, true);
+    SetWindowTextW(GetDlgItem(dialog, 204), L"https://updates.example.test/settings");
+    SetWindowTextW(GetDlgItem(dialog, 209), L"https://dav.example.test/settings");
+    SetWindowTextW(GetDlgItem(dialog, 212), L"settings-test");
+    check(215, true);
+    const bool passwordPending = probe.mode == 3 || probe.mode == 5 || probe.mode == 8;
+    if (passwordPending) SetWindowTextW(GetDlgItem(dialog, 213), L"isolated-password");
+    if (probe.mode == 6) check(300, true);
+    if (probe.mode == 8) SetWindowTextW(GetDlgItem(dialog, 212), L"");
+    ThemedUi::SetActiveTab(tabs, probe.mode % 9, true);
+
+    Scenario scenario{probe.name, L"QuattroSettingsDialog", L"", probe.name + L".png"};
+    scenario.forcedDpi = probe.dpi;
+    ValidateAndCapture(dialog, scenario, probe.output, *probe.state);
+    const int finalTab = ThemedUi::ActiveTab(tabs);
+    if (probe.mode >= 9) {
+        SendMessageW(dialog, WM_QUATTRO_TEST_SETTINGS_SYNC_RESULT, probe.mode != 9, 0);
+        probe.Check(probe.commits == 1, L"sync result did not attempt config persistence");
+        probe.Check(probe.config->showTitle && !probe.config->autoDock,
+            L"sync result silently applied unrelated drafts");
+        probe.Check(!ThemedUi::IsChecked(GetDlgItem(dialog, 101)),
+            L"sync result discarded an unrelated draft");
+        if (probe.mode != 11) {
+            probe.Check(probe.runtimeUpdates == 0, L"failed sync settings changed runtime");
+            HWND toast = FindTopWindow({L"QuattroThemedToast", L"", GetCurrentProcessId()});
+            probe.Check(toast && WindowText(toast).find(L"保存失败") != std::wstring::npos,
+                L"sync success hid the config failure");
+            SendMessageW(dialog, WM_COMMAND, IDCANCEL, 0);
+            return;
+        }
+        probe.Check(!probe.config->webDavLastSyncAt.empty(), L"successful sync timestamp was not saved");
+    }
+    if (probe.mode == 2) {
+        SendMessageW(dialog, WM_COMMAND, IDCANCEL, 0);
+        return;
+    }
+    const bool apply = probe.mode == 1 || probe.mode == 4;
+    const int command = apply ? 430 : IDOK;
+    SendMessageW(dialog, WM_COMMAND, command, 0);
+    const bool expectRejected = probe.mode >= 3 && probe.mode <= 8 && probe.mode != 7;
+    if (expectRejected) {
+        probe.Check(IsWindow(dialog), L"rejected commit must keep dialog open");
+        if (!IsWindow(dialog)) return;
+        probe.Check(ThemedUi::ActiveTab(tabs) == finalTab, L"commit changed the active page");
+        probe.Check(!ThemedUi::IsChecked(GetDlgItem(dialog, 101)) &&
+            ThemedUi::IsChecked(GetDlgItem(dialog, 105)), L"rejected commit lost cross-page drafts");
+        if (probe.mode == 5) {
+            probe.Check(!probe.config->showTitle && probe.passwordWrites == 1,
+                L"credential failure must retain the successfully saved config");
+        } else {
+            probe.Check(probe.config->showTitle && !probe.config->autoDock,
+                L"failed commit changed the caller model");
+            probe.Check(probe.storage->Load().showTitle && probe.runtimeUpdates == 0,
+                L"failed commit changed disk or runtime");
+            probe.Check(probe.passwordWrites == 0, L"password written before config commit");
+        }
+        if (passwordPending) probe.Check(WindowText(GetDlgItem(dialog, 213)) == L"isolated-password",
+            L"failed commit cleared the pending password");
+        if (probe.mode == 6 || probe.mode == 8) probe.Check(probe.commits == 0,
+            L"invalid non-active page reached the commit callback");
+        HWND toast = FindTopWindow({L"QuattroThemedToast", L"", GetCurrentProcessId()});
+        if (probe.mode != 6) {
+            probe.Check(toast != nullptr, L"failure feedback is missing");
+            if (toast) {
+                BitmapCapture capture = CaptureWindowBitmap(toast);
+                probe.Check(capture.bitmap &&
+                    BitmapHasVisualContent(capture.bitmap, capture.width, capture.height),
+                    L"failure toast capture is invalid");
+                if (capture.bitmap) {
+                    probe.Check(SavePng(capture.bitmap, probe.output / (probe.name + L"-failure.png")),
+                        L"failure toast screenshot could not be saved");
+                    DeleteObject(capture.bitmap);
+                }
+            }
+        }
+        probe.Unlock();
+        if (probe.mode == 6) check(300, false);
+        if (probe.mode == 8) SetWindowTextW(GetDlgItem(dialog, 212), L"settings-test");
+        SendMessageW(dialog, WM_COMMAND, command, 0);
+    }
+    if (apply) {
+        probe.Check(IsWindow(dialog), L"successful Apply closed the dialog");
+        probe.Check(!probe.config->showTitle && probe.config->autoDock,
+            L"successful Apply omitted another page");
+        if (IsWindow(dialog)) {
+            check(101, true);
+            check(105, false);
+            SendMessageW(dialog, WM_COMMAND, IDCANCEL, 0);
+        }
+    } else if (IsWindow(dialog)) {
+        probe.Check(false, L"successful OK did not close the dialog");
+        SendMessageW(dialog, WM_COMMAND, IDCANCEL, 0);
+    }
+}
+
+void RunSettingsCommitScenarios(HWND owner, HINSTANCE instance, const Theme& theme,
+    const std::filesystem::path& output, TestState& state) {
+    for (UINT dpi : {96u, 120u, 144u}) {
+        for (int mode = 0; mode < 12; ++mode) {
+            ScopedAcceptanceChildEnvironment environment;
+            ConfigService storage(environment.root() / L"conf.ini");
+            AppConfig config;
+            config.showTitle = true;
+            config.autoDock = false;
+            config.autoRun = false;
+            config.globalHotKeysEnabled = false;
+            config.mainHotKey = VK_F12;
+            config.processLocatorHotKey = VK_F12;
+            config.doubleClickToRun = false;
+            config.httpServerAutoStart = false;
+            config.httpServerLanAccess = false;
+            config.httpServerRootPath = environment.root().wstring();
+            state.Check(storage.Save(config), L"settings commit: fixture save failed");
+            SettingsCommitProbe probe;
+            probe.state = &state;
+            probe.config = &config;
+            probe.storage = &storage;
+            probe.output = output;
+            probe.mode = mode;
+            probe.dpi = dpi;
+            probe.name = L"settings-commit-" + std::to_wstring(mode) + L"-" + DpiPercentSuffix(dpi);
+            probe.deadline = GetTickCount64() + 7000;
+            if (mode == 3 || mode == 4 || mode == 9 || mode == 10) {
+                probe.lockedConfig = CreateFileW(storage.path().c_str(), GENERIC_READ,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
+                probe.Check(probe.lockedConfig != INVALID_HANDLE_VALUE, L"could not inject save failure");
+            }
+            SettingsApplyCallback commit = [&](const AppConfig& next, bool imported) {
+                ++probe.commits;
+                if (imported) ++probe.importedCommits;
+                SettingsApplyResult result;
+                result.config = next;
+                result.saved = storage.Save(next, &result.error);
+                if (result.saved) ++probe.runtimeUpdates;
+                else result.error = L"设置保存失败，请检查配置目录后重试。";
+                return result;
+            };
+            if (mode == 7) commit = {};
+            gSettingsCommitProbe = &probe;
+            const UINT_PTR timer = SetTimer(nullptr, 0, 100, SettingsCommitTimer);
+            probe.Check(timer != 0, L"could not start semantic test timer");
+            bool accepted = false;
+            bool imported = false;
+            if (timer) accepted = ShowSettingsDialog(owner, instance, config, theme,
+                output, environment.root(), &imported, nullptr, false, false, false,
+                commit, {}, {}, {}, {}, [&](std::stop_token stop) {
+                    if (probe.providerMode == 1) throw std::runtime_error("isolated provider failure");
+                    return AcceptanceContextMenuProviderIcons(stop);
+                },
+                [&](bool, std::wstring&) { ++probe.standaloneIntegrations; return true; }, {},
+                [&](const AppConfig&, const std::wstring&, std::wstring& error) {
+                    ++probe.passwordWrites;
+                    if (mode == 5 && probe.passwordWrites == 1) {
+                        error = L"isolated credential write failure";
+                        return false;
+                    }
+                    return true;
+                });
+            if (timer) KillTimer(nullptr, timer);
+            probe.Unlock();
+            gSettingsCommitProbe = nullptr;
+            probe.Check(probe.inspected, L"semantic driver did not run");
+            probe.Check(accepted == (mode != 1 && mode != 2 && mode != 4 && mode != 9 && mode != 10),
+                L"Cancel was incorrectly reported as OK");
+            if (mode == 9 || mode == 10) {
+                probe.Check(imported == (mode == 10), L"failed config commit lost the completed import flag");
+                probe.Check(probe.importedCommits == (mode == 10 ? 1 : 0),
+                    L"import flag did not reach the commit owner");
+                std::wcout << probe.name << L" imported=" << imported << L" save_failure=retained\n";
+                continue;
+            }
+            if (mode == 11) probe.Check(!imported && probe.importedCommits == 1,
+                L"successful sync import was applied twice or left pending");
+            if (mode == 2) {
+                probe.Check(config.showTitle && !config.autoDock && probe.commits == 0,
+                    L"Cancel committed a draft");
+            } else {
+                probe.Check(!config.showTitle && config.autoDock && config.doubleClickToRun &&
+                    config.registerCopyPathContextMenu && config.httpServerAutoStart &&
+                    config.webDavUrl == L"https://dav.example.test/settings" &&
+                    config.updateUrl == L"https://updates.example.test/settings",
+                    L"commit did not collect every page");
+                probe.Check(!config.httpServerLanAccess, L"commit unexpectedly enabled LAN access");
+                if (mode != 7) {
+                    const AppConfig persisted = storage.Load();
+                    probe.Check(!persisted.showTitle && persisted.autoDock &&
+                        persisted.doubleClickToRun && persisted.httpServerAutoStart &&
+                        persisted.webDavUrl == config.webDavUrl && persisted.updateUrl == config.updateUrl,
+                        L"cross-page settings were not persisted");
+                }
+            }
+            probe.Check(probe.standaloneIntegrations == (mode == 7 ? 1 : 0),
+                L"dialog duplicated the commit owner's system integration");
+            std::wcout << probe.name << L" commits=" << probe.commits
+                << L" runtime=" << probe.runtimeUpdates << L" passwords=" << probe.passwordWrites << L"\n";
+        }
+    }
+}
+
 } // namespace
 
 int wmain() {
@@ -6389,6 +7405,57 @@ int wmain() {
     config.webDavBackupPath = L"/Quattro/backups/";
     config.webDavFilesPath = L"/Quattro/files/";
     config.webDavUserName = L"acceptance-user";
+
+    wchar_t webDavDeleteOnly[8]{};
+    if (GetEnvironmentVariableW(L"QUATTRO_UI_ACCEPTANCE_WEBDAV_DELETE_ONLY",
+            webDavDeleteOnly, static_cast<DWORD>(std::size(webDavDeleteOnly))) > 0) {
+        RunWebDavDeleteMutationScenarios(owner, instance, theme, config, outputDir, state);
+        DestroyWindow(owner);
+        OleUninitialize();
+        Gdiplus::GdiplusShutdown(gdiplusToken);
+        for (const auto& failure : state.failures) std::wcerr << failure << L"\n";
+        if (!state.ok) return 1;
+        std::wcout << L"webdav_delete_acceptance=passed\n";
+        return 0;
+    }
+    wchar_t processMutationsOnly[8]{};
+    if (GetEnvironmentVariableW(L"QUATTRO_UI_ACCEPTANCE_PROCESS_MUTATIONS_ONLY",
+            processMutationsOnly, static_cast<DWORD>(std::size(processMutationsOnly))) > 0) {
+        RunProcessMutationScenarios(owner, instance, theme, outputDir, state);
+        DestroyWindow(owner);
+        OleUninitialize();
+        Gdiplus::GdiplusShutdown(gdiplusToken);
+        for (const auto& failure : state.failures) std::wcerr << failure << L"\n";
+        if (!state.ok) return 1;
+        std::wcout << L"process_mutations_acceptance=passed\n";
+        return 0;
+    }
+
+    wchar_t tableOrderOnly[8]{};
+    if (GetEnvironmentVariableW(L"QUATTRO_UI_ACCEPTANCE_TABLE_ORDER_ONLY",
+            tableOrderOnly, static_cast<DWORD>(std::size(tableOrderOnly))) > 0) {
+        RunTableRowOrderScenarios(instance, theme, outputDir, state);
+        DestroyWindow(owner);
+        OleUninitialize();
+        Gdiplus::GdiplusShutdown(gdiplusToken);
+        for (const auto& failure : state.failures) std::wcerr << failure << L"\n";
+        if (!state.ok) return 1;
+        std::wcout << L"table_order_acceptance=passed\n";
+        return 0;
+    }
+
+    wchar_t settingsCommitOnly[8]{};
+    if (GetEnvironmentVariableW(L"QUATTRO_UI_ACCEPTANCE_SETTINGS_COMMIT_ONLY",
+            settingsCommitOnly, static_cast<DWORD>(std::size(settingsCommitOnly))) > 0) {
+        RunSettingsCommitScenarios(owner, instance, theme, outputDir, state);
+        DestroyWindow(owner);
+        OleUninitialize();
+        Gdiplus::GdiplusShutdown(gdiplusToken);
+        for (const auto& failure : state.failures) std::wcerr << failure << L"\n";
+        if (!state.ok) return 1;
+        std::wcout << L"settings_commit_acceptance=passed\n";
+        return 0;
+    }
 
     wchar_t webDavRowTooltipOnly[8]{};
     if (GetEnvironmentVariableW(
@@ -7235,6 +8302,34 @@ int wmain() {
         }
         std::wcout << L"ui_table_acceptance=passed screenshots=" << outputDir.wstring() << L"\n";
         return 0;
+    }
+
+    wchar_t calendarOnly[8]{};
+    if (GetEnvironmentVariableW(L"QUATTRO_UI_ACCEPTANCE_CALENDAR_ONLY",
+            calendarOnly, static_cast<DWORD>(std::size(calendarOnly))) > 0) {
+        for (UINT dpi : {96u, 120u, 144u}) {
+            for (int view = 0; view < 3; ++view) {
+                TodoItem todo;
+                todo.title = L"日历显示验收";
+                todo.content = L"标题、年月选择与点击区域";
+                todo.anchorAt = L"2026-09-08 09:30:00";
+                const std::wstring name = L"calendar-" + std::to_wstring(view) + L"-" + DpiPercentSuffix(dpi);
+                Scenario scenario{name, L"QuattroTodoEditDialog", L"新建待办", name + L".png",
+                    {L"新建待办", L"保存待办", L"取消"}, {todo.title, todo.content}, 2, 2, false};
+                scenario.forcedDpi = dpi;
+                scenario.calendarView = view;
+                scenario.rejectDarkSurface = true;
+                RunDialogScenario(scenario, outputDir, state, [&] {
+                    TodoEditDialog::Show(owner, instance, theme, todo, true);
+                });
+            }
+        }
+        DestroyWindow(owner);
+        OleUninitialize();
+        Gdiplus::GdiplusShutdown(gdiplusToken);
+        for (const auto& failure : state.failures) std::wcerr << failure << L"\n";
+        if (state.ok) std::wcout << L"calendar_acceptance=passed\n";
+        return state.ok ? 0 : 1;
     }
 
     wchar_t d2dDialogsOnly[8]{};

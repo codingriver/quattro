@@ -98,8 +98,8 @@ constexpr UINT WM_WEBDAV_FILE_REFRESH_REQUEST = WM_APP + 0xC9;
 constexpr UINT WM_WEBDAV_FILE_DELETE_DONE = WM_APP + 0xCA;
 constexpr UINT WM_WEBDAV_FILE_SHOW_TEST_DETAILS = WM_APP + 0xCB;
 constexpr UINT WM_WEBDAV_FILE_APPLY_TEST_INCREMENTAL = WM_APP + 0xCC;
-constexpr UINT WM_WEBDAV_FILE_DELETE_ITEM_DONE = WM_APP + 0xCD;
 constexpr UINT WM_WEBDAV_FILE_SHOW_TEST_DELETE_PROGRESS = WM_APP + 0xCE;
+std::atomic_uintptr_t gWebDavDeleteGeneration{1};
 constexpr int ID_CONFIG_EXPORT = 415;
 constexpr int ID_CONFIG_IMPORT = 416;
 constexpr int ID_TODO_EXPORT = 417;
@@ -151,14 +151,6 @@ struct SettingsWebDavResult {
     WebDavBackupReport report;
     std::vector<WebDavRemoteFile> backups;
     AppConfig config;
-};
-
-struct SettingsContextMenuIconAsyncState {
-    std::mutex mutex;
-    std::stop_source stopSource;
-    std::optional<std::vector<ContextMenuProviderIconInfo>> result;
-    std::uintptr_t generation = 0;
-    std::atomic_bool abandoned{false};
 };
 
 std::atomic_uintptr_t gContextMenuIconGeneration{1};
@@ -1575,8 +1567,10 @@ private:
 
 class WebDavFileManagerDialog {
 public:
-    WebDavFileManagerDialog(HWND owner, HINSTANCE instance, const Theme& theme, AppConfig config)
-        : owner_(owner), instance_(instance), theme_(theme), config_(std::move(config)) {}
+    WebDavFileManagerDialog(HWND owner, HINSTANCE instance, const Theme& theme, AppConfig config,
+        std::function<void(HWND)> backgroundTestAction = {})
+        : owner_(owner), instance_(instance), theme_(theme), config_(std::move(config)),
+          backgroundTestAction_(std::move(backgroundTestAction)) {}
 
     bool Run() {
         const std::wstring className = L"QuattroWebDavFileManagerDialog_" + std::to_wstring(GetCurrentProcessId()) + L"_" + std::to_wstring(GetTickCount64());
@@ -1591,6 +1585,7 @@ public:
         std::wstring error; hwnd_ = ThemedWindowUi::CreateWindowHandle(options, &error);
         if (!hwnd_) { WriteAppLog(L"WebDAV 文件管理窗口创建失败: " + error); return false; }
         windowUi_->ShowModal(); UpdateWindow(hwnd_);
+        if (backgroundTestAction_ && QuattroTestMode() && BackgroundAcceptanceMode()) backgroundTestAction_(hwnd_);
         MSG message{}; while (!done_ && GetMessageW(&message, nullptr, 0, 0) > 0) {
             if (!ThemedUi::PreTranslateMessage(message) && !IsDialogMessageW(hwnd_, &message)) { TranslateMessage(&message); DispatchMessageW(&message); }
         }
@@ -1617,33 +1612,6 @@ private:
         std::uint64_t generation = 0;
         std::vector<WebDavFileRecord> records;
     };
-    struct DeleteResult {
-        std::vector<std::wstring> succeededIds;
-        std::vector<std::wstring> failedIds;
-        std::vector<std::wstring> notStartedIds;
-        std::wstring lastError;
-        bool stopped = false;
-    };
-    struct DeleteItemResult {
-        std::wstring id;
-        bool ok = false;
-        std::wstring error;
-    };
-    struct DeleteTaskState {
-        std::mutex mutex;
-        std::atomic_bool stopRequested{false};
-        std::size_t totalFiles = 0;
-        std::size_t currentFile = 0;
-        std::size_t completedSteps = 0;
-        std::size_t succeeded = 0;
-        std::size_t failed = 0;
-        std::wstring currentName;
-        std::wstring phaseText;
-        std::wstring lastError;
-        bool finished = false;
-        bool stopped = false;
-    };
-
     static LRESULT CALLBACK Proc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
         auto* dialog = reinterpret_cast<WebDavFileManagerDialog*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
         if (message == WM_NCCREATE) { auto* create = reinterpret_cast<CREATESTRUCTW*>(lParam); dialog = static_cast<WebDavFileManagerDialog*>(create->lpCreateParams); SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(dialog)); dialog->hwnd_ = hwnd; }
@@ -1700,9 +1668,10 @@ private:
             {ThemedTableCell{record.displayName},
              ThemedTableCell{healthy ? FormatFileSize(record.size) : L"—"},
              ThemedTableCell{healthy ? UploadedAtText(record) : HealthText(record)},
-             ThemedTableCell{WebDavFileService::LocalSyncStatusText(record)}, action},
+             ThemedTableCell{pendingDeleteSyncIds_.contains(record.id)
+                 ? L"待同步" : WebDavFileService::LocalSyncStatusText(record)}, action},
             checkedIds_.contains(record.id),
-            !deletingIds_.contains(record.id)};
+            !deletingIds_.contains(record.id) && !pendingDeleteSyncIds_.contains(record.id)};
     }
     void RestoreNaturalOrder() {
         std::vector<WebDavFileRecord> restored;
@@ -1856,11 +1825,12 @@ private:
         }
     }
     void StartRefresh() {
+        if (deleteBusy_) return;
         if (refreshTask_) {
             refreshTask_->RequestStop();
-            refreshTask_->Wait();
             refreshTask_.reset();
         }
+        deletedTombstones_.clear();
         refreshBusy_ = true;
         const std::uint64_t generation = ++refreshGeneration_;
         ThemedUi::SetText(directoryLabel_, L"远端目录：" + WebDavFileService::FilesDirectory(config_) + L" · 正在后台刷新...");
@@ -1901,13 +1871,6 @@ private:
                 WebDavFileService service(config);
                 result.ok = service.Enumerate({}, [&](std::vector<WebDavFileRecord> batch) {
                     result.records.insert(result.records.end(), batch.begin(), batch.end());
-                    auto message = std::make_unique<BatchResult>();
-                    message->generation = generation;
-                    message->records = std::move(batch);
-                    BatchResult* raw = message.release();
-                    if (!alive->load() || !PostMessageW(target, WM_WEBDAV_FILE_BATCH, 0, reinterpret_cast<LPARAM>(raw))) {
-                        delete raw; return false;
-                    }
                     return !context.StopRequested();
                 }, context.StopToken(), result.error);
             }
@@ -1926,20 +1889,18 @@ private:
     }
     void ApplyBatch(std::unique_ptr<BatchResult> batch) {
         if (!batch || batch->generation != refreshGeneration_) return;
-        const MergeSummary summary = MergeRecords(batch->records);
-        if (summary.appended + summary.updated > 0) {
-            SortRecords();
-            PopulateTable();
-        }
-        WriteAppLog(L"WebDAV 文件表格增量批次: 新增 " + std::to_wstring(summary.appended) +
-            L"，更新 " + std::to_wstring(summary.updated) +
-            L"，未变化 " + std::to_wstring(summary.unchanged));
+        // The completed snapshot is committed before changing displayed records.
+        WriteAppLog(L"WebDAV 文件扫描批次: " + std::to_wstring(batch->records.size()) + L" 项");
     }
     void FinishRefresh(std::unique_ptr<ListResult> result) {
         if (!result && refreshTask_ && refreshTask_->IsFinished()) {
             refreshTask_->Wait();
-            if (refreshTask_->Status() != ScanTaskStatus::Failed) {
+            if (refreshTask_->Status() == ScanTaskStatus::Completed) {
                 result = std::make_unique<ListResult>(refreshTask_->ResultCopy<ListResult>());
+            } else {
+                result = std::make_unique<ListResult>();
+                result->generation = refreshGeneration_;
+                result->error = L"远端刷新未完成，已保留原清单，请重试。";
             }
             refreshTask_.reset();
         }
@@ -1952,26 +1913,23 @@ private:
             ThemedUi::SetText(refreshButton_, L"刷新");
         }
         if (!result->ok) {
-            if (!result->error.empty() && result->error != L"WebDAV 文件刷新已取消。") {
-                if (!result->refreshedAtUtc.empty()) cacheRefreshedAt_ = result->refreshedAtUtc;
-                if (!cache_.Replace(records_, cacheRefreshedAt_)) {
-                    WriteAppLog(L"WebDAV 文件索引缓存保存失败: " + cache_.path().wstring());
-                }
-                if (windowUi_) {
-                    ThemedToastOptions toast{};
-                    toast.role = ThemedToastRole::Warning;
-                    toast.durationMs = 6000;
-                    windowUi_->ui().ShowToast(L"远端刷新未完全成功，已保存当前清单缓存。", toast);
-                }
-            }
+            ShowToast(result->error.empty() ? L"远端刷新未完成，已保留原清单，请重试。" : result->error,
+                ThemedToastRole::Warning, 6000);
             return;
         }
+        if (!cache_.Replace(result->records, result->refreshedAtUtc)) {
+            ShowToast(L"本地记录同步失败，已保留原清单，请刷新重试。", ThemedToastRole::Warning, 6000);
+            return;
+        }
+        const auto pending = std::move(pendingDeleteSyncIds_);
+        pendingDeleteSyncIds_.clear();
+        MergeRecords(result->records);
         std::set<std::wstring> seenIds;
         for (const auto& record : result->records) seenIds.insert(record.id);
         int removed = 0;
         for (int index = static_cast<int>(records_.size()) - 1; index >= 0; --index) {
             const auto& id = records_[static_cast<std::size_t>(index)].id;
-            if (seenIds.contains(id) || deletingIds_.contains(id) || deletedTombstones_.contains(id)) continue;
+            if (seenIds.contains(id) || deletingIds_.contains(id)) continue;
             checkedIds_.erase(id);
             ThemedUi::RemoveTableRow(table_, index);
             records_.erase(records_.begin() + index);
@@ -1979,14 +1937,21 @@ private:
             ++removed;
         }
         cacheRefreshedAt_ = result->refreshedAtUtc;
-        if (!cache_.Replace(records_, cacheRefreshedAt_)) {
-            WriteAppLog(L"WebDAV 文件索引缓存保存失败: " + cache_.path().wstring());
-        }
         for (auto it = deletedTombstones_.begin(); it != deletedTombstones_.end();) {
             if (!deletingIds_.contains(*it)) it = deletedTombstones_.erase(it); else ++it;
         }
         SortRecords();
-        PopulateTable();
+        std::vector<std::intptr_t> keys;
+        for (const auto& record : records_) {
+            const auto key = RowKey(record.id);
+            keys.push_back(key);
+            if (pending.contains(record.id)) {
+                const int row = ThemedUi::FindTableRowByKey(table_, key);
+                if (row >= 0) ThemedUi::UpdateTableRow(table_, row, TableRow(record));
+            }
+        }
+        ThemedUi::SetTableRowOrder(table_, keys);
+        ThemedUi::SetTableSortState(table_, sortState_);
         UpdateSelectionState();
         WriteAppLog(L"WebDAV 文件表格刷新收尾: 移除 " + std::to_wstring(removed) +
             L"，最终 " + std::to_wstring(records_.size()) + L" 行");
@@ -2027,7 +1992,10 @@ private:
     int Selected() const { const int index = ThemedUi::TableSelectedIndex(table_); return index >= 0 && index < static_cast<int>(records_.size()) ? index : -1; }
     std::vector<WebDavFileRecord> CheckedRecords() const {
         std::vector<WebDavFileRecord> selected;
-        for (const auto& record : records_) if (checkedIds_.contains(record.id)) selected.push_back(record);
+        for (const auto& record : records_) {
+            if (checkedIds_.contains(record.id) && !deletingIds_.contains(record.id) &&
+                    !pendingDeleteSyncIds_.contains(record.id)) selected.push_back(record);
+        }
         return selected;
     }
     void UpdateSelectionState() {
@@ -2040,11 +2008,19 @@ private:
         ui.SetEnabled(downloadSelectedButton_, hasSelection);
         ui.SetEnabled(deleteSelectedButton_, hasSelection && !deleteBusy_);
         ui.SetEnabled(clearSelectionButton_, hasSelection);
+        ui.SetEnabled(refreshButton_, !deleteBusy_ && !refreshBusy_);
+        ThemedUi::SetText(refreshButton_, refreshBusy_ ? L"刷新中" : L"刷新");
     }
     void SelectAll(bool checked) {
         checkedIds_.clear();
-        if (checked) for (const auto& record : records_) checkedIds_.insert(record.id);
-        PopulateTable();
+        for (const auto& record : records_) {
+            const bool selected = checked && !deletingIds_.contains(record.id) &&
+                !pendingDeleteSyncIds_.contains(record.id);
+            if (selected) checkedIds_.insert(record.id);
+            const int row = ThemedUi::FindTableRowByKey(table_, RowKey(record.id));
+            if (row >= 0) ThemedUi::SetTableChecked(table_, row, selected);
+        }
+        UpdateSelectionState();
     }
     void ShowToast(const std::wstring& text, ThemedToastRole role, int durationMs = 0) {
         if (!windowUi_) return;
@@ -2195,15 +2171,34 @@ private:
         if (index < 0 || index >= static_cast<int>(records_.size())) { ShowThemedMessageBox(hwnd_, instance_, theme_, L"请选择一个文件。", L"WebDAV 文件管理", MB_OK | MB_ICONWARNING); return; }
         DeleteRecords({records_[static_cast<std::size_t>(index)]});
     }
-    static std::wstring DeletePhaseText(WebDavFileDeletePhase phase) {
-        switch (phase) {
-        case WebDavFileDeletePhase::DeletingContent: return L"正在删除文件内容";
-        case WebDavFileDeletePhase::DeletingMetadata: return L"正在删除元数据";
-        case WebDavFileDeletePhase::DeletingDirectory: return L"正在删除远端目录";
+    static ThemedTaskProgressSnapshot DeleteSnapshot(const std::shared_ptr<TaskHandle>& task) {
+        auto snapshot = ToThemedTaskProgressSnapshot(task->Snapshot());
+        if (!task->IsFinished()) return snapshot;
+        if (task->Status() == TaskStatus::Failed) {
+            snapshot.detail = L"删除任务异常，请刷新后重试。";
+            return snapshot;
         }
-        return L"正在删除";
+        const auto result = task->ResultCopy<WebDavFileDeleteBatchResult>();
+        const bool failed = !result.failedIds.empty() || !result.cacheSynchronized;
+        const auto processed = result.remoteDeletedIds.size() + result.failedIds.size();
+        const auto total = processed + result.notStartedIds.size() + 1;
+        snapshot.value = static_cast<double>(processed + (result.cacheSynchronized && result.notStartedIds.empty() ? 1 : 0)) /
+            static_cast<double>(total);
+        snapshot.completed = !result.stopped && !failed;
+        snapshot.role = result.stopped ? ThemedStatusRole::Warning
+            : failed ? (result.remoteDeletedIds.empty() ? ThemedStatusRole::Danger : ThemedStatusRole::Warning)
+                : ThemedStatusRole::Success;
+        snapshot.status = result.stopped ? L"删除已停止"
+            : !result.cacheSynchronized ? L"远端删除已执行，本地待同步"
+                : failed ? L"删除未全部成功" : L"删除完成";
+        snapshot.detail = L"已删 " + std::to_wstring(result.remoteDeletedIds.size()) +
+            L"，失败 " + std::to_wstring(result.failedIds.size()) +
+            L"，未执行 " + std::to_wstring(result.notStartedIds.size()) + L"。";
+        if (!result.cacheSynchronized) snapshot.detail += L"请刷新同步。";
+        else if (failed || result.stopped) snapshot.detail += L"请刷新后重试。";
+        return snapshot;
     }
-    void ShowDeleteProgress(const std::shared_ptr<DeleteTaskState>& state) {
+    void ShowDeleteProgress(const std::shared_ptr<TaskHandle>& task) {
         ThemedTaskProgressDialogOptions options{};
         options.owner = hwnd_;
         options.instance = instance_;
@@ -2216,60 +2211,52 @@ private:
         options.initialDetail = L"正在检查远端文件记录。";
         options.stopText = L"停止";
         options.closeText = L"关闭";
-        options.readSnapshot = [state]() {
-            ThemedTaskProgressSnapshot snapshot;
-            std::lock_guard lock(state->mutex);
-            const std::size_t totalSteps = std::max<std::size_t>(1, state->totalFiles * 3);
-            snapshot.title = L"删除 WebDAV 文件";
-            snapshot.value = static_cast<double>(state->completedSteps) / static_cast<double>(totalSteps);
-            snapshot.indeterminate = false;
-            snapshot.finished = state->finished;
-            snapshot.stopRequested = state->stopRequested.load();
-            if (state->finished) {
-                snapshot.role = state->failed > 0 ? ThemedStatusRole::Warning : ThemedStatusRole::Success;
-                snapshot.status = state->stopped ? L"删除已停止" : L"删除完成";
-                snapshot.detail = L"成功 " + std::to_wstring(state->succeeded) + L" 项，失败 " +
-                    std::to_wstring(state->failed) + L" 项。";
-                if (!state->lastError.empty()) snapshot.detail += L" 最后错误：" + state->lastError;
-            } else {
-                snapshot.role = state->stopRequested.load() ? ThemedStatusRole::Warning : ThemedStatusRole::Info;
-                snapshot.status = state->currentFile == 0
-                    ? L"正在准备删除…"
-                    : L"正在删除 " + std::to_wstring(state->currentFile) + L" / " +
-                        std::to_wstring(state->totalFiles);
-                snapshot.detail = state->phaseText;
-                if (!state->currentName.empty()) snapshot.detail += L"：" + state->currentName;
-                if (state->stopRequested.load()) snapshot.detail = L"将在当前文件完成后停止。";
-            }
-            return snapshot;
-        };
-        options.requestStop = [state]() { state->stopRequested.store(true); };
+        options.readSnapshot = [task]() { return DeleteSnapshot(task); };
+        options.requestStop = [task]() { task->RequestStop(); };
         deleteProgressDialog_ = std::make_unique<ThemedTaskProgressDialog>(std::move(options));
         deleteProgressDialog_->Show();
     }
     void ShowTestDeleteProgress() {
-        if (!QuattroTestMode()) return;
-        auto state = std::make_shared<DeleteTaskState>();
-        state->totalFiles = 5;
-        state->currentFile = 2;
-        state->completedSteps = 4;
-        state->currentName = L"archive-report.zip";
-        state->phaseText = L"正在删除元数据";
-        deleteTaskState_ = state;
-        ShowDeleteProgress(state);
+        if (!QuattroTestMode() || !BackgroundAcceptanceMode()) return;
+        TaskOptions options;
+        options.mode = TaskExecutionMode::BackgroundSingle;
+        deleteTask_ = TaskExecutionService::StartTyped<WebDavFileDeleteBatchResult>(options, [](TaskContext& context) {
+            TaskProgressUpdate progress;
+            progress.status = L"正在删除 2 / 5";
+            progress.detail = L"正在删除元数据：archive-report.zip";
+            progress.current = 2;
+            progress.total = 6;
+            progress.indeterminate = false;
+            context.Report(std::move(progress));
+            while (!context.StopRequested()) Sleep(20);
+            WebDavFileDeleteBatchResult result;
+            result.stopped = true;
+            return result;
+        });
+        ShowDeleteProgress(deleteTask_);
     }
-    void DeleteRecords(std::vector<WebDavFileRecord> records) {
+    void DeleteRecords(std::vector<WebDavFileRecord> records, const WebDavDeleteTestRequest* test = nullptr) {
+        if (test && (!QuattroTestMode() || !BackgroundAcceptanceMode() ||
+            !test->operations.deleteRemote || !test->operations.removeCachedRecords)) return;
+        std::erase_if(records, [this](const auto& record) {
+            return RecordIndex(record.id) < 0 || pendingDeleteSyncIds_.contains(record.id);
+        });
         if (records.empty() || deleteBusy_) return;
         std::vector<WebDavFileBatchConfirmItem> items;
         items.reserve(records.size());
         for (const auto& record : records) {
             items.push_back(ConfirmItem(record, L"将删除远端内容、Meta 和记录目录。", true));
         }
-        if (!ConfirmBatch(L"确认删除 WebDAV 文件",
+        if (!(test ? test->confirm : ConfirmBatch(L"确认删除 WebDAV 文件",
                 L"请确认要删除以下远端文件。此操作不会删除对应的本地文件。",
-                L"确认删除", items, true)) {
+                L"确认删除", items, true))) {
             return;
         }
+        if (refreshTask_) refreshTask_->RequestStop();
+        refreshTask_.reset();
+        ++refreshGeneration_;
+        refreshBusy_ = false;
+        ThemedUi::SetText(directoryLabel_, L"远端目录：" + WebDavFileService::FilesDirectory(config_));
         deleteBusy_ = true;
         for (const auto& record : records) { deletingIds_.insert(record.id); deletedTombstones_.insert(record.id); }
         for (const auto& record : records) {
@@ -2277,96 +2264,113 @@ private:
             if (index >= 0) ThemedUi::UpdateTableRow(table_, index, TableRow(records_[static_cast<std::size_t>(index)]));
         }
         UpdateSelectionState();
-        auto taskState = std::make_shared<DeleteTaskState>();
-        taskState->totalFiles = records.size();
-        deleteTaskState_ = taskState;
-        ShowDeleteProgress(taskState);
-        const HWND target = hwnd_; const AppConfig config = config_; const auto alive = alive_;
-        std::thread([target, config, records = std::move(records), alive, taskState]() mutable {
-            auto result = std::make_unique<DeleteResult>();
-            WebDavFileService service(config); WebDavFileIndexCache cache(config);
-            for (std::size_t recordIndex = 0; recordIndex < records.size(); ++recordIndex) {
-                if (taskState->stopRequested.load()) {
-                    result->stopped = true;
-                    for (std::size_t pending = recordIndex; pending < records.size(); ++pending) {
-                        result->notStartedIds.push_back(records[pending].id);
-                    }
-                    break;
-                }
-                const auto& record = records[recordIndex];
-                {
-                    std::lock_guard lock(taskState->mutex);
-                    taskState->currentFile = recordIndex + 1;
-                    taskState->currentName = record.displayName;
-                    taskState->phaseText = L"正在准备远端删除";
-                }
-                std::wstring error;
-                const bool ok = service.Delete(record, error, [taskState](WebDavFileDeletePhase phase, bool completed) {
-                    std::lock_guard lock(taskState->mutex);
-                    taskState->phaseText = DeletePhaseText(phase);
-                    if (completed) ++taskState->completedSteps;
-                });
-                if (ok) {
-                    result->succeededIds.push_back(record.id);
-                    cache.Remove(record.id);
-                } else {
-                    result->failedIds.push_back(record.id);
-                    result->lastError = error;
-                }
-                {
-                    std::lock_guard lock(taskState->mutex);
-                    taskState->completedSteps = (recordIndex + 1) * 3;
-                    if (ok) ++taskState->succeeded; else { ++taskState->failed; taskState->lastError = error; }
-                }
-                auto item = std::make_unique<DeleteItemResult>();
-                item->id = record.id;
-                item->ok = ok;
-                item->error = error;
-                DeleteItemResult* itemRaw = item.release();
-                if (!alive->load() || !PostMessageW(target, WM_WEBDAV_FILE_DELETE_ITEM_DONE, 0,
-                        reinterpret_cast<LPARAM>(itemRaw))) {
-                    delete itemRaw;
-                }
-            }
-            {
-                std::lock_guard lock(taskState->mutex);
-                taskState->finished = true;
-                taskState->stopped = result->stopped;
-                if (!result->stopped) taskState->completedSteps = taskState->totalFiles * 3;
-            }
-            DeleteResult* raw = result.release();
-            if (!alive->load() || !PostMessageW(target, WM_WEBDAV_FILE_DELETE_DONE, 0, reinterpret_cast<LPARAM>(raw))) delete raw;
-        }).detach();
+        const HWND target = hwnd_;
+        const auto generation = gWebDavDeleteGeneration.fetch_add(1);
+        deleteGeneration_ = generation;
+        TaskOptions options;
+        if (test) options.mode = TaskExecutionMode::BackgroundSingle;
+        options.completionCallback = [target, generation]() {
+            PostMessageW(target, WM_WEBDAV_FILE_DELETE_DONE, static_cast<WPARAM>(generation), 0);
+        };
+        deleteTask_ = WebDavFileService(config_).StartDeleteBatch(std::move(records), std::move(options),
+            test ? test->operations : WebDavFileDeleteOperations{});
+        ShowDeleteProgress(deleteTask_);
     }
     void DeleteChecked() { DeleteRecords(CheckedRecords()); }
-    void FinishDeleteItem(std::unique_ptr<DeleteItemResult> result) {
-        if (!result) return;
-        const int index = RecordIndex(result->id);
-        if (result->ok) {
-            if (index >= 0) {
-                ThemedUi::RemoveTableRow(table_, index);
-                records_.erase(records_.begin() + index);
+    void FinishDelete(std::uintptr_t generation) {
+        const auto task = deleteTask_;
+        if (!task || generation != deleteGeneration_ || !task->IsFinished()) return;
+        auto presentation = DeleteSnapshot(task);
+        WebDavFileDeleteBatchResult result;
+        if (task->Status() != TaskStatus::Failed) result = task->ResultCopy<WebDavFileDeleteBatchResult>();
+        if (!result.error.empty() || !result.cacheError.empty() || task->Status() == TaskStatus::Failed) {
+            WriteAppLog(L"WebDAV 删除结果: " + result.error + L" " + result.cacheError + L" " + task->Snapshot().error);
+        }
+        std::set<std::wstring> removed(result.remoteDeletedIds.begin(), result.remoteDeletedIds.end());
+        const auto affected = std::move(deletingIds_);
+        deletingIds_.clear();
+        for (const auto& id : affected) {
+            if (!removed.contains(id)) deletedTombstones_.erase(id);
+        }
+        for (int index = static_cast<int>(records_.size()) - 1; index >= 0; --index) {
+            const auto id = records_[static_cast<std::size_t>(index)].id;
+            if (removed.contains(id)) {
+                if (result.cacheSynchronized) {
+                    const int row = ThemedUi::FindTableRowByKey(table_, RowKey(id));
+                    if (row >= 0 && !ThemedUi::RemoveTableRow(table_, row)) {
+                        pendingDeleteSyncIds_.insert(id);
+                        ThemedUi::UpdateTableRow(table_, row, TableRow(records_[static_cast<std::size_t>(index)]));
+                        presentation.role = ThemedStatusRole::Warning;
+                        presentation.status = L"删除已完成，请刷新列表";
+                        continue;
+                    }
+                    records_.erase(records_.begin() + index);
+                    std::erase(naturalOrderIds_, id);
+                    checkedIds_.erase(id);
+                    pendingDeleteSyncIds_.erase(id);
+                    continue;
+                }
+                pendingDeleteSyncIds_.insert(id);
+                checkedIds_.erase(id);
             }
-            naturalOrderIds_.erase(std::remove(naturalOrderIds_.begin(), naturalOrderIds_.end(), result->id), naturalOrderIds_.end());
-            checkedIds_.erase(result->id);
-            deletingIds_.erase(result->id);
-        } else {
-            deletingIds_.erase(result->id);
-            deletedTombstones_.erase(result->id);
-            if (index >= 0) ThemedUi::UpdateTableRow(table_, index, TableRow(records_[static_cast<std::size_t>(index)]));
+            if (affected.contains(id)) {
+                const int row = ThemedUi::FindTableRowByKey(table_, RowKey(id));
+                if (row >= 0) ThemedUi::UpdateTableRow(table_, row, TableRow(records_[static_cast<std::size_t>(index)]));
+            }
         }
-        UpdateSelectionState();
-    }
-    void FinishDelete(std::unique_ptr<DeleteResult> result) {
         deleteBusy_ = false;
-        if (!result) return;
-        for (const auto& id : result->notStartedIds) {
-            deletingIds_.erase(id);
-            deletedTombstones_.erase(id);
-            const int index = RecordIndex(id);
-            if (index >= 0) ThemedUi::UpdateTableRow(table_, index, TableRow(records_[static_cast<std::size_t>(index)]));
-        }
+        deleteTask_.reset();
         UpdateSelectionState();
+        ShowToast(presentation.status + L"。" + presentation.detail,
+            presentation.role == ThemedStatusRole::Success ? ThemedToastRole::Success
+                : presentation.role == ThemedStatusRole::Danger ? ThemedToastRole::Danger : ThemedToastRole::Warning, 6000);
+    }
+    void AbandonDelete() {
+        if (deleteTask_) deleteTask_->RequestStop();
+        deleteTask_.reset();
+        deleteGeneration_ = gWebDavDeleteGeneration.fetch_add(1);
+        deleteProgressDialog_.reset();
+    }
+    LRESULT HandleDeleteTest(WebDavDeleteTestCommand command, const WebDavDeleteTestRequest* request) {
+        if (!QuattroTestMode() || !BackgroundAcceptanceMode()) return 0;
+        switch (command) {
+        case WebDavDeleteTestCommand::SetRows:
+            if (!request || deleteBusy_ || !cache_.Replace(request->records, L"2026-09-08T00:00:00Z")) return 0;
+            records_ = request->records;
+            deletingIds_.clear();
+            deletedTombstones_.clear();
+            pendingDeleteSyncIds_.clear();
+            checkedIds_.clear();
+            naturalOrderIds_.clear();
+            for (const auto& record : records_) naturalOrderIds_.push_back(record.id);
+            PopulateTable();
+            return 1;
+        case WebDavDeleteTestCommand::Delete:
+            if (!request) return 0;
+            DeleteRecords(request->records, request);
+            return 1;
+        case WebDavDeleteTestCommand::Stop:
+            if (deleteTask_) deleteTask_->RequestStop();
+            return 1;
+        case WebDavDeleteTestCommand::Pending: return deleteBusy_;
+        case WebDavDeleteTestCommand::ProgressWindow:
+            return reinterpret_cast<LRESULT>(deleteProgressDialog_ ? deleteProgressDialog_->hwnd() : nullptr);
+        case WebDavDeleteTestCommand::ObsoleteCompletion:
+            FinishDelete(deleteGeneration_ - 1);
+            return 1;
+        case WebDavDeleteTestCommand::RefreshResult: {
+            if (!request || deleteBusy_) return 0;
+            deletedTombstones_.clear();
+            auto result = std::make_unique<ListResult>();
+            result->generation = refreshGeneration_;
+            result->ok = true;
+            result->records = request->records;
+            result->refreshedAtUtc = L"2026-09-08T00:01:00Z";
+            FinishRefresh(std::move(result));
+            return 1;
+        }
+        }
+        return 0;
     }
     void ShowTransferQueue() {
         std::wstring error;
@@ -2408,6 +2412,8 @@ private:
     }
     void ShowFileActionMenu(int row, POINT anchor) {
         if (row < 0 || row >= static_cast<int>(records_.size())) return;
+        if (deletingIds_.contains(records_[static_cast<std::size_t>(row)].id) ||
+            pendingDeleteSyncIds_.contains(records_[static_cast<std::size_t>(row)].id)) return;
         ThemedUi::SetTableSelectedIndex(table_, row);
         const auto& record = records_[static_cast<std::size_t>(row)];
         const bool healthy = IsHealthy(record);
@@ -2556,11 +2562,13 @@ private:
         case WM_WEBDAV_FILE_REFRESH_REQUEST: StartRefresh(); return 0;
         case WM_WEBDAV_FILE_BATCH: ApplyBatch(std::unique_ptr<BatchResult>(reinterpret_cast<BatchResult*>(lParam))); return 0;
         case WM_WEBDAV_FILE_LIST_DONE: FinishRefresh(std::unique_ptr<ListResult>(reinterpret_cast<ListResult*>(lParam))); return 0;
-        case WM_WEBDAV_FILE_DELETE_ITEM_DONE: FinishDeleteItem(std::unique_ptr<DeleteItemResult>(reinterpret_cast<DeleteItemResult*>(lParam))); return 0;
-        case WM_WEBDAV_FILE_DELETE_DONE: FinishDelete(std::unique_ptr<DeleteResult>(reinterpret_cast<DeleteResult*>(lParam))); return 0;
+        case WM_WEBDAV_FILE_DELETE_DONE: FinishDelete(static_cast<std::uintptr_t>(wParam)); return 0;
         case WM_WEBDAV_FILE_SHOW_TEST_DETAILS: ShowDetails(0); return 0;
         case WM_WEBDAV_FILE_APPLY_TEST_INCREMENTAL: ApplyTestIncrementalRefresh(); return 0;
         case WM_WEBDAV_FILE_SHOW_TEST_DELETE_PROGRESS: ShowTestDeleteProgress(); return 0;
+        case WM_QUATTRO_TEST_WEBDAV_DELETE:
+            return HandleDeleteTest(static_cast<WebDavDeleteTestCommand>(wParam),
+                reinterpret_cast<const WebDavDeleteTestRequest*>(lParam));
         case WM_NOTIFY: {
             ThemedTableEvent event{};
             if (ThemedUi::DecodeTableEvent(table_, lParam, event)) {
@@ -2610,8 +2618,8 @@ private:
             return 0;
         }
         case WM_COMMAND: if (LOWORD(wParam)==ID_WEBDAV_FILE_REFRESH) { StartRefresh(); return 0; } if (LOWORD(wParam)==ID_WEBDAV_FILE_TRANSFER_QUEUE) { ShowTransferQueue(); return 0; } if (LOWORD(wParam)==ID_WEBDAV_FILE_SELECT_ALL) { SelectAll(true); return 0; } if (LOWORD(wParam)==ThemedControls::ID_TABLE_SELECT_ALL) { const int cnt = ThemedUi::TableRowCount(table_); std::vector<int> all(static_cast<std::size_t>(cnt)); for (int i = 0; i < cnt; ++i) all[i] = i; ThemedUi::SetTableSelectedIndices(table_, all); return 0; } if (LOWORD(wParam)==ID_WEBDAV_FILE_CLEAR_SELECTION) { SelectAll(false); return 0; } if (LOWORD(wParam)==ID_WEBDAV_FILE_UPLOAD_SELECTED) { UploadSelected(); return 0; } if (LOWORD(wParam)==ID_WEBDAV_FILE_DOWNLOAD_SELECTED) { DownloadSelected(); return 0; } if (LOWORD(wParam)==ID_WEBDAV_FILE_DELETE_SELECTED) { DeleteChecked(); return 0; } if (LOWORD(wParam)==ID_WEBDAV_FILE_DOWNLOAD) { Download(); return 0; } if (LOWORD(wParam)==ID_WEBDAV_FILE_DELETE) { DeleteSelected(); return 0; } return 0;
-        case WM_CLOSE: if (refreshTask_) refreshTask_->RequestStop(); done_=true; DestroyWindow(hwnd_); return 0;
-        case WM_NCDESTROY: if (refreshTask_) refreshTask_->RequestStop(); alive_->store(false); RemovePropW(hwnd_, L"QuattroWebDavIncrementalApplied"); RemovePropW(hwnd_, L"QuattroWebDavFileActionMenuHasOpenLocation"); RemovePropW(hwnd_, L"QuattroWebDavFileActionMenuHasUpload"); done_=true; hwnd_=nullptr; return 0;
+        case WM_CLOSE: if (refreshTask_) refreshTask_->RequestStop(); AbandonDelete(); done_=true; DestroyWindow(hwnd_); return 0;
+        case WM_NCDESTROY: if (refreshTask_) refreshTask_->RequestStop(); AbandonDelete(); alive_->store(false); RemovePropW(hwnd_, L"QuattroWebDavIncrementalApplied"); RemovePropW(hwnd_, L"QuattroWebDavFileActionMenuHasOpenLocation"); RemovePropW(hwnd_, L"QuattroWebDavFileActionMenuHasUpload"); done_=true; hwnd_=nullptr; return 0;
         default: return DefWindowProcW(hwnd_, message, wParam, lParam);
         }
     }
@@ -2625,7 +2633,10 @@ private:
     ThemedTableSortState sortState_{};
     std::set<std::wstring> checkedIds_; std::set<std::wstring> deletingIds_;
     std::set<std::wstring> deletedTombstones_; std::unique_ptr<ThemedWindowUi> windowUi_;
-    std::shared_ptr<DeleteTaskState> deleteTaskState_;
+    std::shared_ptr<TaskHandle> deleteTask_;
+    std::uintptr_t deleteGeneration_ = 0;
+    std::set<std::wstring> pendingDeleteSyncIds_;
+    std::function<void(HWND)> backgroundTestAction_;
     std::unique_ptr<ThemedTaskProgressDialog> deleteProgressDialog_;
     std::shared_ptr<std::atomic<bool>> alive_ = std::make_shared<std::atomic<bool>>(true);
     std::shared_ptr<ScanTaskHandle> refreshTask_; std::uint64_t refreshGeneration_=0; bool refreshBusy_=false; bool deleteBusy_=false; bool done_=false;
@@ -2651,7 +2662,8 @@ public:
         SettingsContextMenuRefreshApplyCallback contextMenuRefreshApplyCallback,
         SettingsContextMenuProviderIconRunner contextMenuProviderIconRunner,
         SettingsCopyPathContextMenuCallback copyPathContextMenuCallback,
-        SettingsWebDavUploadContextMenuCallback webDavUploadContextMenuCallback)
+        SettingsWebDavUploadContextMenuCallback webDavUploadContextMenuCallback,
+        SettingsWebDavPasswordSaveCallback webDavPasswordSaveCallback)
         : owner_(owner),
           instance_(instance),
           config_(config),
@@ -2670,7 +2682,8 @@ public:
           contextMenuRefreshApplyCallback_(std::move(contextMenuRefreshApplyCallback)),
           contextMenuProviderIconRunner_(std::move(contextMenuProviderIconRunner)),
           copyPathContextMenuCallback_(std::move(copyPathContextMenuCallback)),
-          webDavUploadContextMenuCallback_(std::move(webDavUploadContextMenuCallback)) {}
+          webDavUploadContextMenuCallback_(std::move(webDavUploadContextMenuCallback)),
+          webDavPasswordSaveCallback_(std::move(webDavPasswordSaveCallback)) {}
 
     ~SettingsDialog() {
         AbandonContextMenuIconLoad();
@@ -3109,15 +3122,11 @@ private:
             }
         }
 
-        const int selected = ThemedUi::TableSelectedIndex(contextMenuTable_);
-        const std::intptr_t selectedKey = selected >= 0
-            ? ThemedUi::TableRowKey(contextMenuTable_, selected)
-            : 0;
-        contextMenuTableOrder_ = TrackedContextMenuDisplayOrder(installed);
+        const auto desiredOrder = TrackedContextMenuDisplayOrder(installed);
         std::vector<ThemedTableRow> rows;
-        rows.reserve(contextMenuTableOrder_.size());
+        rows.reserve(desiredOrder.size());
 
-        for (std::size_t bindingIndex : contextMenuTableOrder_) {
+        for (std::size_t bindingIndex : desiredOrder) {
             const auto& provider = providers[bindingIndex];
             const auto& iconInfo = contextMenuProviderIcons_[bindingIndex];
             ThemedTableRow row{};
@@ -3150,11 +3159,38 @@ private:
             row.enabled = true;
             rows.push_back(std::move(row));
         }
-        ThemedUi::SetTableRows(contextMenuTable_, rows);
-        if (selectedKey != 0) {
-            for (std::size_t index = 0; index < rows.size(); ++index) {
-                if (rows[index].key == selectedKey) {
-                    ThemedUi::SetTableSelectedIndex(contextMenuTable_, static_cast<int>(index));
+        const auto sameRow = [](const ThemedTableRow& left, const ThemedTableRow& right) {
+            return left.key == right.key && left.checked == right.checked &&
+                left.enabled == right.enabled && left.active == right.active &&
+                left.cells.size() == right.cells.size() &&
+                std::equal(left.cells.begin(), left.cells.end(), right.cells.begin(), [](const auto& a, const auto& b) {
+                    return a.text == b.text && a.image == b.image && a.role == b.role &&
+                        a.actionId == b.actionId && a.secondaryText == b.secondaryText;
+                });
+        };
+        std::vector<std::intptr_t> keys;
+        for (const auto& row : rows) {
+            keys.push_back(row.key);
+            const int index = ThemedUi::FindTableRowByKey(contextMenuTable_, row.key);
+            const auto old = contextMenuRenderedRows_.find(row.key);
+            if (index >= 0 && old != contextMenuRenderedRows_.end() && sameRow(old->second, row) &&
+                ThemedUi::IsTableChecked(contextMenuTable_, index) == row.checked) continue;
+            const bool changed = index < 0 ? ThemedUi::AppendTableRow(contextMenuTable_, row) >= 0
+                : ThemedUi::UpdateTableRow(contextMenuTable_, index, row);
+            if (changed) contextMenuRenderedRows_[row.key] = row;
+        }
+        for (int row = ThemedUi::TableRowCount(contextMenuTable_) - 1; row >= 0; --row) {
+            const auto key = ThemedUi::TableRowKey(contextMenuTable_, row);
+            if (std::find(keys.begin(), keys.end(), key) == keys.end() &&
+                ThemedUi::RemoveTableRow(contextMenuTable_, row)) contextMenuRenderedRows_.erase(key);
+        }
+        ThemedUi::SetTableRowOrder(contextMenuTable_, keys);
+        contextMenuTableOrder_.clear();
+        for (int row = 0; row < ThemedUi::TableRowCount(contextMenuTable_); ++row) {
+            const auto key = ThemedUi::TableRowKey(contextMenuTable_, row);
+            for (std::size_t index = 0; index < providers.size(); ++index) {
+                if (providers[index].checkBoxControlId == key) {
+                    contextMenuTableOrder_.push_back(index);
                     break;
                 }
             }
@@ -3215,49 +3251,34 @@ private:
             return false;
         }
         AbandonContextMenuIconLoad();
-        auto state = std::make_shared<SettingsContextMenuIconAsyncState>();
-        state->generation = gContextMenuIconGeneration.fetch_add(1);
-        contextMenuIconAsyncState_ = state;
-        contextMenuIconLoadGeneration_ = state->generation;
+        const auto generation = gContextMenuIconGeneration.fetch_add(1);
+        contextMenuIconLoadGeneration_ = generation;
         const HWND target = hwnd_;
         const SettingsContextMenuProviderIconRunner runner = contextMenuProviderIconRunner_;
         SetContextMenuIconLoadBusy(true);
-        std::thread([state, target, runner]() {
-            std::vector<ContextMenuProviderIconInfo> result;
-            try {
-                result = runner
-                    ? runner(state->stopSource.get_token())
-                    : ContextMenuProviderIconService().Load(state->stopSource.get_token());
-            } catch (...) {
-                result.clear();
-            }
-            if (state->abandoned.load() || state->stopSource.stop_requested()) {
-                return;
-            }
-            {
-                std::lock_guard lock(state->mutex);
-                state->result = std::move(result);
-            }
-            PostMessageW(
-                target,
-                WM_CONTEXT_MENU_ICON_LOAD_DONE,
-                static_cast<WPARAM>(state->generation),
-                0);
-        }).detach();
+        TaskOptions options;
+        options.mode = TaskExecutionMode::BackgroundSingle;
+        options.completionCallback = [target, generation]() {
+            PostMessageW(target, WM_CONTEXT_MENU_ICON_LOAD_DONE, static_cast<WPARAM>(generation), 0);
+        };
+        contextMenuIconTask_ = TaskExecutionService::StartTyped<std::vector<ContextMenuProviderIconInfo>>(
+            options, [runner](TaskContext& context) {
+                return runner ? runner(context.StopToken())
+                    : ContextMenuProviderIconService().Load(context.StopToken());
+            });
         return true;
     }
 
     void CompleteContextMenuIconLoad(std::uintptr_t generation) {
-        const auto state = contextMenuIconAsyncState_;
-        if (!state || generation != contextMenuIconLoadGeneration_ || generation != state->generation) {
+        const auto task = contextMenuIconTask_;
+        if (!task || generation != contextMenuIconLoadGeneration_ || !task->IsFinished()) {
             return;
         }
         std::optional<std::vector<ContextMenuProviderIconInfo>> result;
-        {
-            std::lock_guard lock(state->mutex);
-            result = std::move(state->result);
+        if (task->Status() == TaskStatus::Completed) {
+            result = task->ResultCopy<std::vector<ContextMenuProviderIconInfo>>();
         }
-        contextMenuIconAsyncState_.reset();
+        contextMenuIconTask_.reset();
         SetContextMenuIconLoadBusy(false);
         if (!result || result->size() != TrackedContextMenuProviders().size()) {
             contextMenuProviderLoadCompleted_ = true;
@@ -3274,13 +3295,9 @@ private:
     }
 
     void AbandonContextMenuIconLoad() {
-        const auto state = contextMenuIconAsyncState_;
-        if (!state) {
-            return;
-        }
-        state->abandoned = true;
-        state->stopSource.request_stop();
-        contextMenuIconAsyncState_.reset();
+        if (contextMenuIconTask_) contextMenuIconTask_->RequestStop();
+        contextMenuIconTask_.reset();
+        contextMenuIconLoadGeneration_ = gContextMenuIconGeneration.fetch_add(1);
     }
 
     void ReadContextMenuTableDraft(AppConfig& value) const {
@@ -3331,9 +3348,8 @@ private:
         return true;
     }
 
-    AppConfig ReadCurrentTabDraft() {
-        AppConfig value = config_;
-        switch (currentTab_) {
+    void ReadTabDraft(int tab, AppConfig& value) {
+        switch (tab) {
         case TabDisplay: {
             value.showTitle = ThemedUi::IsChecked(showTitle_);
             value.showGroup = ThemedUi::IsChecked(showGroup_);
@@ -3388,14 +3404,21 @@ private:
             value.updateUrl = GetText(updateUrlEdit_);
             break;
         case TabWebDav:
-            value = ReadWebDavDraftFromControls();
+            ReadWebDavDraft(value);
             break;
         case TabHttp:
-            value = ReadHttpDraftFromControls();
+            ReadHttpDraft(value);
             break;
         case TabBackup:
         default:
             break;
+        }
+    }
+
+    AppConfig ReadSettingsDraft() {
+        AppConfig value = config_;
+        for (int tab = 0; tab < TabCount; ++tab) {
+            ReadTabDraft(tab, value);
         }
         return value;
     }
@@ -3520,6 +3543,11 @@ private:
 
     AppConfig ReadWebDavDraftFromControls() {
         AppConfig value = config_;
+        ReadWebDavDraft(value);
+        return value;
+    }
+
+    void ReadWebDavDraft(AppConfig& value) {
         value.webDavEnabled = ThemedUi::IsChecked(webDavEnabled_);
         value.registerWebDavUploadContextMenu = ThemedUi::IsChecked(webDavUploadContextMenu_);
         value.webDavUrl = GetText(webDavUrlEdit_);
@@ -3530,7 +3558,6 @@ private:
         value.webDavLastSyncAt = draft_.webDavLastSyncAt;
         if (Trim(value.webDavBackupPath).empty()) value.webDavBackupPath = L"/Quattro/backups/";
         if (Trim(value.webDavFilesPath).empty()) value.webDavFilesPath = L"/Quattro/files/";
-        return value;
     }
 
     void UpdateWebDavLastSyncLabel() {
@@ -3550,21 +3577,26 @@ private:
         }
     }
 
-    void MarkWebDavSyncedNow(bool importedData) {
+    bool MarkWebDavSyncedNow(bool importedData) {
         AppConfig next = ReadWebDavDraftFromControls();
         next.webDavLastSyncAt = CurrentTodoTimestamp();
-        draft_ = next;
-        config_ = next;
-        if (importedData) {
-            importedData_ = true;
-        }
-        UpdateWebDavLastSyncLabel();
+        draft_.webDavLastSyncAt = next.webDavLastSyncAt;
+        importedData_ = importedData_ || importedData;
         if (applyCallback_) {
-            mainHotKeyRegistered_ = applyCallback_(config_, importedData_);
-            processLocatorHotKeyRegistered_ = config_.globalHotKeysEnabled && config_.processLocatorHotKey != 0;
-            copySelectedPathsHotKeyRegistered_ = config_.globalHotKeysEnabled && config_.copySelectedPathsHotKey != 0;
-            importedData_ = false;
+            const SettingsApplyResult result = applyCallback_(next, importedData_);
+            if (!AcceptSettingsResult(result)) return false;
+        } else {
+            config_ = next;
         }
+        draft_.webDavLastSyncAt = config_.webDavLastSyncAt;
+        UpdateWebDavLastSyncLabel();
+        return true;
+    }
+
+    bool SaveWebDavPassword(const AppConfig& value, const std::wstring& password, std::wstring& error) {
+        return webDavPasswordSaveCallback_
+            ? webDavPasswordSaveCallback_(value, password, error)
+            : WebDavCredentialService::SavePassword(value, password, error);
     }
 
     bool SaveWebDavPasswordIfNeeded(const AppConfig& value) {
@@ -3573,7 +3605,7 @@ private:
             return true;
         }
         std::wstring error;
-        if (!WebDavCredentialService::SavePassword(value, password, error)) {
+        if (!SaveWebDavPassword(value, password, error)) {
             ShowThemedMessageBox(hwnd_, instance_, theme_, error, L"WebDAV 备份", MB_OK | MB_ICONWARNING);
             return false;
         }
@@ -3614,6 +3646,7 @@ private:
         if (answer != IDYES) {
             return;
         }
+        const AppConfig beforeReset = config_;
         if (resetContextMenuCallback_()) {
             for (const auto& provider : TrackedContextMenuProviders()) {
                 if (hasSelection && !IsContextMenuProviderSelected(selectedKeys, provider.checkBoxControlId)) {
@@ -3626,6 +3659,12 @@ private:
             ShowToast(hasSelection ? L"已重置所选工具的右键菜单跟踪。" : L"右键菜单已重置，跟踪开关与缓存均已恢复默认。",
                 ThemedToastRole::Success, 5000);
         } else {
+            for (const auto& provider : TrackedContextMenuProviders()) {
+                if (beforeReset.*(provider.configMember) != config_.*(provider.configMember)) {
+                    draft_.*(provider.configMember) = config_.*(provider.configMember);
+                }
+            }
+            AddContextMenuTableRows();
             ShowThemedMessageBox(
                 hwnd_, instance_, theme_, L"右键菜单重置失败，请确认缓存目录可写。", L"重置右键菜单", MB_OK | MB_ICONWARNING);
         }
@@ -4093,8 +4132,9 @@ private:
             return;
         case SettingsWebDavOperation::Upload:
             if (result->ok) {
-                MarkWebDavSyncedNow(false);
-                ShowToast(result->message.empty() ? L"已上传到云端。" : result->message, ThemedToastRole::Success);
+                if (MarkWebDavSyncedNow(false)) {
+                    ShowToast(result->message.empty() ? L"已上传到云端。" : result->message, ThemedToastRole::Success);
+                }
             } else {
                 ShowThemedMessageBox(hwnd_, instance_, theme_, result->message, L"上传到云端", MB_OK | MB_ICONWARNING);
             }
@@ -4107,8 +4147,9 @@ private:
             return;
         case SettingsWebDavOperation::DownloadApply:
             if (result->ok) {
-                MarkWebDavSyncedNow(true);
-                ShowToast(result->message.empty() ? L"已从云端下载并合并。" : result->message, ThemedToastRole::Success);
+                if (MarkWebDavSyncedNow(true)) {
+                    ShowToast(result->message.empty() ? L"已从云端下载并合并。" : result->message, ThemedToastRole::Success);
+                }
             } else {
                 ShowThemedMessageBox(hwnd_, instance_, theme_, result->message, L"从云端下载", MB_OK | MB_ICONWARNING);
             }
@@ -4257,15 +4298,21 @@ private:
 
     AppConfig ReadHttpDraftFromControls() {
         AppConfig value = config_;
-        value.httpServerEnabled = httpServer_ && httpServer_->IsRunning();
+        ReadHttpDraft(value);
+        return value;
+    }
+
+    void ReadHttpDraft(AppConfig& value) {
+        if (httpServer_) value.httpServerEnabled = httpServer_->IsRunning();
         value.httpServerAutoStart = httpServerAutoStart_ && ThemedUi::IsChecked(httpServerAutoStart_);
-        value.httpServerLanAccess = true;
+        if (httpServer_ && httpServer_->IsRunning()) {
+            value.httpServerLanAccess = httpServer_->options().lanAccess;
+        }
         value.httpServerPort = ParseHttpPortText(GetText(httpServerAddressEdit_), value.httpServerPort);
         value.httpServerRootPath = GetText(httpServerRootEdit_);
         if (Trim(value.httpServerRootPath).empty()) {
             value.httpServerRootPath = LocalHttpServerService::DefaultRootPath(httpRootBaseDirectory_).wstring();
         }
-        return value;
     }
 
     std::wstring CurrentHttpAddress(bool trailingSlash) {
@@ -4447,22 +4494,41 @@ private:
         ShowToast(L"HTTP 服务已停止。", ThemedToastRole::Info);
     }
 
+    bool AcceptSettingsResult(const SettingsApplyResult& result) {
+        if (!result.saved) {
+            ShowToast(result.error.empty() ? L"设置保存失败，请检查配置目录后重试。" : result.error,
+                ThemedToastRole::Danger);
+            return false;
+        }
+        config_ = result.config;
+        mainHotKeyRegistered_ = result.mainHotKeyRegistered;
+        processLocatorHotKeyRegistered_ = result.processLocatorHotKeyRegistered;
+        copySelectedPathsHotKeyRegistered_ = result.copySelectedPathsHotKeyRegistered;
+        importedData_ = false;
+        if (!result.warning.empty()) ShowToast(result.warning, ThemedToastRole::Warning);
+        return true;
+    }
+
     bool CommitSettings(bool closeAfterCommit) {
         if (webDavBusy_) {
             ShowToast(L"WebDAV 操作正在进行，请稍候完成。", ThemedToastRole::Warning);
             return false;
         }
-        AppConfig next = ReadCurrentTabDraft();
-        if (currentTab_ == TabHotKeys) {
-            draft_.globalHotKeysEnabled = next.globalHotKeysEnabled;
-        }
-        if (currentTab_ == TabHotKeys && !ValidateHotKeysBeforeSave()) {
+        AppConfig next = ReadSettingsDraft();
+        draft_.globalHotKeysEnabled = next.globalHotKeysEnabled;
+        const bool hotKeysChanged = next.globalHotKeysEnabled != config_.globalHotKeysEnabled ||
+            next.mainHotKey != config_.mainHotKey ||
+            next.processLocatorHotKey != config_.processLocatorHotKey ||
+            next.copySelectedPathsHotKey != config_.copySelectedPathsHotKey;
+        if (hotKeysChanged && !ValidateHotKeysBeforeSave()) {
             return false;
         }
-        if (currentTab_ == TabWebDav && !SaveWebDavPasswordIfNeeded(next)) {
+        const bool passwordPending = !GetText(webDavPasswordEdit_).empty();
+        if (passwordPending && (Trim(next.webDavUrl).empty() || Trim(next.webDavUserName).empty())) {
+            ShowToast(L"保存密码前请填写 WebDAV 地址和用户名。", ThemedToastRole::Warning);
             return false;
         }
-        if (next.registerCopyPathContextMenu != config_.registerCopyPathContextMenu &&
+        if (!applyCallback_ && next.registerCopyPathContextMenu != config_.registerCopyPathContextMenu &&
             copyPathContextMenuCallback_) {
             std::wstring error;
             if (!copyPathContextMenuCallback_(next.registerCopyPathContextMenu, error)) {
@@ -4477,7 +4543,7 @@ private:
                 return false;
             }
         }
-        if (next.registerWebDavUploadContextMenu != config_.registerWebDavUploadContextMenu &&
+        if (!applyCallback_ && next.registerWebDavUploadContextMenu != config_.registerWebDavUploadContextMenu &&
             webDavUploadContextMenuCallback_) {
             std::wstring error;
             if (!webDavUploadContextMenuCallback_(next.registerWebDavUploadContextMenu, error)) {
@@ -4489,18 +4555,35 @@ private:
             }
         }
 
-        config_ = next;
+        std::wstring warning;
+        if (applyCallback_) {
+            const SettingsApplyResult result = applyCallback_(next, importedData_);
+            if (!AcceptSettingsResult(result)) return false;
+            warning = result.warning;
+        } else {
+            config_ = next;
+        }
+        draft_ = config_;
+        ThemedUi::SetChecked(autoRun_, config_.autoRun);
+        ThemedUi::SetChecked(registerCopyPathContextMenu_, config_.registerCopyPathContextMenu);
+        ThemedUi::SetChecked(webDavUploadContextMenu_, config_.registerWebDavUploadContextMenu);
         UpdateCopyPathContextMenuStatus(config_.registerCopyPathContextMenu);
-        if (!closeAfterCommit && applyCallback_) {
-            mainHotKeyRegistered_ = applyCallback_(config_, importedData_);
-            processLocatorHotKeyRegistered_ = config_.globalHotKeysEnabled && config_.processLocatorHotKey != 0;
-            copySelectedPathsHotKeyRegistered_ = config_.globalHotKeysEnabled && config_.copySelectedPathsHotKey != 0;
-            importedData_ = false;
-            UpdateHotKeyLabels();
-            UpdateHttpStatusLabel();
+        UpdateHotKeyLabels();
+        UpdateHttpStatusLabel();
+        if (passwordPending) {
+            std::wstring error;
+            if (!SaveWebDavPassword(config_, GetText(webDavPasswordEdit_), error)) {
+                WriteAppLog(L"设置已保存，但 WebDAV 密码保存失败: " + error);
+                ShowToast(L"设置已保存，但 WebDAV 密码保存失败。请保留输入并重试。",
+                    ThemedToastRole::Danger);
+                return false;
+            }
+            SetWindowTextW(webDavPasswordEdit_, L"");
+        }
+        if (!closeAfterCommit && warning.empty()) {
             ShowToast(L"设置已应用。", ThemedToastRole::Success);
         }
-        accepted_ = true;
+        accepted_ = closeAfterCommit;
         return true;
     }
 
@@ -5139,6 +5222,24 @@ private:
             EndPaint(hwnd_, &ps);
             return 0;
         }
+        case WM_QUATTRO_TEST_SETTINGS_PROVIDER:
+            if (QuattroTestMode() && BackgroundAcceptanceMode()) {
+                switch (static_cast<SettingsProviderTestCommand>(wParam)) {
+                case SettingsProviderTestCommand::Rebuild: AddContextMenuTableRows(); return 1;
+                case SettingsProviderTestCommand::Refresh: return StartContextMenuIconLoad(true);
+                case SettingsProviderTestCommand::Pending: return contextMenuIconLoadBusy_;
+                }
+            }
+            return 0;
+        case WM_QUATTRO_TEST_SETTINGS_SYNC_RESULT:
+            if (QuattroTestMode() && BackgroundAcceptanceMode()) {
+                auto result = std::make_unique<SettingsWebDavResult>();
+                result->operation = wParam ? SettingsWebDavOperation::DownloadApply : SettingsWebDavOperation::Upload;
+                result->ok = true;
+                HandleWebDavResult(std::move(result));
+                return TRUE;
+            }
+            return FALSE;
         case WM_SETTINGS_WEBDAV_DONE:
             HandleWebDavResult(std::unique_ptr<SettingsWebDavResult>(reinterpret_cast<SettingsWebDavResult*>(lParam)));
             return 0;
@@ -5444,6 +5545,7 @@ private:
     HWND registerCopyPathContextMenu_ = nullptr;
     HWND copyPathContextMenuStatus_ = nullptr;
     HWND contextMenuTable_ = nullptr;
+    std::map<std::intptr_t, ThemedTableRow> contextMenuRenderedRows_;
     HWND resetContextMenuButton_ = nullptr;
     HWND refreshContextMenuButton_ = nullptr;
     HIMAGELIST contextMenuImages_ = nullptr;
@@ -5520,9 +5622,10 @@ private:
     SettingsContextMenuProviderIconRunner contextMenuProviderIconRunner_;
     SettingsCopyPathContextMenuCallback copyPathContextMenuCallback_;
     SettingsWebDavUploadContextMenuCallback webDavUploadContextMenuCallback_;
+    SettingsWebDavPasswordSaveCallback webDavPasswordSaveCallback_;
     std::shared_ptr<ScanTaskHandle> contextMenuRefreshTask_;
     std::unique_ptr<ThemedTaskProgressDialog> contextMenuRefreshProgressDialog_;
-    std::shared_ptr<SettingsContextMenuIconAsyncState> contextMenuIconAsyncState_;
+    std::shared_ptr<TaskHandle> contextMenuIconTask_;
     std::uintptr_t contextMenuIconLoadGeneration_ = 0;
 };
 }
@@ -5560,8 +5663,9 @@ bool ShowWebDavBackupSelectionDialog(
     return dialog.Run();
 }
 
-bool ShowWebDavFileManagerDialog(HWND owner, HINSTANCE instance, const Theme& theme, const AppConfig& config) {
-    WebDavFileManagerDialog dialog(owner, instance, theme, config);
+bool ShowWebDavFileManagerDialog(HWND owner, HINSTANCE instance, const Theme& theme, const AppConfig& config,
+    std::function<void(HWND)> backgroundTestAction) {
+    WebDavFileManagerDialog dialog(owner, instance, theme, config, std::move(backgroundTestAction));
     return dialog.Run();
 }
 
@@ -5584,7 +5688,8 @@ bool ShowSettingsDialog(
     SettingsContextMenuRefreshApplyCallback contextMenuRefreshApplyCallback,
     SettingsContextMenuProviderIconRunner contextMenuProviderIconRunner,
     SettingsCopyPathContextMenuCallback copyPathContextMenuCallback,
-    SettingsWebDavUploadContextMenuCallback webDavUploadContextMenuCallback) {
+    SettingsWebDavUploadContextMenuCallback webDavUploadContextMenuCallback,
+    SettingsWebDavPasswordSaveCallback webDavPasswordSaveCallback) {
     SettingsDialog dialog(
         owner,
         instance,
@@ -5603,7 +5708,8 @@ bool ShowSettingsDialog(
         std::move(contextMenuRefreshApplyCallback),
         std::move(contextMenuProviderIconRunner),
         std::move(copyPathContextMenuCallback),
-        std::move(webDavUploadContextMenuCallback));
+        std::move(webDavUploadContextMenuCallback),
+        std::move(webDavPasswordSaveCallback));
     const bool accepted = dialog.Run();
     if (importedData) {
         *importedData = dialog.webDavDataImported();

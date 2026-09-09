@@ -27,18 +27,15 @@ ThemedTaskProgressSnapshot ToThemedTaskProgressSnapshot(const TaskProgressSnapsh
         snapshot.taskStatus == TaskStatus::Failed;
     output.completed = snapshot.taskStatus == TaskStatus::Completed;
     output.stopRequested = snapshot.stopRequested;
-    output.indeterminate = snapshot.indeterminate || snapshot.total == 0;
-    if (!output.indeterminate) {
+    const bool hasTotal = !snapshot.indeterminate && snapshot.total > 0;
+    output.indeterminate = !hasTotal && !output.finished;
+    if (hasTotal) {
         const double rawValue = std::clamp(
             static_cast<double>(snapshot.current) / static_cast<double>(snapshot.total),
             0.0,
             1.0);
-        const bool running = snapshot.taskStatus == TaskStatus::Pending ||
-            snapshot.taskStatus == TaskStatus::Running;
         if (output.completed) {
             output.value = 1.0;
-        } else if (running && rawValue <= 0.0) {
-            output.value = 0.01;
         } else {
             output.value = rawValue;
         }
@@ -46,17 +43,17 @@ ThemedTaskProgressSnapshot ToThemedTaskProgressSnapshot(const TaskProgressSnapsh
     output.activity = !output.indeterminate &&
         (snapshot.taskStatus == TaskStatus::Pending || snapshot.taskStatus == TaskStatus::Running) &&
         !output.stopRequested;
-    output.showPercent = !output.indeterminate;
+    output.showPercent = hasTotal;
     if (snapshot.taskStatus == TaskStatus::Failed) {
         output.role = ThemedStatusRole::Danger;
-        if (output.status.empty()) output.status = L"任务失败";
-        if (output.detail.empty()) output.detail = snapshot.error;
+        output.status = L"任务失败";
+        if (!snapshot.error.empty()) output.detail = snapshot.error;
     } else if (snapshot.taskStatus == TaskStatus::Stopped) {
         output.role = ThemedStatusRole::Warning;
-        if (output.status.empty()) output.status = L"任务已停止";
+        output.status = L"任务已停止";
     } else if (snapshot.taskStatus == TaskStatus::Completed) {
         output.role = ThemedStatusRole::Success;
-        if (output.status.empty()) output.status = L"任务完成";
+        output.status = L"任务完成";
     } else {
         output.role = ThemedStatusRole::Info;
     }
@@ -208,6 +205,7 @@ void ThemedTaskProgressDialog::Refresh() {
     if (!snapshot.title.empty() && (!hasSnapshot_ || snapshot.title != lastSnapshot_.title)) SetWindowTextW(hwnd_, snapshot.title.c_str());
     if (!hasSnapshot_ || snapshot.status != lastSnapshot_.status) ThemedUi::SetText(status_, snapshot.status);
     if (!hasSnapshot_ || snapshot.detail != lastSnapshot_.detail) ThemedUi::SetText(detail_, snapshot.detail);
+    if (!hasSnapshot_ || snapshot.role != lastSnapshot_.role) ui.SetStatusTextRole(status_, snapshot.role);
     if (!hasSnapshot_ || snapshot.value != lastSnapshot_.value ||
         snapshot.indeterminate != lastSnapshot_.indeterminate ||
         snapshot.activity != lastSnapshot_.activity ||
