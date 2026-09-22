@@ -80,6 +80,24 @@ foreach ($required in @(
     }
 }
 
+$hotKeyService = Get-Content -LiteralPath (Join-Path $root "src/services/GlobalHotKeyService.cpp") -Raw
+foreach ($required in @(
+    "if (BackgroundTest()) return std::nullopt;",
+    "if (BackgroundTest()) return GlobalHotKeyRegistration",
+    "(!testOperations_ && BackgroundTest())"
+)) {
+    if (!$hotKeyService.Contains($required)) {
+        throw "Global hotkey service is missing a native-input background guard: $required"
+    }
+}
+$hotKeyTests = Get-Content -LiteralPath (Join-Path $root "tests/GlobalHotKeyServiceTests.cpp") -Raw
+foreach ($pattern in @("GetAsyncKeyState\s*\(", "GetKeyState\s*\(", "GetKeyboardState\s*\(",
+        "SendInput\s*\(", "SetWindowsHookExW\s*\(")) {
+    if ($hotKeyTests -match $pattern) {
+        throw "Global hotkey tests access real desktop input: $pattern"
+    }
+}
+
 $harness = Get-Content -LiteralPath (Join-Path $PSScriptRoot "QuattroTestHarness.ps1") -Raw
 foreach ($required in @(
     "QUATTRO_USER_CONFIG_DIR",

@@ -70,6 +70,8 @@
 #include <string>
 #include <vector>
 
+int RunGlobalHotKeyServiceTests();
+
 #ifndef HDS_NOSIZING
 #define HDS_NOSIZING 0x0800
 #endif
@@ -724,6 +726,7 @@ LRESULT CALLBACK TableUpdateNotificationParentProc(
 
 int wmain(int argc, wchar_t* argv[]) {
     if (argc == 2 && std::wstring(argv[1]) == L"--window-activation-only") {
+        failures += RunGlobalHotKeyServiceTests();
         TestDoubleAltGesture();
         TestForegroundInputRecovery();
         TestMainHotKeyActionDecision();

@@ -64,6 +64,7 @@
 #include <unordered_map>
 #include <uxtheme.h>
 #include <windowsx.h>
+#include <wtsapi32.h>
 
 namespace {
 constexpr int ID_HOTKEY_MAIN = 1;
@@ -80,6 +81,7 @@ constexpr UINT_PTR ID_TIMER_DOUBLE_ALT_DISPATCH = 15;
 constexpr UINT_PTR ID_TIMER_WAKE_RETRY = 16;
 constexpr UINT kTrayIconId = 1;
 constexpr UINT WM_QUATTRO_DOUBLE_ALT_HOTKEY = WM_APP + 0x6C;
+constexpr UINT WM_QUATTRO_HOTKEY_STATUS = WM_APP + 0x85;
 constexpr UINT WM_QUATTRO_NOTE_EDIT_DEFERRED_REDRAW = WM_APP + 0x7F;
 constexpr int kDockVisiblePixels = 3;
 constexpr int kDockPeekVisiblePixels = 6;
@@ -123,62 +125,6 @@ std::wstring BuildMarkerDisplayText() {
 
 std::wstring AppWindowTitle() {
     return std::wstring(kAppDisplayName) + BuildMarkerDisplayText();
-}
-
-HHOOK gDoubleAltHook = nullptr;
-HWND gDoubleAltTarget = nullptr;
-DoubleAltGesture gDoubleAltGesture;
-
-LRESULT CALLBACK DoubleAltKeyboardProc(int code, WPARAM wParam, LPARAM lParam) {
-    UINT_PTR gesture = 0;
-    const HWND target = gDoubleAltTarget;
-    HWND foreground = nullptr;
-    if (code == HC_ACTION && gDoubleAltTarget) {
-        const auto* event = reinterpret_cast<const KBDLLHOOKSTRUCT*>(lParam);
-        const bool keyDown = wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN;
-        const bool keyUp = wParam == WM_KEYUP || wParam == WM_SYSKEYUP;
-        if (keyDown || keyUp) {
-            gesture = gDoubleAltGesture.OnKey(event->vkCode, keyDown,
-                event->time, (event->flags & LLKHF_INJECTED) != 0, event->dwExtraInfo);
-            if (gesture) foreground = GetForegroundWindow();
-        }
-    }
-    // Never activate inside the low-level hook or swallow Alt/Alt+Tab. A posted
-    // message alone can run before the recipient processes the physical release.
-    const LRESULT next = CallNextHookEx(gDoubleAltHook, code, wParam, lParam);
-    if (gesture && next == 0 && gDoubleAltTarget == target) {
-        PostMessageW(target, WM_QUATTRO_DOUBLE_ALT_HOTKEY, gesture,
-            reinterpret_cast<LPARAM>(foreground));
-    }
-    return next;
-}
-
-bool InstallDoubleAltHotKeyHook(HWND hwnd) {
-    if (gDoubleAltHook) {
-        gDoubleAltTarget = hwnd;
-        return true;
-    }
-    gDoubleAltTarget = hwnd;
-    gDoubleAltGesture.Reset();
-    gDoubleAltHook = SetWindowsHookExW(WH_KEYBOARD_LL, DoubleAltKeyboardProc, GetModuleHandleW(nullptr), 0);
-    if (!gDoubleAltHook) {
-        gDoubleAltTarget = nullptr;
-        return false;
-    }
-    return true;
-}
-
-void UninstallDoubleAltHotKeyHook(HWND hwnd) {
-    if (gDoubleAltTarget != hwnd) {
-        return;
-    }
-    if (gDoubleAltHook) {
-        UnhookWindowsHookEx(gDoubleAltHook);
-        gDoubleAltHook = nullptr;
-    }
-    gDoubleAltTarget = nullptr;
-    gDoubleAltGesture.Reset();
-    KillTimer(hwnd, ID_TIMER_DOUBLE_ALT_DISPATCH);
 }
 
 std::wstring VersionCompareText(int comparison) {
@@ -1852,6 +1798,8 @@ MainWindow::MainWindow(
 }
 
 MainWindow::~MainWindow() {
+    doubleAltHotKey_.Stop();
+    if (sessionNotificationsRegistered_) WTSUnRegisterSessionNotification(hwnd_);
     CancelResourceRefresh();
     httpServerService_.Stop();
     if (dockPeek_) {
@@ -1996,6 +1944,9 @@ bool MainWindow::Create() {
         WriteStartupTiming(L"drag drop deferred");
     }
     RegisterConfiguredHotKeys();
+    if (!QuattroTestMode() && !BackgroundAcceptanceMode() && !SuppressForegroundActivation()) {
+        sessionNotificationsRegistered_ = WTSRegisterSessionNotification(hwnd_, NOTIFY_FOR_THIS_SESSION) != FALSE;
+    }
     WriteStartupTiming(L"hotkeys registered", L"main_hotkey=" + std::wstring(mainHotKeyRegistered_ ? L"1" : L"0"));
     if (config_.autoDock || config_.hideWhenInactive) {
         dockTimerId_ = SetTimer(hwnd_, ID_TIMER_DOCK, 250, nullptr);
@@ -2053,6 +2004,31 @@ LRESULT CALLBACK MainWindow::WindowProc(HWND hwnd, UINT message, WPARAM wParam, 
 
 LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
     switch (message) {
+    case WM_WTSSESSION_CHANGE:
+        if (wParam == WTS_SESSION_LOCK || wParam == WTS_SESSION_UNLOCK ||
+            wParam == WTS_CONSOLE_CONNECT || wParam == WTS_REMOTE_CONNECT ||
+            wParam == WTS_CONSOLE_DISCONNECT || wParam == WTS_REMOTE_DISCONNECT) {
+            CancelPendingMainWindowWake();
+            doubleAltHotKey_.Refresh();
+        }
+        return 0;
+    case WM_POWERBROADCAST:
+        if (wParam == PBT_APMRESUMEAUTOMATIC || wParam == PBT_APMRESUMESUSPEND ||
+            wParam == PBT_APMSUSPEND) {
+            CancelPendingMainWindowWake();
+            doubleAltHotKey_.Refresh();
+        }
+        return TRUE;
+    case WM_QUATTRO_HOTKEY_STATUS:
+        if (wParam == doubleAltHotKey_.RegistrationId() && config_.globalHotKeysEnabled &&
+            IsDoubleAltMainHotKey(config_.mainHotKey)) {
+            mainHotKeyRegistered_ = doubleAltHotKey_.Registered();
+            UpdateTrayTooltip();
+            if (!mainHotKeyRegistered_ && doubleAltHotKey_.LastError() != ERROR_SUCCESS) {
+                ShowHotKeyConflictWarning(L"主窗口（双击 Alt），后台正在重试注册。");
+            }
+        }
+        return 0;
     case WM_QUATTRO_WAKEUP:
         WakeUp(L"single-instance");
         return 0;
@@ -2369,12 +2345,12 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         return 0;
     case WM_QUATTRO_DOUBLE_ALT_HOTKEY:
         if (config_.globalHotKeysEnabled && IsDoubleAltMainHotKey(config_.mainHotKey) &&
-            gDoubleAltTarget == hwnd_ && gDoubleAltGesture.IsPending(wParam)) {
+            doubleAltHotKey_.IsPending(wParam)) {
             doubleAltToken_ = wParam;
             doubleAltForeground_ = reinterpret_cast<HWND>(lParam);
             doubleAltDueTick_ = GetTickCount64() + kDoubleAltDispatchDelayMs;
             if (!SetTimer(hwnd_, ID_TIMER_DOUBLE_ALT_DISPATCH, kDoubleAltDispatchDelayMs, nullptr)) {
-                gDoubleAltGesture.CancelPending();
+                doubleAltHotKey_.CancelPending();
                 WriteAppLog(L"双 Alt 延后唤起计时失败。");
             }
         }
@@ -2423,10 +2399,10 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             // gesture early. New keyboard input also cancels the pending token.
             if (GetTickCount64() < doubleAltDueTick_) return 0;
             KillTimer(hwnd_, ID_TIMER_DOUBLE_ALT_DISPATCH);
-            if (gDoubleAltTarget == hwnd_ && gDoubleAltGesture.Consume(doubleAltToken_) &&
+            if (doubleAltHotKey_.Consume(doubleAltToken_) &&
                 config_.globalHotKeysEnabled && IsDoubleAltMainHotKey(config_.mainHotKey) &&
                 doubleAltForeground_ && GetForegroundWindow() == doubleAltForeground_) {
-                ToggleMainWindowFromHotKey(L"double-alt", true);
+                ToggleMainWindowFromHotKey(L"double-alt", true, doubleAltToken_);
             }
             return 0;
         }
@@ -3167,6 +3143,11 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         }
         return DefWindowProcW(hwnd_, message, wParam, lParam);
     case WM_DESTROY:
+        doubleAltHotKey_.Stop();
+        if (sessionNotificationsRegistered_) {
+            WTSUnRegisterSessionNotification(hwnd_);
+            sessionNotificationsRegistered_ = false;
+        }
         CancelPendingMainWindowWake();
         WriteAppLog(L"主窗口销毁，准备退出消息循环。");
         CancelResourceRefresh();
@@ -6884,11 +6865,21 @@ void MainWindow::RegisterConfiguredHotKeys() {
 
     if (config_.globalHotKeysEnabled) {
         if (IsDoubleAltMainHotKey(config_.mainHotKey)) {
-            mainHotKeyRegistered_ = InstallDoubleAltHotKeyHook(hwnd_);
-            if (!mainHotKeyRegistered_) {
+            const HWND target = hwnd_;
+            const bool started = doubleAltHotKey_.Start({
+                [target](UINT_PTR token, HWND foreground) {
+                    PostMessageW(target, WM_QUATTRO_DOUBLE_ALT_HOTKEY, token,
+                        reinterpret_cast<LPARAM>(foreground));
+                },
+                [target](UINT_PTR registration) {
+                    PostMessageW(target, WM_QUATTRO_HOTKEY_STATUS, registration, 0);
+                },
+            });
+            mainHotKeyRegistered_ = doubleAltHotKey_.Registered();
+            if (!started) {
                 const std::wstring line = L"主窗口（" + FormatMainHotKeyText(config_.mainHotKey) + L"）";
                 failures += failures.empty() ? line : (L"\n" + line);
-                WriteAppLog(L"热键注册失败: " + line + L" - " + FormatLastError(GetLastError()));
+                WriteAppLog(L"热键注册失败: " + line + L" - " + FormatLastError(doubleAltHotKey_.LastError()));
             }
         } else if (config_.mainHotKey != 0) {
             mainHotKeyRegistered_ = registerHotKey(ID_HOTKEY_MAIN, config_.mainHotKey, L"主窗口");
@@ -6946,7 +6937,8 @@ void MainWindow::UnregisterConfiguredHotKeys() {
     if (!hwnd_) {
         return;
     }
-    UninstallDoubleAltHotKeyHook(hwnd_);
+    doubleAltHotKey_.Stop();
+    KillTimer(hwnd_, ID_TIMER_DOUBLE_ALT_DISPATCH);
     UnregisterHotKey(hwnd_, ID_HOTKEY_MAIN);
     UnregisterHotKey(hwnd_, ID_HOTKEY_PROCESS_LOCATOR);
     UnregisterHotKey(hwnd_, ID_HOTKEY_COPY_SELECTED_PATHS);
@@ -7946,11 +7938,11 @@ void MainWindow::SaveWindowState() {
 void MainWindow::CancelPendingMainWindowWake() {
     KillTimer(hwnd_, ID_TIMER_WAKE_RETRY);
     KillTimer(hwnd_, ID_TIMER_DOUBLE_ALT_DISPATCH);
-    if (gDoubleAltTarget == hwnd_) gDoubleAltGesture.CancelPending();
+    doubleAltHotKey_.CancelPending();
     wakeRetry_.Cancel();
 }
 
-void MainWindow::WakeUp(const wchar_t* source, bool allowInputRecovery) {
+void MainWindow::WakeUp(const wchar_t* source, bool allowInputRecovery, UINT_PTR inputSerial) {
     CancelPendingMainWindowWake();
     const UINT_PTR generation = wakeRetry_.Begin();
     if (popupMenuDepth_ > 0) {
@@ -7959,7 +7951,8 @@ void MainWindow::WakeUp(const wchar_t* source, bool allowInputRecovery) {
         popupWakePending_ = true;
         return;
     }
-    wakeInputSerial_ = gDoubleAltGesture.InputSerial();
+    wakeInputSerial_ = allowInputRecovery ? inputSerial : doubleAltHotKey_.InputSerial();
+    if (allowInputRecovery && doubleAltHotKey_.InputSerial() != wakeInputSerial_) return;
     if (dockHidden_) {
         DockRestore(source);
     }
@@ -7972,7 +7965,7 @@ void MainWindow::AttemptMainWindowWake(
     const HWND previousForeground = GetForegroundWindow();
     const auto current = [this, generation, allowInputRecovery]() {
         return wakeRetry_.IsCurrent(generation) &&
-            (!allowInputRecovery || gDoubleAltGesture.InputSerial() == wakeInputSerial_);
+            (!allowInputRecovery || doubleAltHotKey_.InputSerial() == wakeInputSerial_);
     };
     const auto result = retry && allowInputRecovery
         ? RequestWindowForegroundWithInputRecovery(hwnd_, config_.topMost, recoveryForeground, current)
@@ -8033,12 +8026,13 @@ bool MainWindow::ShouldHideMainWindowFromHotKey() const {
     return DecideMainHotKeyAction(state) == MainHotKeyAction::Hide;
 }
 
-void MainWindow::ToggleMainWindowFromHotKey(const wchar_t* source, bool allowInputRecovery) {
+void MainWindow::ToggleMainWindowFromHotKey(const wchar_t* source, bool allowInputRecovery, UINT_PTR inputSerial) {
+    if (allowInputRecovery && doubleAltHotKey_.InputSerial() != inputSerial) return;
     if (ShouldHideMainWindowFromHotKey()) {
         HideMainWindow();
         return;
     }
-    WakeUp(source, allowInputRecovery);
+    WakeUp(source, allowInputRecovery, inputSerial);
 }
 
 void MainWindow::HideMainWindowAfterLink() {

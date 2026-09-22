@@ -3,6 +3,7 @@
 #include "Config.h"
 #include "ConfigPackageService.h"
 #include "IconService.h"
+#include "GlobalHotKeyService.h"
 #include "Launcher.h"
 #include "LocalHttpServerService.h"
 #include "MenuCatalog.h"
@@ -320,7 +321,8 @@ private:
     void CancelPendingMainWindowWake();
     void AttemptMainWindowWake(const wchar_t* source, UINT_PTR generation, bool retry,
         bool allowInputRecovery = false, HWND recoveryForeground = nullptr);
-    void ToggleMainWindowFromHotKey(const wchar_t* source = L"hotkey", bool allowInputRecovery = false);
+    void ToggleMainWindowFromHotKey(const wchar_t* source = L"hotkey", bool allowInputRecovery = false,
+        UINT_PTR inputSerial = 0);
     void HideMainWindowAfterLink();
     void HideMainWindow();
     bool ImportPath(const std::wstring& path, bool showError = true);
@@ -381,7 +383,7 @@ private:
     void AppendTagTargetMenu(HMENU menu, UINT commandBase, std::vector<int>& targetIds, int excludedTagId);
     void AppendGroupedTagTargetMenu(HMENU menu, UINT commandBase, std::vector<int>& targetIds, int excludedTagId);
     void SaveWindowState();
-    void WakeUp(const wchar_t* source = L"explicit", bool allowInputRecovery = false);
+    void WakeUp(const wchar_t* source = L"explicit", bool allowInputRecovery = false, UINT_PTR inputSerial = 0);
 
     void DiscardDeviceResources();
     HRESULT CreateDeviceResources();
@@ -568,6 +570,8 @@ private:
     bool processLocatorHotKeyRegistered_ = false;
     bool copySelectedPathsHotKeyRegistered_ = false;
     bool hotKeyConflictWarningShown_ = false;
+    GlobalHotKeyService doubleAltHotKey_;
+    bool sessionNotificationsRegistered_ = false;
     WindowActivationRetry wakeRetry_;
     UINT_PTR wakeRetryTimerGeneration_ = 0;
     UINT_PTR wakeInputSerial_ = 0;

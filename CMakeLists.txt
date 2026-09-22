@@ -596,6 +596,7 @@ add_executable(Quattro WIN32
     src/services/LinkResourceRefreshService.cpp
     src/services/LocalHttpServerService.cpp
     src/windows/LinkEditDialog.cpp
+    src/services/GlobalHotKeyService.cpp
     src/windows/MainHotKey.cpp
     src/windows/MainWindow.cpp
     src/domain/MenuCatalog.cpp
@@ -671,6 +672,8 @@ if(QUATTRO_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/UnitTests.c
 add_executable(QuattroTests
     $<TARGET_OBJECTS:QuattroEmbeddedAssetResources>
     tests/UnitTests.cpp
+    tests/GlobalHotKeyServiceTests.cpp
+    src/services/GlobalHotKeyService.cpp
     src/common/AppLog.cpp
     src/common/EmbeddedAssets.cpp
     src/common/EmbeddedAssetInstaller.cpp
@@ -1445,6 +1448,7 @@ target_compile_options(AppLaunchLockerTests PRIVATE
 endif()
 
 target_link_libraries(Quattro PRIVATE
+    wtsapi32
     QuattroThemedUi
     QuattroScanCore
     QuattroPortScan
