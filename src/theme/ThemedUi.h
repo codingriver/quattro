@@ -422,6 +422,7 @@ enum class ThemedToastAnchor {
     OwnerBottomRight,
     OwnerTopRight,
     ScreenBottomRight,
+    OwnerOutsideBottomRight,
 };
 
 enum class ThemedToastRole {
@@ -865,6 +866,8 @@ public:
     int buttonHeight() const;
     int buttonHeight(ThemedButtonRole role, ThemedButtonSize size) const;
     int compactButtonHeight() const;
+    // Height in target-DPI pixels for two rows within the current dialog layout.
+    int twoRowClientHeight(int firstRowHeight, int secondRowHeight) const;
     int footerButtonHeight() const { return layout_.footerButtonHeight; }
     int timeDisplayHeight() const;
     SIZE timeDisplayPreferredSize(const std::wstring& text) const;

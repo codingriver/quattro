@@ -1146,6 +1146,7 @@ void Theme::SetDefaults() {
     PutMetric(L"toast", L"closeGap", 6.0f);
     PutMetric(L"toast", L"marginX", 16.0f);
     PutMetric(L"toast", L"marginY", 16.0f);
+    PutMetric(L"toast", L"ownerOutsideGap", 8.0f);
     PutMetric(L"separator", L"thickness", 1.0f);
     PutMetric(L"separator", L"inset", 0.0f);
 }

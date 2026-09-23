@@ -95,6 +95,7 @@ if(EXISTS "${DEFAULT_THEME}")
         "compactContentInsetX\" value=\"12"
         "compactContentInsetY\" value=\"10"
         "compactRowGap\" value=\"6"
+        "ownerOutsideGap\" value=\"8"
         "standardRowGap\" value=\"8"
         "sectionGap\" value=\"12"
         "majorSectionGap\" value=\"16")

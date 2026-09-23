@@ -94,6 +94,8 @@ public:
         HICON icon = nullptr,
         HICON smallIcon = nullptr,
         ThemedWindowSizePreset sizePreset = ThemedWindowSizePreset::StandardDialog);
+    // A normal activatable tool window without a visible system caption.
+    static ThemedWindowCreateOptions BorderlessToolOptions(ThemedWindowCreateOptions options);
     static HWND CreateWindowHandle(const ThemedWindowCreateOptions& options, std::wstring* error = nullptr);
     static int ShowMessageBox(
         HWND owner,
@@ -116,6 +118,8 @@ public:
 
     bool ShowModal();
     void ShowModeless(bool activate = true);
+    // The designated child is a draggable grip; other child controls remain interactive.
+    void SetDragHandle(HWND child);
     void ResizeClientArea(int clientWidth, int clientHeight, bool keepCenter = true);
     void RestoreModalOwner();
     bool HandleMessage(UINT message, WPARAM wParam, LPARAM lParam, LRESULT& result);
@@ -196,6 +200,7 @@ private:
     static LRESULT CALLBACK TooltipProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
     static LRESULT CALLBACK ToastProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
     static LRESULT CALLBACK ToastOwnerProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR id, DWORD_PTR data);
+    static LRESULT CALLBACK DragHandleProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR id, DWORD_PTR data);
 
     HINSTANCE instance_ = nullptr;
     HWND owner_ = nullptr;
@@ -222,6 +227,7 @@ private:
     POINT tooltipPosition_{};
     bool tooltipPositionValid_ = false;
     HWND toast_ = nullptr;
+    HWND dragHandle_ = nullptr;
     std::wstring toastText_;
     ThemedToastOptions toastOptions_{};
     ThemedToastLayout toastLayout_{};

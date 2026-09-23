@@ -134,6 +134,22 @@ void TestFileHelperService() {
     Check(wideToolOptions.clientWidth == kThemedWideCompactToolClientWidth &&
             wideToolOptions.clientHeight == kThemedWideCompactToolClientHeight,
         "Wide compact tool preset uses the file helper dimensions");
+    const auto borderless = ThemedWindowUi::BorderlessToolOptions(wideToolOptions);
+    Check((borderless.style & WS_CAPTION) == 0 && (borderless.style & WS_POPUP) != 0 &&
+            (borderless.style & WS_SYSMENU) != 0 && !borderless.topMost,
+        "Borderless tool preserves popup activation and the system close command");
+    const Theme helperTheme = Theme::Load(std::filesystem::current_path() / L"theme", L"default");
+    Check(helperTheme.metric(L"toast", L"ownerOutsideGap", -1.0f) == 8.0f,
+        "Window-outside toast spacing is themed");
+    for (const UINT dpi : {96u, 120u, 144u}) {
+        const ThemedUi ui(GetModuleHandleW(nullptr), nullptr, helperTheme, nullptr,
+            DialogLayoutKind::Compact, ThemedWindowUi::ScaleForDpi(600, dpi), 100,
+            nullptr, nullptr, nullptr, nullptr, dpi);
+        Check(ui.twoRowClientHeight(ui.editHeight(), ui.compactButtonHeight()) ==
+                ui.layout().contentInsetY * 2 + ui.editHeight() +
+                ui.layout().rowGap + ui.compactButtonHeight(),
+            "Two-row compact height scales with the dialog layout");
+    }
 
     const auto readEnvironment = [](const wchar_t* name) {
         const DWORD size = GetEnvironmentVariableW(name, nullptr, 0);

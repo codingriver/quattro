@@ -1944,6 +1944,10 @@ int ThemedUi::compactButtonHeight() const {
     return scale(ThemedControls::CompactButtonHeight(theme_));
 }
 
+int ThemedUi::twoRowClientHeight(int firstRowHeight, int secondRowHeight) const {
+    return layout_.contentInsetY * 2 + firstRowHeight + layout_.rowGap + secondRowHeight;
+}
+
 int ThemedUi::denseGap() const {
     return scale(static_cast<int>(theme_.metric(L"global", L"denseGap", 4.0f)));
 }

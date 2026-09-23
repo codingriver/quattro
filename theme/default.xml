@@ -711,6 +711,7 @@
         <Metric name="closeGap" value="6"/>
         <Metric name="marginX" value="16"/>
         <Metric name="marginY" value="16"/>
+        <Metric name="ownerOutsideGap" value="8"/>
         <State name="normal" bg="@surfaceRaised" text="@text" border="@border"/>
         <State name="info" bg="@infoSoft" text="@text" border="@info"/>
         <State name="success" bg="@successSoft" text="@success" border="@success"/>

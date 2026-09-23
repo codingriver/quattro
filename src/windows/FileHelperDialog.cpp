@@ -15,7 +15,6 @@
 
 namespace {
 constexpr int kPickerLogicalWidth = 96;
-constexpr int kStatusMinimumLogicalWidth = 80;
 constexpr int kPickFolderCommand = 7910;
 constexpr wchar_t kFileHelperToolId[] = L"quattro.builtin.file-helper";
 constexpr UINT WM_FILE_HELPER_ACTIVATE = WM_APP + 0x8C;
@@ -68,6 +67,7 @@ private:
         ThemedWindowCreateOptions options = ThemedWindowUi::DialogOptions(
             instance_, owner_, kFileHelperWindowClass, L"文件助手", Proc, this,
             icon, icon, ThemedWindowSizePreset::WideCompactTool);
+        options = ThemedWindowUi::BorderlessToolOptions(options);
         std::wstring error;
         hwnd_ = ThemedWindowUi::CreateWindowHandle(options, &error);
         if (!hwnd_) {
@@ -127,7 +127,12 @@ private:
             windowUi_ = std::make_unique<ThemedWindowUi>(
                 instance_, owner_, hwnd_, theme_, DialogLayoutKind::Compact,
                 kThemedWideCompactToolClientWidth, kThemedWideCompactToolClientHeight);
-            windowUi_->SetDpiChangedCallback([this](UINT) { LayoutControls(); });
+            windowUi_->SetDpiChangedCallback([this](UINT) {
+                const ThemedUi ui = windowUi_->ui();
+                windowUi_->ResizeClientArea(ui.clientWidth(),
+                    ui.twoRowClientHeight(ui.editHeight(), ui.compactButtonHeight()), false);
+                LayoutControls();
+            });
             CreateControls();
             return 0;
         case WM_COMMAND:
@@ -149,6 +154,7 @@ private:
             return 0;
         }
         case WM_CLOSE:
+            windowUi_->ui().HideToast();
             DestroyWindow(hwnd_);
             return 0;
         default:
@@ -159,6 +165,9 @@ private:
     void CreateControls() {
         const ThemedUi ui = windowUi_->ui();
         history_ = service_.LoadHistory();
+        dragHandle_ = ui.Label(L"⋮⋮", 0, 0, ui.textWidth(L"移动"),
+            ThemedLabelOptions{ThemedTextAlign::Center});
+        windowUi_->SetDragHandle(dragHandle_);
         ThemedComboBoxOptions pathOptions{};
         pathOptions.mode = ThemedComboBoxMode::Editable;
         pathOptions.placeholder = L"输入本地绝对路径";
@@ -185,10 +194,10 @@ private:
         createFolder_ = ui.Button(ID_FILE_HELPER_CREATE_FOLDER, L"创建目录", 0, 0,
             ThemedButtonRole::Normal, ThemedButtonSize::Compact, ThemedButtonWidthMode::Text);
 
-        status_ = ui.StatusText(L"请输入路径。", 0, 0, ui.scale(kStatusMinimumLogicalWidth),
-            ThemedStatusTextOptions{ThemedStatusRole::Normal, ThemedTextAlign::Start});
         openLocation_ = ui.LinkText(ID_FILE_HELPER_OPEN_LOCATION, L"打开所在位置", 0, 0, ui.scale(96));
         ui.SetEnabled(openLocation_, false);
+        windowUi_->ResizeClientArea(ui.clientWidth(),
+            ui.twoRowClientHeight(ui.editHeight(), ui.compactButtonHeight()), false);
         LayoutControls();
     }
 
@@ -201,8 +210,8 @@ private:
         const int left = ui.contentLeft();
         const int contentWidth = ui.contentWidth();
         const int pickerWidth = ui.scale(kPickerLogicalWidth);
-        const int editWidth = std::max(ui.scale(kStatusMinimumLogicalWidth),
-            contentWidth - layout.controlGapX - pickerWidth);
+        const int editWidth = std::max(ui.textWidth(L"输入路径"),
+            contentWidth - pickerWidth - layout.controlGapX);
         int y = ui.contentTop();
         ui.MoveComboBox(pathEdit_, left, y, editWidth);
 
@@ -210,18 +219,12 @@ private:
         GetWindowRect(picker_.split.menu, &menuRect);
         const int menuWidth = std::max(1, static_cast<int>(menuRect.right - menuRect.left));
         const int primaryWidth = std::max(1, pickerWidth - menuWidth);
-        ui.MoveControl(picker_.split.primary, left + editWidth + layout.controlGapX, y, primaryWidth);
-        ui.MoveControl(picker_.split.menu, left + editWidth + layout.controlGapX + primaryWidth, y, menuWidth);
+        const int pickerX = left + editWidth + layout.controlGapX;
+        ui.MoveControl(picker_.split.primary, pickerX, y, primaryWidth);
+        ui.MoveControl(picker_.split.menu, pickerX + primaryWidth, y, menuWidth);
 
         y = ui.nextRowY(y, ui.editHeight());
         LayoutButtonRow(ui, y);
-        y += ui.compactButtonHeight();
-
-        const int linkWidth = ui.textWidth(L"打开所在位置");
-        const int statusWidth = std::max(ui.scale(kStatusMinimumLogicalWidth),
-            contentWidth - layout.controlGapX - linkWidth);
-        ui.MoveControl(status_, left, y, statusWidth);
-        ui.MoveControl(openLocation_, left + statusWidth + layout.controlGapX, y, linkWidth);
     }
 
     void LayoutButtonRow(const ThemedUi& ui, int y) {
@@ -234,13 +237,20 @@ private:
         const int createFolderWidth = ui.buttonWidth(L"创建目录", ThemedButtonRole::Normal,
             ThemedButtonSize::Compact, ThemedButtonWidthMode::Text);
         const int gap = ui.layout().controlGapX;
-        const int groupWidth = openFileWidth + openFolderWidth + createFileWidth + createFolderWidth + gap * 3;
-        const int x = ui.centeredGroupX(groupWidth);
+        const int linkWidth = ui.textWidth(L"打开所在位置");
+        const int groupWidth = openFileWidth + openFolderWidth + createFileWidth + createFolderWidth + linkWidth + gap * 4;
+        const int gripWidth = ui.textWidth(L"移动");
+        const int left = ui.contentLeft();
+        ui.MoveControl(dragHandle_, left,
+            y + (ui.compactButtonHeight() - ui.labelHeight()) / 2, gripWidth);
+        const int x = std::max(left + gripWidth + gap, ui.centeredGroupX(groupWidth));
         ui.MoveControl(openFile_, x, y, openFileWidth);
         ui.MoveControl(openFolder_, x + openFileWidth + gap, y, openFolderWidth);
         ui.MoveControl(createFile_, x + openFileWidth + openFolderWidth + gap * 2, y, createFileWidth);
         ui.MoveControl(createFolder_, x + openFileWidth + openFolderWidth + createFileWidth + gap * 3,
             y, createFolderWidth);
+        ui.MoveControl(openLocation_, x + groupWidth - linkWidth,
+            y + (ui.compactButtonHeight() - ui.labelHeight()) / 2, linkWidth);
     }
 
     LRESULT HandleCommand(int id, int notification) {
@@ -306,8 +316,8 @@ private:
             return;
         }
         ThemedUi::SetComboBoxText(pathEdit_, result.dialog.path);
-        SetStatus(kind == CommonPathPickerKind::File ? L"已选择文件。" : L"已选择文件夹。",
-            ThemedStatusRole::Info);
+        ShowResult(kind == CommonPathPickerKind::File ? L"已选择文件。" : L"已选择文件夹。",
+            ThemedToastRole::Info);
         UpdateOpenLocationEnabled();
     }
 
@@ -325,7 +335,7 @@ private:
     void SelectHistory(std::size_t index) {
         if (index >= history_.size()) return;
         ThemedUi::SetComboBoxText(pathEdit_, history_[index].wstring());
-        SetStatus(L"已选择历史路径。", ThemedStatusRole::Info);
+        ShowResult(L"已选择历史路径。", ThemedToastRole::Info);
         UpdateOpenLocationEnabled();
     }
 
@@ -336,7 +346,7 @@ private:
                 hwnd_, instance_, theme_, L"文件已存在，覆盖会清空现有内容。", L"创建文件",
                 MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2);
             if (answer != IDYES) {
-                SetStatus(L"已取消覆盖。", ThemedStatusRole::Info);
+                ShowResult(L"已取消覆盖。", ThemedToastRole::Warning);
                 UpdateOpenLocationEnabled();
                 return;
             }
@@ -355,19 +365,22 @@ private:
             history_ = service_.LoadHistory();
             ThemedUi::SetComboBoxItems(pathEdit_, HistoryItems(), -1);
         }
-        ThemedStatusRole role = ThemedStatusRole::Danger;
+        ThemedToastRole role = ThemedToastRole::Danger;
         if (result.status == FileHelperStatus::Success) {
-            role = ThemedStatusRole::Success;
+            role = ThemedToastRole::Success;
         } else if (result.status == FileHelperStatus::AlreadyExists) {
-            role = ThemedStatusRole::Info;
+            role = ThemedToastRole::Info;
         }
-        SetStatus(result.message, role);
+        ShowResult(result.message, role);
         UpdateOpenLocationEnabled();
     }
 
-    void SetStatus(const std::wstring& text, ThemedStatusRole role) {
-        ThemedUi::SetText(status_, text);
-        windowUi_->ui().SetStatusTextRole(status_, role);
+    void ShowResult(const std::wstring& text, ThemedToastRole role) {
+        ThemedToastOptions options{};
+        options.anchor = ThemedToastAnchor::OwnerOutsideBottomRight;
+        options.role = role;
+        options.durationMs = (role == ThemedToastRole::Warning || role == ThemedToastRole::Danger) ? 6000 : 3000;
+        windowUi_->ui().ShowToast(text, options);
     }
 
     std::wstring CurrentPath() const {
@@ -445,12 +458,12 @@ private:
     FileHelperService service_;
     std::vector<std::filesystem::path> history_;
     HWND pathEdit_ = nullptr;
+    HWND dragHandle_ = nullptr;
     ThemedPathPickerSplitButton picker_{};
     HWND openFile_ = nullptr;
     HWND openFolder_ = nullptr;
     HWND createFile_ = nullptr;
     HWND createFolder_ = nullptr;
-    HWND status_ = nullptr;
     HWND openLocation_ = nullptr;
     int lastAction_ = 0;
     bool focusRequested_ = false;

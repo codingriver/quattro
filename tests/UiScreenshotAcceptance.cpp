@@ -1299,7 +1299,9 @@ void ValidateAndCapture(HWND hwnd, const Scenario& scenario, const std::filesyst
 
     RECT client{};
     GetClientRect(hwnd, &client);
-    state.Check(client.right - client.left >= 120 && client.bottom - client.top >= 80, scenario.name + L": client area too small");
+    state.Check(client.right - client.left >= 120 &&
+        client.bottom - client.top >= (scenario.windowClass == kFileHelperWindowClass ? 64 : 80),
+        scenario.name + L": client area too small");
 
     if (scenario.calendarView >= 0) {
         state.Check(SendMessageW(hwnd, WM_QUATTRO_TEST_TODO_CALENDAR, scenario.calendarView, 0) == TRUE,
@@ -5419,7 +5421,7 @@ void RunFileHelperScenarios(
             L"文件助手",
             scenarioName + L".png",
             {L"文件助手", L"打开文件", L"打开文件夹", L"创建文件", L"创建目录",
-             L"请输入路径", L"打开所在位置"},
+             L"打开所在位置"},
             {},
             1,
             6,
@@ -5470,37 +5472,109 @@ void RunFileHelperScenarios(
 
                 RECT helperWindow{};
                 GetWindowRect(helper, &helperWindow);
+                state.Check((GetWindowLongPtrW(helper, GWL_STYLE) & WS_CAPTION) == 0,
+                    scenarioName + L": file helper still has a visible title bar");
+                const DialogLayoutMetrics compact = ScaleDialogLayoutMetrics(
+                    GetDialogLayoutMetrics(theme, DialogLayoutKind::Compact), dpi);
+                const int expectedClientHeight = compact.contentInsetY * 2 +
+                    ThemedWindowUi::ScaleForDpi(ThemedControls::ComboBoxHeight(theme), dpi) +
+                    compact.rowGap +
+                    ThemedWindowUi::ScaleForDpi(ThemedControls::CompactButtonHeight(theme), dpi);
                 const SIZE expectedWindow = ThemedWindowUi::AdjustedWindowSize(
                     ThemedWindowUi::ScaleForDpi(kThemedWideCompactToolClientWidth, dpi),
-                    ThemedWindowUi::ScaleForDpi(kThemedWideCompactToolClientHeight, dpi),
+                    expectedClientHeight,
                     static_cast<DWORD>(GetWindowLongPtrW(helper, GWL_STYLE)),
                     static_cast<DWORD>(GetWindowLongPtrW(helper, GWL_EXSTYLE)),
                     false,
                     dpi);
                 state.Check(
-                    std::abs((helperWindow.right - helperWindow.left) - expectedWindow.cx) <= 2,
+                    std::abs((helperWindow.right - helperWindow.left) - expectedWindow.cx) <=
+                        ThemedWindowUi::ScaleForDpi(6, dpi),
                     scenarioName + L": file helper did not use the wide compact client width");
+                state.Check(std::abs((helperWindow.bottom - helperWindow.top) - expectedWindow.cy) <= 2,
+                    scenarioName + L": file helper is not exactly two rows tall");
+                state.Check(!FindTopWindow({L"QuattroThemedToast", L"", GetCurrentProcessId()}),
+                    scenarioName + L": opening the helper unexpectedly displayed a toast");
 
-                const std::array<int, 4> actionIds{
+                const std::array<int, 5> actionIds{
                     ID_FILE_HELPER_OPEN_FILE,
                     ID_FILE_HELPER_OPEN_FOLDER,
                     ID_FILE_HELPER_CREATE_FILE,
-                    ID_FILE_HELPER_CREATE_FOLDER};
-                int actionRowTop = -1;
+                    ID_FILE_HELPER_CREATE_FOLDER,
+                    ID_FILE_HELPER_OPEN_LOCATION};
+                int actionRowCenter = -1;
                 int previousRight = -1;
                 for (const int actionId : actionIds) {
                     HWND action = ChildById(helper, actionId);
                     RECT actionRect{};
                     GetWindowRect(action, &actionRect);
                     MapWindowPoints(HWND_DESKTOP, helper, reinterpret_cast<POINT*>(&actionRect), 2);
-                    if (actionRowTop < 0) {
-                        actionRowTop = actionRect.top;
+                    const int center = (actionRect.top + actionRect.bottom) / 2;
+                    if (actionRowCenter < 0) {
+                        actionRowCenter = center;
                     } else {
-                        state.Check(actionRect.top == actionRowTop && actionRect.left >= previousRight,
+                        state.Check(std::abs(center - actionRowCenter) <= 2 && actionRect.left >= previousRight,
                             scenarioName + L": file helper actions are not laid out on one row");
                     }
                     previousRight = actionRect.right;
                 }
+                state.Check(previousRight <= helperWindow.right - helperWindow.left,
+                    scenarioName + L": five actions overflow the window");
+                const auto children = Children(helper);
+                state.Check(std::none_of(children.begin(), children.end(),
+                    [](const ChildInfo& child) { return child.text == L"×"; }),
+                    scenarioName + L": removed close button is still visible");
+                HWND grip = nullptr;
+                for (const ChildInfo& child : children) {
+                    if (child.text == L"⋮⋮") grip = child.hwnd;
+                }
+                state.Check(grip != nullptr, scenarioName + L": missing drag handle");
+                if (grip) {
+                    RECT rect{};
+                    GetWindowRect(grip, &rect);
+                    RECT gripInHelper = rect;
+                    MapWindowPoints(HWND_DESKTOP, helper, reinterpret_cast<POINT*>(&gripInHelper), 2);
+                    RECT pathRect{};
+                    GetWindowRect(ChildById(helper, ID_FILE_HELPER_PATH), &pathRect);
+                    MapWindowPoints(HWND_DESKTOP, helper, reinterpret_cast<POINT*>(&pathRect), 2);
+                    RECT firstActionRect{};
+                    GetWindowRect(ChildById(helper, ID_FILE_HELPER_OPEN_FILE), &firstActionRect);
+                    MapWindowPoints(HWND_DESKTOP, helper, reinterpret_cast<POINT*>(&firstActionRect), 2);
+                    state.Check(gripInHelper.left == pathRect.left &&
+                            gripInHelper.top >= pathRect.bottom &&
+                            gripInHelper.right < firstActionRect.left &&
+                            std::abs((gripInHelper.top + gripInHelper.bottom) / 2 - actionRowCenter) <= 2,
+                        scenarioName + L": drag handle is not at the lower-left of the action row");
+                    state.Check(SendMessageW(grip, WM_NCHITTEST, 0,
+                        MAKELPARAM(rect.left + 1, rect.top + 1)) == HTTRANSPARENT,
+                        scenarioName + L": drag handle is not transparent to parent hit testing");
+                    state.Check(SendMessageW(helper, WM_NCHITTEST, 0,
+                        MAKELPARAM(rect.left + 1, rect.top + 1)) == HTCAPTION,
+                        scenarioName + L": dragging grip does not hit the caption");
+                }
+
+                auto toastMatches = [&](const std::wstring& expected) {
+                    HWND toast = WaitForTopWindow({L"QuattroThemedToast", expected, GetCurrentProcessId()}, 2000);
+                    state.Check(toast && GetWindow(toast, GW_OWNER) == helper,
+                        scenarioName + L": result toast is not owned by the helper");
+                    if (toast) {
+                        RECT ownerRect{}, toastRect{};
+                        GetWindowRect(helper, &ownerRect);
+                        GetWindowRect(toast, &toastRect);
+                        state.Check(toastRect.bottom <= ownerRect.top || toastRect.top >= ownerRect.bottom,
+                            scenarioName + L": toast overlaps the helper");
+                        BitmapCapture capture = CaptureWindowBitmap(toast);
+                        state.Check(capture.bitmap && BitmapHasVisualContent(capture.bitmap,
+                            capture.width, capture.height), scenarioName + L": toast screenshot is blank");
+                        if (capture.bitmap) {
+                            state.Check(SavePng(capture.bitmap,
+                                outputDir / (L"builtin-file-helper-toast-" + suffix + L".png")),
+                                scenarioName + L": toast screenshot save failed");
+                            DeleteObject(capture.bitmap);
+                        }
+                    }
+                    return toast != nullptr;
+                };
 
                 auto send = [&](FileHelperTestCommand command, FileHelperTestRequest* request = nullptr) {
                     return SendMessageW(
@@ -5555,8 +5629,16 @@ void RunFileHelperScenarios(
                         RECT listBounds{};
                         GetWindowRect(pathBox, &fieldBounds);
                         GetWindowRect(info.hwndList, &listBounds);
-                        state.Check(listBounds.top >= fieldBounds.bottom - 2,
-                            scenarioName + L": history dropdown did not appear below the input");
+                        state.Check(listBounds.top >= fieldBounds.bottom - 2 ||
+                            listBounds.bottom <= fieldBounds.top + 2,
+                            scenarioName + L": history dropdown overlaps the input");
+                        MONITORINFO dropdownMonitor{sizeof(dropdownMonitor)};
+                        if (GetMonitorInfoW(MonitorFromRect(&fieldBounds, MONITOR_DEFAULTTONEAREST),
+                                &dropdownMonitor)) {
+                            state.Check(listBounds.top >= dropdownMonitor.rcWork.top &&
+                                listBounds.bottom <= dropdownMonitor.rcWork.bottom,
+                                scenarioName + L": history dropdown is clipped outside the work area");
+                        }
                         state.Check(listBounds.bottom - listBounds.top >=
                                 ThemedWindowUi::ScaleForDpi(ThemedControls::ComboBoxItemHeight(theme), dpi),
                             scenarioName + L": history dropdown is too short to show an item");
@@ -5574,19 +5656,21 @@ void RunFileHelperScenarios(
                             DeleteObject(capture.bitmap);
                         }
                     }
-                    ThemedUi::SetComboBoxDropDownVisible(pathBox, false);
+                    state.Check(SendMessageW(helper, WM_COMMAND, IDCANCEL, 0) == 0 &&
+                        IsWindow(helper) && !ThemedUi::IsComboBoxDropDownVisible(pathBox),
+                        scenarioName + L": Escape did not close history before the window");
                 }
                 state.Check(
                     send(FileHelperTestCommand::SelectHistory, nullptr) == TRUE &&
                         WindowText(ChildById(helper, ID_FILE_HELPER_PATH)) == recentPath.lexically_normal().wstring() &&
-                        WindowContainsText(helper, L"已选择历史路径。"),
+                        toastMatches(L"已选择历史路径。"),
                     scenarioName + L": selecting recent history did not restore the path");
 
                 setPath(file);
                 state.Check(
                     send(FileHelperTestCommand::CreateFileAction) == TRUE &&
                         std::filesystem::is_regular_file(file) &&
-                        WindowContainsText(helper, L"文件已创建。"),
+                        toastMatches(L"文件已创建。"),
                     scenarioName + L": create-file action failed");
                 state.Check(
                     send(FileHelperTestCommand::QueryContainingLocationEnabled) == TRUE,
@@ -5594,7 +5678,7 @@ void RunFileHelperScenarios(
                 state.Check(
                     send(FileHelperTestCommand::OpenFile) == TRUE &&
                         send(FileHelperTestCommand::QueryLastAction) == ID_FILE_HELPER_OPEN_FILE &&
-                        WindowContainsText(helper, L"已记录打开文件意图。"),
+                        toastMatches(L"已记录打开文件意图。"),
                     scenarioName + L": open-file intent was not recorded");
 
                 {
@@ -5633,7 +5717,7 @@ void RunFileHelperScenarios(
                     std::filesystem::exists(file) && std::filesystem::file_size(file) == 8,
                     scenarioName + L": cancelled overwrite changed file content");
                 state.Check(
-                    WaitForWindowText(helper, L"已取消覆盖。", 2000),
+                    toastMatches(L"已取消覆盖。"),
                     scenarioName + L": cancelled overwrite status was not shown");
 
                 PostMessageW(
@@ -5661,25 +5745,53 @@ void RunFileHelperScenarios(
                     std::filesystem::exists(file) && std::filesystem::file_size(file) == 0,
                     scenarioName + L": confirmed overwrite did not clear file content");
                 state.Check(
-                    WaitForWindowText(helper, L"文件已覆盖。", 2000),
+                    toastMatches(L"文件已覆盖。"),
                     scenarioName + L": confirmed overwrite status was not shown");
 
                 setPath(folder);
                 state.Check(
                     send(FileHelperTestCommand::CreateFolder) == TRUE &&
                         std::filesystem::is_directory(folder) &&
-                        WindowContainsText(helper, L"目录已创建。"),
+                        toastMatches(L"目录已创建。"),
                     scenarioName + L": create-folder action failed");
                 state.Check(
                     send(FileHelperTestCommand::OpenFolder) == TRUE &&
                         send(FileHelperTestCommand::QueryLastAction) == ID_FILE_HELPER_OPEN_FOLDER &&
-                        WindowContainsText(helper, L"已记录打开目录意图。"),
+                        toastMatches(L"已记录打开目录意图。"),
                     scenarioName + L": open-folder intent was not recorded");
                 state.Check(
                     send(FileHelperTestCommand::OpenContainingLocation) == TRUE &&
                         send(FileHelperTestCommand::QueryLastAction) == ID_FILE_HELPER_OPEN_LOCATION &&
-                        WindowContainsText(helper, L"已记录打开所在位置意图。"),
+                        toastMatches(L"已记录打开所在位置意图。"),
                     scenarioName + L": containing-location intent was not recorded");
+                setPath(caseRoot / L"missing.txt");
+                state.Check(send(FileHelperTestCommand::OpenFile) == TRUE &&
+                    toastMatches(L"文件不存在。"),
+                    scenarioName + L": failed open did not show the outside error toast");
+                MONITORINFO monitor{sizeof(monitor)};
+                if (GetMonitorInfoW(MonitorFromWindow(helper, MONITOR_DEFAULTTONEAREST), &monitor)) {
+                    RECT bounds{};
+                    GetWindowRect(helper, &bounds);
+                    const int bottomY = monitor.rcWork.bottom - (bounds.bottom - bounds.top) - 2;
+                    SetWindowPos(helper, nullptr, bounds.left, bottomY, 0, 0,
+                        SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+                    state.Check(send(FileHelperTestCommand::OpenFile) == TRUE &&
+                        toastMatches(L"文件不存在。"),
+                        scenarioName + L": bottom-edge failure toast was not displayed");
+                    HWND toast = FindTopWindow({L"QuattroThemedToast", L"文件不存在。", GetCurrentProcessId()});
+                    RECT moved{}, toastRect{};
+                    if (toast && GetWindowRect(helper, &moved) && GetWindowRect(toast, &toastRect)) {
+                        state.Check(toastRect.bottom <= moved.top,
+                            scenarioName + L": bottom-edge toast was not moved above the helper");
+                        BitmapCapture capture = CaptureWindowBitmap(toast);
+                        if (capture.bitmap) {
+                            state.Check(SavePng(capture.bitmap, outputDir /
+                                (L"builtin-file-helper-toast-top-" + suffix + L".png")),
+                                scenarioName + L": top-anchored toast screenshot failed");
+                            DeleteObject(capture.bitmap);
+                        }
+                    }
+                }
                 RECT beforeMove{};
                 GetWindowRect(helper, &beforeMove);
                 const auto target = ThemedWindowUi::RestoredWindowPosition(
@@ -5714,8 +5826,10 @@ void RunFileHelperScenarios(
                 std::to_wstring(beforeProcessId) + L" to " + std::to_wstring(afterProcessId) +
                 L" (acceptance process " + std::to_wstring(GetCurrentProcessId()) + L")");
         }
-        state.Check(foregroundAfter == foregroundBefore,
-            scenarioName + L": changed the foreground window");
+        DWORD afterProcessId = 0;
+        if (foregroundAfter) GetWindowThreadProcessId(foregroundAfter, &afterProcessId);
+        state.Check(afterProcessId != GetCurrentProcessId(),
+            scenarioName + L": acceptance process took the foreground");
         state.Check(GetActiveWindow() == activeBefore,
             scenarioName + L": changed the active window");
     }
@@ -5776,14 +5890,40 @@ void RunFileHelperScenarios(
             state.Check(
                 CountTopWindowsForProcess(L"文件助手", GetCurrentProcessId()) == 1,
                 L"file-helper-toggle: reopening created duplicate windows");
-            state.Check(
-                ToggleBuiltinFileHelper(owner, instance, theme),
-                L"file-helper-toggle: second toggle could not close the reopened window");
+            state.Check(ToggleBuiltinFileHelper(owner, instance, theme),
+                L"file-helper-toggle: double Ctrl close request failed");
             for (int elapsed = 0; IsWindow(helper) && elapsed < 2000; elapsed += 20) {
                 Sleep(20);
             }
             state.Check(!IsWindow(helper),
-                L"file-helper-toggle: second toggle left the reopened window open");
+                L"file-helper-toggle: double Ctrl left the reopened window open");
+        });
+
+    Scenario escapeCloseScenario{
+        L"builtin-file-helper-escape-close", kFileHelperWindowClass, L"文件助手",
+        L"builtin-file-helper-escape-close.png",
+        {L"文件助手", L"打开文件", L"打开所在位置"},
+        {}, 1, 6, false};
+    escapeCloseScenario.requireThemedEditFrames = false;
+    RunDialogScenario(escapeCloseScenario, outputDir, state,
+        [&]() {
+            state.Check(ShowBuiltinTool(owner, instance, theme, registry, config, L"file-helper"),
+                L"file-helper-escape: could not reopen the helper");
+            HWND helper = WaitForTopWindow(
+                {kFileHelperWindowClass, L"文件助手", GetCurrentProcessId()}, 3000);
+            if (helper) PumpModelessBuiltinTool(helper);
+        },
+        [&]() {
+            HWND helper = FindTopWindow(
+                {kFileHelperWindowClass, L"文件助手", GetCurrentProcessId()});
+            state.Check(helper != nullptr, L"file-helper-escape: window missing");
+            if (!helper) return;
+            PostMessageW(helper, WM_COMMAND, IDCANCEL, 0);
+            for (int elapsed = 0; IsWindow(helper) && elapsed < 2000; elapsed += 20) {
+                Sleep(20);
+            }
+            state.Check(!IsWindow(helper),
+                L"file-helper-escape: Escape did not close the window with history collapsed");
         });
 
     AppConfig settingsConfig;

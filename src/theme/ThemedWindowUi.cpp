@@ -290,6 +290,12 @@ ThemedWindowCreateOptions ThemedWindowUi::DialogOptions(
     return options;
 }
 
+ThemedWindowCreateOptions ThemedWindowUi::BorderlessToolOptions(ThemedWindowCreateOptions options) {
+    options.style &= ~WS_CAPTION;
+    options.style |= WS_POPUP | WS_SYSMENU;
+    return options;
+}
+
 HWND ThemedWindowUi::CreateWindowHandle(const ThemedWindowCreateOptions& options, std::wstring* error) {
     if (!options.instance || !options.className || !options.wndProc || options.clientWidth <= 0 || options.clientHeight <= 0) {
         if (error) {
@@ -399,6 +405,29 @@ void ThemedWindowUi::ShowModeless(bool activate) {
     }
 }
 
+void ThemedWindowUi::SetDragHandle(HWND child) {
+    if (dragHandle_ && IsWindow(dragHandle_)) {
+        RemoveWindowSubclass(dragHandle_, DragHandleProc, reinterpret_cast<UINT_PTR>(this));
+    }
+    dragHandle_ = nullptr;
+    if (child && IsWindow(child) && GetParent(child) == hwnd_ &&
+        SetWindowSubclass(child, DragHandleProc, reinterpret_cast<UINT_PTR>(this),
+            reinterpret_cast<DWORD_PTR>(this))) {
+        dragHandle_ = child;
+    }
+}
+
+LRESULT CALLBACK ThemedWindowUi::DragHandleProc(
+    HWND child, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR id, DWORD_PTR data) {
+    if (message == WM_NCHITTEST) return HTTRANSPARENT;
+    if (message == WM_NCDESTROY) {
+        auto* ui = reinterpret_cast<ThemedWindowUi*>(data);
+        if (ui->dragHandle_ == child) ui->dragHandle_ = nullptr;
+        RemoveWindowSubclass(child, DragHandleProc, id);
+    }
+    return DefSubclassProc(child, message, wParam, lParam);
+}
+
 void ThemedWindowUi::ResizeClientArea(int clientWidth, int clientHeight, bool keepCenter) {
     if (!hwnd_ || clientWidth <= 0 || clientHeight <= 0) {
         return;
@@ -443,6 +472,18 @@ bool ThemedWindowUi::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam, L
     }
 
     switch (message) {
+    case WM_NCHITTEST:
+        if (dragHandle_ && IsWindow(dragHandle_)) {
+            RECT grip{};
+            if (GetWindowRect(dragHandle_, &grip)) {
+                const POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+                if (PtInRect(&grip, point)) {
+                    result = HTCAPTION;
+                    return true;
+                }
+            }
+        }
+        break;
     case WM_DPICHANGED:
         ApplyDpiChange(HIWORD(wParam), reinterpret_cast<const RECT*>(lParam));
         result = 0;
@@ -1095,6 +1136,32 @@ void ThemedWindowUi::PositionToast() {
     int y = anchorRect.bottom - size.cy - marginY;
     if (toastOptions_.anchor == ThemedToastAnchor::OwnerTopRight) {
         y = anchorRect.top + marginY;
+    } else if (toastOptions_.anchor == ThemedToastAnchor::OwnerOutsideBottomRight) {
+        const int gap = ScaleForDpi(static_cast<int>(theme_.metric(L"toast", L"ownerOutsideGap", 8.0f)), dpi_);
+        MONITORINFO placementMonitor{};
+        placementMonitor.cbSize = sizeof(placementMonitor);
+        if (GetMonitorInfoW(MonitorFromRect(&anchorRect, MONITOR_DEFAULTTONEAREST), &placementMonitor)) {
+            const RECT work = placementMonitor.rcWork;
+            if (anchorRect.bottom + gap + size.cy <= work.bottom - marginY) {
+                y = anchorRect.bottom + gap;
+            } else if (anchorRect.top - gap - size.cy >= work.top + marginY) {
+                y = anchorRect.top - size.cy - gap;
+            } else {
+                // When neither vertical side fits, use a horizontal side so the
+                // toast never covers the owner's input or actions.
+                y = std::max<int>(work.top + marginY,
+                    std::min<int>(anchorRect.top, work.bottom - size.cy - marginY));
+                if (anchorRect.left - gap - size.cx >= work.left + marginX) {
+                    x = anchorRect.left - gap - size.cx;
+                } else if (anchorRect.right + gap + size.cx <= work.right - marginX) {
+                    x = anchorRect.right + gap;
+                } else {
+                    // If no side fits, prefer the side with more vertical room.
+                    y = work.bottom - anchorRect.bottom >= anchorRect.top - work.top
+                        ? anchorRect.bottom + gap : anchorRect.top - size.cy - gap;
+                }
+            }
+        }
     }
 
     HMONITOR monitor = MonitorFromRect(&anchorRect, MONITOR_DEFAULTTONEAREST);
@@ -1962,6 +2029,7 @@ HBRUSH ThemedWindowUi::ApplyEditColors(HDC dc, HWND child) {
 
 void ThemedWindowUi::ReleaseResources() {
     ThemedUi::DetachTooltips(this);
+    SetDragHandle(nullptr);
     for (auto& editFrame : editFrames_) {
         if (editFrame.child && IsWindow(editFrame.child)) {
             RemoveWindowSubclass(editFrame.child, EditChildProc, kEditChildSubclassId);
