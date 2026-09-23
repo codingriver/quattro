@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../domain/DoubleAltGesture.h"
+#include "../domain/DoubleModifierGesture.h"
 #include <functional>
 #include <memory>
 #include <optional>
@@ -22,8 +22,21 @@ struct GlobalHotKeyOperations {
 
 struct GlobalHotKeyNotifications {
     // Worker-thread notifications: callers may only post an owning-thread message.
-    std::function<void(UINT_PTR token, HWND foreground)> gesture;
+    std::function<void(DoubleModifierGestureKind kind, UINT_PTR token, HWND foreground)> gesture;
     std::function<void(UINT_PTR registration)> registrationChanged;
+};
+
+struct GlobalHotKeyGestureOptions {
+    bool doubleAlt = false;
+    bool doubleCtrl = false;
+
+    bool Enabled(DoubleModifierGestureKind kind) const noexcept {
+        if (kind == DoubleModifierGestureKind::DoubleAlt) return doubleAlt;
+        if (kind == DoubleModifierGestureKind::DoubleCtrl) return doubleCtrl;
+        return false;
+    }
+
+    bool Any() const noexcept { return doubleAlt || doubleCtrl; }
 };
 
 class GlobalHotKeyService {
@@ -35,14 +48,14 @@ public:
     GlobalHotKeyService& operator=(const GlobalHotKeyService&) = delete;
 
     // Start reports acceptance, not completed registration. Never waits for the worker.
-    bool Start(GlobalHotKeyNotifications notifications);
+    bool Start(GlobalHotKeyGestureOptions options, GlobalHotKeyNotifications notifications);
     void Stop();
     void Refresh();
     bool Registered() const;
     DWORD LastError() const;
     UINT_PTR RegistrationId() const;
-    bool IsPending(UINT_PTR token) const;
-    bool Consume(UINT_PTR token);
+    bool IsPending(DoubleModifierGestureKind kind, UINT_PTR token) const;
+    bool Consume(DoubleModifierGestureKind kind, UINT_PTR token);
     void CancelPending();
     UINT_PTR InputSerial() const;
     bool Stopped() const;

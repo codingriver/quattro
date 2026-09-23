@@ -70,6 +70,7 @@ namespace {
 constexpr int ID_HOTKEY_MAIN = 1;
 constexpr int ID_HOTKEY_PROCESS_LOCATOR = 2;
 constexpr int ID_HOTKEY_COPY_SELECTED_PATHS = 3;
+constexpr int ID_HOTKEY_FILE_HELPER = 4;
 constexpr int ID_HOTKEY_LINK_BASE = 1000;
 constexpr int ID_NOTE_EDIT = 2100;
 constexpr UINT_PTR ID_TIMER_DOCK = 10;
@@ -77,10 +78,11 @@ constexpr UINT_PTR ID_TIMER_HOVER_ACTIVATE = 11;
 constexpr UINT_PTR ID_TIMER_NOTE_AUTOSAVE = 12;
 constexpr UINT_PTR ID_TIMER_REMINDER_SCAN = 13;
 constexpr UINT_PTR ID_TIMER_TOOL_OPEN_HIDE = 14;
-constexpr UINT_PTR ID_TIMER_DOUBLE_ALT_DISPATCH = 15;
+constexpr UINT_PTR ID_TIMER_MODIFIER_GESTURE_DISPATCH = 15;
 constexpr UINT_PTR ID_TIMER_WAKE_RETRY = 16;
 constexpr UINT kTrayIconId = 1;
 constexpr UINT WM_QUATTRO_DOUBLE_ALT_HOTKEY = WM_APP + 0x6C;
+constexpr UINT WM_QUATTRO_DOUBLE_CTRL_HOTKEY = WM_APP + 0x8E;
 constexpr UINT WM_QUATTRO_HOTKEY_STATUS = WM_APP + 0x85;
 constexpr UINT WM_QUATTRO_NOTE_EDIT_DEFERRED_REDRAW = WM_APP + 0x7F;
 constexpr int kDockVisiblePixels = 3;
@@ -1798,7 +1800,7 @@ MainWindow::MainWindow(
 }
 
 MainWindow::~MainWindow() {
-    doubleAltHotKey_.Stop();
+    modifierGestureHotKey_.Stop();
     if (sessionNotificationsRegistered_) WTSUnRegisterSessionNotification(hwnd_);
     CancelResourceRefresh();
     httpServerService_.Stop();
@@ -2009,23 +2011,36 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             wParam == WTS_CONSOLE_CONNECT || wParam == WTS_REMOTE_CONNECT ||
             wParam == WTS_CONSOLE_DISCONNECT || wParam == WTS_REMOTE_DISCONNECT) {
             CancelPendingMainWindowWake();
-            doubleAltHotKey_.Refresh();
+            modifierGestureHotKey_.Refresh();
         }
         return 0;
     case WM_POWERBROADCAST:
         if (wParam == PBT_APMRESUMEAUTOMATIC || wParam == PBT_APMRESUMESUSPEND ||
             wParam == PBT_APMSUSPEND) {
             CancelPendingMainWindowWake();
-            doubleAltHotKey_.Refresh();
+            modifierGestureHotKey_.Refresh();
         }
         return TRUE;
     case WM_QUATTRO_HOTKEY_STATUS:
-        if (wParam == doubleAltHotKey_.RegistrationId() && config_.globalHotKeysEnabled &&
-            IsDoubleAltMainHotKey(config_.mainHotKey)) {
-            mainHotKeyRegistered_ = doubleAltHotKey_.Registered();
+        if (wParam == modifierGestureHotKey_.RegistrationId() && config_.globalHotKeysEnabled) {
+            const bool gestureRegistered = modifierGestureHotKey_.Registered();
+            if (IsDoubleAltMainHotKey(config_.mainHotKey)) {
+                mainHotKeyRegistered_ = gestureRegistered;
+            }
+            if (IsDoubleCtrlFileHelperHotKey(config_.fileHelperHotKey)) {
+                fileHelperHotKeyRegistered_ = gestureRegistered;
+            }
             UpdateTrayTooltip();
-            if (!mainHotKeyRegistered_ && doubleAltHotKey_.LastError() != ERROR_SUCCESS) {
-                ShowHotKeyConflictWarning(L"主窗口（双击 Alt），后台正在重试注册。");
+            if (!gestureRegistered && modifierGestureHotKey_.LastError() != ERROR_SUCCESS) {
+                std::wstring failures;
+                if (IsDoubleAltMainHotKey(config_.mainHotKey)) {
+                    failures = L"主窗口（双击 Alt），后台正在重试注册。";
+                }
+                if (IsDoubleCtrlFileHelperHotKey(config_.fileHelperHotKey)) {
+                    const std::wstring line = L"文件助手（双击 Ctrl），后台正在重试注册。";
+                    failures += failures.empty() ? line : (L"\n" + line);
+                }
+                ShowHotKeyConflictWarning(failures);
             }
         }
         return 0;
@@ -2335,6 +2350,10 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             CopySelectedPathsFromForeground(GetForegroundWindow());
             return 0;
         }
+        if (wParam == ID_HOTKEY_FILE_HELPER) {
+            OpenBuiltinToolEngine(L"file-helper");
+            return 0;
+        }
         if (wParam >= ID_HOTKEY_LINK_BASE) {
             const int linkId = LinkIdFromHotKeyId(static_cast<int>(wParam));
             if (linkId > 0) {
@@ -2344,17 +2363,26 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         }
         return 0;
     case WM_QUATTRO_DOUBLE_ALT_HOTKEY:
-        if (config_.globalHotKeysEnabled && IsDoubleAltMainHotKey(config_.mainHotKey) &&
-            doubleAltHotKey_.IsPending(wParam)) {
-            doubleAltToken_ = wParam;
-            doubleAltForeground_ = reinterpret_cast<HWND>(lParam);
-            doubleAltDueTick_ = GetTickCount64() + kDoubleAltDispatchDelayMs;
-            if (!SetTimer(hwnd_, ID_TIMER_DOUBLE_ALT_DISPATCH, kDoubleAltDispatchDelayMs, nullptr)) {
-                doubleAltHotKey_.CancelPending();
-                WriteAppLog(L"双 Alt 延后唤起计时失败。");
+    case WM_QUATTRO_DOUBLE_CTRL_HOTKEY: {
+        const DoubleModifierGestureKind kind = message == WM_QUATTRO_DOUBLE_ALT_HOTKEY
+            ? DoubleModifierGestureKind::DoubleAlt
+            : DoubleModifierGestureKind::DoubleCtrl;
+        const ModifierGestureAction action = DecideModifierGestureAction(
+            config_.globalHotKeysEnabled, config_.mainHotKey, config_.fileHelperHotKey, kind);
+        if (action != ModifierGestureAction::None &&
+            modifierGestureHotKey_.IsPending(kind, wParam)) {
+            modifierGestureKind_ = kind;
+            modifierGestureToken_ = wParam;
+            modifierGestureForeground_ = reinterpret_cast<HWND>(lParam);
+            modifierGestureDueTick_ = GetTickCount64() + kModifierGestureDispatchDelayMs;
+            if (!SetTimer(hwnd_, ID_TIMER_MODIFIER_GESTURE_DISPATCH,
+                    kModifierGestureDispatchDelayMs, nullptr)) {
+                modifierGestureHotKey_.CancelPending();
+                WriteAppLog(L"双击修饰键延后分发计时失败。");
             }
         }
         return 0;
+    }
     case WM_PAINT:
         OnPaint();
         return 0;
@@ -2394,15 +2422,26 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         return DefWindowProcW(hwnd_, message, wParam, lParam);
     }
     case WM_TIMER:
-        if (wParam == ID_TIMER_DOUBLE_ALT_DISPATCH) {
+        if (wParam == ID_TIMER_MODIFIER_GESTURE_DISPATCH) {
             // A stale WM_TIMER from the previous gesture must not dispatch a new
             // gesture early. New keyboard input also cancels the pending token.
-            if (GetTickCount64() < doubleAltDueTick_) return 0;
-            KillTimer(hwnd_, ID_TIMER_DOUBLE_ALT_DISPATCH);
-            if (doubleAltHotKey_.Consume(doubleAltToken_) &&
-                config_.globalHotKeysEnabled && IsDoubleAltMainHotKey(config_.mainHotKey) &&
-                doubleAltForeground_ && GetForegroundWindow() == doubleAltForeground_) {
-                ToggleMainWindowFromHotKey(L"double-alt", true, doubleAltToken_);
+            if (GetTickCount64() < modifierGestureDueTick_) return 0;
+            KillTimer(hwnd_, ID_TIMER_MODIFIER_GESTURE_DISPATCH);
+            const DoubleModifierGestureKind kind = modifierGestureKind_;
+            const UINT_PTR token = modifierGestureToken_;
+            const HWND foreground = modifierGestureForeground_;
+            const ModifierGestureAction action = DecideModifierGestureAction(
+                config_.globalHotKeysEnabled, config_.mainHotKey, config_.fileHelperHotKey, kind);
+            if (modifierGestureHotKey_.Consume(kind, token) &&
+                action != ModifierGestureAction::None && foreground &&
+                GetForegroundWindow() == foreground) {
+                if (action == ModifierGestureAction::ToggleMainWindow) {
+                    ToggleMainWindowFromHotKey(L"double-alt", true, token);
+                } else if (action == ModifierGestureAction::ToggleFileHelper) {
+                    if (!ToggleBuiltinFileHelper(hwnd_, instance_, theme_)) {
+                        WriteAppLog(L"双击 Ctrl 切换文件助手失败。");
+                    }
+                }
             }
             return 0;
         }
@@ -3143,7 +3182,7 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         }
         return DefWindowProcW(hwnd_, message, wParam, lParam);
     case WM_DESTROY:
-        doubleAltHotKey_.Stop();
+        modifierGestureHotKey_.Stop();
         if (sessionNotificationsRegistered_) {
             WTSUnRegisterSessionNotification(hwnd_);
             sessionNotificationsRegistered_ = false;
@@ -5273,6 +5312,7 @@ void MainWindow::OpenSettings() {
             mainHotKeyRegistered_,
             processLocatorHotKeyRegistered_,
             copySelectedPathsHotKeyRegistered_,
+            fileHelperHotKeyRegistered_,
             applySettings,
             resetContextMenu,
             model_.links,
@@ -5375,6 +5415,7 @@ SettingsApplyResult MainWindow::CommitSettingsConfig(const AppConfig& next, bool
     result.mainHotKeyRegistered = mainHotKeyRegistered_;
     result.processLocatorHotKeyRegistered = processLocatorHotKeyRegistered_;
     result.copySelectedPathsHotKeyRegistered = copySelectedPathsHotKeyRegistered_;
+    result.fileHelperHotKeyRegistered = fileHelperHotKeyRegistered_;
     return result;
 }
 
@@ -6793,7 +6834,8 @@ void MainWindow::ApplyConfigRuntimeChanges(const AppConfig& previous) {
     if (previous.globalHotKeysEnabled != config_.globalHotKeysEnabled ||
         previous.mainHotKey != config_.mainHotKey ||
         previous.processLocatorHotKey != config_.processLocatorHotKey ||
-        previous.copySelectedPathsHotKey != config_.copySelectedPathsHotKey) {
+        previous.copySelectedPathsHotKey != config_.copySelectedPathsHotKey ||
+        previous.fileHelperHotKey != config_.fileHelperHotKey) {
         UnregisterConfiguredHotKeys();
         RegisterConfiguredHotKeys();
     }
@@ -6850,6 +6892,9 @@ void MainWindow::CopySelectedPathsFromForeground(HWND foregroundWindow) {
 void MainWindow::RegisterConfiguredHotKeys() {
     UnregisterConfiguredHotKeys();
     std::wstring failures;
+    auto appendFailure = [&](const std::wstring& line) {
+        failures += failures.empty() ? line : (L"\n" + line);
+    };
     auto registerHotKey = [&](int id, int key, const std::wstring& name) -> bool {
         if (key <= 0) {
             return false;
@@ -6858,36 +6903,55 @@ void MainWindow::RegisterConfiguredHotKeys() {
             return true;
         }
         const std::wstring line = name + L"（" + FormatHotKeyText(key) + L"）";
-        failures += failures.empty() ? line : (L"\n" + line);
+        appendFailure(line);
         WriteAppLog(L"热键注册失败: " + line + L" - " + FormatLastError(GetLastError()));
         return false;
     };
 
     if (config_.globalHotKeysEnabled) {
-        if (IsDoubleAltMainHotKey(config_.mainHotKey)) {
+        const GlobalHotKeyGestureOptions gestureOptions{
+            IsDoubleAltMainHotKey(config_.mainHotKey),
+            IsDoubleCtrlFileHelperHotKey(config_.fileHelperHotKey),
+        };
+        if (gestureOptions.Any()) {
             const HWND target = hwnd_;
-            const bool started = doubleAltHotKey_.Start({
-                [target](UINT_PTR token, HWND foreground) {
-                    PostMessageW(target, WM_QUATTRO_DOUBLE_ALT_HOTKEY, token,
+            const bool started = modifierGestureHotKey_.Start(gestureOptions, {
+                [target](DoubleModifierGestureKind kind, UINT_PTR token, HWND foreground) {
+                    const UINT message = kind == DoubleModifierGestureKind::DoubleAlt
+                        ? WM_QUATTRO_DOUBLE_ALT_HOTKEY
+                        : WM_QUATTRO_DOUBLE_CTRL_HOTKEY;
+                    PostMessageW(target, message, token,
                         reinterpret_cast<LPARAM>(foreground));
                 },
                 [target](UINT_PTR registration) {
                     PostMessageW(target, WM_QUATTRO_HOTKEY_STATUS, registration, 0);
                 },
             });
-            mainHotKeyRegistered_ = doubleAltHotKey_.Registered();
+            const bool registered = modifierGestureHotKey_.Registered();
+            if (gestureOptions.doubleAlt) mainHotKeyRegistered_ = registered;
+            if (gestureOptions.doubleCtrl) fileHelperHotKeyRegistered_ = registered;
             if (!started) {
-                const std::wstring line = L"主窗口（" + FormatMainHotKeyText(config_.mainHotKey) + L"）";
-                failures += failures.empty() ? line : (L"\n" + line);
-                WriteAppLog(L"热键注册失败: " + line + L" - " + FormatLastError(doubleAltHotKey_.LastError()));
+                if (gestureOptions.doubleAlt) {
+                    appendFailure(L"主窗口（" + FormatMainHotKeyText(config_.mainHotKey) + L"）");
+                }
+                if (gestureOptions.doubleCtrl) {
+                    appendFailure(L"文件助手（" + FormatFileHelperHotKeyText(config_.fileHelperHotKey) + L"）");
+                }
+                WriteAppLog(L"双击修饰键注册失败: " +
+                    FormatLastError(modifierGestureHotKey_.LastError()));
             }
-        } else if (config_.mainHotKey != 0) {
+        }
+        if (!gestureOptions.doubleAlt && config_.mainHotKey != 0) {
             mainHotKeyRegistered_ = registerHotKey(ID_HOTKEY_MAIN, config_.mainHotKey, L"主窗口");
         }
         processLocatorHotKeyRegistered_ = registerHotKey(
             ID_HOTKEY_PROCESS_LOCATOR, config_.processLocatorHotKey, L"进程定位器");
         copySelectedPathsHotKeyRegistered_ = registerHotKey(
             ID_HOTKEY_COPY_SELECTED_PATHS, config_.copySelectedPathsHotKey, L"复制选中项绝对路径");
+        if (!gestureOptions.doubleCtrl) {
+            fileHelperHotKeyRegistered_ = registerHotKey(
+                ID_HOTKEY_FILE_HELPER, config_.fileHelperHotKey, L"文件助手");
+        }
 
         int nextHotKeyId = ID_HOTKEY_LINK_BASE;
         for (const auto& link : model_.links) {
@@ -6899,7 +6963,7 @@ void MainWindow::RegisterConfiguredHotKeys() {
                 registeredLinkHotKeys_.push_back({hotKeyId, link.id});
             } else {
                 const std::wstring line = link.name + L"（" + FormatHotKeyText(link.hotKey) + L"）";
-                failures += failures.empty() ? line : (L"\n" + line);
+                appendFailure(line);
                 WriteAppLog(L"启动项热键注册失败: " + line + L" - " + FormatLastError(GetLastError()));
             }
         }
@@ -6937,14 +7001,16 @@ void MainWindow::UnregisterConfiguredHotKeys() {
     if (!hwnd_) {
         return;
     }
-    doubleAltHotKey_.Stop();
-    KillTimer(hwnd_, ID_TIMER_DOUBLE_ALT_DISPATCH);
+    modifierGestureHotKey_.Stop();
+    KillTimer(hwnd_, ID_TIMER_MODIFIER_GESTURE_DISPATCH);
     UnregisterHotKey(hwnd_, ID_HOTKEY_MAIN);
     UnregisterHotKey(hwnd_, ID_HOTKEY_PROCESS_LOCATOR);
     UnregisterHotKey(hwnd_, ID_HOTKEY_COPY_SELECTED_PATHS);
+    UnregisterHotKey(hwnd_, ID_HOTKEY_FILE_HELPER);
     mainHotKeyRegistered_ = false;
     processLocatorHotKeyRegistered_ = false;
     copySelectedPathsHotKeyRegistered_ = false;
+    fileHelperHotKeyRegistered_ = false;
     for (const auto& [hotKeyId, _] : registeredLinkHotKeys_) {
         UnregisterHotKey(hwnd_, hotKeyId);
     }
@@ -6965,6 +7031,9 @@ std::wstring MainWindow::TrayTooltipText() const {
     }
     if (copySelectedPathsHotKeyRegistered_ && config_.copySelectedPathsHotKey != 0) {
         text += L"\n复制路径：" + FormatGlobalHotKeyText(config_.copySelectedPathsHotKey);
+    }
+    if (fileHelperHotKeyRegistered_ && config_.fileHelperHotKey != 0) {
+        text += L"\n文件助手：" + FormatGlobalHotKeyText(config_.fileHelperHotKey);
     }
     return text;
 }
@@ -7937,8 +8006,8 @@ void MainWindow::SaveWindowState() {
 
 void MainWindow::CancelPendingMainWindowWake() {
     KillTimer(hwnd_, ID_TIMER_WAKE_RETRY);
-    KillTimer(hwnd_, ID_TIMER_DOUBLE_ALT_DISPATCH);
-    doubleAltHotKey_.CancelPending();
+    KillTimer(hwnd_, ID_TIMER_MODIFIER_GESTURE_DISPATCH);
+    modifierGestureHotKey_.CancelPending();
     wakeRetry_.Cancel();
 }
 
@@ -7951,8 +8020,8 @@ void MainWindow::WakeUp(const wchar_t* source, bool allowInputRecovery, UINT_PTR
         popupWakePending_ = true;
         return;
     }
-    wakeInputSerial_ = allowInputRecovery ? inputSerial : doubleAltHotKey_.InputSerial();
-    if (allowInputRecovery && doubleAltHotKey_.InputSerial() != wakeInputSerial_) return;
+    wakeInputSerial_ = allowInputRecovery ? inputSerial : modifierGestureHotKey_.InputSerial();
+    if (allowInputRecovery && modifierGestureHotKey_.InputSerial() != wakeInputSerial_) return;
     if (dockHidden_) {
         DockRestore(source);
     }
@@ -7965,7 +8034,7 @@ void MainWindow::AttemptMainWindowWake(
     const HWND previousForeground = GetForegroundWindow();
     const auto current = [this, generation, allowInputRecovery]() {
         return wakeRetry_.IsCurrent(generation) &&
-            (!allowInputRecovery || doubleAltHotKey_.InputSerial() == wakeInputSerial_);
+            (!allowInputRecovery || modifierGestureHotKey_.InputSerial() == wakeInputSerial_);
     };
     const auto result = retry && allowInputRecovery
         ? RequestWindowForegroundWithInputRecovery(hwnd_, config_.topMost, recoveryForeground, current)
@@ -8027,7 +8096,7 @@ bool MainWindow::ShouldHideMainWindowFromHotKey() const {
 }
 
 void MainWindow::ToggleMainWindowFromHotKey(const wchar_t* source, bool allowInputRecovery, UINT_PTR inputSerial) {
-    if (allowInputRecovery && doubleAltHotKey_.InputSerial() != inputSerial) return;
+    if (allowInputRecovery && modifierGestureHotKey_.InputSerial() != inputSerial) return;
     if (ShouldHideMainWindowFromHotKey()) {
         HideMainWindow();
         return;

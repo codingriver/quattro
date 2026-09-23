@@ -134,6 +134,22 @@ std::vector<PluginRecord> PluginRegistry::BuiltinPlugins() {
     webDavManager.enabled = true;
     webDavManager.installed = true;
 
+    PluginRecord fileHelper;
+    fileHelper.id = L"quattro.builtin.file-helper";
+    fileHelper.name = L"文件助手";
+    fileHelper.version = L"1.0.0";
+    fileHelper.category = L"builtin-tools";
+    fileHelper.kind = L"builtin-tool";
+    fileHelper.engine = L"file-helper";
+    fileHelper.description = L"快速打开文件或目录，并按需创建文件和目录。";
+    fileHelper.permissions = L"文件读写, 打开目录, 全局快捷键";
+    fileHelper.author = L"Quattro快速启动器";
+    fileHelper.license = L"Built-in";
+    fileHelper.builtin = true;
+    fileHelper.deletable = false;
+    fileHelper.enabled = true;
+    fileHelper.installed = true;
+
     PluginRecord adBlock;
     adBlock.id = L"quattro.builtin.ad-block";
     adBlock.name = L"广告拦截";
@@ -156,6 +172,7 @@ std::vector<PluginRecord> PluginRegistry::BuiltinPlugins() {
         timer,
         stopwatch,
         processTools,
+        fileHelper,
         webDavManager,
     };
     plugins.push_back(std::move(adBlock));

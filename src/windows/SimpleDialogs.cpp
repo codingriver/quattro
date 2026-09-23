@@ -68,6 +68,7 @@ constexpr int ID_PROCESS_LOCATOR_HOTKEY_CAPTURE = 303;
 constexpr int ID_HOTKEY_TABLE = 304;
 constexpr int ID_COPY_SELECTED_PATHS_HOTKEY_CAPTURE = 305;
 constexpr int ID_RESET_DEFAULT_HOTKEYS = 306;
+constexpr int ID_FILE_HELPER_HOTKEY_CAPTURE = 307;
 constexpr int ID_GROUP_WIDTH = 401;
 constexpr int ID_TAG_WIDTH = 402;
 constexpr int ID_DOCK_DELAY = 403;
@@ -353,6 +354,13 @@ HotKeyAvailability CheckCtrlAltHotKeyAvailability(HWND hwnd, int key, int curren
     return HotKeyAvailability{false, error, std::move(reason)};
 }
 
+HotKeyAvailability CheckFileHelperHotKeyAvailability(HWND hwnd, int key, int currentRegisteredKey) {
+    if (IsDoubleCtrlFileHelperHotKey(key)) {
+        return HotKeyAvailability{true, ERROR_SUCCESS, {}};
+    }
+    return CheckCtrlAltHotKeyAvailability(hwnd, key, currentRegisteredKey);
+}
+
 std::wstring MainHotKeyConflictMessage(int key, const HotKeyAvailability& availability) {
     return FormatMainHotKeyText(key) + L" 不可用。\n\n" + availability.reason;
 }
@@ -388,6 +396,19 @@ std::wstring CopySelectedPathsHotKeyStatusText(int key, const HotKeyAvailability
         return L"当前快捷键可用。";
     }
     return L"复制选中项绝对路径快捷键 " + FormatGlobalHotKeyText(key) + L" 已被占用。";
+}
+
+std::wstring FileHelperHotKeyStatusText(int key, const HotKeyAvailability& availability) {
+    if (IsDoubleCtrlFileHelperHotKey(key)) {
+        return availability.available ? L"当前快捷键可用。" : L"热键冲突：双击 Ctrl 不可用。";
+    }
+    if (key <= 0) {
+        return L"文件助手快捷键未设置。";
+    }
+    if (availability.available) {
+        return L"当前快捷键可用。";
+    }
+    return L"文件助手快捷键 " + FormatGlobalHotKeyText(key) + L" 已被占用。";
 }
 
 void ShowHotKeyConflictMessage(HWND owner, HINSTANCE instance, const Theme& theme, const std::wstring& message) {
@@ -2655,6 +2676,7 @@ public:
         bool mainHotKeyRegistered,
         bool processLocatorHotKeyRegistered,
         bool copySelectedPathsHotKeyRegistered,
+        bool fileHelperHotKeyRegistered,
         SettingsApplyCallback applyCallback,
         SettingsResetContextMenuCallback resetContextMenuCallback,
         std::vector<Link> contextMenuLinks,
@@ -2675,6 +2697,7 @@ public:
           mainHotKeyRegistered_(mainHotKeyRegistered),
           processLocatorHotKeyRegistered_(processLocatorHotKeyRegistered),
           copySelectedPathsHotKeyRegistered_(copySelectedPathsHotKeyRegistered),
+          fileHelperHotKeyRegistered_(fileHelperHotKeyRegistered),
           applyCallback_(std::move(applyCallback)),
           resetContextMenuCallback_(std::move(resetContextMenuCallback)),
           contextMenuLinks_(std::move(contextMenuLinks)),
@@ -2962,9 +2985,8 @@ private:
         return group;
     }
 
-    void AddHotKeyTableRows() {
-        if (!hotKeyTable_) return;
-        ThemedUi::SetTableRows(hotKeyTable_, {
+    std::vector<ThemedTableRow> HotKeyTableRows() const {
+        return {
             ThemedTableRow{
                 ID_MAIN_HOTKEY_CAPTURE,
                 {
@@ -2989,7 +3011,42 @@ private:
                     ThemedTableCell{L"录入", -1, ThemedTableCellRole::Action, ID_COPY_SELECTED_PATHS_HOTKEY_CAPTURE},
                 },
             },
-        });
+            ThemedTableRow{
+                ID_FILE_HELPER_HOTKEY_CAPTURE,
+                {
+                    ThemedTableCell{L"打开文件助手"},
+                    ThemedTableCell{FormatGlobalHotKeyText(draft_.fileHelperHotKey)},
+                    ThemedTableCell{L"录入", -1, ThemedTableCellRole::Action, ID_FILE_HELPER_HOTKEY_CAPTURE},
+                },
+            },
+        };
+    }
+
+    std::array<int, 4> HotKeyValues() const {
+        return {
+            draft_.mainHotKey,
+            draft_.processLocatorHotKey,
+            draft_.copySelectedPathsHotKey,
+            draft_.fileHelperHotKey,
+        };
+    }
+
+    void UpdateHotKeyTableRows() {
+        if (!hotKeyTable_) return;
+        const auto rows = HotKeyTableRows();
+        const auto values = HotKeyValues();
+        if (!hotKeyTableInitialized_) {
+            ThemedUi::SetTableRows(hotKeyTable_, rows);
+            renderedHotKeyValues_ = values;
+            hotKeyTableInitialized_ = true;
+            return;
+        }
+        for (std::size_t index = 0; index < rows.size(); ++index) {
+            if (renderedHotKeyValues_[index] == values[index]) continue;
+            if (ThemedUi::UpdateTableRowByKey(hotKeyTable_, rows[index].key, rows[index])) {
+                renderedHotKeyValues_[index] = values[index];
+            }
+        }
     }
 
     void ResetDefaultHotKeys() {
@@ -2997,6 +3054,7 @@ private:
         draft_.mainHotKey = defaults.mainHotKey;
         draft_.processLocatorHotKey = defaults.processLocatorHotKey;
         draft_.copySelectedPathsHotKey = defaults.copySelectedPathsHotKey;
+        draft_.fileHelperHotKey = defaults.fileHelperHotKey;
         UpdateHotKeyLabels();
         ShowToast(L"已恢复默认热键，保存设置后生效。", ThemedToastRole::Info);
     }
@@ -3337,13 +3395,17 @@ private:
         }
         if (event.actionId == ID_MAIN_HOTKEY_CAPTURE) {
             HotKeyCaptureDialogOptions options{};
-            options.allowDoubleAlt = true;
-            options.useMainHotKeyText = true;
+            options.allowedDoubleTap = DoubleModifierGestureKind::DoubleAlt;
             TrySetMainHotKey(ShowHotKeyCaptureDialog(hwnd_, instance_, theme_, draft_.mainHotKey, options));
         } else if (event.actionId == ID_PROCESS_LOCATOR_HOTKEY_CAPTURE) {
             TrySetProcessLocatorHotKey(ShowHotKeyCaptureDialog(hwnd_, instance_, theme_, draft_.processLocatorHotKey));
         } else if (event.actionId == ID_COPY_SELECTED_PATHS_HOTKEY_CAPTURE) {
             TrySetCopySelectedPathsHotKey(ShowHotKeyCaptureDialog(hwnd_, instance_, theme_, draft_.copySelectedPathsHotKey));
+        } else if (event.actionId == ID_FILE_HELPER_HOTKEY_CAPTURE) {
+            HotKeyCaptureDialogOptions options{};
+            options.allowedDoubleTap = DoubleModifierGestureKind::DoubleCtrl;
+            TrySetFileHelperHotKey(
+                ShowHotKeyCaptureDialog(hwnd_, instance_, theme_, draft_.fileHelperHotKey, options));
         }
         return true;
     }
@@ -3398,6 +3460,7 @@ private:
             value.mainHotKey = draft_.mainHotKey;
             value.processLocatorHotKey = draft_.processLocatorHotKey;
             value.copySelectedPathsHotKey = draft_.copySelectedPathsHotKey;
+            value.fileHelperHotKey = draft_.fileHelperHotKey;
             break;
         case TabLinks:
             value.openDirCommand = GetText(openDirEdit_);
@@ -3455,6 +3518,10 @@ private:
         return copySelectedPathsHotKeyRegistered_ ? config_.copySelectedPathsHotKey : 0;
     }
 
+    int CurrentRegisteredFileHelperHotKey() const {
+        return fileHelperHotKeyRegistered_ ? config_.fileHelperHotKey : 0;
+    }
+
     bool TrySetProcessLocatorHotKey(int key) {
         if (key == kMainHotKeyDoubleAlt) {
             key = 0;
@@ -3488,6 +3555,23 @@ private:
         return true;
     }
 
+    bool TrySetFileHelperHotKey(int key) {
+        if (key == kMainHotKeyDoubleAlt) {
+            key = 0;
+        }
+        const HotKeyAvailability availability = CheckFileHelperHotKeyAvailability(
+            hwnd_, key, CurrentRegisteredFileHelperHotKey());
+        if (!availability.available) {
+            draft_.fileHelperHotKey = key;
+            UpdateHotKeyLabels();
+            ShowHotKeyConflictMessage(hwnd_, instance_, theme_, FileHelperHotKeyStatusText(key, availability));
+            return false;
+        }
+        draft_.fileHelperHotKey = key;
+        UpdateHotKeyLabels();
+        return true;
+    }
+
     bool ValidateHotKeysBeforeSave() {
         if (!draft_.globalHotKeysEnabled) {
             UpdateHotKeyLabels();
@@ -3513,6 +3597,22 @@ private:
             ShowHotKeyConflictMessage(hwnd_, instance_, theme_, L"进程定位器和复制选中项绝对路径不能使用同一个快捷键。");
             return false;
         }
+        if (!IsDoubleAltMainHotKey(draft_.mainHotKey) &&
+            draft_.mainHotKey != 0 && draft_.mainHotKey == draft_.fileHelperHotKey) {
+            UpdateHotKeyLabels();
+            ShowHotKeyConflictMessage(hwnd_, instance_, theme_, L"主窗口显隐和文件助手不能使用同一个快捷键。");
+            return false;
+        }
+        if (draft_.processLocatorHotKey != 0 && draft_.processLocatorHotKey == draft_.fileHelperHotKey) {
+            UpdateHotKeyLabels();
+            ShowHotKeyConflictMessage(hwnd_, instance_, theme_, L"进程定位器和文件助手不能使用同一个快捷键。");
+            return false;
+        }
+        if (draft_.copySelectedPathsHotKey != 0 && draft_.copySelectedPathsHotKey == draft_.fileHelperHotKey) {
+            UpdateHotKeyLabels();
+            ShowHotKeyConflictMessage(hwnd_, instance_, theme_, L"复制选中项绝对路径和文件助手不能使用同一个快捷键。");
+            return false;
+        }
         const HotKeyAvailability availability = CheckMainHotKeyAvailability(hwnd_, draft_.mainHotKey, CurrentRegisteredMainHotKey());
         UpdateHotKeyLabels();
         if (!availability.available) {
@@ -3536,6 +3636,15 @@ private:
             ShowHotKeyConflictMessage(
                 hwnd_, instance_, theme_,
                 CopySelectedPathsHotKeyStatusText(draft_.copySelectedPathsHotKey, copyAvailability));
+            return false;
+        }
+        const HotKeyAvailability fileHelperAvailability = CheckFileHelperHotKeyAvailability(
+            hwnd_, draft_.fileHelperHotKey, CurrentRegisteredFileHelperHotKey());
+        UpdateHotKeyLabels();
+        if (!fileHelperAvailability.available) {
+            ShowHotKeyConflictMessage(
+                hwnd_, instance_, theme_,
+                FileHelperHotKeyStatusText(draft_.fileHelperHotKey, fileHelperAvailability));
             return false;
         }
         return true;
@@ -4504,6 +4613,7 @@ private:
         mainHotKeyRegistered_ = result.mainHotKeyRegistered;
         processLocatorHotKeyRegistered_ = result.processLocatorHotKeyRegistered;
         copySelectedPathsHotKeyRegistered_ = result.copySelectedPathsHotKeyRegistered;
+        fileHelperHotKeyRegistered_ = result.fileHelperHotKeyRegistered;
         importedData_ = false;
         if (!result.warning.empty()) ShowToast(result.warning, ThemedToastRole::Warning);
         return true;
@@ -4519,7 +4629,8 @@ private:
         const bool hotKeysChanged = next.globalHotKeysEnabled != config_.globalHotKeysEnabled ||
             next.mainHotKey != config_.mainHotKey ||
             next.processLocatorHotKey != config_.processLocatorHotKey ||
-            next.copySelectedPathsHotKey != config_.copySelectedPathsHotKey;
+            next.copySelectedPathsHotKey != config_.copySelectedPathsHotKey ||
+            next.fileHelperHotKey != config_.fileHelperHotKey;
         if (hotKeysChanged && !ValidateHotKeysBeforeSave()) {
             return false;
         }
@@ -4934,7 +5045,7 @@ private:
             resetDefaultHotKeysTooltipOptions.placement = ThemedTooltipPlacement::Cursor;
             settingsUi.SetTooltip(
                 resetDefaultHotKeysButton_,
-                L"恢复主窗口、进程定位器和复制路径的默认热键；启用状态保持不变。",
+                L"恢复主窗口、进程定位器、复制路径和文件助手的默认热键；启用状态保持不变。",
                 resetDefaultHotKeysTooltipOptions);
             const int hotKeyStatusY = hotKeyContent.bottom - settingsUi.labelHeight();
             const int hotKeyTableTop = hotKeyToggleY + settingsUi.toggleHeight() + behaviorLayout.rowGap;
@@ -5291,8 +5402,7 @@ private:
         }
             if (LOWORD(wParam) == ID_MAIN_HOTKEY_CAPTURE) {
                 HotKeyCaptureDialogOptions options{};
-                options.allowDoubleAlt = true;
-                options.useMainHotKeyText = true;
+                options.allowedDoubleTap = DoubleModifierGestureKind::DoubleAlt;
                 TrySetMainHotKey(ShowHotKeyCaptureDialog(hwnd_, instance_, theme_, draft_.mainHotKey, options));
                 return 0;
             }
@@ -5302,6 +5412,13 @@ private:
             }
             if (LOWORD(wParam) == ID_COPY_SELECTED_PATHS_HOTKEY_CAPTURE) {
                 TrySetCopySelectedPathsHotKey(ShowHotKeyCaptureDialog(hwnd_, instance_, theme_, draft_.copySelectedPathsHotKey));
+                return 0;
+            }
+            if (LOWORD(wParam) == ID_FILE_HELPER_HOTKEY_CAPTURE) {
+                HotKeyCaptureDialogOptions options{};
+                options.allowedDoubleTap = DoubleModifierGestureKind::DoubleCtrl;
+                TrySetFileHelperHotKey(
+                    ShowHotKeyCaptureDialog(hwnd_, instance_, theme_, draft_.fileHelperHotKey, options));
                 return 0;
             }
             if (LOWORD(wParam) == ID_GLOBAL_HOTKEYS_ENABLED) {
@@ -5468,7 +5585,7 @@ private:
     }
 
     void UpdateHotKeyLabels() {
-        AddHotKeyTableRows();
+        UpdateHotKeyTableRows();
         if (mainHotKeyStatus_) {
             if (!draft_.globalHotKeysEnabled) {
                 SetWindowTextW(mainHotKeyStatus_, L"全局快捷键已关闭。");
@@ -5491,6 +5608,19 @@ private:
                 SetWindowTextW(mainHotKeyStatus_, L"进程定位器和复制选中项绝对路径不能使用同一个快捷键。");
                 return;
             }
+            if (!IsDoubleAltMainHotKey(draft_.mainHotKey) &&
+                draft_.mainHotKey != 0 && draft_.mainHotKey == draft_.fileHelperHotKey) {
+                SetWindowTextW(mainHotKeyStatus_, L"主窗口显隐和文件助手不能使用同一个快捷键。");
+                return;
+            }
+            if (draft_.processLocatorHotKey != 0 && draft_.processLocatorHotKey == draft_.fileHelperHotKey) {
+                SetWindowTextW(mainHotKeyStatus_, L"进程定位器和文件助手不能使用同一个快捷键。");
+                return;
+            }
+            if (draft_.copySelectedPathsHotKey != 0 && draft_.copySelectedPathsHotKey == draft_.fileHelperHotKey) {
+                SetWindowTextW(mainHotKeyStatus_, L"复制选中项绝对路径和文件助手不能使用同一个快捷键。");
+                return;
+            }
             const HotKeyAvailability mainAvailability = CheckMainHotKeyAvailability(hwnd_, draft_.mainHotKey, CurrentRegisteredMainHotKey());
             if (!mainAvailability.available) {
                 SetWindowTextW(mainHotKeyStatus_, MainHotKeyStatusText(draft_.mainHotKey, mainAvailability).c_str());
@@ -5504,7 +5634,13 @@ private:
             }
             const HotKeyAvailability copyAvailability = CheckCtrlAltHotKeyAvailability(
                 hwnd_, draft_.copySelectedPathsHotKey, CurrentRegisteredCopySelectedPathsHotKey());
-            SetWindowTextW(mainHotKeyStatus_, CopySelectedPathsHotKeyStatusText(draft_.copySelectedPathsHotKey, copyAvailability).c_str());
+            if (!copyAvailability.available) {
+                SetWindowTextW(mainHotKeyStatus_, CopySelectedPathsHotKeyStatusText(draft_.copySelectedPathsHotKey, copyAvailability).c_str());
+                return;
+            }
+            const HotKeyAvailability fileHelperAvailability = CheckFileHelperHotKeyAvailability(
+                hwnd_, draft_.fileHelperHotKey, CurrentRegisteredFileHelperHotKey());
+            SetWindowTextW(mainHotKeyStatus_, FileHelperHotKeyStatusText(draft_.fileHelperHotKey, fileHelperAvailability).c_str());
         }
     }
 
@@ -5520,6 +5656,7 @@ private:
     bool mainHotKeyRegistered_ = false;
     bool processLocatorHotKeyRegistered_ = false;
     bool copySelectedPathsHotKeyRegistered_ = false;
+    bool fileHelperHotKeyRegistered_ = false;
     int currentTab_ = -1;
     RECT tabStripRect_{};
     int tabContentOffsetY_ = 0;
@@ -5573,6 +5710,8 @@ private:
     HWND globalHotKeysEnabled_ = nullptr;
     HWND resetDefaultHotKeysButton_ = nullptr;
     HWND hotKeyTable_ = nullptr;
+    bool hotKeyTableInitialized_ = false;
+    std::array<int, 4> renderedHotKeyValues_{};
     HWND mainHotKeyStatus_ = nullptr;
     HWND openDirEdit_ = nullptr;
     HWND updateUrlEdit_ = nullptr;
@@ -5681,6 +5820,7 @@ bool ShowSettingsDialog(
     bool mainHotKeyRegistered,
     bool processLocatorHotKeyRegistered,
     bool copySelectedPathsHotKeyRegistered,
+    bool fileHelperHotKeyRegistered,
     SettingsApplyCallback applyCallback,
     SettingsResetContextMenuCallback resetContextMenuCallback,
     const std::vector<Link>& contextMenuLinks,
@@ -5701,6 +5841,7 @@ bool ShowSettingsDialog(
         mainHotKeyRegistered,
         processLocatorHotKeyRegistered,
         copySelectedPathsHotKeyRegistered,
+        fileHelperHotKeyRegistered,
         std::move(applyCallback),
         std::move(resetContextMenuCallback),
         contextMenuLinks,

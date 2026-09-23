@@ -31,6 +31,7 @@ struct SettingsApplyResult {
     bool mainHotKeyRegistered = false;
     bool processLocatorHotKeyRegistered = false;
     bool copySelectedPathsHotKeyRegistered = false;
+    bool fileHelperHotKeyRegistered = false;
     std::wstring error;
     std::wstring warning;
 };
@@ -80,6 +81,7 @@ bool ShowSettingsDialog(
     bool mainHotKeyRegistered = false,
     bool processLocatorHotKeyRegistered = false,
     bool copySelectedPathsHotKeyRegistered = false,
+    bool fileHelperHotKeyRegistered = false,
     SettingsApplyCallback applyCallback = {},
     SettingsResetContextMenuCallback resetContextMenuCallback = {},
     const std::vector<Link>& contextMenuLinks = {},

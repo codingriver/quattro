@@ -1,4 +1,5 @@
 #include "../src/windows/BuiltinTools.h"
+#include "../src/windows/FileHelperDialog.h"
 #include "../src/windows/LinkEditDialog.h"
 #include "../src/windows/MainWindow.h"
 #include "../src/domain/MenuCatalog.h"
@@ -1540,7 +1541,7 @@ void ValidateAndCapture(HWND hwnd, const Scenario& scenario, const std::filesyst
                     scenario.name + L": hotkey table column proportions are not compact");
             }
             const int rowCount = ListView_GetItemCount(table);
-            state.Check(rowCount == 3, scenario.name + L": hotkey table row count mismatch");
+            state.Check(rowCount == 4, scenario.name + L": hotkey table row count mismatch");
             if (rowCount > 0) {
                 RECT lastRow{};
                 lastRow.left = LVIR_BOUNDS;
@@ -2422,6 +2423,46 @@ void RunMainWindowScenario(
         Scenario scenario{L"main-window-" + dpiSuffix, L"QuattroMainWindow", L"", screenshotName, {expectedTitle}, {}, 0, 0, false};
         scenario.forcedDpi = dpi;
         ValidateAndCapture(hwnd, scenario, outputDir, state);
+
+        SendMessageW(hwnd, WM_HOTKEY, 4, 0);
+        HWND fileHelper = WaitForTopWindow(
+            FindWindowRequest{kFileHelperWindowClass, L"文件助手", process.dwProcessId},
+            3000);
+        state.Check(fileHelper != nullptr,
+            L"main-window-file-helper-hotkey: WM_HOTKEY did not open file helper");
+        if (fileHelper) {
+            state.Check(
+                SendMessageW(
+                    fileHelper,
+                    WM_QUATTRO_TEST_FILE_HELPER,
+                    static_cast<WPARAM>(FileHelperTestCommand::QueryFocusRequested),
+                    0) == TRUE,
+                L"main-window-file-helper-hotkey: initial open did not request path focus");
+            SendMessageW(
+                fileHelper,
+                WM_QUATTRO_TEST_FILE_HELPER,
+                static_cast<WPARAM>(FileHelperTestCommand::ResetFocusRequested),
+                0);
+            SendMessageW(hwnd, WM_HOTKEY, 4, 0);
+            bool focusRequested = false;
+            for (int elapsed = 0; elapsed < 2000 && !focusRequested; elapsed += 20) {
+                focusRequested = SendMessageW(
+                    fileHelper,
+                    WM_QUATTRO_TEST_FILE_HELPER,
+                    static_cast<WPARAM>(FileHelperTestCommand::QueryFocusRequested),
+                    0) == TRUE;
+                if (!focusRequested) Sleep(20);
+            }
+            state.Check(focusRequested,
+                L"main-window-file-helper-hotkey: repeated hotkey did not request path focus");
+            state.Check(
+                CountTopWindowsForProcess(L"文件助手", process.dwProcessId) == 1,
+                L"main-window-file-helper-hotkey: repeated hotkey created another window");
+            PostMessageW(fileHelper, WM_CLOSE, 0, 0);
+            for (int elapsed = 0; IsWindow(fileHelper) && elapsed < 2000; elapsed += 20) {
+                Sleep(20);
+            }
+        }
 
         const bool originalShowTitle = SendMessageW(hwnd, WM_QUATTRO_TEST_SETTINGS_COMMIT, 0, 0) != 0;
         HANDLE lockedConfig = CreateFileW(childConfig.path().c_str(), GENERIC_READ,
@@ -5354,6 +5395,510 @@ void RunClockScenarios(
     }
 }
 
+void RunFileHelperScenarios(
+    HWND owner,
+    HINSTANCE instance,
+    const Theme& theme,
+    const std::filesystem::path& outputDir,
+    TestState& state) {
+    ScopedAcceptanceChildEnvironment environment;
+    PluginRegistry registry(environment.root());
+    AppConfig config;
+
+    for (const UINT dpi : {96u, 120u, 144u}) {
+        const std::wstring suffix = DpiPercentSuffix(dpi);
+        const std::wstring scenarioName = L"builtin-file-helper-" + suffix;
+        Scenario scenario{
+            scenarioName,
+            kFileHelperWindowClass,
+            L"文件助手",
+            scenarioName + L".png",
+            {L"文件助手", L"打开文件", L"打开文件夹", L"创建文件", L"创建目录",
+             L"请输入路径", L"打开所在位置"},
+            {},
+            1,
+            6,
+            false};
+        scenario.forcedDpi = dpi;
+        scenario.requireThemedEditFrames = true;
+
+        const HWND foregroundBefore = GetForegroundWindow();
+        const HWND activeBefore = GetActiveWindow();
+        const std::filesystem::path caseRoot = environment.root() / (L"dpi-" + suffix);
+        const std::filesystem::path file = caseRoot / L"nested" / L"sample.txt";
+        const std::filesystem::path folder = caseRoot / L"created" / L"folder";
+        std::error_code error;
+        std::filesystem::create_directories(caseRoot, error);
+        state.Check(!error, scenarioName + L": failed to prepare isolated directory");
+
+        RunDialogScenario(
+            scenario,
+            outputDir,
+            state,
+            [&]() {
+                state.Check(
+                    ShowBuiltinTool(owner, instance, theme, registry, config, L"file-helper"),
+                    scenarioName + L": open request failed");
+                HWND helper = WaitForTopWindow(
+                    FindWindowRequest{kFileHelperWindowClass, L"文件助手", GetCurrentProcessId()},
+                    3000);
+                state.Check(helper != nullptr, scenarioName + L": modeless window was not found");
+                if (helper) {
+                    PumpModelessBuiltinTool(helper);
+                }
+            },
+            [&]() {
+                HWND helper = FindTopWindow(
+                    FindWindowRequest{kFileHelperWindowClass, L"文件助手", GetCurrentProcessId()});
+                state.Check(helper != nullptr, scenarioName + L": window disappeared before interaction");
+                if (!helper) {
+                    return;
+                }
+
+                auto send = [&](FileHelperTestCommand command, FileHelperTestRequest* request = nullptr) {
+                    return SendMessageW(
+                        helper,
+                        WM_QUATTRO_TEST_FILE_HELPER,
+                        static_cast<WPARAM>(command),
+                        reinterpret_cast<LPARAM>(request));
+                };
+                auto setPath = [&](const std::filesystem::path& path) {
+                    FileHelperTestRequest request{path.wstring()};
+                    state.Check(
+                        send(FileHelperTestCommand::SetPath, &request) == TRUE,
+                        scenarioName + L": failed to set test path");
+                };
+
+                state.Check(
+                    send(FileHelperTestCommand::QueryFocusRequested) == TRUE,
+                    scenarioName + L": initial open did not request path focus");
+                send(FileHelperTestCommand::ResetFocusRequested);
+                state.Check(
+                    ShowBuiltinTool(owner, instance, theme, registry, config, L"file-helper"),
+                    scenarioName + L": repeated open request failed");
+                bool focusRequested = false;
+                for (int elapsed = 0; elapsed < 2000 && !focusRequested; elapsed += 20) {
+                    focusRequested = send(FileHelperTestCommand::QueryFocusRequested) == TRUE;
+                    if (!focusRequested) Sleep(20);
+                }
+                state.Check(focusRequested,
+                    scenarioName + L": repeated open did not request path focus");
+                state.Check(
+                    CountTopWindowsForProcess(L"文件助手", GetCurrentProcessId()) == 1,
+                    scenarioName + L": repeated open created another window");
+
+                setPath(file);
+                state.Check(
+                    send(FileHelperTestCommand::CreateFileAction) == TRUE &&
+                        std::filesystem::is_regular_file(file) &&
+                        WindowContainsText(helper, L"文件已创建。"),
+                    scenarioName + L": create-file action failed");
+                state.Check(
+                    send(FileHelperTestCommand::QueryContainingLocationEnabled) == TRUE,
+                    scenarioName + L": existing file did not enable containing-location action");
+                state.Check(
+                    send(FileHelperTestCommand::OpenFile) == TRUE &&
+                        send(FileHelperTestCommand::QueryLastAction) == ID_FILE_HELPER_OPEN_FILE &&
+                        WindowContainsText(helper, L"已记录打开文件意图。"),
+                    scenarioName + L": open-file intent was not recorded");
+
+                {
+                    std::ofstream output(file, std::ios::binary | std::ios::trunc);
+                    output << "preserve";
+                }
+                PostMessageW(
+                    helper,
+                    WM_QUATTRO_TEST_FILE_HELPER,
+                    static_cast<WPARAM>(FileHelperTestCommand::CreateFileAction),
+                    0);
+                HWND confirmation = WaitForTopWindow(
+                    FindWindowRequest{L"QuattroCommonThemedMessageBox", L"创建文件", GetCurrentProcessId()},
+                    3000);
+                state.Check(confirmation != nullptr,
+                    scenarioName + L": overwrite confirmation did not appear");
+                if (confirmation) {
+                    Scenario confirmationScenario{
+                        scenarioName + L"-overwrite-confirm",
+                        L"QuattroCommonThemedMessageBox",
+                        L"创建文件",
+                        scenarioName + L"-overwrite-confirm.png",
+                        {L"覆盖会清空现有内容", L"是", L"否"},
+                        {},
+                        0,
+                        2,
+                        false};
+                    confirmationScenario.forcedDpi = dpi;
+                    ValidateAndCapture(confirmation, confirmationScenario, outputDir, state);
+                    HWND noButton = ChildById(confirmation, IDNO);
+                    state.Check(noButton != nullptr,
+                        scenarioName + L": overwrite confirmation has no cancel action");
+                    if (noButton) SendMessageW(noButton, BM_CLICK, 0, 0);
+                }
+                state.Check(
+                    std::filesystem::exists(file) && std::filesystem::file_size(file) == 8,
+                    scenarioName + L": cancelled overwrite changed file content");
+                state.Check(
+                    WaitForWindowText(helper, L"已取消覆盖。", 2000),
+                    scenarioName + L": cancelled overwrite status was not shown");
+
+                PostMessageW(
+                    helper,
+                    WM_QUATTRO_TEST_FILE_HELPER,
+                    static_cast<WPARAM>(FileHelperTestCommand::CreateFileAction),
+                    0);
+                confirmation = WaitForTopWindow(
+                    FindWindowRequest{L"QuattroCommonThemedMessageBox", L"创建文件", GetCurrentProcessId()},
+                    3000);
+                state.Check(confirmation != nullptr,
+                    scenarioName + L": second overwrite confirmation did not appear");
+                if (confirmation) {
+                    HWND yesButton = ChildById(confirmation, IDYES);
+                    state.Check(yesButton != nullptr,
+                        scenarioName + L": overwrite confirmation has no confirm action");
+                    if (yesButton) SendMessageW(yesButton, BM_CLICK, 0, 0);
+                }
+                for (int elapsed = 0;
+                     elapsed < 2000 && (!std::filesystem::exists(file) || std::filesystem::file_size(file) != 0);
+                     elapsed += 20) {
+                    Sleep(20);
+                }
+                state.Check(
+                    std::filesystem::exists(file) && std::filesystem::file_size(file) == 0,
+                    scenarioName + L": confirmed overwrite did not clear file content");
+                state.Check(
+                    WaitForWindowText(helper, L"文件已覆盖。", 2000),
+                    scenarioName + L": confirmed overwrite status was not shown");
+
+                setPath(folder);
+                state.Check(
+                    send(FileHelperTestCommand::CreateFolder) == TRUE &&
+                        std::filesystem::is_directory(folder) &&
+                        WindowContainsText(helper, L"目录已创建。"),
+                    scenarioName + L": create-folder action failed");
+                state.Check(
+                    send(FileHelperTestCommand::OpenFolder) == TRUE &&
+                        send(FileHelperTestCommand::QueryLastAction) == ID_FILE_HELPER_OPEN_FOLDER &&
+                        WindowContainsText(helper, L"已记录打开目录意图。"),
+                    scenarioName + L": open-folder intent was not recorded");
+                state.Check(
+                    send(FileHelperTestCommand::OpenContainingLocation) == TRUE &&
+                        send(FileHelperTestCommand::QueryLastAction) == ID_FILE_HELPER_OPEN_LOCATION &&
+                        WindowContainsText(helper, L"已记录打开所在位置意图。"),
+                    scenarioName + L": containing-location intent was not recorded");
+                state.Check(
+                    ToggleBuiltinFileHelper(owner, instance, theme),
+                    scenarioName + L": double-Ctrl toggle could not close the window");
+                for (int elapsed = 0; IsWindow(helper) && elapsed < 2000; elapsed += 20) {
+                    Sleep(20);
+                }
+                state.Check(!IsWindow(helper),
+                    scenarioName + L": toggle left the file helper open");
+            });
+
+        state.Check(GetForegroundWindow() == foregroundBefore,
+            scenarioName + L": changed the foreground window");
+        state.Check(GetActiveWindow() == activeBefore,
+            scenarioName + L": changed the active window");
+    }
+
+    Scenario toggleReopenScenario{
+        L"builtin-file-helper-toggle-reopen",
+        kFileHelperWindowClass,
+        L"文件助手",
+        L"builtin-file-helper-toggle-reopen.png",
+        {L"文件助手", L"打开文件", L"打开文件夹", L"创建文件", L"创建目录"},
+        {},
+        1,
+        6,
+        false};
+    toggleReopenScenario.requireThemedEditFrames = true;
+    RunDialogScenario(
+        toggleReopenScenario,
+        outputDir,
+        state,
+        [&]() {
+            state.Check(
+                ToggleBuiltinFileHelper(owner, instance, theme),
+                L"file-helper-toggle: closed helper could not be reopened");
+            HWND helper = WaitForTopWindow(
+                FindWindowRequest{kFileHelperWindowClass, L"文件助手", GetCurrentProcessId()},
+                3000);
+            state.Check(helper != nullptr,
+                L"file-helper-toggle: reopened window was not found");
+            if (helper) PumpModelessBuiltinTool(helper);
+        },
+        [&]() {
+            HWND helper = FindTopWindow(
+                FindWindowRequest{kFileHelperWindowClass, L"文件助手", GetCurrentProcessId()});
+            state.Check(helper != nullptr,
+                L"file-helper-toggle: reopened window disappeared before inspection");
+            if (!helper) return;
+            state.Check(
+                SendMessageW(
+                    helper,
+                    WM_QUATTRO_TEST_FILE_HELPER,
+                    static_cast<WPARAM>(FileHelperTestCommand::QueryFocusRequested),
+                    0) == TRUE,
+                L"file-helper-toggle: reopening did not request path focus");
+            state.Check(
+                CountTopWindowsForProcess(L"文件助手", GetCurrentProcessId()) == 1,
+                L"file-helper-toggle: reopening created duplicate windows");
+            state.Check(
+                ToggleBuiltinFileHelper(owner, instance, theme),
+                L"file-helper-toggle: second toggle could not close the reopened window");
+            for (int elapsed = 0; IsWindow(helper) && elapsed < 2000; elapsed += 20) {
+                Sleep(20);
+            }
+            state.Check(!IsWindow(helper),
+                L"file-helper-toggle: second toggle left the reopened window open");
+        });
+
+    AppConfig settingsConfig;
+    settingsConfig.globalHotKeysEnabled = false;
+    settingsConfig.processLocatorHotKey = L'Z';
+    settingsConfig.fileHelperHotKey = kFileHelperHotKeyDoubleCtrl;
+    int appliedFileHelperHotKey = 0;
+    bool imported = false;
+    Scenario settingsScenario{
+        L"settings-file-helper-hotkey",
+        L"QuattroSettingsDialog",
+        L"设置",
+        L"settings-file-helper-hotkey.png",
+        {L"设置", L"打开文件助手", L"双击 Ctrl", L"重置默认热键", L"确定", L"取消"},
+        {},
+        0,
+        2,
+        false,
+        false,
+        false,
+        {},
+        L"热键"};
+    settingsScenario.validateHotKeyTableLayout = true;
+    RunDialogScenario(
+        settingsScenario,
+        outputDir,
+        state,
+        [&]() {
+            ShowSettingsDialog(
+                owner,
+                instance,
+                settingsConfig,
+                theme,
+                environment.root(),
+                environment.root(),
+                &imported,
+                nullptr,
+                false,
+                false,
+                false,
+                false,
+                [&](const AppConfig& next, bool) {
+                    appliedFileHelperHotKey = next.fileHelperHotKey;
+                    SettingsApplyResult result;
+                    result.saved = true;
+                    result.config = next;
+                    return result;
+                });
+        },
+        [&]() {
+            HWND settings = FindTopWindow(
+                FindWindowRequest{L"QuattroSettingsDialog", L"设置", GetCurrentProcessId()});
+            state.Check(settings != nullptr,
+                L"settings-file-helper-hotkey: settings window disappeared before reset");
+            if (!settings) return;
+            constexpr int kHotKeyTableCommand = 304;
+            constexpr int kProcessLocatorHotKeyRowKey = 303;
+            HWND hotKeyTable = ChildById(settings, kHotKeyTableCommand);
+            state.Check(hotKeyTable != nullptr,
+                L"settings-file-helper-hotkey: hotkey table was not found before reset");
+            if (hotKeyTable) {
+                state.Check(
+                    ThemedUi::SetTableSelectedKey(hotKeyTable, kProcessLocatorHotKeyRowKey),
+                    L"settings-file-helper-hotkey: process-locator row could not be selected");
+            }
+            HWND reset = VisibleButtonByText(settings, L"重置默认热键");
+            state.Check(reset != nullptr,
+                L"settings-file-helper-hotkey: reset-default button was not found");
+            if (reset) SendMessageW(reset, BM_CLICK, 0, 0);
+            if (hotKeyTable) {
+                const int selected = ThemedUi::TableSelectedIndex(hotKeyTable);
+                state.Check(
+                    selected >= 0 &&
+                        ThemedUi::TableRowKey(hotKeyTable, selected) == kProcessLocatorHotKeyRowKey,
+                    L"settings-file-helper-hotkey: reset rebuilt the table and lost selection");
+            }
+            const auto texts = CollectTexts(settings, Children(settings));
+            state.Check(
+                std::find(texts.begin(), texts.end(), L"打开文件助手") != texts.end() &&
+                    std::find(texts.begin(), texts.end(), L"双击 Ctrl") != texts.end(),
+                L"settings-file-helper-hotkey: reset did not restore double Ctrl");
+        });
+    state.Check(appliedFileHelperHotKey == kFileHelperHotKeyDoubleCtrl,
+        L"settings-file-helper-hotkey: reset default was not applied");
+
+    AppConfig conflictConfig;
+    conflictConfig.globalHotKeysEnabled = true;
+    conflictConfig.fileHelperHotKey = L'G';
+    int conflictApplyCount = 0;
+    int clearedFileHelperHotKey = -1;
+    bool conflictImported = false;
+    Scenario conflictScenario{
+        L"settings-file-helper-hotkey-conflict",
+        L"QuattroSettingsDialog",
+        L"设置",
+        L"settings-file-helper-hotkey-conflict.png",
+        {L"设置", L"打开文件助手", L"Ctrl+Alt+G"},
+        {},
+        0,
+        2,
+        false,
+        false,
+        false,
+        {},
+        L"热键"};
+    conflictScenario.validateHotKeyTableLayout = true;
+    RunDialogScenario(
+        conflictScenario,
+        outputDir,
+        state,
+        [&]() {
+            ShowSettingsDialog(
+                owner,
+                instance,
+                conflictConfig,
+                theme,
+                environment.root(),
+                environment.root(),
+                &conflictImported,
+                nullptr,
+                false,
+                false,
+                false,
+                false,
+                [&](const AppConfig& next, bool) {
+                    ++conflictApplyCount;
+                    clearedFileHelperHotKey = next.fileHelperHotKey;
+                    SettingsApplyResult result;
+                    result.saved = true;
+                    result.config = next;
+                    return result;
+                });
+        },
+        [&]() {
+            HWND settings = FindTopWindow(
+                FindWindowRequest{L"QuattroSettingsDialog", L"设置", GetCurrentProcessId()});
+            state.Check(settings != nullptr,
+                L"settings-file-helper-hotkey: settings window disappeared before conflict test");
+            if (!settings) return;
+
+            const auto captureKey = [&](WPARAM key) {
+                constexpr int kFileHelperHotKeyCaptureCommand = 307;
+                PostMessageW(
+                    settings,
+                    WM_COMMAND,
+                    MAKEWPARAM(kFileHelperHotKeyCaptureCommand, BN_CLICKED),
+                    0);
+                HWND capture = WaitForTopWindow(
+                    FindWindowRequest{L"QuattroHotKeyCaptureDialog", L"录入热键", GetCurrentProcessId()},
+                    3000);
+                state.Check(capture != nullptr,
+                    L"settings-file-helper-hotkey: capture dialog did not appear");
+                if (!capture) return;
+                HWND edit = ChildById(capture, 1001);
+                for (const auto& child : Children(capture)) {
+                    if (!edit && IsWindowVisible(child.hwnd) && IsEditLikeClass(child.className)) {
+                        edit = child.hwnd;
+                        break;
+                    }
+                }
+                state.Check(edit != nullptr,
+                    L"settings-file-helper-hotkey: capture edit was not found");
+                if (edit) SendMessageW(edit, WM_KEYDOWN, key, 0);
+                HWND accept = ChildById(capture, IDOK);
+                state.Check(accept != nullptr,
+                    L"settings-file-helper-hotkey: capture confirm action was not found");
+                if (accept) SendMessageW(accept, BM_CLICK, 0, 0);
+            };
+
+            const auto captureDoubleCtrl = [&]() {
+                constexpr int kFileHelperHotKeyCaptureCommand = 307;
+                PostMessageW(
+                    settings,
+                    WM_COMMAND,
+                    MAKEWPARAM(kFileHelperHotKeyCaptureCommand, BN_CLICKED),
+                    0);
+                HWND capture = WaitForTopWindow(
+                    FindWindowRequest{L"QuattroHotKeyCaptureDialog", L"录入热键", GetCurrentProcessId()},
+                    3000);
+                state.Check(capture != nullptr,
+                    L"settings-file-helper-hotkey: double-Ctrl capture dialog did not appear");
+                if (!capture) return;
+                HWND edit = ChildById(capture, 1001);
+                for (const auto& child : Children(capture)) {
+                    if (!edit && IsWindowVisible(child.hwnd) && IsEditLikeClass(child.className)) {
+                        edit = child.hwnd;
+                        break;
+                    }
+                }
+                state.Check(edit != nullptr,
+                    L"settings-file-helper-hotkey: double-Ctrl capture edit was not found");
+                if (edit) {
+                    for (int tap = 0; tap < 2; ++tap) {
+                        SendMessageW(edit, WM_KEYDOWN, VK_CONTROL, 0);
+                        SendMessageW(edit, WM_KEYUP, VK_CONTROL, 0);
+                    }
+                }
+                HWND accept = ChildById(capture, IDOK);
+                state.Check(accept != nullptr,
+                    L"settings-file-helper-hotkey: double-Ctrl capture confirm action was not found");
+                if (accept) SendMessageW(accept, BM_CLICK, 0, 0);
+            };
+
+            captureDoubleCtrl();
+            bool doubleCtrlShown = false;
+            for (int elapsed = 0; elapsed < 2000 && !doubleCtrlShown; elapsed += 20) {
+                const auto capturedTexts = CollectTexts(settings, Children(settings));
+                doubleCtrlShown =
+                    std::find(capturedTexts.begin(), capturedTexts.end(), L"双击 Ctrl") !=
+                    capturedTexts.end();
+                if (!doubleCtrlShown) Sleep(20);
+            }
+            state.Check(doubleCtrlShown,
+                L"settings-file-helper-hotkey: double Ctrl was not captured");
+
+            captureKey(L'C');
+            state.Check(
+                WaitForWindowText(
+                    settings,
+                    L"复制选中项绝对路径和文件助手不能使用同一个快捷键。",
+                    2000),
+                L"settings-file-helper-hotkey: duplicate hotkey conflict was not reported");
+            SendMessageW(settings, WM_COMMAND, MAKEWPARAM(IDOK, BN_CLICKED), 0);
+            state.Check(conflictApplyCount == 0,
+                L"settings-file-helper-hotkey: conflicting hotkey was applied");
+
+            captureKey(VK_BACK);
+            bool clearedShown = false;
+            for (int elapsed = 0; elapsed < 2000 && !clearedShown; elapsed += 20) {
+                const auto clearedTexts = CollectTexts(settings, Children(settings));
+                clearedShown =
+                    std::find(clearedTexts.begin(), clearedTexts.end(), L"打开文件助手") != clearedTexts.end() &&
+                    std::find(clearedTexts.begin(), clearedTexts.end(), L"未设置") != clearedTexts.end();
+                if (!clearedShown) Sleep(20);
+            }
+            state.Check(clearedShown,
+                L"settings-file-helper-hotkey: clear action did not clear the hotkey");
+            HWND globalToggle = VisibleButtonByText(settings, L"启用全局快捷键");
+            state.Check(globalToggle != nullptr,
+                L"settings-file-helper-hotkey: global hotkey toggle was not found");
+            if (globalToggle && ThemedUi::IsChecked(globalToggle)) {
+                SendMessageW(globalToggle, BM_CLICK, 0, 0);
+            }
+        });
+    state.Check(conflictApplyCount == 1 && clearedFileHelperHotKey == 0,
+        L"settings-file-helper-hotkey: cleared hotkey was not applied");
+}
+
 void RunProcessToolsSingletonScenario(
     HWND owner,
     HINSTANCE instance,
@@ -7305,7 +7850,7 @@ void RunSettingsCommitScenarios(HWND owner, HINSTANCE instance, const Theme& the
             bool accepted = false;
             bool imported = false;
             if (timer) accepted = ShowSettingsDialog(owner, instance, config, theme,
-                output, environment.root(), &imported, nullptr, false, false, false,
+                output, environment.root(), &imported, nullptr, false, false, false, false,
                 commit, {}, {}, {}, {}, [&](std::stop_token stop) {
                     if (probe.providerMode == 1) throw std::runtime_error("isolated provider failure");
                     return AcceptanceContextMenuProviderIcons(stop);
@@ -7644,6 +8189,25 @@ int wmain() {
 
     wchar_t processToolsOnly[8]{};
     wchar_t clockOnly[8]{};
+    wchar_t fileHelperOnly[8]{};
+    if (GetEnvironmentVariableW(
+            L"QUATTRO_UI_ACCEPTANCE_FILE_HELPER_ONLY",
+            fileHelperOnly,
+            static_cast<DWORD>(std::size(fileHelperOnly))) > 0) {
+        RunFileHelperScenarios(owner, instance, theme, outputDir, state);
+        DestroyWindow(owner);
+        OleUninitialize();
+        Gdiplus::GdiplusShutdown(gdiplusToken);
+        if (!state.ok) {
+            for (const auto& failure : state.failures) {
+                AcceptanceLog(L"file-helper target failure " + failure);
+                std::wcerr << failure << L"\n";
+            }
+            return 1;
+        }
+        std::wcout << L"ui_file_helper_acceptance=passed screenshots=" << outputDir.wstring() << L"\n";
+        return 0;
+    }
     if (GetEnvironmentVariableW(
             L"QUATTRO_UI_ACCEPTANCE_CLOCK_ONLY",
             clockOnly,
@@ -7774,7 +8338,7 @@ int wmain() {
                 const std::filesystem::path baseDirectory = std::filesystem::current_path();
                 ShowSettingsDialog(
                     owner, instance, config, theme, baseDirectory, baseDirectory, &imported,
-                    nullptr, false, false, false, {}, {}, {}, {}, {},
+                    nullptr, false, false, false, false, {}, {}, {}, {}, {},
                     [&](std::stop_token stopToken) {
                         ++automaticIconLoads;
                         return AcceptanceContextMenuProviderIcons(stopToken);
@@ -7798,7 +8362,7 @@ int wmain() {
                     const std::filesystem::path baseDirectory = std::filesystem::current_path();
                     ShowSettingsDialog(
                         owner, instance, config, theme, baseDirectory, baseDirectory, &imported,
-                        nullptr, false, false, false, {}, {}, {}, {}, {},
+                        nullptr, false, false, false, false, {}, {}, {}, {}, {},
                         AcceptanceContextMenuProviderIcons);
                 });
         }
@@ -7825,7 +8389,7 @@ int wmain() {
                         const std::filesystem::path baseDirectory = std::filesystem::current_path();
                         ShowSettingsDialog(
                             owner, instance, config, theme, baseDirectory, baseDirectory, &imported,
-                            nullptr, false, false, false, {}, {}, {}, {}, {},
+                            nullptr, false, false, false, false, {}, {}, {}, {}, {},
                             AcceptanceSystemContextMenuProviderIcons);
                     });
             }
@@ -7936,7 +8500,7 @@ int wmain() {
             ShowSettingsDialog(
                 owner, instance, resetConfig, theme,
                 std::filesystem::current_path(), std::filesystem::current_path(), &resetImported,
-                nullptr, false, false, false, {},
+                nullptr, false, false, false, false, {},
                 [&]() {
                     ++resetCallbackCount;
                     const bool menuReset = resetReopenCache.Reset();
@@ -8028,7 +8592,7 @@ int wmain() {
                     ShowSettingsDialog(
                         owner, instance, resetConfig, theme,
                         std::filesystem::current_path(), std::filesystem::current_path(), &imported,
-                        nullptr, false, false, false, {}, {}, {}, {}, {},
+                        nullptr, false, false, false, false, {}, {}, {}, {}, {},
                         [reopenedIcons](std::stop_token stopToken) {
                             return stopToken.stop_requested()
                                 ? std::vector<ContextMenuProviderIconInfo>{}
@@ -8048,7 +8612,7 @@ int wmain() {
                     ShowSettingsDialog(
                         owner, instance, resetConfig, theme,
                         std::filesystem::current_path(), std::filesystem::current_path(), &imported,
-                        nullptr, false, false, false, {}, {}, {}, {}, {},
+                        nullptr, false, false, false, false, {}, {}, {}, {}, {},
                         [refreshedIcons](std::stop_token stopToken) {
                             return stopToken.stop_requested()
                                 ? std::vector<ContextMenuProviderIconInfo>{}
@@ -8136,7 +8700,7 @@ int wmain() {
                 const std::filesystem::path baseDirectory = std::filesystem::current_path();
                 ShowSettingsDialog(
                     owner, instance, config, theme, baseDirectory, baseDirectory, &imported,
-                    nullptr, false, false, false, {}, {}, {}, {}, {},
+                    nullptr, false, false, false, false, {}, {}, {}, {}, {},
                     [&](std::stop_token) {
                         slowIconRunnerStarted = true;
                         std::this_thread::sleep_for(std::chrono::seconds(2));
@@ -8217,6 +8781,7 @@ int wmain() {
                     baseDirectory,
                     &imported,
                     nullptr,
+                    false,
                     false,
                     false,
                     false,
@@ -8584,7 +9149,7 @@ int wmain() {
         {L"行为", {L"窗口行为", L"未贴边时，打开工具后隐藏主窗口", L"运行与数据", L"系统集成", L"启动后隐藏", L"开机启动", L"启用日志"}},
         {L"右键菜单", {L"系统集成", L"注册“复制绝对路径”右键菜单", L"未注册。", L"自动跟踪", L"缓存维护", L"重置右键菜单"}},
         {L"交互", {L"启动操作", L"悬停激活", L"双击运行", L"分组激活延迟", L"标签激活延迟"}},
-        {L"热键", {L"全局快捷键", L"启用全局快捷键", L"主窗口显隐", L"进程定位器", L"复制选中项绝对路径"}},
+        {L"热键", {L"全局快捷键", L"启用全局快捷键", L"主窗口显隐", L"进程定位器", L"复制选中项绝对路径", L"打开文件助手", L"双击 Ctrl"}},
         {L"链接", {L"目录命令", L"公共链接", L"打开目录命令", L"帮助链接", L"更新链接", L"FAQ 链接"}},
         {L"WebDAV", {L"WebDAV 备份", L"启用 WebDAV 备份", L"服务器地址", L"用户名", L"备份目录", L"保留数量", L"文件目录", L"/Quattro/backups/", L"/Quattro/files/", L"打开文件管理", L"注册“上传到 WebDAV”右键菜单", L"测试连接", L"上传到云端"}},
         {L"HTTP", {L"服务配置", L"运行控制", L"高级配置", L"配置目录"}},
@@ -8625,7 +9190,7 @@ int wmain() {
                 const std::filesystem::path baseDirectory = std::filesystem::current_path();
                 ShowSettingsDialog(
                     owner, instance, config, theme, baseDirectory, baseDirectory, &imported,
-                    nullptr, false, false, false, {}, {}, {}, {}, {},
+                    nullptr, false, false, false, false, {}, {}, {}, {}, {},
                     AcceptanceContextMenuProviderIcons);
             });
     }
@@ -8684,6 +9249,7 @@ int wmain() {
     PluginRegistry registry(std::filesystem::current_path());
     AppConfig builtinToolConfig;
     RunClockScenarios(owner, instance, theme, outputDir, state);
+    RunFileHelperScenarios(owner, instance, theme, outputDir, state);
     RunDialogScenario(
         Scenario{L"builtin-clicker", L"", L"连点器", L"builtin-clicker.png", {L"连点器", L"启动(&S)"}, {L"0, 0", L"10", L"1000"}, 4, 2, false},
         outputDir,

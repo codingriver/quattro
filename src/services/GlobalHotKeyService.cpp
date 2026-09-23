@@ -103,22 +103,25 @@ struct GlobalHotKeyService::State {
     };
 
     GlobalHotKeyOperations operations;
+    GlobalHotKeyGestureOptions options;
     GlobalHotKeyNotifications notifications;
     const UINT_PTR id = NextSequence();
     HANDLE signal = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     std::atomic<bool> active{true}, finished{false}, registered{false}, refresh{false};
     std::atomic<DWORD> error{ERROR_SUCCESS};
     std::atomic<UINT_PTR> serial{NextSequence()}, pending{0}, cancelledToken{0};
+    std::atomic<DoubleModifierGestureKind> pendingKind{DoubleModifierGestureKind::None};
     std::atomic<ULONGLONG> pendingExpires{0};
     std::atomic<ULONGLONG> wakeGraceUntil{0};
     std::mutex testMutex;
     std::vector<Key> testKeys;
     HHOOK hook = nullptr;
-    DoubleAltGesture recognizer;
+    DoubleModifierGesture recognizer;
     bool samplingAvailable = false;
     bool statusReported = false;
     ULONGLONG lastInput = 0, nextRenew = 0, retryDelay = kRetryMs;
     UINT_PTR candidate = 0;
+    DoubleModifierGestureKind candidateKind = DoubleModifierGestureKind::None;
     HWND candidateForeground = nullptr;
     static thread_local State* current;
 
@@ -126,27 +129,34 @@ struct GlobalHotKeyService::State {
 
     UINT_PTR Invalidate() {
         pending = 0;
+        pendingKind = DoubleModifierGestureKind::None;
         const auto token = NextSequence();
         serial = token;
         return token;
     }
 
-    UINT_PTR OnKey(const Key& event) {
-        if (!active || (event.injected && event.extraInfo == kForegroundRecoveryInputTag)) return 0;
+    DoubleModifierGestureResult OnKey(const Key& event) {
+        if (!active || (event.injected && event.extraInfo == kForegroundRecoveryInputTag)) return {};
         const auto token = Invalidate();
         candidate = 0;
+        candidateKind = DoubleModifierGestureKind::None;
         lastInput = operations.clock();
-        if (!samplingAvailable) return 0;
+        if (!samplingAvailable) return {};
         const auto recognized = recognizer.OnKey(
             event.key, event.down, event.tick, event.injected, event.extraInfo);
-        return recognized ? token : 0;
+        return recognized && options.Enabled(recognized.kind)
+            ? DoubleModifierGestureResult{recognized.kind, token}
+            : DoubleModifierGestureResult{};
     }
 
-    void QueueCandidate(UINT_PTR token, HWND foreground, bool consumed) {
-        if (token && !consumed && active && !refresh && serial == token && cancelledToken != token) {
+    void QueueCandidate(DoubleModifierGestureResult recognized, HWND foreground, bool consumed) {
+        if (recognized && !consumed && active && !refresh && serial == recognized.token &&
+            cancelledToken != recognized.token) {
             pendingExpires = lastInput + kCandidateLifetimeMs;
-            pending = token;
-            candidate = token;
+            pendingKind = recognized.kind;
+            pending = recognized.token;
+            candidateKind = recognized.kind;
+            candidate = recognized.token;
             candidateForeground = foreground;
             SetEvent(signal);
         }
@@ -154,7 +164,7 @@ struct GlobalHotKeyService::State {
 
     static LRESULT CALLBACK HookProc(int code, WPARAM message, LPARAM data) {
         State* state = current;
-        UINT_PTR token = 0;
+        DoubleModifierGestureResult recognized;
         HWND foreground = nullptr;
         try {
             if (code == HC_ACTION && state) {
@@ -162,16 +172,16 @@ struct GlobalHotKeyService::State {
                 const bool down = message == WM_KEYDOWN || message == WM_SYSKEYDOWN;
                 const bool up = message == WM_KEYUP || message == WM_SYSKEYUP;
                 if (down || up) {
-                    token = state->OnKey({event->vkCode, down, event->time,
+                    recognized = state->OnKey({event->vkCode, down, event->time,
                         (event->flags & LLKHF_INJECTED) != 0, event->dwExtraInfo, false});
-                    if (token) foreground = state->operations.foreground();
+                    if (recognized) foreground = state->operations.foreground();
                 }
             }
         } catch (...) {
             if (state) state->Invalidate();
         }
         const LRESULT next = CallNextHookEx(nullptr, code, message, data);
-        if (state) state->QueueCandidate(token, foreground, next != 0);
+        if (state) state->QueueCandidate(recognized, foreground, next != 0);
         return next;
     }
 
@@ -192,6 +202,7 @@ struct GlobalHotKeyService::State {
             recognizer.Reset();
             Invalidate();
             candidate = 0;
+            candidateKind = DoubleModifierGestureKind::None;
             samplingAvailable = false;
             nextRenew = 0;
             retryDelay = kRetryMs;
@@ -206,6 +217,7 @@ struct GlobalHotKeyService::State {
                 recognizer.Reset();
                 Invalidate();
                 candidate = 0;
+                candidateKind = DoubleModifierGestureKind::None;
             }
             samplingAvailable = false;
             return;
@@ -219,7 +231,8 @@ struct GlobalHotKeyService::State {
         if (recognizer.Reconcile(*snapshot)) {
             Invalidate();
             candidate = 0;
-            WriteAppLog(L"Double Alt: reconciled keyboard state; cancelled incomplete gesture.");
+            candidateKind = DoubleModifierGestureKind::None;
+            WriteAppLog(L"Double modifier: reconciled keyboard state; cancelled incomplete gesture.");
         }
         // Consume publishes the grace deadline before clearing pending. Read in
         // this order so a concurrent UI consumption cannot race an idle renewal.
@@ -242,12 +255,12 @@ struct GlobalHotKeyService::State {
             retryDelay = kRetryMs;
             nextRenew = now + kRenewMs;
             if (!statusReported || !registered || error != ERROR_SUCCESS) ReportStatus(ERROR_SUCCESS);
-            WriteAppLog(L"Double Alt: hook registration renewed on input service thread.");
+            WriteAppLog(L"Double modifier: hook registration renewed on input service thread.");
         } else {
             nextRenew = now + retryDelay;
             retryDelay = (std::min)(retryDelay * 2, kMaxRetryMs);
             if (!statusReported || error != replacement.error) ReportStatus(replacement.error);
-            WriteAppLog(L"Double Alt: hook registration failed; error=" + std::to_wstring(replacement.error));
+            WriteAppLog(L"Double modifier: hook registration failed; error=" + std::to_wstring(replacement.error));
         }
     }
 
@@ -267,16 +280,18 @@ struct GlobalHotKeyService::State {
                     events.swap(testKeys);
                 }
                 for (const auto& event : events) {
-                    const auto token = OnKey(event);
-                    QueueCandidate(token, token ? operations.foreground() : nullptr, event.downstreamConsumed);
+                    const auto recognized = OnKey(event);
+                    QueueCandidate(recognized, recognized ? operations.foreground() : nullptr,
+                        event.downstreamConsumed);
                 }
                 if (!active) break;
                 Maintain();
                 if (candidate) {
                     const auto token = std::exchange(candidate, 0);
+                    const auto kind = std::exchange(candidateKind, DoubleModifierGestureKind::None);
                     if (active && !refresh && pending == token && serial == token &&
-                        cancelledToken != token && notifications.gesture) {
-                        notifications.gesture(token, candidateForeground);
+                        pendingKind == kind && cancelledToken != token && notifications.gesture) {
+                        notifications.gesture(kind, token, candidateForeground);
                     }
                 }
                 const DWORD wait = MsgWaitForMultipleObjectsEx(
@@ -311,14 +326,16 @@ GlobalHotKeyService::GlobalHotKeyService(GlobalHotKeyOperations operations)
     : operations_(std::move(operations)), testOperations_(true) {}
 GlobalHotKeyService::~GlobalHotKeyService() { Stop(); }
 
-bool GlobalHotKeyService::Start(GlobalHotKeyNotifications notifications) {
+bool GlobalHotKeyService::Start(
+    GlobalHotKeyGestureOptions options,
+    GlobalHotKeyNotifications notifications) {
     Stop();
     startError_ = ERROR_SUCCESS;
     if ((!testOperations_ && BackgroundTest()) || (testOperations_ && !QuattroTestMode())) {
         startError_ = ERROR_ACCESS_DISABLED_BY_POLICY;
         return false;
     }
-    if (!operations_.install || !operations_.uninstall || !operations_.keyboard ||
+    if (!options.Any() || !operations_.install || !operations_.uninstall || !operations_.keyboard ||
         !operations_.foreground || !operations_.clock) {
         startError_ = ERROR_INVALID_PARAMETER;
         return false;
@@ -329,6 +346,7 @@ bool GlobalHotKeyService::Start(GlobalHotKeyNotifications notifications) {
         return false;
     }
     state->operations = operations_;
+    state->options = options;
     state->notifications = std::move(notifications);
     state_ = state;
     try {
@@ -365,20 +383,25 @@ DWORD GlobalHotKeyService::LastError() const {
 UINT_PTR GlobalHotKeyService::RegistrationId() const { return state_ ? state_->id : 0; }
 UINT_PTR GlobalHotKeyService::InputSerial() const { return state_ ? state_->serial.load() : 0; }
 bool GlobalHotKeyService::Stopped() const { return !state_ || state_->finished; }
-bool GlobalHotKeyService::IsPending(UINT_PTR token) const {
+bool GlobalHotKeyService::IsPending(DoubleModifierGestureKind kind, UINT_PTR token) const {
     return token && state_ && state_->active && !state_->refresh &&
-        state_->cancelledToken != token && state_->pending == token && state_->serial == token &&
+        state_->cancelledToken != token && state_->pending == token && state_->pendingKind == kind &&
+        state_->serial == token &&
         state_->operations.clock() < state_->pendingExpires;
 }
-bool GlobalHotKeyService::Consume(UINT_PTR token) {
-    if (!IsPending(token)) return false;
+bool GlobalHotKeyService::Consume(DoubleModifierGestureKind kind, UINT_PTR token) {
+    if (!IsPending(kind, token)) return false;
     state_->wakeGraceUntil = state_->operations.clock() + kWakeGraceMs;
-    return state_->pending.compare_exchange_strong(token, 0) && state_->serial == token && state_->active;
+    const bool consumed = state_->pending.compare_exchange_strong(token, 0) &&
+        state_->serial == token && state_->active;
+    if (consumed) state_->pendingKind = DoubleModifierGestureKind::None;
+    return consumed;
 }
 void GlobalHotKeyService::CancelPending() {
     if (!state_) return;
     state_->cancelledToken = state_->serial.load();
     state_->pending = 0;
+    state_->pendingKind = DoubleModifierGestureKind::None;
 }
 bool GlobalHotKeyService::PostTestKey(
     DWORD key, bool down, DWORD tick, bool injected, ULONG_PTR extraInfo, bool consumed) {

@@ -4,6 +4,9 @@
 #include <string>
 #include <vector>
 
+inline constexpr int kMainHotKeyDoubleAlt = -1;
+inline constexpr int kFileHelperHotKeyDoubleCtrl = -2;
+
 enum class TodoScheduleKind {
     None = 0,
     Once = 1,
@@ -83,9 +86,10 @@ struct AppConfig {
     int currentGroupId = 0;
     int currentTagId = 0;
     bool globalHotKeysEnabled = true;
-    int mainHotKey = -1;
+    int mainHotKey = kMainHotKeyDoubleAlt;
     int processLocatorHotKey = L'U';
     int copySelectedPathsHotKey = L'C';
+    int fileHelperHotKey = kFileHelperHotKeyDoubleCtrl;
     bool ignoreHotKeyConflictWarning = false;
 
     int width = 400;

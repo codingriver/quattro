@@ -13,6 +13,7 @@
 #include "../src/services/WebDavFileIndexCache.h"
 #include "../src/services/WebDavTransferQueueController.h"
 #include "../src/services/FileLockQueryService.h"
+#include "../src/services/FileHelperService.h"
 #include "../src/services/IconResolverService.h"
 #include "../src/services/Launcher.h"
 #include "../src/services/LinkResourceRefreshService.h"
@@ -125,6 +126,88 @@ void Check(bool condition, const char* name) {
     }
 }
 
+void TestFileHelperService() {
+    const auto readEnvironment = [](const wchar_t* name) {
+        const DWORD size = GetEnvironmentVariableW(name, nullptr, 0);
+        if (size == 0) {
+            return std::pair<bool, std::wstring>{false, {}};
+        }
+        std::wstring value(size, L'\0');
+        const DWORD copied = GetEnvironmentVariableW(name, value.data(), size);
+        value.resize(copied);
+        return std::pair<bool, std::wstring>{true, std::move(value)};
+    };
+    const auto restoreEnvironment = [](const wchar_t* name, const auto& saved) {
+        SetEnvironmentVariableW(name, saved.first ? saved.second.c_str() : nullptr);
+    };
+    const auto savedTestMode = readEnvironment(L"QUATTRO_TEST_MODE");
+    const auto savedAcceptanceMode = readEnvironment(L"QUATTRO_ACCEPTANCE_MODE");
+
+    const std::filesystem::path root = std::filesystem::temp_directory_path() /
+        (L"quattro_file_helper_unit_" + std::to_wstring(GetCurrentProcessId()));
+    std::error_code error;
+    std::filesystem::remove_all(root, error);
+    std::filesystem::create_directories(root, error);
+    Check(!error, "File helper fixture directory");
+    SetEnvironmentVariableW(L"QUATTRO_FILE_HELPER_TEST_ROOT", root.c_str());
+
+    FileHelperService service;
+    const std::wstring quotedFile = L"\"%QUATTRO_FILE_HELPER_TEST_ROOT%\\nested\\deep\\created.txt\"";
+    FileHelperResult result = service.CreateFile(quotedFile, false);
+    Check(result.status == FileHelperStatus::Success, "File helper expands env and strips quotes");
+    Check(result.path == (root / L"nested" / L"deep" / L"created.txt").lexically_normal(),
+        "File helper returns resolved path");
+    Check(std::filesystem::is_regular_file(result.path), "File helper recursively creates file parent path");
+
+    {
+        std::ofstream output(result.path, std::ios::binary | std::ios::trunc);
+        output << "preserve";
+    }
+    result = service.CreateFile(result.path.wstring(), false);
+    Check(result.status == FileHelperStatus::AlreadyExists, "File helper existing file requires confirmation");
+    Check(std::filesystem::file_size(result.path) == 8, "File helper cancelled overwrite preserves content");
+    result = service.CreateFile(result.path.wstring(), true);
+    Check(result.status == FileHelperStatus::Success && std::filesystem::file_size(result.path) == 0,
+        "File helper confirmed overwrite truncates file");
+
+    const std::filesystem::path folder = root / L"folder" / L"child";
+    result = service.CreateFolder(folder.wstring());
+    Check(result.status == FileHelperStatus::Success && std::filesystem::is_directory(folder),
+        "File helper recursively creates directory");
+    result = service.CreateFolder(folder.wstring());
+    Check(result.status == FileHelperStatus::AlreadyExists && std::filesystem::is_directory(folder),
+        "File helper existing directory is a no-op");
+
+    Check(service.OpenFile(nullptr, folder.wstring()).status == FileHelperStatus::Failed,
+        "File helper rejects directory for open file");
+    Check(service.OpenFolder(nullptr, (root / L"nested" / L"deep" / L"created.txt").wstring()).status == FileHelperStatus::Failed,
+        "File helper rejects file for open folder");
+    Check(service.CreateFile(folder.wstring(), false).status == FileHelperStatus::Failed,
+        "File helper rejects directory for create file");
+    Check(service.CreateFolder((root / L"nested" / L"deep" / L"created.txt").wstring()).status == FileHelperStatus::Failed,
+        "File helper rejects file for create folder");
+
+    for (const wchar_t* invalid : {L"relative\\file.txt", L"C:drive-relative.txt",
+            L"\\\\server\\share\\file.txt", L"https://example.com/file.txt", L"shell:Downloads"}) {
+        Check(service.CreateFolder(invalid).status == FileHelperStatus::Failed,
+            "File helper rejects unsupported path form");
+    }
+
+    SetEnvironmentVariableW(L"QUATTRO_TEST_MODE", L"1");
+    SetEnvironmentVariableW(L"QUATTRO_ACCEPTANCE_MODE", L"background");
+    const std::filesystem::path file = root / L"nested" / L"deep" / L"created.txt";
+    Check(service.OpenFile(nullptr, file.wstring()).status == FileHelperStatus::Success,
+        "File helper records valid open file intent in background tests");
+    Check(service.OpenFolder(nullptr, folder.wstring()).status == FileHelperStatus::Success,
+        "File helper records valid open folder intent in background tests");
+    Check(service.OpenContainingLocation(nullptr, file.wstring()).status == FileHelperStatus::Success,
+        "File helper records valid containing location intent in background tests");
+    restoreEnvironment(L"QUATTRO_ACCEPTANCE_MODE", savedAcceptanceMode);
+    restoreEnvironment(L"QUATTRO_TEST_MODE", savedTestMode);
+    SetEnvironmentVariableW(L"QUATTRO_FILE_HELPER_TEST_ROOT", nullptr);
+    std::filesystem::remove_all(root, error);
+}
+
 void TestMainHotKeyActionDecision() {
     Check(
         DecideMainHotKeyAction(MainHotKeyWindowState{}) == MainHotKeyAction::Wake,
@@ -210,65 +293,98 @@ void TestWindowPresentationPolicy() {
         "Cloaked target is not considered presented");
 }
 
-void TestDoubleAltGesture() {
-    DoubleAltGesture gesture;
-    const auto tap = [&](DWORD tick, DWORD key = VK_LMENU, bool injected = false) {
-        Check(gesture.OnKey(key, true, tick, injected) == 0, "Alt down never dispatches");
+void TestDoubleModifierGesture() {
+    DoubleModifierGesture gesture;
+    const auto tap = [&](DWORD tick, DWORD key, bool injected = false) {
+        Check(!gesture.OnKey(key, true, tick, injected), "Modifier down never dispatches");
         return gesture.OnKey(key, false, tick + 10, injected);
     };
-    Check(tap(0) == 0, "First clean Alt tap only arms recognition");
-    const auto first = tap(100);
-    Check(gesture.IsPending(first), "Second release produces a deferred gesture token");
-    Check(gesture.Consume(first) && !gesture.Consume(first), "Gesture dispatches at most once");
-    Check(tap(200) == 0, "Third tap starts a new pair, not a second toggle");
-    Check(gesture.Consume(tap(300, VK_RMENU)), "Either Alt can complete the pair");
+    const auto altTap = [&](DWORD tick, DWORD key = VK_LMENU, bool injected = false) {
+        return tap(tick, key, injected);
+    };
+    const auto ctrlTap = [&](DWORD tick, DWORD key = VK_LCONTROL, bool injected = false) {
+        return tap(tick, key, injected);
+    };
+
+    Check(!altTap(0), "First clean Alt tap only arms recognition");
+    const auto first = altTap(100);
+    Check(gesture.IsPending(first.kind, first.token), "Second Alt release produces a deferred gesture token");
+    Check(first.kind == DoubleModifierGestureKind::DoubleAlt &&
+        gesture.Consume(first.kind, first.token) && !gesture.Consume(first.kind, first.token),
+        "Double Alt dispatches at most once with its gesture type");
+    Check(!altTap(200), "Third Alt tap starts a new pair, not a second toggle");
+    const auto mixedAlt = altTap(300, VK_RMENU);
+    Check(gesture.Consume(mixedAlt.kind, mixedAlt.token), "Either Alt can complete the pair");
 
     gesture.Reset();
-    tap(100);
-    Check(tap(551) == 0, "More than 450ms between releases is not a double tap");
-    Check(gesture.Consume(tap(650)), "Expired tap can start the next pair");
+    Check(!ctrlTap(100), "First clean Ctrl tap only arms recognition");
+    const auto mixedCtrl = ctrlTap(200, VK_RCONTROL);
+    Check(mixedCtrl.kind == DoubleModifierGestureKind::DoubleCtrl &&
+        gesture.Consume(mixedCtrl.kind, mixedCtrl.token),
+        "Left and right Ctrl can form a clean double Ctrl");
     gesture.Reset();
-    tap(MAXDWORD - 100);
-    Check(gesture.Consume(tap(20)), "Tick rollover does not break the interval");
+    ctrlTap(100);
+    Check(!ctrlTap(551), "More than 450ms between Ctrl releases is not a double tap");
+    const auto recoveredCtrl = ctrlTap(650);
+    Check(gesture.Consume(recoveredCtrl.kind, recoveredCtrl.token),
+        "Expired Ctrl tap can start the next pair");
+    gesture.Reset();
+    ctrlTap(MAXDWORD - 100);
+    const auto rollover = ctrlTap(20);
+    Check(gesture.Consume(rollover.kind, rollover.token), "Tick rollover does not break the interval");
 
     gesture.Reset();
-    tap(100);
-    gesture.OnKey(VK_LMENU, true, 200);
-    gesture.OnKey(VK_TAB, true, 210);
-    gesture.OnKey(VK_TAB, false, 220);
-    gesture.OnKey(VK_LMENU, true, 230);
-    Check(!gesture.OnKey(VK_LMENU, false, 240), "Alt+Tab and Alt repeat cannot toggle");
-    Check(!tap(300), "Alt chord invalidates the previous tap");
+    ctrlTap(100);
+    Check(!gesture.OnKey(VK_LCONTROL, true, 200) &&
+        !gesture.OnKey(VK_LCONTROL, true, 300) &&
+        !gesture.OnKey(VK_LCONTROL, true, 500) &&
+        !gesture.OnKey(VK_LCONTROL, false, 700),
+        "Long Ctrl hold and repeat events do not become a second tap");
+
+    gesture.Reset();
+    ctrlTap(100);
+    gesture.OnKey(VK_LCONTROL, true, 200);
+    gesture.OnKey('C', true, 210);
+    gesture.OnKey('C', false, 220);
+    Check(!gesture.OnKey(VK_LCONTROL, false, 230), "Ctrl+C cannot complete double Ctrl");
+    Check(!ctrlTap(300), "Ctrl shortcut invalidates the previous tap");
+    gesture.OnKey(VK_LCONTROL, true, 400);
+    gesture.OnKey(VK_MENU, true, 410);
+    gesture.OnKey(VK_MENU, false, 420);
+    Check(!gesture.OnKey(VK_LCONTROL, false, 430), "Ctrl+Alt cannot complete double Ctrl");
 
     gesture.Reset();
     gesture.OnKey(VK_LCONTROL, true, 0);
-    Check(!tap(100) && !tap(200), "Ctrl held before Alt prevents double-Alt recognition");
+    Check(!altTap(100) && !altTap(200), "Ctrl held before Alt prevents double Alt recognition");
     gesture.OnKey(VK_LCONTROL, false, 220);
-    Check(!tap(300) && gesture.Consume(tap(400)), "Clean pair works after modifier release");
+    Check(!altTap(300), "First clean Alt starts a new pair after modifier release");
+    const auto cleanAlt = altTap(400);
+    Check(gesture.Consume(cleanAlt.kind, cleanAlt.token), "Clean Alt pair works after modifier release");
     gesture.Reset();
-    Check(!tap(100, VK_RMENU, true) && !tap(200, VK_RMENU, true),
-        "Injected Alt events cannot activate the product");
-    Check(!tap(300), "Injected input cannot arm a physical double tap");
-    gesture.OnKey(VK_LMENU, true, 400);
-    gesture.OnKey(VK_RMENU, true, 410);
-    gesture.OnKey(VK_RMENU, false, 420);
-    Check(!gesture.OnKey(VK_LMENU, false, 430), "Overlapping Alt keys are not two taps");
+    Check(!ctrlTap(100, VK_RCONTROL, true) && !ctrlTap(200, VK_RCONTROL, true),
+        "Injected Ctrl events cannot activate the product");
+    Check(!ctrlTap(300), "Injected input cannot arm a physical double tap");
+    gesture.OnKey(VK_LCONTROL, true, 400);
+    gesture.OnKey(VK_RCONTROL, true, 410);
+    gesture.OnKey(VK_RCONTROL, false, 420);
+    Check(!gesture.OnKey(VK_LCONTROL, false, 430), "Overlapping Ctrl keys are not two taps");
     gesture.Reset();
-    Check(!gesture.OnKey(VK_LMENU, false, 0), "Unmatched key release is not a tap");
+    Check(!gesture.OnKey(VK_LCONTROL, false, 0), "Unmatched key release is not a tap");
 
-    tap(100);
-    auto token = tap(200);
+    ctrlTap(100);
+    auto result = ctrlTap(200);
     gesture.OnKey('X', true, 230);
-    Check(!gesture.Consume(token), "New input cancels deferred activation");
+    Check(!gesture.Consume(result.kind, result.token), "New input cancels deferred activation");
     gesture.Reset();
-    tap(300);
-    token = tap(400);
+    ctrlTap(300);
+    result = ctrlTap(400);
     gesture.CancelPending();
-    Check(!gesture.Consume(token), "Lifecycle changes cancel deferred activation");
+    Check(!gesture.Consume(result.kind, result.token), "Lifecycle changes cancel deferred activation");
     gesture.Reset();
-    tap(500);
-    const auto replacement = tap(600);
-    Check(replacement != token && !gesture.Consume(token) && gesture.Consume(replacement),
+    ctrlTap(500);
+    const auto replacement = ctrlTap(600);
+    Check(replacement.token != result.token && !gesture.Consume(result.kind, result.token) &&
+        gesture.Consume(replacement.kind, replacement.token),
         "Re-registration never accepts an old queued token");
     const auto inputSerial = gesture.InputSerial();
     Check(!gesture.OnKey(VK_LMENU, true, 700, true, kForegroundRecoveryInputTag) &&
@@ -277,6 +393,29 @@ void TestDoubleAltGesture() {
         "Own recovery pair neither toggles nor cancels its active wake");
     gesture.OnKey('X', true, 720);
     Check(gesture.InputSerial() != inputSerial, "New physical input invalidates input recovery serial");
+}
+
+void TestModifierGestureActionDecision() {
+    Check(DecideModifierGestureAction(
+        true, kMainHotKeyDoubleAlt, kFileHelperHotKeyDoubleCtrl,
+        DoubleModifierGestureKind::DoubleAlt) == ModifierGestureAction::ToggleMainWindow,
+        "Configured double Alt maps to main-window toggle intent");
+    Check(DecideModifierGestureAction(
+        true, kMainHotKeyDoubleAlt, kFileHelperHotKeyDoubleCtrl,
+        DoubleModifierGestureKind::DoubleCtrl) == ModifierGestureAction::ToggleFileHelper,
+        "Configured double Ctrl maps to file-helper toggle intent");
+    Check(DecideModifierGestureAction(
+        false, kMainHotKeyDoubleAlt, kFileHelperHotKeyDoubleCtrl,
+        DoubleModifierGestureKind::DoubleCtrl) == ModifierGestureAction::None,
+        "Global switch disables double Ctrl intent");
+    Check(DecideModifierGestureAction(
+        true, kMainHotKeyDoubleAlt, L'F',
+        DoubleModifierGestureKind::DoubleCtrl) == ModifierGestureAction::None,
+        "Ordinary file-helper hotkey disables double Ctrl intent");
+    Check(DecideModifierGestureAction(
+        true, L'Q', kFileHelperHotKeyDoubleCtrl,
+        DoubleModifierGestureKind::DoubleAlt) == ModifierGestureAction::None,
+        "Ordinary main hotkey disables double Alt intent");
 }
 
 void TestForegroundInputRecovery() {
@@ -725,9 +864,11 @@ LRESULT CALLBACK TableUpdateNotificationParentProc(
 }
 
 int wmain(int argc, wchar_t* argv[]) {
+    TestFileHelperService();
     if (argc == 2 && std::wstring(argv[1]) == L"--window-activation-only") {
         failures += RunGlobalHotKeyServiceTests();
-        TestDoubleAltGesture();
+        TestDoubleModifierGesture();
+        TestModifierGestureActionDecision();
         TestForegroundInputRecovery();
         TestMainHotKeyActionDecision();
         TestWindowPresentationPolicy();
@@ -750,7 +891,8 @@ int wmain(int argc, wchar_t* argv[]) {
     Check(FormatVersionForDisplay(L"V0.1.0") == L"v0.1.0", "Version display normalizes prefix");
     Check(FormatVersionForDisplay(L" 0.1.0 ") == L"v0.1.0", "Version display trims whitespace");
     Check(FormatVersionForDisplay(L"").empty(), "Version display preserves empty value");
-    TestDoubleAltGesture();
+    TestDoubleModifierGesture();
+    TestModifierGestureActionDecision();
     TestForegroundInputRecovery();
     TestMainHotKeyActionDecision();
     TestWindowPresentationPolicy();
@@ -2034,6 +2176,8 @@ int wmain(int argc, wchar_t* argv[]) {
     Check(!config.hideNotifyIcon, "Config default tray visible");
     Check(config.width == 400, "Config default width fits three link columns");
     Check(config.copySelectedPathsHotKey == L'C', "Config default copy selected paths hotkey");
+    Check(config.fileHelperHotKey == kFileHelperHotKeyDoubleCtrl,
+        "Config default file helper hotkey is double Ctrl");
     config.width = 500;
     config.height = 700;
     config.theme = L"default";
@@ -2057,6 +2201,7 @@ int wmain(int argc, wchar_t* argv[]) {
     config.httpServerPort = 45211;
     config.httpServerRootPath = L"C:\\QuattroWeb";
     config.copySelectedPathsHotKey = L'X';
+    config.fileHelperHotKey = L'G';
     config.registerCopyPathContextMenu = true;
     config.registerWebDavUploadContextMenu = true;
     Check(service.Save(config), "Config reports successful complete save");
@@ -2085,6 +2230,7 @@ int wmain(int argc, wchar_t* argv[]) {
     Check(loaded.httpServerPort == 45211, "Config http port");
     Check(loaded.httpServerRootPath == L"C:\\QuattroWeb", "Config http root");
     Check(loaded.copySelectedPathsHotKey == L'X', "Config copy selected paths hotkey round trip");
+    Check(loaded.fileHelperHotKey == L'G', "Config file helper hotkey round trip");
     Check(loaded.registerCopyPathContextMenu, "Config copy path context menu round trip");
     Check(loaded.registerWebDavUploadContextMenu, "Config WebDAV upload context menu round trip");
     Check(FileExists(unitUserConfigRoot / L"webdav.ini"), "Config webdav stored in user config directory");
@@ -5094,6 +5240,7 @@ int wmain(int argc, wchar_t* argv[]) {
     Check(MenuIconForToolEngine(L"stopwatch") == MenuIconCalculator, "Stopwatch tool menu icon");
     Check(MenuIconForToolEngine(L"process-tools") == MenuIconComputer, "Process tool menu icon");
     Check(MenuIconForToolEngine(L"webdav-manager") == MenuIconFolder, "WebDAV manager tool menu icon");
+    Check(MenuIconForToolEngine(L"file-helper") == MenuIconFolder, "File helper tool menu icon");
     Check(MenuIconForToolEngine(L"app-launch-locker") == MenuIconRestart, "Startup manager tool menu icon");
     Check(MenuIconForToolEngine(L"ad-block") == MenuIconShield, "Ad blocker tool menu icon");
     Check(MenuIconForToolEngine(L"unknown") == MenuIconTools, "Unknown tool menu icon fallback");
@@ -5118,6 +5265,7 @@ int wmain(int argc, wchar_t* argv[]) {
     bool hasLegacyProcessTool = false;
     bool hasAppLaunchLocker = false;
     bool hasAdBlock = false;
+    bool hasFileHelper = false;
     for (const auto& plugin : plugins) {
         if (plugin.id == L"quattro.builtin.clicker" && plugin.name == L"连点器") {
             hasAutoClickerName = true;
@@ -5151,6 +5299,10 @@ int wmain(int argc, wchar_t* argv[]) {
             plugin.engine == L"ad-block") {
             hasAdBlock = true;
         }
+        if (plugin.id == L"quattro.builtin.file-helper" &&
+            plugin.name == L"文件助手" && plugin.engine == L"file-helper" && plugin.enabled) {
+            hasFileHelper = true;
+        }
     }
     Check(hasAutoClickerName, "Plugin clicker display name");
     Check(hasClock, "Plugin clock registration");
@@ -5160,11 +5312,13 @@ int wmain(int argc, wchar_t* argv[]) {
     Check(hasAppLaunchLocker,
         "Plugin AppLaunchLocker registration is available in all builds");
     Check(hasAdBlock, "Plugin AdBlock external tool registration");
+    Check(hasFileHelper, "Plugin file helper registration");
     Check(pluginRegistry.IsEnabled(L"quattro.builtin.clicker"), "Plugin clicker enabled by default");
     Check(pluginRegistry.IsEnabled(L"quattro.builtin.clock"), "Plugin clock enabled by default");
     Check(pluginRegistry.IsEnabled(L"quattro.builtin.timer"), "Plugin timer enabled by default");
     Check(pluginRegistry.IsEnabled(L"quattro.builtin.process-tools"), "Plugin process tools enabled by default");
     Check(pluginRegistry.IsEnabled(L"quattro.builtin.webdav-manager"), "Plugin WebDAV manager enabled by default");
+    Check(pluginRegistry.IsEnabled(L"quattro.builtin.file-helper"), "Plugin file helper enabled by default");
     Check(pluginRegistry.IsEnabled(L"quattro.builtin.app-launch-locker"),
         "Plugin AppLaunchLocker enabled by default");
     Check(pluginRegistry.SetEnabled(L"quattro.builtin.app-launch-locker", false),

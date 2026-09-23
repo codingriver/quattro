@@ -344,6 +344,7 @@ int wmain() {
         false,
         false,
         false,
+        false,
         applyCallback,
         resetContextMenuCallback);
     if (interactor.joinable()) {

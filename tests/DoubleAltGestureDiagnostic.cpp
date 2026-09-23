@@ -9,18 +9,25 @@ int main() {
         std::cout << name << "=" << (passed ? "passed" : "failed") << '\n';
         if (!passed) ++failures;
     };
-    DoubleAltGesture gesture;
-    const auto tap = [&](DWORD tick) {
-        gesture.OnKey(VK_LMENU, true, tick);
-        return gesture.OnKey(VK_LMENU, false, tick + 10);
+    DoubleModifierGesture gesture;
+    const auto tap = [&](DWORD tick, DWORD key = VK_LMENU) {
+        gesture.OnKey(key, true, tick);
+        return gesture.OnKey(key, false, tick + 10);
     };
     const auto pair = [&](DWORD tick) {
         const auto first = tap(tick);
         const auto second = tap(tick + 100);
-        return first != 0 || second != 0;
+        return static_cast<bool>(first) || static_cast<bool>(second);
     };
 
     check(pair(100), "clean_double_alt_recognized");
+    gesture.Reset();
+    const auto ctrlPair = [&] {
+        const auto first = tap(800, VK_LCONTROL);
+        const auto second = tap(900, VK_RCONTROL);
+        return !first && second.kind == DoubleModifierGestureKind::DoubleCtrl;
+    };
+    check(ctrlPair(), "clean_double_ctrl_recognized");
     gesture.Reset();
     gesture.OnKey(VK_LCONTROL, true, 1000);
     check(!pair(1100), "ctrl_without_release_blocks_double_alt");

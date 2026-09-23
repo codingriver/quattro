@@ -1,14 +1,14 @@
 #pragma once
 
 #include "Theme.h"
+#include "../domain/DoubleModifierGesture.h"
 
 #include <windows.h>
 
 #include <string>
 
 struct HotKeyCaptureDialogOptions {
-    bool allowDoubleAlt = false;
-    bool useMainHotKeyText = false;
+    DoubleModifierGestureKind allowedDoubleTap = DoubleModifierGestureKind::None;
 };
 
 std::wstring FormatHotKeyText(int key);

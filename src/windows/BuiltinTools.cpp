@@ -6,6 +6,7 @@
 #include "ClockDisplay.h"
 #include "DialogLayout.h"
 #include "FileDialog.h"
+#include "FileHelperDialog.h"
 #include "MainHotKey.h"
 #include "SimpleDialogs.h"
 #include "FileLockQueryService.h"
@@ -4096,6 +4097,9 @@ LRESULT CALLBACK ProcessToolsDialog::PickOverlayProc(HWND hwnd, UINT message, WP
 }
 
 bool PreTranslateBuiltinToolMessage(const MSG& message) {
+    if (PreTranslateFileHelperMessage(message)) {
+        return true;
+    }
     HWND clock = gClockWindow.load();
     if (IsRegisteredBuiltinToolWindow(clock, message)) {
         MSG translated = message;
@@ -4127,6 +4131,10 @@ bool PreTranslateBuiltinToolMessage(const MSG& message) {
     return false;
 }
 
+bool ToggleBuiltinFileHelper(HWND owner, HINSTANCE instance, const Theme& theme) {
+    return ToggleFileHelperDialog(owner, instance, theme);
+}
+
 bool ShowBuiltinTool(
     HWND owner,
     HINSTANCE instance,
@@ -4135,6 +4143,9 @@ bool ShowBuiltinTool(
     const AppConfig& config,
     const std::wstring& engine,
     bool locateProcessOnOpen) {
+    if (engine == L"file-helper") {
+        return ShowFileHelperDialog(owner, instance, theme);
+    }
     if (engine == L"clicker") {
         auto dialog = std::make_unique<ClickerDialog>(owner, instance, theme, registry);
         if (!dialog->Run()) {

@@ -205,6 +205,7 @@ AppConfig ConfigService::Load() const {
     config.mainHotKey = ReadInt(L"nMainHotKey", config.mainHotKey);
     config.processLocatorHotKey = ReadInt(L"nProcessLocatorHotKey", config.processLocatorHotKey);
     config.copySelectedPathsHotKey = ReadInt(L"nCopySelectedPathsHotKey", config.copySelectedPathsHotKey);
+    config.fileHelperHotKey = ReadInt(L"nFileHelperHotKey", config.fileHelperHotKey);
     config.registerCopyPathContextMenu = ReadBool(
         L"bRegisterCopyPathContextMenu", config.registerCopyPathContextMenu);
     config.registerWebDavUploadContextMenu = ReadBool(
@@ -385,6 +386,7 @@ AppConfig ConfigService::LoadForSchemaUpgrade(int targetVersion, bool& compatibl
     readInt(L"nMainHotKey", config.mainHotKey);
     readInt(L"nProcessLocatorHotKey", config.processLocatorHotKey);
     readInt(L"nCopySelectedPathsHotKey", config.copySelectedPathsHotKey);
+    readInt(L"nFileHelperHotKey", config.fileHelperHotKey);
     readBool(L"bRegisterCopyPathContextMenu", config.registerCopyPathContextMenu);
     readBool(L"bRegisterWebDavUploadContextMenu", config.registerWebDavUploadContextMenu);
     readBool(L"bIgnoreHotKeyConflictWarning", config.ignoreHotKeyConflictWarning);
@@ -591,6 +593,7 @@ void ConfigService::WriteSettings(const AppConfig& config) const {
     WriteInt(L"nMainHotKey", config.mainHotKey);
     WriteInt(L"nProcessLocatorHotKey", config.processLocatorHotKey);
     WriteInt(L"nCopySelectedPathsHotKey", config.copySelectedPathsHotKey);
+    WriteInt(L"nFileHelperHotKey", config.fileHelperHotKey);
     WriteInt(L"bRegisterCopyPathContextMenu", config.registerCopyPathContextMenu ? 1 : 0);
     WriteInt(L"bRegisterWebDavUploadContextMenu", config.registerWebDavUploadContextMenu ? 1 : 0);
     WriteInt(L"bIgnoreHotKeyConflictWarning", config.ignoreHotKeyConflictWarning ? 1 : 0);

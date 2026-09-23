@@ -8,6 +8,7 @@
 #include "ThemedWindowUi.h"
 #include "Utilities.h"
 
+#include <algorithm>
 #include <commctrl.h>
 #include <cwctype>
 #include <memory>
@@ -16,16 +17,18 @@
 namespace {
 constexpr int kDialogWidth = 360;
 constexpr int kDialogHeight = 150;
-constexpr int kDoubleAltMaxIntervalMs = 450;
 constexpr int IdHotKeyEdit = 1001;
 constexpr int IdInstructionText = 1002;
 constexpr int IdOk = IDOK;
 
 std::wstring GetText(HWND hwnd) {
     const int length = GetWindowTextLengthW(hwnd);
-    std::wstring text(static_cast<std::size_t>(length), L'\0');
+    std::wstring text(static_cast<std::size_t>(length) + 1, L'\0');
     if (length > 0) {
-        GetWindowTextW(hwnd, text.data(), length + 1);
+        const int copied = GetWindowTextW(hwnd, text.data(), length + 1);
+        text.resize(static_cast<std::size_t>((std::max)(0, copied)));
+    } else {
+        text.clear();
     }
     return text;
 }
@@ -42,15 +45,23 @@ std::wstring NormalizedHotKeyText(std::wstring value) {
     return result;
 }
 
-bool IsAltKey(WPARAM key) {
-    return key == VK_MENU || key == VK_LMENU || key == VK_RMENU;
-}
-
 bool IsModifierKey(WPARAM key) {
     return key == VK_CONTROL || key == VK_LCONTROL || key == VK_RCONTROL ||
            key == VK_MENU || key == VK_LMENU || key == VK_RMENU ||
            key == VK_SHIFT || key == VK_LSHIFT || key == VK_RSHIFT ||
            key == VK_LWIN || key == VK_RWIN;
+}
+
+int DoubleTapHotKeyValue(DoubleModifierGestureKind kind) {
+    if (kind == DoubleModifierGestureKind::DoubleAlt) return kMainHotKeyDoubleAlt;
+    if (kind == DoubleModifierGestureKind::DoubleCtrl) return kFileHelperHotKeyDoubleCtrl;
+    return 0;
+}
+
+std::wstring DoubleTapHotKeyText(DoubleModifierGestureKind kind) {
+    if (kind == DoubleModifierGestureKind::DoubleAlt) return L"双击 Alt";
+    if (kind == DoubleModifierGestureKind::DoubleCtrl) return L"双击 Ctrl";
+    return L"";
 }
 
 bool IsAllowedMainKey(int key) {
@@ -123,9 +134,13 @@ bool ParseHotKeyText(const std::wstring& text, const HotKeyCaptureDialogOptions&
     }
 
     std::wstring normalized = NormalizedHotKeyText(trimmed);
-    if (options.allowDoubleAlt &&
-        (normalized == L"双击alt" || normalized == L"doublealt" || normalized == L"altalt")) {
-        key = kMainHotKeyDoubleAlt;
+    const bool doubleAlt = options.allowedDoubleTap == DoubleModifierGestureKind::DoubleAlt &&
+        (normalized == L"双击alt" || normalized == L"doublealt" || normalized == L"altalt");
+    const bool doubleCtrl = options.allowedDoubleTap == DoubleModifierGestureKind::DoubleCtrl &&
+        (normalized == L"双击ctrl" || normalized == L"双击control" ||
+         normalized == L"doublectrl" || normalized == L"ctrlctrl");
+    if (doubleAlt || doubleCtrl) {
+        key = DoubleTapHotKeyValue(options.allowedDoubleTap);
         return true;
     }
 
@@ -157,7 +172,10 @@ bool ParseHotKeyText(const std::wstring& text, const HotKeyCaptureDialogOptions&
 }
 
 std::wstring DialogHotKeyText(int key, const HotKeyCaptureDialogOptions& options) {
-    return options.useMainHotKeyText ? FormatMainHotKeyText(key) : FormatHotKeyText(key);
+    if (key == DoubleTapHotKeyValue(options.allowedDoubleTap)) {
+        return DoubleTapHotKeyText(options.allowedDoubleTap);
+    }
+    return FormatHotKeyText(key);
 }
 
 class HotKeyCapture {
@@ -233,31 +251,31 @@ private:
                 return 0;
             }
             if (wParam == VK_BACK) {
+                doubleTapGesture_.Reset();
                 SetWindowTextW(edit_, L"");
                 return 0;
             }
+            {
+                const auto recognized = doubleTapGesture_.OnKey(
+                    static_cast<DWORD>(wParam), true, GetTickCount());
+                if (recognized && recognized.kind == options_.allowedDoubleTap) {
+                    SetDoubleTapText();
+                }
+            }
             if (!IsModifierKey(wParam)) {
                 SetCapturedText(static_cast<int>(wParam));
-                otherKeySinceAlt_ = true;
-                lastAltUpTick_ = 0;
                 return 0;
             }
             return 0;
         case WM_KEYUP:
         case WM_SYSKEYUP:
-            if (options_.allowDoubleAlt && IsAltKey(wParam) && !otherKeySinceAlt_) {
-                const DWORD now = GetTickCount();
-                if (lastAltUpTick_ != 0 && now - lastAltUpTick_ <= kDoubleAltMaxIntervalMs) {
-                    SetWindowTextW(edit_, FormatMainHotKeyText(kMainHotKeyDoubleAlt).c_str());
-                    SendMessageW(edit_, EM_SETSEL, static_cast<WPARAM>(-1), static_cast<LPARAM>(-1));
-                    lastAltUpTick_ = 0;
+            {
+                const auto recognized = doubleTapGesture_.OnKey(
+                    static_cast<DWORD>(wParam), false, GetTickCount());
+                if (recognized && recognized.kind == options_.allowedDoubleTap) {
+                    SetDoubleTapText();
                     return 0;
                 }
-                lastAltUpTick_ = now;
-                return 0;
-            }
-            if (!IsAltKey(wParam)) {
-                otherKeySinceAlt_ = false;
             }
             return 0;
         default:
@@ -271,6 +289,12 @@ private:
             return;
         }
         SetWindowTextW(edit_, FormatHotKeyText(key).c_str());
+        SendMessageW(edit_, EM_SETSEL, static_cast<WPARAM>(-1), static_cast<LPARAM>(-1));
+    }
+
+    void SetDoubleTapText() {
+        if (options_.allowedDoubleTap == DoubleModifierGestureKind::None) return;
+        SetWindowTextW(edit_, DoubleTapHotKeyText(options_.allowedDoubleTap).c_str());
         SendMessageW(edit_, EM_SETSEL, static_cast<WPARAM>(-1), static_cast<LPARAM>(-1));
     }
 
@@ -305,8 +329,8 @@ private:
         int key = 0;
         if (!ParseHotKeyText(GetText(edit_), options_, key)) {
             std::wstring message = L"快捷键格式无效。请输入例如 Ctrl+Alt+P、F8，或按键自动录入。";
-            if (options_.allowDoubleAlt) {
-                message += L"\n主窗口热键也支持“双击 Alt”。";
+            if (options_.allowedDoubleTap != DoubleModifierGestureKind::None) {
+                message += L"\n此项也支持“" + DoubleTapHotKeyText(options_.allowedDoubleTap) + L"”。";
             }
             ShowThemedMessageBox(hwnd_, instance_, theme_, message, L"录入热键", MB_OK | MB_ICONWARNING);
             SetFocus(edit_);
@@ -340,8 +364,9 @@ private:
                     instructionY,
                     layout.contentInsetX + ui.contentWidth(),
                     instructionY + ui.labelHeight() * 2},
-                options_.allowDoubleAlt
-                    ? L"输入快捷键，或按一个键录入为 Ctrl+Alt+该键；也可快速按两次 Alt。"
+                options_.allowedDoubleTap != DoubleModifierGestureKind::None
+                    ? L"输入快捷键，或按一个键录入为 Ctrl+Alt+该键；也可" +
+                        DoubleTapHotKeyText(options_.allowedDoubleTap) + L"。"
                     : L"输入快捷键，或按一个键录入为 Ctrl+Alt+该键。Backspace 清除，Esc 取消。",
                 instructionOptions);
 
@@ -401,8 +426,7 @@ private:
     HotKeyCaptureDialogOptions options_{};
     std::wstring initialText_;
     int capturedKey_ = 0;
-    DWORD lastAltUpTick_ = 0;
-    bool otherKeySinceAlt_ = false;
+    DoubleModifierGesture doubleTapGesture_;
     bool accepted_ = false;
     bool done_ = false;
 };
