@@ -31,7 +31,7 @@ int ThemedFormLayout::labelWidthForText(const std::wstring& text) const {
     if (text.empty()) {
         return std::max(defaultMin, fallback);
     }
-    return std::max(measured, defaultMin);
+    return std::max(measured + ui_.denseGap(), defaultMin);
 }
 
 int ThemedFormLayout::labelWidthForTexts(std::initializer_list<std::wstring_view> labels) const {

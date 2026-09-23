@@ -9,6 +9,7 @@
 #include "../src/windows/SimpleDialogs.h"
 #include "../src/windows/ConfirmDialog.h"
 #include "../src/windows/UpdateCheckDialog.h"
+#include "../src/windows/UpdateDownloadDialog.h"
 #include "../src/theme/Theme.h"
 #include "../src/theme/ThemedD2D.h"
 #include "../src/theme/ThemedUi.h"
@@ -19,6 +20,7 @@
 #include "../src/windows/UrlEditDialog.h"
 #include "../src/services/WebDavClient.h"
 #include "../src/services/WebDavFileIndexCache.h"
+#include "../src/services/FileHelperService.h"
 #include "../src/services/ShellItemService.h"
 #include "../src/services/Storage.h"
 #include "../src/domain/Config.h"
@@ -5405,6 +5407,9 @@ void RunFileHelperScenarios(
     PluginRegistry registry(environment.root());
     AppConfig config;
 
+    POINT lastSavedPosition{};
+    bool hasSavedPosition = false;
+
     for (const UINT dpi : {96u, 120u, 144u}) {
         const std::wstring suffix = DpiPercentSuffix(dpi);
         const std::wstring scenarioName = L"builtin-file-helper-" + suffix;
@@ -5420,16 +5425,24 @@ void RunFileHelperScenarios(
             6,
             false};
         scenario.forcedDpi = dpi;
-        scenario.requireThemedEditFrames = true;
+        scenario.requireThemedEditFrames = false;
 
         const HWND foregroundBefore = GetForegroundWindow();
         const HWND activeBefore = GetActiveWindow();
         const std::filesystem::path caseRoot = environment.root() / (L"dpi-" + suffix);
         const std::filesystem::path file = caseRoot / L"nested" / L"sample.txt";
         const std::filesystem::path folder = caseRoot / L"created" / L"folder";
+        const std::filesystem::path recentPath = caseRoot / L"最近使用" / L"示例路径.txt";
         std::error_code error;
         std::filesystem::create_directories(caseRoot, error);
         state.Check(!error, scenarioName + L": failed to prepare isolated directory");
+        FileHelperService historyService;
+        for (int index = 0; index < 14; ++index) {
+            state.Check(historyService.RememberPath(caseRoot / (L"older-" + std::to_wstring(index))),
+                scenarioName + L": failed to seed older history");
+        }
+        state.Check(historyService.RememberPath(recentPath),
+            scenarioName + L": failed to seed isolated path history");
 
         RunDialogScenario(
             scenario,
@@ -5453,6 +5466,40 @@ void RunFileHelperScenarios(
                 state.Check(helper != nullptr, scenarioName + L": window disappeared before interaction");
                 if (!helper) {
                     return;
+                }
+
+                RECT helperWindow{};
+                GetWindowRect(helper, &helperWindow);
+                const SIZE expectedWindow = ThemedWindowUi::AdjustedWindowSize(
+                    ThemedWindowUi::ScaleForDpi(kThemedWideCompactToolClientWidth, dpi),
+                    ThemedWindowUi::ScaleForDpi(kThemedWideCompactToolClientHeight, dpi),
+                    static_cast<DWORD>(GetWindowLongPtrW(helper, GWL_STYLE)),
+                    static_cast<DWORD>(GetWindowLongPtrW(helper, GWL_EXSTYLE)),
+                    false,
+                    dpi);
+                state.Check(
+                    std::abs((helperWindow.right - helperWindow.left) - expectedWindow.cx) <= 2,
+                    scenarioName + L": file helper did not use the wide compact client width");
+
+                const std::array<int, 4> actionIds{
+                    ID_FILE_HELPER_OPEN_FILE,
+                    ID_FILE_HELPER_OPEN_FOLDER,
+                    ID_FILE_HELPER_CREATE_FILE,
+                    ID_FILE_HELPER_CREATE_FOLDER};
+                int actionRowTop = -1;
+                int previousRight = -1;
+                for (const int actionId : actionIds) {
+                    HWND action = ChildById(helper, actionId);
+                    RECT actionRect{};
+                    GetWindowRect(action, &actionRect);
+                    MapWindowPoints(HWND_DESKTOP, helper, reinterpret_cast<POINT*>(&actionRect), 2);
+                    if (actionRowTop < 0) {
+                        actionRowTop = actionRect.top;
+                    } else {
+                        state.Check(actionRect.top == actionRowTop && actionRect.left >= previousRight,
+                            scenarioName + L": file helper actions are not laid out on one row");
+                    }
+                    previousRight = actionRect.right;
                 }
 
                 auto send = [&](FileHelperTestCommand command, FileHelperTestRequest* request = nullptr) {
@@ -5486,6 +5533,54 @@ void RunFileHelperScenarios(
                 state.Check(
                     CountTopWindowsForProcess(L"文件助手", GetCurrentProcessId()) == 1,
                     scenarioName + L": repeated open created another window");
+
+                state.Check(
+                    send(FileHelperTestCommand::QueryHistoryCount) == 15,
+                    scenarioName + L": recent path history did not retain 15 entries");
+                {
+                    HWND pathBox = ChildById(helper, ID_FILE_HELPER_PATH);
+                    COMBOBOXINFO info{sizeof(info)};
+                    state.Check(GetComboBoxInfo(pathBox, &info) && info.hwndList && info.hwndItem,
+                        scenarioName + L": editable history dropdown is unavailable");
+                    if (info.hwndItem) {
+                        // Deliver focus notification only to our in-process test control.
+                        // Do not change the desktop's actual focus or foreground window.
+                        SendMessageW(info.hwndItem, WM_SETFOCUS,
+                            reinterpret_cast<WPARAM>(helper), 0);
+                    }
+                    state.Check(ThemedUi::IsComboBoxDropDownVisible(pathBox),
+                        scenarioName + L": focusing the input did not expand recent paths");
+                    if (info.hwndList && ThemedUi::IsComboBoxDropDownVisible(pathBox)) {
+                        RECT fieldBounds{};
+                        RECT listBounds{};
+                        GetWindowRect(pathBox, &fieldBounds);
+                        GetWindowRect(info.hwndList, &listBounds);
+                        state.Check(listBounds.top >= fieldBounds.bottom - 2,
+                            scenarioName + L": history dropdown did not appear below the input");
+                        state.Check(listBounds.bottom - listBounds.top >=
+                                ThemedWindowUi::ScaleForDpi(ThemedControls::ComboBoxItemHeight(theme), dpi),
+                            scenarioName + L": history dropdown is too short to show an item");
+                        BitmapCapture capture = CaptureWindowBitmap(info.hwndList);
+                        state.Check(capture.bitmap != nullptr,
+                            scenarioName + L": history dropdown capture failed");
+                        if (capture.bitmap) {
+                            state.Check(
+                                BitmapHasVisualContent(capture.bitmap, capture.width, capture.height),
+                                scenarioName + L": history dropdown screenshot is blank");
+                            state.Check(
+                                SavePng(capture.bitmap, outputDir /
+                                    (L"builtin-file-helper-history-dropdown-" + suffix + L".png")),
+                                scenarioName + L": history dropdown screenshot save failed");
+                            DeleteObject(capture.bitmap);
+                        }
+                    }
+                    ThemedUi::SetComboBoxDropDownVisible(pathBox, false);
+                }
+                state.Check(
+                    send(FileHelperTestCommand::SelectHistory, nullptr) == TRUE &&
+                        WindowText(ChildById(helper, ID_FILE_HELPER_PATH)) == recentPath.lexically_normal().wstring() &&
+                        WindowContainsText(helper, L"已选择历史路径。"),
+                    scenarioName + L": selecting recent history did not restore the path");
 
                 setPath(file);
                 state.Check(
@@ -5585,6 +5680,20 @@ void RunFileHelperScenarios(
                         send(FileHelperTestCommand::QueryLastAction) == ID_FILE_HELPER_OPEN_LOCATION &&
                         WindowContainsText(helper, L"已记录打开所在位置意图。"),
                     scenarioName + L": containing-location intent was not recorded");
+                RECT beforeMove{};
+                GetWindowRect(helper, &beforeMove);
+                const auto target = ThemedWindowUi::RestoredWindowPosition(
+                    beforeMove.left + 8, beforeMove.top + 8,
+                    beforeMove.right - beforeMove.left, beforeMove.bottom - beforeMove.top);
+                if (target) {
+                    SetWindowPos(helper, nullptr, target->x, target->y, 0, 0,
+                        SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+                    SendMessageW(helper, WM_EXITSIZEMOVE, 0, 0);
+                    RECT afterMove{};
+                    GetWindowRect(helper, &afterMove);
+                    lastSavedPosition = POINT{afterMove.left, afterMove.top};
+                    hasSavedPosition = true;
+                }
                 state.Check(
                     ToggleBuiltinFileHelper(owner, instance, theme),
                     scenarioName + L": double-Ctrl toggle could not close the window");
@@ -5595,7 +5704,17 @@ void RunFileHelperScenarios(
                     scenarioName + L": toggle left the file helper open");
             });
 
-        state.Check(GetForegroundWindow() == foregroundBefore,
+        const HWND foregroundAfter = GetForegroundWindow();
+        if (foregroundAfter != foregroundBefore) {
+            DWORD beforeProcessId = 0;
+            DWORD afterProcessId = 0;
+            if (foregroundBefore) GetWindowThreadProcessId(foregroundBefore, &beforeProcessId);
+            if (foregroundAfter) GetWindowThreadProcessId(foregroundAfter, &afterProcessId);
+            AcceptanceLog(scenarioName + L" foreground changed from process " +
+                std::to_wstring(beforeProcessId) + L" to " + std::to_wstring(afterProcessId) +
+                L" (acceptance process " + std::to_wstring(GetCurrentProcessId()) + L")");
+        }
+        state.Check(foregroundAfter == foregroundBefore,
             scenarioName + L": changed the foreground window");
         state.Check(GetActiveWindow() == activeBefore,
             scenarioName + L": changed the active window");
@@ -5611,7 +5730,7 @@ void RunFileHelperScenarios(
         1,
         6,
         false};
-    toggleReopenScenario.requireThemedEditFrames = true;
+    toggleReopenScenario.requireThemedEditFrames = false;
     RunDialogScenario(
         toggleReopenScenario,
         outputDir,
@@ -5633,6 +5752,13 @@ void RunFileHelperScenarios(
             state.Check(helper != nullptr,
                 L"file-helper-toggle: reopened window disappeared before inspection");
             if (!helper) return;
+            if (hasSavedPosition) {
+                RECT restored{};
+                GetWindowRect(helper, &restored);
+                state.Check(restored.left == lastSavedPosition.x &&
+                        restored.top == lastSavedPosition.y,
+                    L"file-helper-toggle: reopening did not restore dragged position");
+            }
             state.Check(
                 SendMessageW(
                     helper,
@@ -5640,6 +5766,13 @@ void RunFileHelperScenarios(
                     static_cast<WPARAM>(FileHelperTestCommand::QueryFocusRequested),
                     0) == TRUE,
                 L"file-helper-toggle: reopening did not request path focus");
+            state.Check(
+                SendMessageW(
+                    helper,
+                    WM_QUATTRO_TEST_FILE_HELPER,
+                    static_cast<WPARAM>(FileHelperTestCommand::QueryHistoryCount),
+                    0) == static_cast<LRESULT>(FileHelperService::HistoryLimit),
+                L"file-helper-toggle: reopening did not reload recent paths from cache");
             state.Check(
                 CountTopWindowsForProcess(L"文件助手", GetCurrentProcessId()) == 1,
                 L"file-helper-toggle: reopening created duplicate windows");
@@ -8963,6 +9096,36 @@ int wmain() {
                     L"从云端下载",
                     MB_OKCANCEL | MB_ICONINFORMATION);
             });
+
+            Scenario updateDownloadScenario{
+                L"update-download-" + suffix,
+                L"QuattroUpdateDownloadDialog",
+                L"下载更新",
+                L"update-download-" + suffix + L".png",
+                {L"正在下载更新", L"版本：", L"v0.6.21", L"文件：", L"Quattro-x64.exe",
+                 L"大小：", L"12.0 MB", L"已下载：", L"3.00 MB", L"25%",
+                 L"正在下载更新包...", L"取消"},
+                {},
+                0,
+                1,
+                false};
+            updateDownloadScenario.forcedDpi = dpi;
+            updateDownloadScenario.transparentLabelTexts = {
+                L"v0.6.21", L"Quattro-x64.exe", L"12.0 MB", L"3.00 MB"};
+            SetEnvironmentVariableW(L"QUATTRO_TEST_MODE", L"1");
+            SetEnvironmentVariableW(L"QUATTRO_TEST_UPDATE_DOWNLOAD_PREVIEW", L"1");
+            RunDialogScenario(updateDownloadScenario, outputDir, state, [&]() {
+                UpdateReleaseInfo info;
+                info.latestVersion = L"0.6.21";
+                info.assetName = L"Quattro-x64.exe";
+                info.assetSizeBytes = 12ull * 1024ull * 1024ull;
+                UpdateDownloadResult result;
+                std::wstring error;
+                ShowUpdateDownloadDialog(
+                    owner, instance, theme, std::filesystem::current_path(), info, result, error);
+            });
+            SetEnvironmentVariableW(L"QUATTRO_TEST_UPDATE_DOWNLOAD_PREVIEW", nullptr);
+            SetEnvironmentVariableW(L"QUATTRO_TEST_MODE", nullptr);
 
             std::wstring selectedBackup = backups.front().name;
             Scenario webDavScenario{

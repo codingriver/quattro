@@ -278,6 +278,9 @@ ThemedWindowCreateOptions ThemedWindowUi::DialogOptions(
     if (sizePreset == ThemedWindowSizePreset::CompactTool) {
         options.clientWidth = kThemedCompactToolClientWidth;
         options.clientHeight = kThemedCompactToolClientHeight;
+    } else if (sizePreset == ThemedWindowSizePreset::WideCompactTool) {
+        options.clientWidth = kThemedWideCompactToolClientWidth;
+        options.clientHeight = kThemedWideCompactToolClientHeight;
     } else {
         options.clientWidth = kThemedDialogClientWidth;
         options.clientHeight = kThemedDialogClientHeight;
@@ -445,6 +448,17 @@ bool ThemedWindowUi::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam, L
         result = 0;
         return true;
     case WM_CTLCOLOREDIT: {
+        HWND child = reinterpret_cast<HWND>(lParam);
+        if (ThemedControls::IsEditableComboBox(GetParent(child))) {
+            HDC dc = reinterpret_cast<HDC>(wParam);
+            const COLORREF background = ToColorRef(theme_.color(L"comboBox", L"normal", L"bg"));
+            const wchar_t* token = GetWindowTextLengthW(child) == 0 ? L"placeholderText" : L"text";
+            SetBkMode(dc, OPAQUE);
+            SetTextColor(dc, ToColorRef(theme_.color(L"comboBox", L"normal", token)));
+            SetBkColor(dc, background);
+            result = reinterpret_cast<LRESULT>(BrushForColor(background));
+            return true;
+        }
         result = reinterpret_cast<LRESULT>(ApplyEditColors(
             reinterpret_cast<HDC>(wParam), reinterpret_cast<HWND>(lParam)));
         return true;

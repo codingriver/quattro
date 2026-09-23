@@ -477,6 +477,7 @@ void Theme::SetDefaults() {
     PutState(L"edit", L"error", L"border", palette_[L"danger"]);
     PutState(L"comboBox", L"normal", L"bg", palette_[L"surface"]);
     PutState(L"comboBox", L"normal", L"text", palette_[L"text"]);
+    PutState(L"comboBox", L"normal", L"placeholderText", palette_[L"mutedText"]);
     PutState(L"comboBox", L"normal", L"border", palette_[L"border"]);
     PutState(L"comboBox", L"normal", L"itemBg", palette_[L"surface"]);
     PutState(L"comboBox", L"normal", L"arrow", palette_[L"mutedText"]);
@@ -749,11 +750,13 @@ void Theme::SetDefaults() {
     PutState(L"progressBar", L"normal", L"track", palette_[L"line"]);
     PutState(L"progressBar", L"normal", L"fill", palette_[L"accent"]);
     PutState(L"progressBar", L"normal", L"activity", palette_[L"focus"]);
+    PutState(L"progressBar", L"normal", L"trackText", palette_[L"text"]);
     PutState(L"progressBar", L"normal", L"text", Color{1.0f, 1.0f, 1.0f, 1.0f});
     PutState(L"progressBar", L"normal", L"border", palette_[L"border"]);
     PutState(L"progressBar", L"disabled", L"track", palette_[L"line"]);
     PutState(L"progressBar", L"disabled", L"fill", palette_[L"border"]);
     PutState(L"progressBar", L"disabled", L"activity", palette_[L"surfaceRaised"]);
+    PutState(L"progressBar", L"disabled", L"trackText", palette_[L"textMuted"]);
     PutState(L"progressBar", L"disabled", L"text", palette_[L"textMuted"]);
     PutState(L"progressBar", L"disabled", L"border", palette_[L"line"]);
     PutState(L"tooltip", L"normal", L"bg", Color{229.0f / 255.0f, 231.0f / 255.0f, 235.0f / 255.0f, 1.0f});

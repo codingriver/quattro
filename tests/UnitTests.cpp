@@ -66,6 +66,7 @@
 #include <iostream>
 #include <iterator>
 #include <numeric>
+#include <sstream>
 #include <thread>
 #include <unordered_set>
 #include <string>
@@ -127,6 +128,13 @@ void Check(bool condition, const char* name) {
 }
 
 void TestFileHelperService() {
+    const auto wideToolOptions = ThemedWindowUi::DialogOptions(
+        GetModuleHandleW(nullptr), nullptr, L"QuattroFileHelperWidePresetTest", L"文件助手",
+        DefWindowProcW, nullptr, nullptr, nullptr, ThemedWindowSizePreset::WideCompactTool);
+    Check(wideToolOptions.clientWidth == kThemedWideCompactToolClientWidth &&
+            wideToolOptions.clientHeight == kThemedWideCompactToolClientHeight,
+        "Wide compact tool preset uses the file helper dimensions");
+
     const auto readEnvironment = [](const wchar_t* name) {
         const DWORD size = GetEnvironmentVariableW(name, nullptr, 0);
         if (size == 0) {
@@ -202,10 +210,70 @@ void TestFileHelperService() {
         "File helper records valid open folder intent in background tests");
     Check(service.OpenContainingLocation(nullptr, file.wstring()).status == FileHelperStatus::Success,
         "File helper records valid containing location intent in background tests");
+
+    const std::filesystem::path historyFile = root / L"cache" / L"file-helper-history.txt";
+    FileHelperService historyService(historyFile);
+    std::vector<std::filesystem::path> expectedHistory;
+    for (int index = 0; index < 18; ++index) {
+        const auto path = root / L"历史" / (L"项目-" + std::to_wstring(index));
+        Check(historyService.RememberPath(path), "File helper history record is saved");
+        expectedHistory.insert(expectedHistory.begin(), path.lexically_normal());
+        if (expectedHistory.size() > FileHelperService::HistoryLimit) {
+            expectedHistory.resize(FileHelperService::HistoryLimit);
+        }
+    }
+    auto loadedHistory = historyService.LoadHistory();
+    Check(loadedHistory == expectedHistory, "File helper history keeps newest fifteen paths");
+    const auto repeatedPath = expectedHistory[7];
+    Check(historyService.RememberPath(repeatedPath), "File helper duplicate history path is saved");
+    loadedHistory = historyService.LoadHistory();
+    Check(loadedHistory.size() == FileHelperService::HistoryLimit &&
+            loadedHistory.front() == repeatedPath &&
+            std::count(loadedHistory.begin(), loadedHistory.end(), repeatedPath) == 1,
+        "File helper duplicate history path moves to front");
+    std::wistringstream historyLines(LoadUtf8File(historyFile));
+    std::wstring historyLine;
+    std::size_t historyLineCount = 0;
+    while (std::getline(historyLines, historyLine)) {
+        if (!historyLine.empty()) ++historyLineCount;
+    }
+    Check(historyLineCount == FileHelperService::HistoryLimit,
+        "File helper cache stores one path per line");
+    Check(historyService.historyPath() == historyFile,
+        "File helper uses the requested isolated history cache path");
+
     restoreEnvironment(L"QUATTRO_ACCEPTANCE_MODE", savedAcceptanceMode);
     restoreEnvironment(L"QUATTRO_TEST_MODE", savedTestMode);
     SetEnvironmentVariableW(L"QUATTRO_FILE_HELPER_TEST_ROOT", nullptr);
     std::filesystem::remove_all(root, error);
+}
+
+void TestFileHelperConfigAndRegistry() {
+    const auto configPath = std::filesystem::temp_directory_path() / L"file-helper-unit-conf.ini";
+    ConfigService service(configPath);
+    AppConfig config = service.Load();
+    Check(config.fileHelperHotKey == kFileHelperHotKeyDoubleCtrl,
+        "File helper missing config defaults to double Ctrl");
+
+    config.fileHelperHotKey = L'G';
+    Check(service.Save(config) && service.Load().fileHelperHotKey == L'G',
+        "File helper ordinary hotkey survives save and load");
+    config.fileHelperHotKey = 0;
+    Check(service.Save(config) && service.Load().fileHelperHotKey == 0,
+        "File helper cleared hotkey survives save and load");
+    config.fileHelperHotKey = kFileHelperHotKeyDoubleCtrl;
+    Check(service.Save(config) && service.Load().fileHelperHotKey == kFileHelperHotKeyDoubleCtrl,
+        "File helper double Ctrl survives save and load");
+
+    const auto plugins = PluginRegistry::BuiltinPlugins();
+    const auto fileHelper = std::find_if(plugins.begin(), plugins.end(), [](const PluginRecord& item) {
+        return item.id == L"quattro.builtin.file-helper";
+    });
+    Check(fileHelper != plugins.end() && fileHelper->name == L"\u6587\u4ef6\u52a9\u624b" &&
+            fileHelper->engine == L"file-helper" && fileHelper->enabled,
+        "File helper builtin is named, routed and enabled by default");
+    Check(MenuIconForToolEngine(L"file-helper") == MenuIconFolder,
+        "File helper reuses the folder menu icon");
 }
 
 void TestMainHotKeyActionDecision() {
@@ -328,6 +396,27 @@ void TestDoubleModifierGesture() {
     const auto recoveredCtrl = ctrlTap(650);
     Check(gesture.Consume(recoveredCtrl.kind, recoveredCtrl.token),
         "Expired Ctrl tap can start the next pair");
+    gesture.Reset();
+    Check(!ctrlTap(100), "First Ctrl release starts the boundary pair");
+    const auto boundaryCtrl = ctrlTap(550);
+    Check(boundaryCtrl.kind == DoubleModifierGestureKind::DoubleCtrl &&
+        gesture.Consume(boundaryCtrl.kind, boundaryCtrl.token),
+        "Exactly 450ms between Ctrl releases is accepted");
+    gesture.Reset();
+    Check(!altTap(100) && !ctrlTap(200),
+        "Ctrl tap between two Alt taps replaces the incomplete Alt pair");
+    const auto alternatingCtrl = ctrlTap(300);
+    Check(alternatingCtrl.kind == DoubleModifierGestureKind::DoubleCtrl &&
+        gesture.Consume(alternatingCtrl.kind, alternatingCtrl.token),
+        "Shared recognizer dispatches Ctrl after an interrupted Alt pair");
+    Check(!ctrlTap(400), "Consumed Ctrl pair does not arm another toggle");
+    const auto alternatingAlt = altTap(500);
+    Check(!alternatingAlt && !gesture.Consume(alternatingCtrl.kind, alternatingCtrl.token),
+        "Alt tap replaces incomplete Ctrl pair without replaying the old token");
+    const auto resumedAlt = altTap(600);
+    Check(resumedAlt.kind == DoubleModifierGestureKind::DoubleAlt &&
+        gesture.Consume(resumedAlt.kind, resumedAlt.token),
+        "Shared recognizer dispatches Alt after the interrupted Ctrl pair");
     gesture.Reset();
     ctrlTap(MAXDWORD - 100);
     const auto rollover = ctrlTap(20);
@@ -865,6 +954,16 @@ LRESULT CALLBACK TableUpdateNotificationParentProc(
 
 int wmain(int argc, wchar_t* argv[]) {
     TestFileHelperService();
+    if (argc == 2 && std::wstring(argv[1]) == L"--file-helper-only") {
+        TestFileHelperConfigAndRegistry();
+        failures += RunGlobalHotKeyServiceTests();
+        TestDoubleModifierGesture();
+        TestModifierGestureActionDecision();
+        if (failures == 0) {
+            std::cout << "file_helper_unit_tests=passed\n";
+        }
+        return failures == 0 ? 0 : 1;
+    }
     if (argc == 2 && std::wstring(argv[1]) == L"--window-activation-only") {
         failures += RunGlobalHotKeyServiceTests();
         TestDoubleModifierGesture();
@@ -3447,7 +3546,7 @@ int wmain(int argc, wchar_t* argv[]) {
     </Component>
     <Component name="progressBar">
         <Metric name="height" value="15"/>
-        <State name="normal" fill="rgb(13,14,15)"/>
+        <State name="normal" fill="rgb(13,14,15)" trackText="rgb(16,17,18)"/>
     </Component>
     <Component name="settings.searchInput">
         <Metric name="height" value="99"/>
@@ -3470,6 +3569,7 @@ int wmain(int argc, wchar_t* argv[]) {
     Check(Near(customTheme.color(L"miniButton", L"normal", L"icon").r, 10.0f / 255.0f), "Theme mini button component parse");
     Check(Near(customTheme.metric(L"progressBar", L"height", 0.0f), 15.0f), "Theme progress bar metric parse");
     Check(Near(customTheme.color(L"progressBar", L"normal", L"fill").r, 13.0f / 255.0f), "Theme progress bar component parse");
+    Check(Near(customTheme.color(L"progressBar", L"normal", L"trackText").r, 16.0f / 255.0f), "Theme progress bar track text parse");
     Check(Near(customTheme.metric(L"settings.searchInput", L"height", 11.0f), 11.0f), "Theme ignores unsupported component metric");
     Check(!Near(customTheme.color(L"settings.searchInput", L"normal", L"text").r, 250.0f / 255.0f), "Theme ignores unsupported component color");
     Check(customTheme.color(L"titleButton", L"hover", L"bg").a > 0.9f, "Theme default component state");
@@ -3484,6 +3584,7 @@ int wmain(int argc, wchar_t* argv[]) {
     Check(Near(fallbackTheme.metric(L"slider", L"thumbSize", 0.0f), 14.0f), "Theme default slider metric");
     Check(Near(fallbackTheme.metric(L"progressBar", L"height", 0.0f), 16.0f), "Theme default progress bar metric");
     Check(fallbackTheme.color(L"progressBar", L"normal", L"fill").a > 0.9f, "Theme default progress bar color");
+    Check(fallbackTheme.color(L"progressBar", L"normal", L"trackText").a > 0.9f, "Theme default progress track text color");
     Check(fallbackTheme.color(L"global", L"warning", L"text").r > 0.5f, "Theme default semantic warning");
     Check(fallbackTheme.color(L"text", L"success", L"text").a > 0.9f, "Theme default text success");
     Check(fallbackTheme.color(L"text", L"danger", L"text").a > 0.9f, "Theme default text danger");
@@ -4149,8 +4250,40 @@ int wmain(int argc, wchar_t* argv[]) {
         Check(ThemedUi::ComboBoxSelectedIndex(runtimeCombo) == 1, "Themed combo public item and selection state");
         ThemedUi::SetComboBoxSelectedIndex(runtimeCombo, 0);
         Check(ThemedUi::ComboBoxSelectedIndex(runtimeCombo) == 0, "Themed combo public selection update");
+        ThemedComboBoxOptions editableOptions{};
+        editableOptions.mode = ThemedComboBoxMode::Editable;
+        editableOptions.placeholder = L"输入路径";
+        editableOptions.openOnFocus = true;
+        editableOptions.selectAllOnFocus = true;
+        HWND editableCombo = controlUi.ComboBox(7115, 240, 110, 280, editableOptions);
+        Check(editableCombo && ThemedControls::IsEditableComboBox(editableCombo),
+            "Themed editable combo exposes semantic mode");
+        ThemedUi::SetComboBoxText(editableCombo, L"C:\\user\\typed.txt");
+        ThemedUi::SetComboBoxItems(editableCombo, {L"C:\\older.txt", L"C:\\newer.txt"}, -1);
+        Check(ThemedUi::ComboBoxText(editableCombo) == L"C:\\user\\typed.txt" &&
+                ThemedUi::ComboBoxSelectedIndex(editableCombo) == -1,
+            "Themed editable combo preserves typed path when history changes");
+        ThemedUi::SetComboBoxSelectedIndex(editableCombo, 1);
+        Check(ThemedUi::ComboBoxText(editableCombo) == L"C:\\newer.txt",
+            "Themed editable combo selection fills edit text");
+        ThemedUi::SetComboBoxText(editableCombo, L"C:\\user\\typed.txt");
+        Check(ThemedUi::ComboBoxText(editableCombo) == L"C:\\user\\typed.txt",
+            "Themed editable combo accepts ordinary typed text");
         Check(controlUi.tableColumnWidth(L"column") > controlUi.textWidth(L"column"),
             "Themed table column width includes public cell padding");
+        if (HDC textDc = GetDC(controlParent)) {
+            const std::wstring measuredLabel = L"已下载：";
+            const SIZE gdiTextSize = ThemedGdiFallback::MeasureText(
+                textDc,
+                reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT)),
+                measuredLabel.c_str(),
+                static_cast<int>(measuredLabel.size()));
+            Check(controlUi.textWidth(measuredLabel) >= gdiTextSize.cx,
+                "Themed text width covers the GDI width used by selectable labels");
+            ReleaseDC(controlParent, textDc);
+        } else {
+            Check(false, "Themed text width GDI comparison acquired a device context");
+        }
         Check(controlUi.tableColumnWidth({L"short", L"a much wider status"})
                 >= controlUi.tableColumnWidth(L"a much wider status"),
             "Themed table column width measures every public candidate text");
@@ -4158,6 +4291,10 @@ int wmain(int argc, wchar_t* argv[]) {
                 == controlUi.scale(static_cast<int>(fallbackTheme.metric(L"listItem", L"height", 28.0f))),
             "Themed table visible-row height advances by the public row template");
         const ThemedFormLayout publicForm(controlUi);
+        Check(
+            publicForm.labelWidthForText(L"已下载：") >=
+                controlUi.textWidth(L"已下载：") + controlUi.denseGap(),
+            "Themed form label width preserves DPI-safe text breathing room");
         const int tableContentHeight = controlUi.tableHeightForRows(7, false);
         const ThemedSectionGeometry tableSection = publicForm.contentSection(8, 12, 320, tableContentHeight);
         Check(tableSection.content.bottom - tableSection.content.top == tableContentHeight,

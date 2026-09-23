@@ -19,6 +19,7 @@ enum class ThemedWindowPlacement {
 enum class ThemedWindowSizePreset {
     StandardDialog,
     CompactTool,
+    WideCompactTool,
 };
 
 struct ThemedWindowCreateOptions {
@@ -52,6 +53,8 @@ constexpr int kThemedDialogClientWidth = 460;
 constexpr int kThemedDialogClientHeight = 246;
 constexpr int kThemedCompactToolClientWidth = 300;
 constexpr int kThemedCompactToolClientHeight = 128;
+constexpr int kThemedWideCompactToolClientWidth = kThemedCompactToolClientWidth * 2;
+constexpr int kThemedWideCompactToolClientHeight = 96;
 constexpr int kThemedManagementClientWidth = 760;
 constexpr int kThemedManagementClientHeight = 520;
 constexpr int kThemedDetailsClientWidth = 620;

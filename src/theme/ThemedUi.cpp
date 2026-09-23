@@ -1063,17 +1063,14 @@ int TextWidth(HWND parent, HFONT font, const std::wstring& text) {
         return 0;
     }
     const int directWriteWidth = ThemedD2D::MeasureTextWidth(font, text);
-    if (directWriteWidth > 0) {
-        return directWriteWidth;
-    }
     HDC dc = GetDC(parent);
     if (!dc) {
-        return 0;
+        return std::max(0, directWriteWidth);
     }
     const SIZE size = ThemedGdiFallback::MeasureText(
         dc, font, text.c_str(), static_cast<int>(text.size()));
     ReleaseDC(parent, dc);
-    return size.cx;
+    return std::max(directWriteWidth, static_cast<int>(size.cx));
 }
 
 void ApplySplitButtonMenuIcon(HWND button, bool expanded = false) {
@@ -3226,7 +3223,8 @@ bool ThemedUi::IsTabSelected(HWND hwnd) {
 HWND ThemedUi::ComboBox(int id, int x, int y, int width, ThemedComboBoxOptions options) const {
     HWND hwnd = ThemedControls::CreateComboBox(
         instance_, parent_, id, x, y, width, ThemedControls::ComboBoxDropdownHeight(theme_, dpi_),
-        font_, theme_, dpi_);
+        font_, theme_, dpi_, options.mode == ThemedComboBoxMode::Editable,
+        options.placeholder, options.openOnFocus, options.selectAllOnFocus);
     if (hwnd) {
         EnableWindow(hwnd, options.enabled ? TRUE : FALSE);
     }
@@ -3235,13 +3233,19 @@ HWND ThemedUi::ComboBox(int id, int x, int y, int width, ThemedComboBoxOptions o
 
 void ThemedUi::SetComboBoxItems(HWND comboBox, const std::vector<std::wstring>& items, int selectedIndex) {
     if (!comboBox) return;
+    const std::wstring previousText = ThemedControls::IsEditableComboBox(comboBox)
+        ? ComboBoxText(comboBox) : L"";
     SendMessageW(comboBox, WM_SETREDRAW, FALSE, 0);
     SendMessageW(comboBox, CB_RESETCONTENT, 0, 0);
     for (const auto& item : items) {
         SendMessageW(comboBox, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(item.c_str()));
     }
-    const int selection = items.empty() ? -1 : std::clamp(selectedIndex, 0, static_cast<int>(items.size()) - 1);
+    const int selection = items.empty() || selectedIndex < 0 ? -1
+        : std::clamp(selectedIndex, 0, static_cast<int>(items.size()) - 1);
     SendMessageW(comboBox, CB_SETCURSEL, selection, 0);
+    if (ThemedControls::IsEditableComboBox(comboBox) && selectedIndex < 0) {
+        SetWindowTextW(comboBox, previousText.c_str());
+    }
     SendMessageW(comboBox, WM_SETREDRAW, TRUE, 0);
     InvalidateRect(comboBox, nullptr, TRUE);
 }
@@ -3263,6 +3267,36 @@ void ThemedUi::SetComboBoxSelectedIndex(HWND comboBox, int selectedIndex, bool n
 
 int ThemedUi::ComboBoxSelectedIndex(HWND comboBox) {
     return comboBox ? static_cast<int>(SendMessageW(comboBox, CB_GETCURSEL, 0, 0)) : -1;
+}
+
+void ThemedUi::SetComboBoxText(HWND comboBox, const std::wstring& text) {
+    if (comboBox && ThemedControls::IsEditableComboBox(comboBox)) {
+        SetWindowTextW(comboBox, text.c_str());
+    }
+}
+
+std::wstring ThemedUi::ComboBoxText(HWND comboBox) {
+    if (!comboBox || !ThemedControls::IsEditableComboBox(comboBox)) return {};
+    const int length = GetWindowTextLengthW(comboBox);
+    std::wstring text(static_cast<std::size_t>(length) + 1, L'\0');
+    text.resize(static_cast<std::size_t>(GetWindowTextW(comboBox, text.data(), static_cast<int>(text.size()))));
+    return text;
+}
+
+void ThemedUi::SetComboBoxDropDownVisible(HWND comboBox, bool visible) {
+    if (comboBox) SendMessageW(comboBox, CB_SHOWDROPDOWN, visible ? TRUE : FALSE, 0);
+}
+
+bool ThemedUi::IsComboBoxDropDownVisible(HWND comboBox) {
+    return comboBox && SendMessageW(comboBox, CB_GETDROPPEDSTATE, 0, 0) != FALSE;
+}
+
+void ThemedUi::FocusComboBoxInput(HWND comboBox, bool selectAll) {
+    if (!comboBox || !ThemedControls::IsEditableComboBox(comboBox)) return;
+    COMBOBOXINFO info{sizeof(info)};
+    if (!GetComboBoxInfo(comboBox, &info) || !info.hwndItem) return;
+    SetFocus(info.hwndItem);
+    if (selectAll) SendMessageW(info.hwndItem, EM_SETSEL, 0, -1);
 }
 
 // 创建主题列表框。

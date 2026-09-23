@@ -449,7 +449,7 @@
         <Metric name="arrowPaddingRight" value="11"/>
         <Metric name="arrowOffsetY" value="1"/>
         <Metric name="arrowStrokeWidth" value="1"/>
-        <State name="normal" bg="@surface" text="@text" border="@border" itemBg="@surface" arrow="@mutedText"/>
+        <State name="normal" bg="@surface" text="@text" placeholderText="@mutedText" border="@border" itemBg="@surface" arrow="@mutedText"/>
         <State name="hover" bg="@surface" text="@text" border="@accent" itemBg="@hover" arrow="@accent"/>
         <State name="focused" bg="@surface" text="@text" border="@focus" itemBg="@surface" arrow="@accent"/>
         <State name="selected" bg="@surface" text="@text" border="@accent" itemBg="@selected" arrow="@accent"/>
@@ -684,8 +684,8 @@
         <Metric name="height" value="16"/>
         <Metric name="radius" value="7"/>
         <Metric name="borderWidth" value="1"/>
-        <State name="normal" track="@line" fill="@accent" activity="@focus" text="rgb(255,255,255)" border="@border"/>
-        <State name="disabled" track="@line" fill="@border" activity="@surfaceRaised" text="@textMuted" border="@line"/>
+        <State name="normal" track="@line" fill="@accent" activity="@focus" trackText="@text" text="rgb(255,255,255)" border="@border"/>
+        <State name="disabled" track="@line" fill="@border" activity="@surfaceRaised" trackText="@textMuted" text="@textMuted" border="@line"/>
     </Component>
     <Component name="tooltip">
         <Metric name="radius" value="6"/>

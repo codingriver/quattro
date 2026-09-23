@@ -5,6 +5,9 @@
 #include "../domain/Models.h"
 #include "ShellItemService.h"
 
+#include <algorithm>
+#include <fstream>
+#include <sstream>
 #include <system_error>
 #include <utility>
 
@@ -35,7 +38,26 @@ bool IsDirectory(const std::filesystem::path& path, std::error_code& error) {
     error.clear();
     return std::filesystem::is_directory(path, error);
 }
+
+std::string WideToUtf8(std::wstring_view value) {
+    if (value.empty()) return {};
+    const int size = WideCharToMultiByte(
+        CP_UTF8, 0, value.data(), static_cast<int>(value.size()), nullptr, 0, nullptr, nullptr);
+    if (size <= 0) return {};
+    std::string bytes(static_cast<std::size_t>(size), '\0');
+    if (WideCharToMultiByte(
+            CP_UTF8, 0, value.data(), static_cast<int>(value.size()),
+            bytes.data(), size, nullptr, nullptr) != size) {
+        return {};
+    }
+    return bytes;
 }
+}
+
+FileHelperService::FileHelperService(std::filesystem::path historyPath)
+    : historyPath_(historyPath.empty()
+          ? QuattroUserConfigDirectory() / L"cache" / L"file-helper-history.txt"
+          : std::move(historyPath)) {}
 
 FileHelperResult FileHelperService::ResolvePath(std::wstring_view input) {
     std::wstring value = Trim(std::wstring(input));
@@ -240,4 +262,71 @@ FileHelperResult FileHelperService::OpenContainingLocation(HWND owner, std::wstr
         return Failure(L"无法打开所在位置，请检查路径和权限。", result.path);
     }
     return Success(L"已打开所在位置。", result.path);
+}
+
+std::vector<std::filesystem::path> FileHelperService::LoadHistory() const {
+    std::vector<std::filesystem::path> history;
+    const std::wstring content = LoadUtf8File(historyPath_);
+    if (content.empty()) return history;
+
+    std::wistringstream lines(content);
+    std::wstring line;
+    while (history.size() < HistoryLimit && std::getline(lines, line)) {
+        if (!line.empty() && line.back() == L'\r') line.pop_back();
+        const FileHelperResult resolved = ResolvePath(line);
+        if (resolved.status == FileHelperStatus::Failed) continue;
+        const std::wstring key = ToLower(resolved.path.wstring());
+        const bool duplicate = std::any_of(history.begin(), history.end(), [&](const auto& item) {
+            return ToLower(item.wstring()) == key;
+        });
+        if (!duplicate) history.push_back(resolved.path);
+    }
+    return history;
+}
+
+bool FileHelperService::RememberPath(const std::filesystem::path& path) const {
+    const FileHelperResult resolved = ResolvePath(path.wstring());
+    if (resolved.status == FileHelperStatus::Failed) return false;
+
+    std::vector<std::filesystem::path> history = LoadHistory();
+    const std::wstring key = ToLower(resolved.path.wstring());
+    history.erase(
+        std::remove_if(history.begin(), history.end(), [&](const auto& item) {
+            return ToLower(item.wstring()) == key;
+        }),
+        history.end());
+    history.insert(history.begin(), resolved.path);
+    if (history.size() > HistoryLimit) history.resize(HistoryLimit);
+
+    std::error_code error;
+    const std::filesystem::path parent = historyPath_.parent_path();
+    if (!parent.empty()) {
+        std::filesystem::create_directories(parent, error);
+        if (error) {
+            LogFailure(L"创建历史缓存目录", parent, std::to_wstring(error.value()));
+            return false;
+        }
+    }
+
+    std::wstring text;
+    for (const auto& item : history) {
+        text += item.wstring();
+        text.push_back(L'\n');
+    }
+    const std::string bytes = WideToUtf8(text);
+    if (!text.empty() && bytes.empty()) {
+        LogFailure(L"编码历史缓存", historyPath_, L"UTF-8 conversion failed");
+        return false;
+    }
+    std::ofstream stream(historyPath_, std::ios::binary | std::ios::trunc);
+    if (!stream) {
+        LogFailure(L"打开历史缓存", historyPath_, FormatLastError(GetLastError()));
+        return false;
+    }
+    stream.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    if (!stream) {
+        LogFailure(L"写入历史缓存", historyPath_, L"stream write failed");
+        return false;
+    }
+    return true;
 }

@@ -28,6 +28,8 @@ enum class FileHelperTestCommand {
     ResetFocusRequested,
     QueryContainingLocationEnabled,
     QueryLastAction,
+    QueryHistoryCount,
+    SelectHistory,
 };
 
 struct FileHelperTestRequest {

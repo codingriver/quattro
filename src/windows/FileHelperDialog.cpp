@@ -6,6 +6,7 @@
 #include "../services/FileHelperService.h"
 #include "../theme/ThemedUi.h"
 #include "../theme/ThemedWindowUi.h"
+#include "ToolWindowPosition.h"
 #include "../../resources/resource.h"
 
 #include <algorithm>
@@ -16,17 +17,10 @@ namespace {
 constexpr int kPickerLogicalWidth = 96;
 constexpr int kStatusMinimumLogicalWidth = 80;
 constexpr int kPickFolderCommand = 7910;
+constexpr wchar_t kFileHelperToolId[] = L"quattro.builtin.file-helper";
 constexpr UINT WM_FILE_HELPER_ACTIVATE = WM_APP + 0x8C;
 
 std::atomic<HWND> gFileHelperWindow{nullptr};
-
-std::wstring WindowText(HWND hwnd) {
-    const int length = GetWindowTextLengthW(hwnd);
-    std::wstring text(static_cast<std::size_t>(length) + 1, L'\0');
-    const int copied = GetWindowTextW(hwnd, text.data(), static_cast<int>(text.size()));
-    text.resize(static_cast<std::size_t>(std::max(0, copied)));
-    return text;
-}
 
 bool IsMessageForWindow(HWND root, const MSG& message) {
     return root && IsWindow(root) && (message.hwnd == root || IsChild(root, message.hwnd));
@@ -73,12 +67,20 @@ private:
         HICON icon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_QUATTRO_APP_ICON));
         ThemedWindowCreateOptions options = ThemedWindowUi::DialogOptions(
             instance_, owner_, kFileHelperWindowClass, L"文件助手", Proc, this,
-            icon, icon, ThemedWindowSizePreset::CompactTool);
+            icon, icon, ThemedWindowSizePreset::WideCompactTool);
         std::wstring error;
         hwnd_ = ThemedWindowUi::CreateWindowHandle(options, &error);
         if (!hwnd_) {
             WriteAppLog(L"文件助手窗口创建失败: " + error);
             return false;
+        }
+        RECT bounds{};
+        if (GetWindowRect(hwnd_, &bounds)) {
+            if (const auto position = LoadToolWindowPosition(kFileHelperToolId,
+                    bounds.right - bounds.left, bounds.bottom - bounds.top)) {
+                SetWindowPos(hwnd_, nullptr, position->x, position->y, 0, 0,
+                    SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+            }
         }
         gFileHelperWindow.store(hwnd_);
         ActivateAndFocus();
@@ -114,6 +116,9 @@ private:
     LRESULT Handle(UINT message, WPARAM wParam, LPARAM lParam) {
         LRESULT common = 0;
         if (ThemedWindowUi::HandleCommonMessage(windowUi_, message, wParam, lParam, common)) {
+            if (message == WM_DESTROY) {
+                SaveToolWindowPosition(kFileHelperToolId, hwnd_);
+            }
             return common;
         }
 
@@ -121,12 +126,15 @@ private:
         case WM_CREATE:
             windowUi_ = std::make_unique<ThemedWindowUi>(
                 instance_, owner_, hwnd_, theme_, DialogLayoutKind::Compact,
-                kThemedCompactToolClientWidth, kThemedCompactToolClientHeight);
+                kThemedWideCompactToolClientWidth, kThemedWideCompactToolClientHeight);
             windowUi_->SetDpiChangedCallback([this](UINT) { LayoutControls(); });
             CreateControls();
             return 0;
         case WM_COMMAND:
             return HandleCommand(LOWORD(wParam), HIWORD(wParam));
+        case WM_EXITSIZEMOVE:
+            SaveToolWindowPosition(kFileHelperToolId, hwnd_);
+            return 0;
         case WM_FILE_HELPER_ACTIVATE:
             ActivateAndFocus();
             return 0;
@@ -150,10 +158,14 @@ private:
 
     void CreateControls() {
         const ThemedUi ui = windowUi_->ui();
-        ThemedEditOptions editOptions{};
-        editOptions.placeholder = L"输入本地绝对路径";
-        editOptions.selectAllOnFocus = true;
-        pathEdit_ = ui.Edit(ID_FILE_HELPER_PATH, ui.editFrame(0, 0, ui.scale(120)), L"", editOptions);
+        history_ = service_.LoadHistory();
+        ThemedComboBoxOptions pathOptions{};
+        pathOptions.mode = ThemedComboBoxMode::Editable;
+        pathOptions.placeholder = L"输入本地绝对路径";
+        pathOptions.openOnFocus = true;
+        pathOptions.selectAllOnFocus = true;
+        pathEdit_ = ui.ComboBox(ID_FILE_HELPER_PATH, 0, 0, ui.scale(120), pathOptions);
+        ThemedUi::SetComboBoxItems(pathEdit_, HistoryItems(), -1);
 
         ThemedPathPickerSplitButtonOptions pickerOptions{};
         pickerOptions.primaryId = ID_FILE_HELPER_PICK;
@@ -192,7 +204,7 @@ private:
         const int editWidth = std::max(ui.scale(kStatusMinimumLogicalWidth),
             contentWidth - layout.controlGapX - pickerWidth);
         int y = ui.contentTop();
-        ui.MoveControl(pathEdit_, ui.editFrame(left, y, editWidth));
+        ui.MoveComboBox(pathEdit_, left, y, editWidth);
 
         RECT menuRect{};
         GetWindowRect(picker_.split.menu, &menuRect);
@@ -202,9 +214,7 @@ private:
         ui.MoveControl(picker_.split.menu, left + editWidth + layout.controlGapX + primaryWidth, y, menuWidth);
 
         y = ui.nextRowY(y, ui.editHeight());
-        LayoutButtonPair(ui, openFile_, L"打开文件", openFolder_, L"打开文件夹", y);
-        y = ui.nextRowY(y, ui.compactButtonHeight());
-        LayoutButtonPair(ui, createFile_, L"创建文件", createFolder_, L"创建目录", y);
+        LayoutButtonRow(ui, y);
         y += ui.compactButtonHeight();
 
         const int linkWidth = ui.textWidth(L"打开所在位置");
@@ -214,25 +224,32 @@ private:
         ui.MoveControl(openLocation_, left + statusWidth + layout.controlGapX, y, linkWidth);
     }
 
-    void LayoutButtonPair(
-        const ThemedUi& ui,
-        HWND first,
-        const std::wstring& firstText,
-        HWND second,
-        const std::wstring& secondText,
-        int y) {
-        const int firstWidth = ui.buttonWidth(firstText, ThemedButtonRole::Normal,
+    void LayoutButtonRow(const ThemedUi& ui, int y) {
+        const int openFileWidth = ui.buttonWidth(L"打开文件", ThemedButtonRole::Normal,
             ThemedButtonSize::Compact, ThemedButtonWidthMode::Text);
-        const int secondWidth = ui.buttonWidth(secondText, ThemedButtonRole::Normal,
+        const int openFolderWidth = ui.buttonWidth(L"打开文件夹", ThemedButtonRole::Normal,
             ThemedButtonSize::Compact, ThemedButtonWidthMode::Text);
-        const int groupWidth = firstWidth + ui.layout().controlGapX + secondWidth;
+        const int createFileWidth = ui.buttonWidth(L"创建文件", ThemedButtonRole::Normal,
+            ThemedButtonSize::Compact, ThemedButtonWidthMode::Text);
+        const int createFolderWidth = ui.buttonWidth(L"创建目录", ThemedButtonRole::Normal,
+            ThemedButtonSize::Compact, ThemedButtonWidthMode::Text);
+        const int gap = ui.layout().controlGapX;
+        const int groupWidth = openFileWidth + openFolderWidth + createFileWidth + createFolderWidth + gap * 3;
         const int x = ui.centeredGroupX(groupWidth);
-        ui.MoveControl(first, x, y, firstWidth);
-        ui.MoveControl(second, x + firstWidth + ui.layout().controlGapX, y, secondWidth);
+        ui.MoveControl(openFile_, x, y, openFileWidth);
+        ui.MoveControl(openFolder_, x + openFileWidth + gap, y, openFolderWidth);
+        ui.MoveControl(createFile_, x + openFileWidth + openFolderWidth + gap * 2, y, createFileWidth);
+        ui.MoveControl(createFolder_, x + openFileWidth + openFolderWidth + createFileWidth + gap * 3,
+            y, createFolderWidth);
     }
 
     LRESULT HandleCommand(int id, int notification) {
-        if (id == ID_FILE_HELPER_PATH && notification == EN_CHANGE) {
+        if (id == ID_FILE_HELPER_PATH && notification == CBN_SELCHANGE) {
+            const int index = ThemedUi::ComboBoxSelectedIndex(pathEdit_);
+            if (index >= 0) SelectHistory(static_cast<std::size_t>(index));
+            return 0;
+        }
+        if (id == ID_FILE_HELPER_PATH && notification == CBN_EDITCHANGE) {
             UpdateOpenLocationEnabled();
             return 0;
         }
@@ -241,9 +258,9 @@ private:
             PickPath(picker_.primaryKind);
             return 0;
         case ID_FILE_HELPER_PICK_MENU: {
+            const auto items = PickerMenuItems();
             const UINT command = windowUi_->ui().ShowSplitButtonMenu(
-                hwnd_, picker_.split.menu,
-                windowUi_->ui().PathPickerSplitButtonMenuItems(picker_, kPickFolderCommand));
+                hwnd_, picker_.split.menu, items);
             if (command == kPickFolderCommand) {
                 PickPath(picker_.menuKind);
             }
@@ -265,6 +282,10 @@ private:
             RunAction(id, service_.OpenContainingLocation(hwnd_, CurrentPath()));
             return 0;
         case IDCANCEL:
+            if (ThemedUi::IsComboBoxDropDownVisible(pathEdit_)) {
+                ThemedUi::SetComboBoxDropDownVisible(pathEdit_, false);
+                return 0;
+            }
             DestroyWindow(hwnd_);
             return 0;
         default:
@@ -284,9 +305,27 @@ private:
         if (!ShowCommonPathPickerDialog(kind, options, result) || !result.dialog.accepted) {
             return;
         }
-        ThemedUi::SetText(pathEdit_, result.dialog.path);
+        ThemedUi::SetComboBoxText(pathEdit_, result.dialog.path);
         SetStatus(kind == CommonPathPickerKind::File ? L"已选择文件。" : L"已选择文件夹。",
             ThemedStatusRole::Info);
+        UpdateOpenLocationEnabled();
+    }
+
+    std::vector<ThemedSplitButtonMenuItem> PickerMenuItems() const {
+        return windowUi_->ui().PathPickerSplitButtonMenuItems(picker_, kPickFolderCommand);
+    }
+
+    std::vector<std::wstring> HistoryItems() const {
+        std::vector<std::wstring> items;
+        items.reserve(history_.size());
+        for (const auto& path : history_) items.push_back(path.wstring());
+        return items;
+    }
+
+    void SelectHistory(std::size_t index) {
+        if (index >= history_.size()) return;
+        ThemedUi::SetComboBoxText(pathEdit_, history_[index].wstring());
+        SetStatus(L"已选择历史路径。", ThemedStatusRole::Info);
         UpdateOpenLocationEnabled();
     }
 
@@ -309,7 +348,12 @@ private:
     void RunAction(int action, const FileHelperResult& result) {
         lastAction_ = action;
         if (!result.path.empty()) {
-            ThemedUi::SetText(pathEdit_, result.path.wstring());
+            ThemedUi::SetComboBoxText(pathEdit_, result.path.wstring());
+        }
+        if (!result.path.empty() && result.status != FileHelperStatus::Failed &&
+            service_.RememberPath(result.path)) {
+            history_ = service_.LoadHistory();
+            ThemedUi::SetComboBoxItems(pathEdit_, HistoryItems(), -1);
         }
         ThemedStatusRole role = ThemedStatusRole::Danger;
         if (result.status == FileHelperStatus::Success) {
@@ -327,7 +371,7 @@ private:
     }
 
     std::wstring CurrentPath() const {
-        return WindowText(pathEdit_);
+        return ThemedUi::ComboBoxText(pathEdit_);
     }
 
     void UpdateOpenLocationEnabled() {
@@ -341,7 +385,7 @@ private:
             windowUi_->ShowModeless();
         }
         if (!BackgroundAcceptanceMode() && pathEdit_) {
-            SetFocus(pathEdit_);
+            ThemedUi::FocusComboBoxInput(pathEdit_);
         }
     }
 
@@ -353,7 +397,7 @@ private:
         switch (command) {
         case FileHelperTestCommand::SetPath:
             if (!request) return FALSE;
-            ThemedUi::SetText(pathEdit_, request->path);
+            ThemedUi::SetComboBoxText(pathEdit_, request->path);
             UpdateOpenLocationEnabled();
             return TRUE;
         case FileHelperTestCommand::OpenFile:
@@ -383,6 +427,12 @@ private:
             return IsWindowEnabled(openLocation_) ? TRUE : FALSE;
         case FileHelperTestCommand::QueryLastAction:
             return lastAction_;
+        case FileHelperTestCommand::QueryHistoryCount:
+            return static_cast<LRESULT>(history_.size());
+        case FileHelperTestCommand::SelectHistory:
+            if (value < 0 || static_cast<std::size_t>(value) >= history_.size()) return FALSE;
+            SelectHistory(static_cast<std::size_t>(value));
+            return TRUE;
         }
         return FALSE;
     }
@@ -393,6 +443,7 @@ private:
     HWND hwnd_ = nullptr;
     std::unique_ptr<ThemedWindowUi> windowUi_;
     FileHelperService service_;
+    std::vector<std::filesystem::path> history_;
     HWND pathEdit_ = nullptr;
     ThemedPathPickerSplitButton picker_{};
     HWND openFile_ = nullptr;

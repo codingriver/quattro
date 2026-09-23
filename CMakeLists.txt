@@ -574,6 +574,7 @@ add_executable(Quattro WIN32
     src/common/EmbeddedAssets.cpp
     src/common/EmbeddedExecutableManager.cpp
     src/windows/BuiltinTools.cpp
+    src/windows/ToolWindowPosition.cpp
     src/windows/ConfirmDialog.cpp
     src/domain/ClockDisplay.cpp
     src/domain/Config.cpp
@@ -781,6 +782,7 @@ add_executable(QuattroUiScreenshotAcceptance
     src/common/AppLog.cpp
     src/windows/AboutDialog.cpp
     src/windows/BuiltinTools.cpp
+    src/windows/ToolWindowPosition.cpp
     src/windows/ConfirmDialog.cpp
     src/domain/ClockDisplay.cpp
     src/domain/Config.cpp
@@ -815,6 +817,8 @@ add_executable(QuattroUiScreenshotAcceptance
     src/windows/TodoEditDialog.cpp
     src/domain/TodoSchedule.cpp
     src/windows/UpdateCheckDialog.cpp
+    src/windows/UpdateDownloadDialog.cpp
+    src/services/UpdateCheckService.cpp
     src/windows/UrlEditDialog.cpp
     src/services/WebDavBackupService.cpp
     src/services/WebDavClient.cpp
@@ -1341,6 +1345,7 @@ add_executable(QuattroSettingsHttpButtonsAcceptance
     src/common/AppLog.cpp
     src/windows/AboutDialog.cpp
     src/windows/BuiltinTools.cpp
+    src/windows/ToolWindowPosition.cpp
     src/windows/ConfirmDialog.cpp
     src/domain/ClockDisplay.cpp
     src/services/ConfigPackageService.cpp

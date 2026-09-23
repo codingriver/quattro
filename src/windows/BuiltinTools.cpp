@@ -15,6 +15,7 @@
 #include "ThemedTaskProgressDialog.h"
 #include "ThemedUi.h"
 #include "ThemedWindowUi.h"
+#include "ToolWindowPosition.h"
 #include "Utilities.h"
 
 #include <commdlg.h>
@@ -182,44 +183,6 @@ std::string WideToUtf8(const std::wstring& text) {
     WideCharToMultiByte(CP_UTF8, 0, text.data(), static_cast<int>(text.size()),
         result.data(), size, nullptr, nullptr);
     return result;
-}
-
-std::filesystem::path ToolWindowStatePath() {
-    return QuattroUserConfigDirectory() / L"tool-window-state.ini";
-}
-
-std::optional<POINT> LoadToolWindowPosition(const std::wstring& toolId, int width, int height) {
-    const std::filesystem::path path = ToolWindowStatePath();
-    if (!FileExists(path)) {
-        return std::nullopt;
-    }
-    wchar_t xBuffer[32]{};
-    wchar_t yBuffer[32]{};
-    GetPrivateProfileStringW(toolId.c_str(), L"x", L"", xBuffer, _countof(xBuffer), path.c_str());
-    GetPrivateProfileStringW(toolId.c_str(), L"y", L"", yBuffer, _countof(yBuffer), path.c_str());
-    const std::optional<int> x = ParseInt(xBuffer);
-    const std::optional<int> y = ParseInt(yBuffer);
-    if (!x || !y) {
-        return std::nullopt;
-    }
-    return ThemedWindowUi::RestoredWindowPosition(*x, *y, width, height);
-}
-
-void SaveToolWindowPosition(const std::wstring& toolId, HWND hwnd) {
-    if (toolId.empty() || !hwnd || !IsWindow(hwnd) || IsIconic(hwnd)) {
-        return;
-    }
-    RECT rect{};
-    if (!GetWindowRect(hwnd, &rect)) {
-        return;
-    }
-    const std::filesystem::path path = ToolWindowStatePath();
-    std::error_code ec;
-    std::filesystem::create_directories(path.parent_path(), ec);
-    WritePrivateProfileStringW(toolId.c_str(), L"version", L"1", path.c_str());
-    WritePrivateProfileStringW(toolId.c_str(), L"x", std::to_wstring(rect.left).c_str(), path.c_str());
-    WritePrivateProfileStringW(toolId.c_str(), L"y", std::to_wstring(rect.top).c_str(), path.c_str());
-    WritePrivateProfileStringW(toolId.c_str(), L"dpi", std::to_wstring(GetDpiForWindow(hwnd)).c_str(), path.c_str());
 }
 
 bool IsRegisteredBuiltinToolWindow(HWND root, const MSG& message) {

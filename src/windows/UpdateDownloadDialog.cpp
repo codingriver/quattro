@@ -17,18 +17,16 @@
 namespace {
 constexpr int ID_PROGRESS = 2701;
 constexpr int ID_CANCEL = 2702;
-constexpr int ID_VERSION_TEXT = 2703;
-constexpr int ID_FILE_TEXT = 2704;
-constexpr int ID_SIZE_TEXT = 2705;
-constexpr int ID_DOWNLOADED_TEXT = 2706;
-constexpr int ID_STATUS_TEXT = 2707;
 constexpr UINT_PTR ID_REFRESH_TIMER = 21;
 constexpr UINT WM_DOWNLOAD_DONE = WM_APP + 0x90;
 
-void SetText(HWND hwnd, const std::wstring& value) {
-    if (hwnd) {
-        SetWindowTextW(hwnd, value.c_str());
-    }
+bool IsAcceptancePreviewEnabled() {
+    wchar_t enabled[8]{};
+    return BackgroundAcceptanceMode() &&
+        GetEnvironmentVariableW(
+            L"QUATTRO_TEST_UPDATE_DOWNLOAD_PREVIEW",
+            enabled,
+            static_cast<DWORD>(_countof(enabled))) > 0;
 }
 
 class UpdateDownloadDialog {
@@ -156,7 +154,7 @@ private:
     }
 
     void Cancel() {
-        if (workerDone_) {
+        if (acceptancePreview_ || workerDone_) {
             Close();
             return;
         }
@@ -175,7 +173,7 @@ private:
             return;
         }
         cancelRequested_.store(true);
-        SetText(statusLabel_, L"正在取消下载...");
+        ThemedUi::SetText(statusLabel_, L"正在取消下载...");
         if (windowUi_) {
             windowUi_->ui().SetEnabled(cancelButton_, false);
         }
@@ -193,14 +191,21 @@ private:
     void RefreshUi() {
         const std::uint64_t downloaded = downloadedBytes_.load();
         const std::uint64_t total = totalBytes_.load();
-        SetText(sizeLabel_, total == 0 ? L"未知" : FormatByteSizeForDisplay(total));
-        SetText(downloadedLabel_, FormatByteSizeForDisplay(downloaded));
+        ThemedUi::SetText(sizeLabel_, total == 0 ? L"未知" : FormatByteSizeForDisplay(total));
+        ThemedUi::SetText(downloadedLabel_, FormatByteSizeForDisplay(downloaded));
         if (!cancelRequested_.load()) {
-            SetText(statusLabel_, total != 0 && downloaded >= total ? L"正在校验更新包..." : L"正在下载更新包...");
+            ThemedUi::SetText(
+                statusLabel_,
+                total != 0 && downloaded >= total ? L"正在校验更新包..." : L"正在下载更新包...");
         }
         const bool indeterminate = total == 0;
         const double value = total == 0 ? 0.0 : static_cast<double>(downloaded) / static_cast<double>(total);
-        ThemedUi::SetProgress(progressBar_, value, indeterminate);
+        ThemedProgressBarOptions progressOptions{};
+        progressOptions.value = value;
+        progressOptions.indeterminate = indeterminate;
+        progressOptions.activity = !indeterminate && !workerDone_;
+        progressOptions.showPercent = !indeterminate;
+        ThemedUi::SetProgress(progressBar_, progressOptions);
     }
 
     LRESULT Handle(UINT message, WPARAM wParam, LPARAM lParam) {
@@ -228,27 +233,41 @@ private:
             y = form.nextRowY(y, {form.text(contentWidth)});
             const int labelWidth = form.labelWidthForTexts({L"版本：", L"文件：", L"大小：", L"已下载："});
             const int valueWidth = contentWidth - labelWidth - ui.layout().labelGap;
-            ThemedSelectableTextOptions fieldText{};
-            fieldText.mode = ThemedEditMode::SingleLine;
             auto versionGroup = form.labelText(labelWidth, valueWidth);
             auto versionRows = form.rowGroups(y, ThemedRowAlign::Left, {versionGroup});
             ui.SelectableLabel(L"版本：", versionRows[0][0].left, versionRows[0][0].top, versionRows[0][0].right - versionRows[0][0].left);
-            versionLabel_ = ui.SelectableFieldText(ID_VERSION_TEXT, versionRows[0][1], FormatVersionForDisplay(info_.latestVersion), fieldText);
+            versionLabel_ = ui.SelectableLabel(
+                FormatVersionForDisplay(info_.latestVersion),
+                versionRows[0][1].left,
+                versionRows[0][1].top,
+                versionRows[0][1].right - versionRows[0][1].left);
             y = form.nextRowY(y, {versionGroup});
             auto fileGroup = form.labelText(labelWidth, valueWidth);
             auto fileRows = form.rowGroups(y, ThemedRowAlign::Left, {fileGroup});
             ui.SelectableLabel(L"文件：", fileRows[0][0].left, fileRows[0][0].top, fileRows[0][0].right - fileRows[0][0].left);
-            fileLabel_ = ui.SelectableFieldText(ID_FILE_TEXT, fileRows[0][1], info_.assetName, fieldText);
+            fileLabel_ = ui.SelectableLabel(
+                info_.assetName,
+                fileRows[0][1].left,
+                fileRows[0][1].top,
+                fileRows[0][1].right - fileRows[0][1].left);
             y = form.nextRowY(y, {fileGroup});
             auto sizeGroup = form.labelText(labelWidth, valueWidth);
             auto sizeRows = form.rowGroups(y, ThemedRowAlign::Left, {sizeGroup});
             ui.SelectableLabel(L"大小：", sizeRows[0][0].left, sizeRows[0][0].top, sizeRows[0][0].right - sizeRows[0][0].left);
-            sizeLabel_ = ui.SelectableFieldText(ID_SIZE_TEXT, sizeRows[0][1], L"未知", fieldText);
+            sizeLabel_ = ui.SelectableLabel(
+                L"未知",
+                sizeRows[0][1].left,
+                sizeRows[0][1].top,
+                sizeRows[0][1].right - sizeRows[0][1].left);
             y = form.nextRowY(y, {sizeGroup});
             auto downloadedGroup = form.labelText(labelWidth, valueWidth);
             auto downloadedRows = form.rowGroups(y, ThemedRowAlign::Left, {downloadedGroup});
             ui.SelectableLabel(L"已下载：", downloadedRows[0][0].left, downloadedRows[0][0].top, downloadedRows[0][0].right - downloadedRows[0][0].left);
-            downloadedLabel_ = ui.SelectableFieldText(ID_DOWNLOADED_TEXT, downloadedRows[0][1], L"0 B", fieldText);
+            downloadedLabel_ = ui.SelectableLabel(
+                L"0 B",
+                downloadedRows[0][1].left,
+                downloadedRows[0][1].top,
+                downloadedRows[0][1].right - downloadedRows[0][1].left);
             y = form.nextRowY(y, {downloadedGroup});
             auto progressRow = form.row(y, ThemedRowAlign::Left, {form.progress(contentWidth)});
             progressBar_ = ui.ProgressBar(ID_PROGRESS, progressRow[0].left, progressRow[0].top, progressRow[0].right - progressRow[0].left);
@@ -262,9 +281,15 @@ private:
                 ThemedStatusTextOptions{ThemedStatusRole::Info, ThemedTextAlign::Start});
             cancelButton_ = ui.FooterButton(ID_CANCEL, L"取消", 0, 1);
             totalBytes_.store(info_.assetSizeBytes);
+            acceptancePreview_ = IsAcceptancePreviewEnabled();
+            if (acceptancePreview_ && info_.assetSizeBytes != 0) {
+                downloadedBytes_.store(info_.assetSizeBytes / 4);
+            }
             RefreshUi();
             SetTimer(hwnd_, ID_REFRESH_TIMER, 1000, nullptr);
-            StartWorker();
+            if (!acceptancePreview_) {
+                StartWorker();
+            }
             return 0;
         }
         case WM_TIMER:
@@ -314,6 +339,7 @@ private:
     bool done_ = false;
     bool workerDone_ = false;
     bool succeeded_ = false;
+    bool acceptancePreview_ = false;
     std::atomic_bool cancelRequested_{false};
     std::atomic<std::uint64_t> downloadedBytes_{0};
     std::atomic<std::uint64_t> totalBytes_{0};

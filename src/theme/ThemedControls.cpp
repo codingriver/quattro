@@ -83,6 +83,9 @@ struct ControlState {
     int tabContainerStyle = kTabContainerStyleAppearanceDefault;
     bool multiline = false;
     bool selectAllOnFocus = false;
+    bool editableComboBox = false;
+    bool comboOpenOnFocus = false;
+    std::wstring comboPlaceholder;
     bool richEdit = false;
     bool transparentBackground = false;
     bool editInheritsSurface = false;
@@ -664,6 +667,47 @@ void InvalidateComboBox(HWND hwnd) {
     UpdateWindow(hwnd);
 }
 
+LRESULT CALLBACK ComboEditProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam,
+                              UINT_PTR id, DWORD_PTR data) {
+    HWND comboBox = reinterpret_cast<HWND>(data);
+    if (message == WM_NCDESTROY) {
+        RemoveWindowSubclass(hwnd, ComboEditProc, id);
+        return DefSubclassProc(hwnd, message, wParam, lParam);
+    }
+    const LRESULT result = DefSubclassProc(hwnd, message, wParam, lParam);
+    if ((message == WM_PAINT || message == WM_PRINTCLIENT) &&
+        GetWindowTextLengthW(hwnd) == 0 && GetFocus() != hwnd) {
+        const auto state = FindState(comboBox);
+        if (state && state->theme && !state->comboPlaceholder.empty()) {
+            HDC dc = message == WM_PRINTCLIENT ? reinterpret_cast<HDC>(wParam) : GetDC(hwnd);
+            if (dc) {
+                RECT textRect{};
+                GetClientRect(hwnd, &textRect);
+                const int inset = ActiveScaledMetric(*state->theme, L"comboBox", L"borderWidth", 1.0f);
+                textRect.left += std::max(1, inset);
+                SetBkMode(dc, TRANSPARENT);
+                HFONT font = reinterpret_cast<HFONT>(SendMessageW(hwnd, WM_GETFONT, 0, 0));
+                DrawThemedText(dc, font, state->comboPlaceholder.c_str(),
+                    static_cast<int>(state->comboPlaceholder.size()), textRect,
+                    DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS,
+                    ToColorRef(state->theme->color(L"comboBox", L"normal", L"placeholderText")));
+                if (message != WM_PRINTCLIENT) ReleaseDC(hwnd, dc);
+            }
+        }
+    }
+    if (message == WM_SETFOCUS && IsWindow(comboBox)) {
+        const auto state = FindState(comboBox);
+        if (state) {
+            if (state->comboOpenOnFocus && SendMessageW(comboBox, CB_GETCOUNT, 0, 0) > 0) {
+                SendMessageW(comboBox, CB_SHOWDROPDOWN, TRUE, 0);
+            }
+            if (state->selectAllOnFocus) SendMessageW(hwnd, EM_SETSEL, 0, -1);
+        }
+        InvalidateComboBox(comboBox);
+    }
+    return result;
+}
+
 void DrawComboOverlay(HWND hwnd, HDC targetDc = nullptr) {
     auto controlState = FindState(hwnd);
     const Theme* theme = controlState ? controlState->theme : nullptr;
@@ -676,11 +720,21 @@ void DrawComboOverlay(HWND hwnd, HDC targetDc = nullptr) {
         return;
     }
     ThemedD2D::ScopedHdcPaint d2dPaint(hwnd, dc);
+    const int savedDc = SaveDC(dc);
+    if (controlState->editableComboBox) {
+        COMBOBOXINFO info{sizeof(info)};
+        if (GetComboBoxInfo(hwnd, &info) && info.hwndItem) {
+            RECT editBounds{};
+            GetWindowRect(info.hwndItem, &editBounds);
+            MapWindowPoints(HWND_DESKTOP, hwnd, reinterpret_cast<POINT*>(&editBounds), 2);
+            ExcludeClipRect(dc, editBounds.left, editBounds.top, editBounds.right, editBounds.bottom);
+        }
+    }
 
     RECT rect{};
     GetClientRect(hwnd, &rect);
     const bool disabled = !IsWindowEnabled(hwnd);
-    const bool focused = GetFocus() == hwnd;
+    const bool focused = GetFocus() == hwnd || (controlState->editableComboBox && IsChild(hwnd, GetFocus()));
     const bool hover = IsHover(hwnd);
     const wchar_t* state = disabled ? L"disabled" : (focused ? L"focused" : (hover ? L"hover" : L"normal"));
     const int radius = ActiveScaledMetric(*theme, L"comboBox", L"radius", 7.0f);
@@ -694,7 +748,7 @@ void DrawComboOverlay(HWND hwnd, HDC targetDc = nullptr) {
         ToColorRef(theme->color(L"comboBox", state, L"border")),
         borderWidth);
 
-    const std::wstring text = ComboBoxSelectedText(hwnd);
+    const std::wstring text = controlState->editableComboBox ? L"" : ComboBoxSelectedText(hwnd);
 
     HFONT font = reinterpret_cast<HFONT>(SendMessageW(hwnd, WM_GETFONT, 0, 0));
     HGDIOBJ oldFont = nullptr;
@@ -726,6 +780,7 @@ void DrawComboOverlay(HWND hwnd, HDC targetDc = nullptr) {
         ActiveScaledMetric(*theme, L"comboBox", L"arrowStrokeWidth", 1.0f));
 
     DrawRoundRect(dc, rect, radius, ToColorRef(theme->color(L"comboBox", state, L"border")), borderWidth);
+    if (savedDc) RestoreDC(dc, savedDc);
     if (!targetDc) {
         ReleaseDC(hwnd, dc);
     }
@@ -996,6 +1051,7 @@ void DrawProgressBar(HWND hwnd, HDC targetDc = nullptr) {
 
     RECT contentRect = rect;
     InflateRect(&contentRect, -std::max(1, borderWidth), -std::max(1, borderWidth));
+    RECT determinateFillRect{};
     if (contentRect.right > contentRect.left && contentRect.bottom > contentRect.top) {
         RECT fillRect = contentRect;
         if (ProgressIndeterminate(hwnd)) {
@@ -1010,6 +1066,7 @@ void DrawProgressBar(HWND hwnd, HDC targetDc = nullptr) {
         } else {
             const double value = ClampFloat(static_cast<float>(ProgressValue(hwnd)), 0.0f, 1.0f);
             fillRect.right = fillRect.left + static_cast<int>((fillRect.right - fillRect.left) * value + 0.5);
+            determinateFillRect = fillRect;
         }
         if (fillRect.right > fillRect.left) {
             FillRoundRect(
@@ -1052,6 +1109,10 @@ void DrawProgressBar(HWND hwnd, HDC targetDc = nullptr) {
             if (!font) {
                 font = reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
             }
+            const int textCenter = rect.left + (rect.right - rect.left) / 2;
+            const wchar_t* textToken = determinateFillRect.right >= textCenter
+                ? L"text"
+                : L"trackText";
             DrawThemedText(
                 dc,
                 font,
@@ -1059,7 +1120,7 @@ void DrawProgressBar(HWND hwnd, HDC targetDc = nullptr) {
                 static_cast<int>(text.size()),
                 rect,
                 DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
-                ToColorRef(theme->color(L"progressBar", state, L"text")));
+                ToColorRef(theme->color(L"progressBar", state, textToken)));
         }
     }
 
@@ -4384,9 +4445,11 @@ int TabContainerStyle(HWND hwnd) {
 
 HWND CreateComboBox(
     HINSTANCE instance, HWND parent, int id, int x, int y, int width, int height,
-    HFONT font, const Theme& theme, UINT dpi) {
+    HFONT font, const Theme& theme, UINT dpi, bool editable,
+    const std::wstring& placeholder, bool openOnFocus, bool selectAllOnFocus) {
     HWND hwnd = CreateWindowExW(0, WC_COMBOBOXW, nullptr,
-                                WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST | CBS_OWNERDRAWFIXED | CBS_HASSTRINGS | WS_VSCROLL,
+                                WS_CHILD | WS_VISIBLE | WS_TABSTOP | (editable ? CBS_DROPDOWN : CBS_DROPDOWNLIST) |
+                                    CBS_OWNERDRAWFIXED | CBS_HASSTRINGS | WS_VSCROLL,
                                 x, y, width, height, parent, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), instance, nullptr);
     if (hwnd) {
         SendMessageW(hwnd, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
@@ -4398,10 +4461,27 @@ HWND CreateComboBox(
             auto& s = StateFor(hwnd);
             s.kind = ControlKind::ComboBox;
             s.theme = &theme;
+            s.editableComboBox = editable;
+            s.comboOpenOnFocus = editable && openOnFocus;
+            s.comboPlaceholder = editable ? placeholder : L"";
+            s.selectAllOnFocus = editable && selectAllOnFocus;
         }
         AttachThemedBehavior(hwnd);
+        if (editable) {
+            COMBOBOXINFO info{sizeof(info)};
+            if (GetComboBoxInfo(hwnd, &info) && info.hwndItem) {
+                SendMessageW(info.hwndItem, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+                SetWindowSubclass(info.hwndItem, ComboEditProc, 1,
+                    reinterpret_cast<DWORD_PTR>(hwnd));
+            }
+        }
     }
     return hwnd;
+}
+
+bool IsEditableComboBox(HWND comboBox) {
+    const auto state = FindState(comboBox);
+    return state && state->kind == ControlKind::ComboBox && state->editableComboBox;
 }
 
 HWND CreateListBox(

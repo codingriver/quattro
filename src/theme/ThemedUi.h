@@ -203,8 +203,14 @@ enum class ThemedSelectableTextRole {
     DetailText,
 };
 
+enum class ThemedComboBoxMode { SelectionOnly, Editable };
+
 struct ThemedComboBoxOptions {
     bool enabled = true;
+    ThemedComboBoxMode mode = ThemedComboBoxMode::SelectionOnly;
+    std::wstring placeholder;
+    bool openOnFocus = false;
+    bool selectAllOnFocus = false;
 };
 
 enum class ThemedListSelection {
@@ -1027,6 +1033,11 @@ public:
     static void SetComboBoxItems(HWND comboBox, const std::vector<std::wstring>& items, int selectedIndex = 0);
     static void SetComboBoxSelectedIndex(HWND comboBox, int selectedIndex, bool notify = false);
     static int ComboBoxSelectedIndex(HWND comboBox);
+    static void SetComboBoxText(HWND comboBox, const std::wstring& text);
+    static std::wstring ComboBoxText(HWND comboBox);
+    static void SetComboBoxDropDownVisible(HWND comboBox, bool visible);
+    static bool IsComboBoxDropDownVisible(HWND comboBox);
+    static void FocusComboBoxInput(HWND comboBox, bool selectAll = true);
     HWND ListBox(int id, int x, int y, int width, int height, ThemedListBoxOptions options = {}) const;
     void MoveListBox(HWND listBox, int x, int y, int width, int height) const;
     HWND Table(int id, RECT frame, const std::vector<ThemedTableColumn>& columns, ThemedTableOptions options = {}) const;

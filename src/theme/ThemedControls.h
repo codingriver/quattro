@@ -178,7 +178,12 @@ HWND CreateComboBox(
     int height,
     HFONT font,
     const Theme& theme,
-    UINT dpi = USER_DEFAULT_SCREEN_DPI);
+    UINT dpi = USER_DEFAULT_SCREEN_DPI,
+    bool editable = false,
+    const std::wstring& placeholder = {},
+    bool openOnFocus = false,
+    bool selectAllOnFocus = false);
+bool IsEditableComboBox(HWND comboBox);
 
 HWND CreateListBox(
     HINSTANCE instance,
