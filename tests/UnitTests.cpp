@@ -5,6 +5,7 @@
 #include "../src/common/AppLog.h"
 #include "../src/common/FileDialog.h"
 #include "../src/domain/LinkSorting.h"
+#include "../src/domain/LinkSearch.h"
 #include "../src/services/ConfigPackageService.h"
 #include "../src/services/ContextMenuProviderIconService.h"
 #include "../src/services/ExplorerCopyPathContextMenuService.h"
@@ -63,6 +64,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <iterator>
 #include <numeric>
@@ -923,6 +925,16 @@ struct TableUpdateNotificationProbe {
     int deleteAllCount = 0;
 };
 
+struct TableBatchViewportProbe {
+    int ensureVisibleCount = 0;
+    int redrawSuspendCount = 0;
+
+    void Reset() {
+        ensureVisibleCount = 0;
+        redrawSuspendCount = 0;
+    }
+};
+
 struct EraseCountProbe {
     int eraseCount = 0;
 };
@@ -966,9 +978,277 @@ LRESULT CALLBACK TableUpdateNotificationParentProc(
     }
     return DefSubclassProc(hwnd, message, wParam, lParam);
 }
+
+LRESULT CALLBACK TableBatchViewportProbeProc(
+    HWND hwnd,
+    UINT message,
+    WPARAM wParam,
+    LPARAM lParam,
+    UINT_PTR subclassId,
+    DWORD_PTR referenceData) {
+    auto* probe = reinterpret_cast<TableBatchViewportProbe*>(referenceData);
+    if (probe) {
+        if (message == LVM_ENSUREVISIBLE) ++probe->ensureVisibleCount;
+        if (message == WM_SETREDRAW && !wParam) ++probe->redrawSuspendCount;
+    }
+    if (message == WM_NCDESTROY) {
+        RemoveWindowSubclass(hwnd, TableBatchViewportProbeProc, subclassId);
+    }
+    return DefSubclassProc(hwnd, message, wParam, lParam);
+}
+
+struct BenchmarkStats {
+    double p50 = 0.0;
+    double p95 = 0.0;
+    double maximum = 0.0;
+};
+
+BenchmarkStats SummarizeBenchmark(std::vector<double> samples) {
+    if (samples.empty()) return {};
+    std::sort(samples.begin(), samples.end());
+    const auto percentile = [&](double value) {
+        const std::size_t index = (std::min)(samples.size() - 1,
+            static_cast<std::size_t>(std::ceil(value * samples.size()) - 1));
+        return samples[index];
+    };
+    return BenchmarkStats{percentile(0.50), percentile(0.95), samples.back()};
+}
+
+template <typename Callback>
+double MeasureBenchmarkMilliseconds(Callback&& callback) {
+    const auto started = std::chrono::steady_clock::now();
+    callback();
+    return std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - started).count();
+}
+
+AppModel MakeLinkSearchBenchmarkModel(std::size_t count) {
+    AppModel model;
+    model.groups = {
+        Group{1, L"Benchmark", 0, L"", 0, 0, 1},
+        Group{2, L"Launchers", 1, L"", 0, 0, 1},
+    };
+    model.links.reserve(count);
+    for (std::size_t index = 0; index < count; ++index) {
+        Link link;
+        link.id = static_cast<int>(index + 1);
+        link.name = index % 3 == 0
+            ? L"Code Benchmark Item " + std::to_wstring(index)
+            : L"Utility Item " + std::to_wstring(index);
+        link.path = L"C:\\Program Files\\Quattro Benchmark\\code-tool-" +
+            std::to_wstring(index) + L".exe";
+        link.parentGroup = 2;
+        link.pos = static_cast<int>(index);
+        model.links.push_back(std::move(link));
+    }
+    return model;
+}
+
+std::filesystem::path BenchmarkThemeDirectory() {
+    const std::filesystem::path current = std::filesystem::current_path();
+    if (std::filesystem::exists(current / L"theme" / L"default.xml")) return current / L"theme";
+    wchar_t executable[MAX_PATH]{};
+    if (GetModuleFileNameW(nullptr, executable, static_cast<DWORD>(std::size(executable))) > 0) {
+        const std::filesystem::path deployed = std::filesystem::path(executable).parent_path() / L"theme";
+        if (std::filesystem::exists(deployed / L"default.xml")) return deployed;
+    }
+    return current / L"theme";
+}
+
+int RunLinkSearchBenchmark(const std::filesystem::path& outputPath) {
+    INITCOMMONCONTROLSEX controls{sizeof(controls), ICC_LISTVIEW_CLASSES | ICC_STANDARD_CLASSES};
+    InitCommonControlsEx(&controls);
+
+    const Theme theme = Theme::Load(BenchmarkThemeDirectory(), L"default");
+    HWND parent = CreateWindowExW(WS_EX_NOACTIVATE, L"STATIC", L"", WS_POPUP,
+        0, 0, 820, 620, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+    if (!parent) return 2;
+    ThemedUi ui(GetModuleHandleW(nullptr), parent, theme,
+        reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT)),
+        DialogLayoutKind::Compact, 820, 620);
+    ThemedEditOptions editOptions{};
+    HWND edit = ui.Edit(9201, RECT{8, 8, 800, 40}, L"", editOptions);
+    ThemedTableOptions tableOptions{};
+    tableOptions.selection = ThemedTableSelection::Single;
+    tableOptions.view = ThemedTableView::Details;
+    tableOptions.showHeader = false;
+    tableOptions.allowHorizontalScroll = false;
+    tableOptions.rowPresentation = ThemedTableRowPresentation::TwoLine;
+    HWND table = ui.Table(9202, RECT{8, 48, 800, 600}, {
+        ThemedTableColumn{L"item", L"Item", ThemedTableColumnAlign::Start,
+            ThemedTableColumnWidth::Remaining},
+        ThemedTableColumn{L"location", L"Location", ThemedTableColumnAlign::Start,
+            ThemedTableColumnWidth::Fixed, 160},
+    }, tableOptions);
+    if (!edit || !table) {
+        DestroyWindow(parent);
+        return 3;
+    }
+
+    std::vector<double> inputSamples;
+    inputSamples.reserve(200);
+    for (int sample = 0; sample < 200; ++sample) {
+        const std::wstring text = L"code benchmark " + std::to_wstring(sample);
+        inputSamples.push_back(MeasureBenchmarkMilliseconds([&] {
+            ThemedUi::SetText(edit, text);
+            if (ThemedUi::Text(edit) != text) std::abort();
+        }));
+    }
+    const BenchmarkStats inputStats = SummarizeBenchmark(std::move(inputSamples));
+
+    std::vector<ThemedTableRow> rowSets[2];
+    for (int set = 0; set < 2; ++set) {
+        rowSets[set].reserve(200);
+        for (int row = 0; row < 200; ++row) {
+            ThemedTableCell primary{L"Code item " + std::to_wstring(row)};
+            primary.secondaryText = L"C:\\Program Files\\Benchmark\\item-" +
+                std::to_wstring(row) + L".exe";
+            rowSets[set].push_back(ThemedTableRow{
+                set * 1000 + row + 1,
+                {std::move(primary), ThemedTableCell{L"Benchmark / Launchers"}}});
+        }
+    }
+    std::vector<std::intptr_t> previousKeys;
+    std::vector<double> firstVisibleTableSamples;
+    std::vector<double> firstPageTableSamples;
+    firstVisibleTableSamples.reserve(25);
+    firstPageTableSamples.reserve(25);
+    for (int sample = 0; sample < 25; ++sample) {
+        const auto& rows = rowSets[sample % 2];
+        const auto pageStarted = std::chrono::steady_clock::now();
+        ThemedTableRowBatch first{};
+        first.removeKeys = previousKeys;
+        first.upserts.assign(rows.begin(), rows.begin() + 32);
+        first.order.reserve(first.upserts.size());
+        for (const auto& row : first.upserts) first.order.push_back(row.key);
+        firstVisibleTableSamples.push_back(MeasureBenchmarkMilliseconds([&] {
+            if (!ThemedUi::ApplyTableRowBatch(table, first)) std::abort();
+        }));
+        for (std::size_t begin = 32; begin < rows.size(); begin += 32) {
+            const std::size_t end = (std::min)(rows.size(), begin + 32);
+            ThemedTableRowBatch append{};
+            append.upserts.assign(rows.begin() + begin, rows.begin() + end);
+            if (!ThemedUi::ApplyTableRowBatch(table, append)) std::abort();
+        }
+        firstPageTableSamples.push_back(std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - pageStarted).count());
+        previousKeys.clear();
+        previousKeys.reserve(rows.size());
+        for (const auto& row : rows) previousKeys.push_back(row.key);
+    }
+    const BenchmarkStats firstVisibleTableStats =
+        SummarizeBenchmark(std::move(firstVisibleTableSamples));
+    const BenchmarkStats firstPageTableStats =
+        SummarizeBenchmark(std::move(firstPageTableSamples));
+
+    ResolvedIcon syntheticIcon{};
+    syntheticIcon.ok = true;
+    syntheticIcon.width = 32;
+    syntheticIcon.height = 32;
+    syntheticIcon.pixels.assign(32 * 32, 0xFF2D7DFFu);
+    std::vector<double> iconSamples;
+    iconSamples.reserve(25);
+    for (int sample = 0; sample < 25; ++sample) {
+        iconSamples.push_back(MeasureBenchmarkMilliseconds([&] {
+            HIMAGELIST images = ImageList_Create(24, 24, ILC_COLOR32 | ILC_MASK, 40, 8);
+            if (!images) std::abort();
+            for (int icon = 0; icon < 40; ++icon) {
+                HBITMAP bitmap = IconResolverService::CreateBitmapFromPixels(
+                    syntheticIcon, 24, ThemedUi::ListSurfaceColor(theme), true);
+                if (!bitmap || ImageList_Add(images, bitmap, nullptr) < 0) std::abort();
+                DeleteObject(bitmap);
+            }
+            ImageList_Destroy(images);
+        }));
+    }
+    const BenchmarkStats iconStats = SummarizeBenchmark(std::move(iconSamples));
+
+    struct SizeResult {
+        std::size_t count = 0;
+        BenchmarkStats build;
+        BenchmarkStats search;
+        std::size_t matches = 0;
+    };
+    std::vector<SizeResult> sizeResults;
+    for (const std::size_t count : {std::size_t{1000}, std::size_t{10000}, std::size_t{100000}}) {
+        const AppModel model = MakeLinkSearchBenchmarkModel(count);
+        std::vector<double> buildSamples;
+        std::shared_ptr<const LinkSearchIndex> index;
+        for (int sample = 0; sample < 5; ++sample) {
+            buildSamples.push_back(MeasureBenchmarkMilliseconds([&] {
+                index = LinkSearchIndex::Build(model);
+                if (!index) std::abort();
+            }));
+        }
+        std::vector<double> searchSamples;
+        std::size_t matches = 0;
+        for (int sample = 0; sample < 25; ++sample) {
+            searchSamples.push_back(MeasureBenchmarkMilliseconds([&] {
+                const auto ids = index->SearchIds(sample % 5 == 0 ? L"missing-value" : L"code");
+                if (!ids) std::abort();
+                if (sample % 5 != 0) matches = ids->size();
+            }));
+        }
+        sizeResults.push_back(SizeResult{
+            count, SummarizeBenchmark(std::move(buildSamples)),
+            SummarizeBenchmark(std::move(searchSamples)), matches});
+    }
+
+    DestroyWindow(parent);
+    std::error_code error;
+    if (!outputPath.parent_path().empty())
+        std::filesystem::create_directories(outputPath.parent_path(), error);
+    std::ofstream output(outputPath, std::ios::binary | std::ios::trunc);
+    if (!output) return 4;
+    SYSTEM_INFO system{};
+    GetNativeSystemInfo(&system);
+    MEMORYSTATUSEX memory{sizeof(memory)};
+    GlobalMemoryStatusEx(&memory);
+    SYSTEMTIME localTime{};
+    GetLocalTime(&localTime);
+    output << std::fixed << std::setprecision(3);
+    output << "benchmark=link_search_v1\n";
+    output << "date=" << localTime.wYear << '-'
+           << std::setw(2) << std::setfill('0') << localTime.wMonth << '-'
+           << std::setw(2) << localTime.wDay << std::setfill(' ') << "\n";
+    output << "logical_processors=" << system.dwNumberOfProcessors << "\n";
+    output << "physical_memory_bytes=" << memory.ullTotalPhys << "\n";
+    output << "input_echo_ms p50=" << inputStats.p50 << " p95=" << inputStats.p95
+           << " max=" << inputStats.maximum << " samples=200\n";
+    output << "table_first_visible_32_ms p50=" << firstVisibleTableStats.p50
+           << " p95=" << firstVisibleTableStats.p95
+           << " max=" << firstVisibleTableStats.maximum << " samples=25\n";
+    output << "table_first_200_sliced_ms p50=" << firstPageTableStats.p50
+           << " p95=" << firstPageTableStats.p95
+           << " max=" << firstPageTableStats.maximum << " samples=25\n";
+    output << "icon_submit_40_ms p50=" << iconStats.p50 << " p95=" << iconStats.p95
+           << " max=" << iconStats.maximum << " samples=25\n";
+    for (const auto& result : sizeResults) {
+        output << "items=" << result.count << " matches=" << result.matches
+               << " build_ms_p50=" << result.build.p50
+               << " build_ms_p95=" << result.build.p95
+               << " build_ms_max=" << result.build.maximum
+               << " search_ms_p50=" << result.search.p50
+               << " search_ms_p95=" << result.search.p95
+               << " search_ms_max=" << result.search.maximum;
+        if (result.count == 10000) {
+            output << " estimated_first_text_p95_including_120ms_debounce="
+                   << 120.0 + result.search.p95 + firstVisibleTableStats.p95;
+        }
+        output << "\n";
+    }
+    std::cout << "link_search_benchmark=passed output=" << outputPath.string() << "\n";
+    return 0;
+}
 }
 
 int wmain(int argc, wchar_t* argv[]) {
+    if (argc >= 2 && std::wstring(argv[1]) == L"--link-search-benchmark") {
+        const std::filesystem::path output = argc >= 3
+            ? std::filesystem::path(argv[2])
+            : std::filesystem::current_path() / L"link-search-benchmark.txt";
+        return RunLinkSearchBenchmark(output);
+    }
     TestFileHelperService();
     if (argc == 2 && std::wstring(argv[1]) == L"--file-helper-only") {
         TestFileHelperConfigAndRegistry();
@@ -1001,6 +1281,94 @@ int wmain(int argc, wchar_t* argv[]) {
 
     Check(Trim(L"  abc \t") == L"abc", "Trim");
     Check(ToLower(L"AbC") == L"abc", "ToLower");
+    {
+        AppModel searchModel;
+        searchModel.groups = {
+            Group{1, L"开发", 0, L"", 0, 0, 1},
+            Group{2, L"编辑器", 1, L"", 0, 0, 1},
+            Group{3, L"工具", 1, L"", 0, 0, 2},
+        };
+        auto makeLink = [](int id, std::wstring name, int tagId, int pos, std::wstring path) {
+            Link link;
+            link.id = id;
+            link.name = std::move(name);
+            link.parentGroup = tagId;
+            link.pos = pos;
+            link.path = std::move(path);
+            return link;
+        };
+        searchModel.links = {
+            makeLink(1, L"Visual Studio Code", 2, 1, LR"(C:\Tools\editor.exe)"),
+            makeLink(2, L"代码编辑器", 2, 2, LR"(D:\Apps\Editor\Code.exe)"),
+            makeLink(3, L"开发工具", 3, 1, LR"(D:\CodeProjects\tool.exe)"),
+            makeLink(4, L"记事本", 3, 2, LR"(C:\Windows\notepad.exe)"),
+            makeLink(5, L"CODE Runner", 3, 3, LR"(D:\Apps\runner.exe)"),
+            makeLink(6, L"重复路径一", 3, 4, LR"(D:\Shared\same.exe)"),
+            makeLink(7, L"重复路径二", 3, 5, LR"(D:\Shared\code-same.exe)"),
+            makeLink(7, L"重复 ID", 3, 6, LR"(D:\Shared\Code-same.exe)"),
+            makeLink(8, L"Visual Studio Code 双字段命中", 3, 7, LR"(D:\Apps\VSCode\Code.exe)"),
+        };
+        const auto code = SearchLinks(searchModel, L"code");
+        Check(code.size() == 6, "Link search name-or-path match count and duplicate-id removal");
+        Check(code.size() >= 6 && code[0].linkId == 1 && code[1].linkId == 5 && code[2].linkId == 8,
+            "Link search name matches sort before path matches");
+        Check(std::any_of(code.begin(), code.end(), [](const auto& row) { return row.linkId == 2; }),
+            "Link search filename path match");
+        Check(std::any_of(code.begin(), code.end(), [](const auto& row) { return row.linkId == 3; }),
+            "Link search directory path match");
+        Check(std::none_of(code.begin(), code.end(), [](const auto& row) { return row.linkId == 4; }),
+            "Link search rejects nonmatch");
+        Check(std::count_if(code.begin(), code.end(), [](const auto& row) { return row.linkId == 7; }) == 1,
+            "Link search deduplicates matching rows by ID");
+        Check(std::count_if(code.begin(), code.end(), [](const auto& row) { return row.linkId == 8; }) == 1,
+            "Link search returns a dual-field match only once");
+        const auto crossField = SearchLinks(searchModel, LR"(code D:\Apps)");
+        Check(crossField.size() == 3 && crossField[0].linkId == 2 &&
+                crossField[1].linkId == 5 && crossField[2].linkId == 8,
+            "Link search multi-term cross-field AND");
+        Check(SearchLinks(searchModel, L"代码").size() == 1, "Link search Chinese");
+        Check(SearchLinks(searchModel, L"CoDe").size() == code.size(), "Link search case insensitive");
+        const auto samePath = SearchLinks(searchModel, L"same.exe");
+        Check(samePath.size() == 2 && samePath[0].linkId != samePath[1].linkId,
+            "Link search preserves distinct IDs with same path");
+        const auto all = SearchLinks(searchModel, L"  ");
+        Check(all.size() == 8 && all.front().linkId == 1 && all.back().linkId == 8,
+            "Link search empty query returns business order");
+
+        const auto searchIndex = LinkSearchIndex::Build(searchModel);
+        const auto indexedCode = searchIndex ? searchIndex->SearchIds(L"code") : nullptr;
+        std::vector<int> legacyCodeIds;
+        legacyCodeIds.reserve(code.size());
+        for (const auto& result : code) legacyCodeIds.push_back(result.linkId);
+        Check(searchIndex && searchIndex->size() == 8 && indexedCode &&
+                *indexedCode == legacyCodeIds,
+            "Link search index preserves legacy result identity and order");
+        const LinkSearchResult* indexedLocation = searchIndex ? searchIndex->FindResult(2) : nullptr;
+        Check(indexedLocation && indexedLocation->groupName == L"开发" &&
+                indexedLocation->tagName == L"编辑器",
+            "Link search index retains group and tag display metadata");
+        std::stop_source stoppedBuild;
+        stoppedBuild.request_stop();
+        Check(!LinkSearchIndex::Build(searchModel, stoppedBuild.get_token()),
+            "Link search index build observes cancellation");
+        std::stop_source stoppedQuery;
+        stoppedQuery.request_stop();
+        Check(searchIndex && !searchIndex->SearchIds(L"code", stoppedQuery.get_token()),
+            "Link search indexed query observes cancellation");
+
+        AppModel largeModel;
+        largeModel.groups = searchModel.groups;
+        largeModel.links.reserve(10000);
+        for (int id = 1; id <= 10000; ++id) {
+            largeModel.links.push_back(makeLink(
+                id, L"code " + std::to_wstring(id), 2, id, LR"(C:\Apps\item.exe)"));
+        }
+        const auto largeIndex = LinkSearchIndex::Build(largeModel);
+        const auto largeResults = largeIndex ? largeIndex->SearchIds(L"code") : nullptr;
+        Check(largeIndex && largeIndex->size() == 10000 && largeResults &&
+                largeResults->size() == 10000,
+            "Link search index handles ten thousand items without truncation");
+    }
     Check(FormatVersionForDisplay(L"0.1.0") == L"v0.1.0", "Version display adds prefix");
     Check(FormatVersionForDisplay(L"v0.1.0") == L"v0.1.0", "Version display preserves prefix");
     Check(FormatVersionForDisplay(L"V0.1.0") == L"v0.1.0", "Version display normalizes prefix");
@@ -2077,8 +2445,8 @@ int wmain(int argc, wchar_t* argv[]) {
         std::filesystem::remove(sourceFont, ec);
         runtimeError.clear();
         Check(!PrepareAppLaunchLockerRuntimeResources(targetV2 / L"AppLaunchLocker.exe", sourceRoot, runtimeError) &&
-                  runtimeError == L"自启动管理组件缺少 Tabler 图标字体。",
-            "AppLaunchLocker runtime reports missing Tabler font from released resources");
+                  runtimeError == L"广告拦截组件缺少 Tabler 图标字体。",
+            "Ad blocker runtime reports missing Tabler font from released resources");
         std::filesystem::remove_all(runtimeRoot, ec);
     }
     {
@@ -3196,11 +3564,14 @@ int wmain(int argc, wchar_t* argv[]) {
                     const int minChannel = std::min({red, green, blue});
                     return alpha >= 32 && maxChannel > 96 && maxChannel - minChannel > 48;
                 });
+            const bool qdirUsesUsefulShellImage =
+                qdirIcon.source.rfind(L"shell-item-image", 0) == 0 && qdirHasSaturatedColor;
+            const bool qdirUsesBestEmbeddedResource =
+                qdirIcon.source == L"file-resource-best-resource" && qdirHasSaturatedColor;
             Check(
                 IconResolverService::HasPixels(qdirIcon) &&
-                    qdirIcon.source == L"file-resource-best-resource" &&
-                    qdirHasSaturatedColor,
-                "Public icon resolver falls back from Q-Dir generic shell icon to best embedded resource");
+                    (qdirUsesUsefulShellImage || qdirUsesBestEmbeddedResource),
+                "Public icon resolver keeps a useful Q-Dir shell icon or falls back to the best embedded resource");
         } else {
             Check(true, "Public icon resolver Q-Dir best-resource test skipped when fixture app is unavailable");
         }
@@ -3993,12 +4364,43 @@ int wmain(int argc, wchar_t* argv[]) {
             7097, RECT{100, 40, 220, 68}, L"read-only field");
         HWND selectionDetail = controlUi.DetailText(
             7098, RECT{100, 72, 260, 132}, L"read-only detail text");
+        ThemedUi::SetText(selectionEdit, L"search text");
+        ThemedUi::SelectAllText(selectionEdit);
+        DWORD selectedTextStart = 0;
+        DWORD selectedTextEnd = 0;
+        SendMessageW(selectionEdit, EM_GETSEL,
+            reinterpret_cast<WPARAM>(&selectedTextStart),
+            reinterpret_cast<LPARAM>(&selectedTextEnd));
+        Check(ThemedUi::Text(selectionEdit) == L"search text" &&
+                selectedTextStart == 0 && selectedTextEnd == 11,
+            "Themed edit public text and select-all semantics");
+        Check(!ThemedUi::IsEditComposing(selectionEdit),
+            "Themed edit composition query reports inactive without an IME composition");
         checkSelectionClearsOnBlur(selectionEdit,
             "Themed editable text selection test control created");
         checkSelectionClearsOnBlur(selectionField,
             "SelectableFieldText selection test control created");
         checkSelectionClearsOnBlur(selectionDetail,
             "DetailText selection test control created");
+        SetFocus(selectionEdit);
+        MSG editNavigationMessage{};
+        editNavigationMessage.hwnd = selectionEdit;
+        editNavigationMessage.message = WM_KEYDOWN;
+        const auto decodeEditNavigation = [&](WPARAM key) {
+            editNavigationMessage.wParam = key;
+            return ThemedUi::DecodeEditTableNavigation(editNavigationMessage, selectionEdit);
+        };
+        Check(decodeEditNavigation(VK_UP) == ThemedEditTableNavigation::Previous &&
+                decodeEditNavigation(VK_DOWN) == ThemedEditTableNavigation::Next &&
+                decodeEditNavigation(VK_PRIOR) == ThemedEditTableNavigation::PagePrevious &&
+                decodeEditNavigation(VK_NEXT) == ThemedEditTableNavigation::PageNext &&
+                decodeEditNavigation(VK_RETURN) == ThemedEditTableNavigation::Activate &&
+                decodeEditNavigation(VK_ESCAPE) == ThemedEditTableNavigation::Cancel,
+            "Themed edit-to-table navigation decodes list movement activation and cancellation");
+        editNavigationMessage.message = WM_CHAR;
+        Check(ThemedUi::DecodeEditTableNavigation(editNavigationMessage, selectionEdit) ==
+                ThemedEditTableNavigation::None,
+            "Themed edit-to-table navigation preserves native edit character input");
         TestTooltipRegistry tooltipRegistry;
         ThemedUi tooltipUi(
             GetModuleHandleW(nullptr), controlParent, fallbackTheme,
@@ -4405,12 +4807,32 @@ int wmain(int argc, wchar_t* argv[]) {
                 ThemedUi::TableRowKey(runtimeTable, 1) == 44,
             "Themed table removes one row by stable key while preserving remaining order");
 
+        ThemedTableOptions compactIconOptions{};
+        compactIconOptions.showHeader = false;
+        HWND compactIconTable = controlUi.Table(
+            7113, RECT{0, 0, 320, controlUi.tableHeightForRows(2, false)},
+            {ThemedTableColumn{
+                L"name", L"Name", ThemedTableColumnAlign::Start,
+                ThemedTableColumnWidth::Remaining}},
+            compactIconOptions);
+        ThemedUi::SetTableRows(
+            compactIconTable, {ThemedTableRow{1, {{L"compact icon row"}}, false, true}});
+        HIMAGELIST compactTableImages = ImageList_Create(
+            controlUi.scale(16), controlUi.scale(16), ILC_COLOR32, 1, 1);
+        ThemedUi::SetTableImageLists(compactIconTable, compactTableImages, nullptr);
+        RECT compactIconRowRect{};
+        ListView_GetItemRect(compactIconTable, 0, &compactIconRowRect, LVIR_BOUNDS);
+        Check(compactIconRowRect.bottom - compactIconRowRect.top == controlUi.scale(28),
+            "Themed table keeps the shared row height with compact application icons");
+        ThemedUi::SetTableImageLists(compactIconTable, nullptr, nullptr);
+        if (compactTableImages) ImageList_Destroy(compactTableImages);
+
         ThemedTableOptions twoLineOptions{};
         twoLineOptions.showHeader = false;
         twoLineOptions.rowPresentation = ThemedTableRowPresentation::TwoLine;
         HWND twoLineTable = controlUi.Table(
             7108,
-            RECT{0, 0, 360, controlUi.tableHeightForRows(2, false, true)},
+            RECT{0, 0, 360, controlUi.tableHeightForRows(10, false, true)},
             {
                 ThemedTableColumn{L"process", L"Process", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Remaining},
                 ThemedTableColumn{L"action", L"Action", ThemedTableColumnAlign::Center, ThemedTableColumnWidth::Fixed, 76},
@@ -4423,7 +4845,11 @@ int wmain(int argc, wchar_t* argv[]) {
         processAction.text = L"结束";
         processAction.role = ThemedTableCellRole::Action;
         processAction.actionId = 42;
-        ThemedUi::SetTableRows(twoLineTable, {ThemedTableRow{42, {processCell, processAction}, false, true}});
+        std::vector<ThemedTableRow> twoLineRows;
+        for (int row = 0; row < 12; ++row) {
+            twoLineRows.push_back(ThemedTableRow{42 + row, {processCell, processAction}, false, true});
+        }
+        ThemedUi::SetTableRows(twoLineTable, twoLineRows);
         RECT twoLineRowRect{};
         ListView_GetItemRect(twoLineTable, 0, &twoLineRowRect, LVIR_BOUNDS);
         Check(twoLineRowRect.bottom - twoLineRowRect.top == controlUi.scale(48),
@@ -4431,6 +4857,8 @@ int wmain(int argc, wchar_t* argv[]) {
         Check(controlUi.tableHeightForRows(3, false, true) - controlUi.tableHeightForRows(2, false, true)
                 == controlUi.scale(48),
             "Themed two-line table height helper advances by the shared row template");
+        Check(ListView_GetCountPerPage(twoLineTable) == 10,
+            "Themed two-line table height helper exposes the requested complete row count");
 
         ThemedTableOptions updateNotificationOptions{};
         updateNotificationOptions.checkable = true;
@@ -4605,6 +5033,115 @@ int wmain(int argc, wchar_t* argv[]) {
         ThemedUi::SetTableSelectedIndex(singleSelectTable, 1);
         Check(ThemedUi::TableSelectedIndex(singleSelectTable) == 1,
             "Themed single-selection table programmatic selection stays single");
+
+        HWND batchTable = controlUi.Table(
+            7116, RECT{0, 0, 320, controlUi.tableHeightForRows(3, false)},
+            {ThemedTableColumn{
+                L"name", L"Name", ThemedTableColumnAlign::Start, ThemedTableColumnWidth::Remaining}},
+            updateNotificationOptions);
+        TableUpdateNotificationProbe batchProbe{batchTable};
+        TableBatchViewportProbe batchViewportProbe;
+        SetWindowSubclass(
+            controlParent,
+            TableUpdateNotificationParentProc,
+            18,
+            reinterpret_cast<DWORD_PTR>(&batchProbe));
+        SetWindowSubclass(
+            batchTable,
+            TableBatchViewportProbeProc,
+            19,
+            reinterpret_cast<DWORD_PTR>(&batchViewportProbe));
+        std::vector<ThemedTableRow> batchRows;
+        for (int key = 1; key <= 8; ++key) {
+            batchRows.push_back(ThemedTableRow{
+                key, {{L"batch " + std::to_wstring(key)}}, key % 2 == 0, true});
+        }
+        ThemedUi::SetTableRows(batchTable, batchRows);
+        batchProbe.deleteAllCount = 0;
+        ThemedUi::SetTableSelectedKey(batchTable, 4);
+        ListView_EnsureVisible(batchTable, 6, FALSE);
+        const std::intptr_t batchTopKey = ThemedUi::TableTopVisibleRowKey(batchTable);
+        ThemedTableRowBatch validBatch{};
+        validBatch.removeKeys = {2};
+        validBatch.upserts = {
+            ThemedTableRow{4, {{L"batch updated"}}, true, true, true},
+            ThemedTableRow{9, {{L"batch appended"}}, false, true}};
+        validBatch.order = {9, 8, 7, 6, 5, 4, 3, 1};
+        batchViewportProbe.Reset();
+        Check(ThemedUi::ApplyTableRowBatch(batchTable, validBatch),
+            "Themed table batch applies remove update append and stable-key reorder");
+        bool batchOrderMatches = ThemedUi::TableRowCount(batchTable) == 8;
+        for (int index = 0; index < 8 && batchOrderMatches; ++index) {
+            batchOrderMatches = ThemedUi::TableRowKey(batchTable, index) == validBatch.order[index];
+        }
+        wchar_t batchUpdatedText[64]{};
+        const int updatedBatchRow = ThemedUi::FindTableRowByKey(batchTable, 4);
+        ListView_GetItemText(batchTable, updatedBatchRow, 0, batchUpdatedText,
+            static_cast<int>(std::size(batchUpdatedText)));
+        Check(batchOrderMatches && updatedBatchRow >= 0 &&
+                std::wstring(batchUpdatedText) == L"batch updated" &&
+                ThemedUi::TableSelectedKeys(batchTable) == std::vector<std::intptr_t>{4} &&
+                ThemedUi::TableTopVisibleRowKey(batchTable) == batchTopKey &&
+                batchProbe.deleteAllCount == 0 && batchProbe.checkChangedCount == 0 &&
+                batchViewportProbe.redrawSuspendCount == 1,
+            "Themed table batch preserves selection viewport and notification semantics");
+
+        ThemedUi::SetTableSelectedKey(batchTable, validBatch.order.front());
+        ListView_EnsureVisible(batchTable, ThemedUi::TableRowCount(batchTable) - 1, FALSE);
+        const std::intptr_t pureUpdateTopKey = ThemedUi::TableTopVisibleRowKey(batchTable);
+        const auto pureUpdateSelection = ThemedUi::TableSelectedKeys(batchTable);
+        ThemedTableRowBatch pureUpdate{};
+        pureUpdate.upserts = {
+            ThemedTableRow{4, {{L"batch icon update", 1}}, true, true, true}};
+        batchViewportProbe.Reset();
+        Check(ThemedUi::ApplyTableRowBatch(batchTable, pureUpdate) &&
+                ThemedUi::TableTopVisibleRowKey(batchTable) == pureUpdateTopKey &&
+                ThemedUi::TableSelectedKeys(batchTable) == pureUpdateSelection &&
+                batchViewportProbe.ensureVisibleCount == 0 &&
+                batchViewportProbe.redrawSuspendCount == 0,
+            "Themed table pure row updates do not scroll or suspend whole-table redraw");
+        ListView_EnsureVisible(batchTable, ThemedUi::TableRowCount(batchTable) - 1, FALSE);
+        const auto selectionBeforeScrollToTop = ThemedUi::TableSelectedKeys(batchTable);
+        Check(ListView_GetTopIndex(batchTable) > 0 &&
+                ThemedUi::ScrollTableToTop(batchTable) &&
+                ListView_GetTopIndex(batchTable) == 0 &&
+                ThemedUi::TableTopVisibleRowKey(batchTable) == validBatch.order.front() &&
+                ThemedUi::TableSelectedKeys(batchTable) == selectionBeforeScrollToTop &&
+                batchProbe.deleteAllCount == 0 && batchProbe.checkChangedCount == 0,
+            "Themed table scroll-to-top restores the first row without changing selection or notifications");
+        int viewportChangedCount = 0;
+        ThemedUi::SetTableViewportChangedHandler(batchTable, [&] { ++viewportChangedCount; });
+        SendMessageW(batchTable, LVM_ENSUREVISIBLE,
+            static_cast<WPARAM>(ThemedUi::TableRowCount(batchTable) - 1), FALSE);
+        const ThemedTableVisibleRange visibleRange = ThemedUi::TableVisibleRange(batchTable);
+        Check(viewportChangedCount == 1 && visibleRange.first >= 0 &&
+                visibleRange.last >= visibleRange.first &&
+                visibleRange.last < ThemedUi::TableRowCount(batchTable),
+            "Themed table reports semantic viewport changes and visible row range");
+        ThemedUi::SetText(selectionEdit, L"");
+        ThemedUi::BindTableSearchEdit(batchTable, selectionEdit);
+        SetFocus(batchTable);
+        SendMessageW(batchTable, WM_CHAR, L'q', 1);
+        Check(ThemedUi::Text(selectionEdit) == L"q" && GetFocus() == selectionEdit,
+            "Themed table redirects printable input to its bound search edit");
+        ThemedUi::BindTableSearchEdit(batchTable, nullptr);
+        ThemedUi::SetTableViewportChangedHandler(batchTable, {});
+        const std::vector<std::intptr_t> batchKeysBeforeInvalid = validBatch.order;
+        ThemedTableRowBatch invalidBatch = validBatch;
+        invalidBatch.removeKeys.clear();
+        invalidBatch.upserts.clear();
+        invalidBatch.order.pop_back();
+        Check(!ThemedUi::ApplyTableRowBatch(batchTable, invalidBatch) &&
+                ThemedUi::TableRowCount(batchTable) == 8 &&
+                ThemedUi::TableRowKey(batchTable, 0) == batchKeysBeforeInvalid.front(),
+            "Themed table batch rejects incomplete target order before mutation");
+        invalidBatch.order = validBatch.order;
+        invalidBatch.order.back() = invalidBatch.order.front();
+        Check(!ThemedUi::ApplyTableRowBatch(batchTable, invalidBatch) &&
+                ThemedUi::TableRowKey(batchTable, 0) == batchKeysBeforeInvalid.front(),
+            "Themed table batch rejects duplicate target keys before mutation");
+        RemoveWindowSubclass(controlParent, TableUpdateNotificationParentProc, 18);
+        RemoveWindowSubclass(batchTable, TableBatchViewportProbeProc, 19);
 
         RECT runtimeTableClient{};
         GetClientRect(runtimeTable, &runtimeTableClient);
@@ -5394,7 +5931,6 @@ int wmain(int argc, wchar_t* argv[]) {
     Check(MenuIconForToolEngine(L"process-tools") == MenuIconComputer, "Process tool menu icon");
     Check(MenuIconForToolEngine(L"webdav-manager") == MenuIconFolder, "WebDAV manager tool menu icon");
     Check(MenuIconForToolEngine(L"file-helper") == MenuIconFolder, "File helper tool menu icon");
-    Check(MenuIconForToolEngine(L"app-launch-locker") == MenuIconRestart, "Startup manager tool menu icon");
     Check(MenuIconForToolEngine(L"ad-block") == MenuIconShield, "Ad blocker tool menu icon");
     Check(MenuIconForToolEngine(L"unknown") == MenuIconTools, "Unknown tool menu icon fallback");
     const ThemedSplitButtonMenuItem folderMenuItem{701, L"选择文件夹", true, TablerIconId::Folder};
@@ -5416,7 +5952,6 @@ int wmain(int argc, wchar_t* argv[]) {
     bool hasProcessTools = false;
     bool hasWebDavManager = false;
     bool hasLegacyProcessTool = false;
-    bool hasAppLaunchLocker = false;
     bool hasAdBlock = false;
     bool hasFileHelper = false;
     for (const auto& plugin : plugins) {
@@ -5442,11 +5977,6 @@ int wmain(int argc, wchar_t* argv[]) {
             plugin.id == L"quattro.builtin.file-lock-inspector") {
             hasLegacyProcessTool = true;
         }
-        if (plugin.id == L"quattro.builtin.app-launch-locker" &&
-            plugin.name == L"自启动管理" &&
-            plugin.engine == L"app-launch-locker") {
-            hasAppLaunchLocker = true;
-        }
         if (plugin.id == L"quattro.builtin.ad-block" &&
             plugin.name == L"广告拦截" &&
             plugin.engine == L"ad-block") {
@@ -5462,8 +5992,6 @@ int wmain(int argc, wchar_t* argv[]) {
     Check(hasProcessTools, "Plugin process tools registration");
     Check(hasWebDavManager, "Plugin WebDAV manager registration");
     Check(!hasLegacyProcessTool, "Legacy process tools are hidden from the toolbox registry");
-    Check(hasAppLaunchLocker,
-        "Plugin AppLaunchLocker registration is available in all builds");
     Check(hasAdBlock, "Plugin AdBlock external tool registration");
     Check(hasFileHelper, "Plugin file helper registration");
     Check(pluginRegistry.IsEnabled(L"quattro.builtin.clicker"), "Plugin clicker enabled by default");
@@ -5472,12 +6000,6 @@ int wmain(int argc, wchar_t* argv[]) {
     Check(pluginRegistry.IsEnabled(L"quattro.builtin.process-tools"), "Plugin process tools enabled by default");
     Check(pluginRegistry.IsEnabled(L"quattro.builtin.webdav-manager"), "Plugin WebDAV manager enabled by default");
     Check(pluginRegistry.IsEnabled(L"quattro.builtin.file-helper"), "Plugin file helper enabled by default");
-    Check(pluginRegistry.IsEnabled(L"quattro.builtin.app-launch-locker"),
-        "Plugin AppLaunchLocker enabled by default");
-    Check(pluginRegistry.SetEnabled(L"quattro.builtin.app-launch-locker", false),
-        "Plugin AppLaunchLocker can be disabled");
-    Check(!pluginRegistry.IsEnabled(L"quattro.builtin.app-launch-locker"),
-        "Plugin AppLaunchLocker disable persists in runtime registry");
     Check(pluginRegistry.IsEnabled(L"quattro.builtin.ad-block"), "Plugin AdBlock enabled by default");
     Check(pluginRegistry.SetEnabled(L"quattro.builtin.clicker", false), "Plugin builtin disable");
     Check(!pluginRegistry.IsEnabled(L"quattro.builtin.clicker"), "Plugin builtin can be disabled");

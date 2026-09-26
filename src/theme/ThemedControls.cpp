@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <functional>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -104,6 +105,7 @@ struct ControlState {
     double sliderValue = 0.0;
     HIMAGELIST tableDefaultSmallImages = nullptr;
     HIMAGELIST tableCheckBoxStateImages = nullptr;
+    HIMAGELIST tableRowHeightStateImages = nullptr;
     bool tableCheckable = false;
     UINT tableDpi = USER_DEFAULT_SCREEN_DPI;
     int tableHotRow = -1;
@@ -139,6 +141,8 @@ struct ControlState {
     std::vector<bool> tableRowEnabled;
     std::vector<bool> tableRowActive;
     std::vector<std::vector<ThemedControls::TableCellRuntime>> tableCells;
+    std::function<void()> tableViewportChangedHandler;
+    HWND tableSearchEdit = nullptr;
 };
 
 std::mutex& StateMutex() {
@@ -187,6 +191,10 @@ void EraseState(HWND hwnd) {
         if (it->second.tableCheckBoxStateImages) {
             ImageList_Destroy(it->second.tableCheckBoxStateImages);
             it->second.tableCheckBoxStateImages = nullptr;
+        }
+        if (it->second.tableRowHeightStateImages) {
+            ImageList_Destroy(it->second.tableRowHeightStateImages);
+            it->second.tableRowHeightStateImages = nullptr;
         }
         if (it->second.ownedFont) {
             DeleteObject(it->second.ownedFont);
@@ -1649,7 +1657,33 @@ bool IsDisabledTableRowHit(HWND table, LPARAM lParam) {
     return hit.iItem >= 0 && !ThemedControls::IsTableRowEnabled(table, hit.iItem);
 }
 
+void NotifyTableViewportChanged(HWND table) {
+    const auto state = FindState(table);
+    if (state && state->tableViewportChangedHandler) {
+        state->tableViewportChangedHandler();
+    }
+}
+
 LRESULT CALLBACK ThemedControlProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR subclassId, DWORD_PTR) {
+    if (KindFor(hwnd) == ControlKind::Table) {
+        if (message == WM_CHAR) {
+            const auto state = FindState(hwnd);
+            const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+            const bool alt = (GetKeyState(VK_MENU) & 0x8000) != 0;
+            if (state && state->tableSearchEdit && IsWindow(state->tableSearchEdit) &&
+                !ctrl && !alt && wParam >= 0x20 && wParam != 0x7F) {
+                SetFocus(state->tableSearchEdit);
+                SendMessageW(state->tableSearchEdit, WM_CHAR, wParam, lParam);
+                return 0;
+            }
+        }
+        if (message == WM_VSCROLL || message == WM_MOUSEWHEEL || message == WM_SIZE ||
+            message == LVM_SCROLL || message == LVM_ENSUREVISIBLE) {
+            const LRESULT result = DefSubclassProc(hwnd, message, wParam, lParam);
+            NotifyTableViewportChanged(hwnd);
+            return result;
+        }
+    }
     if (message == WM_NOTIFY && KindFor(hwnd) == ControlKind::Table) {
         // The table's header (SysHeader32) sends its NM_CUSTOMDRAW notifications
         // to its parent ListView, not to the host window, so they never reach the
@@ -4964,6 +4998,43 @@ void ConfigureTableRowPresentation(HWND table, bool twoLines) {
     InvalidateRect(table, nullptr, TRUE);
 }
 
+void SetTableImageLists(HWND table, HIMAGELIST smallImages, HIMAGELIST largeImages) {
+    if (!table) return;
+    auto& state = StateFor(table);
+
+    if (smallImages) {
+        ListView_SetImageList(table, smallImages, LVSIL_SMALL);
+        if (!state.tableCheckable && state.theme) {
+            if (state.tableRowHeightStateImages) {
+                if (ListView_GetImageList(table, LVSIL_STATE) == state.tableRowHeightStateImages) {
+                    ListView_SetImageList(table, nullptr, LVSIL_STATE);
+                }
+                ImageList_Destroy(state.tableRowHeightStateImages);
+                state.tableRowHeightStateImages = nullptr;
+            }
+            const int rowHeight = TableScaledMetric(
+                table, *state.theme, L"listItem",
+                state.tableTwoLineRows ? L"twoLineHeight" : L"height",
+                state.tableTwoLineRows ? 48.0f : 28.0f);
+            state.tableRowHeightStateImages = ImageList_Create(
+                1, std::max(1, rowHeight - 1), ILC_COLOR32, 1, 1);
+            if (state.tableRowHeightStateImages) {
+                ListView_SetImageList(table, state.tableRowHeightStateImages, LVSIL_STATE);
+            }
+        }
+    } else {
+        if (state.tableRowHeightStateImages) {
+            if (ListView_GetImageList(table, LVSIL_STATE) == state.tableRowHeightStateImages) {
+                ListView_SetImageList(table, nullptr, LVSIL_STATE);
+            }
+            ImageList_Destroy(state.tableRowHeightStateImages);
+            state.tableRowHeightStateImages = nullptr;
+        }
+        RestoreTableDefaultImageList(table);
+    }
+    ListView_SetImageList(table, largeImages, LVSIL_NORMAL);
+}
+
 int ResolveTableColumnMinimumWidth(
     HWND table,
     const std::wstring& title,
@@ -5193,6 +5264,43 @@ void RemoveTableRowState(HWND table, int index) {
     state.tablePressedColumn = -1;
 }
 
+void RemoveTableRowStates(HWND table, const std::vector<int>& descendingIndices) {
+    if (!table || descendingIndices.empty()) return;
+    auto& state = StateFor(table);
+    std::vector<bool> removed(state.tableRowEnabled.size(), false);
+    for (int index : descendingIndices) {
+        if (index >= 0 && static_cast<std::size_t>(index) < removed.size()) {
+            removed[static_cast<std::size_t>(index)] = true;
+        }
+    }
+    auto compact = [&](auto& values) {
+        using Value = typename std::decay_t<decltype(values)>::value_type;
+        std::vector<Value> kept;
+        kept.reserve(values.size());
+        for (std::size_t index = 0; index < values.size(); ++index) {
+            if (index >= removed.size() || !removed[index]) kept.push_back(std::move(values[index]));
+        }
+        values.swap(kept);
+    };
+    compact(state.tableRowEnabled);
+    compact(state.tableRowActive);
+    compact(state.tableCells);
+    state.tableHotRow = -1;
+    state.tableHotColumn = -1;
+    state.tablePressedRow = -1;
+    state.tablePressedColumn = -1;
+}
+
+void SetTableViewportChangedHandler(HWND table, std::function<void()> handler) {
+    if (!table) return;
+    StateFor(table).tableViewportChangedHandler = std::move(handler);
+}
+
+void BindTableSearchEdit(HWND table, HWND edit) {
+    if (!table) return;
+    StateFor(table).tableSearchEdit = edit;
+}
+
 namespace {
 int CALLBACK CompareTableRowOrder(LPARAM left, LPARAM right, LPARAM context) {
     const auto& ranks = *reinterpret_cast<const std::unordered_map<LPARAM, int>*>(context);
@@ -5281,7 +5389,14 @@ void EndTableRowsUpdate(HWND table) {
     state.tableRowsUpdateDepth = std::max(0, state.tableRowsUpdateDepth - 1);
     if (state.tableRowsUpdateDepth == 0) {
         SendMessageW(table, WM_SETREDRAW, TRUE, 0);
-        RedrawWindow(table, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN);
+        // Re-enabling redraw makes the native ListView recalculate whether its
+        // vertical scrollbar is present. Reflow Remaining columns afterwards
+        // so the new scrollbar gutter cannot create a hidden horizontal bar.
+        RelayoutTableRemainingColumns(table, -1, -1);
+        // The table paints its complete surface during WM_PAINT. Forcing an
+        // additional background erase here exposes an empty frame between
+        // incremental batches and makes large result sets visibly flash.
+        RedrawWindow(table, nullptr, nullptr, RDW_INVALIDATE | RDW_FRAME | RDW_ALLCHILDREN);
     }
 }
 
@@ -5300,6 +5415,11 @@ void EndTableRowUpdate(HWND table, int row) {
 bool IsTableRowsUpdating(HWND table) {
     const auto state = FindState(table);
     return state && state->tableRowsUpdateDepth > 0;
+}
+
+void RefreshTableLayout(HWND table) {
+    if (!table) return;
+    RelayoutTableRemainingColumns(table, -1, -1);
 }
 
 bool IsTableRowEnabled(HWND table, int index) {
@@ -5450,6 +5570,11 @@ void RefreshTableDpiResources(HWND table, UINT dpi) {
     }
     if (state.tableCheckable) {
         CreateSystemCheckBoxImages(table);
+    } else if (state.tableRowHeightStateImages) {
+        SetTableImageLists(
+            table,
+            ListView_GetImageList(table, LVSIL_SMALL),
+            ListView_GetImageList(table, LVSIL_NORMAL));
     }
     InvalidateRect(table, nullptr, TRUE);
 }

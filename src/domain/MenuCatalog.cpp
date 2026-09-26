@@ -8,7 +8,8 @@
 namespace {
 constexpr const wchar_t* kMenuIconLinkPrefix = L"#menu:";
 
-constexpr std::array<MenuVisualRequirement, 24> kTopRightMenuVisuals{{
+constexpr std::array<MenuVisualRequirement, 25> kTopRightMenuVisuals{{
+    {ID_MENU_SEARCH_LINKS, L"搜索启动项", MenuIconSearch},
     {ID_MENU_QUICK_IMPORT, L"快速导入", MenuIconPaste},
     {ID_MENU_TOGGLE_TITLE, L"隐藏标题栏", MenuIconEyeOff},
     {ID_MENU_TOGGLE_GROUP, L"隐藏分组", MenuIconEyeOff},
@@ -92,6 +93,7 @@ int MenuIconFor(UINT_PTR id, const std::wstring& text) {
     case ID_MENU_MOVE_DOWN: return MenuIconMove;
     case ID_MENU_COPY_PATH: return MenuIconCopy;
     case ID_MENU_QUICK_IMPORT: return MenuIconPaste;
+    case ID_MENU_SEARCH_LINKS: return MenuIconSearch;
     case ID_MENU_EDIT_LINK:
     case ID_MENU_EDIT_GROUP:
     case ID_MENU_EDIT_TAG: return MenuIconEdit;
@@ -237,6 +239,7 @@ const wchar_t* MenuIconName(MenuIcon icon) {
     case MenuIconCertificate: return L"certificate";
     case MenuIconComputer: return L"computer";
     case MenuIconClock: return L"clock";
+    case MenuIconSearch: return L"search";
     case MenuIconDownload: return L"download";
     default: return L"unknown";
     }

@@ -11,6 +11,7 @@
 #include "FileDialog.h"
 #include "HotKeyEditor.h"
 #include "LinkEditDialog.h"
+#include "LaunchItemSearchDialog.h"
 #include "LinkResourceRefreshService.h"
 #include "LinkSorting.h"
 #include "MainHotKey.h"
@@ -2681,6 +2682,9 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
                 ShowToolMenu(point);
             }
             return 0;
+        case HitKind::SearchButton:
+            OpenLaunchItemSearch();
+            return 0;
         case HitKind::SkinButton:
             {
                 POINT point{};
@@ -2892,6 +2896,9 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             return 0;
         }
         switch (command) {
+        case ID_MENU_SEARCH_LINKS:
+            OpenLaunchItemSearch();
+            return 0;
         case ID_MENU_QUICK_IMPORT:
             QuickImport();
             return 0;
@@ -3140,6 +3147,7 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             case HitKind::CloseButton:
             case HitKind::MenuButton:
             case HitKind::ToolButton:
+            case HitKind::SearchButton:
             case HitKind::SkinButton:
             case HitKind::AddButton:
             case HitKind::Group:
@@ -4063,6 +4071,15 @@ void MainWindow::QuickImport() {
         MessageBoxW(hwnd_, (L"已导入 " + std::to_wstring(imported) + L" 项，部分项目失败：\n" + error).c_str(), L"快速导入", MB_OK | MB_ICONWARNING);
     } else {
         ShowToast(L"已导入 " + std::to_wstring(imported) + L" 项到当前标签页。", ThemedToastRole::Success);
+    }
+}
+
+void MainWindow::OpenLaunchItemSearch() {
+    DockAutoHidePause dockPause(*this);
+    const std::optional<int> selected = LaunchItemSearchDialog::Show(
+        hwnd_, instance_, theme_, appDirectory_, model_);
+    if (selected && FindLink(*selected)) {
+        RunLink(*selected);
     }
 }
 
@@ -7113,6 +7130,7 @@ void MainWindow::ShowMainMenu(POINT screenPoint) {
     AppendSystemFunctionItems(systemMenu);
     AppendToolItems(toolMenu);
 
+    AppendThemedMenuItem(menu, MF_STRING, ID_MENU_SEARCH_LINKS, L"搜索启动项");
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_QUICK_IMPORT, L"快速导入");
     AppendThemedSeparator(menu);
     AppendThemedMenuItem(menu, MF_STRING, ID_MENU_TOGGLE_TITLE, config_.showTitle ? L"隐藏标题栏" : L"显示标题栏", false, -1, -1, config_.showTitle ? MenuIconEyeOff : MenuIconEye);
@@ -7573,7 +7591,9 @@ void MainWindow::UpdateItemTooltip(const HitArea& hit, POINT screenPoint) {
     }
 
     std::wstring text;
-    if (hit.kind == HitKind::Link) {
+    if (hit.kind == HitKind::SearchButton) {
+        text = L"搜索启动项";
+    } else if (hit.kind == HitKind::Link) {
         Link* link = FindLink(hit.id);
         if (!link) {
             HideItemTooltip();
@@ -8101,6 +8121,9 @@ void MainWindow::ToggleMainWindowFromHotKey(const wchar_t* source, bool allowInp
         HideMainWindow();
         return;
     }
+    if (!CloseBuiltinFileHelper()) {
+        WriteAppLog(L"主窗口快捷键唤起时关闭文件助手失败。");
+    }
     WakeUp(source, allowInputRecovery, inputSerial);
 }
 
@@ -8257,7 +8280,7 @@ void MainWindow::DrawTitle(D2D1_RECT_F rect) {
     const float buttonGap = ClampFloat(theme_.metric(L"titleButton", L"gap", 2.0f), 0.0f, 12.0f);
     const float buttonRightInset = Metric(theme_, L"titleButton", L"rightInset", 4.0f);
     const float buttonTopInset = Metric(theme_, L"titleButton", L"topInset", 4.0f);
-    const std::array<HitKind, 4> buttons = TitleButtonsRightToLeft();
+    const std::array<HitKind, 5> buttons = TitleButtonsRightToLeft();
     const float buttonReserve = TitleButtonsReserveWidth();
     const float titleTextLeft = appIcon.right + Metric(theme_, L"title", L"textGap", 7.0f);
     const float titleTextMaxEnd = rect.right - buttonReserve - Metric(theme_, L"title", L"textGap", 7.0f);
@@ -8300,11 +8323,12 @@ void MainWindow::DrawTitle(D2D1_RECT_F rect) {
     }
 }
 
-std::array<MainWindow::HitKind, 4> MainWindow::TitleButtonsRightToLeft() {
+std::array<MainWindow::HitKind, 5> MainWindow::TitleButtonsRightToLeft() {
     return {
         HitKind::CloseButton,
         HitKind::MenuButton,
         HitKind::ToolButton,
+        HitKind::SearchButton,
         HitKind::SkinButton,
     };
 }
@@ -8973,7 +8997,20 @@ void MainWindow::DrawButtonIcon(HitKind kind, D2D1_RECT_F rect, const Color& col
     const float iconHalf = Metric(theme_, L"titleButton", L"iconHalf", 5.0f);
     const float menuHalfWidth = Metric(theme_, L"titleButton", L"menuHalfWidth", 6.0f);
     const float menuLineGap = Metric(theme_, L"titleButton", L"menuLineGap", 5.0f);
-    if (kind == HitKind::CloseButton) {
+    if (kind == HitKind::SearchButton) {
+        const float radius = Metric(theme_, L"titleButton", L"searchRadius", 5.0f);
+        const float offset = Metric(theme_, L"titleButton", L"searchOffset", 2.0f);
+        const float handle = Metric(theme_, L"titleButton", L"searchHandle", 7.0f);
+        renderTarget_->DrawEllipse(
+            D2D1::Ellipse(D2D1::Point2F(cx - offset, cy - offset), radius, radius),
+            brush,
+            stroke);
+        renderTarget_->DrawLine(
+            D2D1::Point2F(cx + offset, cy + offset),
+            D2D1::Point2F(cx + handle, cy + handle),
+            brush,
+            stroke);
+    } else if (kind == HitKind::CloseButton) {
         renderTarget_->DrawLine(D2D1::Point2F(cx - iconHalf, cy - iconHalf), D2D1::Point2F(cx + iconHalf, cy + iconHalf), brush, stroke);
         renderTarget_->DrawLine(D2D1::Point2F(cx + iconHalf, cy - iconHalf), D2D1::Point2F(cx - iconHalf, cy + iconHalf), brush, stroke);
     } else if (kind == HitKind::MenuButton) {

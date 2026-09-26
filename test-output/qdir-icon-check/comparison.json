@@ -1,0 +1,528 @@
+{
+  "exe": "C:\\Soft\\Q-Dir.exe",
+  "file_version": "8.7.1.0",
+  "sha256": "55ef3f7944c5742fa4d5cc6e9aaedaddebe2f64908eb2baf70b71a7c41fbf6dc",
+  "first_resource_alpha_audit_32px": {
+    "same_rgb_pixels": 1024,
+    "total_pixels": 1024,
+    "opaque_black_lost": 162
+  },
+  "groups": [
+    {
+      "group_id": 128,
+      "entries": [
+        {
+          "width": 32,
+          "height": 32,
+          "depth": 4,
+          "bytes": 744,
+          "resource_id": 30
+        }
+      ]
+    },
+    {
+      "group_id": 129,
+      "entries": [
+        {
+          "width": 32,
+          "height": 32,
+          "depth": 4,
+          "bytes": 744,
+          "resource_id": 1
+        }
+      ]
+    },
+    {
+      "group_id": 130,
+      "entries": [
+        {
+          "width": 32,
+          "height": 32,
+          "depth": 4,
+          "bytes": 744,
+          "resource_id": 2
+        }
+      ]
+    },
+    {
+      "group_id": 204,
+      "entries": [
+        {
+          "width": 32,
+          "height": 32,
+          "depth": 32,
+          "bytes": 4264,
+          "resource_id": 27
+        }
+      ]
+    },
+    {
+      "group_id": 205,
+      "entries": [
+        {
+          "width": 16,
+          "height": 16,
+          "depth": 24,
+          "bytes": 872,
+          "resource_id": 28
+        }
+      ]
+    },
+    {
+      "group_id": 215,
+      "entries": [
+        {
+          "width": 32,
+          "height": 32,
+          "depth": 4,
+          "bytes": 744,
+          "resource_id": 3
+        }
+      ]
+    },
+    {
+      "group_id": 222,
+      "entries": [
+        {
+          "width": 32,
+          "height": 32,
+          "depth": 4,
+          "bytes": 744,
+          "resource_id": 4
+        }
+      ]
+    },
+    {
+      "group_id": 226,
+      "entries": [
+        {
+          "width": 16,
+          "height": 16,
+          "depth": 4,
+          "bytes": 296,
+          "resource_id": 5
+        }
+      ]
+    },
+    {
+      "group_id": 233,
+      "entries": [
+        {
+          "width": 16,
+          "height": 16,
+          "depth": 4,
+          "bytes": 296,
+          "resource_id": 6
+        }
+      ]
+    },
+    {
+      "group_id": 249,
+      "entries": [
+        {
+          "width": 16,
+          "height": 16,
+          "depth": 4,
+          "bytes": 296,
+          "resource_id": 7
+        }
+      ]
+    },
+    {
+      "group_id": 250,
+      "entries": [
+        {
+          "width": 32,
+          "height": 32,
+          "depth": 4,
+          "bytes": 744,
+          "resource_id": 8
+        }
+      ]
+    },
+    {
+      "group_id": 306,
+      "entries": [
+        {
+          "width": 16,
+          "height": 16,
+          "depth": 4,
+          "bytes": 296,
+          "resource_id": 9
+        }
+      ]
+    },
+    {
+      "group_id": 311,
+      "entries": [
+        {
+          "width": 16,
+          "height": 16,
+          "depth": 4,
+          "bytes": 296,
+          "resource_id": 10
+        }
+      ]
+    },
+    {
+      "group_id": 312,
+      "entries": [
+        {
+          "width": 16,
+          "height": 16,
+          "depth": 4,
+          "bytes": 296,
+          "resource_id": 11
+        }
+      ]
+    },
+    {
+      "group_id": 314,
+      "entries": [
+        {
+          "width": 32,
+          "height": 32,
+          "depth": 4,
+          "bytes": 744,
+          "resource_id": 12
+        }
+      ]
+    },
+    {
+      "group_id": 315,
+      "entries": [
+        {
+          "width": 16,
+          "height": 16,
+          "depth": 4,
+          "bytes": 296,
+          "resource_id": 13
+        }
+      ]
+    },
+    {
+      "group_id": 317,
+      "entries": [
+        {
+          "width": 32,
+          "height": 32,
+          "depth": 4,
+          "bytes": 744,
+          "resource_id": 14
+        }
+      ]
+    },
+    {
+      "group_id": 318,
+      "entries": [
+        {
+          "width": 16,
+          "height": 16,
+          "depth": 4,
+          "bytes": 296,
+          "resource_id": 15
+        }
+      ]
+    },
+    {
+      "group_id": 320,
+      "entries": [
+        {
+          "width": 32,
+          "height": 32,
+          "depth": 4,
+          "bytes": 744,
+          "resource_id": 16
+        }
+      ]
+    },
+    {
+      "group_id": 321,
+      "entries": [
+        {
+          "width": 32,
+          "height": 32,
+          "depth": 4,
+          "bytes": 744,
+          "resource_id": 17
+        }
+      ]
+    },
+    {
+      "group_id": 323,
+      "entries": [
+        {
+          "width": 32,
+          "height": 32,
+          "depth": 4,
+          "bytes": 744,
+          "resource_id": 18
+        }
+      ]
+    },
+    {
+      "group_id": 325,
+      "entries": [
+        {
+          "width": 32,
+          "height": 32,
+          "depth": 4,
+          "bytes": 744,
+          "resource_id": 19
+        }
+      ]
+    },
+    {
+      "group_id": 329,
+      "entries": [
+        {
+          "width": 16,
+          "height": 16,
+          "depth": 32,
+          "bytes": 1128,
+          "resource_id": 20
+        }
+      ]
+    },
+    {
+      "group_id": 330,
+      "entries": [
+        {
+          "width": 16,
+          "height": 16,
+          "depth": 32,
+          "bytes": 1128,
+          "resource_id": 21
+        }
+      ]
+    },
+    {
+      "group_id": 332,
+      "entries": [
+        {
+          "width": 32,
+          "height": 32,
+          "depth": 32,
+          "bytes": 4264,
+          "resource_id": 25
+        }
+      ]
+    },
+    {
+      "group_id": 341,
+      "entries": [
+        {
+          "width": 16,
+          "height": 16,
+          "depth": 8,
+          "bytes": 1384,
+          "resource_id": 29
+        }
+      ]
+    },
+    {
+      "group_id": 345,
+      "entries": [
+        {
+          "width": 16,
+          "height": 16,
+          "depth": 8,
+          "bytes": 1384,
+          "resource_id": 22
+        }
+      ]
+    },
+    {
+      "group_id": 346,
+      "entries": [
+        {
+          "width": 16,
+          "height": 16,
+          "depth": 8,
+          "bytes": 1384,
+          "resource_id": 23
+        }
+      ]
+    },
+    {
+      "group_id": 350,
+      "entries": [
+        {
+          "width": 32,
+          "height": 32,
+          "depth": 4,
+          "bytes": 744,
+          "resource_id": 24
+        }
+      ]
+    },
+    {
+      "group_id": 362,
+      "entries": [
+        {
+          "width": 32,
+          "height": 32,
+          "depth": 4,
+          "bytes": 744,
+          "resource_id": 26
+        }
+      ]
+    }
+  ],
+  "comparisons": [
+    {
+      "size": 16,
+      "link_equals_pidl": true,
+      "link_equals_shell": true,
+      "first_equals_id128": true,
+      "best_matches": [
+        329
+      ],
+      "cache_rgb_max_delta": 0,
+      "cache_alpha_unchanged": true,
+      "cache_changed_pixels": 0,
+      "cache_vs_extra_premultiply_max_error": 0.0
+    },
+    {
+      "size": 20,
+      "link_equals_pidl": true,
+      "link_equals_shell": true,
+      "first_equals_id128": true,
+      "best_matches": [
+        204
+      ],
+      "cache_rgb_max_delta": 60,
+      "cache_alpha_unchanged": true,
+      "cache_changed_pixels": 76,
+      "cache_vs_extra_premultiply_max_error": 0.4824
+    },
+    {
+      "size": 24,
+      "link_equals_pidl": true,
+      "link_equals_shell": true,
+      "first_equals_id128": true,
+      "best_matches": [
+        204
+      ],
+      "cache_rgb_max_delta": 48,
+      "cache_alpha_unchanged": true,
+      "cache_changed_pixels": 92,
+      "cache_vs_extra_premultiply_max_error": 0.4824
+    },
+    {
+      "size": 32,
+      "link_equals_pidl": true,
+      "link_equals_shell": true,
+      "first_equals_id128": true,
+      "best_matches": [
+        204
+      ],
+      "cache_rgb_max_delta": 0,
+      "cache_alpha_unchanged": true,
+      "cache_changed_pixels": 0,
+      "cache_vs_extra_premultiply_max_error": 0.0
+    },
+    {
+      "size": 40,
+      "link_equals_pidl": true,
+      "link_equals_shell": true,
+      "first_equals_id128": true,
+      "best_matches": [
+        204
+      ],
+      "cache_rgb_max_delta": 54,
+      "cache_alpha_unchanged": true,
+      "cache_changed_pixels": 152,
+      "cache_vs_extra_premultiply_max_error": 0.4353
+    },
+    {
+      "size": 48,
+      "link_equals_pidl": true,
+      "link_equals_shell": true,
+      "first_equals_id128": true,
+      "best_matches": [
+        204
+      ],
+      "cache_rgb_max_delta": 0,
+      "cache_alpha_unchanged": true,
+      "cache_changed_pixels": 0,
+      "cache_vs_extra_premultiply_max_error": 0.0
+    },
+    {
+      "size": 64,
+      "link_equals_pidl": true,
+      "link_equals_shell": true,
+      "first_equals_id128": true,
+      "best_matches": [
+        204
+      ],
+      "cache_rgb_max_delta": 26,
+      "cache_alpha_unchanged": true,
+      "cache_changed_pixels": 496,
+      "cache_vs_extra_premultiply_max_error": 0.4353
+    },
+    {
+      "size": 96,
+      "link_equals_pidl": true,
+      "link_equals_shell": true,
+      "first_equals_id128": true,
+      "best_matches": [
+        204
+      ],
+      "cache_rgb_max_delta": 40,
+      "cache_alpha_unchanged": true,
+      "cache_changed_pixels": 748,
+      "cache_vs_extra_premultiply_max_error": 0.4314
+    },
+    {
+      "size": 128,
+      "link_equals_pidl": true,
+      "link_equals_shell": true,
+      "first_equals_id128": true,
+      "best_matches": [
+        204
+      ],
+      "cache_rgb_max_delta": 48,
+      "cache_alpha_unchanged": true,
+      "cache_changed_pixels": 992,
+      "cache_vs_extra_premultiply_max_error": 0.4941
+    },
+    {
+      "size": 256,
+      "link_equals_pidl": true,
+      "link_equals_shell": true,
+      "first_equals_id128": true,
+      "best_matches": [
+        204
+      ],
+      "cache_rgb_max_delta": 54,
+      "cache_alpha_unchanged": true,
+      "cache_changed_pixels": 2988,
+      "cache_vs_extra_premultiply_max_error": 0.4745
+    }
+  ],
+  "unsuccessful_exports": [
+    {
+      "case": "resource-233",
+      "size": "32",
+      "source": "icon-location",
+      "width": "32",
+      "height": "32",
+      "quality": "1",
+      "opaque_pixels": "0",
+      "saturated_pixels": "0",
+      "saved": "0"
+    },
+    {
+      "case": "resource-362",
+      "size": "32",
+      "source": "icon-location",
+      "width": "32",
+      "height": "32",
+      "quality": "1",
+      "opaque_pixels": "0",
+      "saturated_pixels": "0",
+      "saved": "0"
+    }
+  ]
+}

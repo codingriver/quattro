@@ -464,6 +464,7 @@ target_link_libraries(QuattroThemedUi PUBLIC
     d2d1
     dwrite
     comctl32
+    imm32
     msimg32
     shell32
     shlwapi
@@ -602,8 +603,10 @@ add_executable(Quattro WIN32
     src/services/GlobalHotKeyService.cpp
     src/windows/MainHotKey.cpp
     src/windows/MainWindow.cpp
+    src/domain/LinkSearch.cpp
     src/domain/MenuCatalog.cpp
     src/domain/PluginRegistry.cpp
+    src/windows/LaunchItemSearchDialog.cpp
     src/windows/QuickImportDialog.cpp
     src/services/QuickImportService.cpp
     src/services/ShellContextMenuCacheService.cpp
@@ -697,6 +700,7 @@ add_executable(QuattroTests
     src/services/LinkResourceRefreshService.cpp
     src/common/JsonValue.cpp
     src/domain/LinkSorting.cpp
+    src/domain/LinkSearch.cpp
     src/domain/MenuCatalog.cpp
     src/domain/PluginRegistry.cpp
     src/services/QuickImportService.cpp
@@ -780,6 +784,7 @@ add_executable(QuattroToastAcceptance
 add_executable(QuattroUiScreenshotAcceptance
     tests/UiScreenshotAcceptance.cpp
     src/common/AppLog.cpp
+    src/domain/LinkSearch.cpp
     src/windows/AboutDialog.cpp
     src/windows/BuiltinTools.cpp
     src/windows/ToolWindowPosition.cpp
@@ -798,6 +803,7 @@ add_executable(QuattroUiScreenshotAcceptance
     src/services/Launcher.cpp
     src/services/LocalHttpServerService.cpp
     src/windows/LinkEditDialog.cpp
+    src/windows/LaunchItemSearchDialog.cpp
     src/windows/MainHotKey.cpp
     src/domain/MenuCatalog.cpp
     src/domain/PluginRegistry.cpp
@@ -1056,6 +1062,7 @@ target_link_libraries(QuattroTests PRIVATE
     bcrypt
     comctl32
     gdi32
+    imm32
     ole32
     oleaut32
     rstrtmgr

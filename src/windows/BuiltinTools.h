@@ -38,6 +38,7 @@ struct ProcessToolsTestRequest {
 bool PreTranslateBuiltinToolMessage(const MSG& message);
 
 bool ToggleBuiltinFileHelper(HWND owner, HINSTANCE instance, const Theme& theme);
+bool CloseBuiltinFileHelper();
 
 bool ShowBuiltinTool(
     HWND owner,

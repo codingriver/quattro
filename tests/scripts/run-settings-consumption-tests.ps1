@@ -168,14 +168,11 @@ function Write-Config {
         bDelConfirm = 1
         bSaveRunCount = 1
         bHideNotify = 0
-        bFocusSearch = 0
         bMouseEnterActiveGroup = 0
         bMouseEnterActiveTag = 0
         nActiveGroupDelay = 0
         nActiveTagDelay = 0
         nMainHotKey = 0
-        nSearchHotKey = 0
-        nSearchCount = 0
         OpenDirCmd = ""
         HelpUrl = ""
         UpdateUrl = ""
@@ -247,24 +244,6 @@ function Wait-WindowVisible {
         Start-Sleep -Milliseconds 100
     }
     throw "Window did not become visible."
-}
-
-function Wait-SearchDialog {
-    param([System.Diagnostics.Process]$Process, [int]$TimeoutMs = 10000)
-
-    $deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMs)
-    while ([DateTime]::UtcNow -lt $deadline) {
-        if ($Process.HasExited) {
-            throw "Process exited before search dialog appeared."
-        }
-        $handle = [NativeSettingsConsumptionUi]::FindTopWindow([uint32]$Process.Id, "QuattroSearchDialog", $null)
-        if ($handle -ne [IntPtr]::Zero -and [NativeSettingsConsumptionUi]::IsWindow($handle)) {
-            Set-QuattroTestWindowBackground -Process $Process -Window $handle -Context "wait for search dialog"
-            return $handle
-        }
-        Start-Sleep -Milliseconds 100
-    }
-    throw "Timed out waiting for search dialog. Windows: $(Get-ProcessWindowSummary -Process $Process)"
 }
 
 function Wait-Report {
@@ -403,59 +382,8 @@ try {
         Stop-CaseProcess -Process $behaviorProcess -MainWindow $behaviorMain
     }
 
-    foreach ($focusCase in @(
-        @{ name = "search-focus-edit"; focus = 1; expected = 100; count = 17 },
-        @{ name = "search-focus-list"; focus = 0; expected = 101; count = 23 }
-    )) {
-        $searchDir = New-TestRunDir -BaseRunDir $baseRunDir -Name $focusCase.name -Config @{
-            bFocusSearch = $focusCase.focus
-            bMouseEnterActiveGroup = 1
-            bMouseEnterActiveTag = 1
-            nActiveGroupDelay = 222
-            nActiveTagDelay = 333
-            nSearchCount = $focusCase.count
-        }
-        $searchProcess = $null
-        $searchMain = [IntPtr]::Zero
-        try {
-            $searchProcess = Start-CaseProcess -RunDir $searchDir
-            $searchMain = Wait-ProcessWindow -Process $searchProcess -ClassName "QuattroMainWindow" -TitleContains "Quattro"
-            [NativeSettingsConsumptionUi]::ShowWindow($searchMain, 4) | Out-Null
-            Wait-WindowVisible -Hwnd $searchMain
-
-            $searchReport = Wait-Report -RunDir $searchDir
-            Copy-Item -LiteralPath $searchReport -Destination (Join-Path $LogDir "settings-consumption-$($focusCase.name)-report.txt") -Force
-            Assert-KeyValue -Path $searchReport -Name "focus_search" -Expected ([string]$focusCase.focus)
-            Assert-KeyValue -Path $searchReport -Name "mouse_enter_active_group" -Expected "1"
-            Assert-KeyValue -Path $searchReport -Name "mouse_enter_active_tag" -Expected "1"
-            Assert-KeyValue -Path $searchReport -Name "active_group_delay" -Expected "222"
-            Assert-KeyValue -Path $searchReport -Name "active_tag_delay" -Expected "333"
-            Assert-KeyValue -Path $searchReport -Name "search_count" -Expected ([string]$focusCase.count)
-
-            [NativeSettingsConsumptionUi]::PostMessage($searchMain, 0x0111, [IntPtr]40015, [IntPtr]::Zero) | Out-Null
-            $searchDialog = Wait-SearchDialog -Process $searchProcess
-            Start-Sleep -Milliseconds 350
-            if ($env:QUATTRO_TEST_NO_FOCUS -eq "1") {
-                "search_focus_$($focusCase.name)=skipped_no_focus"
-            } else {
-                $focusedId = Get-FocusedControlId -Window $searchDialog
-                if ($focusedId -ne $focusCase.expected) {
-                    throw "Unexpected search focus for $($focusCase.name): expected=$($focusCase.expected) actual=$focusedId"
-                }
-                "search_focus_$($focusCase.name)=$focusedId"
-            }
-            [NativeSettingsConsumptionUi]::PostMessage($searchDialog, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null
-            Start-Sleep -Milliseconds 350
-            $expectedCount = [string]([int]$focusCase.count + 1)
-            Assert-IniValue -Path (Join-Path $searchDir "conf.ini") -Name "nSearchCount" -Expected $expectedCount
-        } finally {
-            Stop-CaseProcess -Process $searchProcess -MainWindow $searchMain
-        }
-    }
-
     $linksDir = New-TestRunDir -BaseRunDir $baseRunDir -Name "links-hotkeys" -Config @{
         nMainHotKey = 124
-        nSearchHotKey = 125
         OpenDirCmd = "cmd /c echo {name} {path}"
         HelpUrl = "https://example.invalid/help"
         UpdateUrl = "https://example.invalid/update"
@@ -470,7 +398,6 @@ try {
         $linksReport = Wait-Report -RunDir $linksDir
         Copy-Item -LiteralPath $linksReport -Destination (Join-Path $LogDir "settings-consumption-links-hotkeys-report.txt") -Force
         Assert-KeyValue -Path $linksReport -Name "main_hot_key" -Expected "124"
-        Assert-KeyValue -Path $linksReport -Name "search_hot_key" -Expected "125"
         Assert-KeyValue -Path $linksReport -Name "open_dir_command" -Expected "cmd /c echo {name} {path}"
         Assert-KeyValue -Path $linksReport -Name "help_url" -Expected "https://example.invalid/help"
         Assert-KeyValue -Path $linksReport -Name "update_url" -Expected "https://example.invalid/update"

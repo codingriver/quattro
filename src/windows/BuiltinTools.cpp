@@ -4098,6 +4098,10 @@ bool ToggleBuiltinFileHelper(HWND owner, HINSTANCE instance, const Theme& theme)
     return ToggleFileHelperDialog(owner, instance, theme);
 }
 
+bool CloseBuiltinFileHelper() {
+    return CloseFileHelperDialog();
+}
+
 bool ShowBuiltinTool(
     HWND owner,
     HINSTANCE instance,

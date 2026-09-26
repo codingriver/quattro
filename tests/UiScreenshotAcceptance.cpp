@@ -1,6 +1,7 @@
 #include "../src/windows/BuiltinTools.h"
 #include "../src/windows/FileHelperDialog.h"
 #include "../src/windows/LinkEditDialog.h"
+#include "../src/windows/LaunchItemSearchDialog.h"
 #include "../src/windows/MainWindow.h"
 #include "../src/domain/MenuCatalog.h"
 #include "../src/domain/Models.h"
@@ -45,6 +46,7 @@
 #include <fstream>
 #include <functional>
 #include <iostream>
+#include <optional>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -161,7 +163,6 @@ LRESULT CALLBACK TableResizePaintProbeProc(
     if (message == WM_NCDESTROY) RemoveWindowSubclass(hwnd, TableResizePaintProbeProc, id);
     return DefSubclassProc(hwnd, message, wParam, lParam);
 }
-
 LRESULT CALLBACK TableMutationProbeProc(
     HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR id, DWORD_PTR refData) {
     auto* probe = reinterpret_cast<TableMutationProbe*>(refData);
@@ -499,7 +500,10 @@ BitmapCapture CaptureWindowBitmap(HWND hwnd, bool refresh = true) {
         SendMessageW(hwnd, WM_PRINTCLIENT, reinterpret_cast<WPARAM>(dc), PRF_CLIENT | PRF_ERASEBKGND);
         printed = TRUE;
     } else {
-        printed = PrintWindow(hwnd, dc, 0x00000002);
+        const UINT flags = className == L"QuattroLaunchItemSearchDialog"
+            ? 0
+            : 0x00000002;
+        printed = PrintWindow(hwnd, dc, flags);
     }
     if (!printed) {
         SelectObject(dc, old);
@@ -1228,6 +1232,9 @@ std::vector<std::wstring> CollectTexts(HWND hwnd, const std::vector<ChildInfo>& 
                 }
             }
         } else if (child.className == L"SysListView32") {
+            DWORD processId = 0;
+            GetWindowThreadProcessId(child.hwnd, &processId);
+            if (processId != GetCurrentProcessId()) continue;
             const int count = static_cast<int>(SendMessageW(child.hwnd, LVM_GETITEMCOUNT, 0, 0));
             for (int row = 0; row < count && row < 20; ++row) {
                 for (int column = 0; column < 4; ++column) {
@@ -2242,6 +2249,7 @@ public:
         Set(L"QUATTRO_ACCEPTANCE_MODE", L"background");
         Set(L"QUATTRO_TEST_RUN_ID", std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(sequence_));
         Set(L"QUATTRO_TEST_SUPPRESS_TRAY", L"1");
+        Set(L"QUATTRO_TEST_SEARCH_DELAY_MS", L"800");
     }
 
     ~ScopedAcceptanceChildEnvironment() {
@@ -2306,6 +2314,11 @@ void RunMainWindowScenario(
     TestState& state,
     UINT dpi) {
     const std::wstring dpiSuffix = DpiPercentSuffix(dpi);
+    wchar_t launchSearchOnlyValue[8]{};
+    const bool launchSearchOnly = GetEnvironmentVariableW(
+        L"QUATTRO_UI_ACCEPTANCE_LAUNCH_SEARCH_ONLY",
+        launchSearchOnlyValue,
+        static_cast<DWORD>(std::size(launchSearchOnlyValue))) > 0;
     AcceptanceLog(L"begin main-window-" + dpiSuffix);
     const std::filesystem::path sourceExe = ModuleDirectory() / L"Quattro.exe";
     if (!std::filesystem::exists(sourceExe)) {
@@ -2335,6 +2348,35 @@ void RunMainWindowScenario(
     visualLink.parentGroup = linkTag.id;
     visualLink.path = childEnvironment.root().wstring();
     state.Check(storage.InsertLink(visualLink), L"main-window-link-hover: seed link failed");
+    Group searchTag;
+    searchTag.name = L"搜索验收";
+    searchTag.parentGroup = linkGroup.id;
+    searchTag.pos = -1;
+    state.Check(storage.InsertGroup(searchTag), L"launch-search: seed tag failed");
+    for (int index = 0; index < 416; ++index) {
+        Link searchLink;
+        searchLink.parentGroup = searchTag.id;
+        searchLink.pos = index;
+        if (index == 0) {
+            searchLink.name = L"Visual Studio Code";
+            searchLink.path = LR"(C:\Tools\editor.exe)";
+        } else if (index == 1) {
+            searchLink.name = L"代码编辑器";
+            searchLink.path = LR"(D:\Apps\Editor\Code.exe)";
+        } else if (index == 2) {
+            searchLink.name = L"开发工具";
+            searchLink.path = LR"(D:\CodeProjects\tool.exe)";
+        } else if (index == 3) {
+            searchLink.name = L"Visual Studio Code 双字段命中";
+            searchLink.path = LR"(D:\Apps\VSCode\Code.exe)";
+        } else {
+            searchLink.name = L"Code 验收工具 " + std::to_wstring(index + 1);
+            searchLink.path = LR"(C:\Program Files\Quattro Acceptance\Very Long Directory Name\tool-)" +
+                std::to_wstring(index + 1) + L".exe";
+        }
+        state.Check(storage.InsertLink(searchLink),
+            L"launch-search: seed link failed at index " + std::to_wstring(index));
+    }
     Group noteTag;
     noteTag.name = L"便签验收";
     noteTag.parentGroup = linkGroup.id;
@@ -2426,7 +2468,178 @@ void RunMainWindowScenario(
         const std::wstring screenshotName = basePath.stem().wstring() + L"-" + dpiSuffix + basePath.extension().wstring();
         Scenario scenario{L"main-window-" + dpiSuffix, L"QuattroMainWindow", L"", screenshotName, {expectedTitle}, {}, 0, 0, false};
         scenario.forcedDpi = dpi;
-        ValidateAndCapture(hwnd, scenario, outputDir, state);
+        if (!launchSearchOnly) ValidateAndCapture(hwnd, scenario, outputDir, state);
+
+        PostMessageW(hwnd, WM_COMMAND, ID_MENU_SEARCH_LINKS, 0);
+        HWND searchDialog = WaitForTopWindow(
+            FindWindowRequest{L"QuattroLaunchItemSearchDialog", L"搜索启动项", process.dwProcessId},
+            5000);
+        state.Check(searchDialog != nullptr,
+            L"launch-search-" + dpiSuffix + L": search dialog did not open from the main-menu command");
+        if (searchDialog) {
+            HWND queryEdit = ChildById(searchDialog, 1001);
+            HWND resultsTable = ChildById(searchDialog, 1003);
+            state.Check(queryEdit && resultsTable,
+                L"launch-search-" + dpiSuffix + L": search controls are incomplete");
+            state.Check(WaitForWindowText(searchDialog, L"找到 417 项", 5000),
+                L"launch-search-" + dpiSuffix + L": empty query did not show all launch items");
+            if (queryEdit && resultsTable) {
+                SendMessageW(queryEdit, WM_SETTEXT, 0, reinterpret_cast<LPARAM>(L"code"));
+                if (dpi == USER_DEFAULT_SCREEN_DPI) {
+                    state.Check(WaitForWindowText(searchDialog, L"正在匹配，暂不可启动", 2000),
+                        L"launch-search-matching: matching state did not appear before capture");
+                    Scenario matchingScenario{
+                        L"launch-search-matching",
+                        L"QuattroLaunchItemSearchDialog",
+                        L"搜索启动项",
+                        L"launch-search-matching.png",
+                        {L"搜索启动项", L"全部分组与标签", L"正在匹配，暂不可启动", L"清空"},
+                        {L"code"},
+                        1,
+                        1,
+                        false};
+                    ValidateAndCapture(searchDialog, matchingScenario, outputDir, state);
+                    state.Check(SendMessageW(resultsTable, LVM_GETITEMCOUNT, 0, 0) == 200,
+                        L"launch-search-matching: previous result list was not retained during debounce");
+                }
+                const bool codeQueryCompleted = WaitForWindowText(searchDialog, L"找到 416 项", 5000);
+                const int observedResultCount = static_cast<int>(SendMessageW(resultsTable, LVM_GETITEMCOUNT, 0, 0));
+                std::wstring searchDiagnostic = L"launch-search-query dpi=" + dpiSuffix +
+                    L" completed=" + (codeQueryCompleted ? L"1" : L"0") +
+                    L" rows=" + std::to_wstring(observedResultCount);
+                for (const auto& text : CollectTexts(searchDialog, Children(searchDialog))) {
+                    if (!text.empty()) searchDiagnostic += L" | " + text;
+                }
+                AcceptanceLog(searchDiagnostic);
+                state.Check(codeQueryCompleted,
+                    L"launch-search-" + dpiSuffix + L": code query did not match name-or-path results");
+                const int resultCount = observedResultCount;
+                const int completeRows = static_cast<int>(
+                    SendMessageW(resultsTable, LVM_GETCOUNTPERPAGE, 0, 0));
+                AcceptanceLog(L"launch-search-geometry dpi=" + dpiSuffix +
+                    L" completeRows=" + std::to_wstring(completeRows));
+                state.Check(resultCount == 200,
+                    L"launch-search-" + dpiSuffix + L": result table did not contain the first 200 matches");
+                state.Check(completeRows == 10,
+                    L"launch-search-" + dpiSuffix + L": result table did not expose exactly 10 complete two-line rows");
+                state.Check(SendMessageW(resultsTable, LVM_ENSUREVISIBLE, 199, FALSE) != FALSE,
+                    L"launch-search-" + dpiSuffix + L": first result page end was not vertically reachable");
+                const int firstPageTop = ListView_GetTopIndex(resultsTable);
+                bool loadedSecondPage = false;
+                for (int elapsed = 0; elapsed < 5000; elapsed += 20) {
+                    if (SendMessageW(resultsTable, LVM_GETITEMCOUNT, 0, 0) == 400) {
+                        loadedSecondPage = true;
+                        break;
+                    }
+                    Sleep(20);
+                }
+                state.Check(loadedSecondPage,
+                    L"launch-search-" + dpiSuffix + L": nearing the first page end did not append the second 200 rows");
+                state.Check(ListView_GetTopIndex(resultsTable) == firstPageTop,
+                    L"launch-search-" + dpiSuffix + L": second-page append changed the active viewport");
+                state.Check(WaitForWindowText(searchDialog, L"找到 416 项", 1000),
+                    L"launch-search-" + dpiSuffix + L": loading more was presented as a new search");
+                state.Check(SendMessageW(resultsTable, LVM_ENSUREVISIBLE, 399, FALSE) != FALSE,
+                    L"launch-search-" + dpiSuffix + L": second result page end was not vertically reachable");
+                const int secondPageTop = ListView_GetTopIndex(resultsTable);
+                bool loadedFinalPage = false;
+                for (int elapsed = 0; elapsed < 5000; elapsed += 20) {
+                    if (SendMessageW(resultsTable, LVM_GETITEMCOUNT, 0, 0) == 416) {
+                        loadedFinalPage = true;
+                        break;
+                    }
+                    Sleep(20);
+                }
+                state.Check(loadedFinalPage,
+                    L"launch-search-" + dpiSuffix + L": final automatic page was missing or reordered");
+                state.Check(ListView_GetTopIndex(resultsTable) == secondPageTop,
+                    L"launch-search-" + dpiSuffix + L": final-page append changed the active viewport");
+                state.Check(ListView_GetTopIndex(resultsTable) > 0,
+                    L"launch-search-" + dpiSuffix + L": result table did not scroll away from the first row");
+                SendMessageW(resultsTable, WM_KEYDOWN, VK_END, 0);
+                const int selectedBeforeRefresh = static_cast<int>(
+                    SendMessageW(resultsTable, LVM_GETNEXTITEM, static_cast<WPARAM>(-1), LVNI_SELECTED));
+                const int topBeforeRefresh = ListView_GetTopIndex(resultsTable);
+                state.Check(selectedBeforeRefresh >= 400 && topBeforeRefresh > 0,
+                    L"launch-search-" + dpiSuffix + L": could not prepare a selection beyond the first 200 rows");
+                SendMessageW(queryEdit, WM_SETTEXT, 0, reinterpret_cast<LPARAM>(L"CODE"));
+                state.Check(WaitForWindowText(searchDialog, L"正在匹配，暂不可启动", 2000),
+                    L"launch-search-" + dpiSuffix + L": repeated query did not enter matching state");
+                state.Check(ListView_GetTopIndex(resultsTable) == topBeforeRefresh,
+                    L"launch-search-" + dpiSuffix + L": input change unexpectedly reset the result viewport");
+                state.Check(WaitForWindowText(searchDialog, L"找到 416 项", 5000),
+                    L"launch-search-" + dpiSuffix + L": repeated query did not complete");
+                const int selectedAfterRefresh = static_cast<int>(
+                    SendMessageW(resultsTable, LVM_GETNEXTITEM, static_cast<WPARAM>(-1), LVNI_SELECTED));
+                state.Check(SendMessageW(resultsTable, LVM_GETITEMCOUNT, 0, 0) == 416 &&
+                        selectedAfterRefresh == selectedBeforeRefresh &&
+                        ListView_GetTopIndex(resultsTable) == topBeforeRefresh,
+                    L"launch-search-" + dpiSuffix +
+                        L": completed query did not preserve the selection and viewport beyond row 200");
+
+                Scenario resultScenario{
+                    L"launch-search-results-" + dpiSuffix,
+                    L"QuattroLaunchItemSearchDialog",
+                    L"搜索启动项",
+                    L"launch-search-results-" + dpiSuffix + L".png",
+                    {L"搜索启动项", L"全部分组与标签", L"找到 416 项", L"清空"},
+                    {L"CODE"},
+                    1,
+                    1,
+                    false};
+                resultScenario.forcedDpi = dpi;
+                ValidateAndCapture(searchDialog, resultScenario, outputDir, state);
+
+                if (dpi == USER_DEFAULT_SCREEN_DPI) {
+                    SendMessageW(queryEdit, WM_SETTEXT, 0,
+                        reinterpret_cast<LPARAM>(L"definitely-no-launch-item"));
+                    state.Check(WaitForWindowText(searchDialog, L"未找到结果，请缩短关键词或清空", 5000),
+                        L"launch-search-empty-result: no-match state did not appear");
+                    Scenario emptyResultScenario{
+                        L"launch-search-empty-result",
+                        L"QuattroLaunchItemSearchDialog",
+                        L"搜索启动项",
+                        L"launch-search-empty-result.png",
+                        {L"搜索启动项", L"全部分组与标签", L"未找到结果，请缩短关键词或清空", L"清空"},
+                        {L"definitely-no-launch-item"},
+                        1,
+                        1,
+                        false};
+                    ValidateAndCapture(searchDialog, emptyResultScenario, outputDir, state);
+                }
+            }
+            PostMessageW(searchDialog, WM_CLOSE, 0, 0);
+            for (int elapsed = 0; IsWindow(searchDialog) && elapsed < 3000; elapsed += 20) Sleep(20);
+        }
+
+        if (dpi == USER_DEFAULT_SCREEN_DPI) {
+            PostMessageW(hwnd, WM_COMMAND, ID_MENU_TOGGLE_TITLE, 0);
+            Sleep(100);
+            PostMessageW(hwnd, WM_COMMAND, ID_MENU_SEARCH_LINKS, 0);
+            HWND hiddenTitleSearch = WaitForTopWindow(
+                FindWindowRequest{L"QuattroLaunchItemSearchDialog", L"搜索启动项", process.dwProcessId},
+                5000);
+            state.Check(hiddenTitleSearch != nullptr,
+                L"launch-search-hidden-title: main-menu fallback did not open search");
+            if (hiddenTitleSearch) PostMessageW(hiddenTitleSearch, WM_CLOSE, 0, 0);
+            PostMessageW(hwnd, WM_COMMAND, ID_MENU_TOGGLE_TITLE, 0);
+        }
+
+        if (launchSearchOnly) {
+            PostMessageW(hwnd, WM_COMMAND, MAKEWPARAM(ID_MENU_EXIT, 0), 0);
+            if (WaitForSingleObject(process.hProcess, 5000) == WAIT_TIMEOUT) {
+                state.Check(false, L"launch-search: process did not exit after focused acceptance");
+                TerminateProcess(process.hProcess, 2);
+                WaitForSingleObject(process.hProcess, 5000);
+            }
+            DWORD searchExitCode = STILL_ACTIVE;
+            state.Check(GetExitCodeProcess(process.hProcess, &searchExitCode) && searchExitCode == 0,
+                L"launch-search: process exited abnormally: " + std::to_wstring(searchExitCode));
+            CloseHandle(process.hThread);
+            CloseHandle(process.hProcess);
+            AcceptanceLog(L"end main-window-" + dpiSuffix);
+            return;
+        }
 
         SendMessageW(hwnd, WM_HOTKEY, 4, 0);
         HWND fileHelper = WaitForTopWindow(
@@ -2462,10 +2675,18 @@ void RunMainWindowScenario(
             state.Check(
                 CountTopWindowsForProcess(L"文件助手", process.dwProcessId) == 1,
                 L"main-window-file-helper-hotkey: repeated hotkey created another window");
-            PostMessageW(fileHelper, WM_CLOSE, 0, 0);
+            state.Check(
+                SendMessageW(hwnd, WM_QUATTRO_TEST_MAIN_FRONTNESS, 3, 0) == TRUE,
+                L"main-window-file-helper-hotkey: could not force the main window behind");
+            SendMessageW(hwnd, WM_HOTKEY, 1, 0);
             for (int elapsed = 0; IsWindow(fileHelper) && elapsed < 2000; elapsed += 20) {
                 Sleep(20);
             }
+            state.Check(!IsWindow(fileHelper),
+                L"main-window-file-helper-hotkey: showing the main window did not close file helper");
+            state.Check(IsWindowVisible(hwnd) && !IsIconic(hwnd),
+                L"main-window-file-helper-hotkey: main window was not shown after closing file helper");
+            SendMessageW(hwnd, WM_QUATTRO_TEST_MAIN_FRONTNESS, 0, 0);
         }
 
         const bool originalShowTitle = SendMessageW(hwnd, WM_QUATTRO_TEST_SETTINGS_COMMIT, 0, 0) != 0;
@@ -5834,6 +6055,18 @@ void RunFileHelperScenarios(
             scenarioName + L": changed the active window");
     }
 
+    state.Check(
+        ShowBuiltinTool(owner, instance, theme, registry, config, L"file-helper"),
+        L"file-helper-main-hotkey-close: setup could not open the window");
+    HWND mainHotKeyHelper = FindTopWindow(
+        FindWindowRequest{kFileHelperWindowClass, L"文件助手", GetCurrentProcessId()});
+    state.Check(mainHotKeyHelper != nullptr,
+        L"file-helper-main-hotkey-close: setup window was not found");
+    state.Check(CloseBuiltinFileHelper(),
+        L"file-helper-main-hotkey-close: close request failed");
+    state.Check(!mainHotKeyHelper || !IsWindow(mainHotKeyHelper),
+        L"file-helper-main-hotkey-close: close request left the window open");
+
     Scenario toggleReopenScenario{
         L"builtin-file-helper-toggle-reopen",
         kFileHelperWindowClass,
@@ -6527,6 +6760,162 @@ AppModel SampleModel() {
     todo.content = L"验收待办内容";
     model.todos.push_back(todo);
     return model;
+}
+
+void RunLaunchItemSearchActivationScenario(
+    HWND owner,
+    HINSTANCE instance,
+    const Theme& theme,
+    TestState& state) {
+    ScopedAcceptanceChildEnvironment environment;
+    AppModel model;
+    model.groups.push_back(Group{1, L"验收分组"});
+    Group tag;
+    tag.id = 2;
+    tag.name = L"开发工具";
+    tag.parentGroup = 1;
+    model.groups.push_back(tag);
+
+    Link legacy;
+    legacy.id = 101;
+    legacy.name = L"Legacy Tool";
+    legacy.parentGroup = 2;
+    legacy.path = L"C:\\Tools\\legacy.exe";
+    legacy.pos = 0;
+    model.links.push_back(legacy);
+
+    Link nameMatch;
+    nameMatch.id = 102;
+    nameMatch.name = L"Visual Studio Code";
+    nameMatch.parentGroup = 2;
+    nameMatch.path = L"C:\\Tools\\editor.exe";
+    nameMatch.pos = 1;
+    model.links.push_back(nameMatch);
+
+    Link pathMatch;
+    pathMatch.id = 103;
+    pathMatch.name = L"代码目录工具";
+    pathMatch.parentGroup = 2;
+    pathMatch.path = L"D:\\CodeProjects\\tool.exe";
+    pathMatch.pos = 2;
+    model.links.push_back(pathMatch);
+
+    const auto sendActivation = [](HWND dialog, HWND table, int row) {
+        NMLISTVIEW notification{};
+        notification.hdr.hwndFrom = table;
+        notification.hdr.idFrom = 1003;
+        notification.hdr.code = NM_DBLCLK;
+        notification.iItem = row;
+        SendMessageW(dialog, WM_NOTIFY, 1003, reinterpret_cast<LPARAM>(&notification));
+    };
+
+    std::thread delayedActivationController([&]() {
+        HWND dialog = WaitForTopWindow(
+            FindWindowRequest{L"QuattroLaunchItemSearchDialog", L"搜索启动项", GetCurrentProcessId()},
+            5000);
+        state.Check(dialog != nullptr, L"launch-search-activation: dialog did not open");
+        if (!dialog) return;
+        HWND edit = ChildById(dialog, 1001);
+        HWND table = ChildById(dialog, 1003);
+        state.Check(edit && table, L"launch-search-activation: controls are incomplete");
+        if (!edit || !table) {
+            PostMessageW(dialog, WM_CLOSE, 0, 0);
+            return;
+        }
+        state.Check(WaitForWindowText(dialog, L"找到 3 项", 5000),
+            L"launch-search-activation: initial result did not complete");
+        SendMessageW(edit, WM_SETTEXT, 0, reinterpret_cast<LPARAM>(L"code"));
+        sendActivation(dialog, table, 0);
+        PostMessageW(edit, WM_KEYDOWN, VK_RETURN, 0);
+        state.Check(WaitForWindowText(dialog, L"正在匹配，暂不可启动", 1000),
+            L"launch-search-activation: delayed query did not enter matching state");
+        state.Check(WaitForWindowText(dialog, L"找到 2 项", 5000) && IsWindow(dialog),
+            L"launch-search-activation: waiting activation was incorrectly executed later");
+        if (!IsWindow(dialog)) return;
+        ThemedUi::SetTableSelectedIndex(table, 1);
+        PostMessageW(edit, WM_KEYDOWN, VK_RETURN, 0);
+    });
+    const std::optional<int> enterResult = LaunchItemSearchDialog::Show(
+        owner, instance, theme, ModuleDirectory(), model);
+    delayedActivationController.join();
+    state.Check(enterResult == std::optional<int>{103},
+        L"launch-search-activation: Enter did not return the selected stable link ID exactly once");
+
+    std::thread rowKeyController([&]() {
+        HWND dialog = WaitForTopWindow(
+            FindWindowRequest{L"QuattroLaunchItemSearchDialog", L"搜索启动项", GetCurrentProcessId()},
+            5000);
+        state.Check(dialog != nullptr, L"launch-search-row-key: dialog did not open");
+        if (!dialog) return;
+        HWND edit = ChildById(dialog, 1001);
+        HWND table = ChildById(dialog, 1003);
+        if (!edit || !table) {
+            state.Check(false, L"launch-search-row-key: controls are incomplete");
+            PostMessageW(dialog, WM_CLOSE, 0, 0);
+            return;
+        }
+        state.Check(WaitForWindowText(dialog, L"找到 3 项", 5000),
+            L"launch-search-row-key: initial result did not complete");
+        SendMessageW(edit, WM_SETTEXT, 0, reinterpret_cast<LPARAM>(L"code"));
+        state.Check(WaitForWindowText(dialog, L"找到 2 项", 5000),
+            L"launch-search-row-key: filtered result did not complete");
+        ThemedUi::SetTableSelectedIndex(table, 1);
+        sendActivation(dialog, table, 0);
+    });
+    const std::optional<int> doubleClickResult = LaunchItemSearchDialog::Show(
+        owner, instance, theme, ModuleDirectory(), model);
+    rowKeyController.join();
+    state.Check(doubleClickResult == std::optional<int>{102},
+        L"launch-search-row-key: double-click did not use the activated row key");
+
+    SetEnvironmentVariableW(L"QUATTRO_TEST_SEARCH_DELAY_MS", L"20");
+    std::thread clearController([&]() {
+        HWND dialog = WaitForTopWindow(
+            FindWindowRequest{L"QuattroLaunchItemSearchDialog", L"搜索启动项", GetCurrentProcessId()},
+            5000);
+        if (!dialog) return;
+        HWND edit = ChildById(dialog, 1001);
+        HWND clearButton = ChildById(dialog, 1002);
+        HWND table = ChildById(dialog, 1003);
+        if (!edit || !clearButton || !table) {
+            state.Check(false, L"launch-search-clear: controls are incomplete");
+            PostMessageW(dialog, WM_CLOSE, 0, 0);
+            return;
+        }
+        state.Check(WaitForWindowText(dialog, L"找到 3 项", 5000),
+            L"launch-search-clear: initial result did not complete");
+        SendMessageW(edit, WM_SETTEXT, 0, reinterpret_cast<LPARAM>(L"code"));
+        state.Check(WaitForWindowText(dialog, L"找到 2 项", 5000),
+            L"launch-search-clear: filtered result did not complete");
+        ThemedUi::SetTableSelectedIndex(table, 1);
+        SendMessageW(edit, WM_SETTEXT, 0, reinterpret_cast<LPARAM>(L"legacy"));
+        state.Check(WaitForWindowText(dialog, L"找到 1 项", 5000) &&
+                ThemedUi::TableSelectedIndex(table) == 0 &&
+                ThemedUi::TableRowKey(table, 0) == 101,
+            L"launch-search-clear: disappearing selection did not fall back to the first result");
+        SendMessageW(edit, WM_SETTEXT, 0, reinterpret_cast<LPARAM>(L"no-such-launch-item"));
+        state.Check(WaitForWindowText(dialog, L"未找到结果，请缩短关键词或清空", 5000) &&
+                ThemedUi::TableSelectedIndex(table) == -1,
+            L"launch-search-clear: empty results did not clear the selection");
+
+        SendMessageW(edit, WM_SETTEXT, 0, reinterpret_cast<LPARAM>(L"code"));
+        const auto clearStarted = std::chrono::steady_clock::now();
+        SendMessageW(dialog, WM_COMMAND, MAKEWPARAM(1002, BN_CLICKED),
+            reinterpret_cast<LPARAM>(clearButton));
+        const bool clearCompleted = WaitForWindowText(dialog, L"找到 3 项", 130);
+        const auto clearElapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - clearStarted);
+        state.Check(clearCompleted && clearElapsed.count() < 130 &&
+                WindowText(edit).empty() && ThemedUi::TableSelectedIndex(table) == 0,
+            L"launch-search-clear: clear did not bypass debounce and restore all results immediately");
+        PostMessageW(dialog, WM_CLOSE, 0, 0);
+    });
+    const std::optional<int> clearResult = LaunchItemSearchDialog::Show(
+        owner, instance, theme, ModuleDirectory(), model);
+    clearController.join();
+    SetEnvironmentVariableW(L"QUATTRO_TEST_SEARCH_DELAY_MS", L"800");
+    state.Check(!clearResult.has_value(),
+        L"launch-search-clear: closing the dialog returned a launch item ID");
 }
 
 std::wstring AcceptanceKnownFolderPath(REFKNOWNFOLDERID folderId) {
@@ -8223,6 +8612,25 @@ int wmain() {
     config.webDavBackupPath = L"/Quattro/backups/";
     config.webDavFilesPath = L"/Quattro/files/";
     config.webDavUserName = L"acceptance-user";
+
+    wchar_t launchSearchOnly[8]{};
+    if (GetEnvironmentVariableW(
+            L"QUATTRO_UI_ACCEPTANCE_LAUNCH_SEARCH_ONLY",
+            launchSearchOnly,
+            static_cast<DWORD>(std::size(launchSearchOnly))) > 0) {
+        RunLaunchItemSearchActivationScenario(owner, instance, theme, state);
+        for (const UINT dpi : {96u, 120u, 144u}) {
+            RunMainWindowScenario(outputDir, theme, state, dpi);
+        }
+        DestroyWindow(owner);
+        OleUninitialize();
+        Gdiplus::GdiplusShutdown(gdiplusToken);
+        for (const auto& failure : state.failures) std::wcerr << failure << L"\n";
+        if (!state.ok) return 1;
+        std::wcout << L"ui_launch_search_acceptance=passed screenshots="
+            << outputDir.wstring() << L"\n";
+        return 0;
+    }
 
     wchar_t webDavDeleteOnly[8]{};
     if (GetEnvironmentVariableW(L"QUATTRO_UI_ACCEPTANCE_WEBDAV_DELETE_ONLY",

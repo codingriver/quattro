@@ -67,6 +67,7 @@ constexpr UINT ID_MENU_TODO_REMINDER_SNOOZE_5 = 40073;
 constexpr UINT ID_MENU_TODO_REMINDER_SNOOZE_30 = 40074;
 constexpr UINT ID_MENU_TODO_REMINDER_SNOOZE_60 = 40075;
 constexpr UINT ID_MENU_COMPLETE_OVERDUE_TODOS = 40076;
+constexpr UINT ID_MENU_SEARCH_LINKS = 40077;
 constexpr UINT ID_MENU_THEME_BASE = 43000;
 constexpr UINT ID_MENU_LAYOUT_LIST = 44000;
 constexpr UINT ID_MENU_LAYOUT_TILE = 44001;
@@ -154,6 +155,7 @@ enum MenuIcon {
     MenuIconCertificate,
     MenuIconComputer,
     MenuIconClock,
+    MenuIconSearch,
     MenuIconDownload,
 };
 

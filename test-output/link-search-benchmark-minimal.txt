@@ -1,0 +1,11 @@
+benchmark=link_search_v1
+date=2026-09-26
+logical_processors=12
+physical_memory_bytes=68602998784
+input_echo_ms p50=0.065 p95=0.315 max=0.564 samples=200
+table_first_visible_32_ms p50=11.986 p95=15.896 max=33.945 samples=25
+table_first_200_sliced_ms p50=52.055 p95=113.128 max=136.605 samples=25
+icon_submit_40_ms p50=1.228 p95=1.743 max=2.478 samples=25
+items=1000 matches=1000 build_ms_p50=0.886 build_ms_p95=1.010 build_ms_max=1.010 search_ms_p50=0.026 search_ms_p95=0.048 search_ms_max=0.102
+items=10000 matches=10000 build_ms_p50=11.347 build_ms_p95=22.566 build_ms_max=22.566 search_ms_p50=0.271 search_ms_p95=0.934 search_ms_max=1.165 estimated_first_text_p95_including_120ms_debounce=136.830
+items=100000 matches=100000 build_ms_p50=153.940 build_ms_p95=173.163 build_ms_max=173.163 search_ms_p50=8.811 search_ms_p95=10.303 search_ms_max=10.838

@@ -126,6 +126,7 @@ private:
         CloseButton,
         MenuButton,
         ToolButton,
+        SearchButton,
         SkinButton,
         AddButton,
         Group,
@@ -223,6 +224,7 @@ private:
     void AddFolder();
     void AddUrl();
     void QuickImport();
+    void OpenLaunchItemSearch();
     int EnsureQuickImportTargetTag();
     void AddSystemFunction(std::size_t index);
     void OpenSystemFunction(std::size_t index);
@@ -404,7 +406,7 @@ private:
     void DrawTodoItems(D2D1_RECT_F rect, const Group& tag);
     void DrawEmptyState(const D2D1_RECT_F& contentRect, const std::wstring& title, const std::wstring& hint, const std::wstring& buttonLabel);
     void DrawEmptyAddButton(const D2D1_RECT_F& contentRect, float topY, const std::wstring& label);
-    static std::array<HitKind, 4> TitleButtonsRightToLeft();
+    static std::array<HitKind, 5> TitleButtonsRightToLeft();
     bool IsTitleButtonVisible(HitKind kind) const;
     float TitleButtonsReserveWidth() const;
     void DrawButtonIcon(HitKind kind, D2D1_RECT_F rect, const Color& color);

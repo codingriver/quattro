@@ -12,6 +12,7 @@
     "windows": { "codepoint": "U+ECD8", "fallback": false },
     "shortcut": { "codepoint": "U+EA99", "fallback": true },
     "refresh": { "codepoint": "U+EB13", "fallback": false },
+    "search": { "codepoint": "U+EB1C", "fallback": false },
     "move": { "codepoint": "U+F22F", "fallback": false },
     "copy": { "codepoint": "U+EA7A", "fallback": false },
     "cut": { "codepoint": "U+EB1B", "fallback": false },

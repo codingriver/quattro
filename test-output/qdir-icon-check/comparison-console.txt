@@ -1,0 +1,133 @@
+[
+  {
+    "size": 16,
+    "link_equals_pidl": true,
+    "link_equals_shell": true,
+    "first_equals_id128": true,
+    "best_matches": [
+      329
+    ],
+    "cache_rgb_max_delta": 0,
+    "cache_alpha_unchanged": true,
+    "cache_changed_pixels": 0,
+    "cache_vs_extra_premultiply_max_error": 0.0
+  },
+  {
+    "size": 20,
+    "link_equals_pidl": true,
+    "link_equals_shell": true,
+    "first_equals_id128": true,
+    "best_matches": [
+      204
+    ],
+    "cache_rgb_max_delta": 60,
+    "cache_alpha_unchanged": true,
+    "cache_changed_pixels": 76,
+    "cache_vs_extra_premultiply_max_error": 0.4824
+  },
+  {
+    "size": 24,
+    "link_equals_pidl": true,
+    "link_equals_shell": true,
+    "first_equals_id128": true,
+    "best_matches": [
+      204
+    ],
+    "cache_rgb_max_delta": 48,
+    "cache_alpha_unchanged": true,
+    "cache_changed_pixels": 92,
+    "cache_vs_extra_premultiply_max_error": 0.4824
+  },
+  {
+    "size": 32,
+    "link_equals_pidl": true,
+    "link_equals_shell": true,
+    "first_equals_id128": true,
+    "best_matches": [
+      204
+    ],
+    "cache_rgb_max_delta": 0,
+    "cache_alpha_unchanged": true,
+    "cache_changed_pixels": 0,
+    "cache_vs_extra_premultiply_max_error": 0.0
+  },
+  {
+    "size": 40,
+    "link_equals_pidl": true,
+    "link_equals_shell": true,
+    "first_equals_id128": true,
+    "best_matches": [
+      204
+    ],
+    "cache_rgb_max_delta": 54,
+    "cache_alpha_unchanged": true,
+    "cache_changed_pixels": 152,
+    "cache_vs_extra_premultiply_max_error": 0.4353
+  },
+  {
+    "size": 48,
+    "link_equals_pidl": true,
+    "link_equals_shell": true,
+    "first_equals_id128": true,
+    "best_matches": [
+      204
+    ],
+    "cache_rgb_max_delta": 0,
+    "cache_alpha_unchanged": true,
+    "cache_changed_pixels": 0,
+    "cache_vs_extra_premultiply_max_error": 0.0
+  },
+  {
+    "size": 64,
+    "link_equals_pidl": true,
+    "link_equals_shell": true,
+    "first_equals_id128": true,
+    "best_matches": [
+      204
+    ],
+    "cache_rgb_max_delta": 26,
+    "cache_alpha_unchanged": true,
+    "cache_changed_pixels": 496,
+    "cache_vs_extra_premultiply_max_error": 0.4353
+  },
+  {
+    "size": 96,
+    "link_equals_pidl": true,
+    "link_equals_shell": true,
+    "first_equals_id128": true,
+    "best_matches": [
+      204
+    ],
+    "cache_rgb_max_delta": 40,
+    "cache_alpha_unchanged": true,
+    "cache_changed_pixels": 748,
+    "cache_vs_extra_premultiply_max_error": 0.4314
+  },
+  {
+    "size": 128,
+    "link_equals_pidl": true,
+    "link_equals_shell": true,
+    "first_equals_id128": true,
+    "best_matches": [
+      204
+    ],
+    "cache_rgb_max_delta": 48,
+    "cache_alpha_unchanged": true,
+    "cache_changed_pixels": 992,
+    "cache_vs_extra_premultiply_max_error": 0.4941
+  },
+  {
+    "size": 256,
+    "link_equals_pidl": true,
+    "link_equals_shell": true,
+    "first_equals_id128": true,
+    "best_matches": [
+      204
+    ],
+    "cache_rgb_max_delta": 54,
+    "cache_alpha_unchanged": true,
+    "cache_changed_pixels": 2988,
+    "cache_vs_extra_premultiply_max_error": 0.4745
+  }
+]
+unsuccessful_exports: 2

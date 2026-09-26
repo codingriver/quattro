@@ -361,6 +361,31 @@ struct ThemedTableRow {
     bool active = false;
 };
 
+struct ThemedTableRowBatch {
+    std::vector<ThemedTableRow> upserts;
+    std::vector<std::intptr_t> removeKeys;
+    // When non-empty, must contain every row key exactly once after applying
+    // removals and upserts.
+    std::vector<std::intptr_t> order;
+};
+
+struct ThemedTableVisibleRange {
+    int first = -1;
+    int last = -1;
+};
+
+using ThemedTableViewportChangedHandler = std::function<void()>;
+
+enum class ThemedEditTableNavigation {
+    None,
+    Previous,
+    Next,
+    PagePrevious,
+    PageNext,
+    Activate,
+    Cancel,
+};
+
 enum class ThemedTableSortDirection {
     None = 0,
     Ascending = 1,
@@ -929,6 +954,8 @@ public:
     HWND TimeDisplay(const std::wstring& text, int x, int y, int width) const;
     void SetStatusBadgeRole(HWND hwnd, ThemedStatusRole role) const;
     static void SetText(HWND hwnd, const std::wstring& text);
+    static std::wstring Text(HWND hwnd);
+    static void SelectAllText(HWND edit);
     static bool CopyTextToClipboard(HWND owner, const std::wstring& text);
     static void SetVisible(HWND hwnd, bool visible);
     void SetEnabled(HWND hwnd, bool enabled) const;
@@ -1047,6 +1074,9 @@ public:
     void MoveTable(HWND table, RECT frame) const;
     static void SetTableColumns(HWND table, const std::vector<ThemedTableColumn>& columns);
     static void SetTableRows(HWND table, const std::vector<ThemedTableRow>& rows);
+    // Applies a stable-key diff as one public operation. Existing selection and
+    // the top visible row are restored by key when they survive.
+    static bool ApplyTableRowBatch(HWND table, const ThemedTableRowBatch& batch);
     static int AppendTableRow(HWND table, const ThemedTableRow& row);
     static bool UpdateTableRow(HWND table, int index, const ThemedTableRow& row);
     static bool UpdateTableRowByKey(HWND table, std::intptr_t key, const ThemedTableRow& row);
@@ -1092,6 +1122,11 @@ public:
     static void SetTableFocusedIndex(HWND table, int index);
     static std::intptr_t TableRowKey(HWND table, int index);
     static std::intptr_t TableTopVisibleRowKey(HWND table);
+    static ThemedTableVisibleRange TableVisibleRange(HWND table);
+    static void SetTableViewportChangedHandler(
+        HWND table,
+        ThemedTableViewportChangedHandler handler);
+    static bool ScrollTableToTop(HWND table);
     static bool RestoreTableTopVisibleRowByKey(HWND table, std::intptr_t key);
     static int TableHitTest(HWND table, POINT point, bool fullRow = false, bool* stateIcon = nullptr);
     static int TableScreenHitTest(HWND table, POINT screenPoint, bool fullRow = false, bool* stateIcon = nullptr);
@@ -1139,6 +1174,14 @@ public:
     // Native editing shortcuts take priority over window-level commands when
     // an Edit or RichEdit control owns keyboard focus.
     static bool IsNativeEditShortcut(const MSG& message);
+    static bool IsEditComposing(HWND edit);
+    // Printable text typed while a result table owns focus is redirected to
+    // the bound search edit. Navigation and modifier shortcuts stay with the
+    // table/dialog.
+    static void BindTableSearchEdit(HWND table, HWND edit);
+    // Returns None while an IME composition or a native edit shortcut owns the
+    // key, so callers can safely link an edit field to table navigation.
+    static ThemedEditTableNavigation DecodeEditTableNavigation(const MSG& message, HWND edit);
 
     // Call this from a themed window's WndProc before falling back to
     // DefWindowProc. It centralizes the owner-draw/custom-draw bridge required

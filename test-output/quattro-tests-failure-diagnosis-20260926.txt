@@ -1,0 +1,7 @@
+FAILED: AppLaunchLocker runtime reports missing Tabler font from released resources
+embedded_asset_acceptance=passed first_total_ms=13 unchanged_total_ms=6 changed_total_ms=12 storage=raw unchanged_decompressed=0 changed_decompressed=0
+FAILED: Public icon resolver falls back from Q-Dir generic shell icon to best embedded resource
+FAILED: Startup manager tool menu icon
+FAILED: Plugin AppLaunchLocker registration is available in all builds
+FAILED: Plugin AppLaunchLocker enabled by default
+FAILED: Plugin AppLaunchLocker can be disabled

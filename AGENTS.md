@@ -14,7 +14,6 @@ AGENTS.md 是本仓库**唯一权威规则文档**，具有最高优先级。任
 - 禁止窗口直接对 facade 创建的控件发送 `CB_*`/`LVM_*`/`TCM_*`/`BM_*`/`LB_*` 等底层状态消息——改用 `ThemedUi::SetComboBoxItems`/`SetComboBoxSelectedIndex`/`SetTable*`/`SetChecked`/`SetProgress`/`SetEnabled` 等语义接口。
 - 禁止业务窗口直接创建 `WC_LISTVIEW`/`WC_TABCONTROL`/`TOOLBARCLASSNAME`，或调用 `ListView_*`/`TabCtrl_*`/`Toolbar_*` 维护表格/标签/工具栏。
 - 日常增量更新禁止调用 `SetTableRows`（会触发 `ListView_DeleteAllItems` 引起闪烁/选择丢失）；仅首次创建、整体导入/恢复、列结构变化或确需整体重排时允许。
-- 禁止新增、恢复或暴露搜索功能/搜索入口/搜索热键/搜索配置。
 - 禁止绕过 `ThemedUi`/`ThemedWindowUi` 公共 facade 在窗口层私绘控件、手写布局/尺寸/间距/样式，或重复处理公共消息、背景绘制、owner-draw、资源释放。
 - 禁止在多处重复保存同一事实；异步任务结果回到 UI 线程前禁止直接操作 HWND/Table/模型容器。
 - 新增公共能力必须同步补 `ThemedUi.h` 接口、`ThemedUi.cpp`/`ThemedControls.*` 实现、`Theme.cpp` fallback、`theme/default.xml`、主题 lint、单元测试，涉及视觉的还要补 100%/125%/150% DPI 截图验收；公共接口未完成前业务窗口不得先落私有版本。
@@ -43,7 +42,7 @@ AGENTS.md 是本仓库**唯一权威规则文档**，具有最高优先级。任
 - `MainWindow` 使用公共 Theme token 和 `ThemedD2D`/DWrite 能力完成主画布绘制，但它不是普通对话框，不应为了形式统一强行把分组、标签和启动项改造成大量原生子控件。新增主窗口视觉语义必须先抽出可复用的布局/绘制计算，命中区域与绘制矩形不得分别维护魔法数字。
 - 分组用于一级场景组织，普通标签承载启动项，便签标签承载 `NotePage`，待办标签承载 `TodoItem`，“全部”视图是聚合视图而不是新的持久化标签。新增操作必须明确它对当前标签、当前分组、全部聚合视图和跨标签移动/复制的语义。
 - 启动项编辑按类型分工：通用程序/文件/文件夹使用 `LinkEditDialog`，网址使用 `UrlEditDialog`，待办使用 `TodoEditDialog`，批量剪贴板/文本导入使用 `QuickImportDialog`。启动路径、参数、工作目录、显示方式、管理员权限、PIDL、系统功能 key、URL 图标和单项热键应继续经过既有 domain/service 能力，不要在对话框中复制启动或解析逻辑。
-- 设置窗口当前页面固定围绕“显示、行为、右键菜单、交互、热键、链接、WebDAV、HTTP、备份”组织。新增配置先放入最接近的既有页面；只有形成独立用户任务且现有页面会明显过载时才新增页面。搜索页面、搜索框或搜索配置在当前产品阶段一律禁止。
+- 设置窗口当前页面固定围绕“显示、行为、右键菜单、交互、热键、链接、WebDAV、HTTP、备份”组织。新增配置先放入最接近的既有页面；只有形成独立用户任务且现有页面会明显过载时才新增页面。
 - 工具箱条目由 `PluginRegistry` 描述，当前引擎包括连点器、时钟、计时器、秒表、进程工具、WebDAV 管理、自启动管理和广告拦截。轻量同进程工具由 `BuiltinTools` 承载；需要独立生命周期或提权边界的工具必须使用独立 EXE，不能仅因为工具箱里有入口就实现为 Quattro 内嵌窗口。
 - WebDAV 文件管理、传输队列、任务进度、更新检查/下载、确认框、消息框和 Toast 已有对应公共或业务窗口。新增流程前先查找 `ThemedFileTransferQueueDialog`、`ThemedTaskProgressDialog`、`ShowThemedMessageBox`、`ConfirmDialog`、Tooltip/Toast 等能力，禁止创建外观和生命周期相同的私有替代品。
 - `AppLaunchLockerWindow` 展示启动项来源/分类和治理操作，`AdBlockWindow` 展示扫描结果与已阻止记录；二者共享 `QuattroThemedUi`，但数据和操作必须来自 `AppLaunchLockerCore`。修改其界面时既要遵守本节的公共 UI 规则，也要遵守独立进程边界规则。
@@ -83,7 +82,6 @@ AGENTS.md 是本仓库**唯一权威规则文档**，具有最高优先级。任
 
 ## Feature Rules
 
-- 搜索功能暂时不要开发；不要新增、恢复或暴露搜索入口、搜索热键、搜索窗口或与搜索相关的用户可见配置。
 - 全局快捷键用于显示 Quattro 主窗口时，必须恢复并显示主窗口，使其获得焦点并位于当前桌面普通窗口的最前面；该行为属于正式产品功能，不得因后台自动化验收约束而删除、弱化或改为仅在任务栏提示。这里的“最前面”是本次唤起时进入前台，不要求把主窗口永久设置为 Topmost。
 - 非自动化测试用途的打包必须保留正式产品的获取焦点和窗口前台显示逻辑，包括开发者手动打包、人工验收使用的正式包以及 GitHub Actions 生成的发布包或普通构建产物。禁止通过构建参数、条件编译、打包脚本或 CI 配置在这些产物中禁用、替换或绕过该逻辑；只有明确标记且隔离的自动化测试专用产物或测试运行入口可以按后台验收规则抑制前台激活。
 

@@ -3,8 +3,10 @@
 #include "TablerIconManifest.h"
 #include "Theme.h"
 
+#include <functional>
 #include <string>
 #include <vector>
+#include <commctrl.h>
 #include <windows.h>
 
 enum class ThemedTableSelection {
@@ -460,6 +462,7 @@ struct TableCellRuntime {
 };
 void RegisterTable(HWND table, const Theme& theme, UINT dpi = 0);
 void ConfigureTableRowPresentation(HWND table, bool twoLines);
+void SetTableImageLists(HWND table, HIMAGELIST smallImages, HIMAGELIST largeImages);
 void SetTableSelectionMode(HWND table, ThemedTableSelection mode);
 int ResolveTableColumnMinimumWidth(
     HWND table,
@@ -492,12 +495,16 @@ void SetTableCells(HWND table, const std::vector<std::vector<TableCellRuntime>>&
 void InsertTableRowState(HWND table, int index, bool enabled, bool active, std::vector<TableCellRuntime> cells);
 void UpdateTableRowState(HWND table, int index, bool enabled, bool active, std::vector<TableCellRuntime> cells);
 void RemoveTableRowState(HWND table, int index);
+void RemoveTableRowStates(HWND table, const std::vector<int>& descendingIndices);
+void SetTableViewportChangedHandler(HWND table, std::function<void()> handler);
+void BindTableSearchEdit(HWND table, HWND edit);
 bool ReorderTableRows(HWND table, const std::vector<std::intptr_t>& keys);
 void BeginTableRowsUpdate(HWND table);
 void EndTableRowsUpdate(HWND table);
 void BeginTableRowUpdate(HWND table);
 void EndTableRowUpdate(HWND table, int row);
 bool IsTableRowsUpdating(HWND table);
+void RefreshTableLayout(HWND table);
 void RestoreTableDefaultImageList(HWND table);
 void CreateSystemCheckBoxImages(HWND table);
 void RefreshTableDpiResources(HWND table, UINT dpi = 0);

@@ -4,6 +4,7 @@
 #include "Utilities.h"
 
 #include <commctrl.h>
+#include <imm.h>
 #include <windowsx.h>
 
 #include <algorithm>
@@ -2124,15 +2125,19 @@ int ThemedUi::tableColumnWidth(std::initializer_list<std::wstring_view> candidat
 
 int ThemedUi::tableHeightForRows(int visibleRows, bool showHeader, bool twoLines) const {
     // TableFrameInnerRect currently consumes the physical public frame inset;
-    // keep the height helper on that same drawing path so the viewport ends on
-    // an exact row boundary at every DPI.
+    // keep the height helper on that same drawing path. Report-view ListView
+    // reserves one physical trailing pixel when calculating complete rows, so
+    // include that pixel to make LVM_GETCOUNTPERPAGE agree with the requested
+    // semantic row count at every DPI.
     const int border = std::max(1, scale(static_cast<int>(theme_.metric(L"table", L"borderWidth", 1.0f))));
     const int rowHeight = scale(static_cast<int>(theme_.metric(
         L"listItem", twoLines ? L"twoLineHeight" : L"height", twoLines ? 48.0f : 28.0f)));
     const int headerHeight = showHeader
         ? scale(static_cast<int>(theme_.metric(L"tableHeader", L"height", 28.0f)))
         : 0;
-    return border * 2 + headerHeight + std::max(0, visibleRows) * rowHeight;
+    constexpr int nativeCompleteRowSlack = 2;
+    return border * 2 + headerHeight + std::max(0, visibleRows) * rowHeight +
+        nativeCompleteRowSlack;
 }
 
 RECT ThemedUi::tabStripRect(RECT bounds) const {
@@ -2251,6 +2256,19 @@ void ThemedUi::SetText(HWND hwnd, const std::wstring& text) {
         nullptr,
         nullptr,
         RDW_INVALIDATE | RDW_UPDATENOW);
+}
+
+std::wstring ThemedUi::Text(HWND hwnd) {
+    if (!hwnd) return {};
+    const int length = GetWindowTextLengthW(hwnd);
+    std::wstring value(static_cast<std::size_t>(std::max(0, length)) + 1, L'\0');
+    if (length > 0) GetWindowTextW(hwnd, value.data(), length + 1);
+    value.resize(static_cast<std::size_t>(std::max(0, length)));
+    return value;
+}
+
+void ThemedUi::SelectAllText(HWND edit) {
+    if (edit) SendMessageW(edit, EM_SETSEL, 0, -1);
 }
 
 bool ThemedUi::CopyTextToClipboard(HWND owner, const std::wstring& text) {
@@ -3556,8 +3574,63 @@ bool WriteTableRow(HWND table, int index, const ThemedTableRow& row, bool insert
             ? row.cells[static_cast<std::size_t>(cell)].text : L"";
         ListView_SetItemText(table, index, cell, const_cast<wchar_t*>(text.c_str()));
     }
-    ListView_SetCheckState(table, index, row.checked ? TRUE : FALSE);
+    // Checkbox state is meaningful only for explicitly checkable tables. The
+    // native macro still performs state-image work (and may emit synchronous
+    // notifications) when called for every ordinary row, which made large
+    // non-checkable batches unnecessarily expensive. Avoid touching the
+    // state image unless the table exposes checkbox semantics, and avoid a
+    // redundant write for retained rows.
+    if ((ListView_GetExtendedListViewStyle(table) & LVS_EX_CHECKBOXES) != 0 &&
+        (ListView_GetCheckState(table, index) != FALSE) != row.checked) {
+        ListView_SetCheckState(table, index, row.checked ? TRUE : FALSE);
+    }
     return true;
+}
+
+void SetTableSelectedIndicesInternal(
+    HWND table,
+    const std::vector<int>& indices,
+    bool ensureFocusedVisible) {
+    if (!table) return;
+    const int count = ListView_GetItemCount(table);
+    std::vector<bool> selected(static_cast<std::size_t>((std::max)(0, count)), false);
+    int focusRow = -1;
+    for (int index : indices) {
+        if (index >= 0 && index < count) {
+            selected[static_cast<std::size_t>(index)] = true;
+            focusRow = index;
+        }
+    }
+
+    bool changed = false;
+    for (int row = 0; row < count; ++row) {
+        const UINT state = ListView_GetItemState(table, row, LVIS_SELECTED | LVIS_FOCUSED);
+        const bool shouldSelect = selected[static_cast<std::size_t>(row)];
+        const bool shouldFocus = row == focusRow;
+        if (((state & LVIS_SELECTED) != 0) != shouldSelect ||
+            ((state & LVIS_FOCUSED) != 0) != shouldFocus) {
+            changed = true;
+            break;
+        }
+    }
+    if (!changed) return;
+
+    const ScopedTableRowsUpdate update(table);
+    for (int row = 0; row < count; ++row) {
+        const UINT state = ListView_GetItemState(table, row, LVIS_SELECTED | LVIS_FOCUSED);
+        const bool shouldSelect = selected[static_cast<std::size_t>(row)];
+        const bool shouldFocus = row == focusRow;
+        UINT desired = 0;
+        if (shouldSelect) desired |= LVIS_SELECTED;
+        if (shouldFocus) desired |= LVIS_FOCUSED;
+        if ((state & (LVIS_SELECTED | LVIS_FOCUSED)) != desired) {
+            ListView_SetItemState(
+                table, row, desired, LVIS_SELECTED | LVIS_FOCUSED);
+        }
+    }
+    if (ensureFocusedVisible && focusRow >= 0) {
+        ListView_EnsureVisible(table, focusRow, FALSE);
+    }
 }
 }
 
@@ -3623,6 +3696,112 @@ void ThemedUi::SetTableRows(HWND table, const std::vector<ThemedTableRow>& rows)
     }
 }
 
+bool ThemedUi::ApplyTableRowBatch(HWND table, const ThemedTableRowBatch& batch) {
+    if (!table) return false;
+    std::unordered_set<std::intptr_t> upsertKeys;
+    upsertKeys.reserve(batch.upserts.size());
+    for (const auto& row : batch.upserts) {
+        if (!upsertKeys.emplace(row.key).second) return false;
+    }
+    std::unordered_set<std::intptr_t> removeKeys(batch.removeKeys.begin(), batch.removeKeys.end());
+    if (removeKeys.size() != batch.removeKeys.size()) return false;
+    for (std::intptr_t key : removeKeys) {
+        if (upsertKeys.find(key) != upsertKeys.end()) return false;
+    }
+    std::unordered_set<std::intptr_t> resultingKeys;
+    std::unordered_map<std::intptr_t, int> keyToIndex;
+    const int currentCount = TableRowCount(table);
+    resultingKeys.reserve(static_cast<std::size_t>(currentCount) + batch.upserts.size());
+    keyToIndex.reserve(static_cast<std::size_t>(currentCount) + batch.upserts.size());
+    for (int index = 0; index < currentCount; ++index) {
+        const std::intptr_t key = TableRowKey(table, index);
+        if (!resultingKeys.emplace(key).second) return false;
+        keyToIndex.emplace(key, index);
+    }
+    for (std::intptr_t key : removeKeys) resultingKeys.erase(key);
+    for (std::intptr_t key : upsertKeys) resultingKeys.emplace(key);
+    if (!batch.order.empty()) {
+        std::unordered_set<std::intptr_t> orderKeys(batch.order.begin(), batch.order.end());
+        if (orderKeys.size() != batch.order.size() || orderKeys != resultingKeys) return false;
+    }
+
+    bool structuralChange = !batch.removeKeys.empty() || !batch.order.empty();
+    if (!structuralChange) {
+        for (const auto& row : batch.upserts) {
+            if (keyToIndex.find(row.key) == keyToIndex.end()) {
+                structuralChange = true;
+                break;
+            }
+        }
+    }
+    if (!structuralChange) {
+        for (const auto& row : batch.upserts) {
+            const int index = keyToIndex.at(row.key);
+            ThemedControls::BeginTableRowUpdate(table);
+            if (!WriteTableRow(table, index, row, false)) {
+                ThemedControls::EndTableRowUpdate(table, index);
+                return false;
+            }
+            ThemedControls::UpdateTableRowState(
+                table, index, row.enabled, row.active, TableCellStates(row));
+            ThemedControls::EndTableRowUpdate(table, index);
+        }
+        return true;
+    }
+
+    const std::vector<std::intptr_t> selectedKeys = TableSelectedKeys(table);
+    const std::intptr_t topKey = TableTopVisibleRowKey(table);
+    const ScopedTableRowsUpdate update(table);
+
+    std::vector<int> removalRows;
+    removalRows.reserve(batch.removeKeys.size());
+    for (std::intptr_t key : batch.removeKeys) {
+        const auto found = keyToIndex.find(key);
+        if (found != keyToIndex.end()) removalRows.push_back(found->second);
+    }
+    std::sort(removalRows.begin(), removalRows.end(), std::greater<int>());
+    for (int row : removalRows) {
+        if (!ListView_DeleteItem(table, row)) return false;
+    }
+    ThemedControls::RemoveTableRowStates(table, removalRows);
+
+    keyToIndex.clear();
+    const int retainedCount = TableRowCount(table);
+    for (int index = 0; index < retainedCount; ++index) {
+        keyToIndex.emplace(TableRowKey(table, index), index);
+    }
+
+    for (const auto& row : batch.upserts) {
+        const auto existing = keyToIndex.find(row.key);
+        if (existing != keyToIndex.end()) {
+            if (!WriteTableRow(table, existing->second, row, false)) return false;
+            ThemedControls::UpdateTableRowState(
+                table, existing->second, row.enabled, row.active, TableCellStates(row));
+        } else {
+            const int appended = ListView_GetItemCount(table);
+            if (!WriteTableRow(table, appended, row, true)) return false;
+            ThemedControls::InsertTableRowState(
+                table, appended, row.enabled, row.active, TableCellStates(row));
+            keyToIndex.emplace(row.key, appended);
+        }
+    }
+
+    if (!batch.order.empty() && !SetTableRowOrder(table, batch.order)) return false;
+    if (!selectedKeys.empty()) {
+        std::vector<int> selectedIndices;
+        selectedIndices.reserve(selectedKeys.size());
+        for (std::intptr_t key : selectedKeys) {
+            const int index = FindTableRowByKey(table, key);
+            if (index >= 0) selectedIndices.push_back(index);
+        }
+        SetTableSelectedIndicesInternal(table, selectedIndices, false);
+    }
+    if (topKey != 0 && TableTopVisibleRowKey(table) != topKey) {
+        RestoreTableTopVisibleRowByKey(table, topKey);
+    }
+    return true;
+}
+
 int ThemedUi::AppendTableRow(HWND table, const ThemedTableRow& row) {
     if (!table) return -1;
     const int index = ListView_GetItemCount(table);
@@ -3633,6 +3812,9 @@ int ThemedUi::AppendTableRow(HWND table, const ThemedTableRow& row) {
     }
     ThemedControls::InsertTableRowState(table, index, row.enabled, row.active, TableCellStates(row));
     ThemedControls::EndTableRowUpdate(table, index);
+    if (!ThemedControls::IsTableRowsUpdating(table)) {
+        ThemedControls::RefreshTableLayout(table);
+    }
     return index;
 }
 
@@ -3677,6 +3859,7 @@ bool ThemedUi::RemoveTableRow(HWND table, int index) {
     } else if (hasTop && newTop >= 0 && ListView_GetItemRect(table, newTop, &after, LVIR_BOUNDS)) {
         ListView_Scroll(table, 0, after.top - before.top);
     }
+    ThemedControls::RefreshTableLayout(table);
     return true;
 }
 
@@ -3808,10 +3991,17 @@ int ThemedUi::TableSelectedIndex(HWND table) { return table ? ListView_GetNextIt
 void ThemedUi::SetTableSelectedIndex(HWND table, int index) {
     if (!table) return;
     const int count = ListView_GetItemCount(table);
-    for (int row = 0; row < count; ++row) {
-        ListView_SetItemState(table, row, row == index ? LVIS_SELECTED | LVIS_FOCUSED : 0, LVIS_SELECTED | LVIS_FOCUSED);
+    int selected = -1;
+    while ((selected = ListView_GetNextItem(table, selected, LVNI_SELECTED)) >= 0) {
+        if (selected != index) ListView_SetItemState(table, selected, 0, LVIS_SELECTED);
+    }
+    const int focused = ListView_GetNextItem(table, -1, LVNI_FOCUSED);
+    if (focused >= 0 && focused != index) {
+        ListView_SetItemState(table, focused, 0, LVIS_FOCUSED);
     }
     if (index >= 0 && index < count) {
+        ListView_SetItemState(table, index, LVIS_SELECTED | LVIS_FOCUSED,
+            LVIS_SELECTED | LVIS_FOCUSED);
         ListView_EnsureVisible(table, index, FALSE);
     }
 }
@@ -3842,25 +4032,7 @@ std::vector<std::intptr_t> ThemedUi::TableSelectedKeys(HWND table) {
 }
 
 void ThemedUi::SetTableSelectedIndices(HWND table, const std::vector<int>& indices) {
-    if (!table) return;
-    const int count = ListView_GetItemCount(table);
-    SendMessageW(table, WM_SETREDRAW, FALSE, 0);
-    for (int row = 0; row < count; ++row) {
-        ListView_SetItemState(table, row, 0, LVIS_SELECTED);
-    }
-    int focusRow = -1;
-    for (int index : indices) {
-        if (index >= 0 && index < count) {
-            ListView_SetItemState(table, index, LVIS_SELECTED, LVIS_SELECTED);
-            focusRow = index;
-        }
-    }
-    if (focusRow >= 0) {
-        ListView_SetItemState(table, focusRow, LVIS_FOCUSED, LVIS_FOCUSED);
-        ListView_EnsureVisible(table, focusRow, FALSE);
-    }
-    SendMessageW(table, WM_SETREDRAW, TRUE, 0);
-    InvalidateRect(table, nullptr, FALSE);
+    SetTableSelectedIndicesInternal(table, indices, true);
 }
 
 bool ThemedUi::SetTableSelectedKeys(HWND table, const std::vector<std::intptr_t>& keys) {
@@ -3931,6 +4103,24 @@ std::intptr_t ThemedUi::TableTopVisibleRowKey(HWND table) {
     if (!table) return 0;
     return TableRowKey(table, ListView_GetTopIndex(table));
 }
+ThemedTableVisibleRange ThemedUi::TableVisibleRange(HWND table) {
+    ThemedTableVisibleRange range{};
+    if (!table) return range;
+    const int count = ListView_GetItemCount(table);
+    if (count <= 0) return range;
+    range.first = std::clamp(ListView_GetTopIndex(table), 0, count - 1);
+    range.last = std::min(count - 1, range.first + std::max(1, ListView_GetCountPerPage(table)) - 1);
+    return range;
+}
+void ThemedUi::SetTableViewportChangedHandler(
+    HWND table,
+    ThemedTableViewportChangedHandler handler) {
+    ThemedControls::SetTableViewportChangedHandler(table, std::move(handler));
+}
+bool ThemedUi::ScrollTableToTop(HWND table) {
+    if (!table || ListView_GetItemCount(table) <= 0) return false;
+    return RestoreTableTopVisibleRowByKey(table, TableRowKey(table, 0));
+}
 bool ThemedUi::RestoreTableTopVisibleRowByKey(HWND table, std::intptr_t key) {
     if (!table || key == 0) return false;
     const int target = FindTableRowByKey(table, key);
@@ -4000,13 +4190,7 @@ void ThemedUi::ClearTable(HWND table) {
     ThemedControls::SetTableCells(table, {});
 }
 void ThemedUi::SetTableImageLists(HWND table, HIMAGELIST smallImages, HIMAGELIST largeImages) {
-    if (!table) return;
-    if (smallImages) {
-        ListView_SetImageList(table, smallImages, LVSIL_SMALL);
-    } else {
-        ThemedControls::RestoreTableDefaultImageList(table);
-    }
-    ListView_SetImageList(table, largeImages, LVSIL_NORMAL);
+    ThemedControls::SetTableImageLists(table, smallImages, largeImages);
 }
 
 bool ThemedUi::DecodeTableEvent(HWND table, LPARAM lParam, ThemedTableEvent& event) {
@@ -4567,6 +4751,40 @@ bool ThemedUi::IsNativeEditShortcut(const MSG& message) {
         return true;
     default:
         return false;
+    }
+}
+
+bool ThemedUi::IsEditComposing(HWND edit) {
+    if (!edit) return false;
+    HIMC context = ImmGetContext(edit);
+    const bool composing = context && ImmGetCompositionStringW(context, GCS_COMPSTR, nullptr, 0) > 0;
+    if (context) ImmReleaseContext(edit, context);
+    return composing;
+}
+
+void ThemedUi::BindTableSearchEdit(HWND table, HWND edit) {
+    ThemedControls::BindTableSearchEdit(table, edit);
+}
+
+ThemedEditTableNavigation ThemedUi::DecodeEditTableNavigation(const MSG& message, HWND edit) {
+    if (!edit || message.hwnd != edit || GetFocus() != edit || message.message != WM_KEYDOWN) {
+        return ThemedEditTableNavigation::None;
+    }
+    if (IsNativeEditShortcut(message) ||
+        (GetKeyState(VK_CONTROL) & 0x8000) != 0 ||
+        (GetKeyState(VK_MENU) & 0x8000) != 0) {
+        return ThemedEditTableNavigation::None;
+    }
+    if (IsEditComposing(edit)) return ThemedEditTableNavigation::None;
+
+    switch (message.wParam) {
+    case VK_UP: return ThemedEditTableNavigation::Previous;
+    case VK_DOWN: return ThemedEditTableNavigation::Next;
+    case VK_PRIOR: return ThemedEditTableNavigation::PagePrevious;
+    case VK_NEXT: return ThemedEditTableNavigation::PageNext;
+    case VK_RETURN: return ThemedEditTableNavigation::Activate;
+    case VK_ESCAPE: return ThemedEditTableNavigation::Cancel;
+    default: return ThemedEditTableNavigation::None;
     }
 }
 

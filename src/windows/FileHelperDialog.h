@@ -38,4 +38,5 @@ struct FileHelperTestRequest {
 
 bool ShowFileHelperDialog(HWND owner, HINSTANCE instance, const Theme& theme);
 bool ToggleFileHelperDialog(HWND owner, HINSTANCE instance, const Theme& theme);
+bool CloseFileHelperDialog();
 bool PreTranslateFileHelperMessage(const MSG& message);

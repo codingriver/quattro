@@ -61,6 +61,20 @@ public:
         return Open(owner, instance, theme);
     }
 
+    static bool Close() {
+        HWND existing = gFileHelperWindow.load();
+        if (!existing) {
+            return true;
+        }
+        if (!IsWindow(existing)) {
+            gFileHelperWindow.compare_exchange_strong(existing, nullptr);
+            return true;
+        }
+
+        SendMessageW(existing, WM_CLOSE, 0, 0);
+        return !IsWindow(existing);
+    }
+
 private:
     bool Create() {
         HICON icon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_QUATTRO_APP_ICON));
@@ -476,6 +490,10 @@ bool ShowFileHelperDialog(HWND owner, HINSTANCE instance, const Theme& theme) {
 
 bool ToggleFileHelperDialog(HWND owner, HINSTANCE instance, const Theme& theme) {
     return FileHelperDialog::Toggle(owner, instance, theme);
+}
+
+bool CloseFileHelperDialog() {
+    return FileHelperDialog::Close();
 }
 
 bool PreTranslateFileHelperMessage(const MSG& message) {
